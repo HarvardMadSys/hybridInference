@@ -53,6 +53,10 @@ The URL hostname must match the gateway server certificate. The CA file verifies
 that server; the client certificate and key authenticate the frontend to the
 gateway. Supply the files through a read-only secret mount accessible to the
 frontend process, and restrict who may read or mount the client private key.
+The console runs as uid 1000, not root, so the files must be readable by that
+user: for example group 1000 with mode `0440`, or a Kubernetes `fsGroup: 1000`
+with `defaultMode: 0440`. A file only root can read makes `/pgadmin/` answer
+502, and the console logs that the credentials are not readable by its user.
 These are file paths inside the frontend container, not certificate contents.
 The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
 the console's administrator check does not protect a separately exposed backend.
@@ -113,7 +117,7 @@ none of them, and nothing warns you:
 | Protection | What a proxy in front typically does |
 |---|---|
 | Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
-| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`). The gateway enforces no size limit of its own |
+| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`), so oversized ones never cross your network. The gateway refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` bodies to it without holding them |
 | `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
 
 The gateway reads forwarded headers only from the proxies you authorize (see
@@ -176,7 +180,9 @@ make migrate             # apply the schema migrations only
 the external volume `hybridinference_postgres_data` when it is missing, and then
 apply the schema migrations with the backend image before they start the
 services. `make restart` starts the existing containers again and migrates
-nothing.
+nothing. On a deployment that `make deploy` pinned to published images, these
+commands start the pinned images, and `make build` refuses until you return to
+source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery).
 
 To start an optional profile, pass it on the `make` command line — a variable
 set there is exported into the environment of the recipe, and a shell variable
@@ -191,6 +197,56 @@ at once. It can also be set in `.env` (as `.env.example` notes), but the
 command line is the form to reach for when you want certainty about which
 profiles are active.
 
+### Diagnostics, deployment and recovery
+
+```bash
+make doctor
+make smoke MODEL=team-chat
+make deploy BACKEND_IMAGE=registry/backend@sha256:<digest> FRONTEND_IMAGE=registry/frontend@sha256:<digest> MODEL=team-chat
+make rollback MODEL=team-chat
+make backup BACKUP=/private/path/gateway.dump
+make restore-check BACKUP=/private/path/gateway.dump
+```
+
+Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the
+distribution's own `smoke.py` when it ships one.
+
+A deploy records the running artifacts, pulls the pinned pair and migrates with
+the new backend image. With `LEGACY_MANIFEST` set it then imports the previous
+release's file-based configuration with that image; see
+[Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database).
+Only then does it switch the services and run the acceptance smoke. Any failure
+after the switch, an interrupted command included, restores the previous images
+and runs the acceptance on them again; the command then exits with the deploy's
+own error and whether the restore passed. A rollback starts the recorded
+previous images without running their migrations.
+
+Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without
+a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the
+shell sets it): `images.env`, the images it is pinned to, and `previous.json`
+and `current.json`. A deploy writes them only once its release is accepted, so
+a failed attempt changes neither the pin nor the release a rollback returns to;
+a rollback pins the images it starts. While `images.env` exists, that
+deployment's `make up`, `make migrate` and other lifecycle commands start the
+pinned images instead of building the checkout, and `make build` refuses. To
+return to source builds, delete that `images.env` and run `make build`. No other
+distribution, the example included, uses the pin.
+
+Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs
+to persist optional Compose profiles, cloud-agent networking and the pgAdmin
+host-port choice across commands; the copy alone changes nothing.
+
+Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds
+every stored secret: keep it private and copy it off the host. A restore check
+never touches the deployment's database server. It restores the dump into a
+throwaway PostgreSQL container of the same image, with its own volume and
+internal network, migrates the copy to this release, as a deploy would migrate a
+backup taken before the upgrade, and removes the container, volume and network
+afterwards. For its duration it adds a second database server's CPU and I/O,
+and it needs free disk where Docker keeps volumes, normally the disk of the
+deployment's own database: it refuses to start unless about twice the
+database's size plus 1 GiB is free there.
+
 ### What a change actually requires
 
 Three different answers, and picking the wrong one looks like the change not
@@ -199,10 +255,10 @@ taking effect:
 | You changed | Do this |
 |---|---|
 | A setting on the admin **Configuration** tab | Nothing, unless it is marked **Restart required**: then select **Restart backend** on that tab, or run `make restart s=backend` |
-| A value in `.env` that stays in the environment — the database connection, ports, config paths, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
+| A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
 | Any other value in `.env` | Nothing happens once the database has the setting: change it on the **Configuration** tab instead. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
-| A model registry or routing YAML | `make restart s=backend` — `config/` and `distributions/` are bind-mounted read-only, so no rebuild is needed |
-| A distribution branding YAML | `make restart s=backend` — `/site-config` serves the validated snapshot loaded at backend startup |
+| Model catalog, routing policy or alert rules in Admin Settings | Follow the **Restart required** marker; no image rebuild is needed |
+| Site configuration or branding in Admin Settings | Applies when settings refresh; no rebuild or restart |
 | A file in the mounted site-assets directory | No image rebuild; replace the file in the deployment overlay |
 | `AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL` | `make up` — the `/agents` route handler reads them at runtime in the recreated frontend container |
 | A true build-only `NEXT_PUBLIC_*` compatibility value | `make build s=frontend` — see below |
@@ -282,24 +338,16 @@ deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `SITE_NAME` and the sender
 address of outgoing mail start out as those defaults until you change them on
 the tab.
 
-### Config file resolution
+### Application configuration
 
-The gateway picks each configuration file from an explicit
-`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then an
-active distribution manifest, then the examples under `config/examples/`; see
-[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config).
-
-Note that the Compose file passes these through explicitly:
-
-```yaml
-ROUTING_CONFIG_PATH: ${ROUTING_CONFIG_PATH-}
-MODELS_CONFIG_PATH: ${MODELS_CONFIG_PATH-}
-DISTRIBUTION_CONFIG_PATH: ${DISTRIBUTION_CONFIG_PATH-}
-```
-
-An `--env-file` alone does not put a variable into a container's environment;
-these lines are what carry it in. Without them the gateway would silently fall
-back to the default files.
+Models, routing, alert rules, site identity and branding are database settings,
+not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections
+have no effect on this release, which warns at startup while one is set. Keep
+them in the deployment's env files through the rollback window anyway: Compose
+passes them to the backend, where a rolled-back previous release reads its files
+through them and the legacy import learns what that release had in force. See
+[Configuration](configuration.md) for the document controls and the import an
+existing deployment runs during its upgrade.
 
 ### Local inference servers
 
@@ -429,9 +477,8 @@ Slack-compatible destination (Mattermost, Rocket.Chat, an egress proxy) tests
 normally. It must still be `https`. Discord, Telegram and arbitrary webhook
 formats are not supported by this selector.
 
-Rules and thresholds are a deployment's own; this repository ships no alerts
-file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and the built-in
-thresholds apply. The rule types and evaluation live in
+Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings.
+Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in
 `apps/backend/serving/observability/`.
 
 Two auth rules are worth knowing apart, because their defaults differ on
@@ -538,22 +585,33 @@ other limits let through), and twenty per address in an hour
 account before, including the one you used for setup, holds a device cookie
 (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
 valid for 180 days) and gets five attempts per 15 minutes of its own, so other
-people's guesses never lock it out. Changing `JWT_SECRET_KEY` invalidates
-every device cookie until that browser's next sign-in.
+people's guesses never lock it out. Together, the account's browsers that hold
+one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
+only requests carrying such a cookie count against, and once it is spent they
+are limited like any other browser. Each password has its own budget: cookies
+from before a password change or reset cannot spend the one your browsers share
+after it. Changing `JWT_SECRET_KEY` invalidates every device cookie until that
+browser's next sign-in.
 
 Other browsers share the limits with their address, and behind the bundled
-Compose file's console proxy every browser has the same address unless
-[trusted-proxy settings](trusted-proxies-and-client-ips.md) name the console;
-`admin` is the first username anyone tries. The counts are held in memory, so
-a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
+Compose file's console every browser has the same address unless the gateway
+trusts the header your edge sets, which is safe only while the console is
+reachable through that edge alone (see
+[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console));
+`admin` is the first username anyone tries. The pages that mail a link to an
+address anyone types, password reset and resending the verification email,
+are limited too: three of each kind an hour per address, whether or not an
+account has it, and ten an hour per client address when the backend can tell
+clients apart (without that, the per-address limit alone). The counts are held
+in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
 when set, still reaches the admin API, and the command-line tools work on the
 database directly.
 
 **Without the browser.** `ops/admin/create_admin.py` writes the account
 directly: it creates it with `role='admin'`, `status='active'`,
 `email_verified=TRUE`, or promotes an existing account with the same address.
-Run it from the repository root once the backend has started at least once
-(the backend creates the schema):
+Run it from the repository root once the schema migrations have run
+(`make migrate`; `make up` runs them):
 
 ```bash
 python ops/admin/create_admin.py --email you@example.com
@@ -708,21 +766,46 @@ those credentials.
 
 ### pgAdmin (optional)
 
+Set `PGADMIN_PASSWORD` in `.env` first, then:
+
 ```bash
 make up COMPOSE_PROFILES=admin
 ```
 
-pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so an SSH
-tunnel to that port is enough to reach it. The console can also proxy it at
-`/pgadmin/`, gated on an admin session by
-`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on every
-unexpected condition, including a backend it cannot reach.
+The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated on an
+admin session by `apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which
+denies on every unexpected condition, including a backend it cannot reach.
+pgAdmin publishes no host port, since one would skip that gate;
+`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel.
 
-One thing to get right: whether pgAdmin *also* asks for its own login is set by
-`PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The Compose service
-falls back to `False`, which serves pgAdmin with no login at all; `.env.example`
-suggests `True`, which turns pgAdmin's own login on behind the console's gate.
-`True` is the safer of the two.
+Behind the console's gate pgAdmin asks for its own login, `PGADMIN_EMAIL` and
+`PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, and
+`False` serves pgAdmin with no login at all. There is no fallback password:
+without one pgAdmin will not set up its volume. It keeps the login it first
+started with, so a volume first started without a password, or with server
+mode off, needs the steps in [Authentication](database.md#authentication).
+
+pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
+the database. The backend and any other service on `hybridinference` cannot
+reach it. The first `make up` after this change recreates the `postgres`
+container to attach it to that network, a restart of a few seconds.
+
+The Compose service runs an exact pgAdmin release (`dpage/pgadmin4:9.19`).
+Moving from the earlier `dpage/pgadmin4:8` upgrades pgAdmin's settings
+database in the `pgadmin_data` volume on the first start, which an 8.x image
+cannot read afterwards.
+
+```{note}
+pgAdmin and the agent web app (`/agents`) are served on the console's own
+origin. Any script either app serves runs with the authority of the console
+session open in that browser, because the session's access token and
+`/auth/refresh` are same-origin. The proxies keep each app's cookies under its
+own path and refuse any cookie named like one of the console's, which stops an
+app from replacing or clearing the console's session, but only a separate
+origin removes the shared authority. Serving each app from its own hostname
+behind the same admin gate needs DNS and tunnel routes per deployment and is
+tracked as follow-up work.
+```
 
 ## Troubleshooting
 

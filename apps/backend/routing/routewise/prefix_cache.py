@@ -31,7 +31,9 @@ import json
 import secrets
 import threading
 import time
+from array import array
 from collections import OrderedDict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -39,7 +41,7 @@ from serving.utils.logging import get_logger
 from serving.utils.tokens import tokenize_text
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Mapping, Sequence
+    from collections.abc import Callable, Iterator, Sequence
     from typing import Any
 
 logger = get_logger(__name__)
@@ -49,6 +51,39 @@ DEFAULT_BLOCK_SIZE_TOKENS: int = 128
 DEFAULT_TTL_SEC: float = 2 * 3600.0
 DEFAULT_MAX_ENTRIES: int = 50_000
 DEFAULT_MIN_MATCH_TOKENS: int = 1024
+
+# Most of a request's canonical text that is cut into blocks. Tokenizing costs
+# about a second per three megabytes, and a request body may be 32 MiB. The bound
+# sits above the canonical text of any prompt a context window admits -- 1M
+# tokens is about 4M characters of English, and the canonical form escapes
+# non-ASCII text to six characters a character -- so blocks are cut exactly as
+# before for every prompt a route could serve. A longer one is cut over its
+# first MAX_CANONICAL_CHARS characters, which can only shorten a match.
+MAX_CANONICAL_CHARS: int = 16_000_000
+
+# Content block types whose payload is media, not prompt text. Such a payload
+# is tokenized by the provider as an image or a sound, never as the base64 text
+# it is sent in, so the canonical form keeps only its identity
+# (``_media_identity``): a different attachment still breaks the match where it
+# sits, and a megabyte of base64 is neither tokenized nor counted as cached.
+_MEDIA_BLOCK_TYPES = frozenset(
+    {
+        "image",
+        "image_url",
+        "input_image",
+        "audio",
+        "input_audio",
+        "video",
+        "video_url",
+        "input_video",
+        "file",
+        "input_file",
+    }
+)
+
+# A string at least this long inside a media block is its payload; shorter ones
+# (a detail level, a format, a file name) are kept as they are.
+_MEDIA_PAYLOAD_MIN_CHARS = 256
 
 # Per-process secret so block digests are not reversible across deployments and
 # never need a configured key. Callers may override for deterministic tests.
@@ -97,6 +132,61 @@ def _hmac_digest(secret: bytes, payload: bytes) -> str:
     return hmac.new(secret, payload, hashlib.sha256).hexdigest()
 
 
+def _media_identity(payload: str) -> str:
+    """Return a short identity for one media payload: its length and a digest of it."""
+    digest = hashlib.blake2b(payload.encode("utf-8", "surrogatepass"), digest_size=16)
+    return f"\x03media:{len(payload)}:{digest.hexdigest()}"
+
+
+def _media_field(value: Any) -> Any:
+    """Return ``value`` with a payload-sized string replaced by its identity."""
+    if isinstance(value, str) and len(value) >= _MEDIA_PAYLOAD_MIN_CHARS:
+        return _media_identity(value)
+    return value
+
+
+def _is_media_block(block: Any) -> bool:
+    return isinstance(block, Mapping) and block.get("type") in _MEDIA_BLOCK_TYPES
+
+
+def _without_media_payload(block: Mapping[str, Any]) -> dict[str, Any]:
+    """Return a copy of one media block whose payloads are replaced by their identity.
+
+    Looks one level into nested objects, where the payload sits in every format
+    this gateway forwards: ``image_url.url``, ``input_audio.data``,
+    ``source.data``, ``file.file_data``.
+    """
+    return {
+        key: (
+            {inner: _media_field(item) for inner, item in value.items()}
+            if isinstance(value, Mapping)
+            else _media_field(value)
+        )
+        for key, value in block.items()
+    }
+
+
+def _messages_without_media(messages: Sequence[Any]) -> list[Any]:
+    """Return ``messages`` with each media payload replaced by its identity.
+
+    A message without media is the same object, so a text-only request
+    serializes exactly as it would have.
+    """
+    result: list[Any] = []
+    for message in messages:
+        content = message.get("content") if isinstance(message, Mapping) else None
+        if isinstance(content, list) and any(_is_media_block(block) for block in content):
+            message = {
+                **message,
+                "content": [
+                    _without_media_payload(block) if _is_media_block(block) else block
+                    for block in content
+                ],
+            }
+        result.append(message)
+    return result
+
+
 def canonicalize_prompt(
     messages: Sequence[Mapping[str, Any]],
     *,
@@ -106,14 +196,51 @@ def canonicalize_prompt(
     """Return a deterministic string for the cache-affecting parts of a request.
 
     Field order and whitespace are normalized so that semantically identical
-    requests serialize identically. Only prompt-shaping inputs are included.
+    requests serialize identically. Only prompt-shaping inputs are included, and
+    a media payload is included by identity (see ``_MEDIA_BLOCK_TYPES``).
     """
     payload = {
-        "messages": list(messages),
+        "messages": _messages_without_media(messages),
         "tools": tools,
         "response_format": response_format,
     }
     return json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+
+
+def _token_array(token_ids: Sequence[Any]) -> array | None:
+    """Return the token ids as 64-bit integers, or None when some cannot be one."""
+    try:
+        return array("q", token_ids)
+    except TypeError:
+        pass
+    except OverflowError:
+        return None
+    try:
+        return array("q", (int(token) for token in token_ids))
+    except (TypeError, ValueError, OverflowError):
+        return None
+
+
+def _block_payloads(token_ids: Sequence[Any], block_size: int) -> Iterator[tuple[int, Any]]:
+    """Yield ``(token count, bytes to digest)`` for each ``block_size`` run of tokens.
+
+    The bytes of one run are a slice of the token array's own buffer: one copy
+    of the ids for the whole request, none per block. A tokenizer whose ids do
+    not fit 64 bits falls back to the ids written out in decimal, which digests
+    the same runs to the same match.
+    """
+    ids = _token_array(token_ids)
+    if ids is not None:
+        raw = memoryview(ids).cast("B")
+        width = ids.itemsize
+        total = len(ids)
+        for start in range(0, total, block_size):
+            end = min(start + block_size, total)
+            yield end - start, raw[start * width : end * width]
+        return
+    for start in range(0, len(token_ids), block_size):
+        chunk = token_ids[start : start + block_size]
+        yield len(chunk), ",".join(str(int(token)) for token in chunk).encode("ascii")
 
 
 def build_blocks(
@@ -129,20 +256,28 @@ def build_blocks(
 
     The canonical prompt is tokenized and split into ``block_size`` chunks; each
     chunk is HMAC-hashed so the stored sequence is opaque. The trailing partial
-    chunk is kept so short prompts still produce a block.
+    chunk is kept so short prompts still produce a block. Only the first
+    ``MAX_CANONICAL_CHARS`` characters of the canonical prompt are tokenized.
+
+    The digests are compared only with others this process computed under the
+    same secret, so what is hashed for a run is free to be its raw token bytes:
+    two runs digest alike exactly when their tokens are alike.
     """
     if block_size <= 0:
         raise ValueError(f"block_size must be positive, got {block_size}")
     key = secret if secret is not None else _PROCESS_SECRET
     text = canonicalize_prompt(messages, tools=tools, response_format=response_format)
-    token_ids = list(tokenize(text))
+    if len(text) > MAX_CANONICAL_CHARS:
+        text = text[:MAX_CANONICAL_CHARS]
+    token_ids = tokenize(text)
+    if not isinstance(token_ids, (list, tuple)):
+        token_ids = list(token_ids)
+    keyed = hmac.new(key, digestmod=hashlib.sha256)
     blocks: list[Block] = []
-    for start in range(0, len(token_ids), block_size):
-        chunk = token_ids[start : start + block_size]
-        if not chunk:
-            continue
-        payload = b",".join(str(int(tok)).encode("ascii") for tok in chunk)
-        blocks.append(Block(digest=_hmac_digest(key, payload), token_count=len(chunk)))
+    for count, payload in _block_payloads(token_ids, block_size):
+        digest = keyed.copy()
+        digest.update(payload)
+        blocks.append(Block(digest=digest.hexdigest(), token_count=count))
     return tuple(blocks)
 
 
@@ -483,6 +618,7 @@ __all__ = [
     "DEFAULT_BLOCK_SIZE_TOKENS",
     "DEFAULT_MIN_MATCH_TOKENS",
     "DEFAULT_TTL_SEC",
+    "MAX_CANONICAL_CHARS",
     "Block",
     "CacheScope",
     "CacheSignal",

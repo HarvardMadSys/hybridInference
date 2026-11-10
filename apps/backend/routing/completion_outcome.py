@@ -41,11 +41,15 @@ class CompletionOutcome(StrEnum):
 
     #: Real assistant output was produced.
     PROGRESS = "progress"
+    #: The objective was demonstrably finished.
+    COMPLETE = "complete"
     #: Provider is not ready (warming up, cold replica, queued). Transport
     #: succeeded but no inference work happened.
     TRANSIENT_NO_PROGRESS = "transient_no_progress"
     #: Success, but no assistant-visible output.
     EMPTY = "empty"
+    #: Same non-progressing response as a recent prior attempt.
+    REPEATED_NOOP = "repeated_noop"
     #: Structured provider/transport failure.
     PROVIDER_ERROR = "provider_error"
     #: The request was abandoned or cancelled by the client.
@@ -57,18 +61,56 @@ class CompletionOutcome(StrEnum):
     def admits_real_work(self) -> bool:
         """Whether this outcome may be used as evidence that real work happened.
 
-        Only ``PROGRESS`` qualifies. Everything else -- including ``UNKNOWN`` --
-        must leave positive evidence untouched, because an indeterminate
-        observation is not grounds for discarding what we already know.
+        Only ``PROGRESS`` and ``COMPLETE`` qualify. Everything else -- including
+        ``UNKNOWN`` -- must leave positive evidence untouched, because an
+        indeterminate observation is not grounds for discarding what we already
+        know.
         """
-        return self is CompletionOutcome.PROGRESS
+        return self in (CompletionOutcome.PROGRESS, CompletionOutcome.COMPLETE)
+
+    @classmethod
+    def from_response(
+        cls,
+        *,
+        content: str | None,
+        usage: dict[str, Any] | None,
+        http_status: int | None,
+        terminal: bool,
+    ) -> CompletionOutcome:
+        """Classify a single response.
+
+        ``usage`` is the provider's own reported usage mapping, when available.
+        ``http_status`` of None means no HTTP response was obtained.
+        """
+        return classify_completion_outcome(
+            content=content,
+            usage=usage,
+            http_status=http_status,
+            terminal=terminal,
+        )
 
 
-#: Literal starts of provider warmup notices. Keep these canonical strings
-#: shared by final classification and the incremental stream-prefix check.
-#: Commas and regex alternatives are expanded here so partial matching never
-#: treats regex syntax as literal provider output.
+#: Provider warmup / placeholder notices recognized by the shared classifier.
+#: These are regex sources; ``_TRANSIENT_PREFIX_MARKERS`` below holds the same
+#: notices as literal text for incremental (partial) stream matching.
 _DEFAULT_TRANSIENT_MARKERS: tuple[str, ...] = (
+    r"the model is starting up",
+    r"model is starting up",
+    r"the model is warming up",
+    r"model is warming up",
+    r"warming up the model",
+    r"model is loading,? please wait",
+    r"loading the model,? please wait",
+    r"please wait while the model (loads|starts)",
+    r"the model is not ready",
+    r"model is initializing",
+)
+
+#: The same notices as literal text, so a *partial* stream can be tested with
+#: ``str.startswith`` instead of being matched against regex source (where the
+#: syntax itself, ``",?"`` or ``"(loads|starts)"``, never appears in provider
+#: output). Commas and alternatives are expanded one literal per form.
+_TRANSIENT_PREFIX_MARKERS: tuple[str, ...] = (
     "the model is starting up",
     "model is starting up",
     "the model is warming up",
@@ -84,10 +126,9 @@ _DEFAULT_TRANSIENT_MARKERS: tuple[str, ...] = (
     "model is initializing",
 )
 
-#: Provider warmup notices are short and appear at the start of the response.
-#: Keep both their total length and permitted trailing wording bounded so a
-#: genuine answer that quotes one is not mistaken for a transient response.
-_TRANSIENT_TEXT_MAX_CHARS = 200
+#: Known, bounded ways a provider continues a warmup notice. Only these may
+#: follow a marker; anything else is a genuine answer that happens to open with
+#: a marker, and must be classified on its content.
 _TRANSIENT_SUFFIX_PREFIXES: tuple[str, ...] = (
     "this takes about",
     "this will take about",
@@ -110,9 +151,14 @@ _TRANSIENT_SUFFIX_PREFIXES: tuple[str, ...] = (
     "now",
 )
 
-# Possessive punctuation + atomic alternatives: overlapping words ("try again" /
-# "please try again" / "shortly") are tried once, so a failing tail is linear.
-_NOTICE_PUNCT = r"[\s.!\u2026,;:-]*+"
+# Match a marker only at the beginning, and allow only a small set of known
+# provider-notice tails. This avoids classifying a genuine answer as transient
+# just because it quotes a warmup phrase in the middle or continues the phrase
+# with free-form explanation.
+# Possessive punctuation so the repeated suffix cannot backtrack into the
+# punctuation run; atomic alternatives so overlapping words ("try again" /
+# "please try again" / "shortly") are tried once, not re-partitioned on failure.
+_NOTICE_PUNCT = r"[\s.!…,;:-]*+"
 _NOTICE_ALTERNATIVES = (
     r"(?:"
     r"this (?:takes|will take) about \d{1,4} (?:seconds?|minutes?)"
@@ -127,18 +173,21 @@ _NOTICE_ALTERNATIVES = (
     r")"
 )
 _NOTICE_SUFFIX = _NOTICE_PUNCT + r"(?:(?>" + _NOTICE_ALTERNATIVES + r")" + _NOTICE_PUNCT + r")*+$"
+
+# A bounded provider notice is short. Anything longer is a genuine answer,
+# not a notice tail, and must not be fed to the regex (it runs on the event
+# loop via record_routing_observation).
+_MAX_TRANSIENT_TEXT_LEN = 1000
 _TRANSIENT_MARKERS: tuple[re.Pattern[str], ...] = tuple(
-    re.compile(r"^" + re.escape(marker) + _NOTICE_SUFFIX, re.IGNORECASE)
-    for marker in _DEFAULT_TRANSIENT_MARKERS
+    re.compile(marker + _NOTICE_SUFFIX, re.IGNORECASE) for marker in _DEFAULT_TRANSIENT_MARKERS
 )
 
 
 def _looks_transient_text(text: str) -> bool:
     """Return whether *text* is a short response that starts with a warmup marker."""
-    if len(text) > _TRANSIENT_TEXT_MAX_CHARS:
+    if len(text) > _MAX_TRANSIENT_TEXT_LEN:
         return False
-    stripped = text.strip()
-    return any(marker.match(stripped) for marker in _TRANSIENT_MARKERS)
+    return any(marker.match(text) for marker in _TRANSIENT_MARKERS)
 
 
 def _possible_notice_suffix(text: str) -> bool:
@@ -171,15 +220,17 @@ def could_still_be_transient_prefix(content: str | None) -> bool:
 
     Streaming callers must defer a success decision while this is true. The
     final response classifier remains authoritative once the stream terminates.
+    Only the literal marker list is consulted, so a fragment is compared against
+    provider wording and never against regex source.
     """
     raw = content or ""
-    if len(raw) > _TRANSIENT_TEXT_MAX_CHARS:
+    if len(raw) > _MAX_TRANSIENT_TEXT_LEN:
         return False
     normalized = raw.strip().lower()
     if not normalized:
         return True
 
-    for marker in _DEFAULT_TRANSIENT_MARKERS:
+    for marker in _TRANSIENT_PREFIX_MARKERS:
         if marker.startswith(normalized):
             return True
         if normalized.startswith(marker) and _possible_notice_suffix(normalized[len(marker) :]):
@@ -222,11 +273,12 @@ def classify_completion_outcome(
 
     # 1. Structured provider signal first: transient text beats everything else.
     if text and not text.isspace():
-        if _looks_transient_text(text):
+        # Warmup detection is bounded to short responses, so a large answer
+        # never pays a full-body strip or a regex scan.
+        if len(text) <= _MAX_TRANSIENT_TEXT_LEN and _looks_transient_text(text.strip()):
             return CompletionOutcome.TRANSIENT_NO_PROGRESS
 
-        # 2. Genuine content. Warmup detection is bounded to short responses;
-        # large answers do not incur a full-body trim or repeated regex scan.
+        # 2. Genuine content.
         return CompletionOutcome.PROGRESS
 
     # 3. No content. If the provider reported output tokens, something was

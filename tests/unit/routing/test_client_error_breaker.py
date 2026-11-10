@@ -178,7 +178,9 @@ class _CaptureRouteWise(RouteWiseRouter):
         self.captured: list[dict] = []
         self.pending_prefix_cache = PendingPrefixCacheStore()
         # fallback_mode != "policy" so both paths re-raise right after recording.
-        self.config = types.SimpleNamespace(fallback_mode="off")
+        self.config = types.SimpleNamespace(
+            fallback_mode="off", prefix_cache_cost_adjustment_enabled=False
+        )
         self._fake = _FakeAdapter()
 
     def _select_decision(self, model_id, context=None, trace=None, **kwargs):  # type: ignore[override]

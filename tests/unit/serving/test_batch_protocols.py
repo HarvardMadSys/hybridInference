@@ -246,12 +246,20 @@ def test_2026_10_21_still_accepts_citations_where_the_guide_keeps_them():
 
 
 def _openai_adapter(**config: Any) -> Any:
-    settings = {"supports_tools": True, "supported_params": [], "reasoning_efforts": []}
+    # Self-hosted, so batch work may use it (serving/config/batch_routes.py).
+    settings = {
+        "supports_tools": True,
+        "supported_params": [],
+        "reasoning_efforts": [],
+        "deployment_type": "self_hosted",
+    }
     settings.update(config)
     return SimpleNamespace(native_format="openai", config=SimpleNamespace(**settings))
 
 
-_NATIVE = SimpleNamespace(native_format="anthropic", config=SimpleNamespace())
+_NATIVE = SimpleNamespace(
+    native_format="anthropic", config=SimpleNamespace(deployment_type="self_hosted")
+)
 
 
 @pytest.mark.parametrize(
@@ -644,7 +652,7 @@ def _replaced(value: Any, path: tuple, replacement: Any) -> Any:
 
 
 def _admission_context(profile: Any) -> targets.AdmissionContext:
-    embedder = SimpleNamespace(config=SimpleNamespace(id="e"))
+    embedder = SimpleNamespace(config=SimpleNamespace(id="e", deployment_type="self_hosted"))
     # Registered as the registry registers an embedding model: adapter and gate.
     router = FixedRouter()
     router.register_embedding_route("e", [(embedder, 1.0)], required_role="free")

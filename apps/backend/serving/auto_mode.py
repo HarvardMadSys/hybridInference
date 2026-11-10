@@ -57,6 +57,7 @@ from routing.model_selection import (
     select,
 )
 from routing.prefill_load import estimate_prefill_tokens
+from serving.adapters.reasoning_effort import declared_public_levels
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -101,12 +102,7 @@ def candidate_info(configs: Sequence[ModelConfig]) -> CandidateInfo:
     conservative reading ``/v1/models`` gives a model with several routes: the
     endpoint that ends up serving the request is not known yet.
     """
-    efforts = [
-        frozenset(cfg.reasoning_efforts)
-        if "reasoning_effort" in (cfg.supported_params or ())
-        else frozenset()
-        for cfg in configs
-    ]
+    efforts = [frozenset(declared_public_levels(cfg)) for cfg in configs]
     return CandidateInfo(
         context_length=min(cfg.context_length for cfg in configs),
         max_output_length=min(cfg.max_output_length for cfg in configs),
@@ -322,9 +318,6 @@ class AutoMode:
         )
 
 
-_CAPABILITY_REASONS = (DropReason.CONTEXT, DropReason.MODALITY, DropReason.TOOLS)
-
-
 def _unavailable(
     requested: str,
     candidates: Sequence[Candidate],
@@ -401,6 +394,31 @@ def load_auto_mode(path: Path, routes: Mapping[str, Any]) -> AutoMode | None:
     except (OSError, yaml.YAMLError) as exc:
         logger.error(f"Auto mode is off: could not read {path}: {exc}")
         return None
+    return _auto_mode_from_document(data, routes)
+
+
+def load_auto_mode_from_text(text: str, routes: Mapping[str, Any]) -> AutoMode | None:
+    """Load the ``auto:`` section of a stored model registry.
+
+    Args:
+        text: The route-catalog models document.
+        routes: The route table the section is checked against.
+
+    Returns:
+        The configured auto mode, or ``None`` when the document has no section
+        or the section cannot be used. A problem is logged and the models
+        themselves are left as they are.
+    """
+    try:
+        data = yaml.safe_load(text) or {}
+    except yaml.YAMLError as exc:
+        logger.error(f"Auto mode is off: could not read the database route catalog: {exc}")
+        return None
+    return _auto_mode_from_document(data, routes)
+
+
+def _auto_mode_from_document(data: Any, routes: Mapping[str, Any]) -> AutoMode | None:
+    """Build auto mode from a parsed registry, or ``None`` to leave it off."""
     raw = data.get("auto") if isinstance(data, dict) else None
     if raw is None:
         return None

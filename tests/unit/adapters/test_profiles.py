@@ -10,7 +10,6 @@ from serving.adapters.profiles import (
     _DEFAULT_STREAM_IDLE_TIMEOUT_S,
     ProviderProfile,
     filter_sampling_params,
-    function_call_delta_to_tool_calls,
     get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
@@ -19,24 +18,6 @@ from serving.adapters.profiles import (
     normalize_usage_deepseek,
     normalize_usage_default,
 )
-
-# ---------------------------------------------------------------------------
-# Streaming: function_call_delta_to_tool_calls
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.parametrize(
-    ("profile", "delta"),
-    [
-        (ProviderProfile.DEFAULT, {"name": "get_weather", "arguments": ""}),
-        (ProviderProfile.ZAI, {"arguments": '{"cit'}),
-        (ProviderProfile.DEEPSEEK, {"name": "fn", "arguments": "{}"}),
-        (ProviderProfile.DEFAULT, {}),
-    ],
-)
-def test_function_call_delta_returns_none(profile, delta) -> None:
-    """Stub returns None for all profiles after Llama removal; guards regression."""
-    assert function_call_delta_to_tool_calls(profile, delta) is None
 
 
 def test_stream_idle_timeout_is_on_by_default(monkeypatch: pytest.MonkeyPatch) -> None:

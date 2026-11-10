@@ -1,36 +1,28 @@
 # Routing through OpenRouter
 
 [OpenRouter](https://openrouter.ai) is one of the providers HybridInference can
-route to, and it is the one a fresh checkout uses by default. This page covers
+route to. Configure its credentials and routes in Admin. This page covers
 the OpenRouter adapter specifically. For how routing works in general, see
 [Architecture](architecture.md); for the model-registry syntax, see
 [Adding a New Model](adding-models.md).
 
-## The default catalog
+## Configure OpenRouter
 
-With no environment variables and no deployment overlay, config resolution falls
-through to `config/examples/models.openrouter.yaml`, which registers three
-models against OpenRouter — two direct and one demonstrating a local-first
-hybrid route with OpenRouter as the fallback leg. Supplying one API key is
-enough to get a working gateway:
+Add an OpenRouter credential under **Admin → Providers**, then create a model
+and verify its OpenRouter route under **Admin → Routing**. A fresh gateway has
+no configured provider or model.
 
-```bash
-source .venv/bin/activate            # the env `make setup-dev` creates
-export OPENROUTER_API_KEY=sk-or-...
-uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 8080
-```
-
-Run it from the repository root: the default paths are relative, and the boot
-log confirms which registry was chosen with a line like
-`Registered 3 routes from config/examples/models.openrouter.yaml`.
+For catalog metadata and aliases, `config/examples/models.openrouter.json`
+provides optional JSON import input for the `MODEL_CATALOG` setting. Add the
+referenced keys as secret settings before importing it and follow the
+**Restart required** marker.
 
 ```bash
 curl -s --noproxy '*' http://127.0.0.1:8080/routing
 ```
 
-The catalog is a starting point, not a fixture: OpenRouter's model slugs move,
-and the pricing figures in that file are approximate and used only for the
-gateway's own usage accounting. Copy it and edit freely.
+Verify the model identifiers and prices for your account before importing the
+example. The gateway uses catalog prices for its own usage accounting.
 
 ## Route syntax
 
@@ -41,13 +33,18 @@ of `kind:`.
 
 OpenRouter picks the upstream provider itself, under its own default policy.
 
-```yaml
-- kind: openrouter
-  weight: 1.0
-  base_url: https://openrouter.ai/api/v1
-  api_keys:
-    - ${OPENROUTER_API_KEY}
-  provider_model_id: meta-llama/llama-3.3-70b-instruct
+```json
+[
+  {
+    "kind": "openrouter",
+    "weight": 1.0,
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_keys": [
+      "${OPENROUTER_API_KEY}"
+    ],
+    "provider_model_id": "meta-llama/llama-3.3-70b-instruct"
+  }
+]
 ```
 
 `provider_model_id` is OpenRouter's own slug for the model. The `id:` your
@@ -58,13 +55,18 @@ clients ask for is the gateway's; the two are independent on purpose.
 Pins every request on that leg to one OpenRouter upstream, by sending
 `provider: {order: [<slug>], allow_fallbacks: false}`.
 
-```yaml
-- kind: openrouter[deepinfra]
-  weight: 1.0
-  base_url: https://openrouter.ai/api/v1
-  api_keys:
-    - ${OPENROUTER_API_KEY}
-  provider_model_id: meta-llama/llama-3.3-70b-instruct
+```json
+[
+  {
+    "kind": "openrouter[deepinfra]",
+    "weight": 1.0,
+    "base_url": "https://openrouter.ai/api/v1",
+    "api_keys": [
+      "${OPENROUTER_API_KEY}"
+    ],
+    "provider_model_id": "meta-llama/llama-3.3-70b-instruct"
+  }
+]
 ```
 
 The slug must match `[A-Za-z0-9_.-]+`, optionally with `/`-separated segments
@@ -96,7 +98,7 @@ it adds:
 - **Attribution headers.** OpenRouter credits traffic — for its leaderboard and
   its free-tier limits — to the site these two headers name. `X-Title` carries
   your site's name and `HTTP-Referer` its public address, taken from `SITE_NAME`
-  and `SITE_PUBLIC_BASE_URL` or from an active distribution manifest. Without a
+  and `SITE_PUBLIC_BASE_URL` or from `SITE_CONFIGURATION`. Without a
   public address no `HTTP-Referer` is sent, and without a site name `X-Title`
   is `HybridInference`. Set both if you want your own site credited.
 - **`usage: {include: true}`** on every request, so OpenRouter returns its
@@ -170,18 +172,17 @@ healthy.
 ## Troubleshooting
 
 **Every OpenRouter request returns 401.** The gateway's key was rejected, not
-the caller's. Check `OPENROUTER_API_KEY` in the environment the backend process
-actually sees. A key that is unset entirely never gets that far — the route is
+the caller's. Check the credential in Admin Providers or the referenced secret
+setting. A key that is unset entirely never gets that far — the route is
 skipped or startup fails, as above — so a 401 means a key was present and
 OpenRouter refused it.
 
-**The model is missing from `/v1/models`.** Confirm the registry the gateway
-loaded: the boot log emits `Registered N routes from <path>`, which is the file
-the resolution chain chose. If it is not the file you edited, an explicit
-`MODELS_CONFIG_PATH` or a distribution manifest is winning over it — see
-[Configuration](configuration.md).
+**The model is missing from `/v1/models`.** Check its required role, route
+verification and applied status in Admin Routing. For a catalog model, check
+`MODEL_CATALOG`, its referenced secret settings and its **Restart required**
+marker; see [Configuration](configuration.md).
 
 **Requests reach the wrong upstream.** Use `GET /routing` to see the effective
-weight distribution per model. Note that this endpoint is unauthenticated and
-discloses upstream base URLs; see the warning in
+weight distribution per model. It answers anyone, but shows each route's
+upstream base URL only with an administrator's JWT or `ADMIN_TOKEN`; see
 [Architecture](architecture.md#http-surface).

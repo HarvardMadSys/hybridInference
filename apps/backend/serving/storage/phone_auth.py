@@ -8,12 +8,12 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from datetime import datetime
 
-#: What a code may be spent on. Every purpose but ``signup`` and ``login``
-#: belongs to a signed-in account, which must still be active when the code is
-#: sent and when it is spent. ``OWNER_PURPOSES`` confirm the account's owner
-#: for a sensitive change, so their codes go only to its own verified number.
+#: What a code may be spent on is ``PhoneCodeRequest.purpose``. Every purpose
+#: but ``signup`` and ``login`` belongs to a signed-in account, which must still
+#: be active when the code is sent and when it is spent. ``OWNER_PURPOSES``
+#: confirm the account's owner for a sensitive change, so their codes go only to
+#: its own verified number.
 OWNER_PURPOSES = ("delete_account", "bind_email", "set_password")
-PHONE_CODE_PURPOSES = ("signup", "login", "bind", *OWNER_PURPOSES)
 _ACCOUNT_PURPOSES = ("bind", *OWNER_PURPOSES)
 
 
@@ -38,7 +38,9 @@ class PostgresPhoneAuthMixin:
         self, *, user_id: str, phone: str, user_name: str, status: str, signup_reason: str | None
     ) -> bool:
         """Create a verified phone-only identity, refusing duplicate identifiers."""
-        async with self._pool.acquire() as conn:
+        from serving.storage.project_backfill import ensure_personal_org
+
+        async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
                 "INSERT INTO users (id, email, password_hash, phone, phone_verified, "
                 "user_name, status, signup_reason) VALUES ($1, NULL, NULL, $2, TRUE, $3, $4, $5) "
@@ -49,6 +51,8 @@ class PostgresPhoneAuthMixin:
                 status,
                 signup_reason,
             )
+            if row is not None:
+                await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
         return row is not None
 
     async def bind_user_phone(self, user_id: str, phone: str) -> bool:

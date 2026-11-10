@@ -20,10 +20,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
+import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from serving.grant_auth import ledger_attribution
+from serving.storage.bounded_log import (
+    LOGGED_ERROR_MAX_CHARS,
+    LOGGED_MODEL_ID_MAX_CHARS,
+    bounded_json,
+    elide_middle,
+)
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.request_ip import get_client_ip
@@ -493,9 +500,27 @@ async def log_rejection_from(
     if not await _logging_enabled(source, status_code=status_code, user=user):
         return
     is_synthetic_probe = source.probe_marker and is_trusted_probe_caller(user)
+    # A refused caller's prompt, model name and reason are whatever it sent:
+    # stored as bounded summaries, the way a refused request's row is on the
+    # handler paths (serving/storage/bounded_log.py). Some call sites pass the
+    # whole decoded ``messages``; the bound applies to all of them alike.
+    truncated = False
+    if prompt:
+        prompt, truncated = bounded_json(prompt, REJECTED_PROMPT_MAX_CHARS)
+    for limit, text in ((LOGGED_MODEL_ID_MAX_CHARS, model_id), (LOGGED_ERROR_MAX_CHARS, reason)):
+        truncated = truncated or (isinstance(text, str) and len(text) > limit)
+    model_id = elide_middle(model_id, LOGGED_MODEL_ID_MAX_CHARS) if model_id else model_id
+    reason = elide_middle(reason, LOGGED_ERROR_MAX_CHARS) if reason else reason
 
     ctx = req_ctx.get()
+    # The row's key. A request id the client chose (X-Request-ID) is not one:
+    # it can repeat, and a repeat is not stored (request_id is unique), so a
+    # client could keep its own refusals out of the log. Such a row gets an id
+    # of its own and keeps the client's in metadata.
+    client_request_id = ctx.get("client_request_id")
     request_id = ctx.get("request_id") or ""
+    if client_request_id or not request_id:
+        request_id = f"rej_{uuid.uuid4().hex}"
     # Whether the key that named this caller was still live. Set only where an
     # identity is resolved *without* authenticating it — the blocked-IP path,
     # which reaches accounts whose credential was revoked, expired or
@@ -522,6 +547,8 @@ async def log_rejection_from(
         "user_id": None if identified_not_authenticated else resolved_user_id,
         "ip": source.client_ip(),
     }
+    if client_request_id:
+        metadata["client_request_id"] = client_request_id
     if credential_state:
         metadata["credential_state"] = credential_state
     if identified_not_authenticated:
@@ -542,6 +569,8 @@ async def log_rejection_from(
     # enforce_user_concurrency reject before the handler sets this metadata).
     if source.route_path.startswith("/v1/embeddings"):
         metadata["request_type"] = "embedding"
+    if truncated:
+        metadata["payload_truncated"] = True
 
     try:
         await log_store.log_request(

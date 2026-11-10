@@ -1,5 +1,6 @@
 """Base adapter interface and shared utilities for LLM providers."""
 
+import json
 import time
 import uuid
 from abc import ABC, abstractmethod
@@ -106,6 +107,9 @@ class ModelConfig:
     max_output_length: int = 4096
     supports_tools: bool = False
     supports_structured_output: bool = False
+    # The endpoint is a vLLM server, which takes ``structured_outputs`` beside
+    # ``response_format``. Set by the registry for ``kind: vllm`` routes.
+    vllm_structured_outputs: bool = False
     # Lazily loaded on shared GPUs (ops/local_deployment_proxy): started by the
     # first request, stopped when idle, and refused fast when no GPU is vacant.
     # Exposed through /v1/models so synthetic monitors can skip these models —
@@ -126,6 +130,12 @@ class ModelConfig:
     # field exists to prevent. A deployment that wants the knob declares the
     # domain it verified.
     reasoning_efforts: list[str] = field(default_factory=list)
+    # Route-level, strict public -> upstream translation of ``reasoning_effort``
+    # (``serving.adapters.reasoning_effort``). Empty: the legacy contract above.
+    # Set: its keys are the only public levels this route takes, each sent
+    # upstream as its value, whatever ``supported_params`` / ``reasoning_efforts``
+    # say. Only adapters that forward the parameter may carry one.
+    reasoning_effort_map: dict[str, str] = field(default_factory=dict)
     pricing: dict[str, str] = field(
         default_factory=lambda: {
             "prompt": "0",
@@ -176,7 +186,7 @@ class ModelConfig:
     # on for a server that does not report replaces an honest NULL with a
     # fabricated measured miss, which is the harder error to notice later. The
     # loader accepts it only on a route (never inherited from the model) and only
-    # as a real YAML boolean; see servers/registry.py.
+    # as a real boolean; see servers/registry.py.
     null_cache_details_means_miss: bool = False
     # Provider profile for usage extraction (e.g. "deepseek" for cache hit/miss semantics).
     # When set, OpenAICompatAdapter uses profile-specific usage normalization.
@@ -202,7 +212,8 @@ class ModelConfig:
     # OpenAI-compatible providers; see servers/registry.py _make_adapter for the
     # enabled set). Leave False for providers that strictly validate the request
     # body and reject unknown fields (e.g. some Ollama/Chutes/Featherless
-    # deployments).
+    # deployments). A route may set `include_usage_in_stream:` in models.yaml to
+    # override the kind default in either direction; see the registry loader.
     include_usage_in_stream: bool = False
     # When set, OpenRouterAdapter pins requests to this OpenRouter upstream
     # provider via `provider.order=[<slug>]` and `allow_fallbacks=false`.
@@ -257,6 +268,12 @@ class BaseAdapter(ABC):
     # messages()/stream_messages() to identity-passthrough; OpenAI-native ones
     # rely on the default impls below which translate Anthropic <-> OpenAI.
     native_format: str = "openai"
+    # Whether this adapter puts a request's ``reasoning_effort`` on the wire
+    # itself (for a route whose ``supported_params`` name it). The model
+    # listings publish an effort domain only for routes whose adapter does
+    # (``serving.model_effort_capabilities``); for any other the configuration
+    # does not say what reaches the provider.
+    forwards_reasoning_effort: bool = False
 
     def __init__(self, config: ModelConfig):
         self.config = config
@@ -325,14 +342,16 @@ class BaseAdapter(ABC):
 
         ``usage_sink`` receives the Anthropic counts and, when the upstream
         reported usage, its OpenAI-shaped counts under ``OPENAI_USAGE_SINK_KEY``
-        (see :meth:`messages`).
+        (see :meth:`messages`). Before the first event it also receives, under
+        ``INPUT_SEED_SINK_KEY``, the estimate message_start is seeded with.
         """
         from serving.adapters.anthropic_translator import (
+            INPUT_SEED_SINK_KEY,
             OPENAI_USAGE_SINK_KEY,
             OpenAIToAnthropicStreamTranslator,
             anthropic_request_to_openai,
         )
-        from serving.utils.tokens import estimate_prompt_tokens
+        from serving.utils.tokens import estimate_prompt_tokens_bounded
 
         oai_messages, oai_params = anthropic_request_to_openai(
             body, tool_images=self._reads_images()
@@ -341,11 +360,25 @@ class BaseAdapter(ABC):
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients
         # read input usage from message_start. The exact count replaces this in
-        # the terminal message_delta once the upstream reports it.
+        # the terminal message_delta once the upstream reports it. Counted as
+        # count_tokens counts the request: the messages plus the serialized tool
+        # definitions, which are input too, and often most of a coding agent's
+        # prompt. Bounded, because this runs on the event loop for every
+        # streamed turn, and a full encode of a coding agent's context took tens
+        # of milliseconds there: exact up to INLINE_ESTIMATE_MAX_CHARS of text,
+        # sampled beyond.
+        tools = oai_params.get("tools")
         try:
-            input_estimate = estimate_prompt_tokens(oai_messages)
+            input_estimate = estimate_prompt_tokens_bounded(
+                oai_messages, extra_texts=(json.dumps(tools),) if tools else ()
+            )
         except Exception:
             input_estimate = 0
+        if usage_sink is not None:
+            # A guess, not a count: declared so that a stream cut off after
+            # message_start is billed from the router's own estimate of the
+            # request rather than from this number.
+            usage_sink[INPUT_SEED_SINK_KEY] = input_estimate
         translator = OpenAIToAnthropicStreamTranslator(
             model=body.get("model", ""), input_tokens_estimate=input_estimate
         )

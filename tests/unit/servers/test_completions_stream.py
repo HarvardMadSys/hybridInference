@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -1572,3 +1573,109 @@ async def test_stream_finalizer_routes_semantic_outcomes_from_real_chunks():
     tool_call = await observe([*_tool_call_stream("{}"), usage])
     assert tool_call.outcome is CompletionOutcome.PROGRESS
     assert tool_call.admits_real_work is True
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_stops_reading_stops_the_upstream_reads_and_still_tears_down():
+    """The reader runs a bounded way ahead of the client, not to the end of the generation.
+
+    An unbounded queue let the reader drain the whole upstream into memory while
+    the client read nothing: about 260 bytes per token for up to an hour.
+    """
+    from serving.stream import STREAM_QUEUE_MAX_ITEMS, make_stream_chunk
+
+    session = _make_session()
+    produced = 0
+    closed = False
+
+    async def upstream():
+        nonlocal produced, closed
+        try:
+            for _ in range(5_000):
+                produced += 1
+                yield make_stream_chunk(model="gpt-4", content="token")
+                await asyncio.sleep(0)
+            yield "data: [DONE]\n\n"
+        finally:
+            closed = True
+
+    frames = session.stream(upstream())
+    await frames.__anext__()  # the client reads one frame, then stops reading
+    for _ in range(500):
+        await asyncio.sleep(0)
+    assert produced <= STREAM_QUEUE_MAX_ITEMS + 4
+
+    await asyncio.wait_for(frames.aclose(), timeout=2)  # then goes away
+    assert closed  # the upstream request was ended, not left to the collector
+
+
+@pytest.mark.anyio
+async def test_stream_warmup_notice_classifies_transient_through_finalizer():
+    """The streaming finalizer must hand the real text to the classifier.
+
+    Regression for the review's C1 follow-up: the handler used to pass no
+    response body at all, so a warmup notice streamed with output tokens
+    classified PROGRESS and warmed prefix memory. This drives the real
+    StreamSession._finalize_success path and asserts the observation the
+    router receives is TRANSIENT_NO_PROGRESS.
+    """
+    from routing.completion_outcome import CompletionOutcome
+    from serving.stream import StreamText
+
+    session = _make_session()
+    # What the stream accumulated; ``_final_text`` reads it.
+    session._text = StreamText(
+        "The model is starting up - this takes about 120 seconds. Please wait..."
+    )
+    session._reasoning = StreamText()
+    session._finish_reason_for_db = "stop"
+    session._usage_data = {"prompt_tokens": 10, "completion_tokens": 20}
+    session._messages = [{"role": "user", "content": "hi"}]
+    session._params = {"stream": True}
+    session._metadata = {}
+    session._request_payload = None
+    session._get_adapter_config_for_provider = lambda _p, _b: None
+    session._adapter_routing = False
+    session._log_store = None  # skip DB scheduling
+    session._suppress_synthetic_logging = True  # skip DB log
+    session._response_model = None
+
+    captured: dict[str, Any] = {}
+
+    def _record(
+        active_router,
+        model_id,
+        routing,
+        *,
+        request_id,
+        ttft_ms,
+        total_latency_ms,
+        prompt_tokens,
+        completion_tokens,
+        success,
+        cached_tokens=None,
+        response_body=None,
+    ):
+        captured.update(
+            success=success,
+            response_body=response_body,
+            completion_tokens=completion_tokens,
+        )
+
+    session._completions_logger = SimpleNamespace(
+        record_routing_observation=_record,
+        schedule_log=lambda *a, **k: None,
+        build_db_params=lambda params, provider, base_url, get_cfg: params,
+    )
+
+    await session._finalize_success()
+
+    body = captured["response_body"]
+    assert isinstance(body, dict), "finalizer must pass the structured body"
+    message = body["choices"][0]["message"]
+    assert "starting up" in (message.get("content") or "")
+
+    outcome = CompletionsLogger.classify_outcome(
+        success=captured["success"], response_body=body, usage={"completion_tokens": 20}
+    )
+    assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS

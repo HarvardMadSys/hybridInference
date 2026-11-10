@@ -1,4 +1,4 @@
-"""Validated public branding loaded from a distribution-owned YAML file."""
+"""Validated public branding, plus a legacy file reader for explicit imports."""
 
 from __future__ import annotations
 

@@ -58,6 +58,11 @@ starts its requests as soon as their models have room. From then on each
 request succeeds or fails on its own: a request the model rejects, or that
 still fails after its retries, fails alone, and the others keep running.
 
+Validation, including console preflight, applies the same per-request limits
+on messages, content parts, tools and stop sequences as interactive requests.
+Every JSON number must be finite, including numbers nested in tool arguments
+or schemas.
+
 Each request then runs exactly as if you had sent it to its endpoint yourself:
 the same models, routing and fallback, the same price, logged under your
 account. It counts toward your daily cost quota. It does **not** take a slot of
@@ -72,21 +77,43 @@ the same model and may slow down while that traffic is heavy (see
 [Running batch inference](#running-batch-inference)).
 
 Requests run in no particular order, and a request that fails for a reason
-that may pass — a timeout, a `408`, `425` or `429`, a `5xx` — is retried with
+that may pass — a `408`, `425` or `429`, a `5xx` — is retried with
 exponential backoff (5 seconds, doubling to at most 15 minutes, with jitter)
 for as long as the batch's window is open. Once the next try would start after
 the window closes, the request fails with the last error it got rather than
 expiring as though it never ran. A request the model rejects (any other `4xx`)
 fails at once.
 
+A request that times out (a `504`, or the upstream call's own timeout) also
+fails at once, with the error code `timeout`. It is generating for longer than
+any limit allows, usually a long or repetitive output with a large
+`max_tokens`, and sent again it would most likely do the same. Nor does it
+count toward pausing the model, which several failures in a row do: one
+runaway request says nothing about the model's health.
+
+If a provider's response cannot be encoded as valid JSON and UTF-8, the request
+fails permanently with `upstream_error` (`502`). It is not retried, and any
+known charge remains recorded.
+
 A model served on demand (a cluster job, say) may answer that it is queued:
 its deployment is waiting for a GPU. That answer (a `503` with the error code
 `model_queued`) is not a failure and uses up no attempt. The request goes back
-to the queue, the model takes no new batch requests for the deployment's
-`Retry-After` (two minutes without one), and the requests keep waiting like
-this until the model is up or the batch's completion window ends. The same
+to the queue until the deployment's `Retry-After` (two minutes without one),
+the model takes no new batch requests for that long (at most 15 minutes), and
+the requests keep waiting like this until the model is up or the batch's
+completion window ends. The same
 answer reaches an interactive caller as a `503` with the deployment's message,
 and neither the circuit breaker nor the failed-request alerts count it.
+Negative or non-finite `Retry-After` values use the two-minute default; finite
+delays are capped at 168 hours.
+
+An operator may lift the window altogether by setting
+`BATCH_COMPLETION_WINDOW_HOURS` to `0` (see
+[Running batch inference](#running-batch-inference)). A batch created then has
+a `null` `expires_at` and never expires: it runs until every request is done,
+however long its models wait for capacity. A request that keeps failing for a
+reason that may pass is still tried at most 2,000 times (about two weeks at the
+backoff cap), then fails with its last error.
 
 Only a wait longer than `BATCH_QUEUED_ALERT_HOURS` (six hours by default; `0`
 turns it off) is reported: one "Batch model waiting for capacity" alert for the
@@ -106,6 +133,10 @@ again:
   with that key pause, and are checked again within the hour, so raising the
   key's budget lets them resume; batches of your other keys keep running;
 - if your role no longer allows batches, they pause until it does.
+
+The quotas and budgets count your requests still running at what they may
+cost. When those alone stand in the way, and what has been charged leaves
+room, nothing pauses: the request waits half a minute and is checked again.
 
 So keep the key you created a batch with until the batch finishes.
 
@@ -284,9 +315,10 @@ curl -s "https://your-gateway.example/v1/batches/$BATCH_ID/results?limit=100" \
 }
 ```
 
-`limit` is 1–1000 (default 100). When `has_more` is `true`, ask for the next
-page with `after` set to the page's `last_id`. Every request of the batch is
-listed, finished or not. A request still `queued` or `running` has no
+`limit` is 1–1000 (default 100). A page also stops at about 8 MiB of results,
+so large ones (embeddings, say) come a few to a page. When `has_more` is
+`true`, ask for the next page with `after` set to the page's `last_id`. Every
+request of the batch is listed, finished or not. A request still `queued` or `running` has no
 `response` yet, but may retain its last `error` while being retried. Read the
 results once the batch is in a final status, or read them again later.
 
@@ -301,9 +333,10 @@ is `cancelled`, `expired` or `failed`. Error codes:
 | `model_not_found` | The model is gone, or you may no longer use it (`404`) |
 | `forbidden` | Refused (`403`) |
 | `rate_limited` | Still rate-limited after every retry (`429`) |
-| `timeout` | Still timing out after every retry (`504`) |
+| `timeout` | Ran out of time (`504`); not retried |
 | `service_unavailable` | No endpoint could serve it after every retry (`503`) |
 | `upstream_error` | Another server error after every retry |
+| `result_too_large` | The response was larger than one request may store, or the batch's responses had reached their storage limit (the requests still to run then fail without running) |
 | `batch_failed` | Not run: the batch failed |
 | `batch_expired` | Not run before the completion window closed |
 
@@ -421,7 +454,9 @@ bytes every time it is downloaded, and its size and SHA-256 (the `ETag`) are
 fixed when the batch ends. `GET /v1/files` lists your files, `GET
 /v1/files/{id}` returns one, and `DELETE /v1/files/{id}` deletes one for good:
 a deleted output file is not written again, though the batch still names it.
-Deleting an input file does not affect a batch already created from it.
+Deleting an input file does not affect a batch already created from it. A
+download is a stream: it may run for as long as `STREAM_REQUEST_TIMEOUT_SECONDS`
+allows (an hour by default), not only the 120 seconds an ordinary request gets.
 
 The official OpenAI SDKs work with this flow:
 
@@ -602,7 +637,9 @@ are: verify `webhook-signature` (`v1,` and a base64 HMAC-SHA256 of
 `"{webhook-id}.{webhook-timestamp}.{body}"` with the secret's base64 part as the
 key). A delivery that is not answered with a `2xx` is retried with backoff, up
 to eight attempts; the same event can arrive more than once, so deduplicate on
-`webhook-id`.
+`webhook-id`. Your events go out one at a time, beside other users'. An
+endpoint that fails three deliveries in a row by timing out gets none for ten
+minutes, and longer each further time, up to an hour.
 
 A webhook URL must be HTTPS and reach a public address. Private, loopback,
 link-local and cloud-metadata addresses are refused when the URL is saved, again
@@ -670,7 +707,8 @@ in three steps; nothing runs until you confirm the last one:
    billing anything. Each problem names its line, `custom_id` and field, never
    the request's content, and the list can be downloaded as CSV or JSONL. When
    the file is valid, the page shows the first stored requests, the canonical
-   model the batch will run on, its 24-hour window, how it is billed and how
+   model the batch will run on, its window (24 hours, unless the operator set
+   none), how it is billed and how
    long its results are kept.
 
 The console is stricter than `/v1/batches`. A field the gateway would not
@@ -727,8 +765,9 @@ and submit as a new batch.
 | Unfinished requests across all your batches | 100,000 (`429` above it) |
 | Size of an input file, and of one of its lines | 32 MiB; 4 MiB per line |
 | Input files you may keep, and upload per hour | 512 MiB; 60 |
-| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches) |
+| Time a batch has to start its pending requests (`completion_window`) | 24 hours (always 24 hours for file batches), or no limit if the operator set none |
 | Time a finished batch is kept | 7 days |
+| Responses one batch may store | 8 GiB in all; 4 MiB per request |
 
 The operator may have changed any of them. A larger job is several batches.
 
@@ -758,7 +797,9 @@ is read, after the create call has answered: over the limit, the batch is
   providers' own: 50,000 requests and 32 MiB per batch by default.
 - The 24-hour window of file batches is when the gateway stops *starting*
   requests. Requests already running when it ends finish, so
-  a batch may reach its final status after `expires_at`.
+  a batch may reach its final status after `expires_at`. An operator may lift
+  the window: such a batch still reports `completion_window` `24h`, but its
+  `expires_at` is `null` and it never expires.
 - Direct requests, `GET /v1/batches/{id}/results`, the JSONL export,
   `DELETE /v1/batches/{id}`, `Idempotency-Key`, the Messages target with its
   `anthropic-version` header, and the cost fields are this gateway's own. OpenAI's
@@ -787,7 +828,7 @@ and to the worker's next round.
 | `BATCH_MAX_REQUESTS` | 50000 | Requests one batch may hold |
 | `BATCH_MAX_BODY_MB` | 32 | Largest create request, in MiB |
 | `BATCH_MAX_ACTIVE_PER_USER` | 10 | Unfinished batches one user may have |
-| `BATCH_COMPLETION_WINDOW_HOURS` | 24 | Hours a new batch has before its unstarted requests expire, 1–168 |
+| `BATCH_COMPLETION_WINDOW_HOURS` | 24 | Hours a new batch has before its unstarted requests expire, 1–168. `0` means no limit: new batches, inline and from a file, never expire (`expires_at` is `null`, and an inline batch's `completion_window` reads `none`). A batch keeps the value it was created with |
 | `BATCH_RETENTION_DAYS` | 7 | Days a finished batch and its results are kept. A batch keeps the value it was created with |
 | `BATCH_MAX_QUEUED_REQUESTS_PER_USER` | 100000 | Unfinished requests one user may have across all their batches |
 | `BATCH_ROLE_CONCURRENCY_FREE` / `_PRO` / `_INTERNAL` / `_ADMIN` | 8 / 16 / 64 / 64 | Batch requests one user of that role may have running at once, across every model. Counted in each gateway process on its own, so with several processes a user may run up to this many in each; a model's cap, by contrast, is counted in the database across every process. Separate from the role's interactive concurrency limit (`user_concurrency_<role>` and a user's own override apply to interactive requests only); `0` removes this cap |
@@ -795,8 +836,9 @@ and to the worker's next round.
 | `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
+| `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records; after a restart, what a batch already stored counts at its stored, compressed size. `0` removes the limit |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
-| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour |
+| `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour, uploads that failed included (those counted in each gateway process on its own) |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
 | `BATCH_ANTHROPIC_VERSIONS` | `2023-06-01,2026-10-21` | `anthropic-version` values a new `/v1/messages` batch may name. A stored batch keeps running under its own, and a create it made still replays |
 | `BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS` | off | Let webhooks reach private and loopback addresses. For isolated test deployments only |
@@ -854,6 +896,70 @@ first. **Prompts** opens a batch's stored requests with their answers (`GET
 where the gateway keeps prompts in its request log (`db_store_full_content`);
 elsewhere it answers `403`. Opening a batch's requests is audited as
 `batch.requests.read` against the batch's owner.
+
+The tab's **Requests** page lists the requests the batch worker ran, newest
+first: one row per attempt, from the request log, with the batch it belongs
+to. A batch's **Requests** link opens the page on that batch. The **Recent
+Requests** tab leaves these requests out, so a large batch does not bury the
+requests callers made directly. Both pages read the request log's admin
+endpoints with `source=batch` or `source=interactive`, and `batch_id` for one
+batch.
+
+The request volume counts (`GET /admin/request-metrics`) take the same
+`source`. Whatever it is, every bar also reports the batch worker's requests in
+it, `batch_request_count`, and how many failed, `batch_error_count`; each
+window reports both totals as `batch_requests` and `batch_error_requests`. So
+a chart of the interactive counts can stack the batch requests on top. The
+request list takes `start_time` and `end_time`, timezone-aware, to list the
+requests of one bar: the start is inclusive, the end is not, and a start older
+than the list's lookback widens the lookback to reach it, as far as 90 days.
+
+On **Recent Requests**, the **Request volume** cards count only the requests
+callers made directly; each card also says how many batch requests ran in its
+window, and each bar stacks them on top, in violet. Clicking a bar narrows the
+list below to that bar's stretch, shown as a **Window** chip in place of the
+lookback, with a link to the same stretch's batch requests on the **Requests**
+page (`?from=…&to=…`). Clicking the bar again, or clearing the chip, lets it go.
+
+### Which routes batch work may use
+
+A batch is work nobody waits on, so by default it runs only on the servers the
+gateway runs itself and never spends a cloud provider's quota or money. A route
+is local when its `deployment_type` is `self_hosted`, or, for `auto` (the
+default), when its host is `localhost`, `127.0.0.1`, `0.0.0.0` or
+`host.docker.internal`. A `provider_api` route, or an `auto` route on any other
+host, is not.
+
+An administrator can allow or forbid batch work on any route with
+`PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` and
+`{"batch_allowed": true}` or `false`, or `null` to let the route follow its
+locality again. The choice is kept in `provider_route_batch_policies`, by the
+model's canonical id and the route id, and `GET /admin/routing/provider-routes`
+reports each route's `batch_allowed`, `batch_allowed_default` and
+`batch_allowed_choice`.
+
+A batch request runs only on its model's batch-allowed routes: the router's
+selection, retries, fallback, offload and hedging all stay among them, whatever
+their weights. Interactive requests are untouched, and batch requests neither
+follow nor move the owner's routing affinity. A batch-allowed route that is
+disabled, has an open circuit or has weight 0 makes items wait, as it makes
+interactive requests fail over. An embedding model's backends follow their
+locality; they have no per-route choice.
+
+A batch for a model with no batch-allowed route is refused when it is submitted
+(`batch_route_unavailable`, status 400). An item already queued fails with the
+same error when its turn comes, for example after an administrator forbids the
+model's last batch route, or after an upgrade to this release for a model with
+only cloud routes: allow one of its routes for batch work if its queued batches
+should finish.
+
+Two cases to check when you set this up:
+
+- A self-hosted engine reached at a LAN or cluster address counts as cloud
+  unless its route says `deployment_type: self_hosted`.
+- A proxy on the gateway host that forwards to a cloud API counts as local
+  unless its route says `deployment_type: provider_api`, or batch work is
+  forbidden on it.
 
 ### Upgrading a deployment
 

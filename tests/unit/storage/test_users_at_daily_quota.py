@@ -72,7 +72,7 @@ class TestQueryShape:
         What this actually protects is narrower than "the alert and the 429
         always agree", so be precise about it: it binds this query to the
         *grant* door, which reads the same two constants through
-        ``quota.check``/``quota.resolve_quota``. Retune ``serving/quota.py`` and
+        ``quota.first_refusal``/``quota.resolve_quota``. Retune ``serving/quota.py`` and
         both move together; paste ``0.01`` into the SQL and they stop.
 
         It cannot protect the API-key door. ``verify_api_key`` in
@@ -91,7 +91,7 @@ class TestQueryShape:
         assert "1000" not in args[0]
 
     async def test_predicate_matches_quota_check(self, store, pg_conn):
-        """``spend + estimate > cap`` — the same comparison quota.check makes."""
+        """``spend + estimate > cap`` — the same comparison quota.first_refusal makes."""
         await store.query_users_at_daily_quota()
 
         sql = _normalized_sql(pg_conn)

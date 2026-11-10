@@ -151,6 +151,40 @@ describe('RecentRequests', () => {
     expect(scrollWrapper).toHaveClass('overflow-x-auto', 'overscroll-x-contain', 'touch-pan-y');
   });
 
+  it('marks a total that stops at how far the list reaches back', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: {
+        requests: [makeRequest()],
+        total: 10000,
+        total_capped: true,
+        limit: 20,
+        offset: 0,
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    render(<RecentRequests />);
+
+    expect(screen.getByText('10,000+ total requests')).toBeInTheDocument();
+    // Its pages stay within the requests listed: 10,000 at 20 a page.
+    expect(screen.getByText('Page 1 of 500')).toBeInTheDocument();
+  });
+
+  it('shows an exact total as it is', async () => {
+    const { useRecentRequests } = await import('@/lib/hooks');
+    vi.mocked(useRecentRequests).mockReturnValue({
+      data: { requests: [makeRequest()], total: 1, limit: 20, offset: 0 },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useRecentRequests>);
+
+    render(<RecentRequests />);
+
+    expect(screen.getByText('1 total request')).toBeInTheDocument();
+  });
+
   it('rounds sub-second latencies consistently across metrics', async () => {
     const { useRecentRequests } = await import('@/lib/hooks');
     vi.mocked(useRecentRequests).mockReturnValue({

@@ -359,3 +359,125 @@ def test_whitespace_stream_prefix_stays_bounded():
         assert out is None or out is CompletionOutcome.EMPTY
     elapsed = time.perf_counter() - start
     assert elapsed < 2.0, f"whitespace classification took {elapsed:.3f}s"
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # The incident signature: warmup notice with provider-reported tokens.
+        ("The model is starting up - this takes about 120 seconds. Please wait...", True),
+        ("Model is loading, please wait", True),
+        ("the model is warming up now", True),
+        ("please wait while the model loads", True),
+        ("the model is not ready yet, hold on", True),
+        ("model is initializing", True),
+        # A genuine answer that merely mentions a marker stays PROGRESS.
+        ("Here is how to fix it: the model is starting up because the GPU is cold.", False),
+        ("The log says the model is starting up, so I will retry.", False),
+        ("The answer is 42, and 'model is not ready' is a common message", False),
+    ],
+)
+def test_warmup_notice_is_transient_only_when_it_leads_the_message(text, expected):
+    outcome = classify_completion_outcome(content=text, usage=None, http_status=200, terminal=True)
+    is_transient = outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+    assert is_transient is expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        # Answers that BEGIN with a marker but continue into an explanation:
+        # the bounded notice suffix must not swallow real prose.
+        (
+            "The model is starting up because the GPU was cold; that is why "
+            "latency spiked. Here is what I found.",
+            False,
+        ),
+        (
+            '"The model is starting up" is the warmup message; here is how to retry.',
+            False,
+        ),
+        (
+            "The model is starting up is a common log line. To fix it, restart "
+            "the worker and check the GPU pool.",
+            False,
+        ),
+        # Free-form prose after the marker is an answer, not a notice suffix.
+        ("Model is loading, please wait. Meanwhile, here is the summary you asked for.", False),
+        # Known notice suffixes stay transient.
+        ("The model is starting up - this takes about 120 seconds. Please wait...", True),
+        ("model is starting up, please try again shortly", True),
+        ("the model is not ready yet, hold on", True),
+    ],
+)
+def test_notice_suffix_is_bounded_to_known_provider_wording(text, expected):
+    outcome = classify_completion_outcome(content=text, usage=None, http_status=200, terminal=True)
+    is_transient = outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+    assert is_transient is expected
+
+
+def test_adversarial_notice_punctuation_is_progress_and_bounded():
+    """Malformed notice tails stay semantic answers without regex blowup."""
+    adversarial = "the model is starting up" + (". " * 30) + "x"
+    start = time.perf_counter()
+    outcome = classify_completion_outcome(
+        content=adversarial,
+        usage=None,
+        http_status=200,
+        terminal=True,
+    )
+    elapsed = time.perf_counter() - start
+
+    assert outcome is CompletionOutcome.PROGRESS
+    assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
+
+
+def test_logger_classifies_response_body_when_supplied():
+    """The logger classifies structured provider content when its caller supplies it."""
+    captured: dict[str, Any] = {}
+
+    def _record(active_router, model_id, routing, **kwargs):
+        captured.update(kwargs)
+
+    from serving.servers.routers.completions_logging import CompletionsLogger
+
+    real_logger = CompletionsLogger(log_store=None)
+    real_logger.record_routing_observation = _record  # type: ignore[method-assign]
+
+    response = _body(WARMUP_NOTICE)
+    real_logger.record_routing_observation(
+        object(),  # active_router
+        "m1",
+        None,
+        request_id="req-nonstream-body",
+        ttft_ms=None,
+        total_latency_ms=10.0,
+        prompt_tokens=10,
+        completion_tokens=20,
+        success=True,
+        cached_tokens=None,
+        response_body=response,
+    )
+
+    assert captured["response_body"] is response, (
+        "the handler must pass the provider's response body through unchanged"
+    )
+    outcome = CompletionsLogger.classify_outcome(
+        success=True,
+        response_body=captured["response_body"],
+        usage={"completion_tokens": 20},
+    )
+    assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+
+
+def test_overlong_text_bypasses_transient_regex():
+    """Over-cap text is never a bounded provider notice."""
+    long_text = "The model is starting up" + (" try again shortly" * 100)
+    assert len(long_text) > 1000
+    outcome = classify_completion_outcome(
+        content=long_text,
+        usage=None,
+        http_status=200,
+        terminal=True,
+    )
+    assert outcome is CompletionOutcome.PROGRESS

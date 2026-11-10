@@ -21,11 +21,10 @@ import asyncpg
 import pytest
 import pytest_asyncio
 
-from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage import user_usage_rollup
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
-from tests.fixtures import postgres
+from tests.fixtures import migrations as mig, postgres
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -88,7 +87,7 @@ async def db():
         async with pool.acquire() as conn:
             for table in ("users", "api_keys", "user_daily_cost"):
                 await conn.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
-            await ensure_api_logs_schema(conn)
+            await mig.ensure_api_logs_tables(conn)
             for i, uid in enumerate(_USERS):
                 await conn.execute(
                     "INSERT INTO users (id, email, password_hash, status, created_at) "
@@ -370,7 +369,7 @@ async def test_upgrading_tables_from_before_the_turn_and_ask_columns(db):
     async with pool.acquire() as conn:
         await _create_first_release_tables(conn, settled)
 
-        await ensure_api_logs_schema(conn)
+        await mig.ensure_api_logs_tables(conn)
         columns = {
             r["attname"]
             for r in await conn.fetch(
@@ -498,3 +497,48 @@ async def test_a_fill_waits_for_a_hard_delete_holding_the_lock(db):
             await conn.fetchval("SELECT count(*) FROM user_usage_daily WHERE user_id = 'erased'")
             == 0
         )
+
+
+async def test_a_day_that_fails_is_counted_live_and_the_older_days_are_still_filled(
+    db, monkeypatch
+):
+    """One day past its statement timeout used to stop every fill at that day, each hour.
+
+    The fill runs newest first, so the days older than a day it could not
+    count were never reached and stayed counted live. Now the day is rolled back
+    and left live, the connection goes on to the next day, and the totals match
+    either way.
+    """
+    pool, op_store, _, settled = db
+    await _seed(pool, settled)
+    slow = settled - timedelta(days=3)
+    fill_day = user_usage_rollup._fill_day
+
+    async def times_out_on_one_day(conn, day):
+        if day != slow:
+            return await fill_day(conn, day)
+        async with conn.transaction():
+            await conn.execute(
+                "SELECT pg_advisory_xact_lock($1)", user_usage_rollup.ADVISORY_LOCK_KEY
+            )
+            # A statement that outlives its timeout: asyncpg cancels it.
+            await conn.execute("SELECT pg_sleep(5)", timeout=0.1)
+
+    monkeypatch.setattr(user_usage_rollup, "_fill_day", times_out_on_one_day)
+    monkeypatch.setattr(user_usage_rollup, "_failed_days", {})
+
+    written = await user_usage_rollup.backfill_missing(pool)
+
+    covered = await _covered(pool)
+    assert written == len(covered) == 39
+    assert slow not in covered
+    assert min(covered) == settled - timedelta(days=40)  # reached past the slow day
+    await _assert_matches_oracle(pool, op_store)
+
+    # Backed off: the next run leaves it alone; once due, it is filled.
+    assert await user_usage_rollup.backfill_missing(pool) == 0
+    monkeypatch.setattr(user_usage_rollup, "_fill_day", fill_day)
+    user_usage_rollup._failed_days[slow] = (1, 0.0)
+    assert await user_usage_rollup.backfill_missing(pool) == 1
+    assert user_usage_rollup._failed_days == {}
+    await _assert_matches_oracle(pool, op_store)

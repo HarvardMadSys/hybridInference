@@ -1,0 +1,34 @@
+# Base-image updates for the files that pin them by exact release: the
+# Dockerfiles and the Compose file under deploy/docker. Dependabot proposes a
+# newer tag, and keeps a digest current once one is pinned
+# (`image:tag@sha256:...`). It does not add a digest itself, so that pin is a
+# one-time step for whoever can reach the registry. Each proposal is a pull
+# request into the default branch, reviewed like any other.
+version: 2
+updates:
+  - package-ecosystem: docker
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # Python and Node move with uv.lock and package.json, by hand; only
+      # their patch releases and rebuilt digests come from here.
+      - dependency-name: python
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+      - dependency-name: node
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
+  - package-ecosystem: docker-compose
+    directory: /deploy/docker
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: "chore(deps)"
+    ignore:
+      # A PostgreSQL major needs pg_upgrade or a dump and restore, and a
+      # pgAdmin major upgrades its settings volume one way.
+      - dependency-name: postgres
+        update-types: ["version-update:semver-major"]
+      - dependency-name: dpage/pgadmin4
+        update-types: ["version-update:semver-major"]

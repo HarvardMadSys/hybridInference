@@ -9,14 +9,18 @@ import {
   useApiKeys,
   useCreateApiKey,
   useDeleteApiKey,
+  useProjects,
   useRegenerateApiKey,
   useRenameApiKey,
+  useRevealApiKey,
 } from '@/lib/hooks';
+import { Select } from '@/components/ui/Select';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { KeyActionsMenu } from './KeyActionsMenu';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
+import { useAuth } from '@/components/providers';
 import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
@@ -100,7 +104,9 @@ const GRID_COLUMNS =
 
 type KeyAction =
   | { type: 'create' }
-  | { type: 'rename' | 'regenerate' | 'delete'; key: ApiKeyListItem };
+  | { type: 'rename' | 'regenerate' | 'delete'; key: ApiKeyListItem }
+  // The password reveals a saved key, which is then shown or copied.
+  | { type: 'reveal'; key: ApiKeyListItem; then: 'show' | 'copy' };
 
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
@@ -121,23 +127,35 @@ export function ApiKeyManager(): JSX.Element {
   const [newApiKey, setNewApiKey] = useState<string | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [revealedKeys, setRevealedKeys] = useState<Set<string>>(new Set());
+  // Saved keys revealed on this page, by prefix; never stored anywhere else.
+  const [keyValues, setKeyValues] = useState<Record<string, string>>({});
   const [action, setAction] = useState<KeyAction | null>(null);
   const [keyName, setKeyName] = useState('');
+  const [password, setPassword] = useState('');
+
+  const [projectId, setProjectId] = useState('');
   const [actionError, setActionError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const passwordInputRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
+  const { state: authState } = useAuth();
+  // An account made by phone has no password to reveal a saved key with.
+  const hasPassword = authState.user?.has_password !== false;
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
+  const { data: projects } = useProjects();
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
   const renameMutation = useRenameApiKey();
+  const revealMutation = useRevealApiKey();
 
   const isLoading =
     createMutation.isPending ||
     deleteMutation.isPending ||
     regenerateMutation.isPending ||
-    renameMutation.isPending;
+    renameMutation.isPending ||
+    revealMutation.isPending;
 
   const apiKeys = apiKeysResponse?.keys ?? [];
   const liveKeys = apiKeys.filter((key) => key.status !== 'revoked');
@@ -150,12 +168,19 @@ export function ApiKeyManager(): JSX.Element {
 
   function openAction(next: KeyAction): void {
     setKeyName(next.type === 'rename' ? (next.key.name ?? '') : '');
+    setPassword('');
+
+    if (next.type === 'create') {
+      setProjectId(projects?.find((project) => project.is_default)?.id ?? '');
+    }
     setActionError(null);
     setAction(next);
   }
 
   function closeAction(): void {
-    if (!submittingRef.current) setAction(null);
+    if (submittingRef.current) return;
+    setPassword('');
+    setAction(null);
   }
 
   async function confirmAction(): Promise<void> {
@@ -169,7 +194,7 @@ export function ApiKeyManager(): JSX.Element {
     setActionError(null);
     try {
       if (action.type === 'create') {
-        const response = await createMutation.mutateAsync(name);
+        const response = await createMutation.mutateAsync({ name, projectId: projectId || null });
         showNewKey(response.api_key);
         toast.success(
           t('dashboard.keys.created_toast', 'API Key created successfully! Please save it now.'),
@@ -186,6 +211,13 @@ export function ApiKeyManager(): JSX.Element {
             'API Key regenerated successfully! Please save it now.',
           ),
         );
+      } else if (action.type === 'reveal') {
+        const prefix = action.key.key_prefix;
+        const response = await revealMutation.mutateAsync({ keyPrefix: prefix, password });
+        setPassword('');
+        setKeyValues((prev) => ({ ...prev, [prefix]: response.api_key }));
+        if (action.then === 'copy') handleCopyKey(response.api_key);
+        else setRevealedKeys((prev) => new Set(prev).add(prefix));
       } else {
         await deleteMutation.mutateAsync(action.key.key_prefix);
         setNewApiKey(null);
@@ -212,9 +244,15 @@ export function ApiKeyManager(): JSX.Element {
         ? t('dashboard.keys.rename', 'Rename')
         : action?.type === 'regenerate'
           ? t('dashboard.keys.regenerate', 'Regenerate')
-          : action?.type === 'delete' && action.key.status === 'active'
-            ? t('dashboard.keys.revoke', 'Revoke')
-            : t('dashboard.keys.remove', 'Remove');
+          : action?.type === 'reveal'
+            ? action.then === 'copy'
+              ? t('dashboard.keys.copy', 'Copy key')
+              : t('dashboard.keys.show', 'Show key')
+            : action?.type === 'delete' && action.key.status === 'active'
+              ? t('dashboard.keys.revoke', 'Revoke')
+              : t('dashboard.keys.remove', 'Remove');
+  const actionTitle =
+    action?.type === 'reveal' ? t('dashboard.keys.reveal_title', "Confirm it's you") : actionLabel;
   const actionDescription =
     action?.type === 'create'
       ? t(
@@ -228,14 +266,29 @@ export function ApiKeyManager(): JSX.Element {
               'dashboard.keys.confirm_regenerate',
               'Regenerate API Key? The old key will be immediately invalidated. The key keeps its name, limits and spend.',
             )
-          : action?.type === 'delete' && action.key.status === 'active'
-            ? t(
-                'dashboard.keys.confirm_revoke',
-                'This key will stop working immediately. Its usage history will remain available.',
-              )
-            : t('dashboard.keys.confirm_remove', 'Remove this revoked API Key from the dashboard?');
+          : action?.type === 'reveal'
+            ? t('dashboard.keys.reveal_prompt', 'Enter your password to see this key in full.')
+            : action?.type === 'delete' && action.key.status === 'active'
+              ? t(
+                  'dashboard.keys.confirm_revoke',
+                  'This key will stop working immediately. Its usage history will remain available.',
+                )
+              : t(
+                  'dashboard.keys.confirm_remove',
+                  'Remove this revoked API Key from the dashboard?',
+                );
 
-  function toggleReveal(prefix: string): void {
+  /** The key's full value when this page holds it: revealed here, or from an older gateway. */
+  function keyValue(apiKey: ApiKeyListItem): string | null {
+    return keyValues[apiKey.key_prefix] ?? apiKey.api_key ?? null;
+  }
+
+  function toggleReveal(apiKey: ApiKeyListItem): void {
+    const prefix = apiKey.key_prefix;
+    if (!keyValue(apiKey)) {
+      openAction({ type: 'reveal', key: apiKey, then: 'show' });
+      return;
+    }
     setRevealedKeys((prev) => {
       const next = new Set(prev);
       if (next.has(prefix)) next.delete(prefix);
@@ -244,15 +297,29 @@ export function ApiKeyManager(): JSX.Element {
     });
   }
 
+  function copyKey(apiKey: ApiKeyListItem): void {
+    const value = keyValue(apiKey);
+    if (value) handleCopyKey(value);
+    else openAction({ type: 'reveal', key: apiKey, then: 'copy' });
+  }
+
   function handleCopyKey(value: string): void {
-    void navigator.clipboard.writeText(value);
-    toast.success(t('dashboard.keys.copied_toast', 'API key copied to clipboard'));
+    navigator.clipboard.writeText(value).then(
+      () => toast.success(t('dashboard.keys.copied_toast', 'API key copied to clipboard')),
+      () =>
+        toast.error(
+          t('dashboard.keys.copy_failed', 'Could not copy the key. Show it and copy it instead.'),
+        ),
+    );
   }
 
   function renderRow(apiKey: ApiKeyListItem): JSX.Element {
-    const canReveal = Boolean(apiKey.api_key);
+    const value = keyValue(apiKey);
+    // A saved key is revealed with the password, which an account made by
+    // phone does not have; it can regenerate the key instead.
+    const canReveal = Boolean(value) || (Boolean(apiKey.revealable) && hasPassword);
     const revealed = revealedKeys.has(apiKey.key_prefix);
-    const shownValue = canReveal && revealed ? apiKey.api_key! : apiKey.key_masked;
+    const shownValue = value && revealed ? value : apiKey.key_masked;
     return (
       <div
         key={apiKey.key_prefix}
@@ -269,6 +336,11 @@ export function ApiKeyManager(): JSX.Element {
             >
               {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
             </Link>
+            {apiKey.project_name && (
+              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
+                {apiKey.project_name}
+              </span>
+            )}
             {apiKey.status === 'active' && (
               <span className="text-xs text-gray-500">{limitsSummary(apiKey, t)}</span>
             )}
@@ -283,7 +355,7 @@ export function ApiKeyManager(): JSX.Element {
               <>
                 <button
                   type="button"
-                  onClick={() => toggleReveal(apiKey.key_prefix)}
+                  onClick={() => toggleReveal(apiKey)}
                   title={
                     revealed
                       ? t('dashboard.keys.hide', 'Hide key')
@@ -300,7 +372,7 @@ export function ApiKeyManager(): JSX.Element {
                 </button>
                 <button
                   type="button"
-                  onClick={() => handleCopyKey(apiKey.api_key!)}
+                  onClick={() => copyKey(apiKey)}
                   title={t('dashboard.keys.copy', 'Copy key')}
                   aria-label={t('dashboard.keys.copy', 'Copy key')}
                   className="rounded-md p-1.5 text-gray-500 hover:bg-gray-100 hover:text-gray-700"
@@ -310,12 +382,17 @@ export function ApiKeyManager(): JSX.Element {
               </>
             )}
           </div>
-          {!apiKey.api_key && apiKey.status === 'active' && (
+          {!canReveal && apiKey.status === 'active' && (
             <p className="mt-1 text-xs text-gray-500">
-              {t(
-                'dashboard.keys.full_key_once',
-                'Full key is only shown immediately after creation or regeneration.',
-              )}
+              {apiKey.revealable
+                ? t(
+                    'dashboard.keys.reveal_needs_password',
+                    'Showing a saved key needs your password. Set one in Settings, or regenerate the key to see a new one.',
+                  )
+                : t(
+                    'dashboard.keys.full_key_once',
+                    'Full key is only shown immediately after creation or regeneration.',
+                  )}
             </p>
           )}
         </div>
@@ -407,7 +484,7 @@ export function ApiKeyManager(): JSX.Element {
   }
 
   return (
-    <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900">
@@ -498,14 +575,17 @@ export function ApiKeyManager(): JSX.Element {
       )}
       {action && (
         <ConfirmDialog
-          title={actionLabel}
+          title={actionTitle}
           confirmLabel={actionLabel}
           cancelLabel={t('common.cancel', 'Cancel')}
           busyLabel={t('common.loading', 'Loading...')}
           busy={isLoading}
-          tone={editingName ? 'default' : 'danger'}
+          tone={editingName || action.type === 'reveal' ? 'default' : 'danger'}
+          confirmDisabled={action.type === 'reveal' && password === ''}
           error={actionError}
-          initialFocusRef={editingName ? nameInputRef : undefined}
+          initialFocusRef={
+            editingName ? nameInputRef : action.type === 'reveal' ? passwordInputRef : undefined
+          }
           onConfirm={() => void confirmAction()}
           onCancel={closeAction}
         >
@@ -515,6 +595,28 @@ export function ApiKeyManager(): JSX.Element {
               {action.key.name ? `${action.key.name} · ` : ''}
               {action.key.key_masked}
             </p>
+          )}
+          {action.type === 'reveal' && (
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                if (password !== '') void confirmAction();
+              }}
+            >
+              <InputField
+                ref={passwordInputRef}
+                label={t('dashboard.keys.reveal_password', 'Password')}
+                type="password"
+                value={password}
+                onChange={(event) => {
+                  setPassword(event.target.value);
+                  setActionError(null);
+                }}
+                disabled={isLoading}
+                autoComplete="current-password"
+              />
+              <button type="submit" className="hidden" tabIndex={-1} disabled={isLoading} />
+            </form>
           )}
           {editingName && (
             <form
@@ -534,6 +636,28 @@ export function ApiKeyManager(): JSX.Element {
               />
               <button type="submit" className="hidden" tabIndex={-1} disabled={isLoading} />
             </form>
+          )}
+          {action.type === 'create' && (
+            <label className="block">
+              <span className="text-sm font-medium text-gray-700">
+                {t('dashboard.keys.project_label', 'Project')}
+              </span>
+              <Select
+                value={projectId}
+                onValueChange={setProjectId}
+                options={(projects ?? []).map((project) => ({
+                  value: project.id,
+                  label: project.name,
+                  description: project.is_default
+                    ? t('dashboard.keys.project_default', 'Default')
+                    : undefined,
+                }))}
+                placeholder={t('dashboard.keys.project_placeholder', 'Account default')}
+                aria-label={t('dashboard.keys.project_label', 'Project')}
+                disabled={isLoading}
+                className="mt-1.5 w-full"
+              />
+            </label>
           )}
         </ConfirmDialog>
       )}

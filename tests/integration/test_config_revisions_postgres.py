@@ -412,15 +412,62 @@ async def test_a_new_epoch_removes_every_registration(pool, store) -> None:
     )
     assert await reporter.report_once()
     version = await _version(pool)
+    async with pool.acquire() as connection:
+        routing_before, _ = await revisions.lock_version(connection, "routing")
     fresh = await live_control.reset_epoch(store, expected=version)
     assert fresh.epoch != version.epoch
     assert fresh.revision == version.revision + 1
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 0
+        routing_after, _ = await revisions.read_version(connection, "routing")
+        assert routing_after.epoch != routing_before.epoch
     # The process registers again on its next report.
     assert await reporter.report_once()
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 1
+
+
+@pytest.mark.asyncio
+async def test_prune_deletes_registrations_past_retention_and_keeps_current_ones(pool) -> None:
+    day = 24 * 3600.0
+    retention = instances.RETENTION_SECONDS
+    # Each registration's lifecycle, and how long ago, by the database clock,
+    # its process was last heard from.
+    registrations = {
+        "current": ("running", 0.0),
+        "heartbeat-lost": ("running", 120.0),  # Unknown, possibly offline.
+        "stopped-yesterday": ("stopped", day),
+        "just-within": ("running", retention - 60),
+        "just-past": ("running", retention + 60),
+        "stopped-last-month": ("stopped", 30 * day),
+    }
+    reporters = {}
+    for instance_id, (lifecycle, _) in registrations.items():
+        reporter = instances.InstanceReporter(
+            pool=pool,
+            instance_id=instance_id,
+            started_at=dt.datetime.now(dt.UTC),
+            capabilities={"protocol": 1, "groups": {}},
+        )
+        reporter.set_lifecycle(lifecycle)
+        assert await reporter.report_once()
+        reporters[instance_id] = reporter
+    async with pool.acquire() as connection:
+        for instance_id, (_, silent_for) in registrations.items():
+            await connection.execute(
+                "UPDATE config_instances SET heartbeat_at = NOW() - make_interval(secs => $2) "
+                "WHERE instance_id = $1",
+                instance_id,
+                silent_for,
+            )
+        before = {row["instance_id"] for row in await instances.fetch_instances(connection)}
+    assert before == set(registrations)
+
+    await reporters["current"].prune()
+
+    async with pool.acquire() as connection:
+        after = {row["instance_id"] for row in await instances.fetch_instances(connection)}
+    assert after == {"current", "heartbeat-lost", "stopped-yesterday", "just-within"}
 
 
 async def _boot_with_alerts_active(store: AppConfigStore, threshold: str) -> None:

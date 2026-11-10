@@ -1,7 +1,8 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import { ReauthPassword } from '@/components/features/admin/confirm/ReauthPassword';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Select } from '@/components/ui/Select';
@@ -241,6 +242,8 @@ function AccountSettings({
   // Only the fields the administrator has changed; the others show the saved values.
   const [draft, setDraft] = useState<Partial<AccountDraft>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A higher role is confirmed with the administrator's password.
+  const password = useRef('');
   const busy = confirmation.busy;
   const current: AccountDraft = { ...savedAccount(detail), ...draft };
   const patch = accountPatch(detail, current);
@@ -284,6 +287,40 @@ function AccountSettings({
     if (changes === 0) return;
     const pendingPatch = patch;
     setSaveError(null);
+    const raisedRole = pendingPatch.role;
+    if (raisedRole !== undefined && !hasRole(savedAccount(detail).role, raisedRole)) {
+      // A higher role reaches more models and reserved keys, and an admin
+      // everything: the backend asks for the password, which the admin token
+      // cannot give.
+      password.current = '';
+      const account = detail.email || detail.login_name || detail.phone || detail.id;
+      confirmation.request({
+        key: 'account settings',
+        title: `Give ${account} the ${raisedRole} role?`,
+        confirmLabel: 'Save changes',
+        busyLabel: 'Saving…',
+        tone: raisedRole === 'admin' ? 'danger' : 'default',
+        body: (
+          <div className="space-y-2">
+            <p>
+              {raisedRole === 'admin'
+                ? 'An administrator can change every setting and every account, and keeps that access until the role is taken away.'
+                : `The ${raisedRole} role reaches more models and the provider keys reserved for it.`}{' '}
+              Confirm with your password.
+            </p>
+            <ReauthPassword valueRef={password} label="Your password" />
+          </div>
+        ),
+        run: async () => {
+          const given = password.current;
+          if (!given) throw new Error('Enter your password to raise this role.');
+          await onSave({ ...pendingPatch, password: given });
+          password.current = '';
+          setDraft({});
+        },
+      });
+      return;
+    }
     const failure = await confirmation.perform({
       key: 'account settings',
       run: async () => {
@@ -530,7 +567,7 @@ function TextSetting({
   );
 }
 
-export interface UserDetailPanelProps {
+interface UserDetailPanelProps {
   user: AdminUser;
   detail: UserDetail;
   availableModels: AdminModelVisibilityItem[];

@@ -4,7 +4,7 @@ import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 
 const API_BASE = config.apiBase;
 
-export interface User {
+interface User {
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -23,18 +23,26 @@ export interface User {
   locale?: AccountLocaleChoice | null;
 }
 
-export interface ApiKeyResponse {
+interface ApiKeyResponse {
   api_key: string;
   key_prefix: string;
   name?: string | null;
+  project_id?: string | null;
+  project_name?: string | null;
   warning: string;
   created_at: string;
 }
 
 export interface ApiKeyListItem {
+  /**
+   * The listing never carries a full key any more (older gateways did); a
+   * saved key is shown through `revealApiKey`.
+   */
   api_key?: string | null;
   key_prefix: string;
   key_masked: string;
+  /** Whether the key's full value is saved, so that its owner can reveal it. */
+  revealable?: boolean;
   /** The owner's label for the key; absent for keys made before keys had names. */
   name?: string | null;
   created_at: string;
@@ -48,10 +56,18 @@ export interface ApiKeyListItem {
   budget_monthly_usd?: number | null;
   /** Model ids the key may call; null or absent is every model the account may use. */
   allowed_models?: string[] | null;
+  /** The project the key belongs to. */
+  project_id?: string | null;
+  project_name?: string | null;
 }
 
-export interface ApiKeyListResponse {
+interface ApiKeyListResponse {
   keys: ApiKeyListItem[];
+}
+
+interface ApiKeyRevealResponse {
+  key_prefix: string;
+  api_key: string;
 }
 
 /** Settings to change on a key: a field left out is unchanged, `null` clears it. */
@@ -62,7 +78,7 @@ export interface ApiKeyUpdate {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyUpdateResponse {
+interface ApiKeyUpdateResponse {
   key_prefix: string;
   name?: string | null;
   budget_daily_usd?: number | null;
@@ -70,20 +86,20 @@ export interface ApiKeyUpdateResponse {
   allowed_models?: string[] | null;
 }
 
-export interface ApiKeyRegenerateResponse {
+interface ApiKeyRegenerateResponse {
   api_key: string;
   key_prefix: string;
   old_key_prefix: string;
   warning: string;
 }
 
-export interface ApiKeyDeleteResponse {
+interface ApiKeyDeleteResponse {
   key_prefix: string;
   status: string;
   message: string;
 }
 
-export interface UsageStats {
+interface UsageStats {
   period: 'today' | 'month' | 'all';
   quota: {
     has_key: boolean;
@@ -134,7 +150,7 @@ export interface ModelCatalogItem {
   openrouter?: Record<string, unknown> | null;
 }
 
-export interface ModelCatalogResponse {
+interface ModelCatalogResponse {
   object: 'list';
   data: ModelCatalogItem[];
 }
@@ -171,11 +187,14 @@ export async function getModels(): Promise<ModelCatalogResponse> {
 }
 
 /** Create another key for the account; `name` labels it and may be omitted. */
-export async function createApiKey(name?: string | null): Promise<ApiKeyResponse> {
+export async function createApiKey(
+  name?: string | null,
+  projectId?: string | null,
+): Promise<ApiKeyResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ name: name ?? null }),
+    body: JSON.stringify({ name: name ?? null, project_id: projectId ?? null }),
   });
   return jsonOrThrow<ApiKeyResponse>(resp);
 }
@@ -204,6 +223,27 @@ export async function renameApiKey(
 export async function listApiKeys(): Promise<ApiKeyListResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/api-keys/all');
   return jsonOrThrow<ApiKeyListResponse>(resp);
+}
+
+/**
+ * Show one saved key in full. The account's password confirms that its owner,
+ * not just a signed-in browser, is asking; each attempt counts against the
+ * sign-in limits.
+ */
+export async function revealApiKey(
+  keyPrefix: string,
+  password: string,
+): Promise<ApiKeyRevealResponse> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/api-keys/${encodeURIComponent(keyPrefix)}/reveal`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    },
+  );
+  return jsonOrThrow<ApiKeyRevealResponse>(resp);
 }
 
 export async function deleteApiKey(keyPrefix: string): Promise<ApiKeyDeleteResponse> {
@@ -300,9 +340,11 @@ export interface RouteWiseDecision {
   lp_status?: string | null;
 }
 
-export interface RecentRequestsResponse {
+interface RecentRequestsResponse {
   requests: RecentRequestItem[];
   total: number;
+  /** The account has requests older than the ones listed; `total` is a lower bound. */
+  total_capped?: boolean;
   limit: number;
   offset: number;
 }
@@ -318,4 +360,67 @@ export async function getRecentRequests(
   if (keyPrefix) params.set('key_prefix', keyPrefix);
   const resp = await fetchWithAuth(API_BASE, `/user/recent-requests?${params.toString()}`);
   return jsonOrThrow<RecentRequestsResponse>(resp);
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  description?: string | null;
+  is_default: boolean;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
+  max_concurrent_requests?: number | null;
+  spent_today_usd: number;
+  spent_month_usd: number;
+  key_count: number;
+  created_at: string;
+}
+
+/** Settings to change on a project: a field left out is unchanged, `null` clears it. */
+export interface ProjectUpdate {
+  name?: string;
+  description?: string | null;
+  budget_daily_usd?: number | null;
+  budget_monthly_usd?: number | null;
+  allowed_models?: string[] | null;
+  max_concurrent_requests?: number | null;
+}
+
+export interface ProjectCreate extends ProjectUpdate {
+  name: string;
+}
+
+export async function listProjects(): Promise<Project[]> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects');
+  return jsonOrThrow<Project[]>(resp);
+}
+
+export async function createProject(body: ProjectCreate): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, '/user/projects', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function updateProject(projectId: string, changes: ProjectUpdate): Promise<Project> {
+  const resp = await fetchWithAuth(API_BASE, `/user/projects/${encodeURIComponent(projectId)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(changes),
+  });
+  return jsonOrThrow<Project>(resp);
+}
+
+export async function archiveProject(
+  projectId: string,
+): Promise<{ project_id: string; archived_at: string; keys_revoked: number }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/user/projects/${encodeURIComponent(projectId)}/archive`,
+    { method: 'POST' },
+  );
+  return jsonOrThrow(resp);
 }

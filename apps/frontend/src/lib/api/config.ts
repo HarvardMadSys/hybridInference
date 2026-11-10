@@ -81,6 +81,12 @@ export interface ConfigEntry {
   invalid: string | null;
   /** Model ids whose routes reference this variable. */
   used_by: string[];
+  /**
+   * Saving or resetting it needs the administrator's password (and the admin
+   * token cannot): a signing secret, a trusted network, where mail and users
+   * are sent. An older backend omits it, and asks for nothing.
+   */
+  security_relevant?: boolean;
   /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;
@@ -173,6 +179,8 @@ export interface LiveGroupCoverage {
 
 export interface LiveGroupStatus {
   name: string;
+  source?: string | null;
+  version?: ConfigSourceVersion | null;
   keys: string[];
   schema_version: number;
   contract: {
@@ -218,7 +226,7 @@ export class ConfigVersionConflictError extends APIError {
 }
 
 /** Options for a configuration write. */
-export interface ConfigWriteOptions {
+interface ConfigWriteOptions {
   /**
    * The version the editing view was loaded at: the write is refused (a
    * `ConfigVersionConflictError`) if anything was saved since. Pass the
@@ -234,7 +242,7 @@ function ifMatch(options?: ConfigWriteOptions): Record<string, string> {
   return version ? { 'If-Match': `"${version.epoch}:${version.revision}"` } : {};
 }
 
-export interface ConfigPatchRequest {
+interface ConfigPatchRequest {
   /** A JSON boolean for `bool`, a number for `int`/`float`, a string otherwise. */
   values: Record<string, ConfigScalar>;
   /**
@@ -243,17 +251,23 @@ export interface ConfigPatchRequest {
    * custom variable secret. One-way: `false` never makes a secret readable.
    */
   secrets?: Record<string, boolean>;
+  /**
+   * The signed-in administrator's password: needed when `values` changes a
+   * `security_relevant` setting, or adds a variable. 400 when it is missing or
+   * wrong; 403 for the admin token.
+   */
+  password?: string;
 }
 
 export type AlertNotificationChannel = 'slack' | 'wecom';
 
-export interface AlertNotificationTestRequest {
+interface AlertNotificationTestRequest {
   channel: AlertNotificationChannel;
   /** Omit to test the latest saved URL, including changes pending restart. */
   webhook_url?: string;
 }
 
-export interface AlertNotificationTestResponse {
+interface AlertNotificationTestResponse {
   channel: AlertNotificationChannel;
   sent: true;
   test_id: string;
@@ -271,7 +285,7 @@ export async function testAlertNotification(
   return readJson<AlertNotificationTestResponse>(resp);
 }
 
-export interface RestartResponse {
+interface RestartResponse {
   restarting: boolean;
   /** The process that is exiting; `/health` names a different one once it is back. */
   instance?: string;
@@ -345,34 +359,24 @@ export async function patchConfig(
 }
 
 /**
- * Mark a stored variable secret, leaving its value as it is: from then on the
- * console shows only whether it is set. One-way — nothing in the API makes a
- * secret readable again.
- *
- * For a discovered, numbered or custom variable with a row stored, a value or
- * a reset. 400 otherwise, verbatim: "K has no stored value to protect yet: …",
- * "K: a built-in setting keeps the registry's secret flag." A backend that
- * predates this sends entries without `origin`, and would answer 200 without
- * marking anything.
- */
-export async function markConfigSecret(
-  key: string,
-  options?: ConfigWriteOptions,
-): Promise<ConfigResponse> {
-  return patchConfig({ values: {}, secrets: { [key]: true } }, options);
-}
-
-/**
  * Remove a setting's database row: it falls back to the environment, then its
- * default, and a custom variable disappears. 409 for an immutable key.
+ * default, and a custom variable disappears. 409 for an immutable key. A
+ * `security_relevant` setting needs the administrator's `password`, sent in the
+ * request body.
  */
 export async function resetConfigKey(
   key: string,
-  options?: ConfigWriteOptions,
+  options?: ConfigWriteOptions & { password?: string },
 ): Promise<ConfigResponse> {
+  const password = options?.password;
   const resp = await fetchWithAuth(API_BASE, `/admin/config/${encodeURIComponent(key)}`, {
     method: 'DELETE',
-    headers: { accept: 'application/json', ...ifMatch(options) },
+    headers: {
+      accept: 'application/json',
+      ...(password !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      ...ifMatch(options),
+    },
+    ...(password !== undefined ? { body: JSON.stringify({ password }) } : {}),
   });
   return readConfig(resp);
 }
@@ -380,8 +384,21 @@ export async function resetConfigKey(
 export interface ConfigBackupPayload {
   schema_version: number;
   exported_at?: string | null;
-  app_config?: Array<{ key: string; value: string; secret?: boolean; source?: string }>;
-  site_settings?: Array<{ key: string; value: string; value_type?: string }>;
+  /**
+   * Whether the bundle carries secret values. False for the default backup, in
+   * which each secret is named with a `null` value; older bundles lack it and
+   * carry them.
+   */
+  secrets_included?: boolean;
+  app_config?: Array<{
+    key: string;
+    /** `null` for a secret in a backup without secret values. */
+    value: string | null;
+    secret?: boolean;
+    source?: string;
+    is_set?: boolean | null;
+  }>;
+  site_settings?: Array<{ key: string; value: string | null; value_type?: string }>;
   provider_definitions?: Array<Record<string, unknown>>;
   provider_keys?: Array<Record<string, unknown>>;
   disabled_provider_env_keys?: Array<Record<string, unknown>>;
@@ -398,31 +415,89 @@ export interface ConfigBackupPayload {
   signup_allowed_domains?: Array<Record<string, unknown>>;
 }
 
-export interface ConfigRestoreResponse {
+interface ConfigRestoreResponse {
   config: ConfigResponse;
   immutable_keys_preserved: string[];
+  /** The security-relevant changes the restore made; absent from older backends. */
+  security_changes?: string[];
+  /** Secrets the bundle withheld that the deployment had no value for. */
+  secrets_not_restored?: string[];
+}
+
+/** What restoring a bundle would do, before anything is written. */
+export interface ConfigRestorePreview {
+  /**
+   * Security-relevant changes, as `domain:name` labels. Restoring them needs
+   * this exact list back as confirmation, and the administrator's password.
+   */
+  security_changes: string[];
+  /** Secrets the bundle withholds that this deployment has no value for. */
+  secrets_not_restored: string[];
 }
 
 /**
- * Export all administrator-configurable state, including plaintext secrets, as a
- * portable JSON backup bundle.
+ * Export all administrator-configurable state as a portable JSON bundle.
+ *
+ * By default every secret is named without its value, and restoring the bundle
+ * keeps the deployment's own. With `includeSecrets` the bundle carries them in
+ * plain text, which the signed-in administrator's `password` must confirm:
+ * 400 when it is wrong, 403 for the admin token.
  */
-export async function exportConfigBackup(): Promise<ConfigBackupPayload> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/config/backup', {
-    headers: { accept: 'application/json' },
-    cache: 'no-store',
-  });
+export async function exportConfigBackup(
+  options: { includeSecrets?: boolean; password?: string } = {},
+): Promise<ConfigBackupPayload> {
+  const resp = options.includeSecrets
+    ? await fetchWithAuth(API_BASE, '/admin/config/backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify({ include_secrets: true, password: options.password ?? '' }),
+      })
+    : await fetchWithAuth(API_BASE, '/admin/config/backup', {
+        headers: { accept: 'application/json' },
+        cache: 'no-store',
+      });
   return readJson<ConfigBackupPayload>(resp);
 }
 
-/**
- * Restore administrator-configurable state from a backup bundle.
- */
-export async function restoreConfigBackup(backup: unknown): Promise<ConfigRestoreResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore', {
+/** Ask what restoring a bundle would change, writing nothing. */
+export async function previewConfigRestore(backup: unknown): Promise<ConfigRestorePreview> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore/preview', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', accept: 'application/json' },
     body: JSON.stringify(backup),
+  });
+  return readJson<ConfigRestorePreview>(resp);
+}
+
+/**
+ * Restore administrator-configurable state from a backup bundle, all of it or
+ * none. A bundle with security changes needs `confirmation`: the preview's
+ * `security_changes`, exactly, and the administrator's password. 409 when the
+ * changes are not the confirmed ones (the configuration moved since the
+ * preview), 400 for a wrong password, 403 for the admin token.
+ */
+export async function restoreConfigBackup(
+  backup: object,
+  confirmation?: { securityChanges: string[]; password: string },
+): Promise<ConfigRestoreResponse> {
+  // The confirmation is the administrator's, never the file's.
+  const bundle = Object.fromEntries(
+    Object.entries(backup).filter(
+      ([key]) => key !== 'confirm_security_changes' && key !== 'password',
+    ),
+  );
+  const body = confirmation
+    ? {
+        ...bundle,
+        confirm_security_changes: confirmation.securityChanges,
+        password: confirmation.password,
+      }
+    : bundle;
+  const resp = await fetchWithAuth(API_BASE, '/admin/config/restore', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', accept: 'application/json' },
+    body: JSON.stringify(body),
   });
   const result = await readJson<ConfigRestoreResponse>(resp);
   return {
@@ -447,7 +522,7 @@ export async function restartBackend(): Promise<RestartResponse> {
 const HEALTH_ATTEMPT_TIMEOUT_MS = 5_000;
 
 /** What one liveness probe found. */
-export interface BackendHealth {
+interface BackendHealth {
   up: boolean;
   /** The process that answered, when it says (an older backend does not). */
   instance: string | null;
@@ -481,7 +556,7 @@ export async function checkBackendHealth(): Promise<BackendHealth> {
   }
 }
 
-export type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
+type RestartWaitResult = 'restarted' | 'timeout' | 'aborted';
 
 /** What the waits for one restart know about it. */
 export interface RestartProgress {
@@ -491,7 +566,7 @@ export interface RestartProgress {
   from?: string | null;
 }
 
-export interface WaitForRestartOptions {
+interface WaitForRestartOptions {
   /** Give up after this long. Default two minutes. */
   timeoutMs?: number;
   /** Pause between probes. Default one second. */

@@ -1,16 +1,46 @@
-"""Shared extraction helpers for completion response text and usage."""
+"""Shared extraction helpers for completion response text and usage.
+
+Every request surface -- FixedRouter, RouteWise, hedging and ``/v1/messages`` --
+needs the same three things from a response: the generated text, the provider's
+usage, and a verdict on whether a *stream* has produced real work yet. They live
+here so the surfaces cannot drift, as ``routing/AGENTS.md`` asks.
+
+The stream verdict is the delicate one. A provider answers a warmup notice one
+token at a time, so the first delta is frequently a fragment of a notice ("The",
+"\\n\\n", "Model") that a single classification would read as progress and use to
+close a breaker the warmup failures had just opened. :class:`StreamProgressTracker`
+re-evaluates the *accumulated* prefix as each chunk arrives and stays undecided
+until that prefix can no longer become a warmup notice -- while still releasing a
+half-open probe as soon as genuine output proves the endpoint is serving.
+"""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
+from routing.completion_outcome import CompletionOutcome, classify_stream_prefix
+
+__all__ = [
+    "StreamProgressTracker",
+    "accumulate_stream_prefix",
+    "chunk_text",
+    "response_text",
+    "response_usage",
+]
+
+#: How much generated text a stream-prefix decision may look at. A warmup
+#: notice is short and a genuine answer diverges from every marker within a few
+#: characters, so a response that is still ambiguous never reaches this bound;
+#: it only caps how much memory a pathological stream can pin.
+_STREAM_PREFIX_MAX_CHARS = 512
+
 
 def response_text(response: Any) -> str | None:
     """Extract generated content from a non-streaming response body.
 
-    A tool call is returned as a non-empty sentinel so the classifier treats it
-    as real work even with no prose and no reported usage.
+    A tool call is represented by a non-empty sentinel so the classifier
+    treats a structured call as real work even when it has no prose or usage.
     """
     if not isinstance(response, dict):
         return None
@@ -37,39 +67,37 @@ def response_usage(response: Any) -> dict[str, Any] | None:
     return usage if isinstance(usage, dict) else None
 
 
-# Repeated scans of the same prefix (one per streamed chunk) re-parse the
-# same SSE frames; cache the extraction so a long whitespace tail does not
-# re-run json.loads O(n^2) times. Bounded so it cannot grow without limit.
-_CHUNK_TEXT_CACHE: dict[Any, str | None] = {}
-_CHUNK_TEXT_CACHE_MAX = 4096
-
-
 def chunk_text(chunk: Any) -> str | None:
-    """Extract generated text from a stream chunk for outcome classification."""
-    if not isinstance(chunk, str | bytes):
+    """Extract generated text from one stream chunk for outcome classification.
+
+    Mirrors ``routing.streaming.has_non_empty_content``: text, reasoning and
+    thinking deltas return their text; a structured call returns the same
+    ``[tool_call]`` sentinel :func:`response_text` uses.
+
+    Nothing is cached. A process-wide cache of raw response chunks -- the shape
+    an earlier revision used to avoid re-parsing -- would hold other requests'
+    generated output in memory long after they were served, for no benefit a
+    bounded incremental prefix does not already give.
+    """
+    if not isinstance(chunk, (str, bytes)):
         return None
-    if chunk in _CHUNK_TEXT_CACHE:
-        return _CHUNK_TEXT_CACHE[chunk]
-    extracted = _extract_chunk_text(chunk)
-    if len(_CHUNK_TEXT_CACHE) >= _CHUNK_TEXT_CACHE_MAX:
-        _CHUNK_TEXT_CACHE.clear()
-    _CHUNK_TEXT_CACHE[chunk] = extracted
-    return extracted
-
-
-def _extract_chunk_text(chunk: str | bytes) -> str | None:
     text = chunk.decode("utf-8", errors="surrogatepass") if isinstance(chunk, bytes) else chunk
     prefix = "data: "
     if not text.startswith(prefix):
         return None
+    payload = text[len(prefix) :].strip()
+    if not payload or payload == "[DONE]":
+        return None
     try:
-        obj = json.loads(text[len(prefix) :].strip())
+        obj = json.loads(payload)
     except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(obj, dict):
         return None
     choices = obj.get("choices") or []
-    delta = (choices[0] or {}).get("delta") or {} if choices else {}
+    if not choices:
+        return None
+    delta = (choices[0] or {}).get("delta") or {}
     content = (
         delta.get("content")
         or delta.get("reasoning_content")
@@ -83,43 +111,84 @@ def _extract_chunk_text(chunk: str | bytes) -> str | None:
     return None
 
 
-class StreamPrefixAccumulator:
-    """Bounded running prefix for incremental stream classification.
+class StreamProgressTracker:
+    """Decide, chunk by chunk, whether a streamed response proves real work.
 
-    ``observe`` appends one chunk's text and truncates at the cap; callers
-    classify from :meth:`prefix` instead of re-scanning every chunk seen so
-    far (which is O(n^2) JSON parsing over a long whitespace tail).
+    ``observe`` folds one chunk's generated text into a bounded running prefix
+    and returns ``PROGRESS`` the moment that prefix can no longer be a warmup
+    notice. While the prefix is still ambiguous it returns ``None``, and
+    :meth:`finish` gives the terminal verdict when the stream ends.
+
+    The prefix is built incrementally, so each chunk costs one extraction and
+    one classification over at most ``max_chars`` characters: neither the CPU
+    nor the memory cost grows with the number of chunks. Leading whitespace is
+    not accumulated at all -- a runaway whitespace stream (JSON-mode grammars
+    emit them) costs one extraction per chunk and never hides the real content
+    that follows it.
     """
 
-    def __init__(self, max_chars: int = 512) -> None:
-        self.max_chars = max_chars
-        self._parts: list[str] = []
-        self._total = 0
+    __slots__ = ("_cap", "_outcome", "_saw_content", "_text")
+
+    def __init__(self, max_chars: int = _STREAM_PREFIX_MAX_CHARS) -> None:
+        self._cap = max(1, max_chars)
+        self._text = ""
+        self._saw_content = False
+        self._outcome: CompletionOutcome | None = None
 
     @property
-    def saturated(self) -> bool:
-        """Return whether the bounded prefix has reached its cap."""
-        return self._total >= self.max_chars
+    def decided(self) -> bool:
+        """Return whether the verdict is already known."""
+        return self._outcome is not None
 
-    def observe(self, chunk: Any) -> None:
-        """Fold one stream chunk's text into the bounded prefix."""
-        if self.saturated:
-            return
-        text = chunk_text(chunk)
+    @property
+    def saw_content(self) -> bool:
+        """Return whether any non-whitespace generated text has arrived."""
+        return self._saw_content
+
+    def observe(self, text: str | None) -> CompletionOutcome | None:
+        """Fold one chunk's generated text in; return PROGRESS once proven.
+
+        Returns ``None`` while the accumulated prefix could still be a warmup
+        notice -- the caller must keep the attempt undecided and its half-open
+        probe claimed. Once decided, later chunks are ignored.
+        """
+        if self._outcome is not None:
+            return self._outcome
         if not text:
-            return
-        room = self.max_chars - self._total
-        self._parts.append(text[:room])
-        self._total += min(len(text), room)
-
-    def prefix(self) -> str | None:
-        """Return the accumulated prefix, or None before any content."""
-        if not self._parts:
             return None
-        return "".join(self._parts)
+        if not self._saw_content:
+            if not text.strip():
+                # Leading whitespace is not evidence either way, and keeping it
+                # would let a whitespace flood fill the prefix until the real
+                # content no longer fits.
+                return None
+            self._saw_content = True
+        room = self._cap - len(self._text)
+        if room > 0:
+            self._text += text[:room]
+        outcome = classify_stream_prefix(self._text)
+        if outcome is not None and outcome.admits_real_work:
+            self._outcome = outcome
+        return self._outcome
+
+    def finish(self) -> CompletionOutcome | None:
+        """Return the terminal verdict for the accumulated prefix.
+
+        ``None`` means nothing classifiable ever arrived (an empty or
+        whitespace-only stream), which is not success evidence.
+        """
+        if self._outcome is not None:
+            return self._outcome
+        if not self._saw_content:
+            return None
+        self._outcome = classify_stream_prefix(self._text, terminal=True)
+        return self._outcome
 
 
-def accumulate_stream_prefix(chunks: list[Any], max_chars: int = 512) -> str | None:
+def accumulate_stream_prefix(
+    chunks: list[Any],
+    max_chars: int = _STREAM_PREFIX_MAX_CHARS,
+) -> str | None:
     """Accumulate generated text from the first content-bearing stream chunks.
 
     A warmup notice can be split across multiple SSE chunks. Classifying the
@@ -127,6 +196,10 @@ def accumulate_stream_prefix(chunks: list[Any], max_chars: int = 512) -> str | N
     remaining text reveals the response is a warmup notice. This returns the
     concatenated text from the chunks seen so far, bounded to avoid unbounded
     accumulation, so the classifier can decide from the response prefix.
+
+    Callers that see one chunk at a time should use
+    :class:`StreamProgressTracker` instead: this function re-reads the whole
+    list, which is quadratic in the number of chunks.
     """
     parts: list[str] = []
     total = 0

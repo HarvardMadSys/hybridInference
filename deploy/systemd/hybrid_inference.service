@@ -1,11 +1,11 @@
 [Unit]
 Description=HybridInference
 Wants=network-online.target
-After=network-online.target home.mount
+After=network-online.target
 
 [Service]
-User=freeinference
-Group=freeinference
+User=hybridinference
+Group=hybridinference
 Type=simple
 WorkingDirectory=/srv/hybridInference
 # --no-proxy-headers is load-bearing here: uvicorn's proxy-header handling
@@ -14,11 +14,16 @@ WorkingDirectory=/srv/hybridInference
 # whatever X-Forwarded-For the proxy relays, upstream of the application's
 # TRUST_PROXY_HEADERS gate (serving/utils/request_ip.py). That gate is the one
 # place forwarded headers are interpreted.
+# --timeout-graceful-shutdown: open requests get 5 s after SIGTERM, then the
+# shutdown that writes queued request-log rows and unflushed costs runs.
+# Without it a stream held uvicorn until systemd's SIGKILL, or the admin
+# restart's 30 s watchdog, ended the process with that shutdown never run.
 ExecStart=/srv/hybridInference/.venv/bin/uvicorn serving.servers.app:app \
   --host 127.0.0.1 \
   --port 8080 \
   --no-server-header \
-  --no-proxy-headers
+  --no-proxy-headers \
+  --timeout-graceful-shutdown 5
 
 
 Restart=on-failure

@@ -23,8 +23,8 @@ everyone who clones the repository.
 The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
 under "Repository layout". Two things it does not tell you:
 
-- Deployment overlays under `distributions/` move out of this repository before
-  publication. `example/` is the one that remains.
+- Deployment overlays live in their own repositories; `distributions/example/`
+  is the only one here.
 - `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
   excludes it from automatic distribution discovery. Select it explicitly
   with `make up DISTRIBUTION=example` to run the local tutorial.
@@ -168,34 +168,41 @@ For the full diagram (network layer, observability, storage), see
   [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
   is applied by `RoutingManager` in
   [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  the distribution's `config/routing.yaml` (`default_router:`, formerly
-  `routing_strategy:`).
+  the `ROUTING_POLICY` database document (`default_router`, formerly
+  `routing_strategy`).
   Per-model router selection (`fixed` / `routewise`) lives in the
   [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
   and is dispatched by
   [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router:` field in the distribution's `config/models.yaml`
+  from each model's `router` field in the `MODEL_CATALOG` database document
   (see 6.3).
 - **Circuit breaker / EWMA health** — provider health tracking in
   [apps/backend/routing/](apps/backend/routing/).
 
-### 6.3 Configuration files
+### 6.3 Configuration
 
-| File | Owns |
+Application configuration lives in PostgreSQL and is edited through Admin.
+There are no runtime model, routing, alert, distribution or branding YAML files.
+An unconfigured gateway keeps the console/setup available and shows “Ask admin
+to configure”; it does not select example models or a provider implicitly.
+
+| Configuration | Owner |
 |---|---|
-| `distributions/<name>/config/models.yaml` | Model registry — a deployment's; per-model `router:` / `router_params:` (incl. RouteWise tuning). `config/examples/` has one to start from |
-| `distributions/<name>/config/routing.yaml` | Local/remote split, health checks — a deployment's; the gateway starts without one |
-| `distributions/<name>/config/alerts.yaml` | Alert rules — a deployment's, not the project's |
-| `app_config` table (Admin → Settings) | Every other application setting — provider keys, SMTP, secrets, proxy trust, routing knobs. Resolved DB row → env → default by `config_value()` and the `Settings` overlay; a stored row also wins a cross-field rule (the conflicting env value is set aside, with a WARNING). Registry in `apps/backend/serving/config/app_config_registry.py`. Env keeps only DB connection + wiring |
+| Model catalog, optional routing policy, alert rules, site identity and branding | `app_config`: `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`, `SITE_BRANDING`, as validated JSON |
+| Provider keys, live routes, weights and model overrides | Admin Providers/Routing and the operational store |
+| Database connection and infrastructure wiring | `.env` and Docker Compose; persistent lifecycle choices in `.ops.env` |
 
-YAML supports env var interpolation, in two dialects: the model registry
-substitutes only a whole `${VAR}` value, while the routing and alert files also
-handle `${VAR:-default}` and variables embedded in longer strings. Either way
-`${VAR}` resolves through the database-backed setting first, then the
-environment, then (routing and alerts) the inline `:-default`, then the
-setting's registered default. A `${VAR}` used in a credential field
-(`api_key`, `token`, an `Authorization` header) is a secret setting whatever
-its name.
+Documents reference credentials as `${NAME}` in separate secret settings.
+Settings resolve database row → environment seed → registered default. Catalog,
+routing policy and alert-rule changes retain explicit restart requirements;
+ordinary Admin route edits synchronize across processes and report application
+status. Preserve request ownership and feedback across those updates.
+
+The expand migration preserves existing `route_catalog` rows in the shared
+settings store. An explicit `python -m serving.config.manage import-legacy`
+command imports old external YAML; normal startup never calls it. Keep old
+files/rows through the rollback window. See
+[the accepted design](docs/agents/specs/2026-11-08-database-only-configuration.md).
 
 ### 6.4 Tests: markers and tiers
 
@@ -260,7 +267,10 @@ What remains here is the gateway's side of the two service contracts:
   browser bundle.
 
 The old `agent_*` tables stay in existing databases as read-only history
-(decision DR5); nothing here creates, reads or migrates them.
+(decision DR5); nothing here creates, reads or migrates them. `agent_grants` is
+the exception: it belongs to the inference-grant contract above, so the
+migrations create it and `serving/storage/postgres_operational.py` reads and
+writes it.
 
 ## 7. Common tasks
 

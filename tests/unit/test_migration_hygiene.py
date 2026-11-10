@@ -51,6 +51,15 @@ def _revision_files() -> list[Path]:
 
 def breaks_older_code(source: str) -> bool:
     """Whether a revision's source removes or narrows something, by its SQL or ``op`` calls."""
+    source = ast.unparse(ast.parse(source))
+    new_tables = set(re.findall(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)", source, re.I))
+    for table in new_tables:
+        source = re.sub(
+            rf"CREATE\s+UNIQUE\s+INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?\w+\s+ON\s+{re.escape(table)}\b",
+            "CREATE INDEX ON new_table",
+            source,
+            flags=re.I,
+        )
     return bool(_CONTRACT.search(source))
 
 
@@ -89,6 +98,15 @@ def test_the_revisions_form_one_numbered_line():
     assert [int(r.split("_", 1)[0]) for r in chain] == list(range(1, len(chain) + 1))
     assert all(re.fullmatch(r"\d{4}_[a-z0-9_]+", r) for r in chain)
     assert sorted(p.stem for p in _revision_files()) == sorted(chain)
+
+
+def test_every_revision_id_fits_the_version_table():
+    """Alembic records the revision in a ``VARCHAR(32)``.
+
+    A longer id fails the run when it records the revision -- after the
+    revision's own statements have already run.
+    """
+    assert [r for r in code_chain() if len(r) > 32] == []
 
 
 @pytest.mark.parametrize(
@@ -186,6 +204,7 @@ def test_the_contract_check_recognizes_narrowing(source):
         'op.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS note TEXT")',
         'op.execute("CREATE TABLE IF NOT EXISTS t (id BIGINT PRIMARY KEY)")',
         'op.execute("CREATE INDEX IF NOT EXISTS idx_t ON t(id)")',
+        'op.execute("CREATE TABLE t (id BIGINT)")\nop.execute("CREATE UNIQUE INDEX idx_t ON t(id)")',
         'op.execute("DROP INDEX IF EXISTS idx_unused")',
         """op.execute("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free'")""",
         "op.add_column('users', sa.Column('plan', sa.Text(), nullable=True))",

@@ -341,12 +341,34 @@ class UserProfileUpdate(BaseModel):
         return value
 
 
-class LLMProberLayoutState(BaseModel):
-    """Persisted llm-prober layout for one user account."""
+#: Most models one section of a saved llm-prober layout may list (the same
+#: bound as a key's model allowlist).
+LLM_PROBER_LAYOUT_MAX_MODELS = 200
+#: Most providers a layout may pin for one model.
+LLM_PROBER_LAYOUT_MAX_PROVIDERS = 32
+#: Longest model or provider name a layout may hold.
+LLM_PROBER_LAYOUT_NAME_MAX_LENGTH = 256
 
-    direct_models: list[str] = Field(default_factory=list)
-    direct_providers: dict[str, list[str]] = Field(default_factory=dict)
-    e2e_models: list[str] = Field(default_factory=list)
+_LayoutName = Annotated[str, Field(max_length=LLM_PROBER_LAYOUT_NAME_MAX_LENGTH)]
+
+
+class LLMProberLayoutState(BaseModel):
+    """Persisted llm-prober layout for one user account.
+
+    Every list and name is bounded, and the saved document as a whole is
+    bounded by ``USER_PREFERENCES_MAX_BYTES`` when it is written.
+    """
+
+    direct_models: list[_LayoutName] = Field(
+        default_factory=list, max_length=LLM_PROBER_LAYOUT_MAX_MODELS
+    )
+    direct_providers: dict[
+        _LayoutName,
+        Annotated[list[_LayoutName], Field(max_length=LLM_PROBER_LAYOUT_MAX_PROVIDERS)],
+    ] = Field(default_factory=dict, max_length=LLM_PROBER_LAYOUT_MAX_MODELS)
+    e2e_models: list[_LayoutName] = Field(
+        default_factory=list, max_length=LLM_PROBER_LAYOUT_MAX_MODELS
+    )
 
 
 class LLMProberLayoutResponse(BaseModel):
@@ -364,6 +386,7 @@ class APIKeyCreateRequest(BaseModel):
     """Optional settings for a new API key."""
 
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
+    project_id: str | None = None
 
 
 #: Highest budget an owner may give a key, per day or per month: far above any
@@ -400,6 +423,8 @@ class APIKeyResponse(BaseModel):
     api_key: str
     key_prefix: str
     name: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
     warning: str = "Save this API key now. It will not be shown again."
     created_at: datetime
 
@@ -414,14 +439,20 @@ class APIKeyInfo(BaseModel):
     created_at: datetime | None = None
     last_used_at: datetime | None = None
     status: str | None = None
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class APIKeyListItem(BaseModel):
     """Single API key record for the current user."""
 
+    #: Always null: the listing never carries a full key. One saved key is
+    #: shown through ``POST /user/api-keys/{key_prefix}/reveal`` instead.
     api_key: str | None = None
     key_prefix: str
     key_masked: str
+    #: Whether the key's full value is saved, so that its owner can reveal it.
+    revealable: bool = False
     name: str | None = None
     created_at: datetime
     last_used_at: datetime | None = None
@@ -431,6 +462,8 @@ class APIKeyListItem(BaseModel):
     #: from before then are in the account's totals only.
     spent_today_usd: float = 0.0
     spent_month_usd: float = 0.0
+    project_id: str | None = None
+    project_name: str | None = None
     #: The key's own limits; null is no limit at the key.
     budget_daily_usd: float | None = None
     budget_monthly_usd: float | None = None
@@ -441,6 +474,19 @@ class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
+
+
+class APIKeyRevealRequest(BaseModel):
+    """Show one saved API key in full; the owner confirms with the account's password."""
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class APIKeyRevealResponse(BaseModel):
+    """One of the current user's API keys, in full."""
+
+    key_prefix: str
+    api_key: str
 
 
 class APIKeyUpdateResponse(BaseModel):
@@ -644,5 +690,59 @@ class RecentRequestsResponse(BaseModel):
 
     requests: list[RecentRequestItem]
     total: int
+    #: True when the account has requests older than the ones the list reaches
+    #: back over, so ``total`` is a lower bound ("10,000+").
+    total_capped: bool = False
     limit: int
     offset: int
+
+
+class ProjectResponse(BaseModel):
+    """A project with its budgets, keys and current spend."""
+
+    id: str
+    name: str
+    description: str | None = None
+    is_default: bool
+    budget_daily_usd: float | None = None
+    budget_monthly_usd: float | None = None
+    allowed_models: list[str] | None = None
+    max_concurrent_requests: int | None = None
+    spent_today_usd: float = 0.0
+    spent_month_usd: float = 0.0
+    key_count: int = 0
+    created_at: datetime
+
+
+class ProjectCreateRequest(BaseModel):
+    """Create a project under the caller's personal organization."""
+
+    name: str = Field(..., min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
+    max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+
+class ProjectUpdateRequest(BaseModel):
+    """Patch a project; omitted fields are unchanged."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    description: str | None = Field(default=None, max_length=500)
+    budget_daily_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    budget_monthly_usd: Decimal | None = Field(
+        default=None, ge=0, le=API_KEY_BUDGET_MAX_USD, decimal_places=4
+    )
+    allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
+        default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
+    )
+    max_concurrent_requests: int | None = Field(default=None, ge=1)

@@ -14,17 +14,19 @@ import aiohttp
 from serving.config.app_config import config_value, on_change
 from serving.config.settings import get_settings
 from serving.exceptions import UpstreamStreamIdleError
-from serving.stream import done_sentinel
+from serving.http import MAX_RESPONSE_BODY_BYTES
+from serving.stream import StreamText, done_sentinel
+from serving.structured_output import requested_format, with_instruction
 from serving.utils.logging import get_logger
 from serving.utils.messages import (
     flatten_text_content,
     merge_leading_system_messages,
     move_tool_media,
 )
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
-from .dispatch_watch import report_first_token
+from .dispatch_watch import report_first_token, report_queued
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -33,7 +35,6 @@ from .profiles import (
     extract_tool_calls_for_profile,
     filter_response_format,
     filter_sampling_params,
-    function_call_delta_to_tool_calls,
     get_stream_first_byte_timeout_seconds,
     get_stream_idle_timeout_seconds,
     get_usage_normalizer,
@@ -42,7 +43,15 @@ from .profiles import (
     resolve_tool_choice_for_profile,
     supports_guided_json,
 )
-from .upstream_limiter import UpstreamSaturated, UpstreamSlot, acquire_upstream_slot
+from .reasoning_effort import EFFORT_PARAM, EffortContract, effort_contract, translate_effort
+from .remote_media import inline_remote_media
+from .upstream_limiter import (
+    UpstreamSaturated,
+    UpstreamSlot,
+    acquire_upstream_slot,
+    is_local_endpoint,
+    try_acquire_upstream_slot,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator
@@ -82,6 +91,15 @@ class UpstreamStreamError(aiohttp.ClientError):
     def __init__(self, message: str, status: int) -> None:
         super().__init__(message)
         self.status = status
+
+
+# vLLM ends a request it aborted -- its engine shutting down under it, say --
+# with ``finish_reason: "abort"`` and whatever it had generated so far, inside
+# an ordinary 200. That is a failed generation, not a finished one: raised as
+# an upstream error, the router falls back and a batch item is retried instead
+# of the caller receiving a truncated or empty reply as the model's answer.
+_ABORTED_FINISH_REASON = "abort"
+_ABORTED_ERROR = "Upstream aborted the generation before it finished"
 
 
 # Used when an error frame names no usable HTTP status. Not a client error, so
@@ -181,6 +199,28 @@ def completion_timeout_s() -> float:
     loaded and through every later change.
     """
     return _COMPLETION_TIMEOUT_S
+
+
+#: The response bytes an embeddings request may bring back per input: one
+#: vector of 8,192 dimensions written as JSON floats (about 200 KB) and the
+#: object around it. Floats come back at most about 24 bytes each.
+EMBEDDING_RESPONSE_BYTES_PER_INPUT = 256 * 1024
+#: ... and once per response, for the list's own fields (``model``, ``usage``).
+_EMBEDDING_RESPONSE_BASE_BYTES = 64 * 1024
+
+
+def embeddings_response_limit(input_data: str | list[str]) -> int:
+    """Return the most response bytes read for an embeddings request of *input_data*.
+
+    An embeddings response is one vector per input, so its size follows from
+    the request: a few inputs cannot make the gateway read and decode hundreds
+    of MiB. Never more than the limit on any response body.
+    """
+    count = len(input_data) if isinstance(input_data, list) else 1
+    return min(
+        MAX_RESPONSE_BODY_BYTES,
+        _EMBEDDING_RESPONSE_BASE_BYTES + count * EMBEDDING_RESPONSE_BYTES_PER_INPUT,
+    )
 
 
 async def _iter_with_idle_timeout(
@@ -496,6 +536,10 @@ class OpenAICompatAdapter(BaseAdapter):
     - extra_headers / extra_query (dict[str,str])
     """
 
+    #: ``_apply_supported_passthrough_params`` forwards it, translated on a
+    #: route with a ``reasoning_effort_map``.
+    forwards_reasoning_effort = True
+
     def __init__(self, config):
         super().__init__(config)
 
@@ -632,10 +676,32 @@ class OpenAICompatAdapter(BaseAdapter):
         self._key_pool.add_key(normalized)
         return True
 
+    def _resolve_effort(self, params: dict[str, Any]) -> tuple[EffortContract, Any]:
+        """This request's effort contract, and on a mapped route the value to send.
+
+        Raises:
+            ReasoningEffortRefused: A mapped route was asked for a level it does
+                not declare (400), before any I/O.
+        """
+        contract = effort_contract(self.config)
+        requested = params.get(EFFORT_PARAM)
+        if not contract.mapped or requested is None:
+            return contract, None
+        return contract, translate_effort(contract, requested)
+
     def _apply_supported_passthrough_params(
-        self, payload: dict[str, Any], params: dict[str, Any]
+        self,
+        payload: dict[str, Any],
+        params: dict[str, Any],
+        *,
+        effort: tuple[EffortContract, Any] | None = None,
     ) -> None:
-        """Forward OpenAI-like params that do not need special normalization."""
+        """Forward OpenAI-like params that do not need special normalization.
+
+        ``effort`` is :meth:`_resolve_effort`'s answer for this request, read
+        before its first await; resolved here when not given.
+        """
+        contract, upstream_value = effort if effort is not None else self._resolve_effort(params)
         passthrough_params = (
             "top_k",
             "min_p",
@@ -652,6 +718,14 @@ class OpenAICompatAdapter(BaseAdapter):
             "parallel_tool_calls",
         )
         for name in passthrough_params:
+            if name == EFFORT_PARAM and contract.mapped:
+                # A mapped route forwards the parameter on its own declaration,
+                # translated once, here, on the adapter about to send it.
+                # ``params`` keeps the public value, so a retry or another route
+                # never sees a translated one.
+                if upstream_value is not None:
+                    payload[name] = upstream_value
+                continue
             if name in params and name in self.config.supported_params:
                 if name == "parallel_tool_calls" and not payload.get("tools"):
                     continue
@@ -705,6 +779,30 @@ class OpenAICompatAdapter(BaseAdapter):
             endpoint_id=getattr(self.config, "endpoint_id", None) or self.config.provider,
         )
         return [self._clean_message(msg) for msg in messages]
+
+    async def _inline_remote_media(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Return the messages to send, with remote media inlined for a self-hosted engine.
+
+        A self-hosted engine (vLLM, SGLang) fetches a media URL from this
+        deployment's own network, so on such a route the gateway fetches it
+        instead, through a client that reaches only public addresses, and sends
+        it on as a ``data:`` URL (:mod:`serving.adapters.remote_media`). A
+        provider API fetches from its own network, so other routes send the
+        messages as they are. "Self-hosted" is the classification outbound
+        admission uses: the route's ``deployment_type``, else its host.
+
+        Only the payload changes: the caller keeps ``messages`` -- the usage
+        estimate reads them, and a fallback to a cloud route sends their URLs.
+
+        Raises:
+            RemoteMediaRefused: A URL was refused or could not be fetched (400).
+        """
+        if not is_local_endpoint(self.config.base_url, deployment_type=self.config.deployment_type):
+            return messages
+        # The fetch is the gateway's time, not the engine's: pause a first-token
+        # watch as a wait for an outbound slot does. The slot this attempt takes
+        # next restarts it (``report_sent``).
+        return await inline_remote_media(messages, before_fetch=report_queued)
 
     def _normalize_tools(self, tools: list[dict[str, Any]] | None) -> list[dict[str, Any]] | None:
         """Normalize tool definitions for the active provider profile."""
@@ -810,7 +908,41 @@ class OpenAICompatAdapter(BaseAdapter):
             deployment_type=self.config.deployment_type,
         )
 
-    async def _post_with_pool(self, url: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _try_upstream_slot(self, api_key: str | None) -> UpstreamSlot | None:
+        """Take an outbound slot for *api_key* if one is free now; None otherwise."""
+        return try_acquire_upstream_slot(
+            self._key_pool_provider_label,
+            api_key,
+            base_url=self.config.base_url,
+            deployment_type=self.config.deployment_type,
+        )
+
+    def _lease_key(
+        self, affinity_key: str | None, role: str | None, tried: set[int]
+    ) -> tuple[str, Any, UpstreamSlot | None]:
+        """Lease the next key to send on: one with an outbound slot free now, if any.
+
+        Returns ``(api_key, lease, slot)``. Every key the caller may use and has
+        not tried is asked for a free slot first, in the pool's order, so a
+        request does not queue on a full key while a sibling has room (the
+        caller's binding stays on its key). When none has one, the slot is None
+        and the key is the one :meth:`KeyPool.acquire` picks, for the caller to
+        wait on.
+
+        Raises:
+            KeyPoolExhausted: No key is left for this caller.
+        """
+        pool = self._key_pool
+        assert pool is not None
+        picked = pool.acquire_with(affinity_key, self._try_upstream_slot, role=role, exclude=tried)
+        if picked is not None:
+            return picked
+        api_key, lease = pool.acquire(affinity_key, role=role, exclude=tried)
+        return api_key, lease, None
+
+    async def _post_with_pool(
+        self, url: str, payload: dict[str, Any], *, max_body_bytes: int | None = None
+    ) -> dict[str, Any]:
         """POST JSON with sequential key-pool rotation on any upstream error.
 
         When ``self._key_pool`` is None, falls through to the legacy single-key
@@ -832,7 +964,12 @@ class OpenAICompatAdapter(BaseAdapter):
         rotates like any other key-specific failure — a sibling key may have
         room — and only a request that finds every usable key saturated fails
         with ``UpstreamSaturated``.
+
+        ``max_body_bytes``, when given, bounds the response body read (see
+        ``AsyncHTTPClient.json_post``); otherwise the client's default applies.
         """
+        # Passed only when set: the chat path's call is unchanged.
+        limit = {} if max_body_bytes is None else {"max_body_bytes": max_body_bytes}
         if self._key_pool is None:
             headers = self._build_headers()
             slot = await self._acquire_upstream_slot(self.config.api_key)
@@ -852,6 +989,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
                     retries=1,
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 slot.release(
@@ -883,7 +1021,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -907,18 +1045,22 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # This key's outbound allowance is full. Rotate rather than
-                # fail: sibling keys are separate accounts with their own
-                # allowances, and ``tried`` already holds this one so the next
-                # pass picks a different key. The lease is released neutrally —
-                # nothing was sent, so the key is neither credited with a
-                # success nor charged with a failure, and it must not be muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                # Every key this caller may use is at its outbound limit: wait
+                # in line for this one.
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # This key's outbound allowance stayed full. Rotate rather
+                    # than fail: sibling keys are separate accounts with their
+                    # own allowances, and ``tried`` already holds this one so the
+                    # next pass picks a different key. The lease is released
+                    # neutrally — nothing was sent, so the key is neither
+                    # credited with a success nor charged with a failure, and it
+                    # must not be muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             try:
@@ -927,6 +1069,7 @@ class OpenAICompatAdapter(BaseAdapter):
                     json=payload,
                     headers=headers,
                     timeout=aiohttp.ClientTimeout(total=_COMPLETION_TIMEOUT_S),
+                    **limit,
                 )
             except (TimeoutError, aiohttp.ClientError) as e:
                 status = e.status if isinstance(e, aiohttp.ClientResponseError) else 0
@@ -1057,7 +1200,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         for _ in range(max_attempts):
             try:
-                api_key, lease = self._key_pool.acquire(affinity_key, role=role, exclude=tried)
+                api_key, lease, slot = self._lease_key(affinity_key, role, tried)
             except KeyPoolExhausted as exhausted:
                 logger.warning(
                     "key_pool_exhausted",
@@ -1082,16 +1225,17 @@ class OpenAICompatAdapter(BaseAdapter):
                 },
             )
 
-            try:
-                slot = await self._acquire_upstream_slot(api_key)
-            except UpstreamSaturated as saturated:
-                # Same rotation as the non-streaming path: this key's outbound
-                # allowance is full, a sibling's may not be. Neutral lease
-                # release — nothing was sent, so the key is neither credited nor
-                # muted.
-                self._key_pool.release(lease, status_code=None)
-                last_error = saturated
-                continue
+            if slot is None:
+                try:
+                    slot = await self._acquire_upstream_slot(api_key)
+                except UpstreamSaturated as saturated:
+                    # Same rotation as the non-streaming path: this key's
+                    # outbound allowance stayed full, a sibling's may not be.
+                    # Neutral lease release — nothing was sent, so the key is
+                    # neither credited nor muted.
+                    self._key_pool.release(lease, status_code=None)
+                    last_error = saturated
+                    continue
 
             headers = self._build_headers(api_key_override=api_key)
             stream_iter = self.http.stream_post(
@@ -1241,6 +1385,52 @@ class OpenAICompatAdapter(BaseAdapter):
         if isinstance(priority, int) and not isinstance(priority, bool):
             payload["priority"] = priority
 
+    def _apply_response_format(
+        self, payload: dict[str, Any], params: dict[str, Any], *, stream: bool
+    ) -> None:
+        """Forward the request's ``response_format`` as far as this endpoint takes it.
+
+        What the endpoint cannot take is described in the prompt instead: a
+        route without ``supports_structured_output``, or a provider that keeps
+        only ``json_object`` of a schema, would otherwise answer free text with
+        the model never having been told the shape it was asked for.
+
+        A vLLM route also gets ``structured_outputs`` with
+        ``disable_any_whitespace``: vLLM's JSON grammar otherwise admits any
+        amount of whitespace between tokens, and a model can loop on newlines
+        until ``max_tokens`` without ever writing a key. vLLM merges the schema
+        from ``response_format`` into it, and a server too old to know the
+        field ignores it.
+        """
+        wanted = requested_format(params)
+        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
+        if filtered_rf and self.config.supports_structured_output:
+            payload["response_format"] = filtered_rf
+            if self.config.vllm_structured_outputs and wanted is not None:
+                if wanted.schema is not None:
+                    payload["structured_outputs"] = {
+                        "json": wanted.schema,
+                        "disable_any_whitespace": True,
+                    }
+                elif wanted.kind == "json_object":
+                    payload["structured_outputs"] = {
+                        "json_object": True,
+                        "disable_any_whitespace": True,
+                    }
+            elif (
+                stream
+                and supports_guided_json(self._usage_profile)
+                and (schema := params.get("response_format", {}).get("schema"))
+            ):
+                payload["guided_json"] = schema
+        if wanted is None:
+            return
+        forwarded = payload.get("response_format")
+        if forwarded is None or (
+            wanted.schema is not None and forwarded.get("type") != "json_schema"
+        ):
+            payload["messages"] = with_instruction(payload["messages"], wanted)
+
     def _augment_payload(self, payload: dict[str, Any], *, stream: bool) -> dict[str, Any]:
         """Subclass extension point for provider-specific payload mutation.
 
@@ -1262,6 +1452,9 @@ class OpenAICompatAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dict
         """
+        # Before anything else this request would fetch or send, and once: the
+        # route's map as it is now, whatever an admin edit does meanwhile.
+        effort = self._resolve_effort(params)
         validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
@@ -1270,7 +1463,7 @@ class OpenAICompatAdapter(BaseAdapter):
         # Build request payload
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             **validated,
         }
@@ -1281,11 +1474,9 @@ class OpenAICompatAdapter(BaseAdapter):
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
 
-        self._apply_supported_passthrough_params(payload, params)
+        self._apply_supported_passthrough_params(payload, params, effort=effort)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
+        self._apply_response_format(payload, params, stream=False)
         self._apply_upstream_priority(payload)
         payload = self._augment_payload(payload, stream=False)
 
@@ -1324,6 +1515,9 @@ class OpenAICompatAdapter(BaseAdapter):
         Yields:
             SSE-formatted chunks
         """
+        # Before anything else this request would fetch or send, and once: the
+        # route's map as it is now, whatever an admin edit does meanwhile.
+        effort = self._resolve_effort(params)
         validated = filter_sampling_params(self._usage_profile, self.validate_params(params))
 
         # Clean messages to remove None fields (some APIs reject them)
@@ -1331,7 +1525,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         payload = {
             **self.config.extra_body,
-            "messages": cleaned_messages,
+            "messages": await self._inline_remote_media(cleaned_messages),
             "model": self._get_model_identifier(),
             "stream": True,
             **validated,
@@ -1343,15 +1537,9 @@ class OpenAICompatAdapter(BaseAdapter):
             if tool_choice is not None:
                 payload["tool_choice"] = tool_choice
 
-        self._apply_supported_passthrough_params(payload, params)
+        self._apply_supported_passthrough_params(payload, params, effort=effort)
 
-        filtered_rf = filter_response_format(self._usage_profile, params.get("response_format"))
-        if filtered_rf and self.config.supports_structured_output:
-            payload["response_format"] = filtered_rf
-            if supports_guided_json(self._usage_profile) and (
-                schema := params.get("response_format", {}).get("schema")
-            ):
-                payload["guided_json"] = schema
+        self._apply_response_format(payload, params, stream=True)
         if getattr(self.config, "include_usage_in_stream", False):
             existing_options = payload.get("stream_options") or {}
             payload["stream_options"] = {**existing_options, "include_usage": True}
@@ -1364,8 +1552,13 @@ class OpenAICompatAdapter(BaseAdapter):
         # Fresh processor per request — avoids shared mutable state across concurrent streams
         processor = get_processor(self._processor_model_id, override=self._processor_override)
 
-        total_content = ""
-        total_tool_text = ""
+        # The output so far, for the usage estimate when the upstream reports
+        # none: content and reasoning, and tool-call names and arguments. Kept
+        # as ``StreamText``, read once at the end -- appending to a string the
+        # closure below rebinds copies all of it on every token, quadratic in
+        # the answer.
+        content_text = StreamText()
+        tool_text = StreamText()
         finish_reason = "stop"
         upstream_usage: dict[str, Any] | None = None
         prompt_tokens_override: int | None = None
@@ -1375,13 +1568,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         # Helper to yield formatted chunks from processed data
         def format_and_yield(processed_chunk: dict[str, Any]) -> str | None:
-            nonlocal \
-                total_content, \
-                total_tool_text, \
-                finish_reason, \
-                upstream_usage, \
-                prompt_tokens_override, \
-                saw_tool_calls
+            nonlocal finish_reason, upstream_usage, prompt_tokens_override, saw_tool_calls
 
             choices = processed_chunk.get("choices") or []
 
@@ -1405,46 +1592,13 @@ class OpenAICompatAdapter(BaseAdapter):
             # Accumulate visible content and reasoning independently for the fallback
             content = delta.get("content")
             if isinstance(content, str) and content:
-                total_content += content
+                content_text.append(content)
 
             reasoning = (
                 delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             )
             if isinstance(reasoning, str) and reasoning:
-                total_content += reasoning
-
-            legacy_tool_calls = function_call_delta_to_tool_calls(
-                self._usage_profile, delta.get("function_call")
-            )
-            if legacy_tool_calls:
-                saw_tool_calls = True
-                # Accumulate tool-call text so the fallback usage estimate can
-                # count tool tokens when the provider omits a usage chunk.
-                # Skip malformed entries (non-dict entry or `function` value)
-                # rather than crashing the stream.
-                for entry in legacy_tool_calls:
-                    fn = entry.get("function") if isinstance(entry, dict) else None
-                    if not isinstance(fn, dict):
-                        continue
-                    name = fn.get("name") or ""
-                    args = fn.get("arguments") or ""
-                    if isinstance(name, str):
-                        total_tool_text += name
-                    if isinstance(args, str):
-                        total_tool_text += args
-                chunk_copy = dict(processed_chunk)
-                chunk_copy["model"] = self.config.id
-                new_choices = list(chunk_copy.get("choices") or [])
-                if new_choices:
-                    new_choice = dict(new_choices[0])
-                    new_delta = dict(new_choice.get("delta") or {})
-                    new_delta.pop("role", None)
-                    new_delta.pop("function_call", None)
-                    new_delta["tool_calls"] = legacy_tool_calls
-                    new_choice["delta"] = new_delta
-                    new_choices[0] = new_choice
-                    chunk_copy["choices"] = new_choices
-                return f"data: {json.dumps(chunk_copy)}\n\n"
+                content_text.append(reasoning)
 
             has_reasoning = (
                 bool(delta.get("reasoning_content"))
@@ -1469,9 +1623,9 @@ class OpenAICompatAdapter(BaseAdapter):
                         name = fn.get("name") or ""
                         args = fn.get("arguments") or ""
                         if isinstance(name, str):
-                            total_tool_text += name
+                            tool_text.append(name)
                         if isinstance(args, str):
-                            total_tool_text += args
+                            tool_text.append(args)
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
@@ -1569,13 +1723,22 @@ class OpenAICompatAdapter(BaseAdapter):
                         # marks them ``finish_reason: "error"``: a failure, never
                         # a finish, with or without the error object beside it.
                         errored = isinstance(raw_choices, list) and any(
-                            isinstance(choice, dict) and choice.get("finish_reason") == "error"
+                            isinstance(choice, dict)
+                            and choice.get("finish_reason") in ("error", _ABORTED_FINISH_REASON)
                             for choice in raw_choices
                         )
                         if isinstance(data, dict) and (
                             (data.get("error") and not raw_choices) or errored
                         ):
-                            error = data.get("error")
+                            error = data.get("error") or (
+                                _ABORTED_ERROR
+                                if any(
+                                    isinstance(choice, dict)
+                                    and choice.get("finish_reason") == _ABORTED_FINISH_REASON
+                                    for choice in raw_choices or ()
+                                )
+                                else None
+                            )
                             raise UpstreamStreamError(
                                 _stream_error_message(error),
                                 _stream_error_status(error),
@@ -1707,9 +1870,9 @@ class OpenAICompatAdapter(BaseAdapter):
             usage_info = None
             final_usage = self._build_fallback_usage(
                 messages=cleaned_messages,
-                total_content=total_content,
+                total_content=content_text.text,
                 prompt_tokens_override=prompt_tokens_override,
-                tool_text=total_tool_text,
+                tool_text=tool_text.text,
             )
         final_chunk_str = self._build_final_chunk(
             usage=final_usage,
@@ -1752,11 +1915,15 @@ class OpenAICompatAdapter(BaseAdapter):
 
         logger.debug(f"[OpenAICompat] POST {url} model={payload['model']}")
 
-        return await self._post_with_pool(url, payload)
+        return await self._post_with_pool(
+            url, payload, max_body_bytes=embeddings_response_limit(input_data)
+        )
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""
         choice, message = unpack_first_choice(response, self.config.provider)
+        if choice.get("finish_reason") == _ABORTED_FINISH_REASON:
+            raise UpstreamStreamError(_ABORTED_ERROR, _UNCLASSIFIED_STREAM_ERROR_STATUS)
         tool_calls = extract_tool_calls_for_profile(self._usage_profile, message)
 
         usage = self._parse_usage(response.get("usage", {}))
@@ -1782,10 +1949,12 @@ class OpenAICompatAdapter(BaseAdapter):
         prompt_tokens_override: int | None,
         tool_text: str = "",
     ) -> dict[str, int]:
+        # Bounded: this runs on the event loop at the end of the stream, and the
+        # prompt is the caller's size. Exact up to the inline bound, sampled past it.
         prompt_tokens = (
             int(prompt_tokens_override)
             if prompt_tokens_override is not None and prompt_tokens_override > 0
-            else int(estimate_prompt_tokens(messages))
+            else int(estimate_prompt_tokens_bounded(messages))
         )
         # The tool-text estimate intentionally skews low: it counts only the
         # function name + arguments text, not the per-call function-calling

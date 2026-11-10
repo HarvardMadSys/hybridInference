@@ -502,3 +502,149 @@ async def test_the_debug_header_dump_never_contains_a_credential(caplog):
     assert dump.headers["x-api-key"] == "***"
     assert dump.headers["x-long"] == "y" * 256 + "…"
     assert secret not in repr([r.__dict__ for r in caplog.records])
+
+
+# --- what a client chooses is cut and escaped ---------------------------------
+#
+# The line is written for every request, an anonymous 404 included, and the
+# client chooses its headers and path, up to the server's 16 KiB header limit:
+# the formatter's JSON escaping turned 15 KB of them into a 60-105 KB line.
+
+
+def _hostile_scope() -> dict:
+    high = "\xe9".encode("latin-1") * 4000
+    scope = _http_scope(
+        [
+            (b"host", b"h" * 2000),
+            (b"user-agent", high),
+            (b"referer", b"https://evil.test/" + high),
+            (b"origin", high),
+            (b"x-forwarded-for", b"203.0.113.1, " * 300),
+            (b"x-real-ip", high),
+            (b"x-session-id", b"s" * 3000),
+        ]
+    )
+    scope["path"] = "/v1/" + "a" * 3000
+    scope["raw_path"] = scope["path"].encode()
+    return scope
+
+
+async def _ok(scope, receive, send):
+    await send({"type": "http.response.start", "status": 404, "headers": []})
+    await send({"type": "http.response.body", "body": b"{}"})
+
+
+async def test_a_request_line_keeps_a_bounded_part_of_each_value(caplog):
+    from serving.servers.middleware.request_log import (
+        MAX_LOGGED_PATH_CHARS,
+        MAX_LOGGED_VALUE_CHARS,
+    )
+    from serving.utils.logging import JsonFormatter, PlainFormatter
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(_hostile_scope(), _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert len(record.path) == MAX_LOGGED_PATH_CHARS + 1
+    for field in ("host", "user_agent", "referer", "origin", "x_forwarded_for", "session_id"):
+        value = getattr(record, field)
+        assert len(value) == MAX_LOGGED_VALUE_CHARS + 1, field
+        assert value.endswith("…")
+    plain = PlainFormatter(fmt="%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+    # About 40 KB of headers and path; the line keeps a few KB of them.
+    assert len(plain.format(record)) < 16_000
+    assert len(JsonFormatter().format(record)) < 8_000
+
+
+async def test_control_characters_in_a_value_are_escaped(caplog):
+    scope = _http_scope(
+        [
+            (b"host", b"gateway.test"),
+            (b"user-agent", b"agent\r\nlevel=ERROR forged=1"),
+            (b"referer", "https://x.test/‮".encode()),
+        ]
+    )
+    scope["path"] = "/v1/x\x1b[31mred\u2028"
+
+    with caplog.at_level(logging.INFO, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(scope, _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert record.user_agent == "agent\\r\\nlevel=ERROR forged=1"
+    assert record.path == "/v1/x\\x1b[31mred\\u2028"
+    # The referer arrived as latin-1 text: its UTF-8 bytes include C1 controls.
+    assert "\\x80" in record.referer or "\\x8e" in record.referer
+    assert all(ch.isprintable() for ch in record.user_agent + record.path + record.referer)
+
+
+# --- addresses and credentials ------------------------------------------------
+#
+# A browser sends the full address of the page a request came from: the page
+# that resets a password carries its live token in the query, and it calls
+# /auth/accounts on load, so the token reached the INFO log through Referer.
+
+
+async def test_a_referer_is_logged_without_its_query(caplog):
+    token = "Zt9vQ2liveResetToken_from_email"
+    scope = _http_scope(
+        [
+            (b"host", b"gateway.test"),
+            (
+                b"referer",
+                f"https://user:pw@freeinference.org/reset-password?token={token}#x".encode(),
+            ),
+            (b"origin", b"https://freeinference.org/also?token=" + token.encode()),
+        ]
+    )
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(scope, _receive, _discard)
+
+    [record] = [r for r in caplog.records if r.getMessage() == "http_request"]
+    assert record.referer == "https://freeinference.org/reset-password"
+    assert record.origin == "https://freeinference.org/also"
+    [dump] = [r for r in caplog.records if r.getMessage() == "http_request_headers"]
+    assert dump.headers["referer"] == "https://freeinference.org/reset-password"
+    logged = repr([r.__dict__ for r in caplog.records])
+    assert token not in logged
+    assert "pw@" not in logged
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("https://freeinference.org", "https://freeinference.org"),
+        ("https://freeinference.org:8443/a/b?c=d", "https://freeinference.org:8443/a/b"),
+        ("null", "null"),
+        ("/relative/path?q=1#f", "/relative/path"),
+        ("http://[::1/broken?token=t", "http://[::1/broken"),
+    ],
+)
+def test_what_an_address_keeps(value, expected):
+    from serving.servers.middleware.request_log import loggable_url
+
+    assert loggable_url(value) == expected
+
+
+async def test_the_debug_header_dump_masks_every_credential_header(caplog):
+    secret = "sk-live-must-not-be-logged-0123456789"
+    names = [
+        b"cookie",
+        b"api-key",
+        b"x-on-behalf-of",
+        b"proxy-authorization",
+        b"x-goog-api-key",
+        b"x-custom-token",
+        b"x-client-secret",
+    ]
+    headers = [(b"host", b"gateway.test"), (b"accept", b"application/json")]
+    headers += [(name, secret.encode()) for name in names]
+
+    with caplog.at_level(logging.DEBUG, logger=_LOGGER_NAME):
+        await RequestLogMiddleware(_ok)(_http_scope(headers), _receive, _discard)
+
+    [dump] = [r for r in caplog.records if r.getMessage() == "http_request_headers"]
+    for name in names:
+        assert dump.headers[name.decode()] == "***", name
+    assert dump.headers["accept"] == "application/json"
+    assert secret not in repr([r.__dict__ for r in caplog.records])

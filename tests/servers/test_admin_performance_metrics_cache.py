@@ -333,16 +333,21 @@ async def test_breakdown_cache_is_keyed_by_filters(monkeypatch):
     """Different filters must never read each other's cached numbers."""
     db_logger = _db_logger()
     by_key = {
-        (7, None, None, None, None): _breakdown(7),
-        (30, None, None, None, None): _breakdown(30),
-        (7, "alice", None, None, None): _breakdown(7),
-        (7, None, "sess-1", None, None): _breakdown(7),
-        (7, None, None, "glm", None): _breakdown(7),
-        (7, None, None, None, "chat"): _breakdown(7),
+        (7, None, None, None, None, None, None): _breakdown(7),
+        (30, None, None, None, None, None, None): _breakdown(30),
+        (7, "alice", None, None, None, None, None): _breakdown(7),
+        (7, None, "sess-1", None, None, None, None): _breakdown(7),
+        (7, None, None, "glm", None, None, None): _breakdown(7),
+        (7, None, None, None, "chat", None, None): _breakdown(7),
+        (7, None, None, None, None, "interactive", None): _breakdown(7),
+        (7, None, None, None, None, "batch", None): _breakdown(7),
+        (7, None, None, None, None, "batch", "batch_1"): _breakdown(7),
     }
 
-    async def _load(_db_logger, *, days, user_id, session_id, model_id, request_type):
-        return by_key[(days, user_id, session_id, model_id, request_type)]
+    async def _load(
+        _db_logger, *, days, user_id, session_id, model_id, request_type, source, batch_id
+    ):
+        return by_key[(days, user_id, session_id, model_id, request_type, source, batch_id)]
 
     loader = AsyncMock(side_effect=_load)
     monkeypatch.setattr(metrics, "_load_request_perf_breakdown", loader)
@@ -352,18 +357,27 @@ async def test_breakdown_cache_is_keyed_by_filters(monkeypatch):
             db_logger, **{**{"days": 7, **_NO_FILTERS}, **kwargs}
         )
 
-    assert await _get() is by_key[(7, None, None, None, None)]
-    assert await _get(days=30) is by_key[(30, None, None, None, None)]
-    assert await _get(user_id="alice") is by_key[(7, "alice", None, None, None)]
-    assert await _get(session_id="sess-1") is by_key[(7, None, "sess-1", None, None)]
-    assert await _get(model_id="glm") is by_key[(7, None, None, "glm", None)]
-    assert await _get(request_type="chat") is by_key[(7, None, None, None, "chat")]
-    assert loader.await_count == 6
+    assert await _get() is by_key[(7, None, None, None, None, None, None)]
+    assert await _get(days=30) is by_key[(30, None, None, None, None, None, None)]
+    assert await _get(user_id="alice") is by_key[(7, "alice", None, None, None, None, None)]
+    assert await _get(session_id="sess-1") is by_key[(7, None, "sess-1", None, None, None, None)]
+    assert await _get(model_id="glm") is by_key[(7, None, None, "glm", None, None, None)]
+    assert await _get(request_type="chat") is by_key[(7, None, None, None, "chat", None, None)]
+    assert (
+        await _get(source="interactive") is by_key[(7, None, None, None, None, "interactive", None)]
+    )
+    assert await _get(source="batch") is by_key[(7, None, None, None, None, "batch", None)]
+    assert (
+        await _get(source="batch", batch_id="batch_1")
+        is by_key[(7, None, None, None, None, "batch", "batch_1")]
+    )
+    assert loader.await_count == 9
 
-    # Each of those six keys is now cached independently.
-    assert await _get(days=30) is by_key[(30, None, None, None, None)]
-    assert await _get() is by_key[(7, None, None, None, None)]
-    assert loader.await_count == 6
+    # Each of those nine keys is now cached independently.
+    assert await _get(days=30) is by_key[(30, None, None, None, None, None, None)]
+    assert await _get() is by_key[(7, None, None, None, None, None, None)]
+    assert await _get(source="batch") is by_key[(7, None, None, None, None, "batch", None)]
+    assert loader.await_count == 9
 
 
 @pytest.mark.asyncio

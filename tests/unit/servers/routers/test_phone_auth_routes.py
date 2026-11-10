@@ -23,7 +23,16 @@ from tests.fixtures import browser_sessions
 PHONE = "+8613800138000"
 
 
-def request(authorization=None, cookie=None):
+@pytest.fixture(autouse=True)
+def _no_send_wait(monkeypatch):
+    """A request that sends nothing waits like a send; here, not at all unless a test says."""
+    monkeypatch.setattr(routes, "_DEFAULT_SEND_SECONDS", 0)
+    monkeypatch.setattr(
+        routes, "_recent_send_seconds", type(routes._recent_send_seconds)(maxlen=32)
+    )
+
+
+def request(authorization=None, cookie=None, client="127.0.0.1"):
     headers = [(b"user-agent", b"phone-auth-test")]
     if authorization:
         headers.append((b"authorization", authorization.encode()))
@@ -36,7 +45,7 @@ def request(authorization=None, cookie=None):
             "scheme": "https",
             "path": "/auth/phone/code",
             "headers": headers,
-            "client": ("127.0.0.1", 1),
+            "client": (client, 1),
             "server": ("test", 443),
         }
     )
@@ -342,6 +351,52 @@ async def test_unknown_login_and_existing_signup_do_not_send(enabled, monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_code_quotas_count_an_ipv6_client_by_its_slash_64(enabled, monkeypatch):
+    """Counted by the raw address, rotating through a /64 escaped every quota."""
+    monkeypatch.setattr(routes, "run_in_threadpool", AsyncMock(return_value=True))
+    store = Store()
+    for host in ("2001:4860:1:2::5", "2001:4860:1:2:aaaa::7"):
+        await routes.send_phone_code(
+            request(client=host), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+        )
+        await routes.verify_phone_code(
+            request(client=host), PhoneVerifyRequest(phone=PHONE, code="123456"), "signup", store
+        )
+
+    sends = {call.kwargs["ip"] for call in store.reserve_phone_code.await_args_list}
+    checks = {call.kwargs["ip"] for call in store.consume_phone_code.await_args_list}
+    assert sends == checks == {"2001:4860:1:2::/64"}
+
+
+@pytest.mark.asyncio
+async def test_a_number_with_nothing_to_send_answers_no_sooner_than_a_send(enabled, monkeypatch):
+    """Answering at once when nothing was sent told registered numbers apart."""
+    clock = {"slept": None}
+
+    async def provider_call(*args):
+        return True
+
+    async def fake_sleep(seconds):
+        clock["slept"] = seconds
+
+    monkeypatch.setattr(routes, "run_in_threadpool", provider_call)
+    monkeypatch.setattr(routes.asyncio, "sleep", fake_sleep)
+    # A real send to a registered number is timed...
+    await routes.send_phone_code(
+        request(), PhoneCodeRequest(phone=PHONE, purpose="login"), Store(user())
+    )
+    assert len(routes._recent_send_seconds) == 1
+    assert clock["slept"] is None
+    routes._recent_send_seconds.clear()
+    routes._recent_send_seconds.append(0.42)
+
+    # ...and a login code for a number with no account waits as long.
+    await routes.send_phone_code(request(), PhoneCodeRequest(phone=PHONE, purpose="login"), Store())
+
+    assert clock["slept"] == 0.42
+
+
+@pytest.mark.asyncio
 async def test_bind_code_requires_authenticated_user(enabled):
     store = Store()
     with pytest.raises(HTTPException) as exc:
@@ -513,6 +568,8 @@ async def test_phone_only_unverified_identity_refused_even_when_email_gate_disab
     monkeypatch.setattr(get_settings(), "signup_require_email_verification", False)
     monkeypatch.setattr(routes.settings, "signup_require_email_verification", False)
     store = Store(user(phone_verified=False))
+    # A session the token names is live; only the identity check refuses it.
+    store.session_is_live = AsyncMock(return_value=True)
     token, _ = create_access_token(user_id="existing-user", email=None)
     with pytest.raises(HTTPException) as exc:
         await get_current_user("Bearer " + token, store)

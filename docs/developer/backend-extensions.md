@@ -127,7 +127,7 @@ uv run python distributions/example/fixtures/fake-openai-provider/server.py \
 ```
 
 Finally start the gateway with the opt-in
-[quota registry](../../config/examples/models.routewise.quota.yaml). Name the
+[quota registry](../../config/examples/models.routewise.quota.json). Name the
 demo token once so the admin call below can reuse it:
 
 ```bash
@@ -137,8 +137,8 @@ PYTHONPATH=.:apps/backend \
   PYTHON_DOTENV_DISABLED=1 \
   BACKEND_EXTENSIONS=distributions.example.quota_extension \
   EXAMPLE_QUOTA_BASE_URL=http://127.0.0.1:18353 \
-  MODELS_CONFIG_PATH=config/examples/models.routewise.quota.yaml \
-  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+  MODEL_CATALOG="$(cat config/examples/models.routewise.quota.json)" \
+  ROUTING_POLICY="$(cat config/examples/routing.minimal.json)" \
   DB_ENABLED=false USER_AUTH_ENABLED=false ADMIN_TOKEN="${DEMO_ADMIN_TOKEN}" \
   JWT_SECRET_KEY=local-quota-demo-signing-secret-not-for-production \
   uv run uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 18080

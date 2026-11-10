@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap, restart
+from .middleware.body_limit import RequestBodyLimitMiddleware
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
 from .middleware.exception_handler import install_exception_handlers
@@ -26,6 +27,7 @@ from .routers import (
     batch_console,
     batch_console_create,
     batches,
+    billing,
     compat,
     completions,
     embeddings,
@@ -36,6 +38,7 @@ from .routers import (
     internal_lookups,
     models,
     playground,
+    projects,
     public_stats,
     qdrant_proxy,
     rag,
@@ -113,6 +116,13 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Request body limit (REQUEST_MAX_BODY_MB): registered first, so it is the
+    # innermost middleware. Its 413 then passes out through CORS, which a
+    # browser needs to read it, and through the request-id and request-log
+    # middlewares like any other response. It never buffers a body or touches a
+    # response it did not write, so streams are unaffected.
+    app.add_middleware(RequestBodyLimitMiddleware)
+
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
     app.add_middleware(SettingsCORSMiddleware, **CORS_OPTIONS)
@@ -148,10 +158,12 @@ def create_app() -> FastAPI:
     app.include_router(site_updates.router)
     app.include_router(public_stats.router)
     app.include_router(compat.router)
+    app.include_router(billing.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
     app.include_router(setup.router)
     app.include_router(user_routes.router)
+    app.include_router(projects.router)
     app.include_router(internal.router)
     app.include_router(playground.router)
     app.include_router(identity.router)

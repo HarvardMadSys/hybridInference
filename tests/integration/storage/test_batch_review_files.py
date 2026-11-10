@@ -85,3 +85,26 @@ async def test_deleted_but_pinned_upload_still_consumes_storage_quota(stores, pi
     assert await files.upload_exists(first), "The first upload must remain physically pinned"
     with pytest.raises(BatchFileQuotaExceeded):
         await upload(files, owner, payload, cap)
+
+
+async def test_failed_uploads_count_against_the_hourly_limit(stores):
+    """An aborted upload leaves no row, yet it was an upload: the limit counts it (L24)."""
+    _batches, files = stores
+    owner = f"review-rate-{uuid.uuid4().hex}"
+
+    async def open_upload() -> str:
+        return await files.create_upload(
+            user_id=owner,
+            filename="fails.jsonl",
+            purpose="batch",
+            max_total_bytes=10_000,
+            max_uploads_per_hour=3,
+        )
+
+    for _ in range(3):
+        await files.abort_upload(await open_upload())
+
+    with pytest.raises(BatchFileQuotaExceeded) as refused:
+        await open_upload()
+    assert refused.value.kind == "uploads_per_hour"
+    assert (await files.usage(owner))["uploads_last_hour"] == 3

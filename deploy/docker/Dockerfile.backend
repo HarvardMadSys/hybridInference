@@ -1,9 +1,20 @@
 # syntax=docker/dockerfile:1.7
 
-# ---- Stage 1: build ----
-FROM python:3.12-slim AS builder
+# Both stages run one exact Python release, so a rebuild cannot change it under
+# the gateway: 3.12.16 is what `3.12-slim` named when this was pinned. Bump it
+# by hand, in both FROM lines. A registry can still move a tag; pinning its
+# digest too (`python:3.12.16-slim@sha256:...`, the index digest that
+# `docker buildx imagetools inspect python:3.12.16-slim` prints) closes that,
+# and Dependabot (.github/dependabot.yml) then keeps tag and digest current.
 
-RUN pip install uv
+# ---- Stage 1: build ----
+FROM python:3.12.16-slim AS builder
+
+# The installer is pinned like what it installs: the uv release CI uses,
+# accepted only as a wheel whose hash PyPI published (uv-requirements.txt).
+COPY deploy/docker/uv-requirements.txt /tmp/uv-requirements.txt
+RUN pip install --no-cache-dir --only-binary=:all: --require-hashes \
+        -r /tmp/uv-requirements.txt
 
 WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
@@ -12,7 +23,7 @@ COPY pyproject.toml uv.lock README.md ./
 RUN uv sync --frozen --no-dev --no-install-project
 
 # ---- Stage 2: runtime ----
-FROM python:3.12-slim
+FROM python:3.12.16-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends curl \
     && rm -rf /var/lib/apt/lists/*
@@ -27,7 +38,6 @@ ENV PATH="/app/.venv/bin:$PATH"
 COPY apps/backend/serving/ serving/
 COPY apps/backend/routing/ routing/
 COPY apps/backend/migrations/ migrations/
-COPY config/ config/
 
 # The schema migrations ship with the code that needs them. A deploy runs
 # `python -m migrations upgrade` with this image before it starts it; the label
@@ -35,8 +45,13 @@ COPY config/ config/
 # built its schema at startup.
 LABEL org.hybridinference.schema.migrations="alembic"
 
-# config/ will be overridden by a read-only volume mount at runtime,
-# but we copy a default so the image can run standalone for testing.
+# Still root, unlike the console. Compose bind-mounts host directories here
+# (the overlay checkout and var/data), whose owners and modes belong to the
+# host, not to this image: as another user the gateway would lose a file it
+# reads today -- a GeoIP database written by a root deploy
+# -- with nothing to say so until the feature using it failed. The Compose
+# service instead drops every capability that is not about file access, and
+# runs with no-new-privileges.
 
 EXPOSE 8080
 
@@ -50,6 +65,14 @@ HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=3 \
 # "socket peer". Forwarded headers are interpreted in exactly one place, behind
 # that flag. Consequence: request.url.scheme is always http here, so any
 # deployment that builds absolute URLs (auth emails) must set BASE_URL.
+#
+# --timeout-graceful-shutdown bounds the wait for open requests after SIGTERM.
+# uvicorn otherwise waits for every one, a stream outlasts any stop timeout,
+# and the SIGKILL that ends the wait came before the lifespan shutdown that
+# writes queued request-log rows and the costs the spend ledger still holds.
+# Open requests now get 5 s and are then cancelled, and the shutdown runs in
+# what is left of the Compose service's 30 s stop_grace_period, and of the
+# admin restart's 30 s watchdog (serving/servers/restart.py).
 CMD ["uvicorn", "serving.servers.app:app", \
      "--host", "0.0.0.0", "--port", "8080", "--no-server-header", \
-     "--no-proxy-headers"]
+     "--no-proxy-headers", "--timeout-graceful-shutdown", "5"]

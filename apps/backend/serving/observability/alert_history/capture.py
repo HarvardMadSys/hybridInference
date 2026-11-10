@@ -250,9 +250,6 @@ class BackendCapture:
         self._first_unattached: collections.OrderedDict[tuple[str, str], None] = (
             collections.OrderedDict()
         )
-        self.records_built = 0
-        self.records_refused = 0
-        self.evicted_episodes = 0
         #: Short hash of the alert rule configuration in force, if known.
         self.rule_version: str | None = None
 
@@ -390,11 +387,7 @@ class BackendCapture:
             record = finalize(
                 replace(record, message=None, limitations=(*limitations, "message_omitted:size"))
             )
-        self.records_built += 1
-        accepted = self._offer(record)
-        if not accepted:
-            self.records_refused += 1
-        return accepted
+        return self._offer(record)
 
     # -- episodes -----------------------------------------------------------
 
@@ -426,7 +419,6 @@ class BackendCapture:
         if len(self._open) >= MAX_OPEN_EPISODES:
             evicted_key = next(iter(self._open))
             self._open.pop(evicted_key)
-            self.evicted_episodes += 1
         self._open[key] = episode
         self._closed.pop(key, None)
         alert, redact = self._alert_fields(key)

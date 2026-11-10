@@ -1,10 +1,10 @@
 'use client';
 
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { ApiKeyListItem, ApiKeyUpdate } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
-import { useApiKeys, useModels, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
+import { useApiKeys, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { formatUsd } from '@/lib/utils/currency';
 import { fill } from '@/lib/utils/interpolate';
@@ -13,8 +13,9 @@ import { InputField } from '@/components/ui/InputField';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { limitsSummary, parseBudget } from './keyLimits';
+import { ModelPicker } from './ModelPicker';
 
-const CARD = 'rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200';
+const CARD = 'rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6';
 
 function budgetText(value: number | null | undefined): string {
   return value == null ? '' : String(value);
@@ -182,33 +183,19 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
   const t = useT();
   const toast = useAccountToast();
   const update = useUpdateApiKey();
-  const { data: models, isLoading: modelsLoading } = useModels();
   const { data: usage } = useUsageStats('today');
 
   const [daily, setDaily] = useState(budgetText(apiKey.budget_daily_usd));
   const [monthly, setMonthly] = useState(budgetText(apiKey.budget_monthly_usd));
-  const [restricted, setRestricted] = useState(apiKey.allowed_models != null);
-  const [selected, setSelected] = useState<Set<string>>(new Set(apiKey.allowed_models ?? []));
+  const [allowed, setAllowed] = useState<string[] | null>(apiKey.allowed_models ?? null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // A refetch after saving brings the stored values back; start from them.
   useEffect(() => {
     setDaily(budgetText(apiKey.budget_daily_usd));
     setMonthly(budgetText(apiKey.budget_monthly_usd));
-    setRestricted(apiKey.allowed_models != null);
-    setSelected(new Set(apiKey.allowed_models ?? []));
+    setAllowed(apiKey.allowed_models ?? null);
   }, [apiKey.budget_daily_usd, apiKey.budget_monthly_usd, apiKey.allowed_models]);
-
-  // Models the key allows but the catalog no longer lists stay visible, so a
-  // save does not drop them without the owner seeing it.
-  const choices = useMemo(() => {
-    const listed = (models?.data ?? []).map((model) => ({ id: model.id, name: model.name }));
-    const known = new Set(listed.map((model) => model.id));
-    const missing = (apiKey.allowed_models ?? [])
-      .filter((id) => !known.has(id))
-      .map((id) => ({ id, name: id, unavailable: true }));
-    return [...listed.map((model) => ({ ...model, unavailable: false })), ...missing];
-  }, [models, apiKey.allowed_models]);
 
   const dailyValue = parseBudget(daily);
   const monthlyValue = parseBudget(monthly);
@@ -216,8 +203,7 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
     'dashboard.key_detail.budget_invalid',
     'Enter an amount in USD, such as 5 or 12.50, or leave it blank.',
   );
-  const noModels = restricted && selected.size === 0;
-  const allowed = restricted ? [...selected].sort() : null;
+  const noModels = allowed !== null && allowed.length === 0;
 
   const changes: ApiKeyUpdate = {};
   if (dailyValue !== undefined && dailyValue !== (apiKey.budget_daily_usd ?? null)) {
@@ -227,8 +213,9 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
     changes.budget_monthly_usd = monthlyValue;
   }
   const before = apiKey.allowed_models == null ? null : [...apiKey.allowed_models].sort();
-  if (JSON.stringify(allowed) !== JSON.stringify(before)) {
-    changes.allowed_models = allowed;
+  const nextAllowed = allowed == null ? null : [...allowed].sort();
+  if (JSON.stringify(nextAllowed) !== JSON.stringify(before)) {
+    changes.allowed_models = nextAllowed;
   }
   const canSave =
     dailyValue !== undefined &&
@@ -246,15 +233,6 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
     } catch (err) {
       setSaveError(getErrorMessage(err));
     }
-  }
-
-  function toggle(id: string): void {
-    setSelected((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
   }
 
   const accountQuota = usage?.quota.daily_limit_usd;
@@ -310,75 +288,19 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
         />
       </div>
 
-      <fieldset>
-        <legend className="text-sm font-medium text-gray-700">
-          {t('dashboard.key_detail.models_title', 'Models')}
-        </legend>
-        <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:gap-6">
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="radio"
-              name="model-access"
-              checked={!restricted}
-              onChange={() => setRestricted(false)}
-            />
-            {t('dashboard.key_detail.all_models', 'All models')}
-          </label>
-          <label className="flex items-center gap-2 text-sm text-gray-700">
-            <input
-              type="radio"
-              name="model-access"
-              checked={restricted}
-              onChange={() => setRestricted(true)}
-            />
-            {t('dashboard.key_detail.some_models', 'Only the models selected below')}
-          </label>
-        </div>
-        {restricted && (
-          <div className="mt-3 max-h-72 overflow-y-auto rounded-lg ring-1 ring-gray-200">
-            {modelsLoading ? (
-              <p className="p-3 text-sm text-gray-500">{t('common.loading', 'Loading...')}</p>
-            ) : (
-              <ul className="divide-y divide-gray-100">
-                {choices.map((model) => (
-                  <li key={model.id}>
-                    <label className="flex items-center gap-3 px-3 py-2 text-sm hover:bg-gray-50">
-                      <input
-                        type="checkbox"
-                        checked={selected.has(model.id)}
-                        onChange={() => toggle(model.id)}
-                      />
-                      <span className="min-w-0 flex-1 truncate text-gray-900">{model.name}</span>
-                      <code className="truncate text-xs text-gray-500">{model.id}</code>
-                      {model.unavailable && (
-                        <span className="text-xs text-amber-700">
-                          {t('dashboard.key_detail.unavailable', 'no longer available')}
-                        </span>
-                      )}
-                    </label>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </div>
+      <ModelPicker
+        value={allowed}
+        onChange={setAllowed}
+        title={t('dashboard.key_detail.models_title', 'Models')}
+        emptyMessage={t(
+          'dashboard.key_detail.pick_a_model',
+          'Pick at least one model, or allow all models. To stop the key, revoke it or set a budget of 0.',
         )}
-        {noModels && (
-          <p className="mt-2 text-xs text-red-600">
-            {t(
-              'dashboard.key_detail.pick_a_model',
-              'Pick at least one model, or allow all models. To stop the key, revoke it or set a budget of 0.',
-            )}
-          </p>
+        hint={t(
+          'dashboard.key_detail.models_hint',
+          'Other models answer this key as if they did not exist, and its model list shows only these.',
         )}
-        {restricted && (
-          <p className="mt-2 text-xs text-gray-500">
-            {t(
-              'dashboard.key_detail.models_hint',
-              'Other models answer this key as if they did not exist, and its model list shows only these.',
-            )}
-          </p>
-        )}
-      </fieldset>
+      />
 
       {saveError && (
         <p role="alert" className="text-sm text-red-600">

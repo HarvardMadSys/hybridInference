@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import os
 import sys
-from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,20 +27,11 @@ from tests.fixtures.auth_helpers import (
     assert_test_db_from_pool,
     assert_test_db_name,
     build_auth_test_env_defaults,
-    login_and_get_auth_headers,
 )
 
 # ============================================================================
 # Session-level fixtures
 # ============================================================================
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 async def _skip_if_test_db_unavailable(context: str = "") -> None:
@@ -128,6 +118,14 @@ def _reset_login_rate_limit():
     from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
     reset_login_rate_limit_state()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_mail_rate_limit():
+    from serving.utils.mail_rate_limit import reset_mail_rate_limit_state
+
+    reset_mail_rate_limit_state()
     yield
 
 
@@ -455,45 +453,6 @@ async def require_db(auth_app):
             "The gateway started without an operational store (is the test database up?)"
         )
     return op_store
-
-
-@pytest_asyncio.fixture(name="auth_client_test_user")
-async def auth_client_test_user_fixture(auth_client):
-    """Create a test user for auth tests."""
-    user_data = {
-        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
-        "password": "TestPass123!",
-        "user_name": "Test User",
-        "accepted_tos": True,
-    }
-
-    response = await auth_client.post("/auth/signup", json=user_data)
-    assert response.status_code == 201
-
-    user_id = response.json()["user_id"]
-
-    return {
-        **user_data,
-        "user_id": user_id,
-        "id": user_id,  # Add 'id' field for compatibility with conftest_auth tests
-        "status": "active",  # Default status for new users
-        "email_verified": False,  # Email verification is disabled in tests by default
-    }
-
-
-@pytest_asyncio.fixture(name="auth_client_authenticated_user")
-async def auth_client_authenticated_user_fixture(auth_client, auth_client_test_user):
-    """Create and authenticate a test user."""
-    headers = await login_and_get_auth_headers(
-        auth_client,
-        email=auth_client_test_user["email"],
-        password=auth_client_test_user["password"],
-    )
-
-    return {
-        **auth_client_test_user,
-        "access_token": headers["Authorization"].removeprefix("Bearer "),
-    }
 
 
 # ============================================================================

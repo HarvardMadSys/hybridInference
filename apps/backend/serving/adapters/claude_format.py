@@ -489,7 +489,10 @@ class ToolCallAccumulator:
 
     def __init__(self) -> None:
         self._current_tool: dict[str, Any] | None = None
-        self._input_buffer: str = ""
+        # The current tool's argument fragments, joined once when it finishes:
+        # appending each to one string copied all of it per fragment, quadratic
+        # in the size of a call (an agent writing a file sends thousands).
+        self._input_pieces: list[str] = []
         self._current_index: int = 0
         self._completed: list[dict[str, Any]] = []
 
@@ -501,19 +504,22 @@ class ToolCallAccumulator:
             "type": "function",
             "function": {"name": tool_name, "arguments": ""},
         }
-        self._input_buffer = ""
+        self._input_pieces = []
 
     def accumulate_json(self, partial_json: str) -> None:
         """Append a partial JSON fragment to the current tool's arguments."""
-        self._input_buffer += partial_json
+        if not isinstance(partial_json, str):
+            # What appending it to the argument string raised, here, as before.
+            raise TypeError(f"partial_json is {type(partial_json).__name__}, not str")
+        self._input_pieces.append(partial_json)
 
     def finish_tool(self) -> None:
         """Finalize the current tool_use block and move to completed list."""
         if self._current_tool is not None:
-            self._current_tool["function"]["arguments"] = self._input_buffer
+            self._current_tool["function"]["arguments"] = "".join(self._input_pieces)
             self._completed.append(self._current_tool)
             self._current_tool = None
-            self._input_buffer = ""
+            self._input_pieces = []
             self._current_index += 1
 
     @property
@@ -528,7 +534,7 @@ class ToolCallAccumulator:
     def reset(self) -> None:
         """Clear all accumulated state."""
         self._current_tool = None
-        self._input_buffer = ""
+        self._input_pieces = []
         self._current_index = 0
         self._completed = []
 

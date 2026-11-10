@@ -2,7 +2,10 @@
 
 import asyncio
 import logging
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
+
+import aiohttp
 
 from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
@@ -10,6 +13,7 @@ from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.config import RouteWiseConfig
 from routing.routewise.router import RouteWiseRouter
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
+from serving.exceptions import UpstreamRequestTimedOut
 
 
 async def test_registry_circuit_lifecycle(monkeypatch):
@@ -193,6 +197,61 @@ async def test_key_pool_exhaustion_does_not_mask_a_real_outage(monkeypatch):
 
     assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
     assert registry.allow_request(endpoint_id) is False
+
+
+# ``ClientResponseError.__str__`` reads ``request_info.real_url``.
+_REQUEST_INFO = SimpleNamespace(real_url="http://upstream/v1/chat/completions")
+
+
+async def test_a_proxy_upstream_timeout_does_not_trip_the_breaker(monkeypatch, caplog):
+    # The on-demand proxy answers 504 ``upstream_timeout`` when one request
+    # outruns its per-request timeout while the backend keeps serving the rest.
+    # Counting those let one caller's long generations open the circuit for
+    # every caller of the model.
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.6")
+    endpoint_id = "llama-3.1-8b:local-8010"
+    registry = EndpointHealthRegistry()
+    registry.ensure(endpoint_id)
+
+    with caplog.at_level(logging.INFO, logger="routing.routers"):
+        for _ in range(3):
+            registry.record_failure(
+                endpoint_id,
+                reason="chat_exception",
+                exc=UpstreamRequestTimedOut(
+                    request_info=_REQUEST_INFO, history=(), status=504, message="timeout"
+                ),
+            )
+
+    snapshot = registry.snapshot()[endpoint_id]
+    assert snapshot["circuit_state"] == _CircuitState.CLOSED
+    assert snapshot["availability"] == 1.0
+    assert registry.allow_request(endpoint_id) is True
+    assert [r for r in caplog.records if r.getMessage() == "upstream_timeout_skip_breaker"]
+
+
+async def test_any_other_504_still_trips_the_breaker(monkeypatch):
+    monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "30")
+    monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
+    endpoint_id = "llama-3.1-8b:local-8010"
+    registry = EndpointHealthRegistry()
+    registry.ensure(endpoint_id)
+
+    with patch("serving.observability.alerts.alert_slack", new=AsyncMock()):
+        for _ in range(2):
+            registry.record_failure(
+                endpoint_id,
+                reason="chat_exception",
+                exc=aiohttp.ClientResponseError(
+                    request_info=_REQUEST_INFO, history=(), status=504, message="timeout"
+                ),
+            )
+        await asyncio.sleep(0)
+
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
 
 
 async def test_role_restricted_exhaustion_keeps_its_own_skip_event(monkeypatch, caplog):

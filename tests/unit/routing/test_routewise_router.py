@@ -1363,32 +1363,39 @@ class TestRouteWiseLayer2:
         now = time.time()
         assert profile.sample_count(now) == 1
 
-    def test_record_observation_uses_total_latency_when_ttft_missing(self):
-        """Non-streaming successes still feed the latency profile."""
+    def test_record_observation_never_reads_total_latency_as_ttft(self):
+        """A non-streaming success is an untimed success, not a TTFT sample.
+
+        Its wall time is mostly the generation the caller asked for, so reading
+        it as a TTFT let a few long requests move the LP away from an endpoint.
+        """
         config = RouteWiseConfig()
         router, _api_a, _api_b = _make_router_with_two_api(config)
+        profile = router._latency_profiles["test-model:api-a"]
+        now = time.time()
+        profile.record(now, 400.0)
 
         obs = RoutingObservation(
             model_id="test-model",
             endpoint_id="test-model:api-a",
             ttft_ms=None,
-            total_latency_ms=500.0,
-            token_count=600,
+            total_latency_ms=30_000.0,
+            token_count=4100,
             prompt_tokens=100,
-            completion_tokens=500,
+            completion_tokens=4000,
             success=True,
             outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
 
-        profile = router._latency_profiles["test-model:api-a"]
         now = time.time()
         assert profile.sample_count(now) == 1
+        assert profile.untimed_success_count(now) == 1
         assert profile.mean_with_errors_sec(
             now,
             error_penalty_ms=60_000.0,
-        ) == pytest.approx(0.5)
+        ) == pytest.approx(0.4)
 
     def test_single_api_uses_lp_single_provider_solution(self):
         """Single S_A provider returns a degenerate single-provider LP solution."""
