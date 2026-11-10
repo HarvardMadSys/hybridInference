@@ -129,12 +129,13 @@ def _effort_route(
     reasoning_efforts: list[str] | None = None,
 ):
     adapter = SimpleNamespace(
+        forwards_reasoning_effort=True,
         config=SimpleNamespace(
             id=canonical,
             model_type="chat",
             supported_params=supported_params or ["max_tokens"],
             reasoning_efforts=reasoning_efforts or [],
-        )
+        ),
     )
     return SimpleNamespace(
         published=True, required_role=None, admin_only=False, adapters=[(adapter, 1.0)]
@@ -167,3 +168,24 @@ async def test_reasoning_effort_domains_are_reported_per_model():
 async def test_reasoning_effort_domains_ignore_unknown_models():
     """A caller's stale model list must not raise, just describe nothing."""
     assert agent_model_reasoning_efforts(_exec({}), ["gone"]) == {}
+
+
+async def test_agent_effort_domain_intersects_all_eligible_routes():
+    def mapped(model, mapping):
+        route = _effort_route(model)
+        route.adapters[0][0].config.reasoning_effort_map = mapping
+        return route
+
+    shared = mapped("shared", {"low": "high", "high": "xhigh", "max": "max"})
+    shared.adapters.extend(mapped("shared", {"max": "max", "high": "high"}).adapters)
+    blocked = mapped("blocked", {"high": "xhigh"})
+    blocked.adapters.extend(_effort_route("blocked").adapters)
+    unknown = mapped("unknown", {"high": "xhigh"})
+    native = _effort_route("unknown")
+    native.adapters[0][0].forwards_reasoning_effort = False
+    unknown.adapters.extend(native.adapters)
+
+    routes = {"shared": shared, "blocked": blocked, "unknown": unknown}
+    router_exec = _exec(routes)
+    visible = await agent_visible_models(router_exec, user_ctx={"role": "free"})
+    assert agent_model_reasoning_efforts(router_exec, visible) == {"shared": ["high", "max"]}

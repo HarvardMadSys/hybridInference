@@ -2,10 +2,9 @@
 
 The model listings (``servers/routers/models.py``) publish this so a client can
 offer the levels a request would carry to the model, and nothing else. It is
-read only from the registry's own configuration -- ``supported_params`` and the
-``reasoning_efforts`` domain an operator declared -- and from which adapter
-class serves the route. Nothing is inferred from a model's name and no default
-domain is assumed.
+read from the effective effort contract and from which adapter class serves
+the route. An exact upstream preset can supply that contract. Nothing is
+inferred from a model's name.
 
 **Per adapter.** Only :class:`OpenAICompatAdapter` (and its subclasses)
 forwards ``reasoning_effort`` to the provider, and only when the parameter is
@@ -22,13 +21,13 @@ reaches it the same way: ``/v1/chat/completions`` passes the field through,
   route that forwards the parameter and declares a well-formed
   ``reasoning_efforts`` list: exactly those values;
 - **known, with none** -- an adapter that forwards the parameter but whose
-  route leaves it out of ``supported_params``: the field is dropped on every
-  surface, so no value is delivered;
+  route explicitly leaves it out of ``supported_params``: the field is dropped
+  on every surface, so no value is delivered;
 - **unknown** -- an adapter class that does not forward the parameter itself
   (native Anthropic, Vertex Claude, Gemini), so the configuration does not say
   what reaches the provider; or a route that takes the parameter with no
   domain declared (the documented "not offered", where the chat surface would
-  still pass a value through), or a malformed domain.
+  still pass a value through), an undeclared route, or a malformed domain.
 
 **Per model.** A model is listed once, by its canonical id, with the routes of
 the entry the listing shows; any of them may serve a request. A value is
@@ -43,7 +42,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from serving.adapters.reasoning_effort import EFFORT_PARAM, effort_contract
+from serving.adapters.reasoning_effort import (
+    EFFORT_PARAM,
+    effort_contract,
+    legacy_effort_contract,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -70,13 +73,14 @@ def _well_formed(levels: tuple[str, ...]) -> list[str] | None:
     return domain
 
 
-def adapter_effort_domain(adapter: Any) -> list[str] | None:
-    """The values ``adapter``'s route delivers: a list (maybe empty), or ``None`` for unknown."""
+def adapter_effort_domain(adapter: Any, *, legacy: bool = False) -> list[str] | None:
+    """The route's public domain, or its legacy domain when previewing catalog defaults."""
     if not getattr(adapter, "forwards_reasoning_effort", False):
         return None
-    contract = effort_contract(getattr(adapter, "config", None))
+    config = getattr(adapter, "config", None)
+    contract = legacy_effort_contract(config) if legacy else effort_contract(config)
     if not contract.forwards:
-        return []
+        return [] if getattr(adapter.config, "reasoning_effort_declared", True) else None
     if contract.levels is None:
         return None
     return _well_formed(contract.levels)

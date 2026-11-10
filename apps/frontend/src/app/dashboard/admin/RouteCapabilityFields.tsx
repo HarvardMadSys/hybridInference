@@ -237,7 +237,7 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
     media.length ? listWords(['text', ...media]) : 'text only',
     capabilities.supports_tools ? 'tools' : 'no tools',
     ...(capabilities.reasoning_effort_map && Object.keys(capabilities.reasoning_effort_map).length
-      ? [`effort ${describeEffortMap(capabilities.reasoning_effort_map)}`]
+      ? [`effort ${Object.keys(capabilities.reasoning_effort_map).join(', ')}`]
       : []),
   ].join(' · ');
 }
@@ -296,6 +296,9 @@ export type RouteEffortContext = {
   published?: string[] | null;
   /** The map the route has without a console value, kept when no rows are set. */
   defaultMap?: EffortMap | null;
+  presetLabel?: string | null;
+  source?: ProviderRoute['reasoning_effort_source'];
+  onRestore?: () => void;
 };
 
 function ReasoningEffortFields({
@@ -321,77 +324,117 @@ function ReasoningEffortFields({
           Reasoning effort levels
         </p>
         <p className="mt-1 text-[11px] leading-5 text-gray-500">
-          This route&apos;s adapter does not send reasoning_effort, so no mapping applies to it.
+          Effort capability has not been declared for this route. Its adapter has no
+          reasoning_effort mapping.
         </p>
       </div>
     );
   }
   const update = (index: number, change: Partial<EffortRow>) =>
     onChange(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
-  const keeps =
-    context?.defaultMap && Object.keys(context.defaultMap).length
-      ? `keeps its default mapping (${describeEffortMap(context.defaultMap)})`
-      : 'handles reasoning_effort as it did before, with no mapping';
+  const customMap = readEffortRows(rows).map;
+  const defaultMap = context?.defaultMap;
+  const levels = customMap
+    ? Object.keys(customMap)
+    : defaultMap
+      ? Object.keys(defaultMap)
+      : context?.published;
+  const source = customMap
+    ? context?.source === 'configured'
+      ? 'Route configuration'
+      : 'Custom mapping'
+    : context?.presetLabel
+      ? `Preset · ${context.presetLabel}`
+      : defaultMap || context?.source === 'configured'
+        ? 'Route configuration'
+        : null;
   return (
     <div className="mt-4" role="group" aria-labelledby={labelId}>
       <p id={labelId} className="text-[12px] font-medium text-gray-500">
         Reasoning effort levels
       </p>
-      <p className="mt-1 text-[11px] leading-5 text-gray-500">
-        One row per level clients may choose: the public level they send (and are offered), and the
-        value this route&apos;s upstream receives as reasoning_effort. With rows, only these levels
-        are accepted here and any other is refused. Without rows, the route {keeps}.
+      <p className="mt-1 text-[12px] leading-5 text-gray-700">
+        {levels == null
+          ? 'Effort capability has not been declared for this route.'
+          : levels.length
+            ? `Client choices on this route: ${levels.join(', ')}`
+            : 'This route offers no effort choices. The model keeps its usual thinking behavior.'}
       </p>
-      {rows.map((row, index) => (
-        <div key={index} className="mt-2 flex items-center gap-2">
-          <input
-            aria-label={`Public level ${index + 1}`}
-            placeholder="Public level, e.g. high"
-            value={row.publicLevel}
-            onChange={(event) => update(index, { publicLevel: event.target.value })}
-            disabled={disabled}
-            className={`${FIELD_CLASS} mt-0`}
-          />
-          <span aria-hidden className="text-gray-400">
-            →
-          </span>
-          <input
-            aria-label={`Upstream value ${index + 1}`}
-            placeholder="Sent upstream as"
-            value={row.upstreamLevel}
-            onChange={(event) => update(index, { upstreamLevel: event.target.value })}
-            disabled={disabled}
-            className={`${FIELD_CLASS} mt-0`}
-          />
+      {source && <p className="mt-1 text-[11px] text-gray-500">{source}</p>}
+      <details className="mt-2 rounded-lg border border-gray-200 px-3 py-2">
+        <summary className="cursor-pointer text-[12px] font-medium text-gray-700">
+          Advanced mapping
+        </summary>
+        <p className="mt-2 text-[11px] leading-5 text-gray-500">
+          Map each public choice to the value sent upstream as reasoning_effort. A custom mapping
+          replaces the default and limits the route to the public levels listed here.
+        </p>
+        {rows.length === 0 && defaultMap && (
+          <div className="mt-2 flex flex-wrap items-center gap-2">
+            <span className="text-[12px] text-gray-700">{describeEffortMap(defaultMap)}</span>
+            <button
+              type="button"
+              onClick={() => onChange(effortRowsFrom(defaultMap))}
+              disabled={disabled}
+              className="rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] text-gray-700 hover:bg-gray-50"
+            >
+              Customize mapping
+            </button>
+          </div>
+        )}
+        {rows.map((row, index) => (
+          <div key={index} className="mt-2 flex items-center gap-2">
+            <input
+              aria-label={`Public level ${index + 1}`}
+              placeholder="Public level, e.g. high"
+              value={row.publicLevel}
+              onChange={(event) => update(index, { publicLevel: event.target.value })}
+              disabled={disabled}
+              className={`${FIELD_CLASS} mt-0`}
+            />
+            <span aria-hidden className="text-gray-400">
+              →
+            </span>
+            <input
+              aria-label={`Upstream value ${index + 1}`}
+              placeholder="Sent upstream as"
+              value={row.upstreamLevel}
+              onChange={(event) => update(index, { upstreamLevel: event.target.value })}
+              disabled={disabled}
+              className={`${FIELD_CLASS} mt-0`}
+            />
+            <button
+              type="button"
+              onClick={() => onChange(rows.filter((_row, at) => at !== index))}
+              disabled={disabled}
+              className="shrink-0 rounded-lg border border-gray-200 px-2 py-2 text-[12px] text-gray-600 hover:bg-gray-50"
+            >
+              Remove
+            </button>
+          </div>
+        ))}
+        {(rows.length > 0 || !defaultMap) && (
           <button
             type="button"
-            onClick={() => onChange(rows.filter((_row, at) => at !== index))}
+            onClick={() => onChange([...rows, { publicLevel: '', upstreamLevel: '' }])}
             disabled={disabled}
-            className="shrink-0 rounded-lg border border-gray-200 px-2 py-2 text-[12px] text-gray-600 hover:bg-gray-50"
+            className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] text-gray-700 hover:bg-gray-50"
           >
-            Remove
+            Add level
           </button>
-        </div>
-      ))}
-      <button
-        type="button"
-        onClick={() => onChange([...rows, { publicLevel: '', upstreamLevel: '' }])}
-        disabled={disabled}
-        className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] text-gray-700 hover:bg-gray-50"
-      >
-        Add level
-      </button>
-      {error && <p className="mt-1 text-[11px] leading-5 text-red-600">{error}</p>}
-      {context && context.published !== undefined && (
-        <p className="mt-1 text-[11px] leading-5 text-gray-500">
-          Offered to clients now:{' '}
-          {context.published === null
-            ? 'not declared (clients are offered no levels)'
-            : context.published.length
-              ? context.published.join(', ')
-              : 'none'}
-        </p>
-      )}
+        )}
+        {error && <p className="mt-1 text-[11px] leading-5 text-red-600">{error}</p>}
+        {context?.onRestore && (
+          <button
+            type="button"
+            onClick={context.onRestore}
+            disabled={disabled}
+            className="ml-2 mt-2 rounded px-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100"
+          >
+            Use default effort settings
+          </button>
+        )}
+      </details>
     </div>
   );
 }

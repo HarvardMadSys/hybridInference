@@ -1612,8 +1612,12 @@ msgid "an `openai_compat` route (OpenRouter included) with `reasoning_effort` in
 msgstr "`supported_params` 含 `reasoning_effort` 的 `openai_compat` 路由（包括 OpenRouter）送达它的 `reasoning_efforts`；"
 
 #: ../developer/adding-models.md:112
-msgid "a route without `reasoning_effort` in `supported_params` delivers none, and the model is published with an empty list (`supported: false`);"
-msgstr "`supported_params` 不含 `reasoning_effort` 的路由不送达任何取值，模型以空列表公布（`supported: false`）；"
+msgid "a matching verified preset provides the public levels and their upstream translations when the route lacks an explicit map or legacy effort settings;"
+msgstr "路由缺少显式映射或旧版强度设置时，匹配的已验证预设会提供公开档位及其上游映射；"
+
+#: ../developer/adding-models.md:114
+msgid "a route that declares `supported_params` without `reasoning_effort` and has no matching preset delivers no effort choices, and the model is published with an empty list (`supported: false`);"
+msgstr "如果路由声明的 `supported_params` 不包含 `reasoning_effort`，且没有匹配的预设，模型会以空档位列表发布（`supported: false`）；"
 
 #: ../developer/adding-models.md:114
 msgid "for anything else nothing is published (`reasoning: null`, no `capabilities`): a route whose adapter does not forward the parameter itself (`anthropic`, `claude`, `gemini`), `reasoning_effort` without a declared domain, or a domain that is not a list of distinct level names."
@@ -1658,6 +1662,14 @@ msgstr "未指定档位的请求不发送任何档位，因此由服务器自己
 #: ../developer/adding-models.md:166
 msgid "The map is a fact about one server, so it is declared on the route and rejected on the model (including a shorthand model without a route list), and only a route whose adapter sends `reasoning_effort` (an OpenAI-compatible kind) may carry one: on `anthropic`, `claude` or `gemini` it is a configuration error. Each key and value is one short word of letters, digits, `_`, `.` or `-`. Routes without a map behave as they always did. An admin can set or replace a route's map from the console; see [Route capabilities](configuration.md#routing-tab)."
 msgstr "映射是关于某一台服务器的事实，因此在路由上声明，在模型上声明会被拒绝（包括没有路由列表的简写模型）；并且只有适配器会发送 `reasoning_effort` 的路由（OpenAI 兼容类）才能携带映射：在 `anthropic`、`claude` 或 `gemini` 上它是配置错误。每个键和值都是由字母、数字、`_`、`.` 或 `-` 组成的一个短词。没有映射的路由行为不变。管理员可以在控制台设置或替换路由的映射；参见[路由能力](configuration.md#routing-tab)。"
+
+#: ../developer/adding-models.md:178
+msgid "Deployment presets"
+msgstr "部署预设"
+
+#: ../developer/adding-models.md:180
+msgid "A trusted backend extension can call `register_reasoning_effort_preset` from `serving.config.reasoning_effort_presets` in its `register()` hook. Register the upstream provider, adapter kind, exact upstream model ID and base URL that were verified together, with a short display label and a `reasoning_effort_map`. The upstream provider follows the route target, independent of its analytics label. For an OpenRouter pin, use provider `openrouter` and adapter kind `openrouter[<pin>]`. A different endpoint, model or protocol requires its own verification. Explicit admin overrides and route maps retain precedence. Legacy effort declarations keep precedence on their original upstream. A preset with an identity map still supplies a public domain and enables forwarding."
+msgstr "受信任的后端扩展可在 `register()` 钩子中调用 `serving.config.reasoning_effort_presets` 的 `register_reasoning_effort_preset`。注册经过整体验证的上游供应商、适配器类型、确切的上游模型 ID 和基础 URL，同时填写简短的显示名称和 `reasoning_effort_map`。上游供应商取自路由目标，与统计标签独立。OpenRouter 固定上游时，供应商填写 `openrouter`，适配器类型填写 `openrouter[<pin>]`。不同的端点、模型或协议需要单独验证。管理员显式覆盖和路由映射仍然优先。旧版强度声明在原上游仍然优先。档位原样映射的预设同样会声明公开档位并启用转发。"
 
 #: ../developer/adding-models.md
 msgid "`include_usage_in_stream`"

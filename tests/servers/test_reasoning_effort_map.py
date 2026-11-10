@@ -501,3 +501,70 @@ async def test_a_map_changed_mid_request_does_not_split_the_request(gateway, mon
     path, body = _request("chat", "mapped", "low", stream=False)
     assert (await gateway.post(path, body)).status_code == 400
     assert len(gateway.primary.bodies) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("surface", SURFACES)
+async def test_presets_publish_one_public_domain_and_translate_for_each_upstream(
+    gateway, monkeypatch, surface
+):
+    from serving.config import reasoning_effort_presets as presets
+
+    monkeypatch.setattr(presets, "_PRESETS", {})
+    for kind, upstream, mapping in (
+        ("vllm", gateway.primary, EFFORT_MAP),
+        ("openai_compat", gateway.healthy, {level: level for level in EFFORT_MAP}),
+    ):
+        presets.register_reasoning_effort_preset(
+            provider=kind,
+            adapter_kind=kind,
+            provider_model_id="verified-model",
+            base_url=upstream.url,
+            label=f"Verified {kind}",
+            effort_map=mapping,
+        )
+    register_from_models_text(
+        gateway.router,
+        f"""
+models:
+  - id: preset-model
+    provider_model_id: verified-model
+    route:
+      - kind: vllm
+        base_url: {gateway.primary.url}
+      - kind: openai_compat
+        base_url: {gateway.healthy.url}
+  - id: preset-identity
+    provider_model_id: verified-model
+    route:
+      - kind: openai_compat
+        base_url: {gateway.healthy.url}
+  - id: unmatched-target
+    provider_model_id: verified-model
+    route:
+      - kind: vllm
+        base_url: {gateway.legacy.url}
+  - id: mixed-with-unknown
+    provider_model_id: verified-model
+    route:
+      - kind: vllm
+        base_url: {gateway.primary.url}
+      - kind: openai_compat
+        base_url: {gateway.legacy.url}
+""",
+    )
+    openai = {row["id"]: row for row in (await gateway.get("/v1/models")).json()["data"]}
+    assert openai["preset-model"]["reasoning"] == {"supported_efforts": ["low", "high", "max"]}
+    assert openai["unmatched-target"]["reasoning"] is None
+    assert openai["mixed-with-unknown"]["reasoning"] is None
+
+    for draw in (0.0, 0.99):
+        # Messages uses its primary adapter; Chat and Responses select from
+        # the mixed route. Verify both wire values on each surface.
+        model_id = "preset-identity" if surface == "messages" and draw else "preset-model"
+        path, body = _request(surface, model_id, "high", stream=False)
+        monkeypatch.setattr("routing.routers.random.random", lambda draw=draw: draw)
+        result = await gateway.post(path, body)
+        assert result.status_code == 200, result.text
+    assert gateway.primary.efforts() == ["xhigh"]
+    assert gateway.healthy.efforts() == ["high"]
