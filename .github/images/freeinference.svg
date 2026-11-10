@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="232" height="92" viewBox="0 0 232 92">
+  <rect x="0.5" y="3.5" width="231" height="85" rx="12" fill="#fffafb" stroke="#e7d9dd"/>
+  <!-- Monogram from https://realtmxi.github.io/images/logos/freeinference-logo.svg -->
+  <svg x="25" y="13" width="47" height="47" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title desc">
+    <title id="title">FreeInference logo</title>
+    <desc id="desc">Crimson FreeInference monogram with connected nodes.</desc>
+    <defs>
+      <linearGradient id="freeinference-bg" x1="18" y1="16" x2="112" y2="116" gradientUnits="userSpaceOnUse">
+        <stop offset="0" stop-color="#a51c30"/>
+        <stop offset="1" stop-color="#d64b5f"/>
+      </linearGradient>
+      <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+        <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#6f1220" flood-opacity="0.25"/>
+      </filter>
+    </defs>
+    <rect x="12" y="12" width="104" height="104" rx="24" fill="url(#freeinference-bg)" filter="url(#shadow)"/>
+    <path d="M38 40h36v11H51v14h20v11H51v27H38V40Z" fill="#ffffff"/>
+    <path d="M80 40h13v63H80V40Z" fill="#ffffff" opacity="0.92"/>
+    <circle cx="91" cy="33" r="6" fill="#ffffff"/>
+    <circle cx="101" cy="85" r="5" fill="#ffffff" opacity="0.84"/>
+    <circle cx="72" cy="103" r="4" fill="#ffffff" opacity="0.7"/>
+    <path d="M91 33l10 52-29 18" fill="none" stroke="#ffffff" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.38"/>
+  </svg>
+  <text x="78" y="43" fill="#1f2328"
+        font-family="Arial, sans-serif" font-size="16" font-weight="700">FreeInference</text>
+  <text x="116" y="73" text-anchor="middle" fill="#842d41"
+        font-family="Georgia, 'Times New Roman', serif" font-size="13" font-weight="600"
+        letter-spacing="0.25">Harvard SEAS</text>
+  <path d="M208 25l8-8m-6 0h6v6" fill="none" stroke="#697382"
+        stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

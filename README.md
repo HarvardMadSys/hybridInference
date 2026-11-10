@@ -2,8 +2,7 @@
 
 HybridInference is an open-source, self-hosted LLM gateway for serving local
 models and external model APIs to a team. It is developed by the
-[Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS and powers
-[FreeInference](https://freeinference.org/).
+[Harvard MadSys Lab](https://juncheng.seas.harvard.edu/) at Harvard SEAS.
 
 <p align="center">
 <a href="https://doc.hybridinference.org/"><b>Documentation</b></a> |
@@ -139,11 +138,6 @@ development discussion happens in the
 [Slack workspace](https://join.slack.com/t/hybridinference/shared_invite/zt-4a6csrbu8-JgrTHo_CgcK6G0FnejGwfw).
 Security reports have their own channel — see [SECURITY.md](SECURITY.md).
 
-**See one in production:** [FreeInference](https://freeinference.org/) is a
-public HybridInference gateway run at Harvard SEAS; its
-[user documentation](https://doc.freeinference.org/) is a worked example of
-what a deployment publishes.
-
 ## RouteWise
 
 **RouteWise** is the router that decides which provider serves each request:
@@ -272,6 +266,16 @@ reselling, sharing or otherwise redistributing the capacity they grant. The
 gateway will let you configure such a route; that is not the same as being
 permitted to. If a plan is licensed to you personally, route it only for your
 own personal, non-commercial or research use.
+
+## Trusted by Industry and Research
+
+HybridInference serves production inference services across AI labs, enterprises, and universities.
+
+<p>
+  <a href="https://freeinference.org/"><img src=".github/images/freeinference.svg" width="232" height="92" alt="FreeInference at Harvard SEAS" /></a>
+  &nbsp;
+  <a href="https://freeinference.qq.com/"><img src=".github/images/tencent-freeinference.svg" width="232" height="92" alt="Tencent FreeInference (腾讯公益推理平台)" /></a>
+</p>
 
 ## License
 
