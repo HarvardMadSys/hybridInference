@@ -908,6 +908,22 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=0,
     ),
     ConfigEntry(
+        "ROUTING_PREFILL_LOCALITY_ENABLED",
+        "routing",
+        "Prefer the endpoint already holding this conversation's prefix.",
+        type="bool",
+        default="1",
+        flag=True,
+    ),
+    ConfigEntry(
+        "ROUTING_PREFILL_LOCALITY_MAX_AGE_SEC",
+        "routing",
+        "Longest a conversation stays on one endpoint under prefix locality. 0 removes the cap.",
+        type="int",
+        default="86400",
+        minimum=0,
+    ),
+    ConfigEntry(
         "ROUTING_PREFILL_AWARE_ENABLED",
         "routing",
         "Steer requests away from endpoints busy with large prompt prefills.",
