@@ -1002,3 +1002,30 @@ class TestClaudeAdapterEdgeCases:
                 delta = data.get("choices", [{}])[0].get("delta", {})
                 text_content += delta.get("content", "")
         assert "OK" in text_content
+
+
+@pytest.mark.asyncio
+async def test_an_error_event_mid_stream_fails_the_vertex_stream():
+    """An ``error`` event ended the stream as though complete, with ``finish_reason: "stop"``."""
+    from serving.adapters.openai_compat import UpstreamStreamError
+
+    adapter = _make_vertex_adapter()
+    events = [
+        *_vertex_stream_events(text="Partial")[:3],
+        json.dumps({"type": "error", "error": {"type": "overloaded_error", "message": "Busy"}}),
+    ]
+
+    async def mock_stream(*args, **kwargs):
+        for line in events:
+            yield line
+
+    adapter.http.stream_post = mock_stream
+    chunks = []
+
+    with pytest.raises(UpstreamStreamError, match="Busy") as raised:
+        async for chunk in adapter.stream_chat_completion([{"role": "user", "content": "Hi"}]):
+            chunks.append(chunk)
+
+    assert raised.value.status == 529
+    assert "Partial" in "".join(chunks)
+    assert all("[DONE]" not in chunk for chunk in chunks)

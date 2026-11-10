@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import TypeAdapter, ValidationError
 
 from serving.request_limits import responses_limit_problem
 from serving.responses_translator import (
@@ -90,6 +91,25 @@ def _schedule(coro: Any) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+#: How the chat request schema reads ``stream`` (``ChatCompletionRequest.stream``).
+_STREAM_FLAG: TypeAdapter[bool | None] = TypeAdapter(bool | None)
+
+
+def _requests_stream(value: Any) -> bool:
+    """Read ``stream`` as the chat request this one is translated to reads it.
+
+    ``bool("false")`` is true, while the chat schema reads ``"false"`` (or
+    ``"0"``, ``"no"``, ``"off"``) as false and answers unstreamed: the route
+    then streamed an empty response, discarding the answer it was billed for,
+    and stored an empty turn. A value the schema refuses it refuses itself,
+    with a 422, before this is used.
+    """
+    try:
+        return bool(_STREAM_FLAG.validate_python(value))
+    except ValidationError:
+        return False
 
 
 #: Dropped from what the chat execution sees. The Responses surface never
@@ -293,9 +313,11 @@ async def execute_responses(
     input_messages = responses_input_to_messages(body.get("input"))
     params, dropped_tools = responses_request_to_chat_params(body)
     if dropped_tools:
+        # Each as text: a ``type`` may be any JSON value, and a list (unhashable)
+        # or a mix of types (unorderable) made this warning a 500.
         logger.warning(
             "Dropped unsupported hosted tool types for Responses request: %s",
-            sorted(set(dropped_tools)),
+            sorted({str(tool_type) for tool_type in dropped_tools}),
         )
 
     convo_messages = prior_messages + input_messages
@@ -327,7 +349,7 @@ async def execute_responses(
     # regardless of any strict-reasoning header on the inbound request.
     chat_ctx = replace(ctx, origin=ctx.origin.without(_REASONING_PASSTHROUGH_HEADER))
 
-    is_stream = bool(body.get("stream"))
+    is_stream = _requests_stream(body.get("stream"))
     response_id = new_response_id()
     created_at = now_ts()
 

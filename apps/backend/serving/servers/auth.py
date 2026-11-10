@@ -516,6 +516,19 @@ async def _quota_counters(
             account_month = float(identity["account_spent_month_usd"])
         elif op_store:
             account_month = await op_store.get_user_cost_period(identity["user_id"], "month")
+    project_today = float(identity.get("project_spent_today_usd") or 0.0)
+    project_month = float(identity.get("project_spent_month_usd") or 0.0)
+    if (
+        (project_daily is not None or project_monthly is not None)
+        and identity.get("project_spent_today_usd") is None
+        and identity.get("project_id")
+        and op_store
+    ):
+        # The identity-only lookup (the one a request carrying X-On-Behalf-Of
+        # authenticates through) has the project's budgets but not its spend.
+        # Read it as the key's and the account's are read above: taken as $0,
+        # any such header admitted a key whose project had spent its budget.
+        project_today, project_month = await op_store.get_project_spend(identity["project_id"])
     return {
         "account_quota_usd": quota_daily_cost_usd,
         "account_spent_usd": spent_today_usd,
@@ -529,8 +542,8 @@ async def _quota_counters(
         "key_label": _key_label(identity),
         "project_budget_daily_usd": project_daily,
         "project_budget_monthly_usd": project_monthly,
-        "project_spent_today_usd": float(identity.get("project_spent_today_usd") or 0.0),
-        "project_spent_month_usd": float(identity.get("project_spent_month_usd") or 0.0),
+        "project_spent_today_usd": project_today,
+        "project_spent_month_usd": project_month,
         "project_id": identity.get("project_id"),
         "project_name": identity.get("project_name"),
     }

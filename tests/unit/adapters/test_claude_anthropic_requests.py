@@ -332,6 +332,33 @@ async def test_anthropic_endpoint_model_and_credentials(upstream, mode):
     assert request["json"].get("stream", False) is (mode == "stream")
 
 
+@pytest.mark.parametrize(("kind", "mode"), PATHS)
+async def test_only_a_completion_has_a_total_deadline(upstream, kind, mode, monkeypatch):
+    """A stream runs as long as the generation does; a completion has the configured total.
+
+    aiohttp applies a total timeout to reading the body as well. The Vertex
+    adapter gave both a fixed 120 s, so a generation still streaming at two
+    minutes was cut off with an error the circuit breaker counted, and a long
+    non-streaming one could not be given longer through
+    ``UPSTREAM_COMPLETION_TIMEOUT_S``, as on the Anthropic adapter.
+    """
+    from serving.adapters import openai_compat
+
+    monkeypatch.setattr(openai_compat, "_COMPLETION_TIMEOUT_S", 900.0)
+    totals: list[float | None] = []
+    request = aiohttp.ClientSession._request
+
+    async def recording(self, method, url, **kwargs):
+        totals.append(kwargs["timeout"].total)
+        return await request(self, method, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", recording)
+
+    await _send(kind, mode, upstream, USER)
+
+    assert totals == [None if mode == "stream" else 900.0]
+
+
 # --- the reply ---------------------------------------------------------------------------
 
 
@@ -374,6 +401,36 @@ async def test_claude_maps_the_stop_reason(upstream, stop_reason, finish_reason)
     out = await _adapter("claude", upstream).chat_completion(USER)
 
     assert out["choices"][0]["finish_reason"] == finish_reason
+
+
+@pytest.mark.parametrize(
+    ("error_type", "status"), [("overloaded_error", 529), ("rate_limit_error", 429)]
+)
+async def test_an_error_event_mid_stream_fails_the_stream(upstream, error_type, status):
+    """Anthropic reports a failure inside the stream it already answered 200 for.
+
+    The ``error`` event was skipped as one the handler did not know, and the
+    stream ended with ``finish_reason: "stop"``: a cut-off answer passed off as
+    complete, nothing for the router to fall back from, and no output billed.
+    """
+    from serving.adapters.openai_compat import UpstreamStreamError
+
+    start, block, delta = _text_events("Partial ans")[:3]
+    upstream.sse = [
+        start,
+        block,
+        delta,
+        {"type": "error", "error": {"type": error_type, "message": "Overloaded"}},
+    ]
+    chunks: list[str] = []
+
+    with pytest.raises(UpstreamStreamError, match="Overloaded") as raised:
+        async for chunk in _adapter("anthropic", upstream).stream_chat_completion(USER):
+            chunks.append(chunk)
+
+    assert raised.value.status == status
+    assert "Partial ans" in "".join(chunks)
+    assert "finish_reason" not in "".join(chunks).replace('"finish_reason": null', "")
 
 
 async def test_a_vertex_error_body_is_raised_not_returned_as_text(upstream):

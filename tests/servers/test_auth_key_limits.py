@@ -232,6 +232,47 @@ async def test_on_behalf_of_a_suspended_org_falls_back_to_the_service_account(mo
     assert ctx["user_id"] == "owner-1" and ctx["api_key_id"] == 21
 
 
+#: What only the merged lookup selects: ``get_auth_context_by_key_hash``, which a
+#: request carrying X-On-Behalf-Of authenticates through, has none of them.
+_SPEND_COLUMNS = (
+    "cost_usd",
+    "key_spent_today_usd",
+    "key_spent_month_usd",
+    "project_spent_today_usd",
+    "project_spent_month_usd",
+)
+
+
+@pytest.mark.parametrize("on_behalf_of", [None, "someone-else"])
+async def test_a_spent_project_budget_refuses_whatever_header_is_sent(on_behalf_of):
+    """An X-On-Behalf-Of header the gateway ignores must not switch the project's budget off.
+
+    The header selects the identity-only lookup, which carries the project's
+    budgets but not its spend. The key's and the account's spend were read
+    afresh; the project's was taken as $0, so any header admitted a key whose
+    project had spent its budget, for as long as the header was sent.
+    """
+    row = _row(
+        project_id="proj-ci",
+        project_name="CI",
+        project_budget_daily_usd=1.0,
+        project_spent_today_usd=3.0,
+        project_spent_month_usd=3.0,
+    )
+    store = _store(row)
+    store.get_auth_context_by_key_hash = AsyncMock(
+        return_value={k: v for k, v in row.items() if k not in _SPEND_COLUMNS}
+    )
+    store.get_project_spend = AsyncMock(return_value=(3.0, 3.0))
+
+    with pytest.raises(HTTPException) as caught:
+        await _verify(store, x_on_behalf_of=on_behalf_of)
+    await asyncio.sleep(0)  # let the fire-and-forget rejection log run
+
+    assert caught.value.status_code == 429
+    assert (caught.value.detail["scope"], caught.value.detail["window"]) == ("project", "day")
+
+
 async def test_stored_work_stops_at_its_keys_budget():
     store = _store(_row(budget_monthly_usd=10, key_spent_month_usd=10))
 

@@ -445,6 +445,38 @@ async def test_input_over_an_element_limit_returns_400_before_translation(respon
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [[{"type": ["x"]}], [{"type": 1}, {"type": "web_search"}]])
+async def test_a_hosted_tool_of_an_odd_type_is_dropped_not_a_500(responses_client, tools):
+    """Dropped tool types were logged sorted: a list or a mix of types raised TypeError."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "tools": tools},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["type"] == "output_text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", ["false", "0"])
+async def test_a_stream_flag_the_chat_schema_reads_as_false_gets_the_answer(
+    responses_client, responses_store, stream
+):
+    """``bool("false")`` is True: the route streamed an empty response and stored an empty
+    turn, while the chat request it was translated to ran, and was billed, unstreamed."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "stream": stream},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    out = r.json()
+    assert out["output"][0]["content"][0]["type"] == "output_text"
+    stored = responses_store.data[out["id"]]["messages"]
+    assert stored[-1]["role"] == "assistant" and stored[-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_missing_auth_returns_401(responses_client):
     r = await responses_client.post("/v1/responses", json={"model": TEXT_MODEL, "input": "hi"})
     assert r.status_code == 401

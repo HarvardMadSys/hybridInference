@@ -776,7 +776,7 @@ async def test_restoring_a_bundle_without_secret_values_keeps_this_deployments_s
     assert set(store.rows) == keys_before
     assert "TURNSTILE_SECRET_KEY" not in store.rows
     # The withheld usage-insights key is neither rewritten nor deleted.
-    op_store.set_setting.assert_awaited_once_with("signup_enabled", "true", "bool", "admin-token")
+    op_store.set_setting.assert_awaited_once_with("signup_enabled", "True", "bool", "admin-token")
     op_store.delete_setting.assert_not_awaited()
     # The provider key comes back with this deployment's value; the other is left out.
     op_store.add_provider_key.assert_awaited_once_with(
@@ -808,6 +808,23 @@ async def test_a_withheld_value_is_accepted_only_for_a_secret(config_client) -> 
     ):
         response = await client.post("/admin/config/restore/preview", headers=AUTH, json=bundle)
         assert response.status_code == 400, bundle
+
+
+@pytest.mark.parametrize(
+    ("word", "stored"), [("on", "True"), ("YES", "True"), (" 1 ", "True"), ("off", "False")]
+)
+def test_a_restored_boolean_is_stored_the_way_the_admin_api_writes_it(word, stored) -> None:
+    """Restore accepts on/off and the rest, and stored the word as the backup held it.
+
+    The runtime cache read ``on`` as false: ``user_auth_enabled`` restored as
+    ``on`` turned API-key authentication off.
+    """
+    from serving.schemas_config import ConfigBackupSiteSetting
+    from serving.servers.routers.admin.config_backup import _validate_site_setting
+
+    item = ConfigBackupSiteSetting(key="user_auth_enabled", value=word, value_type="bool")
+
+    assert _validate_site_setting(item) == ("user_auth_enabled", stored, "bool")
 
 
 @pytest.mark.asyncio
@@ -957,7 +974,7 @@ async def test_security_changes_need_confirmation_and_the_password(console_admin
     assert entries["CHAT_UPSTREAM_KEY"]["value"] is None
     assert entries["CHAT_UPSTREAM_KEY"]["is_set"] is True
     op_store.set_setting.assert_awaited_once_with(
-        "signup_enabled", "true", "bool", "admin@example.com"
+        "signup_enabled", "True", "bool", "admin@example.com"
     )
     audit.assert_awaited_once()
     assert audit.await_args.kwargs["action"] == "config.restore"
@@ -1028,7 +1045,7 @@ async def test_backup_leaves_out_the_retired_routewise_latency_threshold(config_
     )
 
     assert response.status_code == 200
-    op_store.set_setting.assert_awaited_once_with("signup_enabled", "true", "bool", "admin-token")
+    op_store.set_setting.assert_awaited_once_with("signup_enabled", "True", "bool", "admin-token")
     # The rows left behind are cleared rather than kept.
     assert {call.args[0] for call in op_store.delete_setting.await_args_list} == {
         row["key"] for row in retired

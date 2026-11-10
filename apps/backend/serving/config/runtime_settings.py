@@ -241,7 +241,14 @@ class RuntimeSettings:
         if raw is None:
             return None
         if value_type == "bool":
-            return raw.lower() in ("true", "1", "yes")
+            # Parsed as Settings parses the variable, so every spelling a write
+            # accepts reads as it means: a configuration restore stored the
+            # backup's word as it was, and ``on`` read as false here turned
+            # user_auth_enabled off. A word no write accepts still reads false.
+            try:
+                return _PARSERS["bool"].validate_python(raw.strip())
+            except ValidationError:
+                return False
         if value_type == "int":
             return int(raw)
         if value_type == "float":

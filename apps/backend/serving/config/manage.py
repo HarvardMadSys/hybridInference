@@ -400,6 +400,7 @@ async def run(args: argparse.Namespace) -> list[str]:
         if args.command == "import-legacy":
             from pathlib import Path
 
+            from serving.config.documents import KEY_KINDS
             from serving.config.import_legacy import import_legacy
 
             keys = await import_legacy(
@@ -409,7 +410,12 @@ async def run(args: argparse.Namespace) -> list[str]:
             )
             if not keys:
                 return ["Nothing imported: every document found is already stored."]
-            return ["Imported " + ", ".join(keys) + ". Restart the backend to apply catalogs."]
+            # Catalogs and alert rules wait for a restart; the site documents do
+            # not. Say which is which rather than one hint for all of them.
+            return [
+                "Imported " + ", ".join(keys) + ".",
+                *(f"{key}: {_how_it_applies(_find(key))}" for key in keys if key in KEY_KINDS),
+            ]
         if args.command == "document":
             from pathlib import Path
 

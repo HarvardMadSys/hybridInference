@@ -764,6 +764,10 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
     The key is tracked as DB-injected so a future ``remove_key_from_provider``
     call can distinguish it from env-configured keys that happen to share
     the same raw value.
+
+    A route that pins *key* gets it back too: re-enabling the key it is bound
+    to restores the route at once, as disabling took the key out of it at once,
+    instead of at the next routing refresh (``reconcile_db_keys``).
     """
     with _lock:
         if min_role is not None:
@@ -771,14 +775,23 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
         adapters = _adapters_by_provider.get(provider, [])
         # Route-bound adapters opt out of global DB-key injection — a DB key
         # added for the whole provider must not land on a route reserved for a
-        # specific key (mirrors ``_pools_for_provider_locked(..., False)``).
+        # specific key (mirrors ``_pools_for_provider_locked(..., False)``) —
+        # except the key that route is bound to, which ``reconcile_db_keys``
+        # would also put back (``sources.bound_db & active``).
         disabled_ids = _db_injection_disabled_adapter_ids.get(provider, set())
         disabled = _disabled_env_key_hashes.get(provider, set())
+        sources = _adapter_key_sources.get(provider, {})
+
+        def receives(adapter: object) -> bool:
+            if id(adapter) not in disabled_ids:
+                return True
+            bound = sources.get(id(adapter))
+            return bound is not None and key in bound.bound_db
+
         attached = sum(
             1
             for adapter in adapters
-            if id(adapter) not in disabled_ids
-            and _attach_key_to_adapter_locked(adapter, key, disabled)
+            if receives(adapter) and _attach_key_to_adapter_locked(adapter, key, disabled)
         )
         _db_injected_keys.setdefault(provider, set()).add(key)
         # Attaching leaves keys untiered and may have promoted a single-``api_key``

@@ -129,6 +129,35 @@ def test_a_tool_result_becomes_a_function_response(adapter, content, response):
     }
 
 
+def test_the_results_of_parallel_calls_answer_their_turn_together(adapter):
+    """Gemini wants one function response per call of a turn, in one content.
+
+    Each result was sent as a content of its own, so after any turn with two
+    calls Gemini refused the request, and every later turn replaying it.
+    """
+    calls = [
+        {"id": f"c{n}", "type": "function", "function": {"name": name, "arguments": "{}"}}
+        for n, name in ((1, "weather"), (2, "time"))
+    ]
+    body = adapter._convert_messages_to_gemini(
+        [
+            {"role": "user", "content": "weather and time?"},
+            {"role": "assistant", "content": None, "tool_calls": calls},
+            {"role": "tool", "tool_call_id": "c1", "content": '{"temp": 18}'},
+            {"role": "tool", "tool_call_id": "c2", "content": '{"time": "noon"}'},
+            {"role": "user", "content": "thanks"},
+        ]
+    )
+
+    assert [content["role"] for content in body["contents"]] == ["user", "model", "user", "user"]
+    assert body["contents"][2]["parts"] == [
+        {"functionResponse": {"name": "weather", "response": {"temp": 18}}},
+        {"functionResponse": {"name": "time", "response": {"time": "noon"}}},
+    ]
+    # A user message after the results stays a turn of its own.
+    assert body["contents"][3] == {"role": "user", "parts": [{"text": "thanks"}]}
+
+
 # --- tools -------------------------------------------------------------------------
 
 
