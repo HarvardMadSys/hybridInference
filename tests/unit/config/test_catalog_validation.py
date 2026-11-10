@@ -286,6 +286,7 @@ _SECRET = "sk-live-do-not-show-0042"
         ("MODEL_CATALOG", {"models": [_model(router=_SECRET)]}),
         ("MODEL_CATALOG", {"models": [_model(api_key=_SECRET)]}),
         ("ROUTING_POLICY", {"default_router": "fixed", "timeout": _SECRET}),
+        ("ROUTING_POLICY", {"default_router": _SECRET}),
         ("ALERT_RULES", {"rules": {"client_error_burst": {"threshold_count": _SECRET}}}),
         ("SITE_CONFIGURATION", {"schema_version": 1, "distribution": {"id": "x"}, "z": _SECRET}),
         ("SITE_CONFIGURATION", {"schema_version": _SECRET, "distribution": {"id": "x"}}),
@@ -297,6 +298,22 @@ def test_a_refusal_names_the_place_and_never_shows_the_value(key, document):
         validate(key, json.dumps(document))
     assert _SECRET not in str(refused.value)
     assert str(refused.value)
+
+
+@pytest.mark.parametrize("name", ["fixd", "Fixed", ""])
+def test_a_routing_policy_must_name_a_strategy_the_gateway_has(name):
+    """Every model without its own ``router`` is built with ``default_router`` at startup.
+
+    An unknown name was saved without complaint and then failed that startup,
+    the Admin console with it, until the document was put right from a shell.
+    """
+    with pytest.raises(DocumentError, match=r"^/default_router names no routing strategy"):
+        validate("ROUTING_POLICY", json.dumps({"default_router": name}))
+
+
+@pytest.mark.parametrize("name", ["fixed", "routewise"])
+def test_a_routing_policy_naming_a_known_strategy_is_accepted(name):
+    validate("ROUTING_POLICY", json.dumps({"default_router": name}))
 
 
 # --- the public site document holds no credentials -----------------------------
