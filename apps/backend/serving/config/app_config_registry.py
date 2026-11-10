@@ -908,6 +908,34 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=0,
     ),
     ConfigEntry(
+        "ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION",
+        "routing",
+        "Extend a first-token wait for the un-cached prefill a cold prompt imposes.",
+        # A plain boolean, not a flag: a flag reads as ``value != "0"``, so the
+        # stored spelling "false" would read as *on*. This setting gates a
+        # behaviour change, so it is read with the boolean parser every other
+        # boolean uses, and a value that is not one is refused rather than
+        # guessed at.
+        type="bool",
+        default="false",
+    ),
+    ConfigEntry(
+        "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC",
+        "routing",
+        "Tokens per second of un-cached prefill the engine wait budgets for.",
+        type="int",
+        default="2560",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "ROUTING_OFFLOAD_MAX_ENGINE_WAIT_SECONDS",
+        "routing",
+        "Ceiling on the extended first-token wait, in seconds.",
+        type="int",
+        default="8",
+        minimum=1,
+    ),
+    ConfigEntry(
         "ROUTING_PREFILL_AWARE_ENABLED",
         "routing",
         "Steer requests away from endpoints busy with large prompt prefills.",
