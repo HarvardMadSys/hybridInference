@@ -212,3 +212,50 @@ async def test_a_stream_holds_one_of_the_callers_slots_until_it_ends() -> None:
     assert second.headers["retry-after"] == "1"
     assert first_response.status_code == 200
     assert third.status_code == 200
+
+
+async def _responses(client: AsyncClient, model: str, **extra: Any) -> Any:
+    body = {
+        "model": model,
+        "input": [{"role": "user", "content": "hi"}],
+        **extra,
+    }
+    return await client.post("/internal/playground/responses", json=body)
+
+
+async def _messages(client: AsyncClient, model: str, **extra: Any) -> Any:
+    body = {
+        "model": model,
+        "max_tokens": 64,
+        "messages": [{"role": "user", "content": "hi"}],
+        **extra,
+    }
+    return await client.post("/internal/playground/messages", json=body)
+
+
+@pytest.mark.asyncio
+async def test_the_playground_serves_the_responses_and_messages_formats() -> None:
+    deployment = _Deployment()
+    async with _client(deployment, INTERNAL) as client:
+        responses = await _responses(client, "open-model", stream=True)
+        messages = await _messages(client, "open-model", stream=True)
+
+    assert responses.status_code == 200
+    assert "response.output_text.delta" in responses.text
+    assert "ok" in responses.text
+    assert messages.status_code == 200
+    assert "content_block_delta" in messages.text
+    assert "ok" in messages.text
+    assert deployment.calls == 2
+
+
+@pytest.mark.asyncio
+async def test_the_new_formats_apply_the_same_model_access_rules() -> None:
+    deployment = _Deployment()
+    async with _client(deployment, INTERNAL) as client:
+        responses = await _responses(client, "admin-model", stream=True)
+        messages = await _messages(client, "admin-model", stream=True)
+
+    assert responses.status_code == 404
+    assert messages.status_code == 404
+    assert deployment.calls == 0

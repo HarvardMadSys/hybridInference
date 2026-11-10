@@ -19,6 +19,14 @@ import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
 import {
+  API_OPTIONS,
+  buildCode,
+  buildRequest,
+  endpointFor,
+  parseStreamEvent,
+  type PlaygroundApi,
+} from './api';
+import {
   decodeRate,
   finishNote,
   isUsableReply,
@@ -48,6 +56,7 @@ interface PlaygroundSession {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  api: PlaygroundApi;
   messages: Message[];
   input: string;
 }
@@ -75,6 +84,7 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     systemPrompt: '',
     temperature: 0.7,
     maxTokens: 4096,
+    api: 'chat',
     messages: [],
     input: '',
   };
@@ -97,40 +107,6 @@ function getMessageCount(messages: Message[]): string {
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-/** An in-band `error` frame's message, whatever shape the upstream used. */
-function frameError(raw: unknown): string | null {
-  if (!raw) return null;
-  if (typeof raw === 'string') return raw;
-  if (typeof raw === 'object') {
-    const message = (raw as Record<string, unknown>).message;
-    if (typeof message === 'string' && message) return message;
-  }
-  return 'The upstream reported an error.';
-}
-
-/** Read a `_playground_route` frame; returns null for anything unrecognized. */
-function parseRouting(raw: unknown): RoutingInfo | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const endpointId = typeof r.endpoint_id === 'string' ? r.endpoint_id : '';
-  if (!endpointId) return null;
-  const rawAttempts = Array.isArray(r.failed_attempts) ? r.failed_attempts : [];
-  const attempts = rawAttempts
-    .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
-    .map((a) => ({
-      provider: String(a.provider ?? ''),
-      endpointId: String(a.endpoint_id ?? ''),
-      errorType: String(a.error_type ?? ''),
-    }));
-  return {
-    provider: typeof r.provider === 'string' ? r.provider : '',
-    endpointId,
-    ...(typeof r.host === 'string' && r.host ? { host: r.host } : {}),
-    ...(r.fallback === true ? { fallback: true } : {}),
-    ...(attempts.length > 0 ? { failedAttempts: attempts } : {}),
-  };
 }
 
 function routingLines(routing: RoutingInfo): string[] {
@@ -198,8 +174,12 @@ export default function PlaygroundPage() {
   // Below `lg` the settings rail is a drawer over the conversation, opened
   // from the header; from `lg` up it is the panel beside it.
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
+  const codeButtonRef = useRef<HTMLButtonElement>(null);
+  const codeCloseRef = useRef<HTMLButtonElement>(null);
   const chatRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -239,6 +219,18 @@ export default function PlaygroundPage() {
     };
   }, [settingsOpen]);
 
+  useEffect(() => {
+    if (!codeOpen) return;
+    codeCloseRef.current?.focus();
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      setCodeOpen(false);
+      codeButtonRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [codeOpen]);
+
   // Navigating away must not leave generations running until the network or
   // idle timeout ends them: every live abort controller fires on unmount. The
   // per-turn `finally` stays authoritative for its own scratch state (raf
@@ -255,6 +247,7 @@ export default function PlaygroundPage() {
   }, []);
 
   const session = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
+  const sessionApi = session?.api ?? 'chat';
   const modelId = session?.selectedModelId || '';
   const sysPrompt = session?.systemPrompt || '';
   const temp = session?.temperature ?? 0.7;
@@ -537,6 +530,7 @@ export default function PlaygroundPage() {
     async (base: Message[], undo: UndoAction | null = null) => {
       const turnSessionId = activeSessionId;
       if (streamingIds.has(turnSessionId) || !modelId) return;
+      const api = session?.api ?? 'chat';
       const turn: TurnDeltas = { content: '', reasoning: '', routing: null, raf: null };
       const timing = {
         start: 0,
@@ -584,17 +578,19 @@ export default function PlaygroundPage() {
       resetIdle();
 
       try {
-        const resp = await fetchWithAuth(API_BASE, '/internal/playground/chat', {
+        const resp = await fetchWithAuth(API_BASE, endpointFor(api), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: modelId,
-            system_prompt: sysPrompt,
-            messages: requestHistory(base),
-            temperature: temp,
-            max_tokens: maxTok,
-            ...(selectedProvider ? { provider: selectedProvider } : {}),
-          }),
+          body: JSON.stringify(
+            buildRequest(api, {
+              model: modelId,
+              history: requestHistory(base),
+              systemPrompt: sysPrompt,
+              temperature: temp,
+              maxTokens: maxTok,
+              provider: selectedProvider,
+            }),
+          ),
           signal: ctrl.signal,
         });
 
@@ -628,34 +624,29 @@ export default function PlaygroundPage() {
             const payload = line.slice(6).trim();
             if (payload === '[DONE]') continue;
             try {
-              const parsed = JSON.parse(payload);
-              if (parsed.usage?.completion_tokens) {
-                timing.tokens = parsed.usage.completion_tokens;
-              }
-              const inBandError = frameError(parsed.error);
-              if (inBandError) failure = { status: 'error', error: inBandError };
+              const event = parseStreamEvent(api, JSON.parse(payload));
+              if (!event) continue;
+              if (event.tokens) timing.tokens = event.tokens;
+              if (event.error) failure = { status: 'error', error: event.error };
+              if (event.finishReason) timing.finishReason = event.finishReason;
               // The router announces one routing frame per attempt, so a
               // fallback overwrites the primary — last one wins is the one
               // that actually served the response.
-              const routing = parseRouting(parsed._playground_route);
-              if (routing) {
-                turn.routing = routing;
+              if (event.routing) {
+                turn.routing = event.routing;
                 scheduleFlush(turnSessionId, turn);
               }
-              const choice = parsed.choices?.[0];
-              if (choice?.finish_reason) timing.finishReason = choice.finish_reason;
-              const delta = choice?.delta;
-              if (delta?.content || delta?.reasoning_content) {
+              if (event.content || event.reasoning) {
                 const now = performance.now();
                 if (!timing.firstToken) timing.firstToken = now;
-                if (delta.content && !timing.contentStart) timing.contentStart = now;
+                if (event.content && !timing.contentStart) timing.contentStart = now;
               }
-              if (delta?.content) {
-                turn.content += delta.content;
+              if (event.content) {
+                turn.content += event.content;
                 scheduleFlush(turnSessionId, turn);
               }
-              if (delta?.reasoning_content) {
-                turn.reasoning += delta.reasoning_content;
+              if (event.reasoning) {
+                turn.reasoning += event.reasoning;
                 scheduleFlush(turnSessionId, turn);
               }
             } catch {
@@ -727,6 +718,7 @@ export default function PlaygroundPage() {
       sysPrompt,
       temp,
       maxTok,
+      session,
       selectedProvider,
       patchSession,
       flushDelta,
@@ -826,6 +818,23 @@ export default function PlaygroundPage() {
     'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50';
   const sliderLabelRow = 'mb-2 flex items-center justify-between';
 
+  const apiBase =
+    config.apiBase || (typeof window !== 'undefined' ? window.location.origin : 'https://gateway');
+  const codeHistory = input.trim()
+    ? [...requestHistory(msgs), { role: 'user' as const, content: input.trim() }]
+    : requestHistory(msgs);
+  const codeText = buildCode(sessionApi, apiBase, {
+    model: modelId || 'your-model-id',
+    history: codeHistory,
+    systemPrompt: sysPrompt,
+    temperature: temp,
+    maxTokens: maxTok,
+    provider: selectedProvider,
+  });
+  const copyCode = async () => {
+    setCodeCopied(await copyToClipboard(codeText));
+  };
+
   return (
     <ProtectedRoute>
       <div className="flex w-full flex-col text-gray-900 lg:h-[calc(100dvh-13.5rem)] lg:min-h-[36rem]">
@@ -862,6 +871,29 @@ export default function PlaygroundPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              ref={codeButtonRef}
+              type="button"
+              onClick={() => {
+                setCodeCopied(false);
+                setCodeOpen(true);
+              }}
+              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-3.5 w-3.5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={2}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+              </svg>
+              View code
+            </button>
             <span className="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 sm:inline-flex">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
@@ -1049,6 +1081,24 @@ export default function PlaygroundPage() {
                   </div>
                 )}
 
+                <div className="mt-3">
+                  <label htmlFor="playground-api" className={railLabel}>
+                    API
+                  </label>
+                  <Select
+                    id="playground-api"
+                    size="lg"
+                    className="mt-2 w-full"
+                    value={sessionApi}
+                    onValueChange={(value) => patch((s) => ({ ...s, api: value as PlaygroundApi }))}
+                    disabled={activeStreaming}
+                    options={API_OPTIONS}
+                  />
+                  <p className="mt-2 text-[11px] leading-4 text-gray-400">
+                    Request format. View code shows the same call.
+                  </p>
+                </div>
+
                 {modelProviders.length > 1 && (
                   <div className="mt-3">
                     <label htmlFor="playground-provider" className={railLabel}>
@@ -1065,7 +1115,7 @@ export default function PlaygroundPage() {
                           selectedProvider: value || null,
                         }))
                       }
-                      disabled={activeStreaming}
+                      disabled={activeStreaming || sessionApi !== 'chat'}
                       options={[
                         { value: '', label: 'Auto' },
                         ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
@@ -1551,6 +1601,75 @@ export default function PlaygroundPage() {
             </div>
           </section>
         </div>
+
+        {codeOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[10vh]"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              setCodeOpen(false);
+              codeButtonRef.current?.focus();
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="API request code"
+              className="flex max-h-[75vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-gray-900">View code</h2>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    The same request against the public API, using your own key.
+                  </p>
+                </div>
+                <button
+                  ref={codeCloseRef}
+                  type="button"
+                  onClick={() => {
+                    setCodeOpen(false);
+                    codeButtonRef.current?.focus();
+                  }}
+                  aria-label="Close code view"
+                  className="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                >
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div className="min-h-0 flex-1 overflow-auto bg-gray-50 p-4">
+                <pre className="whitespace-pre font-mono text-[12px] leading-5 text-gray-800">
+                  {codeText}
+                </pre>
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-5 py-3">
+                <span className="min-w-0 text-[11px] leading-4 text-gray-500">
+                  Start with <code className="font-mono">export HYBRID_API_KEY=...</code> from API
+                  Keys.
+                </span>
+                <button
+                  type="button"
+                  onClick={copyCode}
+                  className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:text-gray-900"
+                >
+                  {codeCopied ? 'Copied' : 'Copy'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </ProtectedRoute>
   );

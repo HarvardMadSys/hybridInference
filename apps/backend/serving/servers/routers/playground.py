@@ -8,8 +8,8 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
@@ -20,21 +20,53 @@ from serving.model_access import model_access_denial
 from serving.pricing import require_route_pricing
 from serving.servers.auth import publish_caller_role
 from serving.servers.deps import (
+    get_completions_logger,
+    get_cost_tracker,
     get_current_user,
+    get_log_store,
+    get_model_router_registry,
     get_model_visibility_resolver,
+    get_operational_store,
+    get_pricing_lookup,
+    get_response_store,
     get_router,
     get_user_concurrency_limiter,
     require_role,
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.request_body import json_body_after, json_body_schema
+from serving.servers.routers.anthropic_messages import (
+    MALFORMED_BODY,
+    MessagesConstraints,
+    MessagesServices,
+    MessagesStream,
+    _unstarted_stream_release,
+    execute_messages,
+    render_messages_http,
+)
+from serving.servers.routers.completions import (
+    ChatServices,
+    ChatStream,
+    release_unstarted_chat_streams,
+)
 from serving.servers.routers.completions_stream import _extract_exception_status_code
+from serving.servers.routers.responses import (
+    ResponsesServices,
+    ResponsesStream,
+    execute_responses,
+)
+from serving.servers.surface_http import client_origin, timeout_probe
 from serving.stream import (
     StreamQueue,
     make_role_chunk,
     new_completion_id,
     pump_stream,
     stamp_completion_id,
+)
+from serving.surfaces.context import (
+    ExecutionContext,
+    admission_from,
+    read_only,
 )
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -491,3 +523,115 @@ async def playground_chat(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+_RESPONSES_SSE_HEADERS = {
+    "Cache-Control": "no-cache, no-transform",
+    "X-Accel-Buffering": "no",
+}
+
+
+@router.post("/responses", response_model=None)
+async def playground_responses(
+    request: Request,
+    caller: dict[str, Any] = Depends(_require_internal),
+    _slot: None = Depends(_playground_slot),
+    router_exec=Depends(get_router),
+    log_store=Depends(get_log_store),
+    model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    completions_logger=Depends(get_completions_logger),
+    pricing_lookup=Depends(get_pricing_lookup),
+    cost_tracker=Depends(get_cost_tracker),
+    response_store=Depends(get_response_store),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
+) -> JSONResponse | StreamingResponse:
+    """Serve an OpenAI Responses request for the console playground.
+
+    Runs the same execution as ``/v1/responses`` under the console session, so
+    the playground exercises the real translation, routing, logging and billing
+    with the caller's own identity instead of an API key.
+    """
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(400, "Invalid JSON in request body") from exc
+    publish_caller_role(caller)
+    result = await execute_responses(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(caller),
+            origin=client_origin(request),
+            admission=admission_from(_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        ResponsesServices(
+            chat=ChatServices(
+                router=router_exec,
+                model_router_registry=model_router_registry,
+                visibility=model_visibility_resolver,
+                log_store=log_store,
+                completions_logger=completions_logger,
+                pricing_lookup=pricing_lookup,
+                cost_tracker=cost_tracker,
+                app_services=getattr(request.app.state, "services", None),
+            ),
+            response_store=response_store,
+        ),
+    )
+    if isinstance(result, ResponsesStream):
+        if result.chat_stream is not None:
+            _streams.append(result.chat_stream)
+        return StreamingResponse(
+            result.events,
+            media_type="text/event-stream",
+            headers=_RESPONSES_SSE_HEADERS,
+        )
+    return JSONResponse(content=result.body)
+
+
+@router.post("/messages", response_model=None)
+async def playground_messages(
+    request: Request,
+    caller: dict[str, Any] = Depends(_require_internal),
+    _slot: None = Depends(_playground_slot),
+    router_exec=Depends(get_router),
+    log_store=Depends(get_log_store),
+    op_store=Depends(get_operational_store),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    completions_logger=Depends(get_completions_logger),
+    _streams: list[MessagesStream] = Depends(_unstarted_stream_release, scope="request"),
+) -> JSONResponse | StreamingResponse:
+    """Serve an Anthropic Messages request for the console playground.
+
+    Same execution as ``/v1/messages``, on the console session rather than an
+    API key, so the real translation, routing, logging and billing apply.
+    """
+    try:
+        body: Any = await request.json()
+    except Exception:
+        body = MALFORMED_BODY
+    publish_caller_role(caller)
+    outcome = await execute_messages(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(caller),
+            origin=client_origin(request),
+            admission=admission_from(_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        MessagesServices(
+            router=router_exec,
+            log_store=log_store,
+            op_store=op_store,
+            visibility=model_visibility_resolver,
+            completions_logger=completions_logger,
+            app_services=getattr(request.app.state, "services", None),
+        ),
+        MessagesConstraints.online(),
+    )
+    if isinstance(outcome, MessagesStream):
+        _streams.append(outcome)
+    return render_messages_http(outcome)

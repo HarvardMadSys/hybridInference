@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
@@ -1009,5 +1009,75 @@ describe('PlaygroundPage', () => {
       expect(await screen.findByText('worth the wait')).toBeInTheDocument();
       expect(screen.queryByText(/^Error:/)).toBeNull();
     });
+  });
+
+  it('sends Anthropic Messages to the messages endpoint with that format', async () => {
+    mockStream([
+      `event: content_block_delta\ndata: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Anthropic reply' },
+      })}\n\n`,
+      `event: message_delta\ndata: ${JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 2 },
+      })}\n\n`,
+    ]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Anthropic Messages');
+    await sendPrompt('hello');
+
+    expect(await screen.findByText('Anthropic reply')).toBeInTheDocument();
+    const call = fetchWithAuth.mock.calls.find(
+      ([, path]) => path === '/internal/playground/messages',
+    );
+    expect(call).toBeTruthy();
+    const body = JSON.parse((call?.[2] as { body: string }).body);
+    expect(body).toMatchObject({
+      model: 'glm-4.6',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.7,
+      max_tokens: 4096,
+      stream: true,
+    });
+    expect(body).not.toHaveProperty('system_prompt');
+  });
+
+  it('renders Responses text deltas from the responses endpoint', async () => {
+    mockStream([
+      `event: response.output_text.delta\ndata: ${JSON.stringify({
+        type: 'response.output_text.delta',
+        delta: 'Responses reply',
+      })}\n\n`,
+    ]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Responses');
+    await sendPrompt('hello');
+
+    expect(await screen.findByText('Responses reply')).toBeInTheDocument();
+    expect(
+      fetchWithAuth.mock.calls.some(([, path]) => path === '/internal/playground/responses'),
+    ).toBe(true);
+  });
+
+  it('shows code for the selected API format', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Anthropic Messages');
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'API request code' });
+    expect(dialog).toHaveTextContent('/v1/messages');
+    expect(dialog).toHaveTextContent('x-api-key: $HYBRID_API_KEY');
+    expect(dialog).toHaveTextContent('anthropic-version: 2023-06-01');
+    expect(within(dialog).getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'API request code' })).not.toBeInTheDocument(),
+    );
   });
 });
