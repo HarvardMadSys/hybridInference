@@ -911,9 +911,13 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION",
         "routing",
         "Extend a first-token wait for the un-cached prefill a cold prompt imposes.",
+        # A plain boolean, not a flag: a flag reads as ``value != "0"``, so the
+        # stored spelling "false" would read as *on*. This setting gates a
+        # behaviour change, so it is read with the boolean parser every other
+        # boolean uses, and a value that is not one is refused rather than
+        # guessed at.
         type="bool",
-        default="0",
-        flag=True,
+        default="false",
     ),
     ConfigEntry(
         "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC",

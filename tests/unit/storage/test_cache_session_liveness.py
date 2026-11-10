@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from serving.storage import cache as cache_module
+from serving.storage.base import ResetRedemption
 from serving.storage.cache import CachedOperationalStore, InMemoryCache
 
 pytestmark = pytest.mark.asyncio
@@ -37,6 +38,7 @@ def inner() -> MagicMock:
         "hard_delete_user",
     ):
         setattr(store, name, AsyncMock())
+    store.redeem_reset_token = AsyncMock(return_value=ResetRedemption("reset", "u1"))
     return store
 
 
@@ -92,6 +94,7 @@ async def test_the_answer_expires(cached, inner, monkeypatch):
         ("suspend_user", ("u1",), {}),
         ("delete_user", ("u1",), {}),
         ("hard_delete_user", ("u1",), {"claim_token": "claim"}),
+        ("redeem_reset_token", ("emailed-link",), {"password_hash": "hashed"}),
     ],
 )
 async def test_an_accounts_revocation_forgets_its_sessions_only(cached, inner, write, args, kwargs):
@@ -203,4 +206,27 @@ async def test_an_account_id_is_matched_literally(cached, inner):
     await cached.revoke_user_sessions("u[1]")
 
     await cached.session_is_live("u1", "sess_b")
+    inner.session_is_live.assert_not_awaited()
+
+
+async def test_a_password_reset_forgets_the_accounts_cached_row(cached, inner):
+    inner.get_user_by_id = AsyncMock(return_value={"id": "u1", "password_hash": "old"})
+    await cached.get_user_by_id("u1")
+    inner.get_user_by_id.return_value = {"id": "u1", "password_hash": "hashed"}
+
+    await cached.redeem_reset_token("emailed-link", password_hash="hashed")
+
+    assert (await cached.get_user_by_id("u1"))["password_hash"] == "hashed"
+    assert inner.get_user_by_id.await_count == 2
+
+
+@pytest.mark.parametrize("outcome", ["invalid", "used", "expired"])
+async def test_a_refused_reset_link_forgets_nothing(cached, inner, outcome):
+    inner.redeem_reset_token.return_value = ResetRedemption(outcome)
+    await cached.session_is_live("u1", "sess_a")
+    inner.session_is_live.reset_mock()
+
+    assert (await cached.redeem_reset_token("dead-link", password_hash="hashed")).outcome == outcome
+
+    assert await cached.session_is_live("u1", "sess_a") is True
     inner.session_is_live.assert_not_awaited()

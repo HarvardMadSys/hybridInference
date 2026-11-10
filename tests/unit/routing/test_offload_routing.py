@@ -262,6 +262,29 @@ def test_engine_wait_extension_can_be_disabled_without_restarting_routing(monkey
     assert policy.engine_wait_seconds(18_319) == policy.wait_seconds
 
 
+def test_a_changed_setting_reloads_without_a_restart(monkeypatch):
+    """Turning the setting off takes effect on the next request.
+
+    The controls are read through the configuration layer's change hook, so
+    an administrator who turns the extension off -- the rollback -- gets the
+    base wait back without a restart or a route edit.
+    """
+    values = {"ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION": "true"}
+    monkeypatch.setattr(offload, "config_value", lambda name, default=None: values.get(name))
+    offload._load_engine_wait_settings()
+    try:
+        policy = _policy(wait_seconds=0.3)
+        assert policy.engine_wait_seconds(18_319) > policy.wait_seconds
+
+        # The administrator turns it off: the next reload restores the base.
+        values["ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION"] = "false"
+        offload._load_engine_wait_settings()
+        assert policy.engine_wait_seconds(18_319) == policy.wait_seconds
+    finally:
+        monkeypatch.setattr(offload, "config_value", lambda name, default=None: None)
+        offload._load_engine_wait_settings()
+
+
 @pytest.mark.parametrize(
     ("raw", "expected"),
     [
@@ -298,7 +321,84 @@ def test_engine_wait_controls_reload_from_configuration(monkeypatch):
         offload._load_engine_wait_settings()
 
 
-def test_engine_wait_is_capped_so_a_wedged_engine_still_fails_over():
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        # The spellings an administrator can store, each meaning what it says.
+        ("0", False),
+        ("1", True),
+        ("false", False),
+        ("FALSE", False),
+        ("true", True),
+        ("True", True),
+        ("off", False),
+        ("on", True),
+        ("no", False),
+        ("yes", True),
+        # A value that is not a boolean is refused rather than guessed at.
+        ("garbage", False),
+        ("", False),
+        ("  ", False),
+        ("2", False),
+        ("maybe", False),
+        # Missing: the setting is unset, so the default applies.
+        (None, False),
+    ],
+)
+def test_the_engine_wait_extension_reads_a_boolean_setting(monkeypatch, raw, expected):
+    """The extension turns on only for a stored spelling that means "on".
+
+    Reading the stored value as "anything that is not "0" is on" made the
+    stored spelling "false" -- and any value an administrator mistyped --
+    switch the behaviour on. The setting is read with the repository's boolean
+    parser, so "false" is off and an unusable value keeps the default.
+    """
+    monkeypatch.setattr(offload, "config_value", lambda _name: raw)
+    assert offload._boolean_setting("TEST_EXTENSION", False) is expected
+
+
+def test_the_engine_wait_extension_stays_off_for_a_malformed_value(monkeypatch):
+    """A malformed value must not switch the behaviour on.
+
+    The extension changes how long a request may hold an engine, so an
+    unreadable value leaves it off: the safe direction is the one the
+    deployment already runs in.
+    """
+    monkeypatch.setattr(offload, "config_value", lambda _name: "not-a-boolean")
+    offload._load_engine_wait_settings()
+    try:
+        assert offload.OFFLOAD_ENGINE_WAIT_EXTENSION is False
+    finally:
+        monkeypatch.setattr(offload, "config_value", lambda _name: None)
+        offload._load_engine_wait_settings()
+
+
+def test_the_engine_wait_extension_setting_is_not_read_as_a_flag():
+    """The registry entry is a plain boolean, so the console and the runtime agree.
+
+    A flag is read as ``value != "0"``, which reads the stored spelling
+    "false" as *on*. This setting gates a behaviour change, so it is declared
+    as a plain boolean and the console writes the spellings the parser
+    accepts.
+    """
+    from serving.config.app_config_registry import static_entry
+
+    entry = static_entry("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION")
+    assert entry is not None
+    assert entry.type == "bool"
+    assert entry.flag is False
+    assert entry.default == "false"
+
+
+def test_engine_wait_is_capped_so_a_wedged_engine_still_fails_over(monkeypatch):
+    """A wedged engine still fails over, within a known time.
+
+    The extension has to be on for this to mean anything: with it off the
+    wait is the flat base, and there is no ceiling to reach. The setting is
+    turned on here rather than inherited from another test, so this test
+    states the condition it depends on.
+    """
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
     policy = _policy(wait_seconds=0.05)
     assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
     # Monotone up to the ceiling, never past it.
@@ -306,8 +406,9 @@ def test_engine_wait_is_capped_so_a_wedged_engine_still_fails_over():
     assert huge == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
 
 
-def test_engine_wait_never_shortens_a_base_wait_longer_than_the_ceiling():
+def test_engine_wait_never_shortens_a_base_wait_longer_than_the_ceiling(monkeypatch):
     """A deployment that set a wait above the ceiling keeps its own wait."""
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
     policy = _policy(wait_seconds=OFFLOAD_MAX_WAIT_SECONDS * 2)
     assert policy.engine_wait_seconds(0) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)
     assert policy.engine_wait_seconds(10_000_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS * 2)

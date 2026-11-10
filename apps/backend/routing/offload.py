@@ -76,6 +76,7 @@ from typing import TYPE_CHECKING
 from routing.engine_wait import EngineWaitExpired
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
 from serving.config.app_config import config_value, on_change
+from serving.config.app_config_registry import parse_bool
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
@@ -142,13 +143,31 @@ def _positive_float_setting(name: str, default: float) -> float:
     return value
 
 
+def _boolean_setting(name: str, default: bool) -> bool:
+    """Read a boolean routing setting, refusing anything that is not one.
+
+    The setting is parsed with the repository's own boolean parser, so the
+    spellings an administrator can store -- ``0``/``1``, ``false``/``true``,
+    ``off``/``on``, ``no``/``yes`` -- all mean what they say. A value that is
+    none of them is not a boolean, and it is refused rather than guessed at:
+    an unusable value keeps ``default`` instead of switching the behaviour
+    on. This is the difference between a setting that reads ``"false"`` as
+    *off* and one that reads it as *on*, because it is not the string ``"0"``.
+    """
+    raw = config_value(name)
+    if raw is None:
+        return default
+    try:
+        return parse_bool(raw)
+    except ValueError:
+        return default
+
+
 def _load_engine_wait_settings() -> None:
     """Reload the bounded engine-wait controls for the next routing decision."""
     global OFFLOAD_ENGINE_WAIT_EXTENSION, OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC
     global OFFLOAD_MAX_WAIT_SECONDS
-    OFFLOAD_ENGINE_WAIT_EXTENSION = (
-        config_value("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION", "0") != "0"
-    )
+    OFFLOAD_ENGINE_WAIT_EXTENSION = _boolean_setting("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION", False)
     OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC = _positive_float_setting(
         "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC", 2_560.0
     )
