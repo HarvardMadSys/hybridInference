@@ -26,7 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
-from serving.adapters.base import validate_deployment_type
+from serving.adapters.base import BaseAdapter, validate_deployment_type
 from serving.adapters.reasoning_effort import (
     EFFORT_MAP_FIELD,
     MAX_MAP_ENTRIES,
@@ -585,6 +585,14 @@ def _check_provider_label(
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
+    """Construct an adapter and retain the kind used to build it."""
+    adapter = _build_adapter(kind, cfg)
+    if isinstance(adapter, BaseAdapter):
+        adapter.registered_kind = kind
+    return adapter
+
+
+def _build_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:
