@@ -126,6 +126,9 @@ def _openrouter_adapter_kind(config: Any) -> str:
 
 
 def _adapter_kind(adapter: object) -> str:
+    registered_kind = getattr(adapter, "registered_kind", None)
+    if registered_kind:
+        return registered_kind
     config = getattr(adapter, "config", None)
     if config is None:
         return ""
@@ -158,19 +161,24 @@ def _adapter_key_provider(adapter: object) -> str:
         config, "openrouter_pinned_provider", None
     ):
         return "openrouter"
-    provider = str(getattr(config, "provider", "") or "")
-    return dynamic_keys.normalize_key_provider(provider)
+    metadata = getattr(config, "route_metadata", None) or {}
+    provider = metadata.get("key_provider") or getattr(config, "provider", "") or ""
+    return dynamic_keys.normalize_key_provider(str(provider))
 
 
 def find_verification_adapter(services: Any, provider: str) -> object | None:
     """Find a route adapter suitable for probing a candidate provider key."""
     routes = getattr(getattr(services, "router", None), "routes", {}) or {}
+    bindings = dynamic_keys.snapshot_adapter_key_providers()
     for route in routes.values():
         for adapter, _weight in _route_entries(route):
             config = getattr(adapter, "config", None)
             if config is None:
                 continue
-            if _adapter_key_provider(adapter) != provider:
+            registered = bindings.get(id(adapter))
+            # Live registration owns the binding. The configured owner covers
+            # adapters that do not participate in dynamic key management.
+            if provider not in (registered or {_adapter_key_provider(adapter)}):
                 continue
             if (getattr(config, "model_type", None) or "chat") != "chat":
                 continue
@@ -201,7 +209,12 @@ async def probe_provider_key_with_existing_route(
     cfg["api_key"] = api_key
     cfg["api_keys"] = None
 
-    dry_run_adapter = _make_adapter(_adapter_kind(adapter), cfg)
+    try:
+        dry_run_adapter = _make_adapter(_adapter_kind(adapter), cfg)
+    except (TypeError, ValueError) as exc:
+        raise ProviderKeyProbeError(
+            "probe_unavailable", "Cannot construct a verification adapter for this route"
+        ) from exc
     try:
         await asyncio.wait_for(
             dry_run_adapter.chat_completion(

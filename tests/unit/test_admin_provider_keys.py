@@ -22,6 +22,7 @@ from serving.admin.provider_key_probe import (
 )
 from serving.config.settings import ROLE_RANK
 from serving.servers.deps import AppServices
+from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
 
@@ -512,6 +513,83 @@ async def test_verify_provider_key_dry_run_does_not_persist_or_seed_pool(client)
         max_tokens=1,
         temperature=0,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upstream_status", [200, 403])
+async def test_verify_provider_key_uses_registered_kind_for_custom_label(
+    client, monkeypatch, upstream_status
+):
+    http, store = client
+    provider = "example-cloud"
+    base_url = "https://api.example.test/proxy"
+    old_key = "example-existing-fixture"
+    candidate_key = "example-candidate-fixture"
+    adapter = _make_adapter(
+        "openai_compat",
+        {
+            "id": "example-chat",
+            "name": "Example Chat",
+            "provider": provider,
+            "base_url": base_url,
+            "chat_path": "/chat/completions",
+            "provider_model_id": "vendor/example-chat",
+            "api_keys": [old_key],
+        },
+    )
+    # A different key pool owns a route with the same display label. Even
+    # stale metadata claiming the requested provider cannot override its binding.
+    other_adapter = _make_adapter(
+        "openai_compat",
+        {
+            "id": "example-local",
+            "name": "Example Local",
+            "provider": provider,
+            "base_url": "https://different.example.test/v1",
+            "route_metadata": {"key_provider": provider},
+        },
+    )
+    dynamic_keys.register_adapter_for_provider("example-local", other_adapter)
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    store.services.router.routes = {
+        "example-local": SimpleNamespace(adapters=[(other_adapter, 1.0)]),
+        "example-chat": SimpleNamespace(adapters=[(adapter, 1.0)]),
+    }
+
+    seen = []
+
+    async def upstream(probe_adapter, _messages, **_kwargs):
+        seen.append(probe_adapter)
+        if upstream_status == 403:
+            raise aiohttp.ClientResponseError(
+                request_info=MagicMock(), history=(), status=403, message="Forbidden"
+            )
+        return {"id": "verified"}
+
+    monkeypatch.setattr(OpenAICompatAdapter, "chat_completion", upstream)
+    response = await http.post(
+        "/admin/provider-keys/verify",
+        json={"provider": provider, "api_key": candidate_key},
+        headers=AUTH,
+    )
+
+    if upstream_status == 200:
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+    else:
+        assert response.status_code == 400
+        assert "HTTP 403" in response.json()["detail"]
+        assert candidate_key not in response.text
+    assert len(seen) == 1
+    probe_adapter = seen[0]
+    assert probe_adapter is not adapter
+    assert probe_adapter.config.api_key == candidate_key
+    assert probe_adapter.config.api_keys is None
+    assert probe_adapter.config.base_url == base_url
+    assert probe_adapter.config.chat_path == "/chat/completions"
+    assert probe_adapter.config.provider_model_id == "vendor/example-chat"
+    assert adapter._key_pool.snapshot_keys() == [old_key]
+    assert not store.rows
 
 
 @pytest.mark.asyncio
