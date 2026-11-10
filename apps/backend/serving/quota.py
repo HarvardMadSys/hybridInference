@@ -32,6 +32,7 @@ effect before it was enforced. Month spend is the sum of the month's
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
@@ -41,21 +42,39 @@ from typing import Any, Literal
 DEFAULT_DAILY_QUOTA_USD = 1000.0
 
 #: Charged optimistically before the call, since the real cost is not known
-#: until it returns. Same value the direct path uses.
+#: until it returns. Same value the direct path uses. It is also the least an
+#: admitted request reserves while it runs (:mod:`serving.spend_ledger`), so
+#: requests in flight count against the limits they may yet exceed.
 ESTIMATED_REQUEST_COST_USD = 0.01
 
+#: The most one request reserves while it runs, whatever its estimate
+#: (:func:`estimate_request_cost`): more than the largest request of a typical
+#: model costs, and little enough that one mispriced or oversized estimate
+#: holds back only a few dollars of the caller's budget.
+MAX_RESERVED_REQUEST_COST_USD = 5.0
 
-class QuotaExceeded(Exception):
-    """The account's daily cost quota is spent.
 
-    Carries the numbers rather than a rendered message so each caller can raise
-    it in its own framework's idiom while the body stays identical.
+def estimate_request_cost(
+    *,
+    prompt_tokens: int,
+    output_tokens: int,
+    prompt_price: float,
+    completion_price: float,
+) -> float:
+    """What a request may cost, for reserving it while it runs.
+
+    Its prompt and the output it allows, at its model's prices (USD per
+    million tokens), within [:data:`ESTIMATED_REQUEST_COST_USD`,
+    :data:`MAX_RESERVED_REQUEST_COST_USD`]; the most, when a price is not a
+    number.
     """
-
-    def __init__(self, *, quota_usd: float, spent_usd: float) -> None:
-        super().__init__("Daily cost quota exceeded")
-        self.quota_usd = quota_usd
-        self.spent_usd = spent_usd
+    estimate = (
+        max(prompt_tokens, 0) * max(prompt_price, 0.0)
+        + max(output_tokens, 0) * max(completion_price, 0.0)
+    ) / 1_000_000
+    if not math.isfinite(estimate):
+        return MAX_RESERVED_REQUEST_COST_USD
+    return min(max(estimate, ESTIMATED_REQUEST_COST_USD), MAX_RESERVED_REQUEST_COST_USD)
 
 
 def next_utc_midnight(now: datetime | None = None) -> datetime:
@@ -86,16 +105,6 @@ def resolve_quota(raw: Any) -> float:
     direct path — old rows predate the column.
     """
     return DEFAULT_DAILY_QUOTA_USD if raw is None else float(raw)
-
-
-def check(*, quota_usd: float, spent_usd: float) -> None:
-    """Raise if this request would take the account past its daily limit.
-
-    Raises:
-        QuotaExceeded: When the estimated charge does not fit under the limit.
-    """
-    if spent_usd + ESTIMATED_REQUEST_COST_USD > quota_usd:
-        raise QuotaExceeded(quota_usd=quota_usd, spent_usd=spent_usd)
 
 
 def exceeded_payload(
@@ -137,7 +146,7 @@ def exceeded_payload(
     return body, headers
 
 
-Scope = Literal["key", "account"]
+Scope = Literal["key", "project", "account"]
 Window = Literal["day", "month"]
 
 
@@ -156,6 +165,7 @@ class BudgetRefusal:
     spent_usd: float
     key_prefix: str | None = None
     key_label: str | None = None
+    scope_name: str | None = None
 
     def reset_at(self, now: datetime | None = None) -> datetime:
         """When the window's counter starts again."""
@@ -176,15 +186,20 @@ def first_refusal(
     key_budget_monthly_usd: float | None = None,
     key_spent_today_usd: float = 0.0,
     key_spent_month_usd: float = 0.0,
+    project_budget_daily_usd: float | None = None,
+    project_budget_monthly_usd: float | None = None,
+    project_spent_today_usd: float = 0.0,
+    project_spent_month_usd: float = 0.0,
+    project_name: str | None = None,
     key_prefix: str | None = None,
     key_label: str | None = None,
 ) -> BudgetRefusal | None:
     """Return the narrowest limit this request does not fit under, or None.
 
-    Checked in order key/day, key/month, account/day, account/month, so a
+    Checked in order key, project, account (day then month at each level), so a
     refusal names the narrowest limit that ran out. Each uses the same
-    optimistic estimate, so a key and its account behave alike near their
-    limits. A key budget or a monthly quota of None is no limit there.
+    optimistic estimate, so the levels behave alike near their limits. A NULL
+    budget or monthly quota is no limit there.
     """
     if _over(key_budget_daily_usd, key_spent_today_usd):
         return BudgetRefusal(
@@ -198,6 +213,22 @@ def first_refusal(
             key_spent_month_usd,
             key_prefix,
             key_label,
+        )
+    if _over(project_budget_daily_usd, project_spent_today_usd):
+        return BudgetRefusal(
+            "project",
+            "day",
+            float(project_budget_daily_usd),
+            project_spent_today_usd,
+            scope_name=project_name,
+        )
+    if _over(project_budget_monthly_usd, project_spent_month_usd):
+        return BudgetRefusal(
+            "project",
+            "month",
+            float(project_budget_monthly_usd),
+            project_spent_month_usd,
+            scope_name=project_name,
         )
     if _over(account_quota_usd, account_spent_usd):
         return BudgetRefusal("account", "day", account_quota_usd, account_spent_usd)
@@ -236,6 +267,13 @@ def refusal_payload(
             else "Monthly quota exhausted. Contact the operator of this deployment."
         )
         named: dict[str, Any] = {}
+    elif refusal.scope == "project":
+        error = f"Project {period} budget exceeded"
+        message = (
+            f"Project {refusal.scope_name!r} reached its {period} budget "
+            f"of ${refusal.limit_usd:.2f}. Raise the project's budget in the console."
+        )
+        named = {"project": refusal.scope_name}
     else:
         error = f"API key {period} budget exceeded"
         message = (

@@ -169,7 +169,7 @@ export function DeveloperHome({
 }: {
   requestTimeoutMs?: number;
 } = {}): JSX.Element {
-  const { branding, distribution, features } = useSiteConfig();
+  const { branding, distribution, features, configuration } = useSiteConfig();
   const { state: auth } = useAuth();
   const t = useT();
   const [gatewayStatus, setGatewayStatus] = useState<GatewayStatus>('checking');
@@ -436,7 +436,12 @@ export function DeveloperHome({
           ) : (
             <>
               <p className="font-medium text-gray-900">
-                {t('landing.home.no_chat_user', 'No chat models are available to your account.')}
+                {configuration?.incomplete
+                  ? t(
+                      'chrome.configuration.user_notice',
+                      'Ask admin to configure this service. Required configuration is missing.',
+                    )
+                  : t('landing.home.no_chat_user', 'No chat models are available to your account.')}
               </p>
               <p className="mt-1">
                 {t(

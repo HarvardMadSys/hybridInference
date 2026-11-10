@@ -116,6 +116,10 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
         )
     )
     store.browser_sessions = browser_sessions.install(store)
+    # The session the tokens of _admin_headers() name: the admin is signed in.
+    store.browser_sessions.remember_session(
+        {"id": "auth-sess", "user_id": ADMIN_ID, "sid": "sess", "expires_at": None}
+    )
     return store
 
 
@@ -323,8 +327,18 @@ class TestAdminEndpoints:
 
     async def test_can_change_another_users_role(self, client, op_store, users):
         users[OTHER_ID]["status"] = "active"
-        resp = await client.patch(
+        # Raising a role needs the administrator's password, which an account
+        # without an email confirms like any other: by its login name's limits.
+        refused = await client.patch(
             f"/admin/users/{OTHER_ID}", headers=_admin_headers(), json={"role": "pro"}
+        )
+        assert refused.status_code == 400, refused.text
+        op_store.update_user_fields.assert_not_awaited()
+
+        resp = await client.patch(
+            f"/admin/users/{OTHER_ID}",
+            headers=_admin_headers(),
+            json={"role": "pro", "password": PASSWORD},
         )
 
         assert resp.status_code == 200, resp.text

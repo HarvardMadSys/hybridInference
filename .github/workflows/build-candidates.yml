@@ -38,13 +38,10 @@ concurrency:
 jobs:
   build:
     name: Build and push candidates
-    # Self-hosted, by billing reality (2026-08-18): the original design ran
-    # this on GitHub-hosted runners so publishing would not depend on the
-    # FreeInference fleet, but the org's hosted minutes are billing-blocked
-    # — the same constraint that moved CI onto the fleet. arm64-docker is
-    # native for arm64 diagnostics, so that choice skips QEMU entirely. An
-    # operator may still request an amd64 diagnostic; canonical deployable
-    # candidates are built natively per architecture in ci.yml.
+    # Self-hosted: arm64-docker builds arm64 diagnostics natively, so this
+    # job skips QEMU entirely. An operator may still request an amd64
+    # diagnostic; canonical deployable candidates are built natively per
+    # architecture in ci.yml.
     runs-on: [self-hosted, Linux, arm64-docker]
     timeout-minutes: 45
     steps:
@@ -62,12 +59,30 @@ jobs:
             *) echo "::error title=Bad input::platform must be linux/amd64 or linux/arm64"; exit 1 ;;
           esac
 
-      - uses: actions/checkout@v6
+      # A dispatch runs the chosen ref's code, reviewed or not, with this
+      # workflow's packages: write token, on a host the publish jobs use; the
+      # operator's choices that would bound that are listed at the top of
+      # ci.yml.
+      - name: Keep the registry login in this job's own Docker config
+        # See "Credentials" above publish-backend-precheck in ci.yml.
+        run: |
+          set -euo pipefail
+          plugins="${DOCKER_CONFIG:-${HOME}/.docker}/cli-plugins"
+          docker_config="${RUNNER_TEMP}/docker-config"
+          rm -rf "${docker_config}"
+          mkdir -m 0700 "${docker_config}"
+          if [ -d "${plugins}" ]; then
+            ln -s "${plugins}" "${docker_config}/cli-plugins"
+          fi
+          echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"
+
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           # Full fetch, matching ci.yml: shallow fetches of this repository
           # intermittently fail with "pack has N unresolved deltas" /
           # "missing blob" (see the fetch-depth comments in ci.yml).
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Compute image names
         id: names
@@ -79,13 +94,13 @@ jobs:
           echo "arch=${PLATFORM#linux/}" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@c7c53464625b32c7a7e944ae62b3e17d2b600130 # v3.7.0
 
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
 
       - name: Log in to GHCR
-        uses: docker/login-action@v3
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -93,7 +108,7 @@ jobs:
 
       - name: Build and push backend
         id: backend
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
           file: deploy/docker/Dockerfile.backend
@@ -121,3 +136,7 @@ jobs:
             echo "Diagnostic only: upstream.lock never consumes manual-* tags."
             echo "For deployment, use the automatic dev CI multi-arch candidate and the consuming distribution repository's upstream bump flow."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove the registry login
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/docker-config/config.json"

@@ -123,8 +123,9 @@ export function SignupConsentStep({
   const termsRef = useRef<HTMLDivElement>(null);
   const checkedCount = required.filter((id) => accepted.has(id)).length;
   const allChecked = checkedCount === required.length;
-  // Only the console's own card is known to pad its body by `p-8`, which the
-  // sticky bar bleeds into so the text scrolling under it stays hidden.
+  // Only the console's own card is known to pad its body (`p-6`, `p-8` from
+  // `sm`), which the sticky bar bleeds into so the text scrolling under it
+  // stays hidden.
   const inConsoleCard = !SITE_UI_CLIENT.AuthFrame;
 
   useEffect(() => {
@@ -220,7 +221,7 @@ export function SignupConsentStep({
             way on are never a long scroll away. */}
         <div
           className={`sticky bottom-0 z-10 mt-6 space-y-2.5 border-t border-gray-200 bg-white/95 py-3 backdrop-blur ${
-            inConsoleCard ? '-mx-8 px-8' : ''
+            inConsoleCard ? '-mx-6 px-6 sm:-mx-8 sm:px-8' : ''
           }`}
         >
           <div className="flex items-center gap-3">

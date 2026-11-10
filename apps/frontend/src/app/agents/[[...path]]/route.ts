@@ -1,5 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server';
-import { withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
+import { scopeProxiedSetCookie, withoutConsoleSession } from '@/lib/utils/consoleSessionCookie';
 
 const WEB_PREFIX = '/agents';
 const API_PREFIX = '/agents/api';
@@ -228,8 +228,12 @@ function responseHeaders(
     headers.append(name, value);
   });
 
+  // Both services' cookies stay under /agents and never replace the console's:
+  // see scopeProxiedSetCookie. The control plane names paths from its own root,
+  // which the browser never sees, so those land on /agents as well.
   for (const cookie of upstream.headers.getSetCookie()) {
-    headers.append('set-cookie', cookie);
+    const scoped = scopeProxiedSetCookie(cookie, WEB_PREFIX);
+    if (scoped) headers.append('set-cookie', scoped);
   }
 
   const location = headers.get('location');

@@ -61,12 +61,17 @@ _SNIFF_BYTES = 8192
 def tracked_files(repo_root: Path) -> list[str]:
     """Return the paths tracked by the repository index."""
     output = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=repo_root,
         capture_output=True,
         check=True,
     ).stdout
-    return [name.decode() for name in output.split(b"\0") if name]
+    return [
+        name.decode()
+        for name in output.split(b"\0")
+        if name
+        and ((repo_root / name.decode()).exists() or (repo_root / name.decode()).is_symlink())
+    ]
 
 
 def read_text(path: Path) -> str | None:

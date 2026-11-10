@@ -379,13 +379,9 @@ msgstr ""
 
 #: ../developer/openrouter.md:184
 msgid ""
-"**Requests reach the wrong upstream.** Use `GET /routing` to see the "
-"effective weight distribution per model. Note that this endpoint is "
-"unauthenticated and discloses upstream base URLs; see the warning in "
-"[Architecture](architecture.md#http-surface)."
+"**Requests reach the wrong upstream.** Use `GET /routing` to see the effective weight distribution per model. It answers anyone, but shows each route's upstream base URL only with an administrator's JWT or `ADMIN_TOKEN`; see [Architecture](architecture.md#http-surface)."
 msgstr ""
-"**请求发到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。注意这个端点不需要鉴权，而且会暴露上游的 base"
-" URL；见[架构](architecture.md#http-surface)里的警告。"
+"**请求发到了错误的上游**。用 `GET /routing` 查看每个模型实际生效的权重分布。任何人都能访问它，但只有带上管理员的 JWT 或 `ADMIN_TOKEN` 时才会显示每条路由的上游 base URL；见[架构](architecture.md#http-surface)。"
 
 #~ msgid ""
 #~ "**Attribution headers.** `X-Title` carries the"
@@ -441,3 +437,27 @@ msgstr ""
 #~ " 状态码、不在豁免之列，照样会打开熔断。403 被刻意排除在鉴权升级集合之外，是因为远端 provider"
 #~ " 把它当作按请求拒绝的通用出口——内容策略、地域封锁——这些情况下上游本身是健康的；理由见 "
 #~ "`apps/backend/routing/endpoint_health.py`。"
+
+msgid "[OpenRouter](https://openrouter.ai) is one of the providers HybridInference can route to. Configure its credentials and routes in Admin. This page covers the OpenRouter adapter specifically. For how routing works in general, see [Architecture](architecture.md); for the model-registry syntax, see [Adding a New Model](adding-models.md)."
+msgstr "[OpenRouter](https://openrouter.ai) 是 HybridInference 可路由到的供应商之一。在 Admin 中配置其凭据和路由。本页专门介绍 OpenRouter 适配器。通用路由机制见[架构](architecture.md)；模型注册表语法见[添加新模型](adding-models.md)。"
+
+msgid "Configure OpenRouter"
+msgstr "配置 OpenRouter"
+
+msgid "Add an OpenRouter credential under **Admin → Providers**, then create a model and verify its OpenRouter route under **Admin → Routing**. A fresh gateway has no configured provider or model."
+msgstr "在 **Admin → Providers** 中添加 OpenRouter 凭据，然后在 **Admin → Routing** 中创建模型并验证其 OpenRouter 路由。新网关没有已配置的供应商或模型。"
+
+msgid "For catalog metadata and aliases, `config/examples/models.openrouter.json` provides optional JSON import input for the `MODEL_CATALOG` setting. Add the referenced keys as secret settings before importing it and follow the **Restart required** marker."
+msgstr "如需目录元数据和别名，`config/examples/models.openrouter.json` 为 `MODEL_CATALOG` 设置提供可选 JSON 导入输入。导入前将引用的密钥添加为秘密设置，并遵循 **Restart required** 标记。"
+
+msgid "Verify the model identifiers and prices for your account before importing the example. The gateway uses catalog prices for its own usage accounting."
+msgstr "导入示例前，请核对你账户的模型标识符和价格。网关使用目录价格进行自己的用量计费。"
+
+msgid "**Attribution headers.** OpenRouter credits traffic — for its leaderboard and its free-tier limits — to the site these two headers name. `X-Title` carries your site's name and `HTTP-Referer` its public address, taken from `SITE_NAME` and `SITE_PUBLIC_BASE_URL` or from `SITE_CONFIGURATION`. Without a public address no `HTTP-Referer` is sent, and without a site name `X-Title` is `HybridInference`. Set both if you want your own site credited."
+msgstr "**归属请求头。** OpenRouter 根据这两个请求头标识的站点归属流量，用于排行榜和免费层限额。`X-Title` 携带站点名称，`HTTP-Referer` 携带公共地址，取自 `SITE_NAME` 和 `SITE_PUBLIC_BASE_URL` 或 `SITE_CONFIGURATION`。没有公共地址时不发送 `HTTP-Referer`，没有站点名称时 `X-Title` 为 `HybridInference`。如需归属到自己的站点，请设置两者。"
+
+msgid "**Every OpenRouter request returns 401.** The gateway's key was rejected, not the caller's. Check the credential in Admin Providers or the referenced secret setting. A key that is unset entirely never gets that far — the route is skipped or startup fails, as above — so a 401 means a key was present and OpenRouter refused it."
+msgstr "**每个 OpenRouter 请求都返回 401。** 被拒绝的是网关密钥，而不是调用方密钥。检查 Admin Providers 中的凭据或引用的秘密设置。完全未设置的密钥不会到达此步骤：如上所述，路由会被跳过或启动失败。因此 401 表示密钥已提供，但被 OpenRouter 拒绝。"
+
+msgid "**The model is missing from `/v1/models`.** Check its required role, route verification and applied status in Admin Routing. For a catalog model, check `MODEL_CATALOG`, its referenced secret settings and its **Restart required** marker; see [Configuration](configuration.md)."
+msgstr "**模型未出现在 `/v1/models` 中。** 在 Admin Routing 中检查所需角色、路由验证和应用状态。对于目录模型，检查 `MODEL_CATALOG`、引用的秘密设置和 **Restart required** 标记；参见[配置](configuration.md)。"

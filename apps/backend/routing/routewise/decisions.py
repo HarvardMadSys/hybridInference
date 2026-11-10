@@ -46,6 +46,26 @@ class ProviderReservation:
         if release_callback is not None:
             release_callback()
 
+    def hand_off(self) -> Callable[[], None]:
+        """Give the release to a new owner and return it.
+
+        The returned callable releases at most once, and this reservation's own
+        ``release`` does nothing from here on, so the resource is released once
+        in all: by the new owner, or not at all when it was already released.
+        A hedge uses this to free its primary's capacity when the primary's leg
+        ends while the request carries on through its backup.
+        """
+        if self.released:
+            return _release_nothing
+        self.released = True
+        release_callback = self._release_callback
+        self._release_callback = None
+        return ProviderReservation(release_callback).release
+
+
+def _release_nothing() -> None:
+    """Release a reservation that was already released: nothing to do."""
+
 
 @dataclass(slots=True)
 class RoutingTrace:

@@ -46,16 +46,19 @@ function MissingConfigurationNotice(): JSX.Element | null {
   if (!state.isAuthenticated || !state.user) return null;
 
   return (
-    <div className={`mx-auto w-full ${consoleWidth} px-6`}>
+    <div className={`mx-auto w-full ${consoleWidth} px-4 sm:px-6`}>
       <div
         role="status"
-        className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-5 py-3 text-sm text-amber-900 shadow-subtle"
+        className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-subtle sm:px-5"
       >
         {state.user.is_admin ? (
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-            <span className="font-semibold">Required settings are missing.</span>
+            <span className="font-semibold">Ask admin to configure</span>
+            {/* Filtered to the required settings that have no value, on every
+                sub-tab; clearing the filter lands on Models, where an empty
+                catalog -- the other way to be incomplete -- is fixed. */}
             <Link
-              href={`${ADMIN_SETTINGS_PATH}?missing=1`}
+              href={`${ADMIN_SETTINGS_PATH}?tab=models&missing=1`}
               prefetch={false}
               className="font-medium underline underline-offset-2"
             >
@@ -66,7 +69,7 @@ function MissingConfigurationNotice(): JSX.Element | null {
           <p>
             {t(
               'chrome.configuration.user_notice',
-              'This service is missing required configuration, so some features may not work. Please contact your administrator.',
+              'Ask admin to configure this service. Required configuration is missing.',
             )}
           </p>
         )}

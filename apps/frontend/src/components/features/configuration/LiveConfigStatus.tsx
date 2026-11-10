@@ -81,8 +81,8 @@ function contractText(group: LiveGroupStatus): string {
 }
 
 function GroupStatus({ group, status }: { group: LiveGroupStatus; status: LiveStatus }) {
-  const revision = status.version?.revision ?? null;
-  const epoch = status.version?.epoch ?? null;
+  const revision = (group.version ?? status.version)?.revision ?? null;
+  const epoch = (group.version ?? status.version)?.epoch ?? null;
   const coverage = group.coverage;
   const instances = group.instances.filter((instance) => instance.lifecycle !== 'stopped');
   return (
@@ -236,15 +236,16 @@ export function LiveConfigStatus({
           <p className="text-[12px] text-gray-700">
             Saved configuration:{' '}
             <span className="font-mono">
-              {status.source} / epoch {status.version?.epoch ?? '—'} / revision{' '}
-              {status.version?.revision ?? '—'}
+              {group?.source ?? status.source} / epoch{' '}
+              {(group?.version ?? status.version)?.epoch ?? '—'} / revision{' '}
+              {(group?.version ?? status.version)?.revision ?? '—'}
             </span>
           </p>
           {group ? <GroupStatus group={group} status={status} /> : null}
           <p className="text-[11px] text-gray-500">
-            Applied means the process uses the saved channel and thresholds; it does not mean a
-            message was delivered — use Send test for that. After a channel change, the recovery of
-            an incident opened earlier is posted to the new channel.
+            {groupName === 'routing.runtime'
+              ? 'Route edits apply across registered backend processes. Model catalog changes marked Restart required still need a backend restart.'
+              : 'Applied means the process uses the saved channel and thresholds. Use Send test to check delivery.'}
           </p>
         </div>
       ) : null}

@@ -9,6 +9,7 @@ deletes working, or stored rows could no longer be erased.
 
 from __future__ import annotations
 
+import json
 import uuid
 
 import pytest
@@ -75,6 +76,10 @@ async def test_a_saved_response_reads_back_as_saved(store, users):
     second = await _save(store, alice, previous_response_id=first, model="other-model")
 
     row = await store.get(second)
+    async with store._pool.acquire() as conn:
+        stored_bytes = await conn.fetchval(
+            "SELECT octet_length(messages::text) FROM openai_responses WHERE id = $1", second
+        )
 
     assert row == {
         "id": second,
@@ -86,6 +91,8 @@ async def test_a_saved_response_reads_back_as_saved(store, users):
         ],
         "previous_response_id": first,
         "model": "other-model",
+        # The stored conversation's size, as PostgreSQL renders it, in UTF-8 bytes.
+        "messages_bytes": stored_bytes,
     }
     assert await store.get(_rid()) is None
 
@@ -164,3 +171,107 @@ async def test_a_corrupt_json_column_reads_as_none_not_an_exception():
     assert responses_store._load_json(b"[1]") == [1]
     assert responses_store._load_json("{not json") is None
     assert responses_store._load_json({"already": "decoded"}) == {"already": "decoded"}
+
+
+async def _age(pool, rid: str, days: float) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE openai_responses SET created_at = now() - make_interval(secs => $2) "
+            "WHERE id = $1",
+            rid,
+            days * 86400,
+        )
+
+
+async def _exists(store: ResponseStore, rid: str) -> bool:
+    return await store.get(rid) is not None
+
+
+async def test_the_retention_purge_removes_responses_older_than_30_days_only(pool, store, users):
+    alice, bob = users
+    expired = [await _save(store, alice) for _ in range(3)] + [await _save(store, bob)]
+    kept = [await _save(store, alice), await _save(store, bob)]
+    for rid in expired:
+        await _age(pool, rid, 30.01)
+    await _age(pool, kept[0], 29.99)
+
+    # Two at a time: the purge keeps going until a statement finds fewer.
+    assert await responses_store.purge_expired(pool, batch=2) >= len(expired)
+
+    assert [await _exists(store, rid) for rid in expired] == [False] * len(expired)
+    assert [await _exists(store, rid) for rid in kept] == [True, True]
+    assert await responses_store.purge_expired(pool) == 0
+
+
+async def test_a_chain_older_than_the_retention_continues_from_its_newest_turn(pool, store, users):
+    """Each turn carries the whole conversation, so purging the old turns loses nothing of it."""
+    alice, _ = users
+    first = await _save(store, alice, messages=[{"role": "user", "content": "turn 1"}])
+    conversation = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "reply 1"},
+        {"role": "user", "content": "turn 2"},
+    ]
+    latest = await _save(store, alice, previous_response_id=first, messages=conversation)
+    await _age(pool, first, 31)
+
+    await responses_store.purge_expired(pool)
+
+    assert not await _exists(store, first)
+    assert (await store.get(latest))["messages"] == conversation
+
+
+async def test_the_retention_purge_reads_the_owner_index_not_the_table(pool, users):
+    """Many owners and rows: the plan walks idx_openai_responses_user and the primary key."""
+    tag = users[0]
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO openai_responses (id, user_id, response, messages, created_at) "
+            "SELECT $1 || '-' || g, $1 || '-' || (g % 40), '{}', "
+            "jsonb_build_array(jsonb_build_object('content', repeat('x', 500))), "
+            "now() - make_interval(days => g % 60) "
+            "FROM generate_series(1, 4000) AS g",
+            tag,
+        )
+        try:
+            await conn.execute("ANALYZE openai_responses")
+            plan = "\n".join(
+                r[0] for r in await conn.fetch("EXPLAIN " + responses_store._PURGE_SQL, 30, 1000)
+            )
+        finally:
+            await conn.execute("DELETE FROM openai_responses WHERE user_id LIKE $1 || '-%'", tag)
+
+    assert "Seq Scan on openai_responses" not in plan, plan
+    assert "idx_openai_responses_user" in plan
+    assert "openai_responses_pkey" in plan
+
+
+async def test_a_get_reads_the_owners_response_alone(store, users):
+    """What GET serves: the owner's Responses object, matched in SQL, without the conversation."""
+    alice, bob = users
+    rid = await _save(store, alice)
+
+    body = await store.get_response(rid, user_id=alice)
+
+    assert json.loads(body) == {"id": rid, "status": "completed", "output": [{"text": "héllo ✓"}]}
+    assert await store.get_response(rid, user_id=bob) is None
+    assert await store.get_response(_rid(), user_id=alice) is None
+
+
+async def test_a_follow_up_reads_the_owners_conversation_and_its_stored_size(store, users):
+    alice, bob = users
+    rid = await _save(store, alice)
+
+    stored, size = await store.get_conversation(rid, user_id=alice)
+
+    assert responses_store.decode_conversation(stored) == [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "héllo ✓", "reasoning_content": "thought"},
+    ]
+    async with store._pool.acquire() as conn:
+        assert size == await conn.fetchval(
+            "SELECT octet_length(messages::text) FROM openai_responses WHERE id = $1", rid
+        )
+    # Measured as the bytes of the text asyncpg hands back, non-ASCII included.
+    assert size == len(stored.encode())
+    assert await store.get_conversation(rid, user_id=bob) is None

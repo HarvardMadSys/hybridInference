@@ -43,7 +43,7 @@ const BADGE_TONES: Record<BadgeTone, string> = {
  * key a live group owns is declared restart-required, and is until the group
  * is active; `apply_mode` says which applies now. An older backend omits it.
  */
-export function appliesAfterRestart(entry: ConfigEntry): boolean {
+function appliesAfterRestart(entry: ConfigEntry): boolean {
   return entry.apply_mode ? entry.apply_mode === 'restart' : entry.restart_required;
 }
 

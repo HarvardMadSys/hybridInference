@@ -68,20 +68,6 @@ RETIRE_TIMEOUT_SECONDS = 10.0
 #: forced closed, and replaced states do not pile up without limit.
 MAX_RETAINED = 4
 
-#: States a group reports. ``paused`` is applied with its component idle by
-#: configuration (an alert channel cleared on purpose), not a failure.
-STATES = (
-    "dormant",
-    "dormant-frozen",
-    "applying",
-    "applied",
-    "paused",
-    "invalid",
-    "failed",
-    "unsupported",
-    "cleanup_blocked",
-)
-
 
 def _log_failure(what: str, group: str, exc: BaseException) -> None:
     """Log a failure by its class alone.
@@ -332,11 +318,6 @@ class LiveGroup(Generic[D, V]):
         with self._lock:
             published = self._published
         return published is not None and published.managed
-
-    @property
-    def active_in_contract(self) -> bool:
-        """Whether the last snapshot this applier processed has this group's contract active."""
-        return self.status.state not in ("dormant", "dormant-frozen", "unsupported")
 
     def owns(self, contracts: Contracts) -> bool:
         """Whether *contracts* hand this group's keys to its applier.
@@ -687,6 +668,8 @@ class LiveGroup(Generic[D, V]):
     def _mark_applied(self, version: SourceVersion | None) -> None:
         status = self.status
         view = self.acquire().view
+        # ``paused`` is applied with its component idle by configuration (an
+        # alert channel cleared on purpose), not a failure.
         status.state = "paused" if self._paused(view) else "applied"
         status.error_code = None
         status.error_keys = ()

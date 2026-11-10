@@ -11,7 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import ANY, AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
@@ -53,6 +53,8 @@ class _Upstream(BaseAdapter):
                 name="Batch Model",
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )
@@ -163,7 +165,9 @@ async def test_item_runs_through_the_handler_and_reports_its_response():
 async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     app, services = _setup(_Upstream())
 
-    result = await _dispatch(app, services)
+    result = await _dispatch(
+        app, services, user_ctx={**_owner(), "project_id": "proj_batch", "org_id": "org_batch"}
+    )
 
     row = await _logged_row(services)
     # 100 prompt tokens at $1/M plus 50 completion tokens at $2/M.
@@ -175,6 +179,7 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     assert row["metadata"]["user_id"] == "owner-1"
     # Charged to the key that created the batch, as a live request with it is.
     assert row["metadata"]["api_key_id"] == 41
+    assert row["metadata"]["project_id"] == "proj_batch"
     assert row["metadata"]["user_agent"] == BATCH_USER_AGENT
     assert row["status_code"] == 200
     for _ in range(100):
@@ -182,7 +187,13 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
             break
         await asyncio.sleep(0.001)
     services.operational_store.increment_user_cost.assert_awaited_once_with(
-        "owner-1", pytest.approx(0.0002), api_key_id=41
+        "owner-1",
+        pytest.approx(0.0002),
+        day=ANY,
+        requests=1,
+        api_key_id=41,
+        org_id="org_batch",
+        project_id="proj_batch",
     )
 
 
@@ -295,6 +306,7 @@ async def test_upstream_failures_may_be_retried(error, status, code):
 
     assert result.status_code == status
     assert result.retryable is True
+    assert result.timed_out is False
     assert result.error["code"] == code
     assert result.error["status"] == status
     # The handler logged the failed request; its id comes back with the error.
@@ -327,6 +339,41 @@ async def test_an_attempt_past_its_deadline_times_out():
     result = await _dispatch(app, services, timeout_s=0.05)
 
     assert (result.status_code, result.error["code"], result.retryable) == (504, "timeout", True)
+    assert result.timed_out is True
+
+
+@pytest.mark.parametrize(
+    "error",
+    [_StatusError(504), TimeoutError(), TimeoutError()],
+    ids=["upstream-504", "timeout-error", "asyncio-timeout"],
+)
+async def test_an_upstream_timeout_is_marked_timed_out(error):
+    # A 504 from the upstream, or the upstream call's own timeout (answered
+    # 500, with the timeout as its cause): the scheduler does not retry these.
+    app, services = _setup(_Upstream(error=error))
+
+    result = await _dispatch(app, services)
+
+    assert result.timed_out is True
+    assert result.error is not None
+
+
+async def test_a_connection_that_timed_out_opening_is_retried_not_timed_out():
+    """Opening the connection timed out: nothing was sent, as with a refused connection.
+
+    ``aiohttp.ConnectionTimeoutError`` is a ``TimeoutError`` too, and was taken
+    for a generation running past every limit, which the scheduler fails at once
+    without a retry: a host that dropped connections for a few seconds failed
+    every item in flight for good.
+    """
+    import aiohttp
+
+    app, services = _setup(_Upstream(error=aiohttp.ConnectionTimeoutError()))
+
+    result = await _dispatch(app, services)
+
+    assert result.timed_out is False
+    assert result.retryable is True
 
 
 async def test_cancellation_propagates():
@@ -359,7 +406,18 @@ def _model_queued(retry_after: float | None = 30.0) -> BaseException:
     return error
 
 
-@pytest.mark.parametrize(("retry_after", "requeue_after"), [(30.0, 30.0), (None, 120.0)])
+@pytest.mark.parametrize(
+    ("retry_after", "requeue_after"),
+    [
+        (30.0, 30.0),
+        (0.0, 0.0),
+        (None, 120.0),
+        (-1.0, 120.0),
+        (float("inf"), 120.0),
+        (float("nan"), 120.0),
+        (1e300, 168 * 3600.0),
+    ],
+)
 async def test_a_model_queued_answer_is_requeued_not_failed(retry_after, requeue_after):
     app, services = _setup(_Upstream(error=_model_queued(retry_after)))
 

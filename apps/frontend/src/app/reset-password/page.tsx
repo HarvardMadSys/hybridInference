@@ -1,13 +1,13 @@
 'use client';
 
 import { Suspense, useMemo, useState, useEffect } from 'react';
-import { useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
 import { createAuthSchemas } from '@/lib/schemas/auth';
 import { resetPassword } from '@/lib/api/auth';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { useLinkToken } from '@/lib/hooks/useLinkToken';
 import Link from 'next/link';
 import { useT } from '@/components/providers/useT';
 import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
@@ -32,8 +32,8 @@ type ResetPasswordFormData = z.infer<z.ZodObject<typeof _resetPasswordShape>>;
 function ResetPasswordContent() {
   const t = useT();
   const skin = useAuthAppearance();
-  const searchParams = useSearchParams();
-  const [token, setToken] = useState<string | null>(null);
+  // Taken out of the address once read: see useLinkToken.
+  const token = useLinkToken();
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState(false);
@@ -53,12 +53,10 @@ function ResetPasswordContent() {
   }, [t]);
 
   useEffect(() => {
-    const tokenParam = searchParams.get('token');
-    setToken(tokenParam);
-    if (!tokenParam) {
+    if (!token) {
       setError(t('auth.reset.invalid_token', 'Invalid or missing reset token'));
     }
-  }, [searchParams, t]);
+  }, [token, t]);
 
   const {
     register,

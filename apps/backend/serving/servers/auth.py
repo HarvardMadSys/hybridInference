@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import hmac
 import secrets
+import time
+import weakref
 from base64 import urlsafe_b64encode
+from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -14,14 +17,18 @@ from fastapi import Depends, Header, HTTPException, Request
 from serving import grants, quota
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
-from serving.config.settings import get_settings
+from serving.config.settings import get_settings, has_role
 from serving.config.site_identity import get_site_identity
 from serving.grant_auth import (
     AgentModelAuthError,
     AgentQuotaExceeded,
     authenticate_grant_model_call,
 )
-from serving.model_access import KEY_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
+from serving.model_access import (
+    KEY_ALLOWED_MODELS_KEY,
+    PROJECT_ALLOWED_MODELS_KEY,
+    get_disabled_models_from_preferences,
+)
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -36,7 +43,9 @@ from serving.servers.deps import (
     get_log_store,
     get_operational_store,
 )
+from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.storage.base import OperationalStore
+from serving.storage.pools import DatabaseBusyError
 from serving.utils import context as req_ctx
 from serving.utils.auth_failure_blocklist import is_ip_blocked, record_auth_failure
 from serving.utils.logging import get_logger
@@ -48,6 +57,51 @@ logger = get_logger(__name__)
 # Quota of a key whose ``quota_daily_cost_usd`` is NULL (rows from before the
 # column existed).
 _DEFAULT_DAILY_QUOTA_USD = 1000.0
+
+#: Seconds after one ``last_used_at`` write for a key during which this process
+#: writes no other. The store's UPDATE carries the same window as a guard, so a
+#: key used from several processes is still written about once a minute.
+LAST_USED_DEBOUNCE_SECONDS = 60.0
+
+#: Past this many keys remembered for one store, expired ones are swept out.
+_LAST_USED_SWEEP_AT = 4096
+
+# When this process last scheduled a ``last_used_at`` write, per store and key
+# id. Per store rather than per process so two stores (tests build one each)
+# never debounce each other.
+_last_used_written: weakref.WeakKeyDictionary[Any, dict[int, float]] = weakref.WeakKeyDictionary()
+
+
+def touch_key_last_used(op_store: Any, key_id: int) -> None:
+    """Schedule the ``last_used_at`` write for *key_id*, at most once a minute per process.
+
+    Every authenticated request used to fire one: an unconditional UPDATE of
+    the key's row as an unbounded background task, contending on that one row
+    for a busy key and piling up ahead of the auth lookups on the shared pool
+    while the database was slow. The column is informational (the console's
+    "last used"), so minute resolution is all it needs: a write is skipped when
+    this process scheduled one for the key within
+    :data:`LAST_USED_DEBOUNCE_SECONDS`, and the store skips the row when any
+    process wrote it within the same window.
+
+    The time is noted when the write is scheduled, not when it lands, so a slow
+    database sees at most one pending write per key, never a queue of them.
+    """
+    now = time.monotonic()
+    try:
+        written = _last_used_written.setdefault(op_store, {})
+    except TypeError:
+        # A store that cannot be weakly referenced: no debounce, as before.
+        written = None
+    if written is not None:
+        last = written.get(key_id)
+        if last is not None and now - last < LAST_USED_DEBOUNCE_SECONDS:
+            return
+        if len(written) >= _LAST_USED_SWEEP_AT:
+            for stale in [k for k, at in written.items() if now - at >= LAST_USED_DEBOUNCE_SECONDS]:
+                del written[stale]
+        written[key_id] = now
+    tracked_task(op_store.update_key_last_used(key_id), name="key_last_used")
 
 
 class StoredKeyRejected(Exception):
@@ -71,7 +125,9 @@ class StoredKeyQuotaExceeded(Exception):
     Raised by :func:`authenticate_stored_key`. ``scope`` says whose limit ran
     out: the account's quota (``"account"``) or the key's own budget
     (``"key"``); ``window`` is ``"day"`` or ``"month"``, and ``reset_at`` is
-    when that window renews.
+    when that window renews. ``check`` is the gate's reading the refusal was
+    made on, when there was one: it tells a limit the database shows spent
+    from one taken only by requests still in flight.
     """
 
     def __init__(
@@ -82,6 +138,7 @@ class StoredKeyQuotaExceeded(Exception):
         reset_at: datetime,
         scope: quota.Scope = "account",
         window: quota.Window = "day",
+        check: SpendCheck | None = None,
     ) -> None:
         """Record the limit, the spend, and when and for whom it renews."""
         super().__init__(
@@ -93,6 +150,7 @@ class StoredKeyQuotaExceeded(Exception):
         self.reset_at = reset_at
         self.scope = scope
         self.window = window
+        self.check = check
 
 
 def _quota_contact() -> str:
@@ -157,6 +215,49 @@ def _extract_api_key(authorization: str | None, x_api_key: str | None) -> str | 
     if authorization and authorization.startswith("Bearer "):
         return authorization[7:]
     return x_api_key or None
+
+
+#: Keys of internal and administrator accounts that authenticated in this
+#: process, by hash, with when they last did. A source blocked for repeated
+#: auth failures is refused before its key is looked up, which is the block's
+#: point: brute force costs no database work. One of these keys is still
+#: looked up, so the deployment's own monitor keeps reaching the gateway from
+#: an address it shares with whoever got that address blocked (a Cloudflare
+#: Worker's, say). Nothing enters this set but a key that already proved
+#: itself here, so the block is no weaker for a guesser.
+_PRIVILEGED_KEY_TTL_SEC = 24 * 3600
+_PRIVILEGED_KEYS_MAX = 256
+_privileged_keys: OrderedDict[str, float] = OrderedDict()
+
+
+def _remember_key_privilege(key_hash: str, role: str | None) -> None:
+    """Record whether *key_hash* just authenticated an internal or admin account."""
+    if not has_role(role or "free", "internal"):
+        _privileged_keys.pop(key_hash, None)
+        return
+    _privileged_keys[key_hash] = time.monotonic()
+    _privileged_keys.move_to_end(key_hash)
+    while len(_privileged_keys) > _PRIVILEGED_KEYS_MAX:
+        _privileged_keys.popitem(last=False)
+
+
+def _passes_ip_block(authorization: str | None, x_api_key: str | None) -> bool:
+    """Whether the presented key is a recently proven internal or admin key.
+
+    Costs a keyed hash of the presented value and no lookup, so a blocked
+    source sending guesses is still refused for almost nothing.
+    """
+    if not _privileged_keys:
+        return False
+    api_key = _extract_api_key(authorization, x_api_key)
+    if not api_key:
+        return False
+    try:
+        key_hash = hash_api_key(api_key)
+    except ValueError:
+        return False
+    seen = _privileged_keys.get(key_hash)
+    return seen is not None and time.monotonic() - seen <= _PRIVILEGED_KEY_TTL_SEC
 
 
 def _credential_state(row: dict[str, Any]) -> str:
@@ -336,15 +437,16 @@ def _optional_usd(value: Any) -> float | None:
     return None if value is None else float(value)
 
 
-async def _budget_refusal(
+async def _spend_check(
     identity: dict[str, Any],
     *,
     api_key_id: int | None,
     op_store: Any,
     quota_daily_cost_usd: float,
     spent_today_usd: float,
-) -> quota.BudgetRefusal | None:
-    """Return the limit this request would exceed: the key's budgets, then the account's.
+    read_at: float,
+) -> SpendCheck:
+    """Read what the request is checked against: the key's budgets, then the account's.
 
     A key's budgets apply exactly when the request is attributed to the key
     (``api_key_id`` set); a request on behalf of another user spends that
@@ -355,13 +457,51 @@ async def _budget_refusal(
     The account's monthly quota is read the same way: the month's spend
     arrives with the lookup (``account_spent_month_usd``), or is read here, and
     only for an account that has one. An identity resolved by user rather than
-    by key (``X-On-Behalf-Of``) carries no quota columns, so its daily quota is
-    the default and it has no monthly quota, as before.
+    by key (``X-On-Behalf-Of``) carries its account's quotas
+    (:func:`_account_quotas`), and its month's spend is read here.
+
+    ``read_at`` is when the first of these reads began
+    (:attr:`~serving.spend_ledger.SpendCheck.read_at`). The check counts, on
+    top of what was read, what the spend ledger knows and the counters do not
+    show yet: requests in flight and costs not yet written.
+    """
+    counters = await _quota_counters(
+        identity,
+        api_key_id=api_key_id,
+        op_store=op_store,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=spent_today_usd,
+    )
+    return SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=identity["user_id"],
+        key_id=api_key_id,
+        read_at=read_at,
+        **counters,
+    )
+
+
+async def _quota_counters(
+    identity: dict[str, Any],
+    *,
+    api_key_id: int | None,
+    op_store: Any,
+    quota_daily_cost_usd: float,
+    spent_today_usd: float,
+) -> dict[str, Any]:
+    """Return the limit and counter fields a :class:`SpendCheck` is built from.
+
+    The same dict is what a balance poll reports. In-flight reservations are
+    not part of it: the gate adds those on top, and they live on the worker
+    that admitted the request.
     """
     daily = monthly = None
+    project_daily = project_monthly = None
     if api_key_id is not None:
         daily = _optional_usd(identity.get("budget_daily_usd"))
         monthly = _optional_usd(identity.get("budget_monthly_usd"))
+        project_daily = _optional_usd(identity.get("project_budget_daily_usd"))
+        project_monthly = _optional_usd(identity.get("project_budget_monthly_usd"))
     key_today = key_month = 0.0
     if daily is not None or monthly is not None:
         if identity.get("key_spent_today_usd") is not None:
@@ -376,18 +516,37 @@ async def _budget_refusal(
             account_month = float(identity["account_spent_month_usd"])
         elif op_store:
             account_month = await op_store.get_user_cost_period(identity["user_id"], "month")
-    return quota.first_refusal(
-        account_quota_usd=quota_daily_cost_usd,
-        account_spent_usd=spent_today_usd,
-        account_quota_monthly_usd=monthly_quota,
-        account_spent_month_usd=account_month,
-        key_budget_daily_usd=daily,
-        key_budget_monthly_usd=monthly,
-        key_spent_today_usd=key_today,
-        key_spent_month_usd=key_month,
-        key_prefix=identity.get("key_prefix"),
-        key_label=_key_label(identity),
-    )
+    project_today = float(identity.get("project_spent_today_usd") or 0.0)
+    project_month = float(identity.get("project_spent_month_usd") or 0.0)
+    if (
+        (project_daily is not None or project_monthly is not None)
+        and identity.get("project_spent_today_usd") is None
+        and identity.get("project_id")
+        and op_store
+    ):
+        # The identity-only lookup (the one a request carrying X-On-Behalf-Of
+        # authenticates through) has the project's budgets but not its spend.
+        # Read it as the key's and the account's are read above: taken as $0,
+        # any such header admitted a key whose project had spent its budget.
+        project_today, project_month = await op_store.get_project_spend(identity["project_id"])
+    return {
+        "account_quota_usd": quota_daily_cost_usd,
+        "account_spent_usd": spent_today_usd,
+        "account_quota_monthly_usd": monthly_quota,
+        "account_spent_month_usd": account_month,
+        "key_budget_daily_usd": daily,
+        "key_budget_monthly_usd": monthly,
+        "key_spent_today_usd": key_today,
+        "key_spent_month_usd": key_month,
+        "key_prefix": identity.get("key_prefix"),
+        "key_label": _key_label(identity),
+        "project_budget_daily_usd": project_daily,
+        "project_budget_monthly_usd": project_monthly,
+        "project_spent_today_usd": project_today,
+        "project_spent_month_usd": project_month,
+        "project_id": identity.get("project_id"),
+        "project_name": identity.get("project_name"),
+    }
 
 
 def _anonymous_context() -> dict[str, Any]:
@@ -396,7 +555,8 @@ def _anonymous_context() -> dict[str, Any]:
     The admin role opens the API, but ``authenticated`` stays False on purpose:
     the synthetic-probe trust check (serving/utils/synthetic_probe.py) requires
     a *presented, resolved* key, so on an auth-disabled deployment no caller's
-    X-Probe marker is honoured.
+    X-Probe marker is honoured. Nor does the role open other owners' stored
+    work: see :func:`reads_every_owner`.
     """
     return {
         "user_id": "anonymous",
@@ -404,6 +564,20 @@ def _anonymous_context() -> dict[str, Any]:
         "authenticated": False,
         "is_admin": True,
     }
+
+
+def reads_every_owner(user_ctx: dict[str, Any]) -> bool:
+    """Whether a caller may reach stored work (batches, files) of every owner by id.
+
+    Only an administrator who authenticated as one. While user auth is
+    disabled every caller is the anonymous context, whose admin role opens the
+    API -- every model, the batch surface -- for whoever reaches it; it must not
+    also hand them the batches and files stored under real accounts (before
+    auth was turned off, say) to anyone who has an id. Those callers reach
+    what was stored as ``anonymous``, which is everything stored while auth is
+    off.
+    """
+    return bool(user_ctx.get("authenticated")) and has_role(user_ctx.get("role") or "free", "admin")
 
 
 def _user_context(
@@ -445,10 +619,29 @@ def _user_context(
         # stays the presented key even when acting on behalf of another user.
         "auth_key_hash": key_hash,
         "api_key_id": api_key_id,
+        "key_prefix": identity.get("key_prefix"),
+        "budget_daily_usd": identity.get("budget_daily_usd"),
+        "budget_monthly_usd": identity.get("budget_monthly_usd"),
+        "key_spent_today_usd": identity.get("key_spent_today_usd"),
+        "key_spent_month_usd": identity.get("key_spent_month_usd"),
+        "project_id": identity.get("project_id"),
+        "project_name": identity.get("project_name"),
+        "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
+        "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
+        "org_id": identity.get("org_id"),
+        "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
+        "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
+        "project_spent_today_usd": identity.get("project_spent_today_usd"),
+        "project_spent_month_usd": identity.get("project_spent_month_usd"),
+        "quota_monthly_cost_usd": identity.get("quota_monthly_cost_usd"),
+        "account_spent_month_usd": identity.get("account_spent_month_usd"),
     }
     allowed = identity.get("allowed_models")
     if api_key_id is not None and allowed is not None:
         context[KEY_ALLOWED_MODELS_KEY] = list(allowed)
+    project_allowed = identity.get("project_allowed_models")
+    if api_key_id is not None and project_allowed is not None:
+        context[PROJECT_ALLOWED_MODELS_KEY] = list(project_allowed)
     return context
 
 
@@ -478,7 +671,7 @@ async def _authenticate_by_api_key(
     # Block only on resolved client IPs (never on proxy address).
     ip_info = get_client_ip_info(request)
     blocked, retry_after = await is_ip_blocked(ip_info)
-    if blocked:
+    if blocked and not _passes_ip_block(authorization, x_api_key):
         # Only once the refusal is settled — and only when the rejection log is
         # actually on — spend anything on making the row useful in the admin
         # dashboard. Without this, every ip_blocked row lands with a null prompt
@@ -584,6 +777,8 @@ async def _authenticate_by_api_key(
     user, spend_today = await _auth_context_with_spend(op_store, key_hash, want_spend=want_spend)
 
     if not user:
+        # Revoked or expired since it proved itself: it no longer passes a block.
+        _privileged_keys.pop(key_hash, None)
         # Resolve who the key belongs to, through the same bounded lookup the
         # ip_blocked path above uses. Not gated on ``rejection_logging_enabled``
         # the way that path is: it answers False for every 401 by construction
@@ -655,7 +850,18 @@ async def _authenticate_by_api_key(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
         )
+    if user.get("org_status") == "suspended":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": {
+                    "type": "organization_suspended",
+                    "message": "This organization has been suspended by the operator.",
+                }
+            },
+        )
 
+    _remember_key_privilege(key_hash, user.get("role"))
     return user, key_hash, spend_today
 
 
@@ -702,8 +908,8 @@ async def _resolve_effective_identity(
 
     The returned dict is shaped like the ``get_auth_context_by_key_hash`` row
     that :func:`verify_api_key` consumes downstream: ``user_id``, ``user_name``,
-    ``role``, ``quota_daily_cost_usd``, ``preferences``,
-    ``max_concurrent_requests``.
+    ``role``, ``quota_daily_cost_usd``, ``quota_monthly_cost_usd``,
+    ``preferences``, ``max_concurrent_requests``.
     """
     if not on_behalf_of:
         return caller
@@ -721,18 +927,50 @@ async def _resolve_effective_identity(
             on_behalf_of,
         )
         return caller
-    # The daily quota column lives on ``api_keys``; an on-behalf-of user is
-    # addressed by id (no specific key), so leave quota None to take the same
-    # default the NULL-quota path uses. The per-user cost counter is keyed by
-    # user_id, so the end user's own daily spend still gates their RAG usage.
+    if await op_store.get_personal_org_status(target["id"]) == "suspended":
+        logger.warning(
+            "X-On-Behalf-Of target %r belongs to a suspended organization; "
+            "attributing request to the service account",
+            on_behalf_of,
+        )
+        return caller
+    # The end user's own quotas, daily and monthly, gate what is spent on their
+    # behalf; their spend counters are keyed by user_id, so they meet the same
+    # limits as their own key would.
+    daily, monthly = await _account_quotas(op_store, target)
     return {
         "user_id": target["id"],
         "user_name": target.get("user_name"),
         "role": target.get("role"),
-        "quota_daily_cost_usd": None,
+        "quota_daily_cost_usd": daily,
+        "quota_monthly_cost_usd": monthly,
         "preferences": target.get("preferences"),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
     }
+
+
+async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any]:
+    """The daily and monthly cost quotas of *user*'s account, for spending on their behalf.
+
+    The account's quotas are stored on each of its API keys (any live one
+    answers, :meth:`get_quota_context_for_user`). An account with no live key
+    has none stored, so it gets what its first key would: its role's default
+    daily quota and no monthly quota -- not the far larger default that a key
+    row with no quota stands for.
+    """
+    rows = await op_store.get_quota_context_for_user(user["id"])
+    if rows:
+        return rows[0].get("quota_daily_cost_usd"), rows[0].get("quota_monthly_cost_usd")
+    # Imported here: the router imports this module.
+    from serving.config.runtime_settings import get_runtime_settings_instance
+    from serving.servers.routers.user_routes import get_default_daily_quota_for_role
+
+    try:
+        runtime_settings = get_runtime_settings_instance()
+    except RuntimeError:
+        runtime_settings = None
+    role = user.get("role") or "free"
+    return await get_default_daily_quota_for_role(role, runtime_settings), None
 
 
 # The only routes an agent-job token may reach. An allowlist rather than a
@@ -782,7 +1020,13 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
     through here too. Returns *user_ctx* unchanged so call sites can wrap their
     ``return``.
     """
-    req_ctx.update({req_ctx.USER_ROLE: user_ctx.get("role") or "free"})
+    req_ctx.update(
+        {
+            req_ctx.USER_ROLE: user_ctx.get("role") or "free",
+            req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
+            req_ctx.ORG_ID: user_ctx.get("org_id") or "",
+        }
+    )
     return user_ctx
 
 
@@ -794,7 +1038,9 @@ def _quota_exceeded(
     refusal: quota.BudgetRefusal,
 ) -> HTTPException:
     """Log the budget rejection and return the 429 every quota-gated route answers."""
-    error_code = "quota_exceeded" if refusal.scope == "account" else "key_budget_exceeded"
+    error_code = (
+        "quota_exceeded" if refusal.scope == "account" else f"{refusal.scope}_budget_exceeded"
+    )
     asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
         log_rejection(
             request=request,
@@ -869,7 +1115,7 @@ async def verify_api_key(
             # Same body and headers as the direct path's 429, from the same
             # builder: a caller must not be able to tell which door it used.
             body, headers = quota.refusal_payload(
-                quota.BudgetRefusal("account", exc.window, exc.quota_usd, exc.spent_usd),
+                exc.refusal,
                 contact_email=_quota_contact(),
             )
             raise HTTPException(status_code=429, detail=body, headers=headers) from exc
@@ -884,6 +1130,8 @@ async def verify_api_key(
         # Auth disabled - allow all, mark as anonymous.
         return publish_caller_role(_anonymous_context())
 
+    # Before the first read of the spend counters: see SpendCheck.read_at.
+    spend_read_at = time.monotonic()
     caller, key_hash, caller_spend = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=not x_on_behalf_of
     )
@@ -912,14 +1160,19 @@ async def verify_api_key(
     quota_daily_cost_usd = _daily_quota_usd(identity)
     api_key_id = caller_key_id if identity is caller else None
 
-    # Check the key's budgets, then the account's quota.
-    refusal = await _budget_refusal(
+    # Check the key's budgets, then the account's quota, counting requests in
+    # flight and costs not yet written as well. This refuses early; the
+    # request's admission (enforce_user_concurrency) checks again and reserves
+    # its estimate in one step, against the check carried in the context.
+    check = await _spend_check(
         identity,
         api_key_id=api_key_id,
         op_store=op_store,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+        read_at=spend_read_at,
     )
+    refusal = check.refusal()
     if refusal is not None:
         raise _quota_exceeded(
             request,
@@ -930,19 +1183,20 @@ async def verify_api_key(
 
     # Update last_used timestamp on the presented key — fire-and-forget
     # (issue #185): telemetry, not a gate, so the response no longer waits on
-    # the write. Failures surface through the tracked-task alert rule.
-    tracked_task(op_store.update_key_last_used(caller_key_id), name="key_last_used")
+    # the write, and debounced to once a minute per key. Failures surface
+    # through the tracked-task alert rule.
+    touch_key_last_used(op_store, caller_key_id)
 
     # Return user context for the attributed identity.
-    return publish_caller_role(
-        _user_context(
-            identity,
-            key_hash=key_hash,
-            api_key_id=api_key_id,
-            quota_daily_cost_usd=quota_daily_cost_usd,
-            spent_today_usd=cost_spent,
-        )
+    context = _user_context(
+        identity,
+        key_hash=key_hash,
+        api_key_id=api_key_id,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
     )
+    context[SPEND_CHECK_KEY] = check
+    return publish_caller_role(context)
 
 
 async def authenticate_stored_key(
@@ -993,6 +1247,7 @@ async def authenticate_stored_key(
     if not op_store:
         raise RuntimeError(auth_database_detail())
 
+    spend_read_at = time.monotonic()
     user, spend_today = await _auth_context_with_spend(op_store, key_hash, want_spend=True)
     if not user:
         raise StoredKeyRejected(
@@ -1000,31 +1255,48 @@ async def authenticate_stored_key(
         )
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
+    if user.get("org_status") == "suspended":
+        raise StoredKeyRejected("the organization has been suspended by the operator")
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
+    check: SpendCheck | None = None
     if check_quota:
-        refusal = await _budget_refusal(
+        check = await _spend_check(
             user,
             api_key_id=user.get("id"),
             op_store=op_store,
             quota_daily_cost_usd=quota_daily_cost_usd,
             spent_today_usd=cost_spent,
+            read_at=spend_read_at,
         )
+        refusal = check.refusal()
         if refusal is not None:
-            raise StoredKeyQuotaExceeded(
-                quota_usd=refusal.limit_usd,
-                spent_usd=refusal.spent_usd,
-                reset_at=refusal.reset_at(),
-                scope=refusal.scope,
-                window=refusal.window,
-            )
-    return _user_context(
+            raise stored_key_quota_exceeded(refusal, check=check)
+    context = _user_context(
         user,
         key_hash=key_hash,
         api_key_id=user.get("id"),
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+    )
+    if check is not None:
+        # The worker admits the work against it (SpendCheck.admit).
+        context[SPEND_CHECK_KEY] = check
+    return context
+
+
+def stored_key_quota_exceeded(
+    refusal: quota.BudgetRefusal, *, check: SpendCheck | None = None
+) -> StoredKeyQuotaExceeded:
+    """The :class:`StoredKeyQuotaExceeded` that reports *refusal*, made on *check*."""
+    return StoredKeyQuotaExceeded(
+        quota_usd=refusal.limit_usd,
+        spent_usd=refusal.spent_usd,
+        reset_at=refusal.reset_at(),
+        scope=refusal.scope,
+        window=refusal.window,
+        check=check,
     )
 
 
@@ -1070,10 +1342,11 @@ async def verify_batch_management_identity(
     if not is_user_auth_enabled():
         return publish_caller_role({**_anonymous_context(), "quota_exceeded": False})
 
+    spend_read_at = time.monotonic()
     user, key_hash, spend_today = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
-    tracked_task(op_store.update_key_last_used(user["id"]), name="key_last_used")
+    touch_key_last_used(op_store, user["id"])
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
     context = _user_context(
@@ -1083,13 +1356,15 @@ async def verify_batch_management_identity(
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
-    refusal = await _budget_refusal(
+    check = await _spend_check(
         user,
         api_key_id=user["id"],
         op_store=op_store,
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
+        read_at=spend_read_at,
     )
+    refusal = check.refusal()
     context["quota_exceeded"] = refusal is not None
     context[_BUDGET_REFUSAL_KEY] = refusal
     return publish_caller_role(context)
@@ -1132,18 +1407,49 @@ async def verify_api_key_for_balance(
     if not is_user_auth_enabled():
         return {"user_id": "anonymous", "authenticated": False}
 
-    user, _key_hash, cost_spent = await _authenticate_by_api_key(
+    user, key_hash, cost_spent = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
 
     quota_daily_cost_usd = _daily_quota_usd(user)
 
-    return {
-        "user_id": user["user_id"],
-        "authenticated": True,
-        "quota_daily_cost_usd": quota_daily_cost_usd,
-        "spent_today_usd": cost_spent,
-    }
+    return _user_context(
+        user,
+        key_hash=key_hash,
+        api_key_id=user.get("id"),
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+    )
+
+
+async def read_balance_limits(
+    request: Request,
+    authorization: str | None,
+    x_api_key: str | None,
+    op_store: Any,
+) -> dict[str, Any] | None:
+    """Authenticate a balance poll and return the counters it should display.
+
+    ``None`` means user auth is disabled, so there is no quota. Otherwise the
+    dict is :func:`_quota_counters` plus ``user_id``. A missing or invalid key
+    is a 401, the same as :func:`verify_api_key_for_balance`. An exhausted
+    quota is not a 429, and ``last_used_at`` is not updated: reading the
+    balance must keep working when nothing is left to spend.
+    """
+    if not is_user_auth_enabled():
+        return None
+    user, _key_hash, cost_spent = await _authenticate_by_api_key(
+        request, authorization, x_api_key, op_store, want_spend=True
+    )
+    limits = await _quota_counters(
+        user,
+        api_key_id=user.get("id"),
+        op_store=op_store,
+        quota_daily_cost_usd=_daily_quota_usd(user),
+        spent_today_usd=float(cost_spent or 0.0),
+    )
+    limits["user_id"] = user["user_id"]
+    return limits
 
 
 async def optional_verify_api_key(
@@ -1187,11 +1493,14 @@ async def optional_verify_api_key(
 
     try:
         row = await op_store.get_auth_context_lightweight(key_hash)
+    except DatabaseBusyError:
+        # The app's 503 with Retry-After: busy, not broken.
+        raise
     except Exception as exc:
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
-    if not row:
+    if not row or row.get("org_status") == "suspended":
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification
@@ -1221,6 +1530,11 @@ async def optional_verify_api_key(
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
         "auth_key_hash": key_hash,
+        **(
+            {PROJECT_ALLOWED_MODELS_KEY: list(row["project_allowed_models"])}
+            if row.get("project_allowed_models") is not None
+            else {}
+        ),
         # The key's allowlist narrows the listings this context is for.
         **(
             {KEY_ALLOWED_MODELS_KEY: list(row["allowed_models"])}

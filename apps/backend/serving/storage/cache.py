@@ -11,7 +11,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from .base import OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from .base import CostIncrement, OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
 from .cache_backend import (
     CacheBackend,
     InMemoryCache as InMemoryCache,
@@ -35,6 +35,13 @@ if TYPE_CHECKING:
 _AUTH_CONTEXT_TTL = 30
 _USER_TTL = 60
 _HEALTH_TTL = 5
+# Whether an access token's session is still live. Every revocation made
+# through this store clears the entries it affects at once; this bounds only
+# one made elsewhere (another worker, the password-reset command).
+_SESSION_TTL = 20
+# The tag every session-liveness entry carries besides its account's, so a
+# revocation that names no account clears them all without scanning the cache.
+_ALL_SESSIONS_TAG = "session-all"
 
 
 def _audit_entry_ttl(row: Row) -> int:
@@ -86,12 +93,28 @@ class CachedOperationalStore(OperationalStore):
         - get_auth_context_lightweight  (30 s)
         - get_key_owner_for_audit       (30 s)
         - get_user_by_id                (60 s)
+        - session_is_live               (20 s)
         - health_check                  ( 5 s)
 
     Write-through invalidation:
         - revoke_key / regenerate_key / update_key  → invalidate key caches
         - delete_user / update_user_fields          → invalidate user cache
         - approve_user / reject_user                → invalidate user + auth caches
+        - every write that revokes or deletes sessions → invalidate session liveness
+
+    Invalidation is per account wherever the write names one. Each auth entry
+    is published with a tag naming the account its key belongs to (the row's
+    ``user_id``), and each session entry with its account's, so a write about
+    one account evicts that account's entries through the cache's tag index
+    -- no scan of every key, and no flush of every other account's cached
+    auth. Only a write that changes every account at once (a role's quota) or
+    names none (revoking one session by id) still clears a whole namespace;
+    the sessions' through a tag every session entry carries, the auth one's
+    with a pattern.
+    An account-addressed key write (``rotate_key``, ``update_key_settings``)
+    evicts the tag of the account id it was given: every path that creates a
+    key sets ``account_id`` to the key's ``user_id``, and the baseline
+    backfilled older rows the same way.
 
     Everything else passes straight through.
     """
@@ -121,6 +144,32 @@ class CachedOperationalStore(OperationalStore):
         return f"user:{user_id}"
 
     @staticmethod
+    def _session_key(user_id: str, sid: str) -> str:
+        return f"session:{user_id}:{sid}"
+
+    @staticmethod
+    def _user_auth_tag(user_id: str) -> str:
+        # Tags are an index beside the keys, matched exactly: an id containing
+        # glob characters names only itself.
+        return f"auth-user:{user_id}"
+
+    @staticmethod
+    def _user_sessions_tag(user_id: str) -> str:
+        return f"session-user:{user_id}"
+
+    @classmethod
+    def _auth_entry_tags(cls, row: Row) -> tuple[str, ...]:
+        """The tags an auth entry is published with: its key's account.
+
+        Empty for a row that names no account. Such a row is not cached at
+        all: no account's invalidation could reach it, so it would outlive
+        any change short of a flush of every account's entries. Every row the
+        stores return names one (``api_keys.user_id`` is NOT NULL).
+        """
+        user_id = row.get("user_id")
+        return (cls._user_auth_tag(str(user_id)),) if user_id else ()
+
+    @staticmethod
     def _health_key() -> str:
         return "health"
 
@@ -128,6 +177,14 @@ class CachedOperationalStore(OperationalStore):
     def pool(self) -> Any:
         """Expose underlying store's connection pool, if available (PostgreSQL only)."""
         return getattr(self._store, "_pool", None)
+
+    def on_connection(self, connection: Any) -> OperationalStore:
+        """The wrapped store on one connection, uncached, for writes in the caller's transaction.
+
+        Nothing it returns reads or fills this cache. Every method a
+        configuration restore calls passes straight through it anyway.
+        """
+        return self._store.on_connection(connection)  # type: ignore[attr-defined]
 
     # -- lifecycle (delegated, not cached) -----------------------------------
 
@@ -174,6 +231,42 @@ class CachedOperationalStore(OperationalStore):
             )
         return result
 
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Return whether the session is live, cached for 20 s and generation-fenced.
+
+        Asked on every request a console token makes, so the answer is kept
+        briefly; every write here that revokes or deletes a session clears the
+        entries it affects (:meth:`_forget_sessions`), so a sign-out in this
+        process takes effect on the next request. Both answers are kept: a
+        session never comes back once it has ended, and a new one has a sid
+        nothing has asked about yet.
+        """
+        ck = self._session_key(user_id, sid)
+        cached = await self._cache.get(ck)
+        if cached is not None:
+            return bool(cached)
+        gen_before = self._cache.current_generation()
+        live = await self._store.session_is_live(user_id, sid)
+        await self._cache.set_if_generation(
+            ck,
+            bool(live),
+            _SESSION_TTL,
+            generation=gen_before,
+            tags=(self._user_sessions_tag(user_id), _ALL_SESSIONS_TAG),
+        )
+        return live
+
+    async def _forget_sessions(self, user_id: str | None = None) -> None:
+        """Drop cached session liveness: one account's, or every account's for None.
+
+        Both go through the cache's tag index, so a sign-in, which forgets the
+        account's earlier answers, or a sign-out, which names only a session,
+        costs only the entries it removes rather than a scan of every key.
+        """
+        await self._cache.delete_tag(
+            _ALL_SESSIONS_TAG if user_id is None else self._user_sessions_tag(user_id)
+        )
+
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Return cached auth context (30 s TTL), generation-fenced."""
         ck = self._auth_key(key_hash)
@@ -182,9 +275,9 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_auth_context_by_key_hash(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             await self._cache.set_if_generation(
-                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before
+                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before, tags=tags
             )
         return result
 
@@ -206,9 +299,9 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_auth_context_lightweight(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             await self._cache.set_if_generation(
-                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before
+                ck, _snapshot(result), _AUTH_CONTEXT_TTL, generation=gen_before, tags=tags
             )
         return result
 
@@ -237,11 +330,11 @@ class CachedOperationalStore(OperationalStore):
             return _snapshot(cached)
         gen_before = self._cache.current_generation()
         result = await self._store.get_key_owner_for_audit(key_hash)
-        if result is not None:
+        if result is not None and (tags := self._auth_entry_tags(result)):
             ttl = _audit_entry_ttl(result)
             if ttl > 0:
                 await self._cache.set_if_generation(
-                    ck, _snapshot(result), ttl, generation=gen_before
+                    ck, _snapshot(result), ttl, generation=gen_before, tags=tags
                 )
         return result
 
@@ -252,13 +345,14 @@ class CachedOperationalStore(OperationalStore):
         await self._store.update_user_fields(user_id, **fields)
         await self._cache.delete(self._user_key(user_id))
         if fields.keys() & {"role", "status"}:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
 
     async def suspend_user(self, user_id: str, **fields: Any) -> None:
-        """Delegate then invalidate the user and every auth entry (status and keys changed)."""
+        """Delegate then invalidate the user, its sessions and its keys' auth entries."""
         await self._store.suspend_user(user_id, **fields)
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self._forget_sessions(user_id)
+        await self.invalidate_user_auth_caches(user_id)
 
     async def update_user_last_login(self, user_id: str) -> None:
         """Delegate then invalidate user cache."""
@@ -287,21 +381,22 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))
+        await self._forget_sessions(user_id)
         # Also purge any auth entries referencing this user's keys
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def begin_hard_delete_user(self, user_id: str) -> str:
         """Claim a hard-delete in the wrapped store and invalidate caches."""
         claim_token = await self._store.begin_hard_delete_user(user_id)
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
         return claim_token
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""
         await self._store.release_hard_delete_user_claim(user_id, claim_token)
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def resume_user(
         self,
@@ -323,7 +418,7 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def hard_delete_user(
         self,
@@ -347,7 +442,8 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self._forget_sessions(user_id)
+        await self.invalidate_user_auth_caches(user_id)
         return counts
 
     async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
@@ -361,32 +457,45 @@ class CachedOperationalStore(OperationalStore):
         # true with ``get_key_owner_for_audit``, which caches a row whatever
         # state the account is in -- so without this a decision leaves rejection
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
         await self._cache.delete(self._user_key(user_id))
         # Same reason as approve_user above.
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def invalidate_auth_caches(self) -> None:
-        """Evict all cached auth-context entries (cache-only, no DB write)."""
+        """Evict all cached auth-context entries (cache-only, no DB write).
+
+        For a change to every account at once; one account's change evicts its
+        own entries (:meth:`invalidate_user_auth_caches`).
+        """
         await self._cache.delete_pattern("auth:*")
         await self._cache.delete_pattern("auth_light:*")
+
+    async def invalidate_user_auth_caches(self, user_id: str) -> None:
+        """Evict the cached auth entries of *user_id*'s keys (cache-only, no DB write).
+
+        Every entry the auth lookups publish carries its key's account as a
+        tag, so this removes exactly those, through the cache's index, and
+        leaves every other account's cached auth in place.
+        """
+        await self._cache.delete_tag(self._user_auth_tag(user_id))
 
     # -- key writes (invalidate auth caches) ---------------------------------
 
     async def update_key(self, user_id: str, **fields: Any) -> None:
         """Delegate then invalidate auth caches."""
         await self._store.update_key(user_id, **fields)
-        # We don't know which key_hash maps to this user, so clear all auth entries.
-        await self.invalidate_auth_caches()
+        # Every cached auth entry of this user's keys carries the user's tag.
+        await self.invalidate_user_auth_caches(user_id)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Delegate then invalidate auth caches."""
         await self._store.revoke_key(user_id, hard_delete=hard_delete)
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
     async def regenerate_key(
         self,
@@ -399,7 +508,7 @@ class CachedOperationalStore(OperationalStore):
         old_prefix = await self._store.regenerate_key(
             user_id, new_key_hash=new_key_hash, new_key_prefix=new_key_prefix
         )
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
         return old_prefix
 
     async def rotate_key(
@@ -419,7 +528,7 @@ class CachedOperationalStore(OperationalStore):
             new_key_prefix=new_key_prefix,
             api_key_encrypted=api_key_encrypted,
         )
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(account_id)
         return rotated
 
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
@@ -434,13 +543,87 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_account_keys(account_id)
 
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.create_project(
+            project_id=project_id,
+            user_id=user_id,
+            name=name,
+            description=description,
+            budget_daily_usd=budget_daily_usd,
+            budget_monthly_usd=budget_monthly_usd,
+            allowed_models=allowed_models,
+            max_concurrent_requests=max_concurrent_requests,
+        )
+        await self.invalidate_auth_caches()
+        return row
+
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_projects(user_id)
+
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_default_project(user_id)
+
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_project(user_id, project_id)
+
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.update_project(user_id, project_id, changes)
+        await self.invalidate_auth_caches()
+        return row
+
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Delegate, then invalidate auth caches."""
+        revoked = await self._store.archive_project(user_id, project_id)
+        await self.invalidate_auth_caches()
+        return revoked
+
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """Delegate to wrapped store."""
+        return await self._store.get_project_spend(project_id)
+
+    async def count_project_keys(self, project_id: str) -> int:
+        """Delegate to wrapped store."""
+        return await self._store.count_project_keys(project_id)
+
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Delegate, then invalidate auth caches."""
+        row = await self._store.update_org(org_id, changes)
+        await self.invalidate_auth_caches()
+        return row
+
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Delegate to wrapped store."""
+        return await self._store.get_account_budgets(user_id)
+
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_personal_org_status(user_id)
+
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
     ) -> tuple[Row, Row] | None:
         """Delegate then invalidate auth caches: the limits ride the cached contexts."""
         changed = await self._store.update_key_settings(account_id, key_prefix, changes)
         if changed is not None and set(changes) - {"name"}:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(account_id)
         return changed
 
     # -- role quotas (invalidate auth caches on bulk write) ------------------
@@ -610,6 +793,7 @@ class CachedOperationalStore(OperationalStore):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Delegate, then invalidate auth caches when the account quota may have moved.
 
@@ -632,9 +816,10 @@ class CachedOperationalStore(OperationalStore):
             inherit_account_quota=inherit_account_quota,
             name=name,
             max_active_keys=max_active_keys,
+            project_id=project_id,
         )
         if not inherit_account_quota:
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return row
 
     async def check_active_key_exists(self, user_id: str) -> bool:
@@ -697,17 +882,32 @@ class CachedOperationalStore(OperationalStore):
             session_id, new_refresh_token_hash=new_refresh_token_hash, new_jti=new_jti
         )
 
-    async def revoke_session(self, session_id: str) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.revoke_session(session_id)
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Delegate, then forget the owning account's session liveness.
+
+        Every account's, as before, only when the store cannot say whose the
+        session was.
+        """
+        owner = await self._store.revoke_session(session_id)
+        await self._forget_sessions(owner if isinstance(owner, str) else None)
+        return owner
 
     async def delete_user_sessions(self, user_id: str) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.delete_user_sessions(user_id)
+        """Delegate, then forget the account's session liveness."""
+        await self._store.delete_user_sessions(user_id)
+        await self._forget_sessions(user_id)
 
     async def revoke_user_sessions(self, user_id: str, *, except_sid: str | None = None) -> int:
-        """Delegate to wrapped store."""
-        return await self._store.revoke_user_sessions(user_id, except_sid=except_sid)
+        """Delegate, then forget the account's session liveness."""
+        revoked = await self._store.revoke_user_sessions(user_id, except_sid=except_sid)
+        await self._forget_sessions(user_id)
+        return revoked
+
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Delegate, then forget the account's session liveness."""
+        revoked = await self._store.revoke_session_by_sid(user_id, sid)
+        await self._forget_sessions(user_id)
+        return revoked
 
     # -- browser sessions (pass-through) -------------------------------------
 
@@ -746,10 +946,12 @@ class CachedOperationalStore(OperationalStore):
     async def attach_browser_session_account(
         self, browser_session_id: str, *, user_id: str, auth_session_id: str
     ) -> bool:
-        """Delegate to wrapped store."""
-        return await self._store.attach_browser_session_account(
+        """Delegate, then forget the account's session liveness (a replaced one is revoked)."""
+        attached = await self._store.attach_browser_session_account(
             browser_session_id, user_id=user_id, auth_session_id=auth_session_id
         )
+        await self._forget_sessions(user_id)
+        return attached
 
     async def set_browser_session_active(
         self, browser_session_id: str, user_id: str | None
@@ -758,12 +960,25 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.set_browser_session_active(browser_session_id, user_id)
 
     async def detach_browser_session_account(self, browser_session_id: str, user_id: str) -> int:
-        """Delegate to wrapped store."""
-        return await self._store.detach_browser_session_account(browser_session_id, user_id)
+        """Delegate, then forget the account's session liveness."""
+        remaining = await self._store.detach_browser_session_account(browser_session_id, user_id)
+        await self._forget_sessions(user_id)
+        return remaining
 
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.revoke_browser_session(browser_session_id)
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Delegate, then forget the session liveness of the accounts it signed out.
+
+        Signing out of every account in one browser is any user's to ask for; it
+        must not flush every other account's cached answers with them. Every
+        account's, as before, only when the store cannot say whose they were.
+        """
+        accounts = await self._store.revoke_browser_session(browser_session_id)
+        if isinstance(accounts, list) and all(isinstance(a, str) for a in accounts):
+            for account in accounts:
+                await self._forget_sessions(account)
+        else:
+            await self._forget_sessions()
+        return accounts
 
     async def get_user_by_phone(self, phone: str) -> Row | None:
         """Fetch an account by its canonical phone number."""
@@ -778,7 +993,7 @@ class CachedOperationalStore(OperationalStore):
         bound = await self._store.bind_user_phone(user_id, phone)
         if bound:
             await self._cache.delete(self._user_key(user_id))
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return bound
 
     async def bind_user_email(self, user_id: str, email: str) -> bool:
@@ -788,7 +1003,7 @@ class CachedOperationalStore(OperationalStore):
             # Nothing is cached by e-mail address; the user and auth entries
             # carry it.
             await self._cache.delete(self._user_key(user_id))
-            await self.invalidate_auth_caches()
+            await self.invalidate_user_auth_caches(user_id)
         return bound
 
     async def reserve_phone_code(self, **fields: Any) -> int:
@@ -874,6 +1089,12 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_verification_token(token)
 
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_live_verification_token(user_id, valid_until=valid_until)
+
     async def mark_verification_used(self, token: str) -> None:
         """Delegate to wrapped store."""
         return await self._store.mark_verification_used(token)
@@ -882,9 +1103,9 @@ class CachedOperationalStore(OperationalStore):
         """Delegate then invalidate user + auth caches so verification is visible immediately."""
         await self._store.mark_user_email_verified(user_id)
         await self._cache.delete(self._user_key(user_id))
-        # email_verified is carried in the cached auth contexts too, but we don't
-        # know which key_hash maps to this user, so clear all auth entries.
-        await self.invalidate_auth_caches()
+        # email_verified is carried in the cached auth contexts of this user's
+        # keys, every one of which carries the user's tag.
+        await self.invalidate_user_auth_caches(user_id)
 
     async def delete_user_verification_tokens(self, user_id: str) -> None:
         """Delegate to wrapped store."""
@@ -899,6 +1120,10 @@ class CachedOperationalStore(OperationalStore):
     async def get_reset_token(self, token: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.get_reset_token(token)
+
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_live_reset_token(user_id, valid_until=valid_until)
 
     async def mark_reset_used(self, token: str) -> None:
         """Delegate to wrapped store."""
@@ -1028,13 +1253,18 @@ class CachedOperationalStore(OperationalStore):
 
     async def _invalidate_preferences(self, user_id: str) -> None:
         # The auth contexts carry preferences (disabled models), so every
-        # preference write drops them along with the user row.
+        # preference write drops this user's along with the user row -- and
+        # only this user's: saving a layout must not flush everyone's auth.
         await self._cache.delete(self._user_key(user_id))
-        await self.invalidate_auth_caches()
+        await self.invalidate_user_auth_caches(user_id)
 
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
         """Delegate then invalidate user and auth caches."""
-        found = await self._store.set_user_preference(user_id, key, value)
+        found = await self._store.set_user_preference(
+            user_id, key, value, max_total_bytes=max_total_bytes
+        )
         await self._invalidate_preferences(user_id)
         return found
 
@@ -1358,6 +1588,23 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.list_all_provider_route_states()
 
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Delegate to wrapped store."""
+        return await self._store.list_all_provider_route_batch_policies()
+
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_provider_route_batch_policy(
+            model_id, route_id, batch_allowed=batch_allowed, updated_by=updated_by
+        )
+
     async def set_provider_route_state(
         self,
         model_id: str,
@@ -1465,11 +1712,29 @@ class CachedOperationalStore(OperationalStore):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.increment_user_cost(
-            user_id, cost_usd, day=day, api_key_id=api_key_id
+            user_id,
+            cost_usd,
+            day=day,
+            api_key_id=api_key_id,
+            requests=requests,
+            org_id=org_id,
+            project_id=project_id,
         )
+
+    @property
+    def atomic_cost_increments(self) -> bool:  # type: ignore[override]
+        """Whatever the wrapped store applies its batches as."""
+        return getattr(self._store, "atomic_cost_increments", False) is True
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Delegate to wrapped store."""
+        await self._store.increment_user_costs(increments)
 
     async def get_user_cost_today(self, user_id: str) -> float:
         """Delegate to wrapped store."""

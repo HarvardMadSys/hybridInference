@@ -69,6 +69,7 @@ async def apply_provider_definitions_at_boot(
     *,
     reserved_providers: set[str] | None = None,
     config_label_providers: set[str] | None = None,
+    remove_missing: bool = False,
 ) -> None:
     """Load custom provider definitions from storage into runtime registries.
 
@@ -84,10 +85,18 @@ async def apply_provider_definitions_at_boot(
             custom provider existed. The definition still wins — routes depend
             on its key pool and route target — but the clash is logged, because
             both then report under one label in analytics.
+        remove_missing: Reconcile hard deletions too when called by the live
+            synchronizer. The complete read must succeed before removing any.
     """
     reserved = reserved_providers or set()
     label_only = config_label_providers or set()
-    for row in await op_store.list_provider_definitions():
+    rows = await op_store.list_provider_definitions()
+    if remove_missing:
+        retained = {row.provider for row in rows}
+        for definition in list_provider_definitions():
+            if definition.provider not in retained:
+                unregister_provider_definition(definition.provider)
+    for row in rows:
         if row.provider in label_only:
             logger.error(
                 "Provider %r is both a custom provider and a route provider label in "

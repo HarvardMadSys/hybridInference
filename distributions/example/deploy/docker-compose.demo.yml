@@ -20,8 +20,7 @@ services:
       DB_ENABLED: "true"
       DB_STORE_FULL_CONTENT: "false"
       USER_AUTH_ENABLED: "true"
-      DISTRIBUTION_CONFIG_PATH: /app/distributions/example/distribution.demo.yaml
-      DISTRIBUTION_CONFIG_MODE: active
+      SITE_CONFIGURATION: "{\"schema_version\": 1, \"distribution\": {\"id\": \"example\", \"display_name\": \"Example Router\", \"release\": \"1.0.0\"}, \"site\": {\"public_base_url\": \"http://localhost:13001\", \"support_email\": \"support@example.test\"}, \"features\": {\"routers\": [\"fixed\"], \"public_signup\": true, \"rag\": false}, \"deployment\": {\"target\": \"local\"}}"
       # Verification off keeps SMTP out of this loopback-only demo: with it on,
       # the SMTP settings would be required before anyone could sign up.
       SIGNUP_ENABLED: "true"

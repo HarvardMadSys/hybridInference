@@ -1,14 +1,17 @@
-"""Unit tests for the recent-requests COUNT(*) TTL cache.
+"""Unit tests for ``/user/recent-requests``: its count cache and its bounds.
 
-Exercises ``_get_cached_user_request_count`` in
+Exercises ``_get_cached_user_request_count`` and ``get_recent_requests`` in
 ``serving.servers.routers.user_routes`` against a mocked asyncpg-style
-connection. The helper guards the dashboard's hot path so we verify:
+connection. We verify:
 
 - Cache miss runs the COUNT exactly once.
 - A subsequent call within TTL returns the cached value without querying.
 - After the cached entry's timestamp ages past the TTL, the COUNT runs again.
-- Distinct ``(user_id, model_id)`` keys are cached independently.
+- Distinct ``(user_id, key)`` entries are cached independently; a count by
+  model, whatever the caller typed, is not cached at all.
 - The cache evicts oldest entries once the size cap is reached.
+- Every read reaches back over the account's newest ``RECENT_REQUESTS_WINDOW``
+  rows only, under a statement timeout, and the offset stays inside them.
 """
 
 from __future__ import annotations
@@ -24,8 +27,11 @@ from serving.servers.routers.user_routes import (
     _RECENT_REQUESTS_COUNT_CACHE,
     _RECENT_REQUESTS_COUNT_TTL_SECONDS,
     _SHOWN_MODEL_SQL,
+    RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC,
+    RECENT_REQUESTS_WINDOW,
     _get_cached_user_request_count,
 )
+from serving.storage.pools import DatabaseBusyError
 
 
 @pytest.fixture(autouse=True)
@@ -36,10 +42,10 @@ def _reset_recent_requests_count_cache():
     _RECENT_REQUESTS_COUNT_CACHE.clear()
 
 
-def _make_conn(total: int = 7) -> AsyncMock:
+def _make_conn(total: int = 7, capped: bool = False) -> AsyncMock:
     """Return a mock asyncpg connection whose ``fetchrow`` yields a COUNT row."""
     conn = AsyncMock()
-    conn.fetchrow = AsyncMock(return_value={"total": total})
+    conn.fetchrow = AsyncMock(return_value={"total": total, "capped": capped})
     return conn
 
 
@@ -50,7 +56,7 @@ async def test_cache_miss_executes_count_once():
 
     total = await _get_cached_user_request_count(conn, "user-1", None)
 
-    assert total == 42
+    assert total == (42, False)
     assert conn.fetchrow.await_count == 1
 
 
@@ -62,8 +68,8 @@ async def test_cache_hit_skips_count_query():
     first = await _get_cached_user_request_count(conn, "user-1", None)
     second = await _get_cached_user_request_count(conn, "user-1", None)
 
-    assert first == 42
-    assert second == 42
+    assert first == (42, False)
+    assert second == (42, False)
     assert conn.fetchrow.await_count == 1
 
 
@@ -76,43 +82,42 @@ async def test_count_reruns_after_ttl_expiry():
     assert conn.fetchrow.await_count == 1
 
     # Age the cached entry past the TTL without sleeping.
-    cached_ts, cached_total = _RECENT_REQUESTS_COUNT_CACHE[("user-1", None, None)]
-    _RECENT_REQUESTS_COUNT_CACHE[("user-1", None, None)] = (
+    cached_ts, cached_total = _RECENT_REQUESTS_COUNT_CACHE[("user-1", None)]
+    _RECENT_REQUESTS_COUNT_CACHE[("user-1", None)] = (
         cached_ts - _RECENT_REQUESTS_COUNT_TTL_SECONDS - 1.0,
         cached_total,
     )
-    conn.fetchrow.return_value = {"total": 99}
+    conn.fetchrow.return_value = {"total": 99, "capped": True}
 
     refreshed = await _get_cached_user_request_count(conn, "user-1", None)
 
-    assert refreshed == 99
+    assert refreshed == (99, True)
     assert conn.fetchrow.await_count == 2
 
 
 @pytest.mark.asyncio
 async def test_distinct_keys_cache_independently():
-    """Different (user_id, model_id) tuples each get their own cache entry."""
+    """Each (user, key) gets its own cache entry; a count by model is never cached."""
     conn = _make_conn()
-    conn.fetchrow.side_effect = [
-        {"total": 10},
-        {"total": 20},
-        {"total": 30},
-    ]
+    conn.fetchrow.side_effect = [{"total": n, "capped": False} for n in (10, 20, 30, 40, 21)]
 
     a = await _get_cached_user_request_count(conn, "user-1", None)
     b = await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
     c = await _get_cached_user_request_count(conn, "user-2", None)
+    d = await _get_cached_user_request_count(conn, "user-1", None, 7)
 
-    assert (a, b, c) == (10, 20, 30)
-    assert conn.fetchrow.await_count == 3
+    assert [n for n, _ in (a, b, c, d)] == [10, 20, 30, 40]
+    assert conn.fetchrow.await_count == 4
 
-    # Subsequent hits all served from cache.
+    # Subsequent hits served from cache, but the model's count runs again.
     a2 = await _get_cached_user_request_count(conn, "user-1", None)
     b2 = await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
     c2 = await _get_cached_user_request_count(conn, "user-2", None)
+    d2 = await _get_cached_user_request_count(conn, "user-1", None, 7)
 
-    assert (a2, b2, c2) == (10, 20, 30)
-    assert conn.fetchrow.await_count == 3
+    assert [n for n, _ in (a2, b2, c2, d2)] == [10, 21, 30, 40]
+    assert conn.fetchrow.await_count == 5
+    assert set(_RECENT_REQUESTS_COUNT_CACHE) == {("user-1", None), ("user-2", None), ("user-1", 7)}
 
 
 @pytest.mark.asyncio
@@ -148,6 +153,22 @@ async def test_count_query_escapes_ilike_wildcards_in_model_id():
 
 
 @pytest.mark.asyncio
+async def test_the_count_reaches_back_over_the_window_only():
+    """However much history the account has, the count reads its newest rows only."""
+    conn = _make_conn(total=RECENT_REQUESTS_WINDOW, capped=True)
+
+    counted = await _get_cached_user_request_count(conn, "user-1", "gpt-4o", 7)
+
+    assert counted == (RECENT_REQUESTS_WINDOW, True)
+    sql = " ".join(conn.fetchrow.call_args.args[0].split())
+    assert (
+        "FROM api_logs WHERE user_id = $1 ORDER BY timestamp DESC, cost_usd DESC "
+        f"LIMIT {RECENT_REQUESTS_WINDOW}) AS recent" in sql
+    )
+    assert f"OFFSET {RECENT_REQUESTS_WINDOW}) AS capped" in sql
+
+
+@pytest.mark.asyncio
 async def test_count_query_omits_model_id_when_none():
     """Without ``model_id`` only the user bind param is passed."""
     conn = _make_conn(total=5)
@@ -167,28 +188,28 @@ async def test_cache_evicts_oldest_entries_at_capacity(monkeypatch):
     """Once the cache hits its size cap, the LRU entry is evicted."""
     monkeypatch.setattr(user_routes, "_RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES", 2)
     conn = _make_conn()
-    conn.fetchrow.side_effect = [{"total": i} for i in range(10)]
+    conn.fetchrow.side_effect = [{"total": i, "capped": False} for i in range(10)]
 
     await _get_cached_user_request_count(conn, "user-1", None)
     await _get_cached_user_request_count(conn, "user-2", None)
     assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
-        ("user-1", None, None),
-        ("user-2", None, None),
+        ("user-1", None),
+        ("user-2", None),
     }
 
     # Inserting a third distinct key evicts the least-recently-used entry.
     await _get_cached_user_request_count(conn, "user-3", None)
     assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
-        ("user-2", None, None),
-        ("user-3", None, None),
+        ("user-2", None),
+        ("user-3", None),
     }
 
     # Reading user-2 promotes it; user-3 is now LRU.
     await _get_cached_user_request_count(conn, "user-2", None)
     await _get_cached_user_request_count(conn, "user-4", None)
     assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
-        ("user-2", None, None),
-        ("user-4", None, None),
+        ("user-2", None),
+        ("user-4", None),
     }
 
 
@@ -235,18 +256,13 @@ async def test_a_request_for_an_auto_model_shows_the_auto_model_only():
             ),
         ]
     )
-    acquire = MagicMock()
-    acquire.__aenter__ = AsyncMock(return_value=conn)
-    acquire.__aexit__ = AsyncMock(return_value=None)
-    db_logger = SimpleNamespace(pool=SimpleNamespace(acquire=lambda: acquire))
-
     page = await user_routes.get_recent_requests(
         limit=50,
         offset=0,
         model_id=None,
         key_prefix=None,
         current_user={"user_id": "user-1"},
-        db_logger=db_logger,
+        db_logger=_db_logger(conn),
         op_store=None,
     )
 
@@ -263,6 +279,11 @@ async def test_a_request_for_an_auto_model_shows_the_auto_model_only():
 
 
 def _db_logger(conn):
+    """A logger whose pool hands out *conn*, with the transaction the reads run in."""
+    transaction = MagicMock()
+    transaction.__aenter__ = AsyncMock(return_value=None)
+    transaction.__aexit__ = AsyncMock(return_value=None)
+    conn.transaction = MagicMock(return_value=transaction)
     acquire = MagicMock()
     acquire.__aenter__ = AsyncMock(return_value=conn)
     acquire.__aexit__ = AsyncMock(return_value=None)
@@ -341,3 +362,76 @@ async def test_filtering_by_a_key_the_account_does_not_hold_is_404():
 
     assert refused.value.status_code == 404
     conn.fetch.assert_not_awaited()
+
+
+async def _page(conn, *, offset=0, limit=50, model_id=None):
+    return await user_routes.get_recent_requests(
+        limit=limit,
+        offset=offset,
+        model_id=model_id,
+        key_prefix=None,
+        current_user={"user_id": "user-bounds"},
+        db_logger=_db_logger(conn),
+        op_store=None,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_page_is_read_from_the_window_under_a_timeout():
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"total": RECENT_REQUESTS_WINDOW, "capped": True})
+    conn.fetch = AsyncMock(return_value=[_row()])
+
+    page = await _page(conn)
+
+    assert (page.total, page.total_capped) == (RECENT_REQUESTS_WINDOW, True)
+    sql = " ".join(conn.fetch.call_args.args[0].split())
+    assert (
+        "FROM api_logs WHERE user_id = $1 ORDER BY timestamp DESC, cost_usd DESC "
+        f"LIMIT {RECENT_REQUESTS_WINDOW}) AS recent" in sql
+    )
+    # Both reads run in one read-only transaction that set the timeout and the plan.
+    conn.transaction.assert_called_once_with(readonly=True)
+    (settings,) = conn.execute.await_args.args
+    timeout_ms = int(RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC * 1000)
+    assert f"SET LOCAL statement_timeout = '{timeout_ms}ms'" in settings
+    assert "SET LOCAL enable_sort = off" in settings
+    assert "SET LOCAL enable_bitmapscan = off" in settings
+
+
+@pytest.mark.asyncio
+async def test_an_offset_past_the_window_is_refused_before_any_read():
+    from fastapi import HTTPException
+
+    conn = AsyncMock()
+    with pytest.raises(HTTPException) as refused:
+        await _page(conn, offset=RECENT_REQUESTS_WINDOW)
+
+    assert refused.value.status_code == 400
+    assert str(RECENT_REQUESTS_WINDOW) in refused.value.detail
+    conn.fetch.assert_not_awaited()
+    conn.fetchrow.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_last_page_of_the_window_stops_at_it():
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(return_value={"total": RECENT_REQUESTS_WINDOW, "capped": True})
+    conn.fetch = AsyncMock(return_value=[])
+
+    page = await _page(conn, offset=RECENT_REQUESTS_WINDOW - 30, limit=200)
+
+    assert page.limit == 30
+    *_, limit, offset = conn.fetch.call_args.args
+    assert (limit, offset) == (30, RECENT_REQUESTS_WINDOW - 30)
+
+
+@pytest.mark.asyncio
+async def test_a_read_past_its_timeout_is_a_busy_503_not_an_empty_history():
+    import asyncpg
+
+    conn = AsyncMock()
+    conn.fetchrow = AsyncMock(side_effect=asyncpg.QueryCanceledError("statement timeout"))
+
+    with pytest.raises(DatabaseBusyError):
+        await _page(conn, model_id="zz-no-such-model")

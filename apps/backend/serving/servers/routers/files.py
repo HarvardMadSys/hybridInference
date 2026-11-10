@@ -24,24 +24,28 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from serving.batch.admission import declared_length_exceeds
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upload
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
-from serving.config.settings import has_role
-from serving.servers.auth import verify_batch_management_identity
+from serving.servers.auth import reads_every_owner, verify_batch_management_identity
 from serving.servers.deps import get_batch_file_store, get_batch_store
+from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.storage.batch_file_store import (
     CHUNK_BYTES,
     BatchFileOwnerUnavailable,
     BatchFileQuotaExceeded,
 )
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = get_logger(__name__)
 
@@ -79,7 +83,12 @@ def _owner(user_ctx: dict[str, Any]) -> str:
 
 
 def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
-    return None if has_role(user_ctx.get("role") or "free", "admin") else _owner(user_ctx)
+    """Return the owner a lookup is restricted to: the caller, or none for an admin.
+
+    An administrator who authenticated as one, that is: the anonymous caller of
+    an auth-disabled gateway holds the admin role too (:func:`reads_every_owner`).
+    """
+    return None if reads_every_owner(user_ctx) else _owner(user_ctx)
 
 
 def _epoch(value: Any) -> int | None:
@@ -114,6 +123,20 @@ def content_disposition(name: str) -> str:
     clean = safe_filename(name)
     ascii_name = clean.encode("ascii", "replace").decode("ascii").replace("?", "_")
     return f"attachment; filename=\"{ascii_name}\"; filename*=UTF-8''{quote(clean, safe='')}"
+
+
+def jsonl_download(
+    request: Request, body: AsyncIterator[bytes], *, headers: dict[str, str]
+) -> StreamingResponse:
+    """A JSONL download, marked as the long-lived stream it is.
+
+    ``TimeoutMiddleware`` ends a response at ``REQUEST_TIMEOUT_SECONDS``
+    (120 s by default) even after its status went out, so a large file would
+    stop short behind a ``200``. Marked as streaming, a download gets the
+    stream cap (``STREAM_REQUEST_TIMEOUT_SECONDS``) instead, as SSE does.
+    """
+    request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
+    return StreamingResponse(body, media_type="application/jsonl", headers=headers)
 
 
 def _not_found(file_id: str) -> HTTPException:
@@ -216,12 +239,7 @@ async def store_upload(
         raise HTTPException(
             400, "Content-Type must be multipart/form-data with a boundary"
         ) from None
-    declared = request.headers.get("content-length")
-    if (
-        declared is not None
-        and declared.isdigit()
-        and int(declared) > config.max_body_bytes + _MULTIPART_OVERHEAD
-    ):
+    if declared_length_exceeds(request, config.max_body_bytes + _MULTIPART_OVERHEAD):
         raise HTTPException(
             413,
             f"The file exceeds the batch size limit of {config.max_body_bytes // (1024 * 1024)} MiB",
@@ -360,6 +378,7 @@ async def retrieve_file(
 @router.get("/v1/files/{file_id}/content", response_model=None)
 async def file_content(
     file_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
     file_store=Depends(get_batch_file_store),
@@ -389,7 +408,7 @@ async def file_content(
                 expected=row,
             )
         )
-    return StreamingResponse(body, media_type="application/jsonl", headers=headers)
+    return jsonl_download(request, body, headers=headers)
 
 
 async def _guarded(stream: Any) -> Any:

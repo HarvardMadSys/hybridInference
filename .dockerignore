@@ -24,15 +24,16 @@ apps/frontend/tsconfig.generated.json
 # Data & logs (never bake into images)
 var/
 
+# Host-local lifecycle state: .ops.env, and each deployment's pinned images,
+# release history and default database dumps under .ops/. A dump holds every
+# stored secret, wherever an operator writes it.
+.ops*
+*.dump
+**/*.dump
+
 # Dev/test
 tests/
 docs/
-
-# Binaries on host
-alertmanager-*.linux-amd64/
-
-# Rollback backup (created during migration)
-deploy/docker/.rollback-backup/
 
 # IDE
 .vscode/

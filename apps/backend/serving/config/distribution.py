@@ -1,29 +1,8 @@
-"""Distribution manifest: schema, loader, and config-path resolution.
+"""Database-backed public site configuration and explicit legacy import helpers.
 
-A distribution manifest (design doc:
-``docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md``)
-lets a deployment supply site identity and config-file locations as one
-versioned document instead of scattered env vars. Config-path resolution
-precedence, per the design doc's compatibility rules:
-
-1. explicit env var (``MODELS_CONFIG_PATH`` etc.) — behavior unchanged;
-2. the manifest's ``paths:`` section;
-3. the legacy ``config/*.yaml`` defaults.
-
-The loader is opt-in (``DISTRIBUTION_CONFIG_PATH`` unset means pure legacy
-behavior) and fail-open: a broken manifest logs an error and the process
-falls back to legacy resolution instead of refusing to start.
-``DISTRIBUTION_CONFIG_MODE`` defaults to ``dark``: the manifest loads,
-validates, and logs what WOULD change while current resolution stays
-effective — the DARK_LOADED / SHADOW_COMPARE migration states from the
-design doc. Applying manifest paths requires an explicit
-``DISTRIBUTION_CONFIG_MODE=active``, so setting only the path can never
-change behavior.
-
-``site:`` and ``features:`` are parsed here and exposed as a safe public subset
-by ``GET /site-config``; ``site.branding`` names a separately versioned public
-branding document. Manifest values must not contain secrets; env interpolation
-is deliberately unsupported in ``schema_version: 1``.
+Runtime consumers use get_active_distribution_config, which reads validated JSON
+settings and never loads a manifest file. The file loader and path resolver are
+retained only for explicit previous-release tooling, not application startup.
 """
 
 from __future__ import annotations
@@ -58,10 +37,8 @@ _LEGACY_DEFAULTS: dict[str, str] = {
     "models": "config/examples/models.openrouter.yaml",
     "routing": "config/examples/routing.minimal.yaml",
     "alerts": "config/alerts.yaml",
-    # Same reasoning as alerts: there is no example worth defaulting to, and
-    # the loader's answer to a missing file is "no MCP servers", which is the
-    # right neutral behaviour. config/examples/mcp.example.yaml exists to be
-    # copied, deliberately not to be loaded.
+    # Accepted for compatibility and read by nothing: the MCP loader left with
+    # the cloud agent (configuration.md, "Settings that currently have no effect").
     "mcp": "config/mcp.yaml",
 }
 
@@ -227,32 +204,56 @@ def _refuse_or_fall_back(configured: str, exc: Exception, *, unexpected: bool = 
 
 @lru_cache(maxsize=1)
 def get_distribution_config() -> DistributionConfig | None:
-    """Cached manifest for this process; None when unset or failed to load."""
-    configured = get_settings().distribution_config_path
-    if not configured:
-        return None
+    """Return validated database site configuration; never inspect a manifest file."""
+    from serving.config.documents import get
+
     try:
-        config = load_distribution_config(Path(configured))
-    except DistributionConfigError as exc:
-        _refuse_or_fall_back(configured, exc)
-        return None
-    except Exception as exc:
-        _refuse_or_fall_back(configured, exc, unexpected=True)
-        return None
-    logger.info(
-        f"Distribution manifest loaded: id={config.distribution.id!r} "
-        f"release={config.distribution.release!r} "
-        f"mode={get_settings().distribution_config_mode!r}"
-    )
-    if not _explicitly_configured("distribution_config_mode"):
-        _log_once(
-            ("mode-defaulted",),
-            "DISTRIBUTION_CONFIG_PATH is set but DISTRIBUTION_CONFIG_MODE is "
-            "not: defaulting to 'dark' (manifest compared, not applied). Set "
-            "DISTRIBUTION_CONFIG_MODE=active to apply manifest paths.",
-            level="warning",
+        value = get("distribution")
+        branding = get("branding")
+        if not value and not branding:
+            return None
+        config = DistributionConfig.model_validate(
+            value or {"schema_version": 1, "distribution": {"id": "neutral"}}
         )
-    return config
+        config._branding_config = BrandingConfig.model_validate(branding) if branding else None
+        return config
+    except ValueError:
+        _report_invalid()
+        raise DistributionConfigError(
+            "Ask admin to configure the site in Admin Settings."
+        ) from None
+
+
+#: The invalid site configuration has been reported since the last change.
+#: Every reader runs into it, OpenRouter attribution and ``/site-config`` on
+#: each request, so it is logged once per configuration change, not per call.
+_invalid_reported = False
+
+
+def _report_invalid() -> None:
+    """Log, once per configuration change, what is wrong with the site documents."""
+    global _invalid_reported
+    if _invalid_reported:
+        return
+    _invalid_reported = True
+    from serving.config.app_config import validation_problem
+
+    problems = "; ".join(
+        f"{key}: {problem}"
+        for key in ("SITE_CONFIGURATION", "SITE_BRANDING")
+        if (problem := validation_problem(key))
+    )
+    logger.error(
+        "The public site configuration is not valid (%s). Until it is corrected in Admin "
+        "Settings, the site has the neutral identity, public signup is closed and the "
+        "console reports the configuration incomplete.",
+        problems or "the documents do not validate together",
+    )
+
+
+def _forget_report() -> None:
+    global _invalid_reported
+    _invalid_reported = False
 
 
 @dataclass(frozen=True)
@@ -299,27 +300,7 @@ def _effective_mode() -> str:
 
 
 def get_active_distribution_config() -> DistributionConfig | None:
-    """Return the active manifest, or None for intentional dark mode.
-
-    Unlike config-path migration, consumers of identity and security policy
-    cannot treat an invalid selection as an unconfigured deployment.
-
-    Raises:
-        DistributionConfigError: For an unknown/empty mode, an active mode
-            without a manifest path, or an invalid active manifest.
-    """
-    settings = get_settings()
-    mode = _effective_mode()
-    if settings.distribution_config_mode.strip().lower() not in _VALID_MODES:
-        raise DistributionConfigError(
-            "Invalid DISTRIBUTION_CONFIG_MODE; expected 'active' or 'dark'."
-        )
-    if mode == "dark":
-        return None
-    if not settings.distribution_config_path.strip():
-        message = "DISTRIBUTION_CONFIG_MODE=active requires DISTRIBUTION_CONFIG_PATH."
-        _log_once(("active-without-path",), message, level="error")
-        raise DistributionConfigError(message)
+    """Return the database site policy, effective in every process after refresh."""
     return get_distribution_config()
 
 
@@ -398,3 +379,11 @@ def _log_dark_comparison(
         f"(source={effective.source}, sha256={effective_digest}); manifest would "
         f"use {manifest.path} (sha256={manifest_digest}) — {verdict}",
     )
+
+
+# Settings changes invalidate the parsed public configuration in this process,
+# and let a configuration still invalid after one be reported again.
+from serving.config.app_config import on_change
+
+on_change(get_distribution_config.cache_clear)
+on_change(_forget_report)

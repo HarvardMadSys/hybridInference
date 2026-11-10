@@ -2,6 +2,7 @@
 
 import html as html_lib
 import smtplib
+import ssl
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from urllib.parse import quote, urlparse
@@ -14,6 +15,24 @@ from serving.utils.delivery import EmailMessage, get_email_provider
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
+
+#: The submission port that speaks TLS from the first byte (RFC 8314). Every
+#: other port is plain SMTP upgraded with STARTTLS, which a server that does not
+#: offer it refuses, as it always did.
+SMTP_IMPLICIT_TLS_PORT = 465
+
+
+def _smtp_tls_context() -> ssl.SSLContext:
+    """Return the TLS settings for the SMTP connection: the server must prove its name.
+
+    ``starttls()`` without a context checks neither the certificate nor the
+    host name, so anyone on the path could present their own certificate and
+    read the SMTP password and every reset link. The default context checks
+    both against the system's trusted authorities, or against the bundle the
+    standard ``SSL_CERT_FILE`` variable names (how a server with a private
+    authority's certificate is trusted).
+    """
+    return ssl.create_default_context()
 
 
 def get_smtp_config() -> dict[str, str | int]:
@@ -104,14 +123,42 @@ def send_email(
             msg.attach(MIMEText(text_body, "plain"))
         msg.attach(MIMEText(html_body, "html"))
 
-        # Send email
-        with smtplib.SMTP(config["host"], config["port"], timeout=10) as server:
-            server.starttls()
+        # Send email, over TLS that checks the server's certificate and name.
+        context = _smtp_tls_context()
+        port = int(config["port"])
+        if port == SMTP_IMPLICIT_TLS_PORT:
+            connection = smtplib.SMTP_SSL(config["host"], port, timeout=10, context=context)
+        else:
+            connection = smtplib.SMTP(config["host"], port, timeout=10)
+        with connection as server:
+            if port != SMTP_IMPLICIT_TLS_PORT:
+                try:
+                    server.starttls(context=context)
+                except ssl.SSLError:
+                    # A failed handshake leaves no channel to say QUIT on:
+                    # closed here, the failure reported is the handshake's.
+                    server.close()
+                    raise
             server.login(config["user"], config["password"])
             server.send_message(msg)
 
         logger.info(f"Email sent successfully to {to_email}")
         return True
+
+    except ssl.SSLCertVerificationError as e:
+        # Said in full: until this check existed any certificate was accepted,
+        # so a server with a self-signed one worked and now stops sending.
+        logger.error(
+            "Failed to send email to %s: the SMTP server %s:%s did not present a certificate "
+            "this host trusts for its name (%s). Give it a certificate from a public "
+            "authority, or point SSL_CERT_FILE at a bundle with the system's authorities "
+            "and the one that signed it.",
+            to_email,
+            config["host"],
+            config["port"],
+            e.verify_message or e,
+        )
+        return False
 
     except Exception as e:
         logger.error(f"Failed to send email to {to_email}: {e}")
@@ -373,6 +420,10 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
     """
     site_name = get_site_identity().name
     subject = f"Your {site_name} registration update"
+    # Free text an admin typed, shown as text: a reason that mentions an
+    # address in angle brackets must not vanish into an unknown tag. The
+    # template transport escapes its own variables, so it gets the raw reason.
+    safe_reason = html_lib.escape(reason)
 
     html_body = f"""
     <html>
@@ -382,7 +433,7 @@ def send_rejection_email(to_email: str, reason: str) -> bool:
             <p>Unfortunately, your {site_name} registration was not approved at this time.</p>
             <div style="background: #fef2f2; border-left: 4px solid #ef4444; padding: 12px 16px;
                         margin: 20px 0; border-radius: 4px;">
-                <strong>Reason:</strong> {reason}
+                <strong>Reason:</strong> {safe_reason}
             </div>
             <p>If you believe this was a mistake, please contact the administrator.</p>
             <hr style="border: none; border-top: 1px solid #eee; margin: 30px 0;">
@@ -586,7 +637,13 @@ def send_new_registration_admin_email(
     admin_url = f"{settings.frontend_url}/dashboard/admin"
     display_name = user_name or "(not provided)"
     use_case_text = (use_case or "").strip() or "(not provided)"
-    # HTML-escape the user-supplied use case and preserve line breaks.
+    # Every field below comes from an anonymous signup form, and this mail goes
+    # out from the deployment's own domain to its admins: escaped, a display
+    # name like ``<a href=...>`` reads as text instead of planting a link or a
+    # tracking pixel. The use case also keeps its line breaks.
+    safe_email = html_lib.escape(user_email)
+    safe_name = html_lib.escape(display_name)
+    safe_user_id = html_lib.escape(user_id)
     use_case_html = html_lib.escape(use_case_text).replace("\r\n", "\n").replace("\n", "<br>")
 
     site_name = get_site_identity().name
@@ -601,15 +658,15 @@ def send_new_registration_admin_email(
             <table style="border-collapse: collapse; margin: 20px 0;">
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">Email:</td>
-                    <td style="padding: 6px 0;">{user_email}</td>
+                    <td style="padding: 6px 0;">{safe_email}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">Name:</td>
-                    <td style="padding: 6px 0;">{display_name}</td>
+                    <td style="padding: 6px 0;">{safe_name}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold;">User ID:</td>
-                    <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{user_id}</td>
+                    <td style="padding: 6px 0; font-family: monospace; font-size: 13px;">{safe_user_id}</td>
                 </tr>
                 <tr>
                     <td style="padding: 6px 16px 6px 0; font-weight: bold; vertical-align: top;">Use case:</td>

@@ -112,3 +112,38 @@ describe('ModelsSection pricing', () => {
     expect(renderPricing({})).toHaveTextContent(/^—$/);
   });
 });
+
+describe('ModelsSection on a phone', () => {
+  afterEach(() => cleanup());
+
+  it('repeats the limits under the model, for the column that is hidden there', () => {
+    vi.mocked(useModels).mockReturnValue({
+      data: {
+        data: [
+          makeModel({
+            id: 'qwen3-coder-480b-a35b-instruct',
+            context_length: 262_144,
+            max_output_length: 32_768,
+            pricing: { prompt: '2.8', completion: '8.8' },
+          }),
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as ReturnType<typeof useModels>);
+
+    render(createElement(ModelsSection));
+
+    const [modelCell, limitsCell, priceCell] = within(screen.getAllByRole('row')[1]).getAllByRole(
+      'cell',
+    );
+    expect(within(modelCell).getByText('Ctx / out 262K / 33K')).toHaveClass('sm:hidden');
+    expect(limitsCell).toHaveClass('hidden', 'sm:table-cell');
+    expect(limitsCell).toHaveTextContent('262K / 33K');
+    expect(within(priceCell).getByText('$8.8')).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'Ctx / out' })).toHaveClass(
+      'hidden',
+      'sm:table-cell',
+    );
+  });
+});

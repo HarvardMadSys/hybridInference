@@ -19,7 +19,15 @@ still counted from ``api_logs`` on each load is small:
 A row is classified by the Recent Requests outcome filters themselves
 (``_common.REQUEST_OUTCOME_FILTERS``), so a card's error and disconnect counts are
 the rows the table lists under those outcomes, and an hour read from the rollup
-and an hour counted live cannot disagree about what an error is.
+and an hour counted live cannot disagree about what an error is. Every count is
+also kept for the batch worker's rows alone (``_common.REQUEST_SOURCE_FILTERS``),
+so a card can show the requests callers made directly and stack the batch
+worker's beside them: a large batch would otherwise read as the gateway's traffic.
+
+A stored hour records the :data:`DEFINITION` its counts were made under. An hour
+stored under any other -- before the batch counts were added, or by a release
+that counts differently -- is not stored as far as reads and fills are
+concerned: it is counted again.
 
 Hours reach the table three ways, all through :func:`fill_hours`: the hourly job,
 a backfill at startup, and the endpoint itself when an hour it needs is missing
@@ -36,12 +44,16 @@ and the geo rollup, these are anonymous counts of traffic that did happen.
 
 from __future__ import annotations
 
+import hashlib
 import time
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
-from serving.servers.routers.admin._common import REQUEST_OUTCOME_FILTERS
+from serving.servers.routers.admin._common import (
+    REQUEST_OUTCOME_FILTERS,
+    REQUEST_SOURCE_FILTERS,
+)
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -73,18 +85,46 @@ _TICK = timedelta(microseconds=1)
 # What a card counts over a set of rows. Success is a 2xx/3xx status. Errors and
 # client disconnects are the outcome filters, so the two are disjoint, while a
 # 2xx row that also recorded an error counts as a success and as an error, as it
-# always has.
+# always has. The ``batch_*`` counts are the same over the batch worker's rows.
+_SUCCESS = "l.status_code >= 200 AND l.status_code < 400"
+_ERROR = REQUEST_OUTCOME_FILTERS["errors_excluding_disconnects"]
+_DISCONNECT = REQUEST_OUTCOME_FILTERS["client_disconnect"]
+_BATCH = REQUEST_SOURCE_FILTERS["batch"]
 _COUNTS_SQL = f"""
         COUNT(*) AS request_count,
-        COUNT(*) FILTER (WHERE l.status_code >= 200 AND l.status_code < 400)
-            AS success_count,
-        COUNT(*) FILTER (
-            WHERE {REQUEST_OUTCOME_FILTERS["errors_excluding_disconnects"]}
-        ) AS error_count,
-        COUNT(*) FILTER (WHERE {REQUEST_OUTCOME_FILTERS["client_disconnect"]})
-            AS client_disconnect_count,
+        COUNT(*) FILTER (WHERE {_SUCCESS}) AS success_count,
+        COUNT(*) FILTER (WHERE {_ERROR}) AS error_count,
+        COUNT(*) FILTER (WHERE {_DISCONNECT}) AS client_disconnect_count,
         COUNT(l.latency_ms) AS latency_count,
-        COALESCE(SUM(l.latency_ms), 0) AS latency_sum_ms"""
+        COALESCE(SUM(l.latency_ms), 0) AS latency_sum_ms,
+        COUNT(*) FILTER (WHERE {_BATCH}) AS batch_request_count,
+        COUNT(*) FILTER (WHERE {_BATCH} AND {_SUCCESS}) AS batch_success_count,
+        COUNT(*) FILTER (WHERE {_BATCH} AND {_ERROR}) AS batch_error_count,
+        COUNT(*) FILTER (WHERE {_BATCH} AND {_DISCONNECT}) AS batch_client_disconnect_count,
+        COUNT(l.latency_ms) FILTER (WHERE {_BATCH}) AS batch_latency_count,
+        COALESCE(SUM(l.latency_ms) FILTER (WHERE {_BATCH}), 0) AS batch_latency_sum_ms"""
+
+#: The columns :data:`_COUNTS_SQL` produces and a stored hour keeps, in order.
+#: :class:`VolumeCounts` has a field of each name.
+COUNT_COLUMNS = (
+    "request_count",
+    "success_count",
+    "error_count",
+    "client_disconnect_count",
+    "latency_count",
+    "latency_sum_ms",
+    "batch_request_count",
+    "batch_success_count",
+    "batch_error_count",
+    "batch_client_disconnect_count",
+    "batch_latency_count",
+    "batch_latency_sum_ms",
+)
+
+#: The fingerprint of what a stored hour counts, kept in its ``definition``. Any
+#: change to the counts changes it, and the hours stored before are counted again.
+DEFINITION = hashlib.sha256(_COUNTS_SQL.encode()).hexdigest()[:16]
+_CURRENT = f"'{DEFINITION}'"
 
 # Counts per half-open range [range_start, range_end), one row per range even when
 # it holds no rows. One aggregate per range, each an index range scan -- not one
@@ -100,35 +140,45 @@ CROSS JOIN LATERAL (
 ) c
 """
 
+# Python 3.11 allows no backslash inside an f-string's braces: the lists are joined here.
+_SEPARATOR = ",\n    "
+_COLUMN_LIST = _SEPARATOR.join(COUNT_COLUMNS)
+_COUNTED_LIST = _SEPARATOR.join(f"counted.{column}" for column in COUNT_COLUMNS)
+_UPDATE_LIST = _SEPARATOR.join(f"{column} = EXCLUDED.{column}" for column in COUNT_COLUMNS)
+
+# Writes every count and the current fingerprint. An hour stored under an older
+# fingerprint is overwritten in place: fills treat it as missing.
 _FILL_SQL = f"""
 INSERT INTO request_volume_hourly AS v (
-    hour_bucket, request_count, success_count, error_count,
-    client_disconnect_count, latency_count, latency_sum_ms, completed_at
+    hour_bucket,
+    {_COLUMN_LIST},
+    definition,
+    completed_at
 )
 SELECT
-    counted.range_start, counted.request_count, counted.success_count,
-    counted.error_count, counted.client_disconnect_count,
-    counted.latency_count, counted.latency_sum_ms, NOW()
+    counted.range_start,
+    {_COUNTED_LIST},
+    {_CURRENT},
+    NOW()
 FROM ({_RANGE_COUNTS_SQL}) AS counted
 ON CONFLICT (hour_bucket) DO UPDATE SET
-    request_count = EXCLUDED.request_count,
-    success_count = EXCLUDED.success_count,
-    error_count = EXCLUDED.error_count,
-    client_disconnect_count = EXCLUDED.client_disconnect_count,
-    latency_count = EXCLUDED.latency_count,
-    latency_sum_ms = EXCLUDED.latency_sum_ms,
+    {_UPDATE_LIST},
+    definition = EXCLUDED.definition,
     completed_at = EXCLUDED.completed_at
 """
 
-_STORED_SQL = """
-SELECT hour_bucket, request_count, success_count, error_count,
-    client_disconnect_count, latency_count, latency_sum_ms
+# Only hours stored under the current fingerprint are stored as far as reads and
+# fills are concerned.
+_STORED_SQL = f"""
+SELECT hour_bucket,
+    {_COLUMN_LIST}
 FROM request_volume_hourly
-WHERE hour_bucket >= $1 AND hour_bucket < $2
+WHERE hour_bucket >= $1 AND hour_bucket < $2 AND definition = {_CURRENT}
 """
 
-_STORED_OF_SQL = """
-SELECT hour_bucket FROM request_volume_hourly WHERE hour_bucket = ANY($1::timestamptz[])
+_STORED_OF_SQL = f"""
+SELECT hour_bucket FROM request_volume_hourly
+WHERE hour_bucket = ANY($1::timestamptz[]) AND definition = {_CURRENT}
 """
 
 _PURGE_SQL = """
@@ -137,9 +187,17 @@ WHERE hour_bucket < NOW() - make_interval(days => $1::int)
 """
 
 
+# The counts that describe one set of rows; each has a ``batch_`` twin.
+_OWN_COUNTS = COUNT_COLUMNS[:6]
+
+
 @dataclass
 class VolumeCounts:
-    """Counts for one stretch of time; stretches add up into a bar."""
+    """Counts for one stretch of time; stretches add up into a bar.
+
+    The ``batch_*`` counts are the share of each count above made by the batch
+    worker's requests.
+    """
 
     request_count: int = 0
     success_count: int = 0
@@ -147,11 +205,35 @@ class VolumeCounts:
     client_disconnect_count: int = 0
     latency_count: int = 0
     latency_sum_ms: int = 0
+    batch_request_count: int = 0
+    batch_success_count: int = 0
+    batch_error_count: int = 0
+    batch_client_disconnect_count: int = 0
+    batch_latency_count: int = 0
+    batch_latency_sum_ms: int = 0
 
     @classmethod
     def from_row(cls, row: Any) -> VolumeCounts:
         """Read the counts out of a rollup or range-count row."""
         return cls(**{field.name: int(row[field.name] or 0) for field in fields(cls)})
+
+    def of_source(self, source: str | None) -> VolumeCounts:
+        """The counts of one source's requests alone.
+
+        *source* is a Recent Requests ``source``: ``"batch"`` for the batch
+        worker's, ``"interactive"`` for every other, or ``None`` / ``"all"`` for
+        every request. As in any counts, the result's ``batch_*`` are the batch
+        worker's share of its own: all of a batch result, none of an interactive
+        one.
+        """
+        if source is None or source in ("", "all"):
+            return VolumeCounts(**{name: getattr(self, name) for name in COUNT_COLUMNS})
+        batch = {name: getattr(self, f"batch_{name}") for name in _OWN_COUNTS}
+        if source == "batch":
+            return VolumeCounts(**batch, **{f"batch_{name}": batch[name] for name in _OWN_COUNTS})
+        if source == "interactive":
+            return VolumeCounts(**{name: getattr(self, name) - batch[name] for name in _OWN_COUNTS})
+        raise ValueError(f"unknown request source: {source!r}")
 
     def add(self, other: VolumeCounts) -> None:
         """Fold *other* into these counts."""
@@ -341,8 +423,10 @@ async def invalidate_hours(conn: asyncpg.Connection, hours: list[datetime]) -> N
 async def backfill_missing(pool: asyncpg.Pool, *, days: int = RETENTION_DAYS) -> int:
     """Store every completed hour of the last *days* days the table lacks.
 
-    Newest first, so the hours the cards show most are ready first. Returns how
-    many hours it wrote.
+    An hour stored under an older :data:`DEFINITION` counts as lacking, so the
+    first start after the counts change counts the month again. Newest first, so
+    the hours the cards show most are ready first. Returns how many hours it
+    wrote.
     """
     async with pool.acquire() as conn:
         end_time = await conn.fetchval("SELECT date_trunc('minute', NOW())")

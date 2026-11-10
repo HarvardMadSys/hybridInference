@@ -45,14 +45,17 @@ import asyncio
 import contextvars
 import datetime as dt
 import json
+import math
 import secrets
 from dataclasses import dataclass, replace
 from typing import Any
 
+import aiohttp
 import anyio
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from serving.batch.admission import has_invalid_unicode
 from serving.batch.attempts import observing
 from serving.batch.targets import TARGET_PATHS
 from serving.exceptions import model_queued_cause, safe_detail_text, scrub_error_for_user
@@ -96,6 +99,9 @@ _RETRYABLE_STATUSES = frozenset({408, 425, 429})
 #: Seconds before an item answered "model queued" is tried again when the
 #: upstream named no ``Retry-After`` of its own.
 MODEL_QUEUED_RETRY_SECONDS = 120.0
+#: Keep upstream hints within the longest supported batch window. A bogus
+#: header must not overflow datetime arithmetic or hold a model forever.
+MAX_MODEL_QUEUED_RETRY_SECONDS = 168 * 3600.0
 
 _ERROR_CODES: dict[int, str] = {
     400: "invalid_request",
@@ -142,7 +148,10 @@ class DispatchResult:
     its prompt cache, or None when the usage reports nothing about caching.
     ``requeue_after`` is set when the model's upstream answered that the model
     is queued for capacity: the item is to wait that many seconds and run
-    again, without the attempt counting.
+    again, without the attempt counting. ``timed_out`` says the attempt ran out
+    of time (a 504, the upstream call's own timeout, or the item's deadline):
+    the request is generating longer than any limit allows, and sent again it
+    most likely would again.
     """
 
     status_code: int
@@ -158,6 +167,7 @@ class DispatchResult:
     dispatched: bool = True
     cached_tokens: int | None = None
     requeue_after: float | None = None
+    timed_out: bool = False
 
 
 async def dispatch_item(
@@ -276,6 +286,8 @@ async def _dispatch(
                 outcome = _model_queued(queued, _detail_message(exc.detail, exc.status_code))
             else:
                 outcome = _failure(exc.status_code, _detail_message(exc.detail, exc.status_code))
+                if _caused_by_timeout(exc):
+                    outcome = replace(outcome, timed_out=True)
         except Exception as exc:
             uncertain = True
             if deadline.cancel_called:
@@ -291,7 +303,26 @@ async def _dispatch(
             if deadline.cancelled_caught:
                 outcome, uncertain = _TIMED_OUT, True
             else:
-                outcome = _completed(target, result)
+                try:
+                    outcome = _completed(target, result)
+                except Exception as exc:
+                    # Inference already returned (and may have been billed).
+                    # Leaving this claim to its lease would run it again; the
+                    # serialization failure is final, with the billing report
+                    # below retained even when its answer cannot be stored.
+                    logger.warning(
+                        "batch item response could not be rendered (batch %s)",
+                        batch_id,
+                        extra={
+                            "event": "batch_response_encoding_error",
+                            "error_type": type(exc).__name__,
+                        },
+                        exc_info=True,
+                    )
+                    outcome = replace(
+                        _failure(502, "The upstream response could not be encoded as JSON."),
+                        retryable=False,
+                    )
         request_id = observer.request_id or _logged_request_id(scope_request_id)
         cost_usd: float | None = None
         if observer.billed:
@@ -520,7 +551,25 @@ def _failure(
         status_code=status_code,
         error=error,
         retryable=status_code >= 500 or status_code in _RETRYABLE_STATUSES,
+        timed_out=status_code == 504,
     )
+
+
+def _caused_by_timeout(exc: BaseException) -> bool:
+    """Whether an execution's error was raised from the upstream call timing out.
+
+    The chat surface answers an upstream timeout with the status it can find on
+    the exception, 500 when there is none, and chains the timeout as the
+    HTTPException's cause.
+
+    Not a connection that timed out opening (``aiohttp.ConnectionTimeoutError``,
+    a ``TimeoutError`` too): nothing was sent, so it says nothing about how long
+    a generation runs, and is retried like a refused connection.
+    """
+    cause = exc.__cause__
+    if isinstance(cause, aiohttp.ConnectionTimeoutError):
+        return False
+    return isinstance(cause, (TimeoutError, asyncio.TimeoutError))
 
 
 def _model_queued(exc: BaseException, message: str) -> DispatchResult:
@@ -528,15 +577,22 @@ def _model_queued(exc: BaseException, message: str) -> DispatchResult:
 
     The model's on-demand deployment is waiting for capacity. Nothing ran, so
     the attempt is not billed and does not count: the item waits for the
-    upstream's ``Retry-After`` (``MODEL_QUEUED_RETRY_SECONDS`` without one) and
-    runs again, for as long as its batch's completion window lasts.
+    upstream's ``Retry-After`` (``MODEL_QUEUED_RETRY_SECONDS`` without a valid
+    one), capped at the longest supported batch window, and runs again for as
+    long as its batch's completion window lasts.
     """
-    retry_after = getattr(exc, "retry_after", None)
+    try:
+        retry_after = float(getattr(exc, "retry_after", None))
+    except (TypeError, ValueError, OverflowError):
+        retry_after = MODEL_QUEUED_RETRY_SECONDS
+    if not math.isfinite(retry_after) or retry_after < 0:
+        retry_after = MODEL_QUEUED_RETRY_SECONDS
+    retry_after = min(retry_after, MAX_MODEL_QUEUED_RETRY_SECONDS)
     return DispatchResult(
         status_code=503,
         error={"code": "model_queued", "message": message, "status": 503},
         retryable=True,
-        requeue_after=retry_after if retry_after is not None else MODEL_QUEUED_RETRY_SECONDS,
+        requeue_after=retry_after,
     )
 
 
@@ -563,7 +619,7 @@ def _messages_completed(result: Any) -> tuple[int, Any] | DispatchResult:
         encoded = json.dumps(
             result.body, ensure_ascii=False, allow_nan=False, separators=(",", ":")
         )
-        return 200, json.loads(encoded)
+        return 200, json.loads(encoded.encode("utf-8"))
     if isinstance(result, MessagesStream):
         # The item forced stream off; a stream here never contacted the upstream.
         return _failure(502, "The handler returned a stream for a batch request.")
@@ -616,6 +672,11 @@ def _completed(target: str, result: Any) -> DispatchResult:
     if target == TARGET_MESSAGES and result.get("type") == "error":
         return _error_from_body(target, 502, result)
     response = _client_body(result) if target == TARGET_CHAT else json_safe(result)
+    # Messages already passed its HTTP JSON/UTF-8 encoding above. The other
+    # targets need the same Unicode guarantee before PostgreSQL or a JSONL
+    # export encounters an escaped surrogate and strands a billed claim.
+    if target != TARGET_MESSAGES and has_invalid_unicode(response):
+        raise ValueError("The response contains invalid Unicode")
     usage = response.get("usage") if isinstance(response, dict) else None
     return DispatchResult(
         status_code=200,

@@ -1,4 +1,4 @@
-"""Pydantic models for config/alerts.yaml plus a loader that handles env expansion."""
+"""Alert document schemas and reference expansion, with an explicit legacy file reader."""
 
 from __future__ import annotations
 
@@ -226,12 +226,22 @@ class ClientErrorBurstConfig(BaseModel):
     ``SLACK_ALERTS_WEBHOOK_URL``, so "on" here only affects a deployment that
     has already asked to be paged; with ``cooldown_sec`` at an hour the
     worst case for a noisy deployment is one message per hour.
+
+    ``min_distinct_callers`` is how many callers the window's events must come
+    from, counted by the opaque ``caller`` the event carries (one per API key,
+    grant, or anonymous address). The default of 1 pages on one caller's burst,
+    which is the poisoned-conversation case above -- and which also lets any one
+    key, a free one included, page once per cooldown by sending malformed
+    requests. A deployment that hands out keys to the public and would rather
+    not be paged by one of them sets it to 2 or more, and then learns of a
+    single caller's loop only from the logs.
     """
 
     enabled: bool = True
     window_sec: int = 600
     threshold_count: int = 12
     cooldown_sec: int = 3600
+    min_distinct_callers: int = Field(default=1, ge=1)
 
 
 class KeyPoolExhaustionBurstConfig(BaseModel):
@@ -419,6 +429,11 @@ class AlertConfig(BaseModel):
     cost: CostSection = Field(default_factory=CostSection)
 
 
+def alert_config_from_data(raw: dict[str, Any]) -> AlertConfig:
+    """Validate a parsed alert document using the existing setting-reference rules."""
+    return AlertConfig.model_validate(_expand_env(raw))
+
+
 def load_alert_config(path: str | Path) -> AlertConfig:
     """Load AlertConfig from YAML at ``path``; return defaults if missing."""
     p = Path(path)
@@ -426,5 +441,4 @@ def load_alert_config(path: str | Path) -> AlertConfig:
         log.warning("alerts config not found at %s; using defaults", p)
         return AlertConfig()
     raw = yaml.safe_load(p.read_text()) or {}
-    raw = _expand_env(raw)
-    return AlertConfig.model_validate(raw)
+    return alert_config_from_data(raw)

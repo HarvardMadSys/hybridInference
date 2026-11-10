@@ -115,7 +115,7 @@ function RequestRow({
         className="border-b border-gray-100 hover:bg-gray-50/60 cursor-pointer transition-colors"
         onClick={() => setExpanded(!expanded)}
       >
-        <td className="py-3 pl-4 pr-3 text-sm">
+        <td className="py-3 pl-4 pr-3 text-sm sm:pl-6">
           <div className="flex items-center gap-2">
             <span
               className="block max-w-[180px] truncate font-medium text-gray-900 sm:max-w-[260px]"
@@ -183,77 +183,85 @@ function RequestRow({
         <td className="whitespace-nowrap px-3 py-3 text-sm text-gray-600">
           {formatCost(req.cost_usd)}
         </td>
-        <td className="whitespace-nowrap px-3 py-3 text-right text-xs text-gray-500">
+        <td className="whitespace-nowrap py-3 pl-3 pr-4 text-right text-xs text-gray-500 sm:pr-6">
           <span title={fmt.dateTime(req.timestamp)}>{formatTimestamp(req.timestamp, t, fmt)}</span>
         </td>
       </tr>
       {expanded && (
         <tr className="border-b border-gray-100 bg-gray-50/40">
-          <td colSpan={5} className="px-4 py-3">
-            <div className="rounded-2xl bg-gradient-to-br from-slate-50 via-white to-gray-50 p-4 shadow-sm ring-1 ring-inset ring-gray-200">
-              <div className="flex flex-col gap-3 border-b border-gray-200/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500">
-                    {t('dashboard.requests.details', 'Request Details')}
+          <td colSpan={5} className="p-0">
+            {/* As wide as the visible part of the table and pinned to its left
+                edge: on a phone the table scrolls sideways, and the details
+                would otherwise run off past the right edge of the screen. */}
+            <div className="sticky left-0 w-[100cqw] px-4 py-3">
+              <div className="rounded-2xl bg-gradient-to-br from-slate-50 via-white to-gray-50 p-4 shadow-sm ring-1 ring-inset ring-gray-200">
+                <div className="flex flex-col gap-3 border-b border-gray-200/80 pb-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.18em] text-gray-500">
+                      {t('dashboard.requests.details', 'Request Details')}
+                    </div>
+                    <div className="mt-2 break-all font-mono text-sm text-gray-700">
+                      {req.request_id}
+                    </div>
                   </div>
-                  <div className="mt-2 break-all font-mono text-sm text-gray-700">
-                    {req.request_id}
+                  <div className="inline-flex w-fit items-center rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 shadow-sm ring-1 ring-inset ring-gray-200">
+                    {req.provider}
                   </div>
                 </div>
-                <div className="inline-flex w-fit items-center rounded-full bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 shadow-sm ring-1 ring-inset ring-gray-200">
-                  {req.provider}
-                </div>
-              </div>
 
-              <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                <DetailStat label={t('dashboard.requests.model', 'Model')} value={req.model_id} />
-                <DetailStat
-                  label={t('dashboard.requests.latency', 'Latency')}
-                  value={formatLatency(req.latency_ms)}
-                />
-                <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
-                <DetailStat
-                  label={t('dashboard.requests.total_tokens', 'Total Tokens')}
-                  value={formatTokens(req.total_tokens)}
-                />
-                <DetailStat
-                  label={t('dashboard.requests.cached_tokens', 'Cached Tokens')}
-                  value={formatTokens(cachedTokens)}
-                />
-                <DetailStat
-                  label={t('dashboard.requests.streaming', 'Streaming')}
-                  value={
-                    req.stream != null
-                      ? req.stream
-                        ? t('dashboard.requests.enabled', 'Enabled')
-                        : t('dashboard.requests.disabled', 'Disabled')
-                      : '—'
-                  }
-                />
-                <DetailStat
-                  label={t('dashboard.requests.prompt_output', 'Prompt / Output')}
-                  value={`${formatTokens(req.prompt_tokens)} / ${formatTokens(req.completion_tokens)}`}
-                />
-                {throughputTps != null && (
+                <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <DetailStat label={t('dashboard.requests.model', 'Model')} value={req.model_id} />
                   <DetailStat
-                    label={t('dashboard.requests.throughput', 'Throughput')}
-                    value={`${throughputTps.toFixed(1)} tok/s`}
+                    label={t('dashboard.requests.latency', 'Latency')}
+                    value={formatLatency(req.latency_ms)}
                   />
-                )}
-                {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
-                {keyLabel && (
-                  <DetailStat label={t('dashboard.requests.api_key', 'API Key')} value={keyLabel} />
+                  <DetailStat label="TTFT" value={formatLatency(req.ttft_ms)} />
+                  <DetailStat
+                    label={t('dashboard.requests.total_tokens', 'Total Tokens')}
+                    value={formatTokens(req.total_tokens)}
+                  />
+                  <DetailStat
+                    label={t('dashboard.requests.cached_tokens', 'Cached Tokens')}
+                    value={formatTokens(cachedTokens)}
+                  />
+                  <DetailStat
+                    label={t('dashboard.requests.streaming', 'Streaming')}
+                    value={
+                      req.stream != null
+                        ? req.stream
+                          ? t('dashboard.requests.enabled', 'Enabled')
+                          : t('dashboard.requests.disabled', 'Disabled')
+                        : '—'
+                    }
+                  />
+                  <DetailStat
+                    label={t('dashboard.requests.prompt_output', 'Prompt / Output')}
+                    value={`${formatTokens(req.prompt_tokens)} / ${formatTokens(req.completion_tokens)}`}
+                  />
+                  {throughputTps != null && (
+                    <DetailStat
+                      label={t('dashboard.requests.throughput', 'Throughput')}
+                      value={`${throughputTps.toFixed(1)} tok/s`}
+                    />
+                  )}
+                  {routewiseDecision && <DetailStat label="RouteWise" value={routewiseDecision} />}
+                  {keyLabel && (
+                    <DetailStat
+                      label={t('dashboard.requests.api_key', 'API Key')}
+                      value={keyLabel}
+                    />
+                  )}
+                </div>
+
+                {req.error && (
+                  <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
+                    <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-red-500">
+                      {t('dashboard.requests.error', 'Request Error')}
+                    </div>
+                    <div className="mt-1 break-words">{req.error}</div>
+                  </div>
                 )}
               </div>
-
-              {req.error && (
-                <div className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
-                  <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-red-500">
-                    {t('dashboard.requests.error', 'Request Error')}
-                  </div>
-                  <div className="mt-1 break-words">{req.error}</div>
-                </div>
-              )}
             </div>
           </td>
         </tr>
@@ -306,7 +314,7 @@ export function RecentRequests(): JSX.Element {
   };
 
   return (
-    <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+    <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-base font-semibold tracking-tight text-gray-900 sm:text-lg">
           {t('dashboard.requests.title', 'Recent Requests')}
@@ -330,10 +338,12 @@ export function RecentRequests(): JSX.Element {
           {data && (
             <span className="text-xs text-gray-500">
               {fill(
-                data.total === 1
+                data.total === 1 && !data.total_capped
                   ? t('dashboard.requests.total_one', '{count} total request')
                   : t('dashboard.requests.total_other', '{count} total requests'),
-                { count: fmt.number(data.total) },
+                // The list reaches back so far; an account with older requests
+                // reads "10,000+".
+                { count: `${fmt.number(data.total)}${data.total_capped ? '+' : ''}` },
               )}
             </span>
           )}
@@ -383,13 +393,13 @@ export function RecentRequests(): JSX.Element {
       {!isLoading && data && data.requests.length > 0 && (
         <>
           <DragScrollArea
-            className="-mx-6"
+            className="-mx-4 [container-type:inline-size] sm:-mx-6"
             ariaLabel={t('dashboard.requests.table_label', 'Recent requests table')}
           >
             <table className="min-w-full">
               <thead>
                 <tr className="border-b border-gray-200">
-                  <th className="py-2.5 pl-10 pr-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
+                  <th className="py-2.5 pl-4 pr-3 text-left text-xs font-medium uppercase tracking-wider text-gray-500 sm:pl-6">
                     {t('dashboard.requests.model', 'Model')}
                   </th>
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
@@ -401,7 +411,7 @@ export function RecentRequests(): JSX.Element {
                   <th className="px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wider text-gray-500">
                     {t('dashboard.requests.cost', 'Cost')}
                   </th>
-                  <th className="px-3 py-2.5 text-right text-xs font-medium uppercase tracking-wider text-gray-500 pr-10">
+                  <th className="py-2.5 pl-3 pr-4 text-right text-xs font-medium uppercase tracking-wider text-gray-500 sm:pr-6">
                     {t('dashboard.requests.time', 'Time')}
                   </th>
                 </tr>

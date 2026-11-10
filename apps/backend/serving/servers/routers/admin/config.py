@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Response
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, Response
 
 from serving.audit import AuditActor, AuditTarget
 from serving.config import app_config, live, live_control
@@ -10,11 +10,13 @@ from serving.config.revisions import SourceVersion
 from serving.schemas_config import (
     ConfigResponse,
     LiveConfigStatusResponse,
+    ResetConfigRequest,
     UpdateConfigRequest,
 )
 from serving.servers import restart
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -42,6 +44,34 @@ def _expected(if_match: str | None) -> SourceVersion | None:
         return SourceVersion.parse(if_match)
     except ValueError:
         raise HTTPException(400, "If-Match must be the ETag GET /admin/config returned") from None
+
+
+def _security_action(verb: str, keys: list[str]) -> str:
+    """Name what a password confirms: "Changing SMTP_HOST", "Changing A, B and 3 more"."""
+    shown = keys[:3]
+    named = ", ".join(shown)
+    if len(keys) > len(shown):
+        named = f"{named} and {len(keys) - len(shown)} more"
+    return f"{verb} {named}"
+
+
+async def _confirm_security_change(
+    request: Request, op_store, keys: list[str], password: str | None, *, verb: str
+) -> None:
+    """Ask for the administrator's password before *keys* change, when one of them is guarded.
+
+    A security-relevant setting (:func:`app_config.security_relevant`) -- a
+    signing secret, the admin token, the trusted networks, where mail and
+    users are sent -- is one change a stolen session must not make on its own:
+    a known ``JWT_SECRET_KEY`` or ``ADMIN_TOKEN`` is administrator access that
+    outlives any session. A configuration restore asks for the same settings.
+    ``ADMIN_TOKEN`` cannot confirm, so it changes only the others.
+    """
+    guarded = sorted(key for key in keys if app_config.security_relevant(key))
+    if guarded:
+        await confirm_administrator(
+            request, op_store, password, action=_security_action(verb, guarded)
+        )
 
 
 def _refused(exc: app_config.ConfigUpdateError) -> HTTPException:
@@ -74,6 +104,7 @@ async def get_config(
 @router.patch("/config", response_model=ConfigResponse)
 async def update_config(
     payload: UpdateConfigRequest,
+    request: Request,
     response: Response,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
@@ -86,8 +117,14 @@ async def update_config(
     not keeps its stored value and gains only the flag (400 when it has no
     stored row yet). The audit log records a secret's change, never its value.
     With ``If-Match``, nothing is stored (409) once the configuration has
-    changed since that version was read.
+    changed since that version was read. A value for a security-relevant
+    setting needs the signed-in administrator's ``password``: 400 when it is
+    missing or wrong, 403 for the admin token, which can change only the other
+    settings.
     """
+    await _confirm_security_change(
+        request, op_store, list(payload.values), payload.password, verb="Changing"
+    )
     try:
         changes = await app_config.update(
             payload.values,
@@ -111,13 +148,22 @@ async def update_config(
 @router.delete("/config/{key}", response_model=ConfigResponse)
 async def reset_config(
     key: str,
+    request: Request,
     response: Response,
+    payload: ResetConfigRequest | None = Body(default=None),
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     if_match: str | None = Header(default=None),
 ) -> ConfigResponse:
-    """Remove a stored value, so the setting falls back to the environment or its default."""
+    """Remove a stored value, so the setting falls back to the environment or its default.
+
+    Resetting a security-relevant setting needs the signed-in administrator's
+    ``password`` in the JSON body, as changing it does.
+    """
+    await _confirm_security_change(
+        request, op_store, [key], payload.password if payload else None, verb="Resetting"
+    )
     try:
         change = await app_config.delete(
             key, updated_by=admin_id, expected_version=_expected(if_match)
@@ -163,8 +209,17 @@ async def live_config_status(
     status["this_instance"] = restart.INSTANCE_ID
     for row in (row for group in status["groups"] for row in group["instances"]):
         row["this_process"] = row["instance_id"] == restart.INSTANCE_ID
+    from serving.config.routing_sync import status_group
+
+    try:
+        routing_status = await status_group(store)
+    except Exception:
+        routing_status = None
+        logger.warning("Routing application status unavailable", exc_info=True)
     local = live.COORDINATOR.local_status()
     for group in status["groups"]:
         group["local"] = local["groups"].get(group["name"])
         group["preview"] = live_control.preview(status, entries, group["name"])
+    if routing_status is not None:
+        status["groups"].append(routing_status)
     return LiveConfigStatusResponse(database=True, read_ok=local["read_ok"], **status)

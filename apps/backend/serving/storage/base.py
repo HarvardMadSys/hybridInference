@@ -11,10 +11,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable, Sequence
+    from collections.abc import Awaitable, Callable, Iterable, Sequence
     from datetime import datetime
     from decimal import Decimal
 
@@ -55,6 +55,44 @@ class ProviderDefinitionRow:
 
 Row = dict[str, Any]
 """Generic row type returned by store methods (column-name → value)."""
+
+USER_PREFERENCES_MAX_BYTES = 16 * 1024
+"""The most an account holder's own writes may leave in their preferences, as JSON text.
+
+Their saved prober layout, the largest entry, comes to a few KiB even listing
+every model of a deployment of dozens; the language choice is under 100 bytes.
+"""
+
+
+class CostIncrement(NamedTuple):
+    """One addition to the cost counters (``user_daily_cost``, ``api_key_daily_cost``).
+
+    *cost_usd* and *requests* are added to the user's counter for *day*, and
+    to the key's when *api_key_id* is set. *requests* counts the requests the
+    cost sums, so coalescing several into one increment keeps the counts.
+    """
+
+    user_id: str
+    day: str
+    api_key_id: int | None
+    cost_usd: Decimal | float
+    requests: int = 1
+    org_id: str | None = None
+    project_id: str | None = None
+
+
+class CostWriteOutcomeUnknown(Exception):
+    """A write of cost increments may or may not have been applied.
+
+    Raised when the connection failed after the transaction's COMMIT was sent
+    and the database could not then say how that transaction ended. Retrying
+    could count the costs twice; the caller decides.
+    """
+
+    def __init__(self, xid: int) -> None:
+        """Record the transaction id whose outcome is unknown."""
+        super().__init__(f"outcome of cost counter transaction {xid} is unknown")
+        self.xid = xid
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +211,11 @@ class OperationalStore(ABC):
         email_verified, created_at, last_login_at, password_hash, preferences.
         ``email`` is None for an account created without one (the first-run
         setup administrator), which signs in with ``login_name`` instead.
+
+        ``preferences`` holds only the entries a request acts on
+        (``disabled_models`` and ``locale``): every console request reads
+        this row, so it does not carry the rest. The whole document is
+        :meth:`get_user_preferences`.
         """
 
     @abstractmethod
@@ -499,6 +542,16 @@ class OperationalStore(ABC):
         immediately without waiting for TTL expiry.
         """
 
+    async def invalidate_user_auth_caches(self, user_id: str) -> None:
+        """Evict the cached auth-context entries of *user_id*'s keys.
+
+        For a write that changes one account. The base implementation evicts
+        what :meth:`invalidate_auth_caches` does, which is always enough;
+        ``CachedOperationalStore`` overrides it to evict that account's
+        entries alone.
+        """
+        await self.invalidate_auth_caches()
+
     @abstractmethod
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
         """Materialized auth lookup for ``verify_api_key``.
@@ -568,7 +621,12 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def update_key_last_used(self, key_id: int) -> None:
-        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget."""
+        """Set ``last_used_at = NOW()`` for the given key id. Fire-and-forget.
+
+        A row already written within the last minute may be left as it is: the
+        column is read at minute resolution, and a busy key must not turn it
+        into a write per request.
+        """
 
     @abstractmethod
     async def get_key_spend(self, key_id: int) -> tuple[float, float]:
@@ -596,6 +654,7 @@ class OperationalStore(ABC):
         inherit_account_quota: bool = False,
         name: str | None = None,
         max_active_keys: int | None = None,
+        project_id: str | None = None,
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -605,9 +664,11 @@ class OperationalStore(ABC):
         account must therefore carry the same values. Implementations keep it
         that way:
 
-        - ``inherit_account_quota=True`` (a user adding a key): when the
-          account already holds an unrevoked key, the new key takes its quota
-          and the given values are ignored; they only seed a first key.
+        - ``inherit_account_quota=True`` (a user adding a key): the new key
+          takes the account's quota and the given values are ignored; they
+          only seed the account's first key. The account's quota is that of
+          its unrevoked keys, or with none of those, of its most recently
+          revoked key: revoking every key must not reset a limit an admin set.
         - ``inherit_account_quota=False`` (an admin setting one): the given
           values become the account's, written to every unrevoked key of the
           user in the same transaction.
@@ -635,6 +696,74 @@ class OperationalStore(ABC):
         api_key_encrypted, budget_daily_usd, budget_monthly_usd,
         allowed_models, spent_today_usd, spent_month_usd``; never the hash.
         The spend is the key's over the current UTC day and month.
+        """
+
+    # -- projects ------------------------------------------------------------
+    #
+    # A project belongs to the owner's personal organization. Its budgets are
+    # sub-limits of the account ceiling, and its allowlist narrows the models
+    # its keys may call. The Default project of each account is where keys go
+    # when the caller names none.
+
+    @abstractmethod
+    async def create_project(
+        self,
+        *,
+        project_id: str,
+        user_id: str,
+        name: str,
+        description: str | None = None,
+        budget_daily_usd: Decimal | float | None = None,
+        budget_monthly_usd: Decimal | float | None = None,
+        allowed_models: list[str] | None = None,
+        max_concurrent_requests: int | None = None,
+    ) -> Row:
+        """Insert a project under the user's personal organization."""
+
+    @abstractmethod
+    async def list_projects(self, user_id: str) -> list[Row]:
+        """Return the user's active projects, newest first."""
+
+    @abstractmethod
+    async def get_default_project(self, user_id: str) -> Row | None:
+        """Return the user's Default project."""
+
+    @abstractmethod
+    async def get_project(self, user_id: str, project_id: str) -> Row | None:
+        """Return one active project owned by *user_id*, or None."""
+
+    @abstractmethod
+    async def update_project(
+        self, user_id: str, project_id: str, changes: dict[str, Any]
+    ) -> Row | None:
+        """Update named project columns; return the row, or None when absent."""
+
+    @abstractmethod
+    async def archive_project(self, user_id: str, project_id: str) -> int:
+        """Archive a project and revoke its keys; return keys revoked."""
+
+    @abstractmethod
+    async def get_project_spend(self, project_id: str) -> tuple[float, float]:
+        """The project's spend on the current UTC day and month, ``(today, month)``."""
+
+    @abstractmethod
+    async def count_project_keys(self, project_id: str) -> int:
+        """Return how many active keys the project holds."""
+
+    @abstractmethod
+    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
+        """Update an organization's ceilings or status; return the row."""
+
+    @abstractmethod
+    async def get_personal_org_status(self, user_id: str) -> str | None:
+        """Return the status of the account's personal organization, or None."""
+
+    @abstractmethod
+    async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
+        """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
+
+        Reads the personal organization first and falls back to the legacy key
+        quota while the organization has no ceiling of its own.
         """
 
     @abstractmethod
@@ -746,6 +875,15 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def session_is_live(self, user_id: str, sid: str) -> bool:
+        """Whether *user_id*'s auth session *sid* may still authorize a request.
+
+        *sid* is the ``sid`` claim of an access token. False once the session
+        is revoked (signing out, a password change or reset, signing out the
+        other devices), deleted, expired, or when it never existed.
+        """
+
+    @abstractmethod
     async def rotate_session(
         self,
         session_id: str,
@@ -756,8 +894,12 @@ class OperationalStore(ABC):
         """Update the session with a new refresh token hash and JTI."""
 
     @abstractmethod
-    async def revoke_session(self, session_id: str) -> None:
-        """Set ``revoked = TRUE`` on the session."""
+    async def revoke_session(self, session_id: str) -> str | None:
+        """Set ``revoked = TRUE`` on the session; return the account it belongs to.
+
+        ``None`` when there is no such session. A caching layer forgets that
+        account's cached session liveness, and no other account's.
+        """
 
     @abstractmethod
     async def delete_user_sessions(self, user_id: str) -> None:
@@ -768,6 +910,14 @@ class OperationalStore(ABC):
         """Revoke every live session of *user_id* but the one whose sid is *except_sid*.
 
         Returns how many sessions were revoked.
+        """
+
+    @abstractmethod
+    async def revoke_session_by_sid(self, user_id: str, sid: str) -> bool:
+        """Revoke *user_id*'s session *sid*, the ``sid`` claim of an access token.
+
+        Whichever browser holds it can no longer refresh it. Returns whether a
+        session was still live to revoke.
         """
 
     # -- browser sessions ----------------------------------------------------
@@ -840,8 +990,12 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def revoke_browser_session(self, browser_session_id: str) -> None:
-        """Revoke every account's session in a browser, and the browser session."""
+    async def revoke_browser_session(self, browser_session_id: str) -> list[str]:
+        """Revoke every account's session in a browser, and the browser session.
+
+        Returns the accounts whose sessions were revoked, so a caching layer
+        forgets their cached session liveness and no other account's.
+        """
 
     # -- login events (audit) ------------------------------------------------
 
@@ -900,6 +1054,16 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def get_live_verification_token(
+        self, user_id: str, *, valid_until: datetime
+    ) -> str | None:
+        """Return *user_id*'s newest unused signup verification token valid past *valid_until*.
+
+        A token that proves a new address (``pending_email``) is never
+        returned. None when the account holds no such token.
+        """
+
+    @abstractmethod
     async def mark_verification_used(self, token: str) -> None:
         """Set ``used_at = NOW()`` on the token."""
 
@@ -928,6 +1092,13 @@ class OperationalStore(ABC):
         """Fetch reset token row.
 
         Returns: ``token, user_id, created_at, expires_at, used_at``.
+        """
+
+    @abstractmethod
+    async def get_live_reset_token(self, user_id: str, *, valid_until: datetime) -> str | None:
+        """Return *user_id*'s newest unused password reset token valid past *valid_until*.
+
+        None when the account holds no such token.
         """
 
     @abstractmethod
@@ -1087,27 +1258,59 @@ class OperationalStore(ABC):
         *,
         day: str | None = None,
         api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
 
         Uses upsert: inserts a new row if none exists for (user_id, day),
-        otherwise adds *cost_usd* to the existing total and increments
+        otherwise adds *cost_usd* to the existing total and *requests* to
         the request count.
 
-        The key's own daily counter is a report, not a quota input: a
-        failure to write it never fails the account's increment.
+        The key's counter is written with the account's, both or neither:
+        the key's budgets read it, so it is a quota input too.
 
         Only call this for billed requests (successful responses where
-        cost > 0), not for auth failures or 4xx errors.
+        cost > 0), not for auth failures or 4xx errors. Request handlers do
+        not call it: they record costs in :mod:`serving.spend_ledger`, which
+        writes them.
 
         Args:
+            org_id: Organization attributed at request admission.
+            project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
             day: Date string (YYYY-MM-DD). Defaults to UTC today.
             api_key_id: The key the request was made with, whose own daily
                 counter (``api_key_daily_cost``) is bumped as well; None for a
                 request made without one of the account's keys.
+            requests: How many requests *cost_usd* is the cost of.
         """
+
+    #: Whether :meth:`increment_user_costs` applies a whole batch in one
+    #: transaction, exactly once. The spend ledger writes a store without it
+    #: one increment at a time.
+    atomic_cost_increments: bool = False
+
+    async def increment_user_costs(self, increments: Sequence[CostIncrement]) -> None:
+        """Add every increment to its counters.
+
+        A store with :attr:`atomic_cost_increments` applies the batch in one
+        transaction, exactly once, and raises :class:`CostWriteOutcomeUnknown`
+        when it cannot tell whether that transaction committed. This default
+        applies the increments one after another.
+        """
+        for increment in increments:
+            await self.increment_user_cost(
+                increment.user_id,
+                float(increment.cost_usd),
+                day=increment.day,
+                api_key_id=increment.api_key_id,
+                requests=increment.requests,
+                org_id=increment.org_id,
+                project_id=increment.project_id,
+            )
 
     @abstractmethod
     async def get_user_cost_today(self, user_id: str) -> float:
@@ -1188,15 +1391,33 @@ class OperationalStore(ABC):
 
     @abstractmethod
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
-        """Return the preferences JSONB column for *user_id*, parsed as dict."""
+        """Return the preferences JSONB column for *user_id*, parsed as dict.
+
+        A document stored far over :data:`USER_PREFERENCES_MAX_BYTES`, which
+        only a write made before that bound existed can have left, reads as
+        just the entries ``get_user_by_id`` carries: decoding it must not cost
+        more than a bounded one, and the account holder's next save of the
+        oversized entry replaces it.
+        """
 
     # Preferences are written one key at a time, in the database. A whole-column
     # write from a value read earlier loses whatever another request wrote to a
     # different key in between, so there is deliberately no such method.
 
     @abstractmethod
-    async def set_user_preference(self, user_id: str, key: str, value: Any) -> bool:
-        """Set one preference key atomically; return False when there is no such user."""
+    async def set_user_preference(
+        self, user_id: str, key: str, value: Any, *, max_total_bytes: int | None = None
+    ) -> bool:
+        """Set one preference key atomically; return False when there is no such user.
+
+        With *max_total_bytes*, the write is refused, leaving the row as it
+        was, when the account's whole preferences document would come out
+        larger than that as JSON text: it raises
+        :class:`~serving.exceptions.PreferencesTooLargeError`. Pass it for a
+        value the account holder chose (:data:`USER_PREFERENCES_MAX_BYTES`).
+        An administrator's write passes none, so an account holder cannot
+        block one by filling their own document.
+        """
 
     @abstractmethod
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
@@ -1551,6 +1772,25 @@ class OperationalStore(ABC):
         equal them, a route without a row counting as neither flag set, so a
         write built from a stale snapshot cannot overwrite the other flag.
         Returns whether the state was written (always True without them).
+        """
+
+    @abstractmethod
+    async def list_all_provider_route_batch_policies(self) -> list[Row]:
+        """Return every route's stored batch choice (``batch_allowed``), by (model, route id)."""
+
+    @abstractmethod
+    async def set_provider_route_batch_policy(
+        self,
+        model_id: str,
+        route_id: str,
+        *,
+        batch_allowed: bool | None,
+        updated_by: str | None,
+    ) -> None:
+        """Store whether batch work may use one route; ``None`` deletes the choice.
+
+        A route without a choice follows its locality (``serving.config.batch_routes``).
+        Keyed by the model's canonical id and the route id, as the route states are.
         """
 
     @abstractmethod
@@ -1923,14 +2163,20 @@ class LogStore(ABC):
     async def get_user_usage_detail(
         self,
         user_id: str,
+        windows: Iterable[str] | None = None,
     ) -> dict[str, Any]:
         """Return detailed usage stats for a user (today, week, month, all-time).
 
         Used by the user dashboard ``/user/usage`` endpoint.
-        Returns dict with keys ``today``, ``week``, ``month``, ``alltime``
-        each containing ``requests``, ``cost_usd``, ``prompt_tokens``,
-        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``
-        and ``reasoning_tokens``.
+        Returns dict with keys ``today``, ``week``, ``month``, ``alltime`` --
+        only those named in *windows* when given -- each containing
+        ``requests``, ``cost_usd``, ``prompt_tokens``,
+        ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
+        ``reasoning_tokens`` and ``reasoning_tokens_known_requests``.
+        ``reasoning_tokens`` is summed over the rows that report it and is
+        ``None`` when none does; ``reasoning_tokens_known_requests`` counts
+        those rows. An implementation may answer from a cache a few seconds
+        old.
         """
 
     @abstractmethod
@@ -2095,7 +2341,8 @@ class LogStore(ABC):
         ``limit`` rows from the window, still ordered ascending for replay.
 
         ``include_metadata`` drives the per-row metadata JSON that only the
-        latency replay reads (``endpoint_id`` and ``failed_attempts``).  The
+        latency replay reads (``endpoint_id``, ``failed_attempts`` and
+        RouteWise's own ``attempt_ttft_ms``).  The
         envelope replay needs token counts alone, so it passes ``False`` and
         implementations may leave those fields unset rather than fetching and
         decoding a JSON document per row.
@@ -2119,6 +2366,7 @@ class LogStore(ABC):
         *,
         hours: int = 1,
         on_deleted: Callable[[Any, list[datetime]], Awaitable[None]] | None = None,
+        batch: bool | None = None,
     ) -> int:
         """Hard-delete error requests logged within the last *hours* hours.
 
@@ -2126,6 +2374,11 @@ class LogStore(ABC):
         ``outcome=errors`` filter uses: ``error IS NOT NULL`` OR a status code
         that is missing or outside the 2xx/3xx success range — which includes
         client disconnects (status 499). Returns the number of deleted rows.
+
+        *batch* narrows it by who ran the request, as the list's ``source``
+        filter does: None deletes every source's errors, False only those of
+        requests the batch worker did not run (no ``batch_job_id``), True only
+        the batch worker's.
 
         *on_deleted*, when rows were deleted, is awaited inside the delete's
         transaction with its connection and the UTC hour starts the rows were

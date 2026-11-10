@@ -125,10 +125,11 @@ async def test_user_the_gate_refuses_is_reported(postgres_op_store):
     assert role == "free"
     assert spend == pytest.approx(20.00)
     assert cap == pytest.approx(20.00)
-    # Belt and braces: the row is here for exactly the reason quota.check
-    # would raise on this account's next request.
-    with pytest.raises(quota.QuotaExceeded):
-        quota.check(quota_usd=cap, spent_usd=spend)
+    # Belt and braces: the row is here for exactly the reason the gate would
+    # refuse this account's next request.
+    refusal = quota.first_refusal(account_quota_usd=cap, account_spent_usd=spend)
+    assert refusal is not None
+    assert (refusal.scope, refusal.window) == ("account", "day")
 
 
 async def test_user_with_one_request_left_is_not_reported(postgres_op_store):
