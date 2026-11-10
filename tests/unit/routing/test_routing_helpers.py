@@ -61,11 +61,18 @@ def test_routing_chunk_preserves_framing_fields_and_order():
     assert chunk == (
         'data: {"choices": [], "_routing": {"provider": "openai", '
         '"base_url": "https://api.example.com/v1", '
-        '"endpoint_id": "openai:api.example.com:443", "pricing": {}}}\n\n'
+        '"endpoint_id": "openai:api.example.com:443", "pricing": {}, '
+        '"endpoint_publishable": false}}\n\n'
     )
     payload = json.loads(chunk.removeprefix("data: ").strip())
     assert list(payload) == ["choices", "_routing"]
-    assert list(payload["_routing"]) == ["provider", "base_url", "endpoint_id", "pricing"]
+    assert list(payload["_routing"]) == [
+        "provider",
+        "base_url",
+        "endpoint_id",
+        "pricing",
+        "endpoint_publishable",
+    ]
 
 
 def test_routing_chunk_preserves_raw_nullable_endpoint_and_optional_field_order():
@@ -93,6 +100,7 @@ def test_routing_chunk_preserves_raw_nullable_endpoint_and_optional_field_order(
         "base_url",
         "endpoint_id",
         "pricing",
+        "endpoint_publishable",
         "fallback",
         "failed_attempts",
     ]

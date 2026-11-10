@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from routing.endpoint_health import failure_may_lose_prefix_cache
-from routing.endpoints import endpoint_id_for_adapter
+from routing.endpoints import endpoint_id_for_adapter, endpoint_publishable_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
     estimate_prefill_tokens,
@@ -91,6 +91,10 @@ from serving.servers.deps import (
     get_router,
 )
 from serving.servers.model_availability import model_not_found_detail
+from serving.servers.routers.served_identity import (
+    served_identity_headers,
+    should_include_served_identity_headers,
+)
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.bounded_log import bound_rejected_log_payload
@@ -1892,6 +1896,7 @@ class MessagesResponse:
     """A served request: the Messages response body, as the upstream returned it."""
 
     body: Any
+    headers: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -1967,7 +1972,7 @@ def render_messages_http(outcome: MessagesOutcome) -> JSONResponse | StreamingRe
         return JSONResponse(
             status_code=outcome.status, content=outcome.body(), headers=outcome.headers
         )
-    return JSONResponse(content=outcome.body)
+    return JSONResponse(content=outcome.body, headers=outcome.headers or None)
 
 
 def _rejection_source(ctx: ExecutionContext, services: MessagesServices) -> RejectionSource:
@@ -2106,6 +2111,7 @@ async def execute_messages(
     model_id = body.get("model")
     if not model_id:
         return _messages_error(400, "Missing required field: model")
+    requested_model_id = model_id
     if "messages" not in body:
         return _messages_error(400, "Missing required field: messages")
     if body.get("max_tokens") is None:
@@ -2300,6 +2306,19 @@ async def execute_messages(
     # the endpoint that actually served the request.
     health_registry = router_exec.endpoint_health_registry
     dispatch_endpoint_id = endpoint_id_for_adapter(adapter)
+    identity_headers = (
+        served_identity_headers(
+            requested_model=(
+                auto_selection.requested if auto_selection is not None else requested_model_id
+            ),
+            served_model=None if auto_selection is not None else canonical,
+            endpoint_id=None if auto_selection is not None else dispatch_endpoint_id,
+            provider=None if auto_selection is not None else adapter.config.provider,
+            endpoint_publishable=endpoint_publishable_for_adapter(adapter),
+        )
+        if should_include_served_identity_headers(ctx.origin.headers, user_ctx)
+        else {}
+    )
     # Register before dispatch so the endpoint appears in the health snapshot
     # even while its first request is still in flight (mirrors FixedRouter).
     health_registry.ensure(dispatch_endpoint_id)
@@ -2502,6 +2521,7 @@ async def execute_messages(
             "Cache-Control": "no-cache, no-transform",
             "Connection": "keep-alive",
             "X-Accel-Buffering": "no",
+            **identity_headers,
         }
 
         gen_started = False
@@ -3205,7 +3225,7 @@ async def execute_messages(
             user_id=user_ctx.get("user_id"),
             completions_logger=completions_logger,
         )
-    return MessagesResponse(resp)
+    return MessagesResponse(resp, identity_headers)
 
 
 @router.post("/v1/messages/count_tokens", response_model=None)

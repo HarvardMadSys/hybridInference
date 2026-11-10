@@ -83,6 +83,11 @@ class RoutingInfo:
     pricing: Pricing | None = None
     strategy_metadata: dict[str, Any] | None = None
     upstream_cost_usd: float | None = None
+    #: Whether the serving endpoint's identity may be published to a caller.
+    #: The registry decides this from the route's kind; a surface reads it
+    #: from here rather than re-deriving it from the provider and base URL,
+    #: so every surface answers the same question the same way.
+    endpoint_publishable: bool = False
     extra: dict[str, Any] = field(default_factory=dict)
 
     def __init__(
@@ -96,6 +101,7 @@ class RoutingInfo:
         strategy_metadata: dict[str, Any] | None = None,
         routewise: dict[str, Any] | None | object = _ROUTEWISE_UNSET,
         upstream_cost_usd: float | None = None,
+        endpoint_publishable: bool = False,
         extra: dict[str, Any] | None = None,
     ) -> None:
         if isinstance(strategy_metadata, dict):
@@ -119,6 +125,7 @@ class RoutingInfo:
         object.__setattr__(self, "pricing", pricing)
         object.__setattr__(self, "strategy_metadata", strategy_metadata)
         object.__setattr__(self, "upstream_cost_usd", upstream_cost_usd)
+        object.__setattr__(self, "endpoint_publishable", endpoint_publishable)
         object.__setattr__(self, "extra", extra if extra is not None else {})
 
     @property
@@ -196,9 +203,12 @@ def merge_adapter_routing(
         "base_url",
         "endpoint_id",
         "upstream_cost_usd",
+        "endpoint_publishable",
     }
     for key, value in adapter_routing.items():
-        if key in field_names:
+        if key == "endpoint_publishable":
+            known[key] = bool(value)
+        elif key in field_names:
             known[key] = value
         elif key == "strategy_metadata" and isinstance(value, dict):
             strategy_metadata = merge_strategy_metadata(strategy_metadata, value)

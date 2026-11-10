@@ -6,7 +6,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 from routing.endpoint_health import _uncharged_failure_event, http_status_of
-from routing.endpoints import endpoint_id_for_adapter
+from routing.endpoints import endpoint_id_for_adapter, endpoint_publishable_for_adapter
 from serving.pricing import effective_pricing
 
 if TYPE_CHECKING:
@@ -102,6 +102,10 @@ def routing_chunk(
         "base_url": adapter.config.base_url,
         "endpoint_id": getattr(adapter.config, "endpoint_id", None),
         "pricing": adapter_pricing_snapshot(adapter),
+        # The serving surface reads publishability from the routing contract,
+        # so every surface answers the same question the same way instead of
+        # re-deriving it from provider and base URL.
+        "endpoint_publishable": endpoint_publishable_for_adapter(adapter),
     }
     if fallback:
         routing["fallback"] = True

@@ -384,6 +384,12 @@ class StreamSession:
 
         # Streaming-loop state
         self._yielded_first_chunk = False
+        # True once a client-visible content chunk has been processed.
+        # A keepalive/timeout commit yields only the role chunk, before any
+        # upstream bytes: naming the serving route from that snapshot can
+        # name the primary when a fallback later serves. Headers must omit
+        # served identity until this is True.
+        self._seen_first_content = False
         self._chunk_count = 0
         # The answer and the reasoning so far (see ``StreamText``); read
         # through ``_final_text`` / ``_final_reasoning``.
@@ -440,6 +446,21 @@ class StreamSession:
         to ``req_ctx.publish_upstream_provider``, which drops them.
         """
         return self._error_provider
+
+    @property
+    def routing_info(self) -> RoutingInfo:
+        """Return the best routing identity observed before stream commit."""
+        return self._routing
+
+    @property
+    def seen_first_content(self) -> bool:
+        """True once the first client-visible content chunk has been seen.
+
+        The role chunk committed on a keepalive timeout is not content: the
+        serving route is not yet known, and a fallback can still win. Callers
+        building response headers must omit served identity until this is True.
+        """
+        return self._seen_first_content
 
     @property
     def model_queued(self) -> bool:
@@ -653,6 +674,7 @@ class StreamSession:
                                 f"Yielding sanitized chunk {self._chunk_count} "
                                 f"to client: {sanitized_chunk[:150]}"
                             )
+                            self._seen_first_content = True
                             if not self._yielded_first_chunk:
                                 yield _commit()
                             yield sanitized_chunk
@@ -661,6 +683,7 @@ class StreamSession:
 
                     # Non-JSON or [DONE] chunks pass through verbatim.
                     logger.debug(f"Yielding chunk {self._chunk_count} to client: {chunk[:150]}")
+                    self._seen_first_content = True
                     if not self._yielded_first_chunk:
                         yield _commit()
                     yield chunk
