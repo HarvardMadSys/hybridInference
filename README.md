@@ -28,16 +28,6 @@ APIs, or both.
 - User dashboards for API keys and usage, and an [admin console](#admin-console)
   for operating the gateway.
 
-## Trusted by Industry and Research
-
-HybridInference serves production inference services across AI labs, enterprises, and universities.
-
-<p>
-  <a href="https://freeinference.org/"><img src=".github/images/freeinference.svg" width="232" height="92" alt="FreeInference at Harvard SEAS" /></a>
-  &nbsp;
-  <a href="https://freeinference.qq.com/"><img src=".github/images/tencent-freeinference.svg" width="232" height="92" alt="Tencent FreeInference (腾讯公益推理平台)" /></a>
-</p>
-
 ## Admin Console
 
 Admins can approve or suspend accounts, set daily quotas and per-user
@@ -276,6 +266,16 @@ reselling, sharing or otherwise redistributing the capacity they grant. The
 gateway will let you configure such a route; that is not the same as being
 permitted to. If a plan is licensed to you personally, route it only for your
 own personal, non-commercial or research use.
+
+## Trusted by Industry and Research
+
+HybridInference serves production inference services across AI labs, enterprises, and universities.
+
+<p>
+  <a href="https://freeinference.org/"><img src=".github/images/freeinference.svg" width="232" height="92" alt="FreeInference at Harvard SEAS" /></a>
+  &nbsp;
+  <a href="https://freeinference.qq.com/"><img src=".github/images/tencent-freeinference.svg" width="232" height="92" alt="Tencent FreeInference (腾讯公益推理平台)" /></a>
+</p>
 
 ## License
 
