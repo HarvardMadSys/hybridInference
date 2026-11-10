@@ -26,7 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
-from serving.adapters.base import validate_deployment_type
+from serving.adapters.base import BaseAdapter, validate_deployment_type
 from serving.adapters.reasoning_effort import (
     EFFORT_MAP_FIELD,
     MAX_MAP_ENTRIES,
@@ -35,6 +35,7 @@ from serving.adapters.reasoning_effort import (
 from serving.config.app_config import config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
+from serving.config.reasoning_effort_presets import find_reasoning_effort_preset
 from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
@@ -596,6 +597,33 @@ def _check_provider_label(
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
+    """Construct an adapter, retain its kind, and resolve its upstream defaults."""
+    adapter = _build_adapter(kind, cfg)
+    if isinstance(adapter, BaseAdapter):
+        adapter.registered_kind = kind
+    config = adapter.config
+    config.reasoning_effort_declared = cfg.get(
+        "reasoning_effort_declared",
+        cfg.get("supported_params") is not None or cfg.get("reasoning_efforts") is not None,
+    )
+    preset = None
+    if getattr(adapter, "forwards_reasoning_effort", False):
+        upstream = (config.route_metadata or {}).get("upstream_provider")
+        provider = (
+            upstream.strip() if isinstance(upstream, str) and upstream.strip() else config.provider
+        )
+        preset = find_reasoning_effort_preset(
+            provider,
+            kind,
+            config.provider_model_id or config.id,
+            config.base_url or "",
+        )
+    config.reasoning_effort_preset_label = preset.label if preset else None
+    config.reasoning_effort_preset_map = dict(preset.effort_map) if preset else {}
+    return adapter
+
+
+def _build_adapter(kind: str, cfg: dict[str, Any]):
     """Construct a provider adapter from a kind string and model config.
 
     Args:

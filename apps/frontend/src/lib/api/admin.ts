@@ -2588,6 +2588,8 @@ export interface ProviderRoute {
   reasoning_effort_mappable?: boolean;
   /** The public levels the live route delivers; `null` when unknown. */
   reasoning_efforts_published?: string[] | null;
+  reasoning_effort_source?: 'preset' | 'override' | 'configured' | 'unknown';
+  reasoning_effort_preset_label?: string | null;
 }
 
 /** A route's context window, output cap, input modalities and tool support, as served. */
@@ -2706,6 +2708,36 @@ export async function listProviderRoutes(modelId?: string): Promise<ListProvider
     : '/admin/routing/provider-routes';
   const resp = await fetchWithAuth(API_BASE, path);
   return jsonOrThrow<ListProviderRoutesResponse>(resp);
+}
+
+export interface RouteEffortPreset {
+  label: string;
+  reasoning_effort_map: Record<string, string>;
+}
+
+export type RouteEffortPreview =
+  | RouteEffortPreset
+  | { reasoning_efforts_published: string[] | null };
+
+export async function previewRouteEffortPreset(
+  provider: string,
+  providerModelId: string,
+  baseUrl: string,
+  openRouterProvider: string | null,
+  modelRoutePath: string | null,
+): Promise<RouteEffortPreview | null> {
+  const response = await fetchWithAuth(API_BASE, '/admin/routing/reasoning-effort-preset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      provider_model_id: providerModelId,
+      base_url: baseUrl,
+      openrouter_provider: openRouterProvider,
+      model_route_path: modelRoutePath,
+    }),
+  });
+  return jsonOrThrow<RouteEffortPreview | null>(response);
 }
 
 export async function listOpenRouterProviderOptions(

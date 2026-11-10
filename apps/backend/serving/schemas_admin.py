@@ -1772,6 +1772,29 @@ class RouteCapabilitiesItem(BaseModel):
         return None if not value else validate_effort_map(value)
 
 
+class RouteEffortPresetTarget(BaseModel):
+    """Upstream identity to look up without making a provider request."""
+
+    provider: str
+    provider_model_id: str
+    base_url: str
+    openrouter_provider: str | None = None
+    model_route_path: str | None = None
+
+
+class RouteEffortPresetItem(BaseModel):
+    """The verified effort default for one selected upstream target."""
+
+    label: str
+    reasoning_effort_map: dict[str, str]
+
+
+class RouteLegacyEffortItem(BaseModel):
+    """The catalog's legacy effort declaration when the edit returns to its target."""
+
+    reasoning_efforts_published: list[str] | None
+
+
 class ProviderRouteItem(BaseModel):
     """Runtime provider target for one model route candidate."""
 
@@ -1825,6 +1848,8 @@ class ProviderRouteItem(BaseModel):
     # The public levels this route delivers, as the model listings read it from
     # the live route: a list (maybe empty), or ``None`` when it is unknown.
     reasoning_efforts_published: list[str] | None = None
+    reasoning_effort_source: Literal["preset", "override", "configured", "unknown"] = "unknown"
+    reasoning_effort_preset_label: str | None = None
 
 
 class ListProviderRoutesResponse(BaseModel):
