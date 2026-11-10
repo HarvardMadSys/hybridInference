@@ -128,6 +128,19 @@ class CostWriteOutcomeUnknown(Exception):
         self.xid = xid
 
 
+class ResetRedemption(NamedTuple):
+    """How :meth:`OperationalStore.redeem_reset_token` ended.
+
+    *outcome* is ``"reset"`` when the password was replaced, and otherwise why
+    the link was refused: ``"invalid"`` (no such link, or no such account),
+    ``"used"`` or ``"expired"``. *user_id* is the account reset, for
+    ``"reset"`` only.
+    """
+
+    outcome: Literal["reset", "invalid", "used", "expired"]
+    user_id: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Column allowlists for dynamic UPDATE methods
 # ---------------------------------------------------------------------------
@@ -1191,6 +1204,20 @@ class OperationalStore(ABC):
     @abstractmethod
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delete all reset tokens for a user."""
+
+    @abstractmethod
+    async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
+        """Spend reset link *token* on a new password, all in one transaction.
+
+        When the link is live, the account's password becomes *password_hash*,
+        every reset link the account holds is deleted, and so is every session
+        it holds; otherwise nothing changes and the outcome says why the link
+        was refused. Redemptions of one account's links take turns, so of any
+        number of concurrent ones -- of the same link or of sibling links --
+        exactly one resets the password, and a failure leaves the link, the
+        password and the sessions as they were. A caching layer forgets the
+        account's cached user row and session liveness after a reset.
+        """
 
     # -- identity authorization codes ----------------------------------------
 

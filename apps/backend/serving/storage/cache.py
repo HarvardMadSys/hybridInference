@@ -18,6 +18,7 @@ from .base import (
     OperationalStore,
     ProviderDefinitionRow,
     ProviderKeyRow,
+    ResetRedemption,
     Row,
 )
 from .cache_backend import (
@@ -1173,6 +1174,14 @@ class CachedOperationalStore(OperationalStore):
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delegate to wrapped store."""
         return await self._store.delete_user_reset_tokens(user_id)
+
+    async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
+        """Delegate, then forget the reset account's cached user row and session liveness."""
+        redemption = await self._store.redeem_reset_token(token, password_hash=password_hash)
+        if redemption.user_id is not None:
+            await self._cache.delete(self._user_key(redemption.user_id))
+            await self._forget_sessions(redemption.user_id)
+        return redemption
 
     # -- identity authorization codes (never cached) -------------------------
     #

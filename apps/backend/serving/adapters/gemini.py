@@ -162,14 +162,21 @@ class GeminiAdapter(BaseAdapter):
                 # or a scalar there with 400, so any other value is wrapped.
                 if not isinstance(response_payload, dict):
                     response_payload = {"output": response_payload}
-                contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"functionResponse": {"name": name, "response": response_payload}}
-                        ],
-                    }
-                )
+                part = {"functionResponse": {"name": name, "response": response_payload}}
+                # The results of one turn's parallel calls answer it together:
+                # Gemini refuses a function-response content with fewer parts
+                # than the turn had calls, so a result following another joins
+                # its content rather than starting one of its own.
+                previous = contents[-1] if contents else None
+                if (
+                    previous is not None
+                    and previous["role"] == "user"
+                    and previous["parts"]
+                    and all("functionResponse" in p for p in previous["parts"])
+                ):
+                    previous["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
                 continue
 
         request_body: dict[str, Any] = {"contents": contents}

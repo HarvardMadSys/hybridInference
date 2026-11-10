@@ -231,6 +231,10 @@ def _validate_site_setting(item: ConfigBackupSiteSetting) -> tuple[str, str | No
             expected_type = _validate_runtime_setting_string(key, value)
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if expected_type == "bool":
+            # Stored the way the admin API writes it, not as the word the backup
+            # held: a reader that missed ``on`` read user_auth_enabled as false.
+            value = str(value.strip().lower() in {"true", "1", "yes", "on"})
         return key, value, expected_type
 
     if key.startswith(MODEL_ROUTEWISE_SETTING_PREFIX):
