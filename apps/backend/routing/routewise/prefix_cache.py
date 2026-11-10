@@ -330,6 +330,7 @@ class _Entry:
 
     blocks: tuple[Block, ...]
     last_seen_at: float
+    generation: int = 0
 
 
 class SessionProviderPrefixMemory:
@@ -388,6 +389,7 @@ class SessionProviderPrefixMemory:
         blocks: Sequence[Block],
         *,
         now: float | None = None,
+        generation: int = 0,
     ) -> None:
         """Store a selected-success request for future prefix matches."""
         ts = self._time() if now is None else now
@@ -400,6 +402,7 @@ class SessionProviderPrefixMemory:
             self._entries[scope] = _Entry(
                 blocks=new_blocks,
                 last_seen_at=ts,
+                generation=generation,
             )
             self._entries.move_to_end(scope)
             self._evict_locked()

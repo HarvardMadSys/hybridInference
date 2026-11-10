@@ -23,7 +23,10 @@ if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
 
 from routing.backends import LeafBackend
-from routing.completion_outcome import CompletionOutcome
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+)
 from routing.dispatch import EndpointBinding, binding_for_adapter, execution_adapter
 from routing.endpoint_health import (
     DispatchClaim,
@@ -48,6 +51,12 @@ from routing.prefill_load import (
     estimate_prefill_tokens,
     priority_for_prefill,
     prompt_anchor,
+)
+from routing.response_text import (
+    StreamProgressTracker,
+    chunk_text,
+    response_text,
+    response_usage,
 )
 from routing.route_table import EffectiveRoute, RouteTableSnapshot
 from routing.streaming import (
@@ -1089,8 +1098,65 @@ class FixedRouter:
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
 
-    def _on_success(self, endpoint_id: str) -> None:
-        self._health_registry.record_success(endpoint_id)
+    def _on_success(self, endpoint_id: str, response: Any) -> CompletionOutcome:
+        """Record a semantic serving success and return the verdict it used.
+
+        A transport-level 200 is not sufficient. The response is classified here
+        so endpoint health and prefix locality judge it by the same rule. A
+        caller that cannot classify a response must call ``record_liveness``
+        instead; a missing response is never positive evidence.
+
+        The verdict is returned so a caller that also owns a prefill lease can
+        confirm the prefill from the same decision rather than classify twice.
+        """
+        outcome = classify_completion_outcome(
+            content=response_text(response),
+            usage=response_usage(response),
+            http_status=200,
+            terminal=True,
+        )
+        self._health_registry.record_success(endpoint_id, outcome=outcome)
+        return outcome
+
+    def _observe_stream_progress(
+        self,
+        endpoint_id: str,
+        progress: StreamProgressTracker,
+        chunk: Any,
+        lease: PrefillLease | None,
+    ) -> bool:
+        """Fold one streamed chunk into the attempt's verdict.
+
+        Returns True once the accumulated output proves real work, at which
+        point serving success is recorded and the prefill is confirmed -- a
+        half-open probe is released as soon as genuine output arrives, not at
+        the end of the stream. A prefix that could still be a warmup notice
+        stays undecided.
+        """
+        outcome = progress.observe(chunk_text(chunk))
+        if outcome is None or not outcome.admits_real_work:
+            return False
+        self._health_registry.record_success(endpoint_id, outcome=outcome)
+        self._prefill_load.release(lease, prefill_confirmed=True)
+        return True
+
+    def _finish_stream_progress(
+        self,
+        endpoint_id: str,
+        progress: StreamProgressTracker,
+        lease: PrefillLease | None,
+    ) -> CompletionOutcome | None:
+        """Record the terminal verdict for a stream that never proved progress.
+
+        A stream that was a complete warmup notice from start to end records
+        nothing (``record_success`` is a no-op for a non-progress outcome) and
+        leaves the prefill lease to its unconfirmed release.
+        """
+        outcome = progress.finish()
+        if outcome is not None and outcome.admits_real_work:
+            self._health_registry.record_success(endpoint_id, outcome=outcome)
+            self._prefill_load.release(lease, prefill_confirmed=True)
+        return outcome
 
     def _on_failure(
         self,
@@ -2832,15 +2898,19 @@ class FixedRouter:
                 },
             ):
                 self._ensure_health(endpoint_id)
+                outcome: CompletionOutcome | None = None
                 try:
                     resp = await leaf.chat_completion(messages, **params)
-                    # A returned response proves this endpoint finished
-                    # prefilling this prompt, which is what makes its prefix
-                    # safe to remember.
-                    self._prefill_load.release(lease, prefill_confirmed=True)
+                    outcome = self._on_success(endpoint_id, resp)
                 finally:
-                    self._prefill_load.release(lease)
-                self._on_success(endpoint_id)
+                    # Classify before confirming. A returned 200 proves the
+                    # exchange finished, not that this prompt's prefill is
+                    # resident -- a warmup notice must not write the warm-prefix
+                    # hint, which is what the streaming paths already do.
+                    self._prefill_load.release(
+                        lease,
+                        prefill_confirmed=outcome is not None and outcome.admits_real_work,
+                    )
             # Preserve adapter-set _routing if present;
             # only set default routing if the adapter didn't provide one.
             if "_routing" not in resp:
@@ -2986,12 +3056,17 @@ class FixedRouter:
                                 adapter, prefill_tokens, affinity_key, fingerprint, fallback_anchor
                             )
                         fallback_report.attach(lease)
+                        outcome: CompletionOutcome | None = None
                         try:
                             resp = await leaf.chat_completion(messages, **params)
-                            self._prefill_load.release(lease, prefill_confirmed=True)
+                            outcome = self._on_success(endpoint_id, resp)
                         finally:
-                            self._prefill_load.release(lease)
-                        self._on_success(endpoint_id)
+                            # Same ordering as the primary path: the warm-prefix
+                            # hint waits for a verdict that admits real work.
+                            self._prefill_load.release(
+                                lease,
+                                prefill_confirmed=outcome is not None and outcome.admits_real_work,
+                            )
                     if "_routing" not in resp:
                         resp["_routing"] = {
                             "provider": execution.config.provider,
@@ -3137,6 +3212,7 @@ class FixedRouter:
         # For every stream of this request, whatever its offload plan says.
         engine_queue_limit = self._engine_queue_limit(model_id)
         chunks_yielded = False
+        stream_progress = StreamProgressTracker()
         primary_report = _DispatchReport(self._prefill_load)
         primary_report.attach(lease)
         try:
@@ -3176,29 +3252,24 @@ class FixedRouter:
                 stream = aiter(leaf.stream_chat_completion(messages, **params))
                 if primary_watch is not None:
                     held = await self._await_first_token(stream, primary_watch)
-                    if held and has_non_empty_content(held[-1]):
-                        # The loop below's first-token bookkeeping, for a
-                        # first token that arrived while it was being awaited.
-                        first = False
-                        self._on_success(primary_endpoint_id)
-                        self._prefill_load.release(lease, prefill_confirmed=True)
                     for chunk in held:
+                        if first and self._observe_stream_progress(
+                            primary_endpoint_id, stream_progress, chunk, lease
+                        ):
+                            first = False
                         yield chunk
                         chunks_yielded = True
                 async for chunk in stream:
-                    if first and has_non_empty_content(chunk):
-                        # Providers may emit keep-alives or empty terminal chunks.
+                    if first and self._observe_stream_progress(
+                        primary_endpoint_id, stream_progress, chunk, lease
+                    ):
+                        # Keep accumulating while the prefix could still be a
+                        # warmup notice; only substantive output ends prefill.
                         first = False
-                        # Consider first non-empty token as a success signal for availability.
-                        self._on_success(primary_endpoint_id)
-                        # First token means the prompt is resident and this
-                        # endpoint is decoding, not prefilling. Holding the
-                        # lease for the whole stream would let a long cheap
-                        # decode read as prefill pressure and push traffic away
-                        # from an endpoint that is no longer busy prefilling.
-                        self._prefill_load.release(lease, prefill_confirmed=True)
                     yield chunk
                     chunks_yielded = True
+                if first:
+                    self._finish_stream_progress(primary_endpoint_id, stream_progress, lease)
             return
         except Exception as primary_error:
             # Primary is done either way; release before the fallback attempts
@@ -3352,6 +3423,7 @@ class FixedRouter:
                             offload=offload_reason or earlier_offload,
                             offload_endpoint_id=earlier_offload_endpoint,
                         )
+                        stream_progress = StreamProgressTracker()
                         first = True
                         # Before the transaction: a pass over the whole prompt.
                         fallback_anchor = anchors.for_endpoint(execution)
@@ -3363,20 +3435,24 @@ class FixedRouter:
                         stream = aiter(leaf.stream_chat_completion(messages, **params))
                         if fallback_watch is not None:
                             held = await self._await_first_token(stream, fallback_watch)
-                            if held and has_non_empty_content(held[-1]):
-                                first = False
-                                self._on_success(adapter_endpoint_id)
-                                self._prefill_load.release(lease, prefill_confirmed=True)
                             for chunk in held:
+                                if first and self._observe_stream_progress(
+                                    adapter_endpoint_id, stream_progress, chunk, lease
+                                ):
+                                    first = False
                                 yield chunk
                                 chunks_yielded = True
                         async for chunk in stream:
-                            if first and has_non_empty_content(chunk):
+                            if first and self._observe_stream_progress(
+                                adapter_endpoint_id, stream_progress, chunk, lease
+                            ):
                                 first = False
-                                self._on_success(adapter_endpoint_id)
-                                self._prefill_load.release(lease, prefill_confirmed=True)
                             yield chunk
                             chunks_yielded = True
+                        if first:
+                            self._finish_stream_progress(
+                                adapter_endpoint_id, stream_progress, lease
+                            )
                     return
                 except Exception as fallback_error:
                     attempt = _RouteAttempt(

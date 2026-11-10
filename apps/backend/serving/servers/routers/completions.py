@@ -1706,7 +1706,9 @@ async def execute_chat(
                 cached_tokens=cached_tokens,
                 # Pass the real response body so a warmup notice is classified
                 # TRANSIENT_NO_PROGRESS instead of PROGRESS; without it a
-                # text-bearing warmup still warms the prefix cache.
+                # text-bearing warmup still warms the prefix cache. The
+                # classifier needs the body: without it a warmup notice that
+                # reports output tokens reads as progress, which is the incident.
                 response_body=response if isinstance(response, dict) else None,
             )
 
