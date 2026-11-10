@@ -717,6 +717,11 @@ async def test_add_persists_and_seeds_pool(client):
     assert api_key in pool.snapshot_keys()
     assert len(store.rows) == 1
     assert store.audit and store.audit[0]["action"] == "add_provider_key"
+    # The new key row is the typed target, by id; the shared token acted.
+    target = store.audit[0]["target"]
+    assert (target.type, target.id, target.user_id) == ("provider_key", body["key"]["id"], None)
+    assert store.audit[0]["actor"].type == "admin_token"
+    assert store.audit[0]["target_user_id"] is None
 
 
 @pytest.mark.asyncio
@@ -974,6 +979,103 @@ async def test_delete_db_key_preserves_value_shared_by_another_db_row(client):
     assert resp2.status_code == 200, resp2.text
     assert resp2.json()["pools_updated"] == 1
     assert shared not in pool.snapshot_keys()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("revoke", ["disable", "delete"])
+async def test_revoking_a_key_a_runtime_route_pins_takes_it_out_of_every_pool_at_once(
+    client, revoke
+):
+    """A runtime route pinned to a DB key carries it in its config, not as an env key.
+
+    Counted as an env copy, the value stayed in every pool of this process
+    after the row was disabled or deleted, until another refresh removed it.
+    """
+    http, _store = client
+    pinned_key = "zai-pinned-db-key-cccccccccccc"
+    configured = _registered_provider_adapter("zai", api_key="zai-env-key-dddddddddddd")
+    dynamic_keys.register_adapter_for_provider("zai", configured)
+    add = await http.post(
+        "/admin/provider-keys",
+        json={"provider": "zai", "api_key": pinned_key},
+        headers=AUTH,
+    )
+    key_id = add.json()["key"]["id"]
+    runtime_route = OpenAICompatAdapter(
+        ModelConfig(
+            id="runtime-model",
+            name="runtime-model",
+            provider="zai",
+            base_url="https://zai.example/v1",
+            api_keys=[pinned_key],
+            provider_model_id="Provider/Test-Model",
+        )
+    )
+    dynamic_keys.register_adapter_for_provider(
+        "zai", runtime_route, allow_db_key_injection=False, api_key_id=key_id
+    )
+    assert pinned_key in configured._key_pool.snapshot_keys()
+
+    if revoke == "disable":
+        resp = await http.post(f"/admin/provider-keys/{key_id}/disable", headers=AUTH)
+    else:
+        resp = await http.delete(f"/admin/provider-keys/{key_id}", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 2
+    assert pinned_key not in runtime_route._key_pool.snapshot_keys()
+    assert configured._key_pool.snapshot_keys() == ["zai-env-key-dddddddddddd"]
+
+
+@pytest.mark.asyncio
+async def test_re_enabling_a_key_a_runtime_route_pins_restores_it_to_that_route_at_once(client):
+    """Disabling a pinned key takes it out of its route at once; enabling puts it back at once.
+
+    The route opts out of provider-wide key injection, so the re-enable skipped
+    it and the key returned to the route only at the next routing refresh. A
+    route pinned to another key must still not receive it.
+    """
+    http, _store = client
+    pinned_key = "zai-pinned-db-key-eeeeeeeeeeee"
+    other_key = "zai-other-db-key-ffffffffffff"
+    configured = _registered_provider_adapter("zai", api_key="zai-env-key-gggggggggggg")
+    dynamic_keys.register_adapter_for_provider("zai", configured)
+    key_ids = {}
+    for key in (pinned_key, other_key):
+        add = await http.post(
+            "/admin/provider-keys", json={"provider": "zai", "api_key": key}, headers=AUTH
+        )
+        key_ids[key] = add.json()["key"]["id"]
+
+    def pinned_route(key: str) -> OpenAICompatAdapter:
+        adapter = OpenAICompatAdapter(
+            ModelConfig(
+                id=f"runtime-model-{key_ids[key]}",
+                name="runtime-model",
+                provider="zai",
+                base_url="https://zai.example/v1",
+                api_keys=[key],
+                provider_model_id="Provider/Test-Model",
+            )
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "zai", adapter, allow_db_key_injection=False, api_key_id=key_ids[key]
+        )
+        return adapter
+
+    route = pinned_route(pinned_key)
+    other_route = pinned_route(other_key)
+    disable = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/disable", headers=AUTH)
+    assert disable.status_code == 200, disable.text
+    assert pinned_key not in route._key_pool.snapshot_keys()
+
+    resp = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/enable", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 2
+    assert route._key_pool.snapshot_keys() == [pinned_key]
+    assert pinned_key in configured._key_pool.snapshot_keys()
+    assert other_route._key_pool.snapshot_keys() == [other_key]
 
 
 @pytest.mark.asyncio

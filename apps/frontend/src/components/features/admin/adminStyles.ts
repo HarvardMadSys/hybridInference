@@ -39,9 +39,6 @@ export const SECTION = 'rounded-lg border border-gray-200 bg-white p-4';
  */
 export const PANEL = 'rounded-lg border border-gray-200 bg-white';
 
-/** Two columns on wide screens: a section index, then the sections. */
-export const INDEXED_LAYOUT = 'lg:grid lg:grid-cols-[11rem_minmax(0,1fr)] lg:gap-8';
-
 /** Table header cell and body cell, for the admin's data tables. */
 export const TABLE_HEAD_CELL =
   'px-4 py-2 text-left text-[11px] font-medium uppercase tracking-wide text-gray-500';

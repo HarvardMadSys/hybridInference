@@ -2,7 +2,7 @@
 
 import type { UserAutomationScore } from '@/lib/api/admin';
 
-export interface BandStyle {
+interface BandStyle {
   label: string;
   // Tailwind classes for a small pill/chip (background + text + ring).
   chip: string;

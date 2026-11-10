@@ -11,7 +11,7 @@ from httpx import ASGITransport, AsyncClient
 
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
-from serving.servers.deps import get_log_store, get_router
+from serving.servers.deps import get_completions_logger, get_log_store, get_router
 
 
 @pytest.mark.asyncio
@@ -22,7 +22,7 @@ async def test_anthropic_unknown_model_logs_rejection(monkeypatch):
         log_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "serving.servers.routers.anthropic_messages.log_rejection",
+        "serving.servers.routers.anthropic_messages.log_rejection_from",
         fake_log_rejection,
     )
 
@@ -53,6 +53,7 @@ async def test_anthropic_unknown_model_logs_rejection(monkeypatch):
     app.dependency_overrides[get_router] = _get_router
     app.dependency_overrides[get_log_store] = _get_log_store
     app.dependency_overrides[enforce_user_concurrency] = _enforce
+    app.dependency_overrides[get_completions_logger] = lambda: MagicMock()
 
     app.state.services = type("S", (), {})()
     app.state.services.log_store = MagicMock()
@@ -97,7 +98,7 @@ async def test_anthropic_rejection_passes_probe_trust_fields(monkeypatch):
         log_calls.append(kwargs)
 
     monkeypatch.setattr(
-        "serving.servers.routers.anthropic_messages.log_rejection",
+        "serving.servers.routers.anthropic_messages.log_rejection_from",
         fake_log_rejection,
     )
 
@@ -127,6 +128,7 @@ async def test_anthropic_rejection_passes_probe_trust_fields(monkeypatch):
     app.dependency_overrides[get_router] = _get_router
     app.dependency_overrides[get_log_store] = _get_log_store
     app.dependency_overrides[enforce_user_concurrency] = _enforce
+    app.dependency_overrides[get_completions_logger] = lambda: MagicMock()
 
     app.state.services = type("S", (), {})()
     app.state.services.log_store = MagicMock()

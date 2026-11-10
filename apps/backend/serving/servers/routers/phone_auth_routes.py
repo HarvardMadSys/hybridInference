@@ -1,15 +1,19 @@
 """Optional phone registration, login, and explicit account binding."""
 
+import asyncio
 import secrets
+import time
+from collections import deque
 from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
+from serving.audit import AuditActor, AuditTarget
 from serving.auth.browser_sessions import complete_sign_in, hash_refresh_token, prepare_sign_in
 from serving.auth.signup_policy import allowlist_is_empty, is_public_signup_enabled
 from serving.config.settings import get_signup_notify_emails, settings
-from serving.exceptions import AccountSchemaPending, AccountSuspendedError
+from serving.exceptions import AccountSuspendedError
 from serving.schemas_auth import (
     LoginResponse,
     PhoneCodeRequest,
@@ -20,7 +24,12 @@ from serving.schemas_auth import (
     UserInfo,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
+from serving.servers.deps import (
+    get_current_user,
+    get_db_logger,
+    get_operational_store,
+    user_audit_actor,
+)
 from serving.setup_state import refresh_setup_state
 from serving.storage.phone_auth import OWNER_PURPOSES
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
@@ -34,7 +43,7 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import hash_phone_code, phone_identity_unverified
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.sms import is_sms_enabled, send_verification_sms
 from serving.utils.turnstile import verify_turnstile_token
@@ -42,26 +51,35 @@ from serving.utils.turnstile import verify_turnstile_token
 router = APIRouter(prefix="/phone")
 logger = get_logger(__name__)
 
+# How long recent code sends took, the provider's call included. A request
+# that sends nothing -- a login code for a number with no account, a signup
+# code for one that has an account -- waits as long as one of them, so the
+# time to answer does not tell whether a number is registered.
+_recent_send_seconds: deque[float] = deque(maxlen=32)
+# Before any send has been timed.
+_DEFAULT_SEND_SECONDS = 0.3
+
+
+def _limit_key(request: Request) -> str:
+    """The client address the code quotas count by: an IPv6 address by its /64.
+
+    Counted by the raw address, a client rotating through the prefix it was
+    delegated escaped every per-address quota.
+    """
+    return normalize_ip_bucket(get_client_ip(request))
+
+
+async def _wait_like_a_send() -> None:
+    await asyncio.sleep(
+        secrets.choice(_recent_send_seconds) if _recent_send_seconds else _DEFAULT_SEND_SECONDS
+    )
+
 
 def _require_enabled(op_store) -> None:
     if not is_sms_enabled():
         raise HTTPException(503, "Phone authentication is currently unavailable.")
     if not op_store:
         raise HTTPException(503, "Database not available")
-
-
-async def _require_phone_accounts(op_store) -> None:
-    """Answer 503 until the database upgrade has added the phone columns.
-
-    An upgrade that met a long-held users table lock at startup (the nightly
-    ``pg_dump``) adds them from the background; sign-in by email works
-    meanwhile. Each route calls this after its own gates and before it
-    reserves, sends or consumes a code, so a refused request costs nothing.
-    """
-    try:
-        await op_store.require_phone_accounts()
-    except AccountSchemaPending as exc:
-        raise HTTPException(503, AccountSchemaPending.MESSAGE) from exc
 
 
 async def _require_signup() -> None:
@@ -90,7 +108,7 @@ async def verify_phone_code(
         purpose=purpose,
         user_id=user_id,
         code_hash=hash_phone_code(body.phone, purpose, user_id, body.code),
-        ip=get_client_ip(request),
+        ip=_limit_key(request),
         max_attempts=settings.sms_otp_max_attempts,
         phone_limit=settings.sms_otp_verify_per_phone_15min,
         ip_limit=settings.sms_otp_verify_per_ip_hour,
@@ -117,7 +135,6 @@ async def send_phone_code(
     elif body.purpose == "bind" or body.purpose in OWNER_PURPOSES:
         current_user = await get_current_user(request.headers.get("authorization"), op_store)
         user_id = current_user["user_id"]
-    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     if not await verify_turnstile_token(body.turnstile_token, client_ip):
         raise HTTPException(400, "Captcha verification failed")
@@ -133,7 +150,7 @@ async def send_phone_code(
         user_id=user_id,
         challenge_id=challenge_id,
         code_hash=hash_phone_code(body.phone, body.purpose, user_id, code),
-        ip=client_ip,
+        ip=_limit_key(request),
         limits={
             "cooldown": settings.sms_otp_send_cooldown_seconds,
             "expire": settings.sms_otp_expire_seconds,
@@ -163,6 +180,7 @@ async def send_phone_code(
     elif existing_user and existing_user["id"] != user_id:
         eligible = False
     if eligible:
+        started = time.monotonic()
         try:
             sent = await run_in_threadpool(send_verification_sms, body.phone, code)
         except Exception:
@@ -171,10 +189,12 @@ async def send_phone_code(
         if not sent:
             await op_store.invalidate_phone_code(challenge_id)
             raise HTTPException(503, "Could not send verification code. Please try again later.")
+        _recent_send_seconds.append(time.monotonic() - started)
         if not await op_store.activate_phone_code(challenge_id):
             raise HTTPException(503, "Verification code expired. Please request another code.")
     else:
         await op_store.invalidate_phone_code(challenge_id)
+        await _wait_like_a_send()
     return PhoneCodeResponse(
         message="If this phone number is eligible, a verification code has been sent.",
         retry_after=settings.sms_otp_send_cooldown_seconds,
@@ -192,7 +212,6 @@ async def phone_signup(
     """Create a verified phone identity while respecting registration approval policy."""
     _require_enabled(op_store)
     await _require_signup()
-    await _require_phone_accounts(op_store)
     client_ip = get_client_ip(request)
     allowed, reason = await check_and_record_signup(client_ip)
     if not allowed:
@@ -249,12 +268,14 @@ async def phone_signup(
                 user_id=user_id,
                 use_case=body.use_case,
             )
+    # Registration is unauthenticated: the requester is anonymous, and the
+    # account it created is the target.
     await log_admin_action(
         db_logger,
-        client_ip,
-        "create_user",
-        user_id,
-        {
+        action="create_user",
+        actor=AuditActor.anonymous(client_ip),
+        target=AuditTarget.user(user_id),
+        details={
             "phone": body.phone,
             "user_name": body.user_name,
             "status": status,
@@ -281,7 +302,6 @@ async def phone_login(
 ) -> LoginResponse:
     """Consume a login code and add the account to the browser's session."""
     _require_enabled(op_store)
-    await _require_phone_accounts(op_store)
     user = await op_store.get_user_by_phone(body.phone)
 
     async def record(outcome: str, reason: str | None):
@@ -399,15 +419,14 @@ async def bind_phone(
 ) -> dict[str, str]:
     """Bind a phone explicitly to the authenticated account without merging users."""
     _require_enabled(op_store)
-    await _require_phone_accounts(op_store)
     await verify_phone_code(request, body, "bind", op_store, current_user["user_id"])
     if not await op_store.bind_user_phone(current_user["user_id"], body.phone):
         raise HTTPException(409, "Phone number cannot be bound to this account.")
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "bind_phone",
-        current_user["user_id"],
-        {"phone": body.phone},
+        action="bind_phone",
+        details={"phone": body.phone},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
     )
     return {"message": "Phone number bound successfully."}

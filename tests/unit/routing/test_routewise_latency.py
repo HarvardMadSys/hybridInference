@@ -50,8 +50,14 @@ class TestProviderProfile:
         # F(0.5) = 0.8 * 1.0 = 0.8
         assert profile.cdf_at(0.5, now) == pytest.approx(0.8)
 
-    def test_cdf_ignores_success_with_nonpositive_ttft(self):
-        """A success recorded without a TTFT must not deflate the CDF."""
+    def test_untimed_success_counts_only_toward_the_success_rate(self):
+        """A success without a TTFT says the endpoint answers, not how fast.
+
+        A non-streaming response has no first token, so it is recorded untimed.
+        It is a real outcome -- leaving it out would let a few errors look like
+        a high error rate on an endpoint that answers most of its traffic
+        without streaming -- but it cannot be "within" any threshold.
+        """
         profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
         now = 100.0
 
@@ -63,12 +69,52 @@ class TestProviderProfile:
         # 2 errors.
         profile.record(now, -1.0, error_type="timeout")
         profile.record(now, -1.0, error_type="server_error")
-        # One success with no TTFT (instrumentation missing): must be ignored,
-        # not counted as a real outcome that drags the CDF down.
+        # One success with no TTFT.
         profile.record(now, 0.0)
 
-        # F(0.5) = within / (successes + errors) = 3 / (5 + 2).
-        assert profile.cdf_at(0.5, now) == pytest.approx(3 / 7)
+        # success_rate = 1 - 2/8 over every outcome; F_success(0.5) = 3/5 over
+        # the timed successes only.
+        assert profile.cdf_at(0.5, now) == pytest.approx((1 - 2 / 8) * 3 / 5)
+        assert profile.sample_count(now) == 5
+        assert profile.total_count(now) == 7
+        assert profile.untimed_success_count(now) == 1
+
+    def test_untimed_successes_dilute_errors_without_moving_the_latency_mean(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        now = 100.0
+        profile.record(now, 400.0)
+        profile.record(now, -1.0, error_type="timeout")
+        before = profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0)
+
+        for _ in range(8):
+            profile.record(now, -1.0)
+
+        # 9 successes answering like the timed one, 1 error.
+        after = profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0)
+        assert after == pytest.approx((9 * 400.0 + 60_000.0) / 10 / 1000.0)
+        assert after < before
+        assert profile.mean_ttft_sec(now) == pytest.approx(0.4)
+
+    def test_untimed_successes_without_a_timed_one_use_the_callers_prior(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        now = 100.0
+        profile.record(now, -1.0, error_type="timeout")
+        for _ in range(3):
+            profile.record(now, -1.0)
+
+        assert profile.mean_with_errors_sec(
+            now, error_penalty_ms=60_000.0, untimed_success_ms=800.0
+        ) == pytest.approx((3 * 800.0 + 60_000.0) / 4 / 1000.0)
+        # No prior: the untimed successes are left out, as they always were.
+        assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) == pytest.approx(60.0)
+
+    def test_untimed_successes_alone_carry_no_latency_estimate(self):
+        profile = ProviderProfile(endpoint_id="ep1", window_sec=1000.0)
+        profile.record(100.0, -1.0)
+
+        assert profile.total_count(100.0) == 0
+        assert profile.cdf_at(1.0, 100.0) == 0.0
+        assert profile.mean_with_errors_sec(100.0, error_penalty_ms=60_000.0) is None
 
     def test_window_pruning(self):
         """Old samples are excluded after the window."""
@@ -104,7 +150,7 @@ class TestProviderProfile:
         assert profile.max_samples == 3
         assert len(profile._events) == 3
         assert profile.sample_count(200.0) == 3
-        assert [ttft for _t, ttft, _e in profile._events] == [300.0, 400.0, 500.0]
+        assert [event[1] for event in profile._events] == [300.0, 400.0, 500.0]
 
     def test_max_samples_bounds_successes_and_errors_together(self):
         """Success and error accounting use the same bounded outcome window."""
@@ -158,9 +204,9 @@ class TestProviderProfile:
 
 def _scan_summaries(profile: ProviderProfile) -> tuple[int, int, float]:
     """Recompute (successes, errors, success TTFT sum) by scanning the window."""
-    successes = sum(1 for _ts, ttft, err in profile._events if err is None and ttft > 0)
-    errors = sum(1 for _ts, _ttft, err in profile._events if err is not None)
-    total_ms = sum(ttft for _ts, ttft, err in profile._events if err is None and ttft > 0)
+    successes = sum(1 for _ts, ttft, err, _p in profile._events if err is None and ttft > 0)
+    errors = sum(1 for _ts, _ttft, err, _p in profile._events if err is not None)
+    total_ms = sum(ttft for _ts, ttft, err, _p in profile._events if err is None and ttft > 0)
     return successes, errors, total_ms
 
 
@@ -213,17 +259,23 @@ class TestProviderProfileRunningAggregates:
             if i % 5 == 0:
                 profile.record(ts, -1.0, "error")
             elif i % 7 == 0:
-                # A success the adapter could not time: counted in neither.
+                # A success with no TTFT: an untimed success.
                 profile.record(ts, 0.0)
             else:
                 profile.record(ts, 120.0 + (i % 11) * 30.0)
 
         now = 119.0
         successes, errors, total_ms = _scan_summaries_after_prune(profile, now)
+        untimed = sum(1 for _ts, ttft, err, _p in profile._events if err is None and ttft <= 0)
+        assert untimed > 0
         assert profile.sample_count(now) == successes
         assert profile.total_count(now) == successes + errors
+        assert profile.untimed_success_count(now) == untimed
+        mean_ms = total_ms / successes
         assert profile.mean_with_errors_sec(now, error_penalty_ms=60_000.0) == pytest.approx(
-            (total_ms + errors * 60_000.0) / (successes + errors) / 1000.0
+            ((successes + untimed) * mean_ms + errors * 60_000.0)
+            / (successes + untimed + errors)
+            / 1000.0
         )
 
     def test_aggregates_reset_once_the_window_empties(self):

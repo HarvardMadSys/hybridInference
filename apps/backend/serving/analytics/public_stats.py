@@ -13,12 +13,33 @@ or raw User-Agent strings. Per-item account counts below
 detect its language and is never stored. A model is named only while the
 catalog offers it to ``PUBLIC_MODEL_ROLE``; every other model's traffic is
 counted together as "other", so an internal model's name never leaves.
+
+Each run also checkpoints the language sample and the client totals for every
+week still fully present in ``api_logs``. A later prune deletes the rows; the
+next snapshot reads the checkpoint, so the language section, the agent
+section and the account total do not fall. The checkpoint stores a digest of
+the account id and the truncated User-Agent, never the message, and neither
+value is published. Weeks removed before a checkpoint was written cannot be
+reconstructed.
+
+A week that had closed by the end of the previous stored run is settled: that
+run wrote its checkpoint from the whole week, so this one reads the checkpoint
+instead of scanning ``api_logs`` for it again. Only the open week, and weeks
+that closed since or have no checkpoint, are read from the logs.
+
+The hourly country rollup keeps 90 days, a shorter span than the window. A
+week the rollup no longer fully covers takes its weekly country counts from
+the previous snapshot, which counted it while it was covered, so the weekly
+line does not fall to zero for the window's older weeks. The country totals
+(how many countries, the top shares and the map) cover only the days the
+rollup still holds, and ``countries.since`` says from which day.
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import math
 import sys
@@ -26,8 +47,6 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
-
-import yaml
 
 from routing.model_selection import (
     AUTO_MODEL_ID,
@@ -38,6 +57,7 @@ from routing.model_selection import (
 from serving.analytics import agent_catalog as catalog
 from serving.analytics.language_id import detect_message, user_languages
 from serving.config.settings import has_role
+from serving.model_access import default_required_role_for_model
 from serving.utils.geo_resolver import ALPHA2_TO_ALPHA3
 from serving.utils.logging import get_logger
 
@@ -63,40 +83,25 @@ PUBLIC_MODEL_ROLE = "pro"
 KEEP_SNAPSHOTS = 30
 STATEMENT_TIMEOUT_MS = 600_000
 
-_SCHEMA_STATEMENTS = (
-    """
-    CREATE TABLE IF NOT EXISTS public_stats_snapshots (
-        id           BIGSERIAL   PRIMARY KEY,
-        generated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-        payload      JSONB       NOT NULL
-    )
-    """,
-    """
-    CREATE INDEX IF NOT EXISTS idx_public_stats_snapshots_generated
-    ON public_stats_snapshots (generated_at DESC)
-    """,
-    # Additive counters for successful, non-probe requests removed from
-    # api_logs. The prune writes these in the same transaction as the DELETE
-    # (ops/db/archive-old-logs.sh in the deployment repo). No account id,
-    # address, or message text is stored.
-    """
-    CREATE TABLE IF NOT EXISTS api_log_retained_daily (
-        day            DATE   NOT NULL,
-        model          TEXT   NOT NULL,
-        requests       BIGINT NOT NULL,
-        input_tokens   BIGINT NOT NULL,
-        output_tokens  BIGINT NOT NULL,
-        cached_tokens  BIGINT NOT NULL,
-        PRIMARY KEY (day, model)
-    )
-    """,
-)
-
 LATEST_SNAPSHOT_SQL = """
 SELECT payload FROM public_stats_snapshots
 ORDER BY generated_at DESC, id DESC
 LIMIT 1
 """
+
+# What the previous run recorded about the weeks it covered, carried forward
+# for weeks whose inputs have since been removed.
+PREVIOUS_SNAPSHOT_SQL = """
+SELECT payload->'window'->>'end' AS window_end,
+       payload->'weeks' AS weeks,
+       payload->'countries'->'weekly' AS country_weekly
+FROM public_stats_snapshots
+ORDER BY generated_at DESC, id DESC
+LIMIT 1
+"""
+
+# The first hour the country rollup still holds; it keeps 90 days.
+GEO_COVERED_FROM_SQL = "SELECT MIN(hour_bucket) FROM geo_hourly_coverage"
 
 _NOT_PROBE = "COALESCE(metadata->>'synthetic_probe', 'false') <> 'true'"
 
@@ -130,6 +135,54 @@ WHERE day >= $1 AND day < $2
 
 RETAINED_FIRST_DAY_SQL = "SELECT MIN(day) FROM api_log_retained_daily"
 
+# Week is inclusive at ``$1`` and exclusive at ``$2``.
+RETAINED_LANGUAGE_SQL = """
+SELECT week, account_key, language
+FROM api_log_retained_language
+WHERE week >= $1 AND week < $2
+"""
+
+RETAINED_LANGUAGE_SAMPLE_SQL = """
+SELECT week, messages_sampled
+FROM api_log_retained_language_sample
+WHERE week >= $1 AND week < $2
+"""
+
+RETAINED_CLIENT_SQL = """
+SELECT week, account_key, agent, user_agent, requests, tokens
+FROM api_log_retained_client
+WHERE week >= $1 AND week < $2
+"""
+
+DELETE_RETAINED_LANGUAGE_WEEKS_SQL = (
+    "DELETE FROM api_log_retained_language WHERE week = ANY($1::date[])"
+)
+DELETE_RETAINED_LANGUAGE_SAMPLE_WEEKS_SQL = (
+    "DELETE FROM api_log_retained_language_sample WHERE week = ANY($1::date[])"
+)
+INSERT_RETAINED_LANGUAGE_SQL = """
+INSERT INTO api_log_retained_language (week, account_key, language)
+SELECT * FROM unnest($1::date[], $2::text[], $3::text[])
+"""
+INSERT_RETAINED_LANGUAGE_SAMPLE_SQL = """
+INSERT INTO api_log_retained_language_sample (week, messages_sampled)
+SELECT * FROM unnest($1::date[], $2::bigint[])
+"""
+DELETE_RETAINED_CLIENT_WEEKS_SQL = (
+    "DELETE FROM api_log_retained_client WHERE week = ANY($1::date[])"
+)
+INSERT_RETAINED_CLIENT_SQL = """
+INSERT INTO api_log_retained_client
+    (week, account_key, agent, user_agent, requests, tokens)
+SELECT * FROM unnest(
+    $1::date[], $2::text[], $3::text[], $4::text[], $5::bigint[], $6::bigint[]
+)
+"""
+DELETE_RETAINED_LANGUAGE_ACCOUNT_SQL = (
+    "DELETE FROM api_log_retained_language WHERE account_key = $1"
+)
+DELETE_RETAINED_CLIENT_ACCOUNT_SQL = "DELETE FROM api_log_retained_client WHERE account_key = $1"
+
 CLIENTS_SQL = f"""
 SELECT
   (date_trunc('week', timestamp AT TIME ZONE 'UTC'))::date AS week,
@@ -160,7 +213,10 @@ GROUP BY 1, 2, 3
 # Up to $3 distinct newest-user-message hashes per account in [$1, $2), each
 # read from the first request that carried it (the shortest history), and the
 # text of that message. ``{valid_json}`` guards the jsonb cast where the server
-# can check it (PostgreSQL 16+).
+# can check it (PostgreSQL 16+), so one plain-text prompt that starts with "["
+# cannot fail the week. The prompt is cast once, in the lateral subquery, and
+# both the array check and the message search read that value; ``OFFSET 0``
+# keeps the planner from folding the cast back into each of them.
 LANGUAGE_SAMPLE_SQL = f"""
 WITH candidates AS (
   SELECT user_id, last_user_msg_hash AS h, MIN(id) AS id
@@ -187,16 +243,19 @@ SELECT p.user_id, (
         WHERE b->>'type' IN ('text', 'input_text')
       )
     END, 6000)
-  FROM jsonb_array_elements(l.prompt::jsonb) WITH ORDINALITY e(m, i)
+  FROM jsonb_array_elements(d.doc) WITH ORDINALITY e(m, i)
   WHERE m->>'role' = 'user'
   ORDER BY i DESC
   LIMIT 1
 ) AS text
 FROM picked p
 JOIN api_logs l ON l.id = p.id
+CROSS JOIN LATERAL (
+  SELECT CASE WHEN {{valid_json}} THEN l.prompt::jsonb END AS doc OFFSET 0
+) d
 WHERE l.prompt IS NOT NULL
   AND left(l.prompt, 1) = '['
-  AND jsonb_typeof(CASE WHEN {{valid_json}} THEN l.prompt::jsonb END) = 'array'
+  AND jsonb_typeof(d.doc) = 'array'
 """
 
 # Accounts as of the run: approved (active) and waiting for review, whatever
@@ -224,12 +283,6 @@ WHERE id NOT IN (
 
 
 _ALPHA3_TO_ALPHA2 = {alpha3: alpha2 for alpha2, alpha3 in ALPHA2_TO_ALPHA3.items()}
-
-
-async def ensure_public_stats_schema(connection: Any) -> None:
-    """Create the snapshot and retained-daily tables if they do not exist."""
-    for statement in _SCHEMA_STATEMENTS:
-        await connection.execute(statement)
 
 
 # --------------------------------------------------------------------------
@@ -309,9 +362,12 @@ def public_model_names(
     """Map each model id and alias the page may name to the id it is shown under.
 
     A model is public when ``PUBLIC_MODEL_ROLE`` meets its required role, after
-    the runtime override. A missing or unknown role reads as the gateway reads
-    it (``free`` when unset, never satisfied when unknown), and ``admin_only``
-    always hides. An auto model is public when its tier has a public candidate.
+    the runtime override. A role the entry names explicitly is read as written
+    (unknown names never satisfy the public role); an omitted role reads as
+    the same cost-derived default the registry's gate enforces (a paid or
+    unknown-cost model publishes as pro; a provably free one stays free), and
+    ``admin_only`` always hides. An auto model is public when its tier has a
+    public candidate.
 
     Args:
         models_config: The parsed ``models.yaml``.
@@ -322,7 +378,11 @@ def public_model_names(
         if not isinstance(model, dict) or model.get("id") is None:
             continue
         model_id = str(model["id"])
-        role = overrides.get(model_id) or str(model.get("required_role", "free"))
+        # Same default the registry's gate derives (issue #1576): a paid or
+        # unknown-cost model without an explicit required_role publishes as
+        # pro, so the public page's visibility agrees with what the gate
+        # enforces.
+        role = overrides.get(model_id) or default_required_role_for_model(model)
         if model.get("admin_only") or not has_role(PUBLIC_MODEL_ROLE, role):
             continue
         names[model_id] = model_id
@@ -422,6 +482,97 @@ def build_countries(rows: Iterable[Mapping[str, Any]], weeks: list[date]) -> dic
         ],
         "all": seen,
     }
+
+
+def settled_weeks(weeks: list[date], previous_end: datetime | None) -> frozenset[date]:
+    """The weeks that had closed by ``previous_end``, the end of the previous stored run.
+
+    That run read each of them whole and wrote its checkpoint from it, so a
+    later run can read the checkpoint instead of the logs. Its own last week
+    was still open then, so it is not among them, nor is any week since.
+    """
+    if previous_end is None:
+        return frozenset()
+    return frozenset(
+        week
+        for week in weeks
+        if datetime.combine(week + timedelta(weeks=1), datetime.min.time(), UTC) <= previous_end
+    )
+
+
+def merge_country_weeks(
+    weeks: list[date],
+    live: list[dict[str, int]],
+    *,
+    covered_from: date,
+    carried: Mapping[date, Mapping[str, int]],
+) -> tuple[list[dict[str, int]], int]:
+    """Fill in the weekly country counts of weeks the rollup no longer fully covers.
+
+    ``live`` is :func:`build_countries`' weekly line. A week starting on or
+    after ``covered_from``, the first day the rollup fully holds, keeps its
+    live counts. An earlier week takes, per count, the larger of what is left
+    of it and what the previous snapshot recorded: both undercount a week
+    partly or wholly gone, and the recorded one was taken while more of it was
+    there. Returns the line and how many weeks the record filled in.
+    """
+    merged: list[dict[str, int]] = []
+    filled = 0
+    for week, counts in zip(weeks, live, strict=True):
+        recorded = carried.get(week)
+        if recorded is None or _week_coverage(week, covered_from) == "full":
+            merged.append(counts)
+            continue
+        merged.append({key: max(counts[key], int(recorded.get(key, 0))) for key in counts})
+        filled += 1
+    return merged, filled
+
+
+@dataclass(frozen=True)
+class PreviousSnapshot:
+    """What the previous run recorded: the end of its window and its weekly country line."""
+
+    window_end: datetime | None
+    country_weekly: dict[date, dict[str, int]]
+
+
+def _as_json(value: Any) -> Any:
+    """A JSON value as asyncpg returns it: text unless a codec decoded it already."""
+    return json.loads(value) if isinstance(value, str) else value
+
+
+def previous_snapshot(row: Mapping[str, Any] | None) -> PreviousSnapshot | None:
+    """Read the previous snapshot's record, or ``None`` when there is none to trust.
+
+    A snapshot this version cannot read -- an older layout, a hand edit -- is
+    treated as absent: every week is then computed from what is still there.
+    """
+    if row is None:
+        return None
+    try:
+        end = row["window_end"]
+        window_end = datetime.fromisoformat(end) if end else None
+        weeks = [date.fromisoformat(week) for week in _as_json(row["weeks"]) or []]
+        line = _as_json(row["country_weekly"]) or []
+        weekly = {
+            week: {"any": int(counts["any"]), "min_requests": int(counts["min_requests"])}
+            for week, counts in zip(weeks, line, strict=True)
+        }
+    except (KeyError, TypeError, ValueError):
+        logger.warning("public_stats: the previous snapshot is unreadable; not reusing it")
+        return None
+    if window_end is not None and window_end.tzinfo is None:
+        window_end = window_end.replace(tzinfo=UTC)
+    return PreviousSnapshot(window_end=window_end, country_weekly=weekly)
+
+
+def _first_full_day(first_hour: datetime | None) -> date:
+    """The first UTC day the country rollup fully holds; ``date.max`` when it holds none."""
+    if first_hour is None:
+        return date.max
+    first = first_hour.astimezone(UTC)
+    day = first.date()
+    return day if first.time() == datetime.min.time() else day + timedelta(days=1)
 
 
 @dataclass(frozen=True)
@@ -616,19 +767,359 @@ def build_payload(
 
 
 # --------------------------------------------------------------------------
+# Checkpoints for weeks the prune has removed from api_logs.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class LanguageSample:
+    """Languages still detectable from ``api_logs``, by week."""
+
+    by_week: dict[date, dict[str, set[str]]]
+    messages_by_week: dict[date, int]
+    sampled_weeks: frozenset[date]
+
+
+@dataclass(frozen=True)
+class RetentionWrite:
+    """Checkpoint rows to refresh for weeks that are still complete in ``api_logs``."""
+
+    language_weeks: tuple[date, ...]
+    language_rows: tuple[tuple[date, str, str], ...]
+    language_messages: tuple[tuple[date, int], ...]
+    client_weeks: tuple[date, ...]
+    client_rows: tuple[tuple[date, str, str, str, int, int], ...]
+
+
+def account_key(user_id: str | None) -> str:
+    """Return a digest of an account id, or ``""`` when there is none.
+
+    Retained rows store the digest so one account is counted once across a
+    pruned week and a week still in the logs. The published snapshot never
+    includes it.
+    """
+    if not user_id:
+        return ""
+    return hashlib.sha256(user_id.encode()).hexdigest()
+
+
+def _as_date(value: date | datetime) -> date:
+    """Return a UTC calendar date. ``datetime`` is a ``date``, so test it first."""
+    if isinstance(value, datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(UTC)
+        return value.date()
+    return value
+
+
+def pruned_before_day(
+    first_log: datetime | None, first_retained: date | datetime | None
+) -> date | None:
+    """Return the first day still in ``api_logs`` when older days were pruned.
+
+    ``None`` means nothing in front of the remaining logs was removed, so
+    every week in the window is still complete. ``date.max`` means the logs
+    are gone and only the checkpoint remains.
+    """
+    retained = _as_date(first_retained) if first_retained is not None else None
+    if first_log is None:
+        return date.max if retained is not None else None
+    start = _as_date(first_log)
+    if retained is not None and retained < start:
+        return start
+    return None
+
+
+def _week_coverage(week: date, pruned_before: date | None) -> str:
+    """Return ``full``, ``partial`` or ``pruned`` for one Monday-start week."""
+    if pruned_before is None:
+        return "full"
+    if week + timedelta(weeks=1) <= pruned_before:
+        return "pruned"
+    if week < pruned_before:
+        return "partial"
+    return "full"
+
+
+def _hashed_languages(by_account: Mapping[str, set[str]]) -> dict[str, set[str]]:
+    hashed: dict[str, set[str]] = {}
+    for account, languages in by_account.items():
+        if not languages:
+            continue
+        hashed.setdefault(account_key(account), set()).update(languages)
+    return hashed
+
+
+def _prefer_live_languages(
+    coverage: str, sampled: bool, live_messages: int, has_retained: bool, prompts_stored: bool
+) -> bool:
+    """Return whether the live sample should replace this week's checkpoint."""
+    if coverage != "full" or not sampled:
+        return False
+    if live_messages > 0:
+        return True
+    # No text in this week's logs. When no week had text, a stored checkpoint
+    # is the last measurement; wiping it would drop the section.
+    return prompts_stored or not has_retained
+
+
+def merge_language_weeks(
+    *,
+    weeks: list[date],
+    pruned_before: date | None,
+    sample: LanguageSample,
+    retained_by_week: Mapping[date, Mapping[str, set[str]]],
+    retained_messages: Mapping[date, int],
+    reused: frozenset[date] = frozenset(),
+) -> tuple[dict[date, dict[str, set[str]]] | None, int, RetentionWrite, int]:
+    """Combine the live language sample with the checkpoint.
+
+    A week still fully in the logs is re-sampled, unless it is ``reused``: a
+    settled week read from its checkpoint, as a re-sample would read it, its
+    message count included when it found no language. A week the prune has
+    already removed keeps its checkpoint, so a partial tail still in the
+    logs is not added on top. Returns the sets ``build_languages`` consumes,
+    the messages sampled, the checkpoint to write, and how many weeks came
+    from the checkpoint.
+    """
+    prompts_stored = any(sample.messages_by_week.get(week, 0) > 0 for week in sample.sampled_weeks)
+    merged: dict[date, dict[str, set[str]]] = {}
+    total = 0
+    replace: list[date] = []
+    rows: list[tuple[date, str, str]] = []
+    message_rows: list[tuple[date, int]] = []
+    from_checkpoint = 0
+
+    def _take_live(week: date, *, checkpoint: bool) -> None:
+        nonlocal total
+        languages = _hashed_languages(sample.by_week.get(week, {}))
+        count = sample.messages_by_week.get(week, 0)
+        if languages:
+            merged[week] = languages
+        total += count
+        if not checkpoint:
+            return
+        replace.append(week)
+        message_rows.append((week, count))
+        for key, langs in languages.items():
+            rows.extend((week, key, language) for language in sorted(langs))
+
+    for week in weeks:
+        coverage = _week_coverage(week, pruned_before)
+        retained = retained_by_week.get(week, {})
+        sampled = week in sample.sampled_weeks
+        if week in reused and not sampled:
+            if retained:
+                merged[week] = {key: set(languages) for key, languages in retained.items()}
+            total += retained_messages.get(week, 0)
+            from_checkpoint += 1
+            continue
+        if _prefer_live_languages(
+            coverage, sampled, sample.messages_by_week.get(week, 0), bool(retained), prompts_stored
+        ):
+            _take_live(week, checkpoint=True)
+            continue
+        if retained:
+            merged[week] = {key: set(languages) for key, languages in retained.items()}
+            total += retained_messages.get(week, 0)
+            from_checkpoint += 1
+            continue
+        if coverage == "partial" and sampled:
+            _take_live(week, checkpoint=True)
+
+    has_language = any(languages for accounts in merged.values() for languages in accounts.values())
+    if not has_language and total == 0:
+        languages_by_week = None
+        total = 0
+    else:
+        languages_by_week = merged
+    write = RetentionWrite(
+        language_weeks=tuple(replace),
+        language_rows=tuple(rows),
+        language_messages=tuple(message_rows),
+        client_weeks=(),
+        client_rows=(),
+    )
+    return languages_by_week, total, write, from_checkpoint
+
+
+def _hashed_client(row: ClientRow) -> ClientRow:
+    key = account_key(row.user_id)
+    return ClientRow(
+        week=_as_date(row.week),
+        user_id=key or None,
+        agent=(row.agent or "")[:200] or None,
+        user_agent=(row.user_agent or "")[:200] or None,
+        requests=row.requests,
+        tokens=row.tokens,
+    )
+
+
+def _collapse_clients(rows: Iterable[ClientRow]) -> list[ClientRow]:
+    """Sum rows that share a week, account, declared agent and User-Agent."""
+    collapsed: dict[tuple[date, str | None, str | None, str | None], ClientRow] = {}
+    for row in rows:
+        identity = (row.week, row.user_id, row.agent, row.user_agent)
+        previous = collapsed.get(identity)
+        if previous is None:
+            collapsed[identity] = row
+            continue
+        collapsed[identity] = ClientRow(
+            week=row.week,
+            user_id=row.user_id,
+            agent=row.agent,
+            user_agent=row.user_agent,
+            requests=previous.requests + row.requests,
+            tokens=previous.tokens + row.tokens,
+        )
+    return list(collapsed.values())
+
+
+def merge_client_rows(
+    *,
+    weeks: list[date],
+    pruned_before: date | None,
+    live_rows: Iterable[ClientRow],
+    retained_rows: Iterable[ClientRow],
+    settled: frozenset[date] = frozenset(),
+) -> tuple[list[ClientRow], tuple[date, ...], int]:
+    """Combine live client rows with the checkpoint.
+
+    A ``settled`` week (see :func:`settled_weeks`) that has a checkpoint is
+    read from it, and not rewritten. Returns the rows ``build_agents`` consumes
+    (account ids already digested), the full or newly checkpointed weeks to
+    rewrite, and how many weeks came from the checkpoint.
+    """
+    live_by_week: dict[date, list[ClientRow]] = defaultdict(list)
+    for row in live_rows:
+        live_by_week[_as_date(row.week)].append(_hashed_client(row))
+    retained_by_week: dict[date, list[ClientRow]] = defaultdict(list)
+    for row in retained_rows:
+        retained_by_week[_as_date(row.week)].append(row)
+
+    merged: list[ClientRow] = []
+    replace: list[date] = []
+    from_checkpoint = 0
+    for week in weeks:
+        coverage = _week_coverage(week, pruned_before)
+        retained = retained_by_week.get(week, [])
+        if week in settled and retained:
+            merged.extend(retained)
+            from_checkpoint += 1
+        elif coverage == "full":
+            merged.extend(live_by_week.get(week, []))
+            replace.append(week)
+        elif retained:
+            merged.extend(retained)
+            from_checkpoint += 1
+        elif coverage == "partial":
+            merged.extend(live_by_week.get(week, []))
+            replace.append(week)
+    return _collapse_clients(merged), tuple(replace), from_checkpoint
+
+
+def _client_write_row(row: ClientRow) -> tuple[date, str, str, str, int, int]:
+    return (
+        row.week,
+        row.user_id or "",
+        row.agent or "",
+        row.user_agent or "",
+        row.requests,
+        row.tokens,
+    )
+
+
+def _retained_languages(
+    rows: Iterable[Mapping[str, Any]], sample_rows: Iterable[Mapping[str, Any]]
+) -> tuple[dict[date, dict[str, set[str]]], dict[date, int]]:
+    """Group checkpoint language rows by week and account digest."""
+    by_week: dict[date, dict[str, set[str]]] = defaultdict(lambda: defaultdict(set))
+    for row in rows:
+        by_week[_as_date(row["week"])][row["account_key"]].add(row["language"])
+    counts = {_as_date(row["week"]): int(row["messages_sampled"]) for row in sample_rows}
+    return {week: dict(accounts) for week, accounts in by_week.items()}, counts
+
+
+def _retained_client(row: Mapping[str, Any]) -> ClientRow:
+    """Build a client row from a checkpoint. The digest stays in ``user_id``."""
+    return ClientRow(
+        week=_as_date(row["week"]),
+        user_id=row["account_key"] or None,
+        agent=row["agent"] or None,
+        user_agent=row["user_agent"] or None,
+        requests=int(row["requests"]),
+        tokens=int(row["tokens"]),
+    )
+
+
+def _command_count(status: str) -> int:
+    try:
+        return int(str(status).rsplit(" ", 1)[-1])
+    except (ValueError, IndexError):
+        return 0
+
+
+async def write_retained_facts(conn: Any, retention: RetentionWrite) -> None:
+    """Replace checkpoint rows for the weeks ``retention`` refreshes."""
+    if retention.language_weeks:
+        weeks = list(retention.language_weeks)
+        await conn.execute(DELETE_RETAINED_LANGUAGE_WEEKS_SQL, weeks)
+        await conn.execute(DELETE_RETAINED_LANGUAGE_SAMPLE_WEEKS_SQL, weeks)
+        if retention.language_rows:
+            week_col, key_col, language_col = zip(*retention.language_rows, strict=True)
+            await conn.execute(
+                INSERT_RETAINED_LANGUAGE_SQL, list(week_col), list(key_col), list(language_col)
+            )
+        if retention.language_messages:
+            message_weeks, message_counts = zip(*retention.language_messages, strict=True)
+            await conn.execute(
+                INSERT_RETAINED_LANGUAGE_SAMPLE_SQL, list(message_weeks), list(message_counts)
+            )
+    if retention.client_weeks:
+        await conn.execute(DELETE_RETAINED_CLIENT_WEEKS_SQL, list(retention.client_weeks))
+        if retention.client_rows:
+            columns = [list(column) for column in zip(*retention.client_rows, strict=True)]
+            await conn.execute(INSERT_RETAINED_CLIENT_SQL, *columns)
+
+
+async def purge_retained_account(conn: Any, user_id: str) -> int:
+    """Delete retained language and client rows for one account.
+
+    Raises ``asyncpg.UndefinedTableError`` when the stats job has not created
+    the tables yet. Callers that purge an account should ignore that.
+    """
+    key = account_key(user_id)
+    if not key:
+        return 0
+    removed = 0
+    for statement in (DELETE_RETAINED_LANGUAGE_ACCOUNT_SQL, DELETE_RETAINED_CLIENT_ACCOUNT_SQL):
+        removed += _command_count(await conn.execute(statement, key))
+    return removed
+
+
+# --------------------------------------------------------------------------
 # Database I/O
 # --------------------------------------------------------------------------
 
 
 async def _sample_languages(
     conn: Any, weeks: list[date], start: datetime, end: datetime
-) -> tuple[dict[date, dict[str, set[str]]] | None, int]:
-    """Detect each account's languages per week; None when prompts are not stored."""
+) -> LanguageSample:
+    """Detect each account's languages per week.
+
+    A week whose query fails is left out of ``sampled_weeks`` so its
+    checkpoint is kept. A week that succeeds with no text is included, which
+    is what an empty week and a deployment that stores no message text look
+    like.
+    """
+    if not weeks:
+        return LanguageSample({}, {}, frozenset())
     version = await conn.fetchval("SHOW server_version_num")
     valid_json = "pg_input_is_valid(l.prompt, 'jsonb')" if int(version) >= 160000 else "TRUE"
     sql = LANGUAGE_SAMPLE_SQL.format(valid_json=valid_json)
     by_week: dict[date, dict[str, set[str]]] = {}
-    messages = 0
+    messages_by_week: dict[date, int] = {}
+    sampled: set[date] = set()
     for w in weeks:
         lo = max(start, datetime.combine(w, datetime.min.time(), UTC))
         hi = min(end, datetime.combine(w + timedelta(weeks=1), datetime.min.time(), UTC))
@@ -639,15 +1130,16 @@ async def _sample_languages(
                 "public_stats: language sample failed for week %s; skipping it", w, exc_info=True
             )
             continue
+        sampled.add(w)
         per_account: defaultdict[str, list[Any]] = defaultdict(list)
+        count = 0
         for row in rows:
             if row["text"]:
                 per_account[row["user_id"]].append(detect_message(row["text"]))
-                messages += 1
+                count += 1
+        messages_by_week[w] = count
         by_week[w] = {account: user_languages(found) for account, found in per_account.items()}
-    if messages == 0:
-        return None, 0
-    return by_week, messages
+    return LanguageSample(by_week, messages_by_week, frozenset(sampled))
 
 
 async def _visibility_overrides(conn: Any) -> dict[str, str]:
@@ -664,17 +1156,18 @@ async def compute_snapshot(
     now: datetime | None = None,
     lookback_weeks: int = LOOKBACK_WEEKS,
     models_config: Mapping[str, Any] | None = None,
+    retention_out: list[RetentionWrite] | None = None,
 ) -> dict[str, Any]:
     """Read the logs, the country rollup and account statuses and build the snapshot.
 
     ``models_config`` is the parsed ``models.yaml``; without it the snapshot
     has no per-model section. Request and token totals include
-    ``api_log_retained_daily``, so pruning old ``api_logs`` rows does not
-    reduce them.
+    ``api_log_retained_daily``. Language, agent and account totals include the
+    checkpoint of weeks no longer in ``api_logs``. When ``retention_out`` is
+    given, the checkpoint to refresh is appended to it.
     """
     now = now or datetime.now(UTC)
     end = now.replace(minute=0, second=0, microsecond=0)
-    await ensure_public_stats_schema(conn)
     first_log = await conn.fetchval(FIRST_LOG_SQL)
     first_retained = await conn.fetchval(RETAINED_FIRST_DAY_SQL)
     earliest = datetime.combine(
@@ -706,26 +1199,83 @@ async def compute_snapshot(
             item["model"] = None
         retained_rows.append(item)
     daily_rows = [*await conn.fetch(DAILY_SQL, start, end), *retained_rows]
-    client_rows = [
-        ClientRow(
-            week=row["week"],
-            user_id=row["user_id"],
-            agent=row["agent"],
-            user_agent=row["user_agent"],
-            requests=int(row["requests"]),
-            tokens=int(row["tokens"]),
-        )
-        for row in await conn.fetch(CLIENTS_SQL, start, end)
-    ]
     country_rows = await conn.fetch(COUNTRIES_SQL, start, end)
+    geo_from = await conn.fetchval(GEO_COVERED_FROM_SQL)
+    previous = previous_snapshot(await conn.fetchrow(PREVIOUS_SNAPSHOT_SQL))
     registrations_row = await conn.fetchrow(REGISTRATIONS_SQL)
     model_names = (
         public_model_names(models_config, await _visibility_overrides(conn))
         if models_config is not None
         else None
     )
-    languages, messages = await _sample_languages(conn, weeks_between(start, end), start, end)
-    return build_payload(
+    weeks = weeks_between(start, end)
+    pruned_before = pruned_before_day(first_log, first_retained)
+    week_from, week_until = weeks[0], weeks[-1] + timedelta(weeks=1)
+    settled = settled_weeks(weeks, previous.window_end if previous is not None else None)
+    retained_languages, retained_language_counts = _retained_languages(
+        await conn.fetch(RETAINED_LANGUAGE_SQL, week_from, week_until),
+        await conn.fetch(RETAINED_LANGUAGE_SAMPLE_SQL, week_from, week_until),
+    )
+    # A settled week with a checkpoint is read from it, not sampled again.
+    reused_languages = frozenset(w for w in settled if w in retained_language_counts)
+    sample = await _sample_languages(
+        conn, [w for w in weeks if w not in reused_languages], start, end
+    )
+    languages, messages, language_write, language_weeks = merge_language_weeks(
+        weeks=weeks,
+        pruned_before=pruned_before,
+        sample=sample,
+        retained_by_week=retained_languages,
+        retained_messages=retained_language_counts,
+        reused=reused_languages,
+    )
+    retained_clients = [
+        _retained_client(row)
+        for row in await conn.fetch(RETAINED_CLIENT_SQL, week_from, week_until)
+    ]
+    client_checkpoints = {row.week for row in retained_clients}
+    client_scan = [w for w in weeks if w not in settled or w not in client_checkpoints]
+    live_clients = []
+    if client_scan:
+        scan_from = max(start, datetime.combine(client_scan[0], datetime.min.time(), UTC))
+        live_clients = [
+            ClientRow(
+                week=row["week"],
+                user_id=row["user_id"],
+                agent=row["agent"],
+                user_agent=row["user_agent"],
+                requests=int(row["requests"]),
+                tokens=int(row["tokens"]),
+            )
+            for row in await conn.fetch(CLIENTS_SQL, scan_from, end)
+        ]
+    client_rows, client_weeks, client_checkpoint_weeks = merge_client_rows(
+        weeks=weeks,
+        pruned_before=pruned_before,
+        live_rows=live_clients,
+        retained_rows=retained_clients,
+        settled=frozenset(settled & client_checkpoints),
+    )
+    if language_weeks or client_checkpoint_weeks:
+        logger.info(
+            "public_stats: read %s language week(s) and %s client week(s) from the checkpoint",
+            language_weeks,
+            client_checkpoint_weeks,
+        )
+    if retention_out is not None:
+        client_write = [
+            _client_write_row(row) for row in client_rows if row.week in set(client_weeks)
+        ]
+        retention_out.append(
+            RetentionWrite(
+                language_weeks=language_write.language_weeks,
+                language_rows=language_write.language_rows,
+                language_messages=language_write.language_messages,
+                client_weeks=client_weeks,
+                client_rows=tuple(client_write),
+            )
+        )
+    payload = build_payload(
         generated_at=now,
         start=start,
         end=end,
@@ -737,27 +1287,61 @@ async def compute_snapshot(
         registrations_row=registrations_row,
         model_names=model_names,
     )
+    countries = payload["countries"]
+    countries["weekly"], filled = merge_country_weeks(
+        weeks,
+        countries["weekly"],
+        covered_from=_first_full_day(geo_from),
+        carried=previous.country_weekly if previous is not None else {},
+    )
+    if geo_from is not None:
+        # The totals are what the rollup still holds: from this day on.
+        countries["since"] = max(start.date(), geo_from.astimezone(UTC).date()).isoformat()
+    if filled:
+        logger.info(
+            "public_stats: kept %s week(s) of country counts from the previous snapshot",
+            filled,
+        )
+    return payload
 
 
-def load_models_config() -> dict[str, Any] | None:
-    """Read the gateway's ``models.yaml``, or return None when it cannot be read."""
-    from serving.config.distribution import resolve_config_path
+async def load_models_config(conn: Any) -> dict[str, Any] | None:
+    """Return the model catalog the gateway serves, read on the job's connection.
+
+    The job runs in a process of its own, which has read no configuration:
+    load it first, extensions included (their adapter kinds are part of a
+    valid catalog), as a command-line tool does, or every model counts as
+    "other". ``None`` when nothing could be read or no catalog is stored; the
+    snapshot then has no per-model section, as before a catalog existed.
+    """
+    from serving.config import app_config
+    from serving.config.app_config_store import AppConfigStore
+    from serving.config.documents import get
+    from serving.extensions import load_backend_extensions
 
     try:
-        path = resolve_config_path("models").path
-        data = yaml.safe_load(path.read_text())
+        load_backend_extensions()
+        await app_config.load(AppConfigStore(conn), bootstrap=False)
+        models = get("models")
     except Exception:
         logger.warning(
             "public_stats: cannot read the model catalog; leaving out models", exc_info=True
         )
         return None
-    return data if isinstance(data, dict) else None
+    return models or None
 
 
-async def store_snapshot(conn: Any, payload: dict[str, Any]) -> None:
-    """Insert the snapshot and keep only the newest ``KEEP_SNAPSHOTS``."""
-    await ensure_public_stats_schema(conn)
+async def store_snapshot(
+    conn: Any, payload: dict[str, Any], retention: RetentionWrite | None = None
+) -> None:
+    """Insert the snapshot and keep only the newest ``KEEP_SNAPSHOTS``.
+
+    ``retention`` refreshes language and client checkpoints in the same
+    transaction, so a failed snapshot does not leave a half-written week.
+    """
     async with conn.transaction():
+        if retention is not None:
+            await write_retained_facts(conn, retention)
         await conn.execute(INSERT_SNAPSHOT_SQL, json.dumps(payload, separators=(",", ":")))
         await conn.execute(PRUNE_SNAPSHOTS_SQL, KEEP_SNAPSHOTS)
 
@@ -780,14 +1364,18 @@ async def _main(args: argparse.Namespace) -> int:
         },
     )
     try:
+        retained: list[RetentionWrite] = []
         payload = await compute_snapshot(
-            conn, lookback_weeks=args.weeks, models_config=load_models_config()
+            conn,
+            lookback_weeks=args.weeks,
+            models_config=await load_models_config(conn),
+            retention_out=None if args.dry_run else retained,
         )
         if args.dry_run:
             json.dump(payload, sys.stdout, indent=2)
             sys.stdout.write("\n")
         else:
-            await store_snapshot(conn, payload)
+            await store_snapshot(conn, payload, retained[0] if retained else None)
         totals = payload["totals"]
         models = payload["models"]
         languages = payload["languages"]

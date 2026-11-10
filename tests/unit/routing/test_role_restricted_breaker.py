@@ -1,12 +1,22 @@
-"""Tier-reserved keys must not let lower-tier traffic open the circuit.
+"""Key-pool refusals must not open the circuit.
 
-A caller whose role may spend none of an endpoint's keys is refused by the key
-pool *before* anything is sent upstream. That refusal says nothing about the
-endpoint: it is still serving the tiers that own those keys. Counting it would
-let a burst of free-tier requests trip the breaker and strip reserved capacity
-from exactly the callers it was reserved for — and re-trip it on every half-open
-probe. So ``KeyPoolRoleRestricted`` is health-neutral, while a plain
-``KeyPoolExhausted`` (nothing usable by anyone) still counts.
+Both ``KeyPoolExhausted`` refusals are raised by ``acquire()`` before anything
+is sent upstream, so neither is evidence about the endpoint:
+
+- ``KeyPoolRoleRestricted``: no key this caller's tier may spend, though the
+  pool still serves the tiers that own those keys. Counting it would let a
+  burst of lower-tier traffic strip capacity reserved from exactly the callers
+  it was reserved for — and re-trip on every half-open probe.
+- plain ``KeyPoolExhausted``: every key muted (the tail of a provider 429/auth
+  storm), removed, or already tried by this request. The mutes themselves keep
+  traffic off a struggling provider while they last, and the failures that did
+  the muting were counted when they happened. Counting the echo let one muted
+  pool open the circuit on every route sharing the provider's keys, ending
+  streams in ``AllCircuitsOpenError`` (issue #1440).
+
+``EndpointHealthRegistry.record_failure`` exempts both, with distinct log
+labels so operators can tell reserved-capacity refusals from pool-wide outage
+tails.
 """
 
 import pytest
@@ -38,8 +48,14 @@ def test_role_restricted_refusal_is_breaker_exempt(monkeypatch):
     assert status["availability"] == baseline
 
 
-def test_pool_exhausted_for_everyone_still_counts(monkeypatch):
-    """The exemption is narrow: a pool usable by nobody is an endpoint fault."""
+def test_pool_exhausted_for_everyone_is_also_breaker_exempt(monkeypatch):
+    """The #1238 narrowness was the bug: a muted pool is not an endpoint fault.
+
+    The pool usable by nobody is the tail of upstream failures that were
+    already counted (429/401/5xx mutes the keys); the exhaustion echo adds no
+    endpoint evidence, and charging it re-trips the breaker on every half-open
+    probe while the mutes outlive the cooldown (issue #1440).
+    """
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "2")
     monkeypatch.setenv("CIRCUIT_MIN_AVAILABILITY", "0.0")
 
@@ -48,7 +64,7 @@ def test_pool_exhausted_for_everyone_still_counts(monkeypatch):
     registry.record_success(endpoint_id)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
-    for _ in range(2):
+    for _ in range(5):
         registry.record_failure(
             endpoint_id,
             reason="chat_exception",
@@ -56,8 +72,8 @@ def test_pool_exhausted_for_everyone_still_counts(monkeypatch):
         )
 
     status = registry.snapshot()[endpoint_id]
-    assert status["circuit_state"] == _CircuitState.OPEN
-    assert status["availability"] < baseline
+    assert status["circuit_state"] == _CircuitState.CLOSED
+    assert status["availability"] == baseline
 
 
 def test_subclass_relationship_keeps_existing_handlers_working():

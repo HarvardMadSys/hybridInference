@@ -55,10 +55,25 @@ class EngineWaitExpired(Exception):
     the engine is busy, not failing, and the next request goes to it as usual.
     """
 
-    def __init__(self, endpoint_id: str, wait_seconds: float) -> None:
+    def __init__(
+        self,
+        endpoint_id: str,
+        wait_seconds: float,
+        *,
+        base_wait_seconds: float | None = None,
+        uncached_prefill_tokens: int = 0,
+    ) -> None:
         super().__init__(f"No first token from endpoint {endpoint_id!r} within {wait_seconds:g}s")
         self.endpoint_id = endpoint_id
         self.wait_seconds = wait_seconds
+        #: The wait the attempt actually ran under, and the base it was sized
+        #: from, with the un-cached prefill it was sized on. The telemetry that
+        #: describes an expired attempt reads these, so the numbers describe
+        #: the attempt that expired rather than the one it was replaced by.
+        self.base_wait_seconds = (
+            wait_seconds if base_wait_seconds is None else float(base_wait_seconds)
+        )
+        self.uncached_prefill_tokens = max(int(uncached_prefill_tokens), 0)
 
 
 class FirstTokenWatch:

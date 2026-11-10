@@ -1,0 +1,162 @@
+{
+  "generated_by": "status-monitor createMonitorHistory and historyWireV1",
+  "payloads": [
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "observed_at": "2026-10-26T07:59:13.061Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T07:59:13.061Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 3,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:c28ca0a5f63d2ac7dfdf6c5bb233235a08a7685f5813cf7f6dec288eceb69ea7",
+        "source_instance_id": "status-monitor:cross-language-review",
+        "started_at": "2026-10-26T07:59:13.053Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "consecutive_failures": 3,
+            "delivery_owner": "legacy",
+            "failure_threshold": 3,
+            "storm_incident": false,
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:03.052Z",
+          "origin_record_id": "sm:legacy:review-firing:4f2185d2122b562b:transition",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "error",
+          "source_event_id": "review-firing",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "review-firing:slack_webhook",
+          "channel": "slack",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:03.052Z",
+          "origin_record_id": "sm:legacy:review-firing:slack_webhook:start",
+          "severity": "error",
+          "source_event_id": "review-firing",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "review-firing:slack_webhook",
+          "channel": "slack",
+          "duration_ms": 4,
+          "facts": {
+            "delivery_owner": "legacy",
+            "http_status": 200,
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "Synthetic model failed three probes.",
+            "format": "plain",
+            "format_version": "review-1",
+            "omitted_fields": [],
+            "redacted": true,
+            "title": "Synthetic failure",
+            "truncated": false
+          },
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:03.056Z",
+          "origin_record_id": "sm:legacy:review-firing:slack_webhook:result",
+          "outcome": "accepted",
+          "severity": "error",
+          "source_event_id": "review-firing",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "bucket_end": "2026-10-26T07:59:03.052Z",
+          "bucket_start": "2026-10-26T07:59:03.052Z",
+          "count": 4,
+          "decision_reason": "cooldown",
+          "error_code": "synthetic_cooldown",
+          "facts": {
+            "count": 4
+          },
+          "kind": "suppression_summary",
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:03.052Z",
+          "origin_record_id": "sm:cross-language-review:supp:4f2185d2122b562b:synthetic_cooldown",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "decision_reason": "no_channel",
+          "error_code": "no_legacy_destination",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "firing"
+          },
+          "kind": "notification_decision",
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:13.056Z",
+          "origin_record_id": "sm:legacy:review-no-channel:undeliverable",
+          "severity": "error",
+          "source_event_id": "review-no-channel",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "observed_healthy",
+          "facts": {
+            "consecutive_failures": 0,
+            "delivery_owner": "legacy",
+            "storm_incident": false,
+            "transition": "resolved"
+          },
+          "kind": "condition_ended",
+          "model_id": "synthetic-model",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T07:59:03.052Z",
+          "origin_record_id": "sm:legacy:review-recovery:4f2185d2122b562b:transition",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "info",
+          "source_event_id": "review-recovery",
+          "source_incident_id": "review:model:synthetic",
+          "source_instance_id": "status-monitor:cross-language-review",
+          "target_environment": "test"
+        }
+      ]
+    }
+  ]
+}

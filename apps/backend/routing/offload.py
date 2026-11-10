@@ -71,7 +71,7 @@ from __future__ import annotations
 import math
 from collections import deque
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from routing.engine_wait import EngineWaitExpired
 from serving.adapters.upstream_limiter import UpstreamQueueWaitExpired, UpstreamSaturated
@@ -90,7 +90,6 @@ __all__ = [
     "OFFLOAD_QUEUE_WAIT",
     "FallbackOrder",
     "OffloadPolicy",
-    "OffloadPolicySource",
     "abandoned_for_offload",
     "ended_in_gateway_queue",
     "offload_reason_for",
@@ -104,10 +103,15 @@ OFFLOAD_ENGINE_WAIT = "engine_wait"
 OFFLOAD_LAST_RESORT = "last_resort"
 
 #: Whether cold-prefill engine waits are extended beyond the configured base.
-#: Setting ``ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION=0`` is the rollback control:
-#: the next requests keep the admin-configured first-token wait, without a
-#: restart or route edit.
-OFFLOAD_ENGINE_WAIT_EXTENSION: bool = True
+#:
+#: Off by default until the staging evidence is in. The extension holds a
+#: cold prompt of 18k tokens or more for up to eight seconds instead of the
+#: configured base, and the rate behind it is calibrated from one staging
+#: model -- so the behaviour change ships dark, and an operator turns it on
+#: with the setting once their own evidence supports it. Setting it to ``0``
+#: is the rollback control: the next requests keep the admin-configured
+#: first-token wait, without a restart or route edit.
+OFFLOAD_ENGINE_WAIT_EXTENSION: bool = False
 
 #: Tokens per second used to convert un-cached prefill into engine-wait budget.
 #: The formula is additive, ``base + uncached / rate``, so changing the base
@@ -143,7 +147,7 @@ def _load_engine_wait_settings() -> None:
     global OFFLOAD_ENGINE_WAIT_EXTENSION, OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC
     global OFFLOAD_MAX_WAIT_SECONDS
     OFFLOAD_ENGINE_WAIT_EXTENSION = (
-        config_value("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION", "1") != "0"
+        config_value("ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION", "0") != "0"
     )
     OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC = _positive_float_setting(
         "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC", 2_560.0
@@ -232,15 +236,6 @@ class OffloadPolicy:
         rate = max(OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC, 1.0)
         effective = base + uncached_tokens / rate
         return float(min(effective, max(OFFLOAD_MAX_WAIT_SECONDS, base)))
-
-
-@runtime_checkable
-class OffloadPolicySource(Protocol):
-    """Synchronous read of the offload policy in force for a canonical model."""
-
-    def get_offload_policy(self, model_id: str) -> OffloadPolicy | None:
-        """Return the model's offload policy, or None when it has none."""
-        ...
 
 
 def ended_in_gateway_queue(exc: BaseException) -> bool:

@@ -8,6 +8,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.request_limits import MAX_MESSAGES, MAX_PARTS_PER_MESSAGE
 from serving.servers.auth import verify_api_key
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
@@ -113,3 +114,102 @@ async def test_legacy_completions_preserves_parameters(compat_app: FastAPI):
         assert adapter.last_params["max_tokens"] == 100
         assert adapter.last_params["top_p"] == 0.9
         assert adapter.last_messages[0]["content"] == "hello"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("/completion", {"model": "trk", "messages": [{"role": "user", "content": "hi"}]}),
+        ("/v1/completions", {"model": "trk", "prompt": "hi"}),
+    ],
+    ids=["completion", "v1-completions"],
+)
+async def test_compat_endpoints_read_the_runtime_settings(
+    compat_app: FastAPI, compat_client: AsyncClient, path: str, body: dict[str, Any]
+):
+    """The legacy surfaces are served by the chat handler and follow its runtime settings."""
+    from unittest.mock import AsyncMock
+
+    settings = AsyncMock()
+    settings.get_bool = AsyncMock(return_value=False)
+    compat_app.state.services.runtime_settings = settings
+
+    resp = await compat_client.post(path, json=body)
+
+    assert resp.status_code == status.HTTP_200_OK
+    settings.get_bool.assert_any_await("force_chat_completions_streaming")
+
+
+_TOO_MANY_MESSAGES = [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "body", "message"),
+    [
+        (
+            "/v1/chat/completions",
+            {"model": "trk", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/chat/completions",
+            {"model": "no-such-model", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/completion",
+            {"model": "trk", "messages": _TOO_MANY_MESSAGES},
+            f"Too many messages: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}",
+        ),
+        (
+            "/v1/completions",
+            {"model": "trk", "prompt": ["x"] * (MAX_PARTS_PER_MESSAGE + 1)},
+            "Too many content parts and tool calls in messages[0]: "
+            f"more than {MAX_PARTS_PER_MESSAGE}",
+        ),
+    ],
+    ids=["chat", "chat-unknown-model", "completion", "v1-completions"],
+)
+async def test_a_request_over_an_element_limit_is_a_400_before_it_is_validated(
+    compat_app: FastAPI, compat_client: AsyncClient, path: str, body: dict[str, Any], message: str
+):
+    adapter = compat_app.state.services.router.routes["trk"].adapters[0][0]  # type: ignore[attr-defined]
+
+    resp = await compat_client.post(path, json=body)
+
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert resp.json()["error"]["message"] == message
+    assert adapter.last_messages is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("path", ["/v1/completions", "/completion"])
+@pytest.mark.parametrize("content", [b"{not json", b"[1, 2]", b'"prompt"'])
+async def test_a_malformed_body_is_a_400_on_both_legacy_routes(
+    compat_client: AsyncClient, path: str, content: bytes
+):
+    resp = await compat_client.post(
+        path, content=content, headers={"content-type": "application/json"}
+    )
+
+    assert resp.status_code == status.HTTP_400_BAD_REQUEST
+    assert resp.json()["error"]["message"] == "Invalid JSON or schema in request body"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("part_type", [["image_url"], {"kind": "image_url"}])
+async def test_a_content_part_whose_type_is_not_a_string_is_not_a_500(
+    compat_app: FastAPI, compat_client: AsyncClient, part_type: Any
+):
+    adapter = compat_app.state.services.router.routes["trk"].adapters[0][0]  # type: ignore[attr-defined]
+    content = [{"type": part_type, "text": "x"}]
+
+    resp = await compat_client.post(
+        "/v1/chat/completions",
+        json={"model": "trk", "messages": [{"role": "user", "content": content}]},
+    )
+
+    assert resp.status_code == status.HTTP_200_OK
+    assert adapter.last_messages[0]["content"] == content

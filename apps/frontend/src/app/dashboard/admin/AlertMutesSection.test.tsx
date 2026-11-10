@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chooseOption } from '@/test-utils/select';
@@ -39,10 +39,6 @@ const circuit = alertType({
   group: 'Providers',
   key_pattern: 'circuit_open:<provider>',
 });
-
-function confirmAction(label: string) {
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: label }));
-}
 
 describe('AlertMutesSection', () => {
   beforeEach(() => {
@@ -86,13 +82,9 @@ describe('AlertMutesSection', () => {
     render(<AlertMutesSection onToast={onToast} />);
 
     await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
+    // Choosing a duration mutes at once: Unmute undoes it.
     chooseOption(`Mute ${blocked.label}`, '24 hours');
-    // Choosing a duration only asks; nothing is muted before Confirm.
-    expect(
-      screen.getByRole('dialog', { name: `Mute "${blocked.label}" for 24 hours?` }),
-    ).toHaveTextContent('auth_ip_blocked');
-    expect(muteAlertType).not.toHaveBeenCalled();
-    confirmAction('Mute');
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() => {
       expect(muteAlertType).toHaveBeenCalledWith('auth_ip_blocked', 24 * 60 * 60);
@@ -110,10 +102,6 @@ describe('AlertMutesSection', () => {
 
     await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
     chooseOption(`Mute ${blocked.label}`, 'Until unmuted');
-    expect(
-      screen.getByRole('dialog', { name: `Mute "${blocked.label}" until unmuted?` }),
-    ).toBeInTheDocument();
-    confirmAction('Mute');
 
     await waitFor(() => {
       expect(muteAlertType).toHaveBeenCalledWith('auth_ip_blocked', null);
@@ -130,17 +118,13 @@ describe('AlertMutesSection', () => {
     const trigger = await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
     expect(trigger).toHaveTextContent('Mute for…');
     chooseOption(`Mute ${blocked.label}`, '1 hour');
-    expect(muteAlertType).not.toHaveBeenCalled();
-    confirmAction('Mute');
     await waitFor(() => expect(muteAlertType).toHaveBeenCalledTimes(1));
     // The control stays a prompt rather than showing the duration last chosen.
     await waitFor(() => expect(trigger).toHaveTextContent('Change…'));
     await waitFor(() => expect(trigger).not.toBeDisabled());
 
-    // The same duration again is a new command: it asks again, then mutes again.
+    // The same duration again is a new command: it mutes again.
     chooseOption(`Mute ${blocked.label}`, '1 hour');
-    expect(muteAlertType).toHaveBeenCalledTimes(1);
-    confirmAction('Mute');
     await waitFor(() => expect(muteAlertType).toHaveBeenCalledTimes(2));
     expect(muteAlertType).toHaveBeenNthCalledWith(2, 'auth_ip_blocked', 60 * 60);
   });
@@ -152,8 +136,7 @@ describe('AlertMutesSection', () => {
     render(<AlertMutesSection onToast={onToast} />);
 
     fireEvent.click(await screen.findByRole('button', { name: 'Unmute' }));
-    expect(unmuteAlertType).not.toHaveBeenCalled();
-    confirmAction('Unmute');
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() => {
       expect(unmuteAlertType).toHaveBeenCalledWith('circuit_open');
@@ -163,24 +146,29 @@ describe('AlertMutesSection', () => {
     expect(onToast).toHaveBeenCalledWith('Unmuted "Provider circuit opened"');
   });
 
-  it('reports a failed mute in the dialog and leaves the row as it was', async () => {
-    vi.mocked(muteAlertType).mockRejectedValue(new Error('Database not configured'));
+  it('reports a failed mute above the table, leaves the row as it was, and mutes on a retry', async () => {
+    vi.mocked(muteAlertType)
+      .mockRejectedValueOnce(new Error('Database not configured'))
+      .mockResolvedValueOnce({ ...blocked, muted: true });
     const onToast = vi.fn();
     render(<AlertMutesSection onToast={onToast} />);
 
     await screen.findByRole('combobox', { name: `Mute ${blocked.label}` });
     chooseOption(`Mute ${blocked.label}`, '1 hour');
-    confirmAction('Mute');
 
-    expect(await within(screen.getByRole('dialog')).findByRole('alert')).toHaveTextContent(
-      'Database not configured',
-    );
+    expect(await screen.findByRole('alert')).toHaveTextContent('Database not configured');
     expect(onToast).not.toHaveBeenCalled();
     expect(screen.getAllByText('Sending')).toHaveLength(2);
-    // Cancel closes it; the row is still unmuted and nothing else was sent.
-    confirmAction('Cancel');
-    expect(screen.queryByRole('dialog')).toBeNull();
-    expect(muteAlertType).toHaveBeenCalledTimes(1);
+    // A write failure is not a load failure: it offers no reload, only dismissal.
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: `Mute ${blocked.label}` })).toBeEnabled(),
+    );
+    chooseOption(`Mute ${blocked.label}`, '1 hour');
+    expect(await screen.findByText('Muted until unmuted')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(muteAlertType).toHaveBeenCalledTimes(2);
   });
 
   it('shows a load failure with a retry', async () => {

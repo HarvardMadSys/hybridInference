@@ -110,10 +110,13 @@ def test_weighted_selection_chi_square():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_fallback_on_primary_failure():
+@pytest.mark.parametrize("backup_pricing", [None, {"prompt": "4", "completion": "5"}])
+async def test_fallback_on_primary_failure(backup_pricing):
     exe = FixedRouter()
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
+    primary.config.pricing = {"prompt": "1", "completion": "2"}
+    backup.config.pricing = backup_pricing
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
 
     # Force primary selection by fixing RNG
@@ -126,6 +129,7 @@ async def test_fallback_on_primary_failure():
     assert resp["choices"][0]["message"]["content"] == "ok"
     assert resp["_routing"]["provider"] == "backup"
     assert resp["_routing"].get("fallback") is True
+    assert resp["_routing"]["pricing"] == (backup_pricing or {})
 
 
 @pytest.mark.unit
@@ -239,9 +243,10 @@ async def test_fallback_failure_uses_current_adapter_endpoint_for_failure_record
         reason: str,
         detail: str | None = None,
         exc: BaseException | None = None,
+        charge: bool = True,
     ) -> None:
         recorded.append(endpoint_id)
-        original_on_failure(endpoint_id, reason=reason, detail=detail, exc=exc)
+        original_on_failure(endpoint_id, reason=reason, detail=detail, exc=exc, charge=charge)
 
     original_push = routers_mod.req_ctx.push
 
@@ -797,7 +802,8 @@ async def test_stream_emits_routing_chunk_with_provider_and_base_url():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_stream_emits_routing_chunk_for_fallback_adapter():
+@pytest.mark.parametrize("backup_pricing", [None, {"prompt": "4", "completion": "5"}])
+async def test_stream_emits_routing_chunk_for_fallback_adapter(backup_pricing):
     """Fallback adapter also gets a _routing chunk (with fallback=True)."""
     import json as _json
 
@@ -805,6 +811,8 @@ async def test_stream_emits_routing_chunk_for_fallback_adapter():
     primary = _FailAdapter(_cfg("m", provider="primary"))
     backup = _EchoAdapter(_cfg("m", provider="backup"))
     backup.config.base_url = "https://backup.example"
+    primary.config.pricing = {"prompt": "1", "completion": "2"}
+    backup.config.pricing = backup_pricing
     exe.register_route("m", [(primary, 0.9), (backup, 0.1)])
     exe._select_adapter = lambda model_id, **kw: primary  # type: ignore[assignment]
 
@@ -828,8 +836,10 @@ async def test_stream_emits_routing_chunk_for_fallback_adapter():
     assert len(routing_payloads) == 2
     assert routing_payloads[0]["provider"] == "primary"
     assert routing_payloads[0].get("fallback") is not True
+    assert routing_payloads[0]["pricing"] == {"prompt": "1", "completion": "2"}
     assert routing_payloads[1]["provider"] == "backup"
     assert routing_payloads[1].get("fallback") is True
+    assert routing_payloads[1]["pricing"] == (backup_pricing or {})
     assert routing_payloads[1]["failed_attempts"] == [
         {
             "provider": "primary",

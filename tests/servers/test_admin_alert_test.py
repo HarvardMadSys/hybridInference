@@ -112,9 +112,11 @@ async def test_omitted_url_uses_selected_saved_secret(admin_client, channel, key
     assert result["test_id"] in post.await_args.args[1]
     assert post.await_args.kwargs == {"dedupe_key": result["test_id"]}
     other.assert_not_awaited()
-    assert audit.await_args.args[2] == "alerts.test"
-    assert audit.await_args.args[4] == result
-    assert audit.await_args.kwargs == {"success": True}
+    assert audit.await_args.kwargs["action"] == "alerts.test"
+    assert audit.await_args.kwargs["details"] == result
+    assert audit.await_args.kwargs["success"] is True
+    assert audit.await_args.kwargs["actor"].type == "admin_token"
+    assert "target" not in audit.await_args.kwargs
     assert "synthetic-secret" not in response.text + str(audit.await_args)
 
 
@@ -464,8 +466,8 @@ async def test_delivery_failure_is_safe_and_audited(admin_client, caplog, raise_
     )
 
     assert response.status_code == 502
-    assert audit.await_args.args[4]["sent"] is False
-    assert audit.await_args.kwargs == {"success": False}
+    assert audit.await_args.kwargs["details"]["sent"] is False
+    assert audit.await_args.kwargs["success"] is False
     assert "synthetic-secret" not in (
         response.text + str(audit.await_args) + str([record.__dict__ for record in caplog.records])
     )

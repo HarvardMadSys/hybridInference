@@ -23,6 +23,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from serving.storage.bounded_log import LOGGED_FIELDS_MAX_CHARS
 from serving.storage.database import DatabaseLogger
 from serving.storage.payload_dedup import MESSAGE_RESIDUAL_KEY, strip_duplicated_payload_keys
 from tests.unit.storage.test_served_model_logging import _log, _store_with_capture
@@ -138,6 +139,18 @@ def test_keeps_tools_when_the_column_holds_something_different() -> None:
     assert stripped["tools"] == SAMPLE_TOOLS
 
 
+def test_keeps_an_empty_tools_list_the_column_stores_as_null() -> None:
+    """The writers store ``tools`` only when it is non-empty; ``[]`` becomes NULL.
+
+    So the body is the only record that the client sent ``"tools": []`` -- a
+    request an upstream may refuse for exactly that field.
+    """
+    body = _sample_body()
+    body["tools"] = []
+    stripped = _stripped(body, stored_tools=[])
+    assert stripped["tools"] == []
+
+
 def test_preserves_per_message_fields_the_prompt_column_dropped() -> None:
     """``ChatMessage`` is ``extra="ignore"``, so cache_control never reaches prompt."""
     body = _sample_body()
@@ -226,6 +239,27 @@ async def test_postgres_store_strips_duplicated_keys_but_keeps_the_rest() -> Non
     # The stripped content is not lost — it lives in its own columns.
     assert json.loads(args[PROMPT_ARG])[0]["content"] == "hi"
     assert json.loads(args[TOOLS_ARG])[0]["name"] == "Bash"
+
+
+@pytest.mark.asyncio
+async def test_postgres_store_bounds_fields_the_gateway_ignored_on_each_message() -> None:
+    """``ChatMessage`` drops a field it does not declare; the body kept every one."""
+    store, conn = _store_with_capture()
+    sent = [{"role": "user", "content": "hi", "pad": "p" * 2_000_000}]
+    await _log(
+        store,
+        prompt=[{"role": "user", "content": "hi"}],
+        request_payload={"model": "glm-5.1", "messages": sent},
+        metadata={"user_id": "u1"},
+    )
+
+    args = conn.execute.await_args.args
+    stored = json.loads(args[REQUEST_PAYLOAD_ARG])
+    assert "messages" not in stored
+    assert len(args[REQUEST_PAYLOAD_ARG]) < 1.1 * LOGGED_FIELDS_MAX_CHARS
+    assert stored["messages_extra"][0]["pad"].startswith("ppp")
+    assert json.loads(args[METADATA_ARG])["payload_truncated"] is True
+    assert json.loads(args[PROMPT_ARG]) == [{"role": "user", "content": "hi"}]
 
 
 @pytest.mark.asyncio

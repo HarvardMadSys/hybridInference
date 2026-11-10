@@ -83,7 +83,7 @@ function addAccountHref(pathname: string): string {
  * has ended is listed too, and choosing it goes to the sign-in form.
  */
 export function AccountMenu() {
-  const { state, accounts, maxAccounts, switchAccount, logout, logoutAll } = useAuth();
+  const { state, accounts, maxAccounts, switchAccount, logout } = useAuth();
   const router = useRouter();
   const pathname = usePathname();
   const t = useT();
@@ -182,16 +182,41 @@ export function AccountMenu() {
     });
   };
 
-  const signOut = () =>
+  const signOut = (): Promise<void> =>
     run(async () => {
-      await logout();
+      try {
+        await logout();
+      } catch (err) {
+        // The server did not sign the account out, so its session and cookie
+        // are still here, and so is the account in this tab. Say so, and offer
+        // to try again.
+        toast.error(
+          (shown) => (
+            <span>
+              {fill(
+                t(
+                  'chrome.account_menu.log_out_failed',
+                  'You are still signed in: signing out did not finish. {reason}',
+                ),
+                { reason: getErrorMessage(err) },
+              )}{' '}
+              <button
+                type="button"
+                className="font-medium underline"
+                onClick={() => {
+                  toast.remove(shown.id);
+                  void signOut();
+                }}
+              >
+                {t('chrome.error.retry', 'Try again')}
+              </button>
+            </span>
+          ),
+          { id: 'log-out-failed', duration: 10_000 },
+        );
+        return;
+      }
       router.replace(others.length > 0 ? '/login' : '/');
-    });
-
-  const signOutAll = () =>
-    run(async () => {
-      await logoutAll();
-      router.replace('/');
     });
 
   const itemClass =
@@ -478,18 +503,6 @@ export function AccountMenu() {
             >
               {t('chrome.account_menu.log_out', 'Log out')}
             </button>
-            {others.length > 0 && (
-              <button
-                type="button"
-                role="menuitem"
-                tabIndex={-1}
-                disabled={busy}
-                onClick={signOutAll}
-                className={itemClass}
-              >
-                {t('chrome.account_menu.log_out_all', 'Log out of all accounts')}
-              </button>
-            )}
           </div>
         </div>
       )}

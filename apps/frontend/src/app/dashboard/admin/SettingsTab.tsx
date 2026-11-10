@@ -1,15 +1,10 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { usePathname, useRouter } from 'next/navigation';
 import {
-  SignupAllowedDomain,
-  addSignupAllowedDomain,
-  listSignupAllowedDomains,
   listRuntimeSettings,
-  removeSignupAllowedDomain,
   RuntimeSettingItem,
-  updateRuntimeSetting,
   applyRoleQuota,
   previewRoleQuotaApply,
   Role,
@@ -19,400 +14,170 @@ import {
   AdminEmptyState,
   AdminLoading,
   AdminNotice,
-  AdminSection,
-  AdminSectionNav,
+  AdminSubTabs,
 } from '@/components/features/admin/AdminPrimitives';
+import { BUTTON_GHOST, BUTTON_SECONDARY } from '@/components/features/admin/adminStyles';
 import {
-  BUTTON_GHOST,
-  BUTTON_PRIMARY,
-  BUTTON_SECONDARY,
-  CONTROL,
-  INDEXED_LAYOUT,
-  PANEL,
-  ROW_ACTION_DANGER,
-  TABLE_HEAD_CELL,
-} from '@/components/features/admin/adminStyles';
-import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+  AddVariableControl,
+  ConfigCategorySection,
+  ConfigurationBackupSection,
+  ConfigurationFilters,
+  ConfigurationNotices,
+  matchingSettingCount,
+  useConfigurationEditor,
+} from '@/components/features/admin/ConfigurationEditor';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
-import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import { getErrorMessage } from '@/lib/utils/errors';
 
-import { validateNumericSettingInput } from './numericSettingValidation';
-import { validateSignupDomainInput } from './signupDomainValidation';
 import { AlertMutesSection } from './AlertMutesSection';
 import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { ModelVisibilitySection } from './ModelVisibilitySection';
 import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
+import { RuntimeSettingsSection } from './RuntimeSettingsSection';
+import { SignupPolicySection } from './SignupPolicySection';
+import {
+  DEFAULT_SETTINGS_TAB,
+  RUNTIME_GROUPS,
+  SETTINGS_TABS,
+  isNamedCategory,
+  runtimeGroupOf,
+  tabOfCategory,
+  type RuntimeGroupKey,
+  type SettingsBlock,
+  type SettingsPanelKey,
+  type SettingsTabDefinition,
+  type SettingsTabKey,
+} from './settingsLayout';
 
-/** The page's sections, in order, for its section index. */
-const SECTIONS = [
-  { id: 'settings-feature-flags', label: 'Feature Flags' },
-  { id: 'settings-numeric', label: 'Numeric Settings' },
-  { id: 'settings-alert-notifications', label: 'Alert Notifications' },
-  { id: 'settings-alert-types', label: 'Alert Types' },
-  { id: 'settings-usage-insights', label: 'Usage Insights' },
-  { id: 'settings-model-visibility', label: 'Model Visibility' },
-  { id: 'settings-model-concurrency', label: 'Model Concurrency' },
-  { id: 'settings-batch-concurrency', label: 'Batch Concurrency' },
-  { id: 'settings-signup-policy', label: 'Signup Policy' },
-] as const;
+const QUOTA_KEY_PREFIX = 'user_daily_quota_';
 
-function relTime(iso: string | null): string {
-  if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(ms / 60000);
-  if (m < 1) return 'just now';
-  if (m < 60) return `${m}m ago`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h}h ago`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d}d ago`;
-  return new Date(iso).toLocaleDateString('en-US', {
-    month: 'short',
-    day: 'numeric',
-    year: 'numeric',
-  });
+const tabId = (key: SettingsTabKey) => `admin-settings-${key}-tab`;
+const panelId = (key: SettingsTabKey) => `admin-settings-${key}-panel`;
+
+/** The key of a section that is not a configuration category. */
+function blockKey(block: Extract<SettingsBlock, { kind: 'runtime' | 'panel' }>): string {
+  return block.kind === 'runtime' ? `runtime-${block.group}` : `panel-${block.panel}`;
 }
 
-function settingLabel(key: string): string {
-  return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
-}
-
-function rangeHint(setting: RuntimeSettingItem): string | null {
-  const lo = setting.min;
-  const hi = setting.max;
-  if (lo != null && hi != null) return `${lo}–${hi}`;
-  if (lo != null) return `≥ ${lo}`;
-  if (hi != null) return `≤ ${hi}`;
-  return null;
-}
-
-function validateNumeric(setting: RuntimeSettingItem, draft: string) {
-  return validateNumericSettingInput(draft, {
-    min: setting.min,
-    max: setting.max,
-    integer: setting.value_type === 'int',
-  });
-}
-
-const flagText = (value: unknown) => (value ? 'On' : 'Off');
-
-/** A changed runtime setting: what is saved, and the value the save would write. */
-interface SettingChange {
-  setting: RuntimeSettingItem;
-  value: boolean | number;
-}
-
-/**
- * A group of runtime settings of one type (feature flags or numbers), shown
- * read-only until Edit. The edited values are drafts until the administrator
- * confirms the list of changes; each changed setting is one request.
- */
-function RuntimeSettingsSection({
-  id,
-  title,
-  description,
-  kind,
-  settings,
-  loading,
-  emptyText,
-  onSaved,
-  onAfterWrite,
-  onToast,
-  renderExtra,
-}: {
-  /** Anchor for the page's section index. */
-  id: string;
-  title: string;
-  description: string;
-  kind: 'flag' | 'numeric';
-  settings: RuntimeSettingItem[];
-  loading: boolean;
-  emptyText: string;
-  onSaved: (updated: RuntimeSettingItem) => void;
-  /** Called once after a save that wrote at least one setting, even partly. */
-  onAfterWrite: () => void;
-  onToast: (msg: string) => void;
-  /** Read-only actions for a row, such as applying a quota to existing users. */
-  renderExtra?: (setting: RuntimeSettingItem) => React.ReactNode;
-}) {
-  const confirmation = useConfirmAction();
-  const [editing, setEditing] = useState(false);
-  const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
-  const [saveError, setSaveError] = useState<string | null>(null);
-
-  const draftOf = (setting: RuntimeSettingItem) =>
-    drafts[setting.key] ?? (kind === 'flag' ? !!setting.value : String(setting.value ?? ''));
-
-  // A setting is changed when its draft is valid and differs from what is saved.
-  const changes = settings.flatMap((setting): SettingChange[] => {
-    if (!(setting.key in drafts)) return [];
-    const draft = drafts[setting.key];
-    if (kind === 'flag') {
-      return draft === !!setting.value ? [] : [{ setting, value: draft as boolean }];
-    }
-    const validated = validateNumeric(setting, String(draft));
-    if (!validated.ok || validated.value === setting.value) return [];
-    return [{ setting, value: validated.value as number }];
-  });
-  const invalid =
-    kind === 'numeric'
-      ? settings.filter(
-          (setting) =>
-            setting.key in drafts && !validateNumeric(setting, String(drafts[setting.key])).ok,
-        )
-      : [];
-
-  const cancel = () => {
-    if (confirmation.busy) return;
-    setDrafts({});
-    setSaveError(null);
-    setEditing(false);
-  };
-
-  const save = () => {
-    if (invalid.length > 0) {
-      setSaveError(`Correct ${invalid.map((setting) => setting.key).join(', ')} before saving.`);
-      return;
-    }
-    if (changes.length === 0) return;
-    setSaveError(null);
-    const pending = changes;
-    const format = (value: unknown) => (kind === 'flag' ? flagText(value) : String(value));
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'change')} to ${title}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ setting, value }) => ({
-              label: settingLabel(setting.key),
-              before: format(setting.value),
-              after: format(value),
-            }))}
-          />
-          {pending.length === 1 && pending[0].setting.description ? (
-            <p>{pending[0].setting.description}</p>
-          ) : null}
-          <p>This takes effect immediately.</p>
-        </>
-      ),
-      run: async () => {
-        let wrote = false;
-        const failure = await writeEach(
-          pending,
-          ({ setting }) => setting.key,
-          async ({ setting, value }) => {
-            const updated = await updateRuntimeSetting(setting.key, value);
-            wrote = true;
-            onSaved(updated);
-            setDrafts((prev) => {
-              const next = { ...prev };
-              delete next[setting.key];
-              return next;
-            });
-          },
-        ).finally(() => {
-          if (wrote) onAfterWrite();
-        });
-        setSaveError(failure);
-        if (failure) return;
-        setEditing(false);
-        onToast(
-          pending.length === 1
-            ? kind === 'flag'
-              ? `${pending[0].setting.key} ${pending[0].value ? 'enabled' : 'disabled'}`
-              : `${pending[0].setting.key} set to ${pending[0].value}`
-            : `Saved ${pending.length} settings`,
-        );
-      },
-    });
-  };
-
+/** Sections that edit the configuration, and so have nothing to show without it. */
+function needsConfiguration(block: SettingsBlock): boolean {
   return (
-    <AdminSection
-      id={id}
-      title={title}
-      description={description}
-      actions={
-        !editing && !loading && settings.length > 0 ? (
-          <EditButton target={title} onClick={() => setEditing(true)} />
-        ) : null
-      }
-    >
-      {loading ? (
-        <AdminLoading size="sm" />
-      ) : settings.length === 0 ? (
-        <AdminEmptyState title={emptyText} />
-      ) : (
-        <ul
-          className={`${PANEL} divide-y divide-gray-100 ${editing ? 'border-gray-400 shadow-sm' : ''}`}
-        >
-          {settings.map((setting) => {
-            const isDefault = setting.value === setting.default_value;
-            const draft = draftOf(setting);
-            const validated = kind === 'numeric' ? validateNumeric(setting, String(draft)) : null;
-            const hint = kind === 'numeric' ? rangeHint(setting) : null;
-            const name =
-              kind === 'flag' ? `Toggle ${setting.key.replace(/_/g, ' ')}` : `${setting.key} value`;
-            return (
-              <li
-                key={setting.key}
-                className="flex flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6"
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-[13px] font-medium text-gray-900">
-                      {settingLabel(setting.key)}
-                    </span>
-                    {!isDefault && (
-                      <span className="rounded bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
-                        Modified
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
-                    {setting.description}
-                    {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
-                    {kind === 'numeric' ? (
-                      <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
-                      </span>
-                    ) : null}
-                  </p>
-                  {editing && validated && !validated.ok && String(draft) !== '' && (
-                    <p className="mt-0.5 text-[11px] text-red-600" role="alert">
-                      {validated.error}
-                    </p>
-                  )}
-                </div>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  {!editing ? (
-                    <output aria-label={name} className="text-[13px] font-medium text-gray-900">
-                      {kind === 'flag' ? flagText(setting.value) : String(setting.value ?? '')}
-                    </output>
-                  ) : kind === 'flag' ? (
-                    <button
-                      type="button"
-                      role="switch"
-                      aria-checked={draft === true}
-                      aria-label={name}
-                      disabled={confirmation.busy}
-                      onClick={() =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: !(draft === true) }))
-                      }
-                      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus:ring-2 focus:ring-gray-400 focus:ring-offset-2 disabled:opacity-40 ${
-                        draft === true ? 'bg-gray-900' : 'bg-gray-200'
-                      }`}
-                    >
-                      <span
-                        className={`pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
-                          draft === true ? 'translate-x-5' : 'translate-x-0'
-                        }`}
-                      />
-                    </button>
-                  ) : (
-                    <input
-                      type="number"
-                      step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
-                      value={String(draft)}
-                      disabled={confirmation.busy}
-                      onChange={(e) =>
-                        setDrafts((prev) => ({ ...prev, [setting.key]: e.target.value }))
-                      }
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          save();
-                        }
-                      }}
-                      aria-label={name}
-                      className={`${CONTROL} w-24 text-right`}
-                    />
-                  )}
-                  {!editing && renderExtra ? renderExtra(setting) : null}
-                </div>
-              </li>
-            );
-          })}
-        </ul>
-      )}
-
-      {editing ? (
-        <EditBar
-          target={title}
-          changeCount={changes.length}
-          onCancel={cancel}
-          onSave={save}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
-      {confirmation.dialog}
-    </AdminSection>
+    block.kind === 'config' ||
+    block.kind === 'unnamed-categories' ||
+    (block.kind === 'panel' && (block.panel === 'add-variable' || block.panel === 'backup'))
   );
 }
 
-export function SettingsTab() {
+/** What a sub-tab shows beside its name: unsaved changes, and missing settings. */
+function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
+  if (dirty === 0 && missing === 0) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5">
+      {dirty > 0 ? (
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-500" aria-hidden="true" />
+      ) : null}
+      {missing > 0 ? (
+        <span
+          className="rounded bg-red-50 px-1 text-[11px] font-medium tabular-nums text-red-700"
+          aria-hidden="true"
+        >
+          {missing}
+        </span>
+      ) : null}
+      {/* One phrase, so the tab's name reads "Access, unsaved changes, 1 missing". */}
+      <span className="sr-only">
+        {`${dirty > 0 ? ', unsaved changes' : ''}${missing > 0 ? `, ${missing} missing` : ''}`}
+      </span>
+    </span>
+  );
+}
+
+/**
+ * Admin → Settings: every setting an administrator changes in the console, in
+ * sub-tabs (see `settingsLayout`): Common, with the settings changed most
+ * often, then one sub-tab per topic, then Setup, with what is usually set
+ * once. A topic's sections sit together whatever stores them: the
+ * database-backed configuration, the runtime settings, and the sections with
+ * an API of their own.
+ *
+ * Every sub-tab stays mounted while another is shown, so a change waits
+ * unsaved, wherever it was made, until it is saved or discarded. A search or
+ * Missing only looks through the configuration on every sub-tab at once, and
+ * hides the other sections until it is cleared.
+ */
+export function SettingsTab({
+  initialTab = DEFAULT_SETTINGS_TAB,
+  initialMissingOnly = false,
+}: {
+  initialTab?: SettingsTabKey;
+  initialMissingOnly?: boolean;
+}) {
   const router = useRouter();
+  const pathname = usePathname();
+  const editor = useConfigurationEditor({ initialMissingOnly });
+  // One confirmation for the page's confirmed writes, so only one is ever asked for.
   const confirmation = useConfirmAction();
-  const [domains, setDomains] = useState<SignupAllowedDomain[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
   const [toast, setToast] = useState<string | null>(null);
-  const [addingDomain, setAddingDomain] = useState(false);
-  const [input, setInput] = useState('');
-  const [inputError, setInputError] = useState<string | null>(null);
   const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const [featureFlags, setFeatureFlags] = useState<RuntimeSettingItem[]>([]);
-  const [numericSettings, setNumericSettings] = useState<RuntimeSettingItem[]>([]);
-  const [flagsLoading, setFlagsLoading] = useState(true);
-  const [flagsError, setFlagsError] = useState<string | null>(null);
-
-  const QUOTA_KEY_PREFIX = 'user_daily_quota_';
+  const [runtimeSettings, setRuntimeSettings] = useState<RuntimeSettingItem[]>([]);
+  const [runtimeLoading, setRuntimeLoading] = useState(true);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [quotaLoadingRole, setQuotaLoadingRole] = useState<Role | null>(null);
+  const initialAnchorHandled = useRef(false);
 
-  const loadDomains = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const resp = await listSignupAllowedDomains();
-      setDomains(resp.domains);
-    } catch (e) {
-      setError(getErrorMessage(e));
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    // Next's initial hash scroll can run before the sections exist. Wait for
+    // both reads so the runtime sections above the target have their full height.
+    if (!editor.settled || runtimeLoading || initialAnchorHandled.current) return;
+    initialAnchorHandled.current = true;
+    const target = document.getElementById(window.location.hash.slice(1));
+    if (target && !target.closest('[hidden]')) {
+      target.scrollIntoView({ block: 'start' });
     }
-  }, []);
+  }, [editor.settled, runtimeLoading]);
 
-  const loadFlags = useCallback(async () => {
-    setFlagsLoading(true);
-    setFlagsError(null);
+  // Unsaved changes in the sections that are not configuration, by section,
+  // so a sub-tab can say it has some while another is shown.
+  const [unsavedBySection, setUnsavedBySection] = useState<Record<string, number>>({});
+  const unsavedReporters = useRef(new Map<string, (count: number) => void>());
+
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+
+  /** The section's reporter: the same function every render, so reporting runs only on a change. */
+  const reportUnsaved = (key: string) => {
+    let report = unsavedReporters.current.get(key);
+    if (!report) {
+      report = (count: number) =>
+        setUnsavedBySection((prev) =>
+          (prev[key] ?? 0) === count ? prev : { ...prev, [key]: count },
+        );
+      unsavedReporters.current.set(key, report);
+    }
+    return report;
+  };
+
+  const loadRuntimeSettings = useCallback(async () => {
+    setRuntimeLoading(true);
+    setRuntimeError(null);
     try {
       const resp = await listRuntimeSettings();
-      setFeatureFlags(resp.settings.filter((s) => s.value_type === 'bool'));
-      setNumericSettings(
-        resp.settings.filter((s) => s.value_type === 'int' || s.value_type === 'float'),
-      );
+      setRuntimeSettings(resp.settings);
     } catch (e) {
-      setFlagsError(getErrorMessage(e));
+      setRuntimeError(getErrorMessage(e));
     } finally {
-      setFlagsLoading(false);
+      setRuntimeLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadDomains();
-    loadFlags();
-  }, [loadDomains, loadFlags]);
+    void loadRuntimeSettings();
+  }, [loadRuntimeSettings]);
 
   useEffect(
     () => () => {
@@ -444,65 +209,8 @@ export function SettingsTab() {
    */
   const refreshSiteConfig = () => router.refresh();
 
-  const replaceSetting = (setList: typeof setFeatureFlags) => (updated: RuntimeSettingItem) =>
-    setList((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
-
-  const onAddDomain = () => {
-    setInputError(null);
-    const validated = validateSignupDomainInput(input);
-    if (!validated.ok) {
-      setInputError(validated.error);
-      return;
-    }
-    const shownDomain = validated.isWildcard ? `*.${validated.domain}` : validated.domain;
-    confirmation.request({
-      title: `Add ${shownDomain} to the signup allowlist?`,
-      confirmLabel: 'Add domain',
-      busyLabel: 'Adding…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <p className="[overflow-wrap:anywhere]">
-          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code>{' '}
-          {validated.isWildcard ? '(any subdomain, not the bare suffix) ' : ''}are approved
-          automatically.
-        </p>
-      ),
-      run: async () => {
-        await addSignupAllowedDomain(input.trim());
-        setInput('');
-        setAddingDomain(false);
-        flashToast(
-          validated.isWildcard
-            ? `Added wildcard *.${validated.domain}.`
-            : `Added ${validated.domain}.`,
-        );
-        await loadDomains();
-      },
-    });
-  };
-
-  const onRemove = (row: SignupAllowedDomain) => {
-    const shownDomain = row.is_wildcard ? `*.${row.domain}` : row.domain;
-    confirmation.request({
-      title: `Remove ${shownDomain} from the signup allowlist?`,
-      confirmLabel: 'Remove',
-      busyLabel: 'Removing…',
-      tone: 'danger',
-      body: (
-        <p className="[overflow-wrap:anywhere]">
-          Future signups from <code className="rounded bg-gray-100 px-1">{shownDomain}</code> will
-          require admin approval. Existing users keep their current status.
-        </p>
-      ),
-      run: async () => {
-        await removeSignupAllowedDomain(row.domain, row.is_wildcard);
-        flashToast(
-          row.is_wildcard ? `Removed wildcard *.${row.domain}.` : `Removed ${row.domain}.`,
-        );
-        await loadDomains();
-      },
-    });
-  };
+  const replaceSetting = (updated: RuntimeSettingItem) =>
+    setRuntimeSettings((prev) => prev.map((s) => (s.key === updated.key ? updated : s)));
 
   // The preview is a read; applying is the write, confirmed with what the preview found.
   const onClickApply = async (role: Role) => {
@@ -536,233 +244,249 @@ export function SettingsTab() {
     });
   };
 
-  return (
-    // A section index beside full-width sections, one after another.
-    <div className={`mt-6 ${INDEXED_LAYOUT}`}>
-      <AdminSectionNav label="Settings sections" items={SECTIONS} />
+  if (!editor.settled) {
+    return (
+      <div className="mt-6">
+        <AdminLoading />
+      </div>
+    );
+  }
 
-      <div className="min-w-0">
-        {/* Feedback for every section on this page. The live region is
-            always there (so a screen reader announces each message) and
-            takes no height: a message floats at the top right of the
-            sections, pinned to the top of the window while they scroll,
-            without pushing them down, and lets clicks through to whatever
-            is under it. */}
-        <div className="pointer-events-none sticky top-4 z-20 h-0">
-          <div role="status" className="flex justify-end">
-            {toast && (
-              <div
-                key={toast}
-                className="animate-admin-reveal max-w-md rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
-              >
-                {toast}
-              </div>
-            )}
-          </div>
-        </div>
+  const { filtering } = editor;
+  // Without the configuration (an older backend), a sub-tab that only edits it has nothing to show.
+  const tabs = SETTINGS_TABS.filter(
+    (tab) => editor.config !== null || tab.blocks.some((block) => !needsConfiguration(block)),
+  );
+  const currentTab = tabs.some((tab) => tab.key === activeTab) ? activeTab : tabs[0].key;
 
-        <div className="space-y-6 [&>*+*]:border-t [&>*+*]:border-gray-200 [&>*+*]:pt-6">
-          {flagsError && (
-            <AdminNotice onDismiss={() => setFlagsError(null)}>{flagsError}</AdminNotice>
-          )}
+  const selectTab = (key: SettingsTabKey) => {
+    setActiveTab(key);
+    router.replace(key === DEFAULT_SETTINGS_TAB ? pathname : `${pathname}?tab=${key}`, {
+      scroll: false,
+    });
+  };
 
-          <RuntimeSettingsSection
-            id="settings-feature-flags"
-            title="Feature Flags"
-            description="Toggle runtime features without restarting the server. Changes take effect immediately."
-            kind="flag"
-            settings={featureFlags}
-            loading={flagsLoading}
-            emptyText="No feature flags available."
-            onSaved={replaceSetting(setFeatureFlags)}
-            onAfterWrite={refreshSiteConfig}
-            onToast={flashToast}
-          />
+  const clearFilters = () => {
+    editor.setQuery('');
+    editor.setMissingOnly(false);
+    // Drops a `?missing=1` the page was opened with, so a reload does not filter again.
+    selectTab(currentTab);
+  };
 
-          <RuntimeSettingsSection
-            id="settings-numeric"
-            title="Numeric Settings"
-            description="Adjust numeric runtime knobs (e.g. per-user concurrency caps). Changes take effect immediately."
-            kind="numeric"
-            settings={numericSettings}
-            loading={flagsLoading}
-            emptyText="No numeric settings available."
-            onSaved={replaceSetting(setNumericSettings)}
-            onAfterWrite={refreshSiteConfig}
-            onToast={flashToast}
-            renderExtra={(setting) =>
-              setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
-                <button
-                  type="button"
-                  onClick={() =>
-                    void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)
-                  }
-                  disabled={quotaLoadingRole !== null || confirmation.busy}
-                  className={BUTTON_SECONDARY}
-                >
-                  {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
-                    ? 'Loading...'
-                    : 'Apply to existing users'}
-                </button>
-              ) : null
-            }
-          />
+  const tabMeta = (tab: SettingsTabDefinition) => {
+    const groups = editor.groups.filter((group) => tabOfCategory(group.id) === tab.key);
+    const unsavedElsewhere = tab.blocks.reduce(
+      (total, block) =>
+        block.kind === 'runtime' || block.kind === 'panel'
+          ? total + (unsavedBySection[blockKey(block)] ?? 0)
+          : total,
+      0,
+    );
+    return (
+      <TabMeta
+        dirty={
+          groups.reduce((total, group) => total + editor.dirtyCount(group), 0) + unsavedElsewhere
+        }
+        missing={groups.reduce(
+          (total, group) => total + group.entries.filter((entry) => entry.missing).length,
+          0,
+        )}
+      />
+    );
+  };
 
-          <div id="settings-alert-notifications" className="scroll-mt-4 focus:outline-none">
-            <AlertSnoozeSection onToast={flashToast} />
-          </div>
+  const renderQuotaApply = (setting: RuntimeSettingItem, unsaved: boolean) =>
+    setting.key.startsWith(QUOTA_KEY_PREFIX) ? (
+      <button
+        type="button"
+        onClick={() => void onClickApply(setting.key.slice(QUOTA_KEY_PREFIX.length) as Role)}
+        // It applies the saved quota, not the one being typed.
+        disabled={unsaved || quotaLoadingRole !== null || confirmation.busy}
+        title={unsaved ? 'Save or discard the new quota first' : undefined}
+        className={BUTTON_SECONDARY}
+      >
+        {quotaLoadingRole === setting.key.slice(QUOTA_KEY_PREFIX.length)
+          ? 'Loading...'
+          : 'Apply to existing users'}
+      </button>
+    ) : null;
 
-          <div id="settings-alert-types" className="scroll-mt-4 focus:outline-none">
-            <AlertMutesSection onToast={flashToast} />
-          </div>
+  const runtimeSection = (group: RuntimeGroupKey) => (
+    <RuntimeSettingsSection
+      id={`settings-${group}`}
+      title={RUNTIME_GROUPS[group].title}
+      description={RUNTIME_GROUPS[group].description}
+      settings={runtimeSettings.filter((setting) => runtimeGroupOf(setting.key) === group)}
+      // The catch-all is usually empty: it waits unseen rather than flash a spinner.
+      loading={runtimeLoading && group !== 'other'}
+      onSaved={replaceSetting}
+      onAfterWrite={refreshSiteConfig}
+      onToast={flashToast}
+      renderExtra={group === 'quotas' ? renderQuotaApply : undefined}
+      onUnsavedChange={reportUnsaved(`runtime-${group}`)}
+    />
+  );
 
-          <div id="settings-usage-insights" className="scroll-mt-4 focus:outline-none">
-            <UsageInsightsSettingsSection onToast={flashToast} />
-          </div>
-
-          <div id="settings-model-visibility" className="scroll-mt-4 focus:outline-none">
-            <ModelVisibilitySection onToast={flashToast} />
-          </div>
-
-          <div id="settings-model-concurrency" className="scroll-mt-4 focus:outline-none">
-            <ModelConcurrencySection onToast={flashToast} />
-          </div>
-
-          <div id="settings-batch-concurrency" className="scroll-mt-4 focus:outline-none">
-            <BatchConcurrencySection onToast={flashToast} />
-          </div>
-
-          <AdminSection
+  const panelSection = (panel: SettingsPanelKey) => {
+    const onUnsavedChange = reportUnsaved(`panel-${panel}`);
+    switch (panel) {
+      case 'usage-insights':
+        return (
+          <UsageInsightsSettingsSection onToast={flashToast} onUnsavedChange={onUnsavedChange} />
+        );
+      case 'signup-policy':
+        return (
+          <SignupPolicySection
             id="settings-signup-policy"
-            title="Signup Policy"
-            description="Signups from listed domains auto-approve. Other domains require admin approval. Empty list = all signups auto-approve."
-            actions={
-              addingDomain ? null : (
-                <button
-                  type="button"
-                  onClick={() => setAddingDomain(true)}
-                  className={BUTTON_SECONDARY}
-                >
-                  Add domain
-                </button>
-              )
-            }
-          >
-            {/* Add form: opened explicitly, reviewed before anything is written. */}
-            {addingDomain ? (
-              <form
-                className="mb-4 flex max-w-xl flex-col gap-1.5"
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  if (!confirmation.busy) onAddDomain();
-                }}
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    type="text"
-                    value={input}
-                    onChange={(e) => {
-                      setInput(e.target.value);
-                      setInputError(null);
-                    }}
-                    placeholder="example.com or *.example.com"
-                    className={`${CONTROL} min-w-[12rem] flex-1`}
-                    disabled={confirmation.busy}
-                    aria-label="Domain to add"
-                    autoFocus
-                  />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setAddingDomain(false);
-                      setInput('');
-                      setInputError(null);
-                    }}
-                    disabled={confirmation.busy}
-                    className={BUTTON_GHOST}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={confirmation.busy || !input.trim()}
-                    className={BUTTON_PRIMARY}
-                  >
-                    Review and add
-                  </button>
-                </div>
-                <p className="text-[11px] text-gray-400">
-                  Enter <code className="rounded bg-gray-100 px-1">example.com</code> for an exact
-                  match or <code className="rounded bg-gray-100 px-1">*.example.com</code> to allow
-                  any subdomain. <code className="rounded bg-gray-100 px-1">*.example.com</code>{' '}
-                  does not match the bare suffix.
-                </p>
-                {inputError && (
-                  <p className="text-[12px] text-red-600" role="alert">
-                    {inputError}
-                  </p>
-                )}
-              </form>
-            ) : null}
+            confirmation={confirmation}
+            onToast={flashToast}
+          />
+        );
+      case 'model-visibility':
+        return <ModelVisibilitySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
+      case 'model-concurrency':
+        return <ModelConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
+      case 'batch-concurrency':
+        return <BatchConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
+      case 'alert-snooze':
+        return <AlertSnoozeSection onToast={flashToast} />;
+      case 'alert-mutes':
+        return <AlertMutesSection onToast={flashToast} />;
+      case 'add-variable':
+        return <AddVariableControl editor={editor} />;
+      case 'backup':
+        return <ConfigurationBackupSection editor={editor} />;
+    }
+  };
 
-            {error && (
-              <div className="mb-3">
-                <AdminNotice onDismiss={() => setError(null)}>{error}</AdminNotice>
-              </div>
-            )}
+  const renderBlock = (tab: SettingsTabDefinition, block: SettingsBlock): ReactNode => {
+    // While a filter lists every sub-tab's categories, each says where it lives.
+    const tag = filtering ? tab.label : undefined;
+    if (block.kind === 'config') {
+      return (
+        <ConfigCategorySection
+          key={`config-${block.category}`}
+          editor={editor}
+          categoryId={block.category}
+          tag={tag}
+        />
+      );
+    }
+    if (block.kind === 'unnamed-categories') {
+      return editor.groups
+        .filter((group) => !isNamedCategory(group.id))
+        .map((group) => (
+          <ConfigCategorySection
+            key={`config-${group.id}`}
+            editor={editor}
+            categoryId={group.id}
+            tag={tag}
+          />
+        ));
+    }
+    // Not configuration: a filter hides it, but it stays mounted, and with
+    // it any change still unsaved in it.
+    return (
+      <div key={blockKey(block)} hidden={filtering}>
+        {block.kind === 'runtime' ? runtimeSection(block.group) : panelSection(block.panel)}
+      </div>
+    );
+  };
 
-            {loading ? (
-              <AdminLoading size="sm" />
-            ) : domains.length === 0 ? (
-              <AdminEmptyState title="No allowed domains. All signups auto-approve." />
-            ) : (
-              <div className={`${PANEL} relative overflow-x-auto`}>
-                <table className="w-full min-w-[30rem] text-[13px]">
-                  <thead className="bg-gray-50/80">
-                    <tr className="border-b border-gray-200">
-                      <th className={TABLE_HEAD_CELL}>Domain</th>
-                      <th className={TABLE_HEAD_CELL}>Type</th>
-                      <th className={TABLE_HEAD_CELL}>Added</th>
-                      <th className={`${TABLE_HEAD_CELL} text-right`}>Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-gray-100">
-                    {domains.map((d) => {
-                      const key = `${d.domain}|${d.is_wildcard}`;
-                      return (
-                        <tr key={key}>
-                          <td className="px-4 py-2 font-mono text-[12px] text-gray-900">
-                            {d.is_wildcard ? <span>*.{d.domain}</span> : d.domain}
-                          </td>
-                          <td className="px-4 py-2 text-gray-500">
-                            {d.is_wildcard ? 'Wildcard' : 'Exact'}
-                          </td>
-                          <td className="whitespace-nowrap px-4 py-2 text-gray-500">
-                            {relTime(d.created_at)}
-                          </td>
-                          <td className="px-4 py-2 text-right">
-                            <button
-                              type="button"
-                              onClick={() => onRemove(d)}
-                              disabled={confirmation.busy}
-                              aria-label={`Remove ${d.is_wildcard ? `*.${d.domain}` : d.domain}`}
-                              className={ROW_ACTION_DANGER}
-                            >
-                              Remove
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </AdminSection>
+  const matching = matchingSettingCount(editor);
+
+  return (
+    <div className="mt-6 space-y-4">
+      <ConfigurationNotices editor={editor} />
+      {runtimeError ? (
+        <AdminNotice onDismiss={() => setRuntimeError(null)}>{runtimeError}</AdminNotice>
+      ) : null}
+      {editor.config ? <ConfigurationFilters editor={editor} /> : null}
+
+      {filtering ? (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg bg-gray-50 px-3 py-2 text-[12px] text-gray-600">
+          <span aria-live="polite">
+            {matching === 1 ? '1 setting matches' : `${matching} settings match`}, from every
+            sub-tab. Other sections are hidden until the filter is cleared.
+          </span>
+          <button type="button" onClick={clearFilters} className={BUTTON_GHOST}>
+            Clear filters
+          </button>
+        </div>
+      ) : (
+        <AdminSubTabs
+          label="Settings sections"
+          tabs={tabs.map((tab) => ({
+            key: tab.key,
+            label: tab.label,
+            tabId: tabId(tab.key),
+            panelId: panelId(tab.key),
+            meta: tabMeta(tab),
+          }))}
+          active={currentTab}
+          onSelect={selectTab}
+        />
+      )}
+
+      {/* Feedback for the sections on every sub-tab. The live region is
+          always there (so a screen reader announces each message) and takes
+          no height: a message floats at the top right of the sections,
+          pinned to the top of the window while they scroll, without pushing
+          them down, and lets clicks through to whatever is under it. */}
+      <div className="pointer-events-none sticky top-4 z-20 h-0">
+        <div role="status" className="flex justify-end">
+          {toast && (
+            <div
+              key={toast}
+              className="animate-admin-reveal max-w-md rounded-lg bg-gray-900 px-3 py-2 text-[12px] text-white shadow-lg"
+            >
+              {toast}
+            </div>
+          )}
         </div>
       </div>
 
+      {filtering && editor.visibleGroups.length === 0 ? (
+        <AdminEmptyState
+          title={
+            editor.missingOnly && editor.config?.missing.length === 0 && !editor.query.trim()
+              ? 'No required settings are missing.'
+              : 'No settings match.'
+          }
+        />
+      ) : null}
+
+      {/* No display class on an element that takes `hidden`: one would override it. */}
+      <div className="flex flex-col gap-8">
+        {tabs.map((tab) => {
+          const shown = filtering
+            ? editor.visibleGroups.some((group) => tabOfCategory(group.id) === tab.key)
+            : tab.key === currentTab;
+          return (
+            <div
+              key={tab.key}
+              id={panelId(tab.key)}
+              role={filtering ? undefined : 'tabpanel'}
+              aria-labelledby={filtering ? undefined : tabId(tab.key)}
+              hidden={!shown}
+            >
+              {/* While a filter lists every sub-tab's categories, each is tagged instead. */}
+              {tab.description && !filtering ? (
+                <p className="mb-6 max-w-3xl text-[12px] leading-relaxed text-gray-500">
+                  {tab.description}
+                </p>
+              ) : null}
+              {/* A section with nothing to show leaves an empty wrapper: no gap for it. */}
+              <div className="flex flex-col gap-8 [&>div:empty]:hidden">
+                {tab.blocks.map((block) => renderBlock(tab, block))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
       {confirmation.dialog}
+      {editor.backupConfirmation.dialog}
     </div>
   );
 }

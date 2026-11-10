@@ -1,6 +1,6 @@
 // Unsaved edits to configuration entries, and the PATCH body they become.
 //
-// Shared by the admin Configuration tab and the first-run setup wizard, so the
+// Shared by the admin Settings tab and the first-run setup wizard, so the
 // rule for what counts as a change, and the JSON type each setting is sent as,
 // exist once.
 
@@ -128,10 +128,6 @@ export function buildPatch(entries: readonly ConfigEntry[], drafts: ConfigDrafts
     values[entry.key] = patchValue(entry, draft);
   }
   return { values, errors };
-}
-
-export function countDirty(entries: readonly ConfigEntry[], drafts: ConfigDrafts): number {
-  return entries.filter((entry) => isDirty(entry, drafts[entry.key])).length;
 }
 
 /** Drafts without the given keys: what remains after those keys were saved. */

@@ -203,7 +203,7 @@ async def test_alerter_fires_over_threshold():
 
 @pytest.mark.asyncio
 async def test_alerter_fires_includes_breakdown():
-    """Breakdown fields (status_codes, providers, models, sample_error) are included in context."""
+    """Breakdown fields (status_codes, providers, models, the sample's type) are in context."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=25)
     pool.fetchrow = AsyncMock(
@@ -211,7 +211,8 @@ async def test_alerter_fires_includes_breakdown():
             "status_codes": "500, 503",
             "providers": "openai",
             "models": "gpt-4o",
-            "sample_error": "upstream timeout",
+            "sample_error": "TimeoutError: upstream timeout",
+            "sample_status": 504,
         }
     )
     alerter = _make_alerter(pool, threshold=20, window=5)
@@ -228,7 +229,9 @@ async def test_alerter_fires_includes_breakdown():
     assert context["status_codes"] == "500, 503"
     assert context["providers"] == "openai"
     assert context["models"] == "gpt-4o"
-    assert context["sample_error"] == "upstream timeout"
+    assert context["sample_error_type"] == "TimeoutError"
+    assert context["sample_status"] == 504
+    assert "sample_error" not in context
 
 
 @pytest.mark.asyncio
@@ -289,6 +292,71 @@ async def test_alerter_fires_via_httpx_payload(monkeypatch):
     body = kwargs["json"]["text"]
     assert "Failed-request rate exceeded" in body
     assert "25" in body
+
+
+@pytest.mark.parametrize(
+    ("error", "named"),
+    [
+        # format_exception_for_db: the class, then the upstream's own words.
+        (
+            "ClientResponseError: 400, message='Bad Request' | upstream_body="
+            '{"error": "invalid tool arguments: {\\"ssn\\": \\"078-05-1120\\"}"}',
+            "ClientResponseError",
+        ),
+        ("TimeoutError", "TimeoutError"),
+        # A rejection-log code stands alone.
+        ("quota_exceeded", "quota_exceeded"),
+        # A handler's own sentence names no type.
+        ("invalid embedding response: 1 validation error for input 'my secret'", "unclassified"),
+        ("Model 'x' not found", "unclassified"),
+    ],
+)
+def test_the_sample_names_the_error_type_and_never_quotes_it(error, named):
+    from serving.admin.failed_request_alerter import error_type_of
+
+    assert error_type_of(error) == named
+
+
+@pytest.mark.asyncio
+async def test_an_upstream_error_quoting_the_request_never_reaches_the_channel(monkeypatch):
+    """The card carries the failure's class and status; the text stays in api_logs."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/abc")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=25)
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "status_codes": "400",
+            "providers": "openai",
+            "models": "gpt-4o",
+            "sample_error": (
+                "ClientResponseError: 400, message='Bad Request' | upstream_body="
+                "please summarise my diagnosis: patient Jane Roe, HIV positive"
+            ),
+            "sample_status": 400,
+        }
+    )
+    alerter = _make_alerter(pool, threshold=20)
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(return_value=MagicMock(status_code=200, text="ok"))
+
+    class _ClientCtx:
+        async def __aenter__(self_inner):
+            return fake_client
+
+        async def __aexit__(self_inner, *_a):
+            return False
+
+    with patch("serving.observability.alerts.httpx.AsyncClient", return_value=_ClientCtx()):
+        await alerter.run_check()
+
+    body = fake_client.post.await_args.kwargs["json"]["text"]
+    assert "ClientResponseError" in body
+    assert "Jane Roe" not in body
+    assert "diagnosis" not in body
+    assert "Bad Request" not in body
 
 
 @pytest.mark.asyncio
@@ -389,38 +457,58 @@ def _settings_stub(webhook_url="", wecom_url="", slack_alerts_url=""):
     )
 
 
-def test_register_disabled_when_webhook_empty():
-    """Empty SLACK_WEBHOOK_URL must skip registration entirely."""
+def _published(config):
+    from serving.config import live
+
+    return live.Published(config, None, 7)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "webhooks",
+    [
+        {},
+        {"slack_webhook_url": "   "},
+        # Only SLACK_WEBHOOK_URL or WeCom enables this detector; the alerting
+        # URL alone does not. That asymmetry predates the live configuration.
+        {"slack_alerts_webhook_url": "https://hooks.slack.test/alerting"},
+    ],
+    ids=["empty", "whitespace", "only-slack-alerts-url"],
+)
+async def test_one_job_is_registered_and_paused_without_the_detectors_webhook(webhooks):
+    """The job always exists; without its webhook a check queries and sends nothing.
+
+    A webhook saved later then starts the detector without registering a job
+    or restarting, and the cooldown and incident it keeps are the same ones.
+    """
     from serving.admin import failed_request_alerter
+    from serving.observability.alert_runtime import AlertRuntimeConfig
 
     fake_scheduler = MagicMock()
     pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=10_000)
+    pool.fetchrow = AsyncMock(return_value={"failures": 10_000, "total": 10_000})
 
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
+    with (
+        patch.object(failed_request_alerter, "get_scheduler", return_value=fake_scheduler),
+        patch.object(
+            failed_request_alerter.alert_runtime,
+            "acquire",
+            return_value=_published(AlertRuntimeConfig(**webhooks)),
+        ),
+        patch.object(
+            failed_request_alerter, "alert_on_transition", new=AsyncMock(return_value=True)
+        ) as transition,
     ):
-        failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url=""))
+        alerter = failed_request_alerter.register_alerter_job(pool)
+        assert alerter is not None
+        await alerter.run_check()
 
-    fake_scheduler.add_job.assert_not_called()
-
-
-def test_register_disabled_when_webhook_whitespace():
-    """Whitespace-only SLACK_WEBHOOK_URL must be treated as unset — no job registered."""
-    from serving.admin import failed_request_alerter
-
-    fake_scheduler = MagicMock()
-    pool = MagicMock()
-
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
-    ):
-        failed_request_alerter.register_alerter_job(pool, _settings_stub(webhook_url="   "))
-
-    fake_scheduler.add_job.assert_not_called()
+    fake_scheduler.add_job.assert_called_once()
+    pool.fetchval.assert_not_awaited()
+    pool.fetchrow.assert_not_awaited()
+    transition.assert_not_awaited()
+    assert alerter.last_state == "paused"
 
 
 def test_register_adds_job_when_webhook_set():
@@ -467,31 +555,6 @@ def test_register_adds_job_when_only_wecom_is_set():
         )
 
     fake_scheduler.add_job.assert_called_once()
-
-
-def test_register_disabled_when_only_slack_alerts_webhook_is_set():
-    """Only SLACK_WEBHOOK_URL enables this detector; the alerting URL does not.
-
-    That asymmetry predates this change: deployments that set just
-    SLACK_ALERTS_WEBHOOK_URL never registered the DB-query detector, and the
-    WeCom channel must not alter that.
-    """
-    from serving.admin import failed_request_alerter
-
-    fake_scheduler = MagicMock()
-    pool = MagicMock()
-
-    with patch.object(
-        failed_request_alerter,
-        "get_scheduler",
-        return_value=fake_scheduler,
-    ):
-        failed_request_alerter.register_alerter_job(
-            pool,
-            _settings_stub(slack_alerts_url="https://hooks.slack.test/alerting"),
-        )
-
-    fake_scheduler.add_job.assert_not_called()
 
 
 def test_register_no_scheduler_is_safe():
@@ -639,3 +702,21 @@ async def test_absolute_threshold_still_fires_and_is_labelled():
     kwargs = sink.await_args.kwargs
     assert kwargs["breached"] is True
     assert kwargs["context"]()["trigger"] == "count"
+
+
+def test_both_queries_exclude_model_queued_answers():
+    """An on-demand model's "model queued" 503s must never page Slack.
+
+    While the model's cluster job waits for a node every request is answered
+    that way, possibly for hours. The rows are matched by the class name
+    ``format_exception_for_db`` prefixes, so any other 503 still counts, and a
+    NULL ``error`` keeps counting (``NOT LIKE`` alone would drop it).
+    """
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+        FAILED_REQUEST_RATE_SQL,
+    )
+
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL, FAILED_REQUEST_RATE_SQL):
+        assert "(error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%')" in sql

@@ -144,6 +144,8 @@ async def mint_grant(
 
     # Models are clamped: a narrower list still runs. The user context mirrors
     # what the inference path builds, so the answer here and there agree.
+    # Chat routes only: a minted scope can never name an embedding model,
+    # so grants cannot reach /v1/embeddings.
     visible = await agent_visible_models(
         router_exec,
         visibility_resolver=visibility_resolver,

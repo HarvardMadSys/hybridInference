@@ -4,6 +4,7 @@ import asyncio
 import datetime as dt
 import os
 import time
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
 
@@ -257,6 +258,51 @@ async def test_models_openai_provider_is_preserved_for_gpt_style_entry(tmp_path,
 
 
 @pytest.mark.asyncio
+async def test_example_chat_is_public_but_unpriced_external_route_stays_restricted(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setenv("EXAMPLE_UPSTREAM_BASE_URL", "http://example-provider:8351/v1")
+    monkeypatch.setenv("EXAMPLE_UPSTREAM_API_KEY", "example-key")
+    monkeypatch.setenv("EXAMPLE_UPSTREAM_MODEL", "example-upstream")
+
+    router = FixedRouter()
+    example_models = (
+        Path(__file__).resolve().parents[2] / "distributions/example/config/models.json"
+    )
+    registry.register_from_models_yaml(router, example_models)
+
+    remote_models = tmp_path / "remote-models.yaml"
+    remote_models.write_text(
+        "models:\n"
+        "  - id: unconfigured-remote\n"
+        "    name: Unconfigured Remote\n"
+        "    provider: openai_compat\n"
+        "    route:\n"
+        "      - kind: openai_compat\n"
+        "        weight: 1.0\n"
+        "        base_url: https://provider.example.test/v1\n"
+        "        api_key: test-key\n"
+        "        provider_model_id: upstream-model\n"
+    )
+    registry.register_from_models_yaml(router, remote_models)
+
+    assert router.routes["example-chat"].required_role == "free"
+    assert router.routes["unconfigured-remote"].required_role == "pro"
+
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == status.HTTP_200_OK
+    visible_ids = {item["id"] for item in response.json()["data"]}
+    assert "example-chat" in visible_ids
+    assert "unconfigured-remote" not in visible_ids
+
+
+@pytest.mark.asyncio
 async def test_models_pricing_primary_config_behavior():
     router = FixedRouter()
     p_primary = {"prompt": "1", "completion": "2"}
@@ -275,6 +321,35 @@ async def test_models_pricing_primary_config_behavior():
         data = resp.json()["data"]
         item = next(m for m in data if m["id"] == "price")
         assert item["pricing"] == p_primary
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_priced_in_json_numbers_still_lists_every_model():
+    """``"pricing": {"prompt": 0.5}`` is natural JSON, and the catalog check accepts it.
+
+    The listing's pricing field is text, so one such model made /v1/models a
+    500 for every caller, while inference went on billing it correctly.
+    """
+    router = FixedRouter()
+    numeric = _Adapter(_cfg(id="numeric"))
+    numeric.config.pricing = {"prompt": 0.5, "completion": 1.25, "input_cache_reads": 0}
+    router.register_route("numeric", [(numeric, 1.0)])
+    router.register_route("text", [(_Adapter(_cfg(id="text")), 1.0)])
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.status_code == 200
+    items = {item["id"]: item for item in resp.json()["data"]}
+    assert set(items) == {"numeric", "text"}
+    assert items["numeric"]["pricing"] == {
+        "prompt": "0.5",
+        "completion": "1.25",
+        "input_cache_reads": "0",
+    }
 
 
 @pytest.mark.asyncio
@@ -556,7 +631,10 @@ async def test_models_tag_embedding_models_with_the_embeddings_feature():
     """
     router = FixedRouter()
     router.register_route("chat-model", [(_Adapter(_cfg(id="chat-model")), 1.0)])
-    embedding = _Adapter(_cfg(id="embed-model", provider="embedder"))
+    embedding_cfg = _cfg(id="embed-model", provider="embedder")
+    embedding_cfg.model_type = "embedding"
+    embedding = _Adapter(embedding_cfg)
+    router.register_embedding_route("embed-model", [(embedding, 1.0)], required_role="free")
 
     app = FastAPI(title="Models App")
     app.state.services = AppServices(  # type: ignore[attr-defined]
@@ -574,3 +652,60 @@ async def test_models_tag_embedding_models_with_the_embeddings_feature():
             by_id = {item["id"]: item for item in resp.json()["data"]}
             assert by_id["embed-model"]["supported_features"] == ["embeddings"]
             assert "embeddings" not in by_id["chat-model"]["supported_features"]
+
+
+@pytest.mark.asyncio
+async def test_embedding_model_list_obeys_role_and_visibility_override():
+    from serving.config.model_visibility import ModelVisibilityResolver
+    from serving.servers.auth import optional_verify_api_key
+
+    router = FixedRouter()
+    embedding_cfg = _cfg(id="restricted-embed", provider="embedder")
+    embedding_cfg.model_type = "embedding"
+    embedding = _Adapter(embedding_cfg)
+    router.register_embedding_route("restricted-embed", [(embedding, 1.0)], required_role="admin")
+    store = type("Store", (), {})()
+    store.get_model_visibility_override = AsyncMock(
+        return_value={"model_id": "restricted-embed", "required_role": "free"}
+    )
+    resolver = ModelVisibilityResolver(store)
+
+    app = FastAPI()
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        embedding_adapters={"restricted-embed": embedding},
+        model_visibility_resolver=resolver,
+    )
+    app.dependency_overrides[optional_verify_api_key] = lambda: {"role": "free"}
+    app.include_router(models.router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert [item["id"] for item in response.json()["data"]] == ["restricted-embed"]
+
+
+@pytest.mark.asyncio
+async def test_embedding_model_list_hides_admin_only_model_from_free_user():
+    router = FixedRouter()
+    embedding_cfg = _cfg(id="admin-embed", provider="embedder")
+    embedding_cfg.model_type = "embedding"
+    embedding = _Adapter(embedding_cfg)
+    router.register_embedding_route("admin-embed", [(embedding, 1.0)], admin_only=True)
+
+    app = FastAPI()
+    app.state.services = AppServices(  # type: ignore[attr-defined]
+        router=router,
+        db_logger=None,
+        embedding_adapters={"admin-embed": embedding},
+    )
+    app.dependency_overrides[optional_verify_api_key] = lambda: {"role": "free"}
+    app.include_router(models.router)
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.get("/v1/models")
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["data"] == []

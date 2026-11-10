@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from routing.endpoints import endpoint_id_for_adapter
 from serving.admin.provider_quotas import gather_all
+from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
 from serving.schemas_admin import (
     AdminProviderQuotasResponse,
@@ -31,6 +32,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_db_logger,
     get_operational_store,
     get_services,
@@ -38,7 +40,6 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import _require_aware_utc, _truncate_hour
 from serving.servers.routewise_rebuild import rebuild_routewise_routers
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -178,10 +179,10 @@ async def admin_list_routable_providers(
     response_model=SetProviderDisabledResponse,
 )
 async def admin_set_provider_disabled(
-    request: Request,
     provider: str,
     payload: SetProviderDisabledRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
     services=Depends(get_services),
 ) -> SetProviderDisabledResponse:
@@ -210,12 +211,13 @@ async def admin_set_provider_disabled(
 
     rebuild_routewise_routers(services)
 
+    # The provider is the target; it is not a user, so target_user_id stays NULL.
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "providers.disabled.update",
-        provider,
-        {"provider": provider, "disabled": payload.disabled},
+        action="providers.disabled.update",
+        details={"provider": provider, "disabled": payload.disabled},
+        actor=actor,
+        target=AuditTarget.provider(provider),
     )
 
     return SetProviderDisabledResponse(
@@ -422,15 +424,21 @@ async def admin_provider_observability(
                 COUNT(*) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                       AND COALESCE(prompt_tokens, 0) > 0
+                      AND cache_read_tokens IS NOT NULL
                 )::BIGINT AS cache_eligible_count,
                 COUNT(*) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                       AND COALESCE(prompt_tokens, 0) > 0
-                      AND COALESCE(cache_read_tokens, 0) > 0
+                      AND cache_read_tokens > 0
                 )::BIGINT AS cache_hit_count,
                 COALESCE(SUM(prompt_tokens) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                 ), 0)::BIGINT AS input_tokens,
+                COALESCE(SUM(prompt_tokens) FILTER (
+                    WHERE status_code >= 200 AND status_code < 400
+                      AND COALESCE(prompt_tokens, 0) > 0
+                      AND cache_read_tokens IS NOT NULL
+                ), 0)::BIGINT AS cache_eligible_input_tokens,
                 COALESCE(SUM(cache_read_tokens) FILTER (
                     WHERE status_code >= 200 AND status_code < 400
                 ), 0)::BIGINT AS cache_read_tokens,
@@ -485,18 +493,24 @@ async def admin_provider_observability(
                     COUNT(*) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                           AND COALESCE(prompt_tokens, 0) > 0
+                          AND cache_read_tokens IS NOT NULL
                     )::BIGINT AS cache_eligible_count,
                     COUNT(*) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                           AND COALESCE(prompt_tokens, 0) > 0
-                          AND COALESCE(cache_read_tokens, 0) > 0
+                          AND cache_read_tokens > 0
                     )::BIGINT AS cache_hit_count,
                     COALESCE(SUM(cache_read_tokens) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
                     ), 0)::BIGINT AS cache_read_tokens,
                     COALESCE(SUM(prompt_tokens) FILTER (
                         WHERE status_code >= 200 AND status_code < 400
-                    ), 0)::BIGINT AS input_tokens
+                    ), 0)::BIGINT AS input_tokens,
+                    COALESCE(SUM(prompt_tokens) FILTER (
+                        WHERE status_code >= 200 AND status_code < 400
+                          AND COALESCE(prompt_tokens, 0) > 0
+                          AND cache_read_tokens IS NOT NULL
+                    ), 0)::BIGINT AS cache_eligible_input_tokens
                 FROM api_logs
                 WHERE provider = $1
                   AND timestamp >= $2 AND timestamp < $3
@@ -511,7 +525,8 @@ async def admin_provider_observability(
                 COALESCE(bucketed_logs.cache_eligible_count, 0) AS cache_eligible_count,
                 COALESCE(bucketed_logs.cache_hit_count, 0) AS cache_hit_count,
                 COALESCE(bucketed_logs.cache_read_tokens, 0) AS cache_read_tokens,
-                COALESCE(bucketed_logs.input_tokens, 0) AS input_tokens
+                COALESCE(bucketed_logs.input_tokens, 0) AS input_tokens,
+                COALESCE(bucketed_logs.cache_eligible_input_tokens, 0) AS cache_eligible_input_tokens
             FROM series
             LEFT JOIN bucketed_logs ON bucketed_logs.bucket_start = series.bucket_start
             WHERE series.bucket_start < $3
@@ -565,7 +580,7 @@ async def admin_provider_observability(
 
 
 # ============================================================
-# Token Usage tab — per (provider, model_id) totals over a fixed-window
+# Analytics → Overview: token totals per (provider, model_id) over a fixed-window
 # selector (1h | 24h | 7d | 30d). Reads pre-aggregated rows from
 # provider_hourly_stats; no scan of api_logs.
 # ============================================================

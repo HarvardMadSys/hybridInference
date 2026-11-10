@@ -23,9 +23,10 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
+from tests.fixtures.audit import ADMIN_ACTOR
 
 
 def _row(index: int) -> dict[str, Any]:
@@ -125,6 +126,7 @@ def _app(db: _FakeDb, **services: Any) -> FastAPI:
         router=FixedRouter(), db_logger=MagicMock(pool=db.pool), **services
     )
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.include_router(admin.router)
     return app
 
@@ -230,7 +232,7 @@ async def test_clearing_errors_forgets_cached_totals_and_stored_hours():
     # The volume cards' stored hours under the delete are dropped by the delete
     # itself, in its transaction, so the two commit or fail together.
     log_store.delete_recent_error_requests.assert_awaited_once_with(
-        hours=3, on_deleted=request_volume.invalidate_hours
+        hours=3, on_deleted=request_volume.invalidate_hours, batch=None
     )
     assert not [query for query, _ in db.executed if "request_volume" in query]
 

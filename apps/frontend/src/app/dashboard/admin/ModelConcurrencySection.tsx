@@ -15,33 +15,36 @@ import {
   PANEL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
-import { ChangeList, plural } from '@/components/features/admin/confirm/ChangeList';
-import { EditBar, EditButton } from '@/components/features/admin/confirm/EditBar';
+import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 import type { AdminModelConcurrencyItem } from '@/lib/api/admin';
 import { listModelConcurrency, updateModelConcurrency } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
+import { useReportUnsaved } from './useReportUnsaved';
+
 const SECTION = 'Model Concurrency Limit';
 
 interface ModelConcurrencySectionProps {
   onToast: (msg: string) => void;
+  /** Called with the number of unsaved changes whenever it changes. */
+  onUnsavedChange?: (count: number) => void;
 }
 
-const exemptLabel = (exempt: boolean) => (exempt ? 'Exempt' : 'Not exempt');
-
 /**
- * Per-model exemption from the per-user concurrency limit. Read-only until
- * Edit; the changed models are saved together after confirmation.
+ * Per-model exemption from the per-user concurrency limit. The checkboxes are
+ * edited in place; Save writes the changed models together.
  */
-export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProps) {
+export function ModelConcurrencySection({
+  onToast,
+  onUnsavedChange,
+}: ModelConcurrencySectionProps) {
   const queryClient = useQueryClient();
-  const confirmation = useConfirmAction();
+  const writes = useConfirmAction();
   const [models, setModels] = useState<AdminModelConcurrencyItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [editing, setEditing] = useState(false);
   const [drafts, setDrafts] = useState<Record<string, boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -72,57 +75,39 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
   };
 
   const cancel = () => {
-    if (confirmation.busy) return;
+    if (writes.busy) return;
     setDrafts({});
     setSaveError(null);
-    setEditing(false);
   };
 
   const changed = models.filter((model) => model.model_id in drafts);
+  useReportUnsaved(changed.length, onUnsavedChange);
 
-  const save = () => {
+  const save = async () => {
     if (changed.length === 0) return;
     const pending = changed.map((model) => ({ model, exempt: drafts[model.model_id] }));
-    confirmation.request({
-      title: `Save ${plural(pending.length, 'concurrency change')}?`,
-      confirmLabel: 'Confirm save',
-      busyLabel: 'Saving…',
-      cancelLabel: 'Back to editing',
-      body: (
-        <>
-          <ChangeList
-            changes={pending.map(({ model, exempt }) => ({
-              label: model.model_id,
-              before: exemptLabel(model.exempt),
-              after: exemptLabel(exempt),
-            }))}
-          />
-          <p>
-            Requests to an exempt model stop counting toward a user&apos;s in-flight limit, up to 64
-            concurrent requests per user.
-          </p>
-        </>
-      ),
+    setSaveError(null);
+    const failure = await writes.perform({
       run: async () => {
-        const failure = await writeEach(
-          pending,
-          ({ model }) => model.model_id,
-          async ({ model, exempt }) => {
-            const updated = await updateModelConcurrency(model.model_id, exempt);
-            setModels((prev) =>
-              prev.map((item) => (item.model_id === model.model_id ? updated : item)),
-            );
-            setDrafts((prev) => {
-              const next = { ...prev };
-              delete next[model.model_id];
-              return next;
-            });
-          },
-        );
-        void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
-        setSaveError(failure);
-        if (failure) return;
-        setEditing(false);
+        try {
+          await writeEach(
+            pending,
+            ({ model }) => model.model_id,
+            async ({ model, exempt }) => {
+              const updated = await updateModelConcurrency(model.model_id, exempt);
+              setModels((prev) =>
+                prev.map((item) => (item.model_id === model.model_id ? updated : item)),
+              );
+              setDrafts((prev) => {
+                const next = { ...prev };
+                delete next[model.model_id];
+                return next;
+              });
+            },
+          );
+        } finally {
+          void queryClient.invalidateQueries({ queryKey: ['user', 'models'] });
+        }
         onToast(
           pending.length === 1
             ? `Updated concurrency exemption for ${pending[0].model.model_id}.`
@@ -130,17 +115,13 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         );
       },
     });
+    setSaveError(failure);
   };
 
   return (
     <AdminSection
       title={SECTION}
       description="Exempt a model from the per-user concurrency limit. Requests to an exempt model do not count toward a user's normal in-flight request cap, but are still limited to at most 64 concurrent requests per user."
-      actions={
-        !editing && !loading && models.length > 0 ? (
-          <EditButton target={SECTION} onClick={() => setEditing(true)} />
-        ) : null
-      }
     >
       {error && (
         <div className="mb-3">
@@ -162,7 +143,7 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         <AdminEmptyState title="No models available." />
       ) : (
         <div
-          className={`${PANEL} relative overflow-x-auto ${editing ? 'border-gray-400 shadow-sm' : ''}`}
+          className={`${PANEL} relative overflow-x-auto ${changed.length > 0 ? 'border-gray-400 shadow-sm' : ''}`}
         >
           <table className="w-full min-w-[28rem] text-[13px]">
             <thead className="bg-gray-50/80">
@@ -180,20 +161,14 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
                       {model.model_id}
                     </td>
                     <td className="px-4 py-2.5 text-right">
-                      {editing ? (
-                        <input
-                          type="checkbox"
-                          aria-label={`Concurrency exemption for ${model.model_id}`}
-                          className={CHECKBOX}
-                          disabled={confirmation.busy}
-                          checked={exempt}
-                          onChange={(e) => changeDraft(model, e.target.checked)}
-                        />
-                      ) : (
-                        <output aria-label={`Concurrency exemption for ${model.model_id}`}>
-                          {exemptLabel(model.exempt)}
-                        </output>
-                      )}
+                      <input
+                        type="checkbox"
+                        aria-label={`Concurrency exemption for ${model.model_id}`}
+                        className={CHECKBOX}
+                        disabled={writes.busy}
+                        checked={exempt}
+                        onChange={(e) => changeDraft(model, e.target.checked)}
+                      />
                     </td>
                   </tr>
                 );
@@ -203,17 +178,15 @@ export function ModelConcurrencySection({ onToast }: ModelConcurrencySectionProp
         </div>
       )}
 
-      {editing ? (
-        <EditBar
-          target={SECTION}
-          changeCount={changed.length}
-          onCancel={cancel}
-          onSave={save}
-          busy={confirmation.busy}
-          error={saveError}
-        />
-      ) : null}
-      {confirmation.dialog}
+      <EditBar
+        target={SECTION}
+        changeCount={changed.length}
+        onCancel={cancel}
+        onSave={() => void save()}
+        busy={writes.busy}
+        error={saveError}
+        inPlace
+      />
     </AdminSection>
   );
 }

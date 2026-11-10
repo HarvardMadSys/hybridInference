@@ -7,6 +7,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.audit import AuditActor, AuditTarget
+from serving.exceptions import ProjectNotFoundError
+from serving.quota import resolve_quota
 from serving.schemas_admin import (
     APIKeyDetailResponse,
     APIKeyDetailUsage,
@@ -24,11 +27,14 @@ from serving.servers.auth import (
     log_admin_action,
 )
 from serving.servers.deps import (
+    get_admin_audit_actor,
+    get_admin_user_id,
     get_log_store,
     get_operational_store,
     verify_admin_access,
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 
 router = APIRouter(prefix="/admin")
 
@@ -37,26 +43,42 @@ router = APIRouter(prefix="/admin")
 async def create_api_key(
     request: Request,
     payload: CreateAPIKeyRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> CreateAPIKeyResponse:
     """Create a new API key for a user.
 
     Returns the plaintext API key ONLY ONCE. Save it immediately.
 
-    Requires: Authorization: Bearer {ADMIN_TOKEN}
+    A key for an account other than the caller's own is a credential that
+    acts as that account, kept by whoever minted it and lasting past any
+    session, so minting one needs the signed-in administrator's ``password``:
+    400 when it is missing or wrong, 403 for the admin token, which has no
+    account of its own.
+
+    Requires: Admin authentication (JWT)
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    if payload.user_id != get_admin_user_id(request):
+        await confirm_administrator(
+            request,
+            op_store,
+            payload.password,
+            action=f"Creating an API key for {payload.user_id}",
+        )
+
+    # A key row's target is the user who owns the key, so filtering by that
+    # user and erasing them both keep reaching these rows.
     if await op_store.check_active_key_exists(payload.user_id):
         await log_admin_action(
             op_store,
-            admin_id,
-            "create_key",
-            payload.user_id,
-            {"error": "user_id already exists"},
+            action="create_key",
+            details={"error": "user_id already exists"},
             success=False,
+            actor=actor,
+            target=AuditTarget.user(payload.user_id),
         )
         raise HTTPException(
             status_code=409,
@@ -64,31 +86,50 @@ async def create_api_key(
             "Revoke it first, then create a new one.",
         )
 
+    project_id = payload.project_id
+    project_name = None
+    if project_id is not None:
+        project = await op_store.get_project(payload.user_id, project_id)
+        if project is None:
+            raise HTTPException(
+                status_code=404, detail=f"Project '{project_id}' not found for this user"
+            )
+        project_name = project["name"]
+    else:
+        project = await op_store.get_default_project(payload.user_id)
+        if project is not None:
+            project_id = project["id"]
+            project_name = project["name"]
+
     plaintext_key = generate_api_key()
     key_hash = hash_api_key(plaintext_key)
     key_prefix = plaintext_key[:12]
 
-    row = await op_store.create_key(
-        key_hash=key_hash,
-        key_prefix=key_prefix,
-        user_id=payload.user_id,
-        user_name=payload.user_name,
-        quota_daily_cost_usd=payload.quota_daily_cost_usd,
-        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
-        expires_at=payload.expires_at,
-        notes=payload.notes,
-        metadata=payload.metadata,
-    )
+    try:
+        row = await op_store.create_key(
+            key_hash=key_hash,
+            key_prefix=key_prefix,
+            user_id=payload.user_id,
+            user_name=payload.user_name,
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            metadata=payload.metadata,
+            project_id=project_id,
+        )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "create_key",
-        payload.user_id,
-        {
+        action="create_key",
+        details={
             "quota_daily_usd": float(payload.quota_daily_cost_usd),
             "key_prefix": key_prefix,
         },
+        actor=actor,
+        target=AuditTarget.user(payload.user_id),
     )
 
     return CreateAPIKeyResponse(
@@ -99,6 +140,8 @@ async def create_api_key(
         quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
         expires_at=payload.expires_at,
         created_at=row["created_at"],
+        project_id=project_id,
+        project_name=project_name,
     )
 
 
@@ -154,6 +197,8 @@ async def list_api_keys(
                 usage_today_usd=Decimal(str(usage_today_map.get(uid, 0))),
                 usage_month_usd=Decimal(str(usage_month_map.get(uid, 0))),
                 notes=row["notes"],
+                project_id=row.get("project_id"),
+                project_name=row.get("project_name"),
             )
         )
 
@@ -196,8 +241,11 @@ async def get_api_key_detail(
         models_used = key_usage.get("models_used", [])
         last_request_at = key_usage.get("last_request_at")
 
-    quota_daily = float(row["quota_daily_cost_usd"]) if row["quota_daily_cost_usd"] else 1000.0
-    quota_monthly = float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] else None
+    # As enforcement reads them: only NULL is unset, and a quota of 0 refuses everything.
+    quota_daily = resolve_quota(row["quota_daily_cost_usd"])
+    quota_monthly = (
+        float(row["quota_monthly_cost_usd"]) if row["quota_monthly_cost_usd"] is not None else None
+    )
 
     usage = APIKeyDetailUsage(
         today={
@@ -208,7 +256,9 @@ async def get_api_key_detail(
         this_month={
             "cost_usd": cost_month,
             "requests": requests_month,
-            "quota_remaining_usd": (max(0, quota_monthly - cost_month) if quota_monthly else None),
+            "quota_remaining_usd": (
+                max(0, quota_monthly - cost_month) if quota_monthly is not None else None
+            ),
         },
         models_used=models_used,
         last_request_at=last_request_at,
@@ -235,7 +285,7 @@ async def update_api_key(
     request: Request,
     user_id: str,
     payload: UpdateAPIKeyRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> UpdateAPIKeyResponse:
     """Update an existing API key's settings.
@@ -254,15 +304,22 @@ async def update_api_key(
     existing = await op_store.get_key_detail(user_id)
     if not existing:
         raise HTTPException(404, f"User '{user_id}' not found")
+    # ``get_key_detail`` prefers a live key, so a revoked row means the user has
+    # none -- and ``update_key`` never writes a revoked row. Answering 200 and
+    # auditing the change would report an update that did not happen.
+    if existing.get("status") == "revoked":
+        raise HTTPException(409, f"API key for user '{user_id}' is revoked; nothing to update")
 
     await op_store.update_key(user_id, **payload_dict)
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "update_key",
-        user_id,
-        _serialize_for_audit({"updated_fields": list(payload_dict), "new_values": payload_dict}),
+        action="update_key",
+        details=_serialize_for_audit(
+            {"updated_fields": list(payload_dict), "new_values": payload_dict}
+        ),
+        actor=actor,
+        target=AuditTarget.user(user_id),
     )
 
     return UpdateAPIKeyResponse(
@@ -277,7 +334,7 @@ async def revoke_api_key(
     request: Request,
     user_id: str,
     hard_delete: bool = False,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> RevokeAPIKeyResponse:
     """Revoke or delete an API key.
@@ -308,6 +365,12 @@ async def revoke_api_key(
             f"API key for user '{user_id}' has been revoked. User can no longer access the API."
         )
 
-    await log_admin_action(op_store, admin_id, action_type, user_id, {"hard_delete": hard_delete})
+    await log_admin_action(
+        op_store,
+        action=action_type,
+        details={"hard_delete": hard_delete},
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
 
     return RevokeAPIKeyResponse(user_id=user_id, action=response_action, message=message)

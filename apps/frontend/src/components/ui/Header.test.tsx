@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
@@ -129,6 +129,23 @@ describe('Header', () => {
     expect(labels).toEqual(['Status', 'Example Project', 'Example Forum']);
   });
 
+  it('shows a docs link only when the deployment configures a docs URL', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'Docs' })).not.toBeInTheDocument();
+
+    cleanup();
+    brandingOverride = { ...configuredBranding, docsUrl: 'https://docs.example.test/' };
+
+    render(<Header />);
+
+    const docsLink = screen.getByRole('link', { name: 'Docs' });
+
+    expect(docsLink).toHaveAttribute('href', 'https://docs.example.test/');
+    expect(docsLink).toHaveAttribute('target', '_blank');
+    expect(docsLink).toHaveAttribute('rel', 'noopener noreferrer');
+  });
+
   it('hides the stats link unless the deployment publishes stats', () => {
     render(<Header />);
 
@@ -171,7 +188,74 @@ describe('Header', () => {
   it('offers guests no language button in the header', () => {
     render(<Header />);
 
-    expect(screen.queryByRole('button')).not.toBeInTheDocument();
+    // The phone's Menu button is the only one: it holds links, not languages.
+    expect(
+      screen.getAllByRole('button').map((button) => button.getAttribute('aria-label')),
+    ).toEqual(['Menu']);
+  });
+
+  it('offers the links under a Menu button for a phone', () => {
+    authState = { isAuthenticated: true, user: { id: 'ada', user_name: 'Ada', role: 'free' } };
+
+    render(<Header />);
+
+    const button = screen.getByRole('button', { name: 'Menu' });
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('navigation', { name: 'Menu' })).not.toBeInTheDocument();
+
+    fireEvent.click(button);
+
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    const menu = screen.getByRole('navigation', { name: 'Menu' });
+    expect(button).toHaveAttribute('aria-controls', menu.id);
+    expect(
+      within(menu)
+        .getAllByRole('link')
+        .map((link) => [link.textContent, link.getAttribute('href')]),
+    ).toEqual([
+      ['Status', 'https://status.example.test/'],
+      ['Example Project', 'https://project.example.test/'],
+      ['Docs Assistant', '/chat'],
+      ['Dashboard', '/dashboard'],
+      // On a phone the organization is listed here rather than in the bar.
+      ['Example Org', 'https://org.example.test'],
+    ]);
+    expect(within(menu).getByRole('link', { name: 'Status' })).toHaveAttribute('target', '_blank');
+  });
+
+  it('closes the menu on Escape, returning focus to its button', () => {
+    render(<Header />);
+    const button = screen.getByRole('button', { name: 'Menu' });
+    fireEvent.click(button);
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(screen.queryByRole('navigation', { name: 'Menu' })).not.toBeInTheDocument();
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(button).toHaveFocus();
+  });
+
+  it('closes the menu once a link in it is followed', () => {
+    featuresOverride = { rag: true, publicStats: true };
+    render(<Header />);
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
+
+    fireEvent.click(
+      within(screen.getByRole('navigation', { name: 'Menu' })).getByRole('link', {
+        name: 'Stats',
+      }),
+    );
+
+    expect(screen.queryByRole('navigation', { name: 'Menu' })).not.toBeInTheDocument();
+  });
+
+  it('offers no Menu button when there is nothing to list', () => {
+    brandingOverride = { appName: 'Bare Gateway', orgName: '', orgUrl: '', navLinks: [] };
+    featuresOverride = { rag: false, publicStats: false };
+
+    render(<Header />);
+
+    expect(screen.queryByRole('button', { name: 'Menu' })).not.toBeInTheDocument();
   });
 
   it('shows a dashboard link in the header for authenticated users', () => {

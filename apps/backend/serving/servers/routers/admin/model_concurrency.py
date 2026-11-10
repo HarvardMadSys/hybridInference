@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.schemas_admin import (
     ListModelConcurrencyResponse,
     ModelConcurrencyItem,
@@ -11,12 +12,12 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
     verify_admin_access,
 )
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -76,10 +77,10 @@ async def list_model_concurrency(
 
 @router.patch("/models/{model_id:path}/concurrency", response_model=ModelConcurrencyItem)
 async def update_model_concurrency(
-    request: Request,
     model_id: str,
     payload: UpdateModelConcurrencyRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ModelConcurrencyItem:
@@ -112,14 +113,14 @@ async def update_model_concurrency(
 
         await log_admin_action(
             op_store,
-            get_client_ip(request),
-            "models.concurrency.update",
-            None,
-            {
+            action="models.concurrency.update",
+            details={
                 "model_id": model_id,
                 "old_exempt": old_exempt,
                 "new_exempt": new_exempt,
             },
+            actor=actor,
+            target=AuditTarget.model(model_id),
         )
 
         return ModelConcurrencyItem(model_id=model_id, exempt=new_exempt)

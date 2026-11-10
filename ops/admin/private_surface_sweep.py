@@ -61,16 +61,24 @@ _SNIFF_BYTES = 8192
 def tracked_files(repo_root: Path) -> list[str]:
     """Return the paths tracked by the repository index."""
     output = subprocess.run(
-        ["git", "ls-files", "-z"],
+        ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
         cwd=repo_root,
         capture_output=True,
         check=True,
     ).stdout
-    return [name.decode() for name in output.split(b"\0") if name]
+    return [
+        name.decode()
+        for name in output.split(b"\0")
+        if name
+        and ((repo_root / name.decode()).exists() or (repo_root / name.decode()).is_symlink())
+    ]
 
 
 def read_text(path: Path) -> str | None:
     """Read text regardless of suffix; return None only for NUL-bearing binary."""
+    # Git stores the link target text; tracked target files are scanned separately.
+    if path.is_symlink():
+        return str(path.readlink())
     with path.open("rb") as stream:
         head = stream.read(_SNIFF_BYTES)
         if b"\0" in head:

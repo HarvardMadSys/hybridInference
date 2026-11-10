@@ -14,8 +14,10 @@ Two things live here that neither domain can do for the other:
     so when the preferred backend fails before producing any output, this layer
     asks the policy which other backend to try. The preserved contract is the
     one the single ``FixedRouter`` used to provide: try the remaining candidates
-    in policy order, re-raise the *preferred* attempt's error when everything
-    fails, and merge every attempt into the routing metadata and the feedback.
+    in policy order, stopping once two routes have refused the request itself as
+    malformed (``request_refusals_end_fallback``), re-raise the *preferred*
+    attempt's error when everything fails, and merge every attempt into the
+    routing metadata and the feedback.
 
 ``Feedback attribution``
     A request can now be served by more than one backend: attempt 1 on local,
@@ -65,11 +67,12 @@ from routing.hybrid_attempt_history import (
     tag_backend,
     tag_preference,
 )
-from routing.hybrid_stream_frames import is_client_visible, tag_backend_chunk
+from routing.hybrid_stream_frames import carries_routing, is_client_visible, tag_backend_chunk
 from routing.protocols import RoutingRequestOptions
 from routing.routers import (
     AllCircuitsOpenError,
     TargetUnavailableError,
+    request_refusals_end_fallback,
     select_surfaced_error,
 )
 
@@ -384,6 +387,8 @@ class HybridRouter:
                 attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
                 errors.append(exc)
                 _remember_dispatched(dispatched, attempt, exc)
+                if _refusals_end_plan(model_id, attempts, errors):
+                    break
                 continue
             self._remember_backend_decision(
                 params.get("request_id"),
@@ -415,23 +420,14 @@ class HybridRouter:
         being re-attempted. Only an attempt that failed before the client could
         see anything hands over to the next candidate, which is the same rule the
         single-router path applies.
+
+        Nothing runs until the first read, selection included, as in
+        ``FixedRouter.stream_chat_completion``: the serving layer reads the
+        stream inside the handling that turns a routing error into its status
+        (every circuit open is a 503), so one raised by this call would escape
+        it as a 500.
         """
-        decision = self.select_decision(
-            model_id,
-            messages,
-            routing_options=routing_options,
-            **params,
-        )
-        plan = self._attempt_plan(model_id, messages, decision, routing_options, params)
-        return _fallback_stream(
-            self,
-            decision,
-            plan,
-            model_id,
-            messages,
-            routing_options,
-            params,
-        )
+        return _fallback_stream(self, model_id, messages, routing_options, params)
 
     def _attempt_plan(
         self,
@@ -674,9 +670,14 @@ class HybridRouter:
     def _remember_stream_dispatch(
         self, request_id: Any, attempt: _Attempt, model_id: str, chunk: Any
     ) -> None:
-        """Capture routing frames while forwarding the original stream unchanged."""
+        """Capture routing frames while forwarding the original stream unchanged.
+
+        A frame that cannot carry ``_routing`` (``carries_routing``) is not
+        parsed: it still records which backend is serving, which is all it
+        contributes.
+        """
         payload = chunk if isinstance(chunk, dict) else {}
-        if isinstance(chunk, str) and chunk.startswith("data: "):
+        if isinstance(chunk, str) and chunk.startswith("data: ") and carries_routing(chunk):
             try:
                 payload = json.loads(chunk[6:].strip())
             except ValueError:
@@ -771,14 +772,19 @@ def _serves(backend: Any, model_id: str) -> bool:
 
 async def _fallback_stream(
     router: HybridRouter,
-    decision: RoutingDecision,
-    plan: Sequence[_Attempt],
     model_id: str,
     messages: list[dict[str, Any]],
     routing_options: RoutingRequestOptions | None,
     params: dict[str, Any],
 ) -> AsyncIterator[Any]:
     """Forward the first attempt the client can see, else try the next candidate."""
+    decision = router.select_decision(
+        model_id,
+        messages,
+        routing_options=routing_options,
+        **params,
+    )
+    plan = router._attempt_plan(model_id, messages, decision, routing_options, params)
     attempts: list[dict[str, Any]] = []
     errors: list[BaseException] = []
     refusals: list[BaseException] = []
@@ -841,9 +847,16 @@ async def _fallback_stream(
                     committed = committed or is_client_visible(held)
                     yield tag_backend_chunk(held, attempt.backend)
                 async for chunk in stream:
-                    router._remember_stream_dispatch(
-                        params.get("request_id"), attempt, model_id, chunk
-                    )
+                    # Once committed, the dispatch record already names this
+                    # backend and no other attempt can run, so only a frame
+                    # that can still add an endpoint to it is read: a late
+                    # routing frame may name an attempt (a hedge leg) that
+                    # no earlier frame did, and feedback for it is routed by
+                    # that name.
+                    if not committed or carries_routing(chunk):
+                        router._remember_stream_dispatch(
+                            params.get("request_id"), attempt, model_id, chunk
+                        )
                     committed = committed or is_client_visible(chunk)
                     yield tag_backend_chunk(chunk, attempt.backend)
                 return
@@ -879,6 +892,8 @@ async def _fallback_stream(
             attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
             errors.append(exc)
             _remember_dispatched(dispatched, attempt, exc)
+            if _refusals_end_plan(model_id, attempts, errors):
+                break
         finally:
             if callable(aclose):
                 await aclose()
@@ -1022,6 +1037,27 @@ def _remember_dispatched(
         observed = attempt.endpoint_id
     if observed is not None:
         dispatched.add(observed)
+
+
+def _refusals_end_plan(
+    model_id: str,
+    attempts: Sequence[dict[str, Any]],
+    errors: Sequence[BaseException],
+) -> bool:
+    """Return whether the plan stops because enough routes refused the request itself.
+
+    The single router's bound (``request_refusals_end_fallback``) applied to the
+    plan this layer walks, so a composed model sends a malformed request to no
+    more routes than the shared router would. ``attempts`` and ``errors`` are
+    appended together, one record per failed attempt.
+    """
+    return request_refusals_end_fallback(
+        model_id,
+        [
+            (record.get("endpoint_id"), error)
+            for record, error in zip(attempts, errors, strict=False)
+        ],
+    )
 
 
 def _raise_after_attempts(

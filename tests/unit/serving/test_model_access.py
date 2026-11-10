@@ -16,7 +16,9 @@ import pytest
 from serving.model_access import (
     ModelAccessDenial,
     baseline_required_role,
+    default_required_role_for_model,
     model_access_denial,
+    model_cost_is_unknown_remote,
     route_canonical_model_id,
 )
 
@@ -52,6 +54,249 @@ def _ctx(**extra) -> dict:
 @pytest.mark.asyncio
 async def test_an_open_model_is_allowed():
     assert await model_access_denial(_route(), CANONICAL, _ctx()) is None
+
+
+class TestDefaultRequiredRoleForModel:
+    """The loader's default tier for a models.yaml entry (issue #1576)."""
+
+    def test_an_omitted_role_on_a_paid_model_defaults_to_pro(self):
+        model = {"id": "claude-opus-4.8", "pricing": {"prompt": "1.2", "completion": "4.8"}}
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_zero_user_price_does_not_make_a_remote_route_free(self):
+        model = {
+            "id": "sponsored-chat",
+            "provider": "openai_compat",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "route": [{"kind": "openai_compat", "base_url": "https://api.example.test/v1"}],
+        }
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_explicit_free_role_can_override_zero_price_remote_default(self):
+        model = {
+            "id": "sponsored-chat",
+            "required_role": "free",
+            "provider": "openai_compat",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "route": [{"kind": "openai_compat", "base_url": "https://api.example.test/v1"}],
+        }
+        assert default_required_role_for_model(model) == "free"
+
+    def test_an_unpriced_local_engine_stays_free(self):
+        model = {
+            "id": "local-only",
+            "provider": "sglang",
+            "base_url": "http://localhost:12003/v1",
+        }
+        assert default_required_role_for_model(model) == "free"
+
+    def test_an_unknown_cost_remote_route_defaults_to_pro(self):
+        # The #1605 gap: an externally billed upstream configured with no
+        # pricing metadata and no role. The config cannot prove it is free,
+        # and the route reaches a non-local host, so it defaults closed.
+        model = {
+            "id": "ext-silent",
+            "route": [
+                {
+                    "kind": "openrouter",
+                    "base_url": "https://openrouter.ai/api/v1",
+                    "api_keys": ["${OPENROUTER_API_KEY}"],
+                    "provider_model_id": "meta-llama/llama-3.3-70b-instruct",
+                }
+            ],
+        }
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_local_inference_kind_on_a_local_host_stays_free(self):
+        # The one free-by-construction exemption the gate still grants: a
+        # route whose kind names a self-hosted engine API (sglang, vllm,
+        # ollama) on a local host. The kind is the deployment asserting
+        # "this box runs the engine itself", which is what makes the
+        # absence of a pricing block meaningful — an engine API is not a
+        # forwarding dialect.
+        for kind in ("sglang", "vllm", "ollama"):
+            model = {
+                "id": "local-gpu",
+                "route": [{"kind": kind, "base_url": "http://localhost:12003/v1"}],
+            }
+            assert model_cost_is_unknown_remote(model) is False, kind
+            assert default_required_role_for_model(model) == "free", kind
+
+    def test_a_route_inherits_the_model_level_base_url_like_the_registry(self):
+        # The registry fills an omitted route base_url from the top-level
+        # config; the classifier mirrors that, so a locally-served engine
+        # declared with a model-level base_url stays free.
+        model = {
+            "id": "local-gpu",
+            "provider": "sglang",
+            "base_url": "http://localhost:12003/v1",
+            "route": [{"kind": "sglang", "weight": 1.0}],
+        }
+        assert model_cost_is_unknown_remote(model) is False
+        assert default_required_role_for_model(model) == "free"
+
+    def test_an_env_template_base_url_fails_closed(self):
+        # A ${VAR} base_url cannot be classified from the raw config: the
+        # registry expands it, this gate must not guess. An engine kind on
+        # an unclassifiable host still defaults pro; an explicit role or a
+        # zero pricing block is the remedy.
+        model = {
+            "id": "local-gpu",
+            "route": [{"kind": "sglang", "base_url": "${LOCAL_ENGINE_URL}"}],
+        }
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_local_compat_proxy_defaults_to_pro(self):
+        # The gap the local-host rule used to leave open (audit, 2026-10-20):
+        # an openai_compat route on localhost is a forwarding dialect, not a
+        # local engine — the proxy can relay to a paid remote provider, and
+        # local network placement proves nothing about who invoices. The
+        # config cannot prove this route is free, so the default closes.
+        model = {
+            "id": "local-proxy",
+            "route": [{"kind": "openai_compat", "base_url": "http://localhost:8080/v1"}],
+        }
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_an_unpriced_route_without_a_local_inference_kind_defaults_to_pro(self):
+        # Any kind the config does not explicitly pin to a self-hosted engine
+        # API stays unknown-cost even on a local host: remote API kinds,
+        # canary kinds, and an omitted kind (which inherits the model's
+        # provider field) all fail closed.
+        for kind in (None, "openrouter", "staging", "kimi"):
+            route = {"base_url": "http://127.0.0.1:9000/v1"}
+            if kind is not None:
+                route["kind"] = kind
+            model = {"id": "m", "provider": kind or "zai", "route": [route]}
+            assert model_cost_is_unknown_remote(model) is True, kind
+            assert default_required_role_for_model(model) == "pro", kind
+
+    def test_an_explicit_role_still_wins_on_a_local_proxy(self):
+        # Deliberate free-tier access stays a configuration decision: an
+        # explicit required_role is never overridden by the cost default.
+        model = {
+            "id": "local-proxy",
+            "required_role": "free",
+            "route": [{"kind": "openai_compat", "base_url": "http://localhost:8080/v1"}],
+        }
+        assert default_required_role_for_model(model) == "free"
+
+    def test_zero_user_pricing_does_not_prove_a_local_proxy_is_free(self):
+        # A local compatibility proxy may still relay to a paid provider.
+        model = {
+            "id": "local-proxy",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "route": [{"kind": "openai_compat", "base_url": "http://localhost:8080/v1"}],
+        }
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_endpointless_anthropic_model_defaults_to_pro(self):
+        model = {"id": "claude-endpointless", "provider": "anthropic"}
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_synthesized_single_route_inherits_the_model_provider_kind(self):
+        # A model with no route list synthesizes one from the top-level
+        # config; its kind is the model's provider field, so the same rule
+        # applies: a compat provider on localhost is a proxy, not an engine.
+        model = {"id": "m", "provider": "openai_compat", "base_url": "http://localhost:8080/v1"}
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+        engine = {"id": "m", "provider": "sglang", "base_url": "http://localhost:12003/v1"}
+        assert model_cost_is_unknown_remote(engine) is False
+        assert default_required_role_for_model(engine) == "free"
+
+    @pytest.mark.parametrize("routes", [None, []])
+    def test_an_empty_route_list_is_classified_like_an_omitted_one(self, routes):
+        # The registry reads ``m.get("route") or [synthesized]``: ``route: []``
+        # and ``route: null`` synthesize the same single route from the
+        # model-level provider / base_url as an omitted list. An empty list
+        # must not read as "no routes, so nothing can cost".
+        remote = {"id": "m", "provider": "openai_compat", "base_url": "https://api.example.test/v1"}
+        engine = {"id": "m", "provider": "sglang", "base_url": "http://localhost:12003/v1"}
+        for base, unknown, role in ((remote, True, "pro"), (engine, False, "free")):
+            model = {**base, "route": routes}
+            assert model_cost_is_unknown_remote(model) is unknown, model
+            assert default_required_role_for_model(model) == role, model
+
+    def test_an_empty_route_list_keeps_explicit_role_and_paid_pricing(self):
+        remote = {
+            "id": "m",
+            "provider": "openai_compat",
+            "base_url": "https://api.example.test/v1",
+            "route": [],
+        }
+        assert default_required_role_for_model({**remote, "required_role": "free"}) == "free"
+        paid = {**remote, "pricing": {"prompt": "1.0"}}
+        assert model_cost_is_unknown_remote(paid) is False
+        assert default_required_role_for_model(paid) == "pro"
+
+    def test_an_unparseable_top_level_base_url_defaults_closed(self):
+        # A single-route model without a route list falls back to the
+        # top-level base_url; if it cannot be parsed as local, default closed.
+        model = {"id": "top-level-only", "base_url": "https://api.example.io/v1"}
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_mixed_local_and_unknown_cost_remote_model_defaults_to_pro(self):
+        # One remote route with no pricing metadata is enough: the model as a
+        # whole can cost money.
+        model = {
+            "id": "hybrid-silent",
+            "route": [
+                {"kind": "openai_compat", "base_url": "http://localhost:11434/v1"},
+                {"kind": "openrouter", "base_url": "https://openrouter.ai/api/v1"},
+            ],
+        }
+        assert model_cost_is_unknown_remote(model) is True
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_route_level_price_counts_as_paid(self):
+        model = {
+            "id": "hybrid",
+            "pricing": {"prompt": "0", "completion": "0"},
+            "route": [
+                {"kind": "openai_compat", "base_url": "http://local", "pricing": {"prompt": "0.3"}},
+                {"kind": "openai_compat", "base_url": "http://cloud"},
+            ],
+        }
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_pricing_schedule_counts_as_paid(self):
+        model = {"id": "sched", "pricing_schedule": {"effective_at": "2026-01-01T00:00:00Z"}}
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_a_pricing_source_counts_as_paid(self):
+        model = {"id": "sourced", "pricing_source": {"provider": "deepseek", "model": "x"}}
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_an_unparseable_price_counts_as_paid(self):
+        model = {"id": "odd", "pricing": {"prompt": "market"}}
+        assert default_required_role_for_model(model) == "pro"
+
+    def test_an_explicit_role_always_wins(self):
+        model = {"id": "sponsored", "required_role": "free", "pricing": {"prompt": "2.0"}}
+        assert default_required_role_for_model(model) == "free"
+
+    def test_admin_only_beside_an_explicit_free_role_stays_admin(self):
+        # The legacy precedence register_route has always applied: the
+        # contradictory pair must not open an admin-only model to free users.
+        model = {"id": "legacy", "admin_only": True, "required_role": "free"}
+        assert default_required_role_for_model(model) == "admin"
+
+    @pytest.mark.parametrize("role", ["pro", "internal", "admin"])
+    def test_any_other_explicit_role_replaces_admin_only(self, role):
+        model = {"id": "legacy", "admin_only": True, "required_role": role}
+        assert default_required_role_for_model(model) == role
+
+    def test_an_invalid_explicit_role_is_returned_untouched(self):
+        # The registry validates and fails closed to admin; the default
+        # helper must not swallow the typo.
+        model = {"id": "typo", "required_role": "freee"}
+        assert default_required_role_for_model(model) == "freee"
 
 
 @pytest.mark.asyncio

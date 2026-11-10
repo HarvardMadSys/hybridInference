@@ -3,10 +3,30 @@
 import { APIError, ERROR_MESSAGES, httpStatusToErrorCode } from '@/lib/utils/errors';
 
 let accessToken: string | null = null;
-let refreshPromise: Promise<boolean> | null = null;
+// The refresh in flight, for the session it was started for.
+let refreshing: { generation: number; promise: Promise<boolean> } | null = null;
+// Bumped whenever this tab's session is replaced or ended from outside a
+// refresh -- a sign-in, an account switch, a sign-out, an account change.
+// Work started for an earlier session (a refresh, a retry, an upload) checks it
+// before it acts, so it can neither install its old token over the new session,
+// nor end the new session on a late 401, nor run again as the new account --
+// even when the new session is the same account again (A, then B, then A).
+let sessionGeneration = 0;
 // Set once a refresh proves the browser's session now belongs to another
 // account; cleared only by a sign-in in this tab. See refreshAccessToken.
 let accountChanged = false;
+// Set for the life of a document that runs a script the console does not
+// control -- the deployment's analytics counter, on the public pages (see
+// src/components/analytics/PublicAnalytics.tsx). That script can read whatever
+// the page holds, so the document holds no session at all. See
+// keepDocumentSignedOut.
+let keptSignedOut = false;
+// Set once this document has asked to be replaced. See reloadDocument.
+let reloading = false;
+// The generation notifyAuthExpired left behind. While it is still the current
+// one, this tab's session ended on its own -- refused at a refresh -- rather
+// than giving way to another; see sessionGoneError.
+let expiredGeneration = -1;
 
 // These events are ephemeral within one loaded console bundle, not persisted
 // distribution state. Keeping a stable neutral name lets storageKeyPrefix be
@@ -41,6 +61,7 @@ export async function safeFetch(input: string, init?: RequestInit): Promise<Resp
 
 function notifyAuthExpired(): void {
   setAccessToken(null);
+  expiredGeneration = sessionGeneration;
   if (typeof window !== 'undefined') {
     window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));
   }
@@ -58,6 +79,7 @@ export type AccountChangeReason = 'switched' | 'signed-out';
  * Dispatches `ACCOUNT_CHANGED_EVENT` with the reason as its `detail`.
  */
 export function markAccountChanged(reason: AccountChangeReason): void {
+  sessionGeneration += 1;
   accountChanged = true;
   accessToken = null;
   sessionStorage.removeItem('access_token');
@@ -66,7 +88,55 @@ export function markAccountChanged(reason: AccountChangeReason): void {
   }
 }
 
+/**
+ * Keep this document signed out until it is replaced.
+ *
+ * For a page that runs a third-party script. A token the tab still holds from
+ * an earlier page is dropped, and from now on the client mints none -- it never
+ * refreshes, so a request that needs a session is refused unsent -- and
+ * installs none: a sign-in answered anyway reloads the page, and its session
+ * starts in the new document. Nothing clears it; the document ends instead.
+ */
+export function keepDocumentSignedOut(): void {
+  keptSignedOut = true;
+  sessionGeneration += 1;
+  accessToken = null;
+  sessionStorage.removeItem('access_token');
+}
+
+export function isDocumentKeptSignedOut(): boolean {
+  return keptSignedOut;
+}
+
+/**
+ * Replace this document with a fresh load of its address, once however often
+ * it is asked. The way a document kept signed out takes up a session: the new
+ * document is rendered for it, and loads no third-party script.
+ */
+export function reloadDocument(): void {
+  if (reloading) return;
+  reloading = true;
+  window.location.reload();
+}
+
+/** True once `reloadDocument` has been asked: this document is on its way out. */
+export function isDocumentReloading(): boolean {
+  return reloading;
+}
+
+function signedOutDocumentError(): APIError {
+  return new APIError('SESSION_NOT_FOUND', ERROR_MESSAGES.SESSION_NOT_FOUND);
+}
+
 export function setAccessToken(token: string | null): void {
+  if (token && keptSignedOut) {
+    // The server has issued the session; this document must not hold it.
+    reloadDocument();
+    return;
+  }
+  // Only sign-in, account switch, setup and sign-out hand a session in or end
+  // it here; a refresh of the same session installs its token itself.
+  sessionGeneration += 1;
   accessToken = token;
   if (token) {
     // Only a sign-in in this tab hands a token in from outside; the account
@@ -110,6 +180,22 @@ function tokenSubject(token: string | null): string | null {
   return typeof sub === 'string' && sub ? sub : null;
 }
 
+/** The account this tab's token names -- expired or not -- or null without one. */
+export function tokenAccount(): string | null {
+  return tokenSubject(getAccessToken());
+}
+
+/**
+ * Whether `error`, from a request that needed this tab's session, says the
+ * session is gone -- refused (401, 403), ended or replaced -- rather than only
+ * that the request failed: a 5xx, a 429, no answer at all.
+ */
+export function isSessionGone(error: unknown): boolean {
+  if (!(error instanceof APIError)) return false;
+  if (error.statusCode === 401 || error.statusCode === 403) return true;
+  return ['ACCOUNT_CHANGED', 'TOKEN_EXPIRED', 'SESSION_NOT_FOUND'].includes(error.code);
+}
+
 /**
  * Run a request that rotates the session cookie with every other tab's held off.
  *
@@ -126,15 +212,19 @@ export async function withSessionLock<T>(run: () => Promise<T>): Promise<T> {
 }
 
 async function refreshAccessToken(apiBase: string): Promise<boolean> {
-  if (accountChanged) return false;
-  // If refresh is already in progress, wait for it to prevent race conditions
-  if (refreshPromise) {
-    return refreshPromise;
-  }
+  if (accountChanged || keptSignedOut) return false;
+  const generation = sessionGeneration;
+  // A refresh already in flight for this same session answers this one too.
+  if (refreshing && refreshing.generation === generation) return refreshing.promise;
 
-  refreshPromise = (async () => {
+  const entry = { generation, promise: Promise.resolve(false) };
+  entry.promise = (async () => {
     try {
       return await withSessionLock(async () => {
+        // Another session was installed meanwhile: this refresh is not for it.
+        // Without Web Locks a sign-in or switch is not held off by the lock,
+        // so this is checked again after every wait below.
+        if (generation !== sessionGeneration) return false;
         // The account this tab is showing, read before the refresh can replace it.
         const shownSubject = tokenSubject(getAccessToken());
         const resp = await safeFetch(`${apiBase}/auth/refresh`, {
@@ -142,11 +232,24 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
           credentials: 'include',
           signal: AbortSignal.timeout(REFRESH_TIMEOUT_MS),
         });
-        if (!resp.ok) {
+        if (generation !== sessionGeneration) return false;
+        if (resp.status === 401 || resp.status === 403) {
+          // The server refused the session: it has ended.
           notifyAuthExpired();
           return false;
         }
+        if (!resp.ok) {
+          // Anything else says nothing about the session -- the gateway
+          // restarting, its pool busy, a rate limit -- so the tab keeps it, and
+          // the request that needed a token fails with an error it can retry.
+          throw new APIError(
+            httpStatusToErrorCode(resp.status),
+            `HTTP ${resp.status}: ${resp.statusText}`,
+            resp.status,
+          );
+        }
         const data = await resp.json();
+        if (generation !== sessionGeneration) return false;
         const token = data?.access_token as string | undefined;
         if (!token) {
           notifyAuthExpired();
@@ -166,15 +269,26 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
       });
     } finally {
       // Clear the promise so future refreshes can proceed
-      refreshPromise = null;
+      if (refreshing === entry) refreshing = null;
     }
   })();
-
-  return refreshPromise;
+  refreshing = entry;
+  return entry.promise;
 }
 
 function accountChangedError(): APIError {
   return new APIError('ACCOUNT_CHANGED', ERROR_MESSAGES.ACCOUNT_CHANGED);
+}
+
+/**
+ * Why a request's session is gone: it ended on its own (a refresh was refused,
+ * and nothing replaced it since), or another account or session took its place.
+ */
+function sessionGoneError(): APIError {
+  if (!accountChanged && sessionGeneration === expiredGeneration && !getAccessToken()) {
+    return new APIError('TOKEN_EXPIRED', ERROR_MESSAGES.TOKEN_EXPIRED, 401);
+  }
+  return accountChangedError();
 }
 
 export async function fetchWithAuth(
@@ -183,12 +297,14 @@ export async function fetchWithAuth(
   init: RequestInit = {},
 ): Promise<Response> {
   if (accountChanged) throw accountChangedError();
+  if (keptSignedOut) throw signedOutDocumentError();
+  const generation = sessionGeneration;
   let token = getAccessToken();
   if (isAccessTokenExpired(token)) {
     await refreshAccessToken(apiBase);
     // Sending without a token now would earn a 401 whose retry runs as the
     // other account, the very switch the refresh just refused.
-    if (accountChanged) throw accountChangedError();
+    if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
     token = getAccessToken();
   }
 
@@ -202,10 +318,13 @@ export async function fetchWithAuth(
   });
 
   if (resp.status !== 401) return resp;
+  // A 401 for a session that has since been replaced: refreshing now would
+  // refresh the new session and send this request again as it.
+  if (generation !== sessionGeneration) throw sessionGoneError();
 
   const refreshed = await refreshAccessToken(apiBase);
+  if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
   if (!refreshed) {
-    if (accountChanged) throw accountChangedError();
     notifyAuthExpired();
     return resp;
   }
@@ -219,6 +338,107 @@ export async function fetchWithAuth(
     headers: headersRetry,
     credentials: 'include',
   });
+}
+
+/** Progress of an upload: bytes sent so far, of `total` (0 when unknown). */
+export interface UploadProgress {
+  loaded: number;
+  total: number;
+}
+
+function xhrSend(
+  url: string,
+  body: XMLHttpRequestBodyInit,
+  token: string | null,
+  onProgress?: (progress: UploadProgress) => void,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('The upload was cancelled.', 'AbortError'));
+      return;
+    }
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', url);
+    xhr.withCredentials = true;
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`);
+    xhr.upload.onprogress = (event) =>
+      onProgress?.({ loaded: event.loaded, total: event.lengthComputable ? event.total : 0 });
+    const abort = () => xhr.abort();
+    signal?.addEventListener('abort', abort, { once: true });
+    xhr.onload = () => {
+      signal?.removeEventListener('abort', abort);
+      resolve(
+        new Response(xhr.responseText, {
+          status: xhr.status,
+          headers: { 'content-type': xhr.getResponseHeader('content-type') ?? 'application/json' },
+        }),
+      );
+    };
+    xhr.onerror = () => {
+      signal?.removeEventListener('abort', abort);
+      reject(new APIError('NETWORK_ERROR', 'Network request failed'));
+    };
+    xhr.onabort = () => {
+      signal?.removeEventListener('abort', abort);
+      reject(new DOMException('The upload was cancelled.', 'AbortError'));
+    };
+    xhr.send(body);
+  });
+}
+
+/**
+ * POST a body with upload progress, as `fetchWithAuth` sends any request.
+ *
+ * `fetch` reports no upload progress, so this sends through XHR; everything
+ * about authentication is `fetchWithAuth`'s own: the same token, the same
+ * refresh before an expired one and after a 401 (one retry, with the body sent
+ * again), and the same refusal once this tab's account has changed -- so an
+ * upload never lands in an account the page does not show. Cancelled through
+ * `signal` (an `AbortError`).
+ */
+export async function uploadWithAuth(
+  apiBase: string,
+  input: string,
+  body: XMLHttpRequestBodyInit,
+  options: {
+    /** The account the page that started the upload shows; nothing else may receive it. */
+    expectedUserId: string;
+    onProgress?: (progress: UploadProgress) => void;
+    signal?: AbortSignal;
+  },
+): Promise<Response> {
+  // The upload belongs to the account the page shows, not to whichever token
+  // the tab holds now: a sign-in or switch installs the next account's token
+  // before the page has moved to it. So the token must name that account
+  // before anything is sent, after any refresh, before a retry and when the
+  // answer arrives -- in the same session, with no session installed between.
+  const expected = options.expectedUserId;
+  const owns = () => !accountChanged && tokenSubject(getAccessToken()) === expected;
+  if (accountChanged) throw accountChangedError();
+  if (keptSignedOut) throw signedOutDocumentError();
+  let token = getAccessToken();
+  if (token && tokenSubject(token) !== expected) throw accountChangedError();
+  if (isAccessTokenExpired(token)) {
+    await refreshAccessToken(apiBase);
+    token = getAccessToken();
+  }
+  if (!owns()) throw sessionGoneError();
+  const generation = sessionGeneration;
+  const same = () => owns() && generation === sessionGeneration;
+  const url = `${apiBase}${input}`;
+  const resp = await xhrSend(url, body, token, options.onProgress, options.signal);
+  if (!same()) throw sessionGoneError();
+  if (resp.status !== 401) return resp;
+  const refreshed = await refreshAccessToken(apiBase);
+  if (!same()) throw sessionGoneError();
+  if (!refreshed) {
+    notifyAuthExpired();
+    return resp;
+  }
+  const retried = await xhrSend(url, body, getAccessToken(), options.onProgress, options.signal);
+  if (!same()) throw sessionGoneError();
+  return retried;
 }
 
 export async function jsonOrThrow<T>(resp: Response): Promise<T> {
@@ -266,7 +486,9 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'RESET_TOKEN_INVALID';
       } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (lowerMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired') && resp.status === 401) {
+        // Only an expired session is a 401. A 400/503 about an expired SMS code
+        // or verification link keeps its own message, which says what to do.
         errorCode = 'TOKEN_EXPIRED';
       } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';
@@ -317,7 +539,7 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'RESET_TOKEN_INVALID';
       } else if (lowerMessage.includes('already been used')) {
         errorCode = 'TOKEN_ALREADY_USED';
-      } else if (lowerMessage.includes('expired')) {
+      } else if (lowerMessage.includes('expired') && resp.status === 401) {
         errorCode = 'TOKEN_EXPIRED';
       } else if (lowerMessage.includes('invalid') && lowerMessage.includes('token')) {
         errorCode = 'INVALID_TOKEN';

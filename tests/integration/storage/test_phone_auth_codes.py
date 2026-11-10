@@ -11,6 +11,7 @@ import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -38,8 +39,9 @@ async def phone_store():
         pool = await postgres.create_pool(
             min_size=2, max_size=12, server_settings={"search_path": schema}
         )
+        async with pool.acquire() as conn:
+            await prepare_current_schema(conn)
         store = PostgresOperationalStore(pool)
-        await store.initialize()
         yield store
     finally:
         if pool is not None:
@@ -177,6 +179,8 @@ async def test_phone_uniqueness_and_no_synthetic_email_under_signup_race(phone_s
     assert user["email"] is None
     assert user["password_hash"] is None
     assert user["phone_verified"] is True
+    projects = await phone_store.list_projects(user["id"])
+    assert [project["id"] for project in projects] == [f"proj_d_{user['id']}"]
 
 
 async def test_binding_preserves_uniqueness_existing_phone_and_account_status(phone_store):
@@ -418,8 +422,8 @@ async def test_broadcast_recipient_query_excludes_accounts_without_email(phone_s
 
 
 async def test_purpose_check_from_before_delete_account_is_rebuilt(phone_store):
-    from serving.storage.log_schema import constraint_admitted_values, constraint_definition
-    from serving.storage.phone_auth import initialize_phone_auth
+    from migrations.baseline.ddl import constraint_admitted_values, constraint_definition
+    from migrations.baseline.phone_auth import initialize_phone_auth
 
     async with phone_store._pool.acquire() as conn:
         await conn.execute(

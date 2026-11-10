@@ -1,12 +1,14 @@
-import { ConfigurationTab } from '@/components/features/admin/ConfigurationTab';
+import { redirect } from 'next/navigation';
+
+import { ADMIN_SETTINGS_PATH } from '@/components/features/configuration/paths';
 
 interface PageProps {
   searchParams?: Promise<{ missing?: string }>;
 }
 
-// `?missing=1` is where the "required settings are missing" banner links: the
-// tab opens filtered to what needs a value.
+// The configuration moved into Admin → Settings. An old link still lands
+// there, still filtered to what needs a value when it asked for that.
 export default async function Page({ searchParams }: PageProps) {
   const params = await searchParams;
-  return <ConfigurationTab initialMissingOnly={params?.missing === '1'} />;
+  redirect(params?.missing === '1' ? `${ADMIN_SETTINGS_PATH}?missing=1` : ADMIN_SETTINGS_PATH);
 }

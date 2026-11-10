@@ -20,9 +20,10 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from serving.observability.tracked_tasks import tracked_task
+from serving.batch.attempts import observe_billing
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
+from serving.spend_ledger import ledger_for
 from serving.storage.utils import billable_output_tokens
 from serving.utils.logging import get_logger
 
@@ -35,9 +36,12 @@ logger = get_logger(__name__)
 class PricingLookup:
     """Cache adapter pricing keyed by endpoint_id (fallback: provider+base_url).
 
-    Adapters are immutable after :func:`bootstrap.initialize`, so the cache
-    lives for the lifetime of the process. ``invalidate()`` is a future-only
-    extension if hot-reload ever lands.
+    An executed attempt's pricing snapshot takes precedence. Without one,
+    the adapter config is looked up on every call, a walk over one route's
+    adapters: an admin route edit installs a new adapter at runtime and keeps
+    its endpoint_id when the target and URL are unchanged. What is cached is
+    the pricing read from one config, kept while that config is the one
+    installed.
     """
 
     def __init__(self, *, router: Any) -> None:
@@ -50,9 +54,9 @@ class PricingLookup:
                 config that matches the routing target.
         """
         self._router = router
-        self._config_cache: dict[tuple[str, str | None], Any | None] = {}
-        self._dict_cache: dict[tuple[str, str | None], dict[str, str] | None] = {}
-        self._typed_cache: dict[tuple[str, str | None], Pricing | None] = {}
+        # Each value is (the config it was read from, the pricing).
+        self._dict_cache: dict[tuple[str, str | None], tuple[Any, dict[str, str] | None]] = {}
+        self._typed_cache: dict[tuple[str, str | None], tuple[Any, Pricing | None]] = {}
 
     # -- public API ----------------------------------------------------------
 
@@ -61,8 +65,9 @@ class PricingLookup:
 
         Resolution order:
 
-        1. Adapter-emitted dict in ``routing.extra["pricing"]`` (some
-           adapters override their registered pricing per-call).
+        1. Executed-attempt dict in ``routing.extra["pricing"]`` (some
+           adapters override their registered pricing per-call; routers
+           fill in the executed adapter's price otherwise).
         2. Registry walk by ``routing.endpoint_id`` / ``(provider, base_url)``
            — typed result is cached so float parsing only happens once.
         """
@@ -71,13 +76,18 @@ class PricingLookup:
             return _pricing_from_dict(embedded)
 
         key = self._cache_key(routing)
-        if key is not None and key in self._typed_cache and not self._is_scheduled(routing):
-            return self._typed_cache[key]
+        config = self._lookup_config(routing)
+        if key is None or config is None:
+            return None
+        scheduled = has_scheduled_pricing(config)
+        cached = self._typed_cache.get(key)
+        if not scheduled and cached is not None and cached[0] is config:
+            return cached[1]
 
         raw = self._lookup_raw_dict(routing)
         typed = _pricing_from_dict(raw) if raw is not None else None
-        if key is not None and not self._is_scheduled(routing):
-            self._typed_cache[key] = typed
+        if not scheduled:
+            self._typed_cache[key] = (config, typed)
         return typed
 
     def raw_dict_for_routing(self, routing: RoutingInfo) -> dict[str, str] | None:
@@ -96,9 +106,11 @@ class PricingLookup:
 
     @staticmethod
     def _embedded_pricing_dict(routing: RoutingInfo) -> dict[str, str] | None:
-        """Pull adapter-emitted pricing dict from ``routing.extra``."""
+        """Pull the executed attempt's pricing dict from ``routing.extra``."""
         embedded = routing.extra.get("pricing")
-        if isinstance(embedded, dict) and embedded:
+        # An empty snapshot means this attempt was unpriced. Do not borrow a
+        # replacement route's price (or a preceding fallback attempt's price).
+        if isinstance(embedded, dict):
             return embedded  # type: ignore[return-value]
         return None
 
@@ -119,25 +131,20 @@ class PricingLookup:
         config = self._lookup_config(routing)
         if config is None:
             return None
-        if not has_scheduled_pricing(config) and key in self._dict_cache:
-            return self._dict_cache[key]
+        scheduled = has_scheduled_pricing(config)
+        cached = self._dict_cache.get(key)
+        if not scheduled and cached is not None and cached[0] is config:
+            return cached[1]
 
         raw = effective_pricing(config)
-        if not has_scheduled_pricing(config):
-            self._dict_cache[key] = raw
+        if not scheduled:
+            self._dict_cache[key] = (config, raw)
         return raw
 
-    def _is_scheduled(self, routing: RoutingInfo) -> bool:
-        config = self._lookup_config(routing)
-        return config is not None and has_scheduled_pricing(config)
-
     def _lookup_config(self, routing: RoutingInfo) -> Any | None:
-        key = self._cache_key(routing)
-        if key is None:
+        if self._cache_key(routing) is None:
             return None
-        if key not in self._config_cache:
-            self._config_cache[key] = self._walk_routes_for_pricing_config(routing)
-        return self._config_cache[key]
+        return self._walk_routes_for_pricing_config(routing)
 
     def _walk_routes_for_pricing_config(self, routing: RoutingInfo) -> Any | None:
         """Walk ``router.routes[model].adapters`` to find a matching config.
@@ -208,7 +215,7 @@ def _pricing_from_dict(raw: dict[str, Any]) -> Pricing | None:
 
 
 class CostTracker:
-    """Compute upstream cost from token usage and fire-and-forget the DB increment.
+    """Compute upstream cost from token usage and record it in the spend ledger.
 
     Replaces the module-level ``_schedule_cost_increment`` helper from
     completions.py. The cost-math is centralized in ``_compute_cost`` and
@@ -221,8 +228,8 @@ class CostTracker:
         """Construct with the operational store and pricing lookup.
 
         Args:
-            op_store: Any object exposing
-                ``async increment_user_cost(user_id, cost_usd)``.
+            op_store: The operational store whose counters the costs are
+                written to (:func:`serving.spend_ledger.ledger_for`).
                 ``None``-tolerant: if there's no operational store
                 configured the increment is skipped silently.
             pricing: The shared :class:`PricingLookup` instance. Used
@@ -240,15 +247,53 @@ class CostTracker:
         prompt_tokens: int,
         completion_tokens: int,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
+        api_key_id: int | None = None,
     ) -> RoutingInfo:
         """Compute cost, schedule the DB increment, return enriched routing.
 
+        The awaitable form of :meth:`charge`, which does the work: nothing here
+        suspends.
+        """
+        return self.charge(
+            user_id=user_id,
+            routing=routing,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            cache_read_tokens=cache_read_tokens,
+            cache_write_tokens=cache_write_tokens,
+            reasoning_tokens=reasoning_tokens,
+            api_key_id=api_key_id,
+        )
+
+    def charge(
+        self,
+        *,
+        user_id: str,
+        routing: RoutingInfo,
+        prompt_tokens: int,
+        completion_tokens: int,
+        total_tokens: int | None = None,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
+        reasoning_tokens: int = 0,
+        api_key_id: int | None = None,
+    ) -> RoutingInfo:
+        """Compute cost, schedule the DB increment, return enriched routing.
+
+        Synchronous, so a caller that must not suspend -- a stream being torn
+        down by a cancellation -- can still bill.
+
+        ``api_key_id`` is the key the request was made with (the log row's
+        ``metadata["api_key_id"]``), whose own counter is bumped as well.
+
         Returns a *new* :class:`RoutingInfo` (frozen dataclass) with
-        ``upstream_cost_usd`` populated when pricing is available; the
-        increment is dispatched as a background task so the response path
+        ``upstream_cost_usd`` populated when pricing is available; the cost
+        is recorded in the spend ledger, which counts it against the quota at
+        once and writes the counters in the background, so the response path
         is never blocked. If pricing is unavailable, returns ``routing``
         unchanged.
 
@@ -256,9 +301,24 @@ class CostTracker:
         (matches the prior ``_schedule_cost_increment`` semantics — auth
         failures and 4xx error paths never reach this method, but freebie
         models with zero pricing legitimately produce zero cost).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` are used only for price
+        arithmetic here. Both ``None`` (unreported) and ``0`` (measured miss)
+        apply no cache discount; the distinct measurement state is preserved
+        on the normalized usage dict that the logging path persists.
         """
         pricing = routing.pricing or self._pricing.for_routing(routing)
+        usage = {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": total_tokens,
+            "cache_read_tokens": cache_read_tokens,
+            "cache_write_tokens": cache_write_tokens,
+            "reasoning_tokens": reasoning_tokens,
+        }
         if pricing is None:
+            # A batch attempt records this charge as unknown, never as zero.
+            observe_billing(cost_usd=None, usage=usage)
             return routing
 
         cost = self._compute_cost(
@@ -276,20 +336,19 @@ class CostTracker:
         import dataclasses as _dc
 
         enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=cost)
+        # What this request is charged, reported to a batch attempt watching it
+        # (serving/batch/attempts.py); nothing outside a batch attempt listens.
+        observe_billing(cost_usd=cost if cost is not None else None, usage=usage)
 
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched
 
-        async def _increment() -> None:
-            try:
-                await self._op_store.increment_user_cost(user_id, cost)
-            except Exception as exc:
-                logger.warning(f"Failed to increment cost counter for {user_id}: {exc}")
-                raise  # let tracked_task record the failure
-
-        task = tracked_task(_increment(), name="cost_increment")
-        self._background_tasks.add(task)
-        task.add_done_callback(self._background_tasks.discard)
+        # Recorded in the spend ledger, which counts it against the quota at
+        # once and writes it to the counters with whatever else is pending.
+        task = ledger_for(self._op_store).record(user_id, cost, api_key_id=api_key_id)
+        if task is not None:
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
         return enriched
 
     @staticmethod
@@ -299,8 +358,8 @@ class CostTracker:
         completion_tokens: int,
         pricing: Pricing,
         total_tokens: int | None = None,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
+        cache_read_tokens: int | None = 0,
+        cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
     ) -> float | None:
         """Mirror :func:`serving.storage.utils.calculate_cost` byte-for-byte.
@@ -309,6 +368,12 @@ class CostTracker:
         prompt total only when the adapter configures a non-zero cache
         rate (otherwise they fall through to the regular prompt rate, the
         same behavior as the dict-based path).
+
+        ``cache_read_tokens`` / ``cache_write_tokens`` may be ``None`` when the
+        provider did not report cache usage. This function uses those values
+        only for billing arithmetic, where both ``None`` and measured ``0``
+        mean that no cache discount applies. The separate logging path carries
+        the measurement state into ``api_logs``.
         """
         try:
             prompt = float(prompt_tokens or 0)

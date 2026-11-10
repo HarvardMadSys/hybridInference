@@ -979,6 +979,1154 @@
     "source": "Entered the wrong email? Try another one",
     "text": "邮箱填错了？换一个试试"
   },
+  "batches.action.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "batches.action.copy": {
+    "source": "Copy as new batch",
+    "text": "复制为新任务"
+  },
+  "batches.action.delete": {
+    "source": "Delete",
+    "text": "删除"
+  },
+  "batches.action.details": {
+    "source": "Details",
+    "text": "详情"
+  },
+  "batches.action.details_for": {
+    "source": "Details for {name}",
+    "text": "任务 {name} 的详情"
+  },
+  "batches.action.download": {
+    "source": "Download results",
+    "text": "下载结果"
+  },
+  "batches.action.download_errors": {
+    "source": "Download errors",
+    "text": "下载错误"
+  },
+  "batches.action.download_output": {
+    "source": "Download outputs",
+    "text": "下载输出"
+  },
+  "batches.action.download_requests": {
+    "source": "Download stored requests",
+    "text": "下载存储的请求"
+  },
+  "batches.action.download_source": {
+    "source": "Download source file",
+    "text": "下载源文件"
+  },
+  "batches.action.download_unfinished": {
+    "source": "Export unfinished requests",
+    "text": "导出未成功请求"
+  },
+  "batches.action.more": {
+    "source": "More",
+    "text": "更多"
+  },
+  "batches.action.more_for": {
+    "source": "More actions for {name}",
+    "text": "任务 {name} 的更多操作"
+  },
+  "batches.category.cancelled": {
+    "source": "Cancelled",
+    "text": "已取消"
+  },
+  "batches.category.completed": {
+    "source": "Completed",
+    "text": "已完成"
+  },
+  "batches.category.issues": {
+    "source": "With issues",
+    "text": "有异常"
+  },
+  "batches.category.processing": {
+    "source": "Processing",
+    "text": "处理中"
+  },
+  "batches.confirm.cancel": {
+    "source": "Cancel this batch? Requests that have not started will not run; running ones finish.",
+    "text": "取消这个批次？尚未开始的请求不会再运行；正在运行的会完成。"
+  },
+  "batches.confirm.delete": {
+    "source": "Delete this batch and its results? This cannot be undone.",
+    "text": "删除这个批次及其结果？此操作无法撤销。"
+  },
+  "batches.create.back": {
+    "source": "Back",
+    "text": "上一步"
+  },
+  "batches.create.blocked.auth": {
+    "source": "Submitting from the console needs user authentication on this gateway. Use /v1/batches.",
+    "text": "在控制台提交需要本网关开启用户鉴权。请使用 /v1/batches。"
+  },
+  "batches.create.blocked.create_key": {
+    "source": "Create an API key",
+    "text": "创建 API 密钥"
+  },
+  "batches.create.blocked.no_key": {
+    "source": "A batch runs under your active API key, and you have none. Uploading and checking work without one.",
+    "text": "批处理任务以你当前有效的 API 密钥运行，而你还没有密钥。上传和校验不需要密钥。"
+  },
+  "batches.create.blocked.pending": {
+    "source": "Decide about the earlier submission above before submitting another.",
+    "text": "请先处理上方之前的那次提交，再提交新的任务。"
+  },
+  "batches.create.button": {
+    "source": "Create batch",
+    "text": "创建任务"
+  },
+  "batches.create.cancel_upload": {
+    "source": "Cancel upload",
+    "text": "取消上传"
+  },
+  "batches.create.cannot_identify": {
+    "source": "The file cannot be used as it is: fix the problems above and upload it again.",
+    "text": "这个文件无法直接使用：请修正上面的问题后重新上传。"
+  },
+  "batches.create.cannot_submit": {
+    "source": "Your plan cannot create batches: that needs the {role} plan or higher. Your existing batches stay manageable on the Batches page.",
+    "text": "你的套餐不能创建批处理任务：需要{role}或更高的套餐。已有的任务仍可在批处理页面管理。"
+  },
+  "batches.create.check": {
+    "source": "Check and preview",
+    "text": "校验并预览"
+  },
+  "batches.create.checking": {
+    "source": "Checking every line…",
+    "text": "正在检查每一行…"
+  },
+  "batches.create.choose_another": {
+    "source": "Choose another file",
+    "text": "选择其他文件"
+  },
+  "batches.create.choose_file": {
+    "source": "Choose file",
+    "text": "选择文件"
+  },
+  "batches.create.choose_type": {
+    "source": "Which type are these requests?",
+    "text": "这些请求属于哪种类型？"
+  },
+  "batches.create.choose_type_hint": {
+    "source": "No line says it (no url, and the body has neither messages nor input). Your choice only fills in the type; every line is still checked against it in full.",
+    "text": "文件中没有任何一行说明类型（没有 url，请求体里也既没有 messages 也没有 input）。你的选择只用来补上类型；每一行仍会按该类型完整校验。"
+  },
+  "batches.create.copy_reupload": {
+    "source": "The original source file is no longer stored. Upload it again; the settings of the original batch are kept.",
+    "text": "原任务的源文件已不再保留。请重新上传；原任务的设置会保留。"
+  },
+  "batches.create.copy_suffix": {
+    "source": "copy",
+    "text": "副本"
+  },
+  "batches.create.deleted": {
+    "source": "That submission created a batch which has since been deleted. Nothing was created again; submit once more if you want a new batch.",
+    "text": "那次提交创建的任务已被删除。系统没有再创建任务；如需新任务，请再次提交。"
+  },
+  "batches.create.description": {
+    "source": "Description (optional)",
+    "text": "描述（可选）"
+  },
+  "batches.create.differs_from_original": {
+    "source": "This file differs from the one the original batch used.",
+    "text": "这个文件与原任务使用的文件内容不同。"
+  },
+  "batches.create.drop_hint": {
+    "source": "The file is read by the gateway, not by your browser. Nothing runs until you confirm in step 3.",
+    "text": "文件由网关读取，浏览器不解析内容。在第 3 步确认之前，不会执行任何请求。"
+  },
+  "batches.create.drop_title": {
+    "source": "Drop a .jsonl file here",
+    "text": "将 .jsonl 文件拖到这里"
+  },
+  "batches.create.errors.count": {
+    "source": "{count} problem(s): nothing can be submitted until every one is fixed.",
+    "text": "共 {count} 个问题：全部修正之前不能提交。"
+  },
+  "batches.create.errors.download_csv": {
+    "source": "Download problems (CSV)",
+    "text": "下载问题清单（CSV）"
+  },
+  "batches.create.errors.download_jsonl": {
+    "source": "Download problems (JSONL)",
+    "text": "下载问题清单（JSONL）"
+  },
+  "batches.create.errors.field": {
+    "source": "Field",
+    "text": "字段"
+  },
+  "batches.create.errors.line": {
+    "source": "Line",
+    "text": "行"
+  },
+  "batches.create.errors.problem": {
+    "source": "Problem",
+    "text": "问题"
+  },
+  "batches.create.errors.truncated": {
+    "source": "Showing {shown} of {total}; the downloads list {listed}.",
+    "text": "显示 {shown} / {total} 条；下载的清单包含 {listed} 条。"
+  },
+  "batches.create.example.chat": {
+    "source": "Text generation",
+    "text": "文本生成"
+  },
+  "batches.create.example.copied": {
+    "source": "Example copied",
+    "text": "示例已复制"
+  },
+  "batches.create.example.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "batches.create.example.copy_failed": {
+    "source": "Could not copy: select the example and copy it yourself.",
+    "text": "无法复制：请选中示例后手动复制。"
+  },
+  "batches.create.example.copy_label": {
+    "source": "Copy example",
+    "text": "复制示例"
+  },
+  "batches.create.example.download": {
+    "source": "Download",
+    "text": "下载"
+  },
+  "batches.create.example.download_label": {
+    "source": "Download {file}",
+    "text": "下载 {file}"
+  },
+  "batches.create.example.embeddings": {
+    "source": "Embeddings",
+    "text": "文本向量化"
+  },
+  "batches.create.example.lines": {
+    "source": "Example file: {type}",
+    "text": "示例文件：{type}"
+  },
+  "batches.create.example.type": {
+    "source": "Example type",
+    "text": "示例类型"
+  },
+  "batches.create.files_hide": {
+    "source": "Hide uploaded files",
+    "text": "隐藏已上传文件"
+  },
+  "batches.create.files_show": {
+    "source": "Uploaded files…",
+    "text": "已上传文件…"
+  },
+  "batches.create.format.label": {
+    "source": "File format:",
+    "text": "文件格式："
+  },
+  "batches.create.format.model": {
+    "source": "If any line has no model, you choose one model for every request in step 2.",
+    "text": "只要有一行没有写 model，就需要在第 2 步为所有请求选择同一个模型。"
+  },
+  "batches.create.format.summary": {
+    "source": "one JSON request per line, each with a unique custom_id (1–512 characters) and the request in body.",
+    "text": "每行一个 JSON 请求，各带唯一的 custom_id（1–512 个字符），请求内容放在 body 中。"
+  },
+  "batches.create.identifying": {
+    "source": "Reading the file…",
+    "text": "正在读取文件…"
+  },
+  "batches.create.keep": {
+    "source": "Keep the file's values",
+    "text": "保留文件中的值"
+  },
+  "batches.create.limits": {
+    "source": "Limits on this gateway: up to {file} per file, {line} per line, {requests} requests, {uploads} uploads per hour. Storage {used} of {storage} · unfinished batches {active} of {maxActive}.",
+    "text": "本网关限额：每个文件最大 {file}，每行最大 {line}，最多 {requests} 条请求，每小时最多上传 {uploads} 次。文件空间已用 {used} / {storage} · 未结束任务 {active} / {maxActive}。"
+  },
+  "batches.create.max_output": {
+    "source": "at most {max} for this model",
+    "text": "该模型最多 {max}"
+  },
+  "batches.create.max_tokens_value": {
+    "source": "max_tokens for every request",
+    "text": "统一的 max_tokens"
+  },
+  "batches.create.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "batches.create.model_file": {
+    "source": "Use the file's model ({model})",
+    "text": "使用文件中的模型（{model}）"
+  },
+  "batches.create.model_file_unusable": {
+    "source": "Use the file's model (not possible: the file names several models, none, or one you cannot use)",
+    "text": "使用文件中的模型（不可用：文件中有多个模型、没有模型，或使用了你无权使用的模型）"
+  },
+  "batches.create.model_override": {
+    "source": "Use one model for every request:",
+    "text": "所有请求统一改为："
+  },
+  "batches.create.model_pick": {
+    "source": "Model for every request",
+    "text": "统一使用的模型"
+  },
+  "batches.create.model_placeholder": {
+    "source": "Choose a model",
+    "text": "选择模型"
+  },
+  "batches.create.model_rows": {
+    "source": "Model {model}: {count} lines",
+    "text": "模型 {model}：{count} 行"
+  },
+  "batches.create.model_unavailable": {
+    "source": "not available to you",
+    "text": "你当前无法使用"
+  },
+  "batches.create.model_unset": {
+    "source": "No model: {count} lines",
+    "text": "未设置模型：{count} 行"
+  },
+  "batches.create.name": {
+    "source": "Name",
+    "text": "名称"
+  },
+  "batches.create.next": {
+    "source": "Next",
+    "text": "下一步"
+  },
+  "batches.create.no_models": {
+    "source": "No model of this type is available to you.",
+    "text": "你当前没有可用的这类模型。"
+  },
+  "batches.create.not_jsonl": {
+    "source": "Choose a .jsonl file.",
+    "text": "请选择 .jsonl 文件。"
+  },
+  "batches.create.other_params": {
+    "source": "Other parameters in the file, kept as they are:",
+    "text": "文件中的其他参数（原样保留）："
+  },
+  "batches.create.other_values": {
+    "source": "other",
+    "text": "其他"
+  },
+  "batches.create.params_not_taken": {
+    "source": "This model does not take {params}, so it cannot be set for every request.",
+    "text": "该模型不接受 {params}，因此不能为所有请求统一设置。"
+  },
+  "batches.create.pending.confirming": {
+    "source": "Confirming the result of your submission. It is sent again with the same key, so it cannot create a second batch.",
+    "text": "正在确认提交结果。系统会用同一个键重新发送，不会因此多建一个任务。"
+  },
+  "batches.create.pending.sending": {
+    "source": "Submitting… The file is checked once more before the batch is created.",
+    "text": "正在提交… 创建任务前会再检查一遍文件。"
+  },
+  "batches.create.preview": {
+    "source": "Stored requests (first lines)",
+    "text": "存储的请求（前几行）"
+  },
+  "batches.create.preview_filled": {
+    "source": "set here: {fields}",
+    "text": "此处设置：{fields}"
+  },
+  "batches.create.preview_hide": {
+    "source": "Hide JSON",
+    "text": "收起 JSON"
+  },
+  "batches.create.preview_hint": {
+    "source": "This is what the batch stores. The gateway may still adapt a request for its provider when it runs (for example its format); that is not shown.",
+    "text": "这里展示的是任务存储的请求。执行时网关仍可能为上游供应商做协议转换（例如格式），这部分不在预览中。"
+  },
+  "batches.create.preview_line": {
+    "source": "Line {line} · {custom_id}",
+    "text": "第 {line} 行 · {custom_id}"
+  },
+  "batches.create.preview_show": {
+    "source": "Show JSON",
+    "text": "展开 JSON"
+  },
+  "batches.create.preview_truncated": {
+    "source": "shortened for display",
+    "text": "显示时已截断"
+  },
+  "batches.create.recognized": {
+    "source": "Recognized: {type} · {count} requests",
+    "text": "已识别：{type} · {count} 条请求"
+  },
+  "batches.create.refused.credential_changed": {
+    "source": "Your API key changed after you confirmed (it was regenerated, revoked or replaced). Check the submission again.",
+    "text": "确认之后你的 API 密钥发生了变化（被重新生成、撤销或替换）。请重新校验并确认。"
+  },
+  "batches.create.refused.key_budget": {
+    "source": "The API key this batch runs under has spent its budget. Raise it on the key's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的 API key 已用完预算。请在该 key 的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
+  "batches.create.refused.model_changed": {
+    "source": "The chosen model now resolves to a different model than the one you confirmed. Check the submission again.",
+    "text": "所选模型现在解析到的模型与你确认时不同。请重新校验并确认。"
+  },
+  "batches.create.refused.monthly_quota": {
+    "source": "Your monthly quota is spent. Submit after it renews on the 1st (UTC) or once it is raised; uploading and checking stay free.",
+    "text": "你本月的额度已用完。请在每月 1 日（UTC）额度重置或调整后再提交；上传和校验仍然免费。"
+  },
+  "batches.create.refused.no_key": {
+    "source": "A batch runs under your active API key, and you have none. Create one on the dashboard, then submit again.",
+    "text": "批处理任务以你当前有效的 API 密钥运行，而你还没有密钥。请先在仪表盘创建，然后再提交。"
+  },
+  "batches.create.refused.project_budget": {
+    "source": "The project this batch runs under has spent its budget. Raise it on the project's page, or submit after it renews; uploading and checking stay free.",
+    "text": "这个批次所用的项目已用完预算。请在该项目的页面调高预算，或等预算重置后再提交；上传和校验仍然免费。"
+  },
+  "batches.create.refused.quota": {
+    "source": "Your daily quota is spent. Submit after it renews (00:00 UTC) or once it is raised; uploading and checking stay free.",
+    "text": "你今天的额度已用完。请在额度重置（UTC 0 点）或调整后再提交；上传和校验仍然免费。"
+  },
+  "batches.create.refused.source": {
+    "source": "The source file was deleted or expired. Upload it again; your settings are kept.",
+    "text": "源文件已被删除或已过期。请重新上传；你的设置会保留。"
+  },
+  "batches.create.rows": {
+    "source": "{count} lines",
+    "text": "{count} 行"
+  },
+  "batches.create.same_as_original": {
+    "source": "Same content as the original file.",
+    "text": "与原文件内容一致。"
+  },
+  "batches.create.set_all": {
+    "source": "Set for every request to",
+    "text": "所有请求统一设为"
+  },
+  "batches.create.source_kept": {
+    "source": "The file is kept until {date}.",
+    "text": "该文件保留到 {date}。"
+  },
+  "batches.create.stale.choice": {
+    "source": "Check your batch list first. Submitting again makes a new, separate submission, which can create and bill a second batch.",
+    "text": "请先查看任务列表。再次提交会产生一次新的、独立的提交，可能会创建并计费第二个任务。"
+  },
+  "batches.create.stale.confirm": {
+    "source": "Submit the same content again as a new batch? If the earlier submission did create a batch that has since ended and been removed, this creates (and bills) another one.",
+    "text": "将相同内容作为新任务再次提交？如果之前那次提交确实创建过任务，而该任务已经结束并被清除，这次会再创建（并计费）一个任务。"
+  },
+  "batches.create.stale.discard": {
+    "source": "Forget it",
+    "text": "忽略这次提交"
+  },
+  "batches.create.stale.list": {
+    "source": "Open the batch list",
+    "text": "打开任务列表"
+  },
+  "batches.create.stale.new": {
+    "source": "Submit again as a new batch",
+    "text": "作为新任务再次提交"
+  },
+  "batches.create.stale.text": {
+    "source": "A submission from {when} (\"{name}\") never got an answer, and it is too old to send again safely: the gateway no longer guarantees to recognise it. No batch from it can be found now; one may have been created, finished and removed since.",
+    "text": "{when} 的一次提交（“{name}”）一直没有得到结果，而且已经太久，不能再安全地重发：网关不再保证能识别它。现在找不到它创建的任务；它可能创建过任务，并且该任务已经结束并被清除。"
+  },
+  "batches.create.step.configure": {
+    "source": "Configure",
+    "text": "配置任务"
+  },
+  "batches.create.step.review": {
+    "source": "Check and confirm",
+    "text": "校验与确认"
+  },
+  "batches.create.step.upload": {
+    "source": "Upload data",
+    "text": "上传数据"
+  },
+  "batches.create.steps": {
+    "source": "Steps",
+    "text": "步骤"
+  },
+  "batches.create.submit": {
+    "source": "Confirm and submit",
+    "text": "确认提交"
+  },
+  "batches.create.submitting": {
+    "source": "Submitting…",
+    "text": "正在提交…"
+  },
+  "batches.create.subtitle": {
+    "source": "Text generation or embeddings from a JSONL file: upload it, confirm the model and settings, then check and submit.",
+    "text": "从 JSONL 文件创建文本生成或文本向量化任务：上传文件，确认模型和设置，然后校验并提交。"
+  },
+  "batches.create.summary.batch": {
+    "source": "Batch",
+    "text": "任务"
+  },
+  "batches.create.summary.billing": {
+    "source": "Billing",
+    "text": "计费"
+  },
+  "batches.create.summary.billing_text": {
+    "source": "Each request is billed like the same live request; there is no batch discount and no estimate. It counts toward your daily quota, and the batch pauses when the quota is spent.",
+    "text": "每条请求按相同的实时请求计费，没有批量折扣，也不提供预估。费用计入每日额度，额度用尽时任务暂停。"
+  },
+  "batches.create.summary.copy": {
+    "source": "The batch stores its own copy of the requests as shown below; the copy counts toward your storage and is deleted with the batch or the source file.",
+    "text": "任务会按下方所示存储自己的一份请求副本；副本计入你的存储空间，并随任务或源文件一起删除。"
+  },
+  "batches.create.summary.count": {
+    "source": "{count} requests",
+    "text": "{count} 条请求"
+  },
+  "batches.create.summary.credential": {
+    "source": "Runs under",
+    "text": "运行凭据"
+  },
+  "batches.create.summary.key": {
+    "source": "API key {prefix}…",
+    "text": "API 密钥 {prefix}…"
+  },
+  "batches.create.summary.key_text": {
+    "source": "Signing out or closing the browser does not stop the batch. Revoking or regenerating this key fails its unfinished requests.",
+    "text": "退出登录或关闭浏览器不会停止任务。撤销或重新生成这把密钥会使未结束的请求失败。"
+  },
+  "batches.create.summary.model_alias": {
+    "source": "{requested}, which is {canonical}: the batch runs on {canonical}",
+    "text": "{requested}，即 {canonical}：任务固定使用 {canonical}"
+  },
+  "batches.create.summary.no_key": {
+    "source": "No active API key",
+    "text": "没有有效的 API 密钥"
+  },
+  "batches.create.summary.no_overrides": {
+    "source": "The file's values, unchanged",
+    "text": "沿用文件中的值，不做修改"
+  },
+  "batches.create.summary.override": {
+    "source": "{key} = {value} on every request",
+    "text": "{key} 在所有请求中统一为 {value}"
+  },
+  "batches.create.summary.params": {
+    "source": "Parameters",
+    "text": "参数"
+  },
+  "batches.create.summary.retention": {
+    "source": "Retention",
+    "text": "保留"
+  },
+  "batches.create.summary.retention_text": {
+    "source": "Results are kept {days} days after the batch ends. The source file is kept until {date}.",
+    "text": "结果在任务结束后保留 {days} 天。源文件保留到 {date}。"
+  },
+  "batches.create.summary.type_choice": {
+    "source": "Type chosen by you; url filled in on every line.",
+    "text": "类型由你选择；已为每一行补上 url。"
+  },
+  "batches.create.summary.type_structure": {
+    "source": "Type recognized from the request bodies; url filled in on every line.",
+    "text": "类型根据请求体识别；已为每一行补上 url。"
+  },
+  "batches.create.summary.window": {
+    "source": "Execution window",
+    "text": "执行窗口"
+  },
+  "batches.create.summary.window_none": {
+    "source": "No limit: the batch keeps running until every request is done, however long that takes. No request expires.",
+    "text": "不限：批次会一直运行，直到每个请求都完成，无论需要多久。不会有请求过期。"
+  },
+  "batches.create.summary.window_text": {
+    "source": "Every request starts within {hours} hours; requests already started may finish after that. Requests not started by then expire.",
+    "text": "所有请求在 {hours} 小时内开始执行；已开始的请求可以在此之后完成。届时仍未开始的请求将过期。"
+  },
+  "batches.create.temperature_value": {
+    "source": "temperature for every request",
+    "text": "统一的 temperature"
+  },
+  "batches.create.title": {
+    "source": "Create a batch",
+    "text": "创建批处理任务"
+  },
+  "batches.create.title_copy": {
+    "source": "Copy as a new batch",
+    "text": "复制为新任务"
+  },
+  "batches.create.too_large": {
+    "source": "The file is larger than this gateway accepts.",
+    "text": "文件超过了本网关允许的大小。"
+  },
+  "batches.create.type.chat": {
+    "source": "Text generation (Chat completions)",
+    "text": "文本生成（Chat completions）"
+  },
+  "batches.create.type.embeddings": {
+    "source": "Text embeddings (Embeddings)",
+    "text": "文本向量化（Embeddings）"
+  },
+  "batches.create.unset": {
+    "source": "not set",
+    "text": "未设置"
+  },
+  "batches.create.unsupported": {
+    "source": "This browser cannot coordinate a submission across tabs safely (it has neither Web Locks nor IndexedDB), so it cannot submit from here. Use another browser, or /v1/batches.",
+    "text": "这个浏览器无法在多个标签页之间安全地协调提交（既不支持 Web Locks，也不支持 IndexedDB），因此不能在这里提交。请换一个浏览器，或使用 /v1/batches。"
+  },
+  "batches.create.upload_cancelled": {
+    "source": "Upload cancelled.",
+    "text": "已取消上传。"
+  },
+  "batches.create.upload_progress": {
+    "source": "Uploading {loaded} of {total}",
+    "text": "正在上传 {loaded} / {total}"
+  },
+  "batches.create.uploading": {
+    "source": "Uploading",
+    "text": "上传中"
+  },
+  "batches.create.valid": {
+    "source": "{count} requests are valid. Checking is free and does not guarantee that every request will succeed.",
+    "text": "{count} 条请求格式有效。校验不收费，也不保证每条请求都能执行成功。"
+  },
+  "batches.detail.back": {
+    "source": "Batches",
+    "text": "批处理"
+  },
+  "batches.detail.cancel_semantics": {
+    "source": "Cancelling stops requests that have not started; requests already running finish and are billed. Results so far stay available to download.",
+    "text": "取消后，尚未开始的请求不再执行；正在执行的请求会完成并计费。已有结果仍可下载。"
+  },
+  "batches.detail.config": {
+    "source": "Configuration",
+    "text": "配置"
+  },
+  "batches.detail.copied_from": {
+    "source": "Copied from",
+    "text": "复制自"
+  },
+  "batches.detail.copy_inline": {
+    "source": "This batch was submitted as direct requests, so there is no input file to reuse. Copying it is not available yet.",
+    "text": "这个任务以直接提交的请求创建，没有可复用的输入文件。暂不支持复制。"
+  },
+  "batches.detail.copy_reupload": {
+    "source": "Its source file is no longer stored. Copying keeps the settings and asks you to upload the file again.",
+    "text": "它的源文件已不再保留。复制会保留设置，并要求你重新上传文件。"
+  },
+  "batches.detail.copy_target": {
+    "source": "Batches of this type cannot be created in the console yet; submit them through /v1/batches. You can still manage this one and download its results.",
+    "text": "这类任务暂不支持在控制台创建；请通过 /v1/batches 提交。你仍可以管理这个任务并下载结果。"
+  },
+  "batches.detail.cost": {
+    "source": "Known cost",
+    "text": "已知费用"
+  },
+  "batches.detail.count.cancelled": {
+    "source": "Cancelled",
+    "text": "已取消"
+  },
+  "batches.detail.count.expired": {
+    "source": "Expired unrun",
+    "text": "过期未执行"
+  },
+  "batches.detail.count.failed": {
+    "source": "Failed",
+    "text": "失败"
+  },
+  "batches.detail.count.succeeded": {
+    "source": "Succeeded",
+    "text": "成功"
+  },
+  "batches.detail.count.total": {
+    "source": "Total",
+    "text": "总数"
+  },
+  "batches.detail.count.unfinished": {
+    "source": "Not finished",
+    "text": "未结束"
+  },
+  "batches.detail.credential": {
+    "source": "Runs under API key",
+    "text": "运行所用 API 密钥"
+  },
+  "batches.detail.downloads": {
+    "source": "Downloads",
+    "text": "下载"
+  },
+  "batches.detail.ended": {
+    "source": "Ended",
+    "text": "结束时间"
+  },
+  "batches.detail.error": {
+    "source": "Error",
+    "text": "错误"
+  },
+  "batches.detail.how": {
+    "source": "How it was submitted",
+    "text": "提交方式"
+  },
+  "batches.detail.id": {
+    "source": "Batch ID",
+    "text": "任务 ID"
+  },
+  "batches.detail.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "batches.detail.model_file": {
+    "source": "The file's model",
+    "text": "文件中的模型"
+  },
+  "batches.detail.model_override": {
+    "source": "Set for every request in the console",
+    "text": "在控制台统一设置"
+  },
+  "batches.detail.no_overrides": {
+    "source": "None: the file's values",
+    "text": "无：沿用文件中的值"
+  },
+  "batches.detail.overrides": {
+    "source": "Parameters set for every request",
+    "text": "统一设置的参数"
+  },
+  "batches.detail.requests": {
+    "source": "Requests",
+    "text": "请求"
+  },
+  "batches.detail.results_pending": {
+    "source": "Results can be downloaded once the batch has finished.",
+    "text": "任务结束后即可下载结果。"
+  },
+  "batches.detail.source": {
+    "source": "Source file",
+    "text": "源文件"
+  },
+  "batches.detail.source.available": {
+    "source": "Kept",
+    "text": "已保留"
+  },
+  "batches.detail.source.deleted": {
+    "source": "Deleted",
+    "text": "已删除"
+  },
+  "batches.detail.source.expired": {
+    "source": "Expired",
+    "text": "已过期"
+  },
+  "batches.detail.source.missing": {
+    "source": "No longer stored",
+    "text": "已不再保留"
+  },
+  "batches.detail.source_until": {
+    "source": "kept until {date}",
+    "text": "保留到 {date}"
+  },
+  "batches.detail.unfinished_hint": {
+    "source": "Unfinished requests are the failed, expired and cancelled ones, as they were stored: fix them and upload the file as a new batch. Nothing runs until you submit it. The error file explains failures and cannot be submitted again as is.",
+    "text": "未成功请求包括失败、过期未执行和已取消的请求，内容与存储时一致：修改后可作为新任务重新上传。提交之前不会执行任何请求。错误结果文件用于说明失败原因，不能直接重新提交。"
+  },
+  "batches.detail.unknown_cost": {
+    "source": "{count} attempt(s) of unknown cost, not included (the request was sent but its result was lost)",
+    "text": "另有 {count} 次尝试费用未知，未计入（请求已发出但结果丢失）"
+  },
+  "batches.detail.validation": {
+    "source": "Input problems",
+    "text": "输入问题"
+  },
+  "batches.detail.window": {
+    "source": "Start requests by",
+    "text": "请求开始期限"
+  },
+  "batches.detail.window_none": {
+    "source": "No limit",
+    "text": "不限"
+  },
+  "batches.empty_create": {
+    "source": "You have no batches. Create one here, or submit one through the API.",
+    "text": "你还没有批次。可以在这里创建，或通过 API 提交。"
+  },
+  "batches.empty_existing": {
+    "source": "You have no batches.",
+    "text": "你还没有批次。"
+  },
+  "batches.empty_filtered": {
+    "source": "No batch matches this search.",
+    "text": "没有符合搜索条件的批次。"
+  },
+  "batches.files.confirm_delete": {
+    "source": "Delete this file? Batches already submitted from it keep running, but it can no longer be used or copied from.",
+    "text": "删除这个文件？已经用它提交的任务会继续运行，但它不能再用于新任务或复制。"
+  },
+  "batches.files.delete": {
+    "source": "Delete",
+    "text": "删除"
+  },
+  "batches.files.empty": {
+    "source": "You have no uploaded files.",
+    "text": "你还没有上传文件。"
+  },
+  "batches.files.meta": {
+    "source": "{size} · {lines} lines · uploaded {created} · kept until {expires}",
+    "text": "{size} · {lines} 行 · 上传于 {created} · 保留到 {expires}"
+  },
+  "batches.files.title": {
+    "source": "Uploaded files",
+    "text": "已上传文件"
+  },
+  "batches.files.usage": {
+    "source": "{used} of {limit} used (stored copies of submitted batches included). Files are deleted automatically when they expire.",
+    "text": "已用 {used} / {limit}（包括已提交任务的请求副本）。文件到期后会自动删除。"
+  },
+  "batches.files.use": {
+    "source": "Use this file",
+    "text": "使用此文件"
+  },
+  "batches.filter.all": {
+    "source": "All",
+    "text": "全部"
+  },
+  "batches.filter.status": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "batches.filter.unavailable": {
+    "source": "Filtering by status is not available right now while the service is being updated. Try again in a moment, or show all batches.",
+    "text": "服务更新期间暂时无法按状态筛选。请稍后重试，或查看全部批次。"
+  },
+  "batches.input.file": {
+    "source": "JSONL file",
+    "text": "JSONL 文件"
+  },
+  "batches.input.inline": {
+    "source": "Direct requests",
+    "text": "直接提交的请求"
+  },
+  "batches.loading": {
+    "source": "Loading batches…",
+    "text": "正在加载批次…"
+  },
+  "batches.more": {
+    "source": "Show more",
+    "text": "显示更多"
+  },
+  "batches.note.cancelling": {
+    "source": "Cancelling: requests already running will finish",
+    "text": "正在取消，进行中的请求会完成"
+  },
+  "batches.note.expired": {
+    "source": "Execution window ran out",
+    "text": "超过执行期限"
+  },
+  "batches.note.failed": {
+    "source": "The batch failed",
+    "text": "执行失败"
+  },
+  "batches.note.finalizing": {
+    "source": "Preparing results",
+    "text": "正在整理结果"
+  },
+  "batches.note.none_succeeded": {
+    "source": "No request succeeded",
+    "text": "所有请求均未成功"
+  },
+  "batches.note.partial": {
+    "source": "Some requests failed",
+    "text": "部分请求失败"
+  },
+  "batches.note.validating": {
+    "source": "Checking the data",
+    "text": "正在校验数据"
+  },
+  "batches.notice.cannot_submit": {
+    "source": "Your plan cannot submit new batches: that needs the {role} plan or higher. Your existing batches stay manageable here: download their results, cancel or delete them, and view or remove your webhook.",
+    "text": "你的套餐不能提交新批次：需要{role}或更高的套餐。已有的批次仍可在这里管理：下载结果、取消或删除，以及查看或移除你的 Webhook。"
+  },
+  "batches.notice.capabilities_error": {
+    "source": "Could not check what Batch offers your account ({error}). Your batches are listed below.",
+    "text": "无法确认你的账号可用的批量功能（{error}）。你的批次列在下方。"
+  },
+  "batches.origin.api": {
+    "source": "Created through the API",
+    "text": "通过 API 创建"
+  },
+  "batches.origin.console": {
+    "source": "Created in the console",
+    "text": "在控制台创建"
+  },
+  "batches.paused.account_budget": {
+    "source": "Paused: the account this batch runs under has spent its quota. It is checked again after {until}; raise the account quota to resume sooner.",
+    "text": "已暂停：这个批次所用的账户已用完额度。将在 {until} 之后再次检查；调高账户额度可以更早恢复。"
+  },
+  "batches.paused.key_budget": {
+    "source": "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的 API key 已用完预算。将在 {until} 之后再次检查；在该 key 的页面调高预算可以更早恢复。"
+  },
+  "batches.paused.monthly_quota": {
+    "source": "Paused: your monthly quota is spent. It is checked again after {until}; it resumes once your quota is raised, or when it renews on the 1st (UTC).",
+    "text": "已暂停：本月额度已用完。将在 {until} 之后再次检查；额度调高后，或每月 1 日（UTC）额度重置后恢复。"
+  },
+  "batches.paused.other": {
+    "source": "Paused until {until}.",
+    "text": "已暂停，直到 {until}。"
+  },
+  "batches.paused.project_budget": {
+    "source": "Paused: the project this batch runs under has spent its budget. It is checked again after {until}; raise the project's budget on its page to resume sooner.",
+    "text": "已暂停：这个批次所用的项目已用完预算。将在 {until} 之后再次检查；在该项目的页面调高预算可以更早恢复。"
+  },
+  "batches.paused.quota": {
+    "source": "Paused: your daily quota is spent. It resumes after {until} (when the quota renews at 00:00 UTC) or once your quota is raised.",
+    "text": "已暂停：今日额度已用完。将在 {until} 之后（额度于 UTC 0 点重置时）或额度调整后恢复。"
+  },
+  "batches.paused.role": {
+    "source": "Paused: your plan no longer includes Batch. It is checked again after {until}; you can still cancel it or download what finished.",
+    "text": "已暂停：你的套餐不再包含批处理。将在 {until} 之后重新检查；你仍可以取消任务或下载已完成的结果。"
+  },
+  "batches.refresh": {
+    "source": "Refresh",
+    "text": "刷新"
+  },
+  "batches.row.cancelled_nonzero": {
+    "source": "{count} cancelled",
+    "text": "已取消 {count}"
+  },
+  "batches.row.created": {
+    "source": "Created",
+    "text": "创建时间"
+  },
+  "batches.row.created_compact": {
+    "source": "Created {time}",
+    "text": "创建于 {time}"
+  },
+  "batches.row.expired_nonzero": {
+    "source": "{count} expired unrun",
+    "text": "过期未执行 {count}"
+  },
+  "batches.row.failed_nonzero": {
+    "source": "{count} failed",
+    "text": "失败 {count}"
+  },
+  "batches.row.line_problem": {
+    "source": "Line {line}: {message}",
+    "text": "第 {line} 行：{message}"
+  },
+  "batches.row.more_problems": {
+    "source": "and {count} more errors",
+    "text": "另有 {count} 条错误"
+  },
+  "batches.row.results_until": {
+    "source": "Results kept until",
+    "text": "结果保留到"
+  },
+  "batches.row.results_until_compact": {
+    "source": "Results kept until {time}",
+    "text": "结果保留到 {time}"
+  },
+  "batches.row.success_fraction": {
+    "source": "{succeeded} / {total} succeeded",
+    "text": "成功 {succeeded} / {total}"
+  },
+  "batches.row.tokens": {
+    "source": "Tokens",
+    "text": "Token"
+  },
+  "batches.row.tokens_value": {
+    "source": "{input} in · {output} out",
+    "text": "输入 {input} · 输出 {output}"
+  },
+  "batches.row.unfinished_nonzero": {
+    "source": "{count} unfinished",
+    "text": "未结束 {count}"
+  },
+  "batches.row.unknown_cost_visible": {
+    "source": "Cost is unknown for {count} attempts",
+    "text": "有 {count} 次尝试的费用未知"
+  },
+  "batches.search.label": {
+    "source": "Search by name or batch ID",
+    "text": "按名称或任务 ID 搜索"
+  },
+  "batches.search.placeholder": {
+    "source": "Search by name or batch ID",
+    "text": "按名称或任务 ID 搜索"
+  },
+  "batches.status.cancelled": {
+    "source": "Cancelled",
+    "text": "已取消"
+  },
+  "batches.status.cancelling": {
+    "source": "Cancelling",
+    "text": "取消中"
+  },
+  "batches.status.completed": {
+    "source": "Completed",
+    "text": "已完成"
+  },
+  "batches.status.expired": {
+    "source": "Expired",
+    "text": "已过期"
+  },
+  "batches.status.failed": {
+    "source": "Failed",
+    "text": "失败"
+  },
+  "batches.status.finalizing": {
+    "source": "Finalizing",
+    "text": "整理结果中"
+  },
+  "batches.status.in_progress": {
+    "source": "In progress",
+    "text": "进行中"
+  },
+  "batches.status.validating": {
+    "source": "Validating",
+    "text": "校验中"
+  },
+  "batches.subtitle_create": {
+    "source": "Manage batch tasks and results.",
+    "text": "查看并管理批处理任务与结果。"
+  },
+  "batches.target.chat": {
+    "source": "Chat completions",
+    "text": "Chat Completions"
+  },
+  "batches.target.embeddings": {
+    "source": "Embeddings",
+    "text": "Embeddings"
+  },
+  "batches.target.messages": {
+    "source": "Messages",
+    "text": "Messages"
+  },
+  "batches.target.responses": {
+    "source": "Responses",
+    "text": "Responses"
+  },
+  "batches.target.unknown": {
+    "source": "Batch",
+    "text": "批次"
+  },
+  "batches.title": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "batches.toast.cancelled": {
+    "source": "Batch cancelled.",
+    "text": "批次已取消。"
+  },
+  "batches.toast.deleted": {
+    "source": "Batch deleted.",
+    "text": "批次已删除。"
+  },
+  "batches.unavailable.disabled": {
+    "source": "Batch inference is turned off on this gateway. Batches you submitted before are kept and show here again when it is turned back on.",
+    "text": "此网关已关闭批量推理。之前提交的批次会保留，重新开启后会再次显示在这里。"
+  },
+  "batches.unavailable.not_ready": {
+    "source": "Batch inference is temporarily unavailable on this gateway. Try again in a moment.",
+    "text": "此网关的批量推理暂时不可用，请稍后再试。"
+  },
+  "batches.unavailable.title": {
+    "source": "Batch is not available",
+    "text": "批量推理不可用"
+  },
+  "batches.webhook.cannot_create": {
+    "source": "Your plan cannot set up a webhook.",
+    "text": "你的套餐不能设置 Webhook。"
+  },
+  "batches.webhook.confirm_delete": {
+    "source": "Remove the webhook? Undelivered events are dropped.",
+    "text": "移除 Webhook？未送达的事件将被丢弃。"
+  },
+  "batches.webhook.confirm_rotate": {
+    "source": "Rotate the signing secret? Deliveries are signed with the new secret from now on.",
+    "text": "轮换签名密钥？之后的投递都用新密钥签名。"
+  },
+  "batches.webhook.create": {
+    "source": "Create webhook",
+    "text": "创建 Webhook"
+  },
+  "batches.webhook.deleted": {
+    "source": "Webhook removed.",
+    "text": "Webhook 已移除。"
+  },
+  "batches.webhook.delivered": {
+    "source": "Delivered",
+    "text": "已送达"
+  },
+  "batches.webhook.enabled": {
+    "source": "Send events",
+    "text": "发送事件"
+  },
+  "batches.webhook.events": {
+    "source": "Recent deliveries",
+    "text": "最近的投递"
+  },
+  "batches.webhook.failed": {
+    "source": "Gave up",
+    "text": "已放弃"
+  },
+  "batches.webhook.failed_recent": {
+    "source": "Recent delivery failures",
+    "text": "最近有通知发送失败"
+  },
+  "batches.webhook.pending": {
+    "source": "Retrying",
+    "text": "重试中"
+  },
+  "batches.webhook.read_only": {
+    "source": "Your plan cannot change webhook settings. You can still view and remove your webhook.",
+    "text": "你的套餐不能修改 Webhook 设置，但仍可以查看和移除已有的 Webhook。"
+  },
+  "batches.webhook.remove": {
+    "source": "Remove",
+    "text": "移除"
+  },
+  "batches.webhook.rotate": {
+    "source": "Rotate secret",
+    "text": "轮换密钥"
+  },
+  "batches.webhook.saved": {
+    "source": "Webhook saved.",
+    "text": "Webhook 已保存。"
+  },
+  "batches.webhook.secret_once": {
+    "source": "Signing secret — save it now, it is not shown again. Verify the webhook-signature header with it.",
+    "text": "签名密钥——请现在保存，之后不再显示。用它验证 webhook-signature 请求头。"
+  },
+  "batches.webhook.secret_reminder": {
+    "source": "Save the signing secret now; it is shown only once.",
+    "text": "请立即保存签名密钥，仅显示一次。"
+  },
+  "batches.webhook.state.configured": {
+    "source": "Configured",
+    "text": "已配置"
+  },
+  "batches.webhook.state.disabled": {
+    "source": "Disabled",
+    "text": "已停用"
+  },
+  "batches.webhook.state.error": {
+    "source": "Could not load",
+    "text": "加载失败"
+  },
+  "batches.webhook.state.loading": {
+    "source": "Loading…",
+    "text": "加载中…"
+  },
+  "batches.webhook.state.unconfigured": {
+    "source": "Not configured",
+    "text": "未配置"
+  },
+  "batches.webhook.subtitle": {
+    "source": "Get a signed POST when one of your batches ends and its results can be fetched. Events name the batch only; fetch the results with your API key.",
+    "text": "你的批次结束、结果可以获取时，会收到一个签名的 POST。事件只写明批次，结果请用你的 API Key 获取。"
+  },
+  "batches.webhook.title": {
+    "source": "Webhook",
+    "text": "Webhook"
+  },
+  "batches.webhook.update": {
+    "source": "Save",
+    "text": "保存"
+  },
+  "batches.webhook.url": {
+    "source": "Endpoint URL (https)",
+    "text": "接收地址（https）"
+  },
   "chat.empty_hint": {
     "source": "Try one of these to get started:",
     "text": "不知道问什么？可以试试这些："
@@ -1083,9 +2231,9 @@
     "source": "Log out",
     "text": "退出登录"
   },
-  "chrome.account_menu.log_out_all": {
-    "source": "Log out of all accounts",
-    "text": "退出所有账户"
+  "chrome.account_menu.log_out_failed": {
+    "source": "You are still signed in: signing out did not finish. {reason}",
+    "text": "你仍处于登录状态：退出登录没有完成。{reason}"
   },
   "chrome.account_menu.settings": {
     "source": "My settings",
@@ -1116,7 +2264,7 @@
     "text": "跟随系统"
   },
   "chrome.configuration.user_notice": {
-    "source": "This service is missing required configuration, so some features may not work. Please contact your administrator.",
+    "source": "Ask admin to configure this service. Required configuration is missing.",
     "text": "这个服务缺少必要的配置，部分功能可能用不了。请联系管理员。"
   },
   "chrome.error.body": {
@@ -1175,6 +2323,10 @@
     "source": "Dashboard",
     "text": "控制台"
   },
+  "chrome.header.docs": {
+    "source": "Docs",
+    "text": "文档"
+  },
   "chrome.header.docs_assistant": {
     "source": "Docs Assistant",
     "text": "文档助手"
@@ -1182,6 +2334,10 @@
   "chrome.header.logo_alt": {
     "source": "{app_name} logo",
     "text": "{app_name} 标志"
+  },
+  "chrome.header.menu": {
+    "source": "Menu",
+    "text": "菜单"
   },
   "chrome.header.stats": {
     "source": "Stats",
@@ -1235,6 +2391,46 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.nav.admin": {
+    "source": "Admin Console",
+    "text": "管理后台"
+  },
+  "console.nav.admin_group": {
+    "source": "Admin",
+    "text": "管理"
+  },
+  "console.nav.batches": {
+    "source": "Batches",
+    "text": "批次"
+  },
+  "console.nav.chat": {
+    "source": "Chat",
+    "text": "对话"
+  },
+  "console.nav.home": {
+    "source": "Home",
+    "text": "首页"
+  },
+  "console.nav.keys": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "console.nav.label": {
+    "source": "Console",
+    "text": "控制台"
+  },
+  "console.nav.models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "console.nav.requests": {
+    "source": "Requests",
+    "text": "请求记录"
+  },
+  "console.nav.settings": {
+    "source": "Settings",
+    "text": "设置"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："
@@ -1275,13 +2471,121 @@
     "source": "Admin Console",
     "text": "管理后台"
   },
-  "dashboard.internal.playground": {
-    "source": "API Playground",
-    "text": "API 调试台"
+  "dashboard.key_detail.account_quota_hint": {
+    "source": "Your account's daily quota of {amount} also applies.",
+    "text": "账户的每日额度 {amount} 同时生效。"
   },
-  "dashboard.internal.title": {
-    "source": "Internal Tools",
-    "text": "内部工具"
+  "dashboard.key_detail.back": {
+    "source": "API Keys",
+    "text": "API key"
+  },
+  "dashboard.key_detail.budget_invalid": {
+    "source": "Enter an amount in USD, such as 5 or 12.50, or leave it blank.",
+    "text": "请输入美元金额，例如 5 或 12.50；留空表示不限。"
+  },
+  "dashboard.key_detail.created": {
+    "source": "Created {date}",
+    "text": "创建于 {date}"
+  },
+  "dashboard.key_detail.daily_budget": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.key_detail.last_used": {
+    "source": "Last used {date}",
+    "text": "最近使用 {date}"
+  },
+  "dashboard.key_detail.limits_intro": {
+    "source": "Limit what this key can spend and which models it can call. Requests over a limit are refused; your other keys are not affected.",
+    "text": "限制这个 key 能花多少钱、能调用哪些模型。超出限制的请求会被拒绝，你的其他 key 不受影响。"
+  },
+  "dashboard.key_detail.limits_title": {
+    "source": "Limits",
+    "text": "限制"
+  },
+  "dashboard.key_detail.models_hint": {
+    "source": "Other models answer this key as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个 key 来说就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.key_detail.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.key_detail.monthly_budget": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.key_detail.no_limit": {
+    "source": "No limit",
+    "text": "不限"
+  },
+  "dashboard.key_detail.not_found": {
+    "source": "This key does not exist or was regenerated under a new prefix. Find it in the list of your keys.",
+    "text": "这个 key 不存在，或者已经重新生成、换了新的前缀。请在 key 列表中查找。"
+  },
+  "dashboard.key_detail.not_found_title": {
+    "source": "API key not found",
+    "text": "找不到这个 API key"
+  },
+  "dashboard.key_detail.pick_a_model": {
+    "source": "Pick at least one model, or allow all models. To stop the key, revoke it or set a budget of 0.",
+    "text": "请至少选择一个模型，或者允许全部模型。要停用这个 key，可以吊销它或把预算设为 0。"
+  },
+  "dashboard.key_detail.save": {
+    "source": "Save limits",
+    "text": "保存限制"
+  },
+  "dashboard.key_detail.saved_toast": {
+    "source": "Limits saved.",
+    "text": "限制已保存。"
+  },
+  "dashboard.key_detail.spend_note": {
+    "source": "Counted since usage was first attributed to keys. Regenerating the key keeps its spend.",
+    "text": "从开始按 key 统计用量时算起。重新生成 key 不会清零花费。"
+  },
+  "dashboard.key_detail.spend_title": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
+  "dashboard.key_detail.spent_of": {
+    "source": "{spent} of {budget}",
+    "text": "{spent} / {budget}"
+  },
+  "dashboard.key_detail.this_month": {
+    "source": "This month",
+    "text": "本月"
+  },
+  "dashboard.key_detail.today": {
+    "source": "Today",
+    "text": "今天"
+  },
+  "dashboard.key_detail.zero_hint": {
+    "source": "A budget of 0 pauses the key.",
+    "text": "预算设为 0 会暂停这个 key。"
+  },
+  "dashboard.keys.limit_daily": {
+    "source": "{amount}/day",
+    "text": "{amount}/天"
+  },
+  "dashboard.keys.limit_models_one": {
+    "source": "1 model",
+    "text": "1 个模型"
+  },
+  "dashboard.keys.limit_models_other": {
+    "source": "{count} models",
+    "text": "{count} 个模型"
+  },
+  "dashboard.keys.limit_monthly": {
+    "source": "{amount}/month",
+    "text": "{amount}/月"
+  },
+  "dashboard.keys.limits": {
+    "source": "Limits",
+    "text": "限制"
+  },
+  "dashboard.keys.more_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",
@@ -1299,25 +2603,25 @@
     "source": "Last Used",
     "text": "最近使用"
   },
+  "dashboard.keys.col_spend": {
+    "source": "Spend (UTC)",
+    "text": "花费（UTC）"
+  },
   "dashboard.keys.col_status": {
     "source": "Status",
     "text": "状态"
   },
-  "dashboard.keys.confirm_create": {
-    "source": "Create a new API Key?",
-    "text": "确定要创建新的 API key 吗？"
-  },
-  "dashboard.keys.confirm_delete": {
-    "source": "Delete this API Key? It will stop working immediately.",
-    "text": "确定要删除这个 API key 吗？删除后它会立即停止工作。"
-  },
   "dashboard.keys.confirm_regenerate": {
-    "source": "Regenerate API Key? The old key will be immediately invalidated.",
-    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。"
+    "source": "Regenerate API Key? The old key will be immediately invalidated. The key keeps its name, limits and spend.",
+    "text": "确定要重新生成 API key 吗？旧的 key 会立即失效。这个 key 的名称、限制和花费都会保留。"
   },
   "dashboard.keys.confirm_remove": {
     "source": "Remove this revoked API Key from the dashboard?",
     "text": "要把这个已吊销的 API key 从列表中移除吗？"
+  },
+  "dashboard.keys.confirm_revoke": {
+    "source": "This key will stop working immediately. Its usage history will remain available.",
+    "text": "这个 key 将立即失效，无法再调用 API。历史用量记录会保留。"
   },
   "dashboard.keys.copied_toast": {
     "source": "API key copied to clipboard",
@@ -1326,6 +2630,10 @@
   "dashboard.keys.copy": {
     "source": "Copy key",
     "text": "复制 key"
+  },
+  "dashboard.keys.copy_failed": {
+    "source": "Could not copy the key. Show it and copy it instead.",
+    "text": "无法复制 key。请先显示它，再手动复制。"
   },
   "dashboard.keys.create": {
     "source": "Create API Key",
@@ -1338,14 +2646,6 @@
   "dashboard.keys.created_toast": {
     "source": "API Key created successfully! Please save it now.",
     "text": "API key 已创建，请立即保存。"
-  },
-  "dashboard.keys.delete": {
-    "source": "Delete",
-    "text": "删除"
-  },
-  "dashboard.keys.deleted_toast": {
-    "source": "API Key deleted successfully.",
-    "text": "API key 已删除。"
   },
   "dashboard.keys.empty": {
     "source": "No API keys yet. Create one to start using the API.",
@@ -1367,6 +2667,14 @@
     "source": "Failed to load API keys. Please try again later.",
     "text": "API key 加载失败，请稍后再试。"
   },
+  "dashboard.keys.name_label": {
+    "source": "Name (optional)",
+    "text": "名称（可选）"
+  },
+  "dashboard.keys.name_prompt": {
+    "source": "Name this key (optional), for example \"laptop\" or \"CI\". All of your keys share your account's quota; each can also have limits of its own.",
+    "text": "给这个 key 起个名字（可选），例如“laptop”或“CI”。你的所有 key 共用账户的额度，每个 key 还可以设置自己的限制。"
+  },
   "dashboard.keys.never": {
     "source": "Never",
     "text": "从未使用"
@@ -1374,6 +2682,10 @@
   "dashboard.keys.no_actions": {
     "source": "No actions",
     "text": "无可用操作"
+  },
+  "dashboard.keys.no_limits": {
+    "source": "No limits",
+    "text": "无限制"
   },
   "dashboard.keys.regenerate": {
     "source": "Regenerate",
@@ -1391,13 +2703,65 @@
     "source": "API Key removed.",
     "text": "API key 已移除。"
   },
+  "dashboard.keys.rename": {
+    "source": "Rename",
+    "text": "重命名"
+  },
+  "dashboard.keys.rename_prompt": {
+    "source": "Rename this key. Leave it blank to remove the name.",
+    "text": "重命名这个 key。留空则去掉名字。"
+  },
+  "dashboard.keys.renamed_toast": {
+    "source": "API key renamed.",
+    "text": "API key 已重命名。"
+  },
+  "dashboard.keys.reveal_needs_password": {
+    "source": "Showing a saved key needs your password. Set one in Settings, or regenerate the key to see a new one.",
+    "text": "显示已保存的 key 需要你的密码。请先在设置中设置密码，或者重新生成这个 key 来查看新的 key。"
+  },
+  "dashboard.keys.reveal_password": {
+    "source": "Password",
+    "text": "密码"
+  },
+  "dashboard.keys.reveal_prompt": {
+    "source": "Enter your password to see this key in full.",
+    "text": "输入密码，查看完整的 key。"
+  },
+  "dashboard.keys.reveal_title": {
+    "source": "Confirm it's you",
+    "text": "确认是你本人"
+  },
+  "dashboard.keys.revoke": {
+    "source": "Revoke",
+    "text": "吊销"
+  },
+  "dashboard.keys.revoked_hint": {
+    "source": "Revoked keys can no longer call the API. They are kept here so you can review their usage history.",
+    "text": "已吊销的 key 无法再调用 API。保留这些记录是为了方便查看历史用量。"
+  },
+  "dashboard.keys.revoked_toast": {
+    "source": "API key revoked. It can no longer be used.",
+    "text": "API key 已吊销，无法继续使用。"
+  },
   "dashboard.keys.save_now": {
-    "source": "Save this key now. It will only be shown once.",
-    "text": "请现在就保存这个 key，它只会显示这一次。"
+    "source": "Save this key securely.",
+    "text": "请妥善保存这个 key。"
   },
   "dashboard.keys.show": {
     "source": "Show key",
     "text": "显示 key"
+  },
+  "dashboard.keys.spend_inline": {
+    "source": "Spend: ",
+    "text": "花费："
+  },
+  "dashboard.keys.spent_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.keys.spent_today": {
+    "source": "{amount} today",
+    "text": "今天 {amount}"
   },
   "dashboard.keys.status_active": {
     "source": "active",
@@ -1414,6 +2778,10 @@
   "dashboard.keys.title": {
     "source": "API Keys",
     "text": "API key"
+  },
+  "dashboard.keys.unnamed": {
+    "source": "Unnamed key",
+    "text": "未命名"
   },
   "dashboard.models.col_limits": {
     "source": "Ctx / out",
@@ -1475,6 +2843,14 @@
     "source": "Models",
     "text": "模型"
   },
+  "dashboard.requests.all_keys": {
+    "source": "All keys",
+    "text": "全部 key"
+  },
+  "dashboard.requests.api_key": {
+    "source": "API Key",
+    "text": "API key"
+  },
   "dashboard.requests.badge_embedding": {
     "source": "embedding",
     "text": "embedding"
@@ -1526,6 +2902,10 @@
   "dashboard.requests.error": {
     "source": "Request Error",
     "text": "请求出错"
+  },
+  "dashboard.requests.filter_by_key": {
+    "source": "Filter by API key",
+    "text": "按 API key 筛选"
   },
   "dashboard.requests.go": {
     "source": "Go",
@@ -1623,13 +3003,21 @@
     "source": "Total Tokens",
     "text": "总 token"
   },
-  "dashboard.settings_link": {
-    "source": "Settings",
-    "text": "设置"
-  },
   "dashboard.title": {
     "source": "Dashboard",
     "text": "控制台"
+  },
+  "dashboard.usage.cache_help": {
+    "source": "Cache reads are input tokens served from the prompt cache, usually billed at a lower rate; cache writes are input tokens stored into it. Both are part of Input Tokens.",
+    "text": "缓存命中指直接从提示词缓存读取的输入 token，通常按更低的价格计费；缓存写入指被存进缓存的输入 token。两者都已包含在输入 token 里。"
+  },
+  "dashboard.usage.cache_reads_label": {
+    "source": "Cache reads",
+    "text": "缓存命中"
+  },
+  "dashboard.usage.cache_writes_label": {
+    "source": "Cache writes",
+    "text": "缓存写入"
   },
   "dashboard.usage.cost": {
     "source": "Estimated cost",
@@ -1642,6 +3030,10 @@
   "dashboard.usage.footnote": {
     "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
+  },
+  "dashboard.usage.help_label": {
+    "source": "About {label}",
+    "text": "{label}说明"
   },
   "dashboard.usage.input_tokens": {
     "source": "Input Tokens",
@@ -1698,6 +3090,28 @@
   "dashboard.usage.quota_remaining": {
     "source": "Daily quota remaining",
     "text": "今日剩余额度"
+  },
+  "dashboard.usage.reasoning_help": {
+    "source": "Reasoning tokens are spent by the model thinking before it answers. Depending on the provider, they may already be counted in Output Tokens.",
+    "text": "推理 token 是模型在回答之前用来思考的 token。不同提供商的统计口径不同，这部分可能已经算进输出 token 里了。"
+  },
+  "dashboard.usage.reasoning_label": {
+    "source": "Reasoning tokens",
+    "text": "推理 token"
+  },
+  "dashboard.usage.reasoning_partial": [
+    {
+      "source": "reported by only 1 request",
+      "text": "仅 1 个请求上报"
+    },
+    {
+      "source": "reported by only {known} requests",
+      "text": "仅 {known} 个请求上报"
+    }
+  ],
+  "dashboard.usage.reasoning_unreported": {
+    "source": "Not reported",
+    "text": "未上报"
   },
   "dashboard.usage.requests": {
     "source": "Requests",
@@ -2050,10 +3464,6 @@
   "meta.team.title": {
     "source": "Team",
     "text": "团队"
-  },
-  "settings.back": {
-    "source": "← Back",
-    "text": "← 返回"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",
@@ -2790,5 +4200,169 @@
   "terms.s9.title": {
     "source": "9. Changes to These Terms",
     "text": "9. 条款变更"
+  },
+  "console.nav.projects": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.keys.project_label": {
+    "source": "Project",
+    "text": "项目"
+  },
+  "dashboard.projects.archive": {
+    "source": "Archive",
+    "text": "归档"
+  },
+  "dashboard.projects.archive_prompt": {
+    "source": "Archive {name}? Its keys stop working immediately. Its usage history stays available.",
+    "text": "归档 {name}？其密钥将立即失效，使用记录会保留。"
+  },
+  "dashboard.projects.archived_toast": {
+    "source": "Project archived. {count} key(s) revoked.",
+    "text": "项目已归档，已撤销 {count} 个密钥。"
+  },
+  "dashboard.projects.concurrency_label": {
+    "source": "Max concurrent requests",
+    "text": "最大并发请求数"
+  },
+  "dashboard.projects.create": {
+    "source": "Create Project",
+    "text": "创建项目"
+  },
+  "dashboard.projects.created_toast": {
+    "source": "Project created.",
+    "text": "项目已创建。"
+  },
+  "dashboard.projects.daily_budget": {
+    "source": "Daily {amount}",
+    "text": "每日 {amount}"
+  },
+  "dashboard.projects.daily_label": {
+    "source": "Daily budget (USD)",
+    "text": "每日预算（美元）"
+  },
+  "dashboard.projects.default_badge": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.projects.edit": {
+    "source": "Edit Project",
+    "text": "编辑项目"
+  },
+  "dashboard.projects.empty": {
+    "source": "No projects yet.",
+    "text": "暂无项目。"
+  },
+  "dashboard.projects.invalid_limits": {
+    "source": "Enter non-negative budgets and a positive whole concurrency limit.",
+    "text": "请输入非负预算和正整数并发限制。"
+  },
+  "dashboard.projects.key_count": {
+    "source": "{count} key(s)",
+    "text": "{count} 个密钥"
+  },
+  "dashboard.projects.load_failed": {
+    "source": "Failed to load projects. Please try again later.",
+    "text": "无法加载项目，请稍后重试。"
+  },
+  "dashboard.projects.monthly_budget": {
+    "source": "Monthly {amount}",
+    "text": "每月 {amount}"
+  },
+  "dashboard.projects.monthly_label": {
+    "source": "Monthly budget (USD)",
+    "text": "每月预算（美元）"
+  },
+  "dashboard.projects.name_label": {
+    "source": "Name",
+    "text": "名称"
+  },
+  "dashboard.projects.name_required": {
+    "source": "Name is required.",
+    "text": "请输入名称。"
+  },
+  "dashboard.projects.no_daily_budget": {
+    "source": "No daily budget",
+    "text": "未设置每日预算"
+  },
+  "dashboard.projects.no_limit": {
+    "source": "No limit",
+    "text": "无限制"
+  },
+  "dashboard.projects.no_monthly_budget": {
+    "source": "No monthly budget",
+    "text": "未设置每月预算"
+  },
+  "dashboard.projects.spend_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "dashboard.projects.spend_today": {
+    "source": "{amount} today",
+    "text": "今日 {amount}"
+  },
+  "dashboard.projects.subtitle": {
+    "source": "Group API keys under a shared budget and model allowlist. Keys without a project use your Default project.",
+    "text": "将 API 密钥分组，共享预算和模型允许列表。未指定项目的密钥使用默认项目。"
+  },
+  "dashboard.projects.title": {
+    "source": "Projects",
+    "text": "项目"
+  },
+  "dashboard.projects.updated_toast": {
+    "source": "Project updated.",
+    "text": "项目已更新。"
+  },
+  "common.edit": {
+    "source": "Edit",
+    "text": "编辑"
+  },
+  "dashboard.keys.project_default": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "dashboard.keys.project_placeholder": {
+    "source": "Account default",
+    "text": "账户默认项目"
+  },
+  "dashboard.model_picker.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "dashboard.model_picker.clear_all": {
+    "source": "Clear all",
+    "text": "全部清除"
+  },
+  "dashboard.model_picker.pick_a_model": {
+    "source": "Pick at least one model, or choose All models.",
+    "text": "至少选择一个模型，或选择全部模型。"
+  },
+  "dashboard.model_picker.select_all": {
+    "source": "Select all",
+    "text": "全选"
+  },
+  "dashboard.model_picker.selected_count": {
+    "source": "{count} selected",
+    "text": "已选择 {count} 个"
+  },
+  "dashboard.model_picker.some_models": {
+    "source": "Only the models selected below",
+    "text": "仅以下选中的模型"
+  },
+  "dashboard.model_picker.unavailable": {
+    "source": "no longer available",
+    "text": "已不可用"
+  },
+  "dashboard.projects.models_hint": {
+    "source": "Other models answer requests from this project as if they did not exist, and its model list shows only these.",
+    "text": "其他模型对这个项目的请求就像不存在一样，用它获取的模型列表也只包含这些模型。"
+  },
+  "dashboard.projects.models_title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "dashboard.projects.pick_a_model": {
+    "source": "Pick at least one model, or allow all models.",
+    "text": "至少选择一个模型，或允许全部模型。"
   }
 }

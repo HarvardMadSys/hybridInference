@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config.settings import VALID_ROLES
 from serving.model_access import baseline_required_role
 from serving.schemas_admin import (
@@ -13,12 +14,12 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_operational_store,
     get_services,
     model_router_transition_lock,
     verify_admin_access,
 )
-from serving.utils.request_ip import get_client_ip
 
 router = APIRouter(prefix="/admin")
 
@@ -29,6 +30,14 @@ def _is_canonical_model(model_id: str, route) -> bool:
         and bool(route.adapters)
         and route.adapters[0][0].config.id == model_id
     )
+
+
+def _model_routes(router) -> dict[str, object]:
+    """Return chat and embedding gates keyed by their registered names."""
+    return {
+        **getattr(router, "routes", {}),
+        **getattr(router, "embedding_routes", {}),
+    }
 
 
 def _effective_required_role_for_admin_list(baseline: str, override: str | None) -> str:
@@ -53,8 +62,9 @@ async def list_model_visibility(
     overrides = {row["model_id"]: row["required_role"] for row in override_rows}
     models: list[ModelVisibilityItem] = []
 
-    for model_id in sorted(services.router.routes):
-        route = services.router.routes[model_id]
+    routes = _model_routes(services.router)
+    for model_id in sorted(routes):
+        route = routes[model_id]
         if not _is_canonical_model(model_id, route):
             continue
 
@@ -75,10 +85,10 @@ async def list_model_visibility(
 
 @router.patch("/models/{model_id:path}/visibility", response_model=ModelVisibilityItem)
 async def update_model_visibility(
-    request: Request,
     model_id: str,
     payload: UpdateModelVisibilityRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ModelVisibilityItem:
@@ -87,7 +97,7 @@ async def update_model_visibility(
         raise HTTPException(status_code=500, detail="Database not configured")
 
     async with model_router_transition_lock(services, model_id):
-        route = services.router.routes.get(model_id)
+        route = _model_routes(services.router).get(model_id)
         if route is None or not _is_canonical_model(model_id, route):
             raise HTTPException(status_code=404, detail=f"Unknown model: {model_id}")
 
@@ -124,10 +134,10 @@ async def update_model_visibility(
 
         await log_admin_action(
             op_store,
-            get_client_ip(request),
-            "models.visibility.update",
-            None,
-            {
+            action="models.visibility.update",
+            actor=actor,
+            target=AuditTarget.model(model_id),
+            details={
                 "model_id": model_id,
                 "old_override_required_role": old_override,
                 "new_override_required_role": new_override,

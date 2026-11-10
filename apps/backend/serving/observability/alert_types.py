@@ -82,6 +82,16 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="client_error_burst",
     ),
     AlertType(
+        id="key_pool_exhaustion_burst",
+        label="Key-pool exhaustion burst",
+        description=(
+            "One endpoint's key-pool refusals, which bypass the circuit breaker, piled up "
+            "within the window."
+        ),
+        group="Request errors",
+        key_pattern="key_pool_exhaustion_burst:<endpoint>",
+    ),
+    AlertType(
         id="stream_failure_rate",
         label="Streaming failures for a model",
         description="One model's streams keep dying mid-flight.",
@@ -108,6 +118,14 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         description="An upstream endpoint refused the credential the gateway presents to it.",
         group="Providers",
         key_pattern="upstream_auth:<endpoint>",
+    ),
+    AlertType(
+        id="batch_model_queued",
+        label="Batch model waiting for capacity",
+        description="A model has answered batch requests 'waiting for a GPU' for longer "
+        "than BATCH_QUEUED_ALERT_HOURS.",
+        group="Providers",
+        key_pattern="batch_model_queued:<model>",
     ),
     AlertType(
         id="auth_failure_spike",
@@ -146,6 +164,16 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="tracked_task_failure:<task>",
     ),
     AlertType(
+        id="request_log_queue_saturation",
+        label="Request-log queue saturated; report rows dropped",
+        description=(
+            "The bounded api_logs queue fell behind and discarded report rows; quota-ledger "
+            "increments are separate, but usage reports undercount the dropped rows."
+        ),
+        group="Platform",
+        key_pattern="request_log_queue_saturation",
+    ),
+    AlertType(
         id="prefix_cache_pending_leak",
         label="RouteWise pending prefix-cache entries leaking",
         description=(
@@ -167,6 +195,26 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         description="A provider's spend this hour exceeded the budget configured for it.",
         group="Cost",
         key_pattern="provider_spend:<provider>:<hour>",
+    ),
+    AlertType(
+        id="cost_counter_write_refused",
+        label="Cost counters refused an entry",
+        description=(
+            "The cost counters refused a cost for its own values, such as one that would "
+            "overflow its counter; it was set aside unwritten for an operator to reconcile."
+        ),
+        group="Cost",
+        key_pattern="cost_counter_write_refused",
+    ),
+    AlertType(
+        id="cost_above_request_ceiling",
+        label="Request cost above the per-request ceiling",
+        description=(
+            "A request cost more than any real request can, so its usage report or price is "
+            "wrong; it was recorded as the ceiling."
+        ),
+        group="Cost",
+        key_pattern="cost_above_request_ceiling",
     ),
 )
 

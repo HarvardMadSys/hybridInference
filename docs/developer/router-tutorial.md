@@ -90,16 +90,16 @@ List models:
 curl -s localhost:18080/v1/models
 ```
 
-The response contains the public model id `example-chat`. Its registry entry is
-in `distributions/example/config/models.yaml`, which the backend finds through
-the distribution manifest `distributions/example/distribution.yaml` — see
-[Configuration](configuration.md) for how that resolution works.
+The response contains the public model id `example-chat`. This explicitly
+selected tutorial seeds the `MODEL_CATALOG` setting from
+`distributions/example/config/models.json`. Stage 1 has no database, so the
+setting is supplied in its container environment; there is no implicit file
+fallback in the gateway. Normal deployments configure the catalog in Admin.
 
-The file is mounted into the container rather than built into the image, so
-an edit only needs a backend restart. To try it, change the model's `name`
-from `Runnable Example Chat` to `Reloaded Example Chat`, run
-`make restart s=backend DISTRIBUTION=example`, and list the models again. Change
-it back and restart once more before continuing.
+For this stateless teaching stage only, change the example model's `name`, run
+`make up DISTRIBUTION=example` to recreate the container with its updated JSON
+seed, and list the models again. Restore the sample before continuing. Once
+Stage 2 uses PostgreSQL, edit stored settings in Admin instead.
 
 Send a completion:
 
@@ -186,8 +186,9 @@ overrode it — and complete the browser flow:
    setting the gateway keeps in its database, the example's own values among
    them; see
    [Settings stored in the database](configuration.md#settings-stored-in-the-database).
-3. On the dashboard, create an API key, then reveal and copy it for the API
-   call below.
+3. On the dashboard, create an API key and copy it for the API call below.
+   To see a saved key again later, select **Show key** and enter your
+   password.
 4. Open **API Playground**, select `example-chat`, and send a message. The reply
    is `RUNNABLE_EXAMPLE_OK`.
 5. Open **Admin Console** again. This account is an administrator because
@@ -275,7 +276,7 @@ your own `BACKEND_PORT` here too if you overrode it).
 
 Once Stage 2 has started, exporting `EXAMPLE_UPSTREAM_*` in your shell does not
 change the route: a stored setting wins over the environment, and the
-Configuration tab marks such a variable **Environment ignored**. To return to
+Settings tab marks such a variable **Environment ignored**. To return to
 the bundled provider, select **Reset** on the three settings and restart the
 backend again.
 
@@ -296,11 +297,11 @@ source:
 ```text
 distributions/example/
 ├── EXAMPLE_OVERLAY
-├── distribution.yaml
-├── distribution.demo.yaml
+├── distribution.json
+├── distribution.demo.json
 ├── config/
-│   ├── models.yaml
-│   └── routing.yaml
+│   ├── models.json
+│   └── routing.json
 ├── deploy/
 │   ├── backend.env
 │   ├── docker-compose.yml
@@ -310,10 +311,9 @@ distributions/example/
 └── full_smoke.py
 ```
 
-`distribution.yaml` describes the Stage 1 capability with public signup off.
-`distribution.demo.yaml` describes the same distribution after auth and the
-frontend are enabled. Both reuse the same model and routing files; they do not
-duplicate a registry.
+`distribution.json` seeds Stage 1 site settings with public signup off.
+`distribution.demo.json` supplies the demo site settings after auth and the
+frontend are enabled. Both stages reuse the model and routing JSON seeds.
 
 The two Compose files follow the same progression. The first adds the fake
 provider and starts the backend alone. The second adds the database and
@@ -396,7 +396,7 @@ and 3. The links the site generates follow the same ports:
 the example's database. Keep the same three ports on every later `make demo`
 or `make demo-smoke`, because both commands can recreate containers. A
 different `FRONTEND_PORT` later does not reach the stored addresses; change
-them on the Configuration tab, or reset the example and start again.
+them on the Settings tab, or reset the example and start again.
 
 ### The setup page rejects the code
 
@@ -424,13 +424,11 @@ before `make up` can work.
 
 ### Empty `/v1/models` and `routes_configured: 0`
 
-The backend could not read the example's config. The most common cause on
-macOS is a checkout outside Docker's shared file paths: the `distributions/`
-bind mount then resolves to an empty directory inside the VM, the manifest at
-`/app/distributions/example/distribution.yaml` is missing, and
-`make logs s=backend DISTRIBUTION=example` says so explicitly. Move the
-checkout under a shared path (or add yours in Docker Desktop's *File sharing*
-settings) and run `make up DISTRIBUTION=example` again.
+In Stage 1, confirm that you passed `DISTRIBUTION=example` and that the checked-in
+JSON seeds are valid. Run `make up DISTRIBUTION=example` to recreate the backend
+with those explicit seeds, then inspect `make logs s=backend DISTRIBUTION=example`.
+In Stage 2, use Admin Settings and Routing to check saved and applied
+configuration; stored database values take precedence over environment seeds.
 
 ### `make up` chose another distribution
 

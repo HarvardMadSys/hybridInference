@@ -32,6 +32,7 @@ __all__ = [
     "build_router",
     "register_missing_strategy",
     "register_strategy",
+    "strategy_name_problem",
     "validate_router_config",
 ]
 
@@ -99,19 +100,19 @@ def _accepts_health_registry(router_cls: type) -> bool:
     return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
 
 
-def _accepts_prefill_load(router_cls: type) -> bool:
-    """Return whether a registered router constructor accepts prefill_load injection."""
-    try:
-        parameters = inspect.signature(router_cls).parameters
-    except (TypeError, ValueError):
-        return False
-    prefill_parameter = parameters.get("prefill_load")
-    if prefill_parameter is not None and prefill_parameter.kind in {
-        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        inspect.Parameter.KEYWORD_ONLY,
-    }:
-        return True
-    return any(parameter.kind is inspect.Parameter.VAR_KEYWORD for parameter in parameters.values())
+def strategy_name_problem(name: str) -> str | None:
+    """Say why no router can be built under *name*, or return None when one can.
+
+    For a strategy named apart from its parameters: ``ROUTING_POLICY``'s
+    ``default_router``, which every model that omits ``router`` is built with,
+    each with its own ``router_params``. The reason never repeats *name*, so a
+    document validator can show it as it is.
+    """
+    if name in _STRATEGIES:
+        return None
+    if name in _MISSING_STRATEGIES:
+        return _MISSING_STRATEGIES[name]
+    return f"names no routing strategy this gateway has (known: {', '.join(sorted(_STRATEGIES))})"
 
 
 def _validated_strategy(
@@ -189,13 +190,10 @@ def build_router(
         dependencies=dependencies,
     )
     if dependencies is not None:
-        kwargs: dict[str, Any] = {
-            "params": validated,
-            "health_registry": dependencies.health_registry,
-        }
-        if dependencies.prefill_load is not None and _accepts_prefill_load(router_cls):
-            kwargs["prefill_load"] = dependencies.prefill_load
-        return router_cls(**kwargs)
+        return router_cls(
+            params=validated,
+            health_registry=dependencies.health_registry,
+        )
     return router_cls(params=validated)
 
 

@@ -10,6 +10,12 @@ models and external model APIs to a team. It is developed by the
 <a href="https://join.slack.com/t/hybridinference/shared_invite/zt-4a6csrbu8-JgrTHo_CgcK6G0FnejGwfw"><b>Join Slack</b></a>
 </p>
 
+Application configuration lives in **Admin and PostgreSQL**. A fresh gateway
+starts without models and shows **Ask admin to configure**. Model/routing/alert
+YAML and distribution/branding files are no longer runtime sources; existing
+deployments can use the explicit [legacy importer](docs/developer/configuration.md#model-and-routing-documents-in-the-database).
+The opt-in tutorials below seed JSON settings solely for their local examples.
+
 ## Who It's For
 
 Labs and teams serving LLMs to their members from their own GPUs, external
@@ -64,9 +70,11 @@ docker logs hybridinference-example-backend 2>&1 | grep 'setup code'
 
 Enter the code and create the administrator with a username and a demo-only
 password (at least eight characters, including uppercase, lowercase, and a
-number). From the dashboard, create an API key, open the API Playground,
-or enter the Admin Console, whose Configuration tab holds the gateway's
-settings. The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
+number). In the side navigation, create an API key under **API Keys** or
+open **Chat** to try a model. Administrators can open **Admin Console**
+or **pgAdmin** from the separate **Admin** group; the Admin Console's
+Settings tab holds the gateway's settings.
+The example model returns the fixed reply `RUNNABLE_EXAMPLE_OK`.
 
 When you are done, stop the stack. Its database volume is kept for the next
 run:
@@ -93,8 +101,8 @@ uv sync
 export OPENROUTER_API_KEY=sk-or-...
 
 PYTHONPATH=apps/backend \
-  MODELS_CONFIG_PATH=config/examples/models.openrouter.yaml \
-  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+  MODEL_CATALOG="$(cat config/examples/models.openrouter.json)" \
+  ROUTING_POLICY="$(cat config/examples/routing.minimal.json)" \
   DB_ENABLED=false USER_AUTH_ENABLED=false \
   uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
@@ -122,6 +130,7 @@ row describes you:
 | Understand how a request becomes a routing decision | [Architecture](docs/developer/architecture.md) |
 | Add a model, a local server, or a new provider | [Adding a New Model](docs/developer/adding-models.md) |
 | Operate one in production | [Deployment Guide](docs/developer/deployment.md) |
+| Follow changing Kubernetes proxy Pod addresses | [Proxy discovery deployment guide](deploy/kubernetes/proxy-discovery/README.md) |
 | Send a change | [Contributing](docs/developer/contributing.md) |
 
 Bugs and questions go to the
@@ -171,8 +180,8 @@ uv run python $F --port 18351 --response-text ROUTED_TO_PREMIUM &
 uv run python $F --port 18352 --response-text ROUTED_TO_BUDGET --ttft-delay-ms 400 &
 
 PYTHONPATH=apps/backend \
-  MODELS_CONFIG_PATH=config/examples/models.routewise.yaml \
-  ROUTING_CONFIG_PATH=config/examples/routing.minimal.yaml \
+  MODEL_CATALOG="$(cat config/examples/models.routewise.json)" \
+  ROUTING_POLICY="$(cat config/examples/routing.minimal.json)" \
   DB_ENABLED=false USER_AUTH_ENABLED=false \
   uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
 ```
@@ -195,7 +204,7 @@ pkill -f fake-openai-provider/server.py
 
 The example ships `budget_alpha: 0.0`, so every reply is `ROUTED_TO_BUDGET`:
 the LP may not spend more than the cheapest eligible provider. Set it to `1.0`
-in `config/examples/models.routewise.yaml`, restart, and — after another ten
+in `config/examples/models.routewise.json`, restart, and — after another ten
 seconds, since the restart drops the measurements with the process — every
 reply becomes `ROUTED_TO_PREMIUM`: the wider cost budget lets the policy buy
 the 400 ms. That one edit is the cost/latency tradeoff the paper is about.
@@ -234,14 +243,14 @@ apps/
   frontend/       # Next.js web UI
 benchmark/        # Benchmark utilities
 config/
-  examples/       # Reference registries and routing config; also the built-in
+  examples/       # Importable JSON examples; no implicit runtime
                   # fallback a checkout with no overlay resolves to. A
-                  # deployment's own config lives in distributions/<name>/.
+                  # application configuration lives in Admin and PostgreSQL.
 distributions/    # Per-distribution overlays: identity, content, config
                   # (including example/, the public runnable router example)
 tests/            # Unit, API, integration, and external tests
-ops/              # CI classifiers, admin sweeps, release/deploy scripts, backend-coupled DB analysis
-deploy/           # Docker, systemd, observability manifests
+ops/              # CI helpers, admin tools and sweeps, local dev scripts, backend-coupled DB analysis
+deploy/           # Docker, systemd and Kubernetes manifests
 docs/             # Developer docs, agent specs/plans, reviews
 ```
 

@@ -1,0 +1,34 @@
+# Example only. Review and replace names; this file is not applied by a build.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway-proxy-reader
+  namespace: example-inference
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-proxy-reader
+  namespace: example-inference
+rules:
+  - apiGroups: [""]
+    resources: ["services"]
+    resourceNames: ["frontend"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-proxy-reader
+  namespace: example-inference
+subjects:
+  - kind: ServiceAccount
+    name: gateway-proxy-reader
+    namespace: example-inference
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: gateway-proxy-reader

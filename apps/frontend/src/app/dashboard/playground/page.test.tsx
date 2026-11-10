@@ -630,11 +630,9 @@ describe('PlaygroundPage', () => {
   it('stops following the stream once the reader scrolls up', async () => {
     const stream = controlledStream();
     mockChats(stream.response);
-    const { container } = render(<PlaygroundPage />);
+    render(<PlaygroundPage />);
     await sendPrompt();
-    const chat = container.querySelector<HTMLElement>(
-      '.dark-scrollbar.flex-1.overflow-y-auto.px-6',
-    )!;
+    const chat = screen.getByRole('region', { name: 'Conversation' });
     const scrollTo = vi.mocked(Element.prototype.scrollTo);
     const place = (top: number) => {
       Object.defineProperty(chat, 'scrollHeight', { value: 1000, configurable: true });
@@ -776,6 +774,49 @@ describe('PlaygroundPage', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('opens the sessions and settings from the header on a phone', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+
+    const toggle = screen.getByRole('button', { name: 'Chat settings' });
+    const drawer = screen.getByRole('complementary', { name: 'Chat settings' });
+    expect(toggle).toHaveAttribute('aria-controls', drawer.id);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('button', { name: 'Close chat settings' })).toHaveFocus();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+
+    // The empty conversation offers the same drawer, and closing returns focus.
+    fireEvent.click(screen.getByRole('button', { name: 'Open chat settings' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'Close chat settings' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(toggle).toHaveFocus();
+  });
+
+  it('shows the conversation once a session is started or chosen from the drawer', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const toggle = screen.getByRole('button', { name: 'Chat settings' });
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    fireEvent.click(screen.getAllByRole('button', { name: /^New session/ })[0]);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('aborts every live stream when the page unmounts', async () => {

@@ -58,12 +58,14 @@ import threading
 import time
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from serving.config.settings import ROLE_RANK, has_role
 
 if TYPE_CHECKING:
-    from collections.abc import Collection
+    from collections.abc import Callable, Collection
+
+T = TypeVar("T")
 
 # 4xx statuses that are key-specific (not request-scoped) and so should rotate
 # the request onto another key — and mute this one once there is none left:
@@ -162,17 +164,17 @@ class KeyPoolExhausted(Exception):
 class KeyPoolRoleRestricted(KeyPoolExhausted):
     """No key for *this caller*, though the pool can still serve someone else.
 
-    Split out from plain ``KeyPoolExhausted`` because the two mean opposite
-    things to endpoint health. A pool with nothing usable by anyone is an
-    endpoint problem worth counting against it; a pool that simply holds no key
-    this caller's tier may spend is not — the request never reached the upstream,
-    and the endpoint is happily serving the tiers that own those keys. Counting
-    it would let a burst of lower-tier traffic open the circuit and take reserved
-    capacity away from the callers it was reserved for.
+    Split out from plain ``KeyPoolExhausted`` so operators can tell the two
+    apart in health logs. Neither subtype is counted against endpoint health:
+    both are raised by ``acquire()`` before anything is sent, so neither is
+    evidence about the endpoint (see ``EndpointHealthRegistry.record_failure``).
+    The distinction is diagnostic only — "reserved above this caller's tier"
+    (the endpoint is happily serving the tiers that own those keys) versus
+    "every key muted or removed" (the tail of a provider 429/auth storm).
 
     Subclasses ``KeyPoolExhausted`` so existing handlers (the 429 mapping on the
     Anthropic surface, the router's fallback chain) keep their behavior without
-    change; only health accounting looks for the distinction.
+    change; only the health-accounting log label looks for the distinction.
     """
 
 
@@ -539,6 +541,79 @@ class KeyPool:
                 )
             self._keys[idx].request_count += 1
             return self._keys[idx].key, Lease(idx, affinity_key, role)
+
+    def acquire_with(
+        self,
+        affinity_key: str | None,
+        admit: Callable[[str], T | None],
+        *,
+        role: str | None = None,
+        exclude: Collection[int] = (),
+    ) -> tuple[str, Lease, T] | None:
+        """Return ``(api_key, lease, admitted)`` for the first key *admit* takes, or None.
+
+        Keys are offered to *admit* in the order :meth:`acquire` prefers them --
+        the caller's bound key first, then reservation and configuration order --
+        and it returns what lets the request use that key now (an outbound slot)
+        or None when it cannot. A pooled adapter asks this before it queues on a
+        key, so a request does not wait on a full key while a sibling has room.
+
+        A binding whose key is passed over this way is kept, not repointed: the
+        key is only busy, and the caller's next request goes back to it. A caller
+        with no binding, or one :meth:`acquire` would drop (stale, excluded,
+        muted, another role's), is bound to the key that admitted it. None, with
+        nothing changed, when no usable key admits; :meth:`acquire` then chooses
+        the key to wait on.
+        """
+        now = time.monotonic()
+        with self._lock:
+            self._maybe_sweep_locked(now)
+            existing = self._affinity.get(affinity_key) if affinity_key is not None else None
+            bound: int | None = None
+            if existing is not None:
+                state = self._keys[existing.key_index]
+                if (
+                    now < existing.expires_at
+                    and existing.role == role
+                    and not state.removed
+                    and state.cooldown_until <= now
+                    and existing.key_index not in exclude
+                    and _role_may_use(role, state)
+                ):
+                    bound = existing.key_index
+            order = self._usable_in_order_locked(now, role, exclude)
+            if bound is not None:
+                order = [bound, *(i for i in order if i != bound)]
+            for idx in order:
+                admitted = admit(self._keys[idx].key)
+                if admitted is None:
+                    continue
+                if affinity_key is not None and bound is None:
+                    self._affinity[affinity_key] = _Affinity(
+                        key_index=idx,
+                        expires_at=now + self.AFFINITY_TTL_SECONDS,
+                        role=role,
+                    )
+                self._keys[idx].request_count += 1
+                return self._keys[idx].key, Lease(idx, affinity_key, role), admitted
+            return None
+
+    def _usable_in_order_locked(
+        self, now: float, role: str | None = None, exclude: Collection[int] = ()
+    ) -> list[int]:
+        """Return every key *role* may use now, in the order selection prefers them.
+
+        The order of :meth:`_pick_first_available_locked`, which takes the first.
+        """
+        candidates = sorted(
+            (-ROLE_RANK.get(state.min_role, 0), i)
+            for i, state in enumerate(self._keys)
+            if not state.removed
+            and state.cooldown_until <= now
+            and i not in exclude
+            and _role_may_use(role, state)
+        )
+        return [i for _, i in candidates]
 
     def _pick_first_available_locked(
         self, now: float, role: str | None = None, exclude: Collection[int] = ()

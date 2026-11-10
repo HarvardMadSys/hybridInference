@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import fields as dataclass_fields
 from pathlib import Path
@@ -46,7 +45,6 @@ class TestRouteWiseConfigDefaults:
         assert cfg.latency_slo_sec == 3.0
         assert cfg.latency_window_sec == 900.0
         assert cfg.latency_max_samples_per_profile == 5000
-        assert cfg.latency_min_samples == 10
         assert cfg.latency_hedge_mode == "disabled"
 
     def test_invalid_latency_hedge_mode_rejected(self):
@@ -67,7 +65,7 @@ class TestRouteWiseConfigDefaults:
             assert not hasattr(cfg, moved)
 
 
-_EXAMPLE = Path(__file__).resolve().parents[3] / "config" / "examples" / "models.routewise.yaml"
+_EXAMPLE = Path(__file__).resolve().parents[3] / "config" / "examples" / "models.routewise.json"
 
 
 def _example_model() -> dict:
@@ -77,37 +75,17 @@ def _example_model() -> dict:
 
 
 def _commented_reference_routes() -> list[dict]:
-    """Uncomment the `route:` entries the example ships as documentation.
+    """Read the explicit quota/concurrency examples."""
+    import json
 
-    They are the only record of what a quota or concurrency provider looks
-    like. Commented out they are invisible to every loader, so this pulls them
-    back into structured form and the tests below run them through the real
-    parsers -- the previous string-search guard happily passed a `quota_source`
-    block that no schema would accept.
-    """
-    lines = _EXAMPLE.read_text().splitlines()
-    start = next(i for i, line in enumerate(lines) if line.strip() == "route:")
-    body: list[str] = []
-    for line in lines[start + 1 :]:
-        match = re.match(r"^      # ?(.*)$", line)
-        if not match:
-            continue
-        entry = match.group(1)
-        # Route YAML, not the prose around it: a list item, or any indented
-        # continuation of one (nested blocks such as `quota_source:` indent
-        # further). Prose lines sit flush against the comment marker.
-        if entry.startswith("- kind:") or (entry.startswith("  ") and entry.strip()):
-            body.append(entry)
-    routes = yaml.safe_load("\n".join(body))
-    assert routes, "the example no longer carries commented reference routes"
-    return routes
+    return json.loads((_EXAMPLE.parent / "route-capacity-reference.json").read_text())
 
 
 @pytest.mark.unit
 class TestRouteWiseExampleRegistry:
     """The shipped RouteWise example must load, build, and stay complete.
 
-    `config/examples/models.routewise.yaml` is the reference an operator reads
+    `config/examples/models.routewise.json` is the reference an operator reads
     to learn what RouteWise can be tuned to do, and the runnable demo the
     README points at. The FreeInference overlay used to carry that block and a
     guard for it; both left with the overlay, so the guard now protects the
@@ -156,10 +134,10 @@ class TestRouteWiseExampleRegistry:
         assert concurrency["concurrency_pool"]
 
     def test_every_config_option_is_documented(self):
-        text = _EXAMPLE.read_text()
+        text = _EXAMPLE.read_text() + (_EXAMPLE.parent / "routewise-options.md").read_text()
         for field in dataclass_fields(RouteWiseConfig):
             assert field.name in text, (
-                f"config/examples/models.routewise.yaml no longer mentions "
+                f"config/examples/models.routewise.json no longer mentions "
                 f"RouteWise option {field.name!r}"
             )
 
@@ -175,7 +153,7 @@ def _router_for_alpha(alpha: float) -> tuple[RouteWiseRouter, str, str]:
     register_from_models_yaml(fixed, _EXAMPLE)
     router = RouteWiseRouter(
         route_table=fixed,
-        config=RouteWiseConfig(budget_alpha=alpha, latency_min_samples=5),
+        config=RouteWiseConfig(budget_alpha=alpha),
     )
     for _ in range(25):
         router.predictor.update("routewise-demo", 500)

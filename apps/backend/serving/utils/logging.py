@@ -18,6 +18,10 @@ _STRUCTURED_LOG_KEYS = (
     "path",
     "status_code",
     "duration_ms",
+    # Time the request spent in Kubernetes proxy discovery, lock waits
+    # included (servers/middleware/proxy_trust.py). Kept apart from
+    # duration_ms, which measures only what runs inside the request log.
+    "proxy_discovery_ms",
     "remote_ip",
     "peer_ip",
     "ip_source",
@@ -64,6 +68,13 @@ _STRUCTURED_LOG_KEYS = (
     # depend on.
     "task_name",
     "success",
+    # Request-log queue health: preserve counts and bounds without adding
+    # request payloads to the structured field allowlist.
+    "dropped_total",
+    "queue_maxsize",
+    "queued_rows_discarded",
+    "inflight_writes_uncertain",
+    "pending_rows",
     "from_provider",
     "to_provider",
     "ttft_ms",
@@ -184,8 +195,24 @@ _STRUCTURED_LOG_KEYS = (
 )
 
 
+#: Longest text a structured field of a log line keeps. A request's path and
+#: headers are the client's to choose, up to the server's 16 KiB header limit,
+#: and reach lines written for every such request (an auth failure, a refused
+#: body), where JSON escaping makes six characters of each byte over 0x7f. The
+#: request log cuts its own values shorter; this bounds every other line.
+MAX_LOGGED_FIELD_CHARS = 2048
+
+
+def _bounded_field(value: Any) -> Any:
+    """*value*, or the start of it when it is text longer than :data:`MAX_LOGGED_FIELD_CHARS`."""
+    if isinstance(value, str) and len(value) > MAX_LOGGED_FIELD_CHARS:
+        return value[:MAX_LOGGED_FIELD_CHARS] + "…"
+    return value
+
+
 def _format_extra_value(value: Any) -> str:
     """Format a structured extra value for plain logs."""
+    value = _bounded_field(value)
     if isinstance(value, str):
         return json.dumps(value)
     return json.dumps(value, default=str)
@@ -240,7 +267,7 @@ class JsonFormatter(logging.Formatter):
         # so ``hasattr`` will not work. We therefore read from ``__dict__``.
         for key in (*_STRUCTURED_LOG_KEYS, "headers"):
             if key in record.__dict__:
-                payload[key] = record.__dict__[key]
+                payload[key] = _bounded_field(record.__dict__[key])
 
         if record.exc_info:
             payload["exception"] = self.formatException(record.exc_info)

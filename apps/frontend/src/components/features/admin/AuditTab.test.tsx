@@ -20,12 +20,58 @@ vi.mock('@/lib/api/admin', () => ({
   listAuditLog: vi.fn(),
 }));
 
-import { listAuditLog, type ListAuditLogResponse } from '@/lib/api/admin';
+import { listAuditLog, type AuditLogEntry, type ListAuditLogResponse } from '@/lib/api/admin';
 import { AuditTab } from './AuditTab';
 import { chooseOption } from '@/test-utils/select';
 import { escapingScreenReaderText } from './__tests__/layoutContainment';
 
 const USER_ID = '0123456789abcdef0123';
+const ADMIN_ID = 'fedcba9876543210fedc';
+
+function entry(over: Partial<AuditLogEntry> & Pick<AuditLogEntry, 'id' | 'action'>): AuditLogEntry {
+  return {
+    timestamp: '2026-10-22T10:00:00Z',
+    admin_ip: '10.0.0.1',
+    target_user_id: null,
+    details: null,
+    success: true,
+    ...over,
+  };
+}
+
+function page(...entries: AuditLogEntry[]): ListAuditLogResponse {
+  return { total: entries.length, entries };
+}
+
+/** The table row of the entry whose action reads `action`. */
+async function rowOf(action: string): Promise<HTMLElement> {
+  const badge = await screen.findByText(action, { selector: 'span[title]' });
+  return badge.closest('tr')!;
+}
+
+/** The row's Actor, Target and Source cells, by their column. */
+function cellsOf(row: HTMLElement) {
+  const headers = screen.getAllByRole('columnheader').map((h) => h.textContent);
+  const cells = within(row).getAllByRole('cell');
+  return {
+    actor: cells[headers.indexOf('Actor')],
+    target: cells[headers.indexOf('Target')],
+    source: cells[headers.indexOf('Source')],
+  };
+}
+
+/** Opens a row's details and returns them. */
+function openDetails(action: string): HTMLElement {
+  const toggle = screen.getByRole('button', { name: new RegExp(`Show details of ${action}`) });
+  fireEvent.click(toggle);
+  return document.getElementById(toggle.getAttribute('aria-controls')!)!;
+}
+
+/** The value a details panel records under `label`. */
+function detail(details: HTMLElement, label: string): HTMLElement | null {
+  const term = within(details).queryByText(label, { selector: 'dt' });
+  return (term?.nextElementSibling as HTMLElement | null) ?? null;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -65,7 +111,7 @@ describe('AuditTab', () => {
     expect(screen.getByRole('combobox', { name: 'Filter by action' })).toHaveTextContent(
       'All actions',
     );
-    expect(screen.getByLabelText('Filter by user ID')).toHaveValue('');
+    expect(screen.getByLabelText('Filter by affected user ID')).toHaveValue('');
     expect(screen.getByText('2 entries')).toBeInTheDocument();
     expect(screen.getByText('FAILED')).toBeInTheDocument();
     expect(screen.getByText('10.0.0.1')).toBeInTheDocument();
@@ -77,9 +123,25 @@ describe('AuditTab', () => {
   });
 
   it('filters by the target user and by action through the URL', async () => {
+    vi.mocked(listAuditLog).mockResolvedValue(
+      page(
+        entry({
+          id: 1,
+          action: 'update_user',
+          actor_type: 'admin',
+          actor_id: ADMIN_ID,
+          target_type: 'user',
+          target_id: USER_ID,
+          target_user_id: USER_ID,
+          source_ip: '10.0.0.1',
+        }),
+      ),
+    );
     render(<AuditTab />);
 
-    fireEvent.click(await screen.findByRole('button', { name: `Filter by user ${USER_ID}` }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Show entries affecting user ${USER_ID}` }),
+    );
     expect(replace).toHaveBeenLastCalledWith(`/dashboard/admin/log?user_id=${USER_ID}`, {
       scroll: false,
     });
@@ -88,6 +150,148 @@ describe('AuditTab', () => {
     expect(replace).toHaveBeenLastCalledWith('/dashboard/admin/log?action=delete_key', {
       scroll: false,
     });
+  });
+
+  it('separates a signed-in actor from the affected user and source address', async () => {
+    vi.mocked(listAuditLog).mockResolvedValue(
+      page(
+        entry({
+          id: 1,
+          action: 'update_user',
+          actor_type: 'admin',
+          actor_id: ADMIN_ID,
+          target_type: 'user',
+          target_id: USER_ID,
+          target_user_id: USER_ID,
+          source_ip: '192.0.2.10',
+          admin_ip: '192.0.2.10',
+        }),
+      ),
+    );
+    render(<AuditTab />);
+    const { actor, target, source } = cellsOf(await rowOf('Update user'));
+    expect(actor).toHaveTextContent('Administrator');
+    expect(within(actor).getByTitle(ADMIN_ID)).toHaveTextContent(ADMIN_ID);
+    expect(within(actor).queryByRole('button')).not.toBeInTheDocument();
+    expect(target).toHaveTextContent(USER_ID);
+    expect(target).not.toHaveTextContent(ADMIN_ID);
+    expect(source).toHaveTextContent('192.0.2.10');
+    const details = openDetails('Update user');
+    expect(detail(details, 'Actor ID')).toHaveTextContent(ADMIN_ID);
+    expect(detail(details, 'Target ID')).toHaveTextContent(USER_ID);
+    expect(detail(details, 'Source address')).toHaveTextContent('192.0.2.10');
+    expect(detail(details, 'Legacy source')).toBeNull();
+  });
+
+  it.each([
+    ['admin_token', 'Shared admin token', null],
+    ['user', 'User (self-service)', USER_ID],
+    ['anonymous', 'Anonymous registration', null],
+    ['bootstrap', 'Initial setup', null],
+    ['system', 'System', null],
+  ] as const)(
+    'renders the recorded %s actor without inventing an account',
+    async (type, label, id) => {
+      vi.mocked(listAuditLog).mockResolvedValue(
+        page(
+          entry({
+            id: 1,
+            action: 'create_user',
+            actor_type: type,
+            actor_id: id,
+            source_ip: null,
+            admin_ip: 'unknown',
+          }),
+        ),
+      );
+      render(<AuditTab />);
+      const { actor, source } = cellsOf(await rowOf('Create user'));
+      expect(actor).toHaveTextContent(label);
+      if (id) expect(actor).toHaveTextContent(id);
+      if (type === 'admin_token') expect(actor).toHaveTextContent('No account');
+      expect(source).toHaveTextContent('Not recorded');
+      expect(source).not.toHaveTextContent('Legacy record');
+      const details = openDetails('Create user');
+      expect(detail(details, 'Actor')).toHaveTextContent(label);
+      if (id) expect(detail(details, 'Actor ID')).toHaveTextContent(id);
+      else expect(detail(details, 'Actor ID')).toBeNull();
+      expect(detail(details, 'Source address')).toHaveTextContent('Not recorded');
+      expect(detail(details, 'Legacy source')).toBeNull();
+    },
+  );
+
+  it.each(['ops@example.test', '192.0.2.11', 'legacy-login', 'unknown'])(
+    'shows raw legacy source %s without inferring an actor or target type',
+    async (raw) => {
+      vi.mocked(listAuditLog).mockResolvedValue(
+        page(
+          entry({
+            id: 1,
+            action: 'providers.disabled.update',
+            admin_ip: raw,
+            actor_type: null,
+            actor_id: null,
+            source_ip: null,
+            target_type: null,
+            target_id: null,
+            target_user_id: 'old-provider',
+            details: { admin_id: 'old-display-name', actor: 'admin' },
+          }),
+        ),
+      );
+      render(<AuditTab />);
+      const { actor, target, source } = cellsOf(await rowOf('Providers disabled update'));
+      expect(actor).toHaveTextContent('Not recorded');
+      expect(actor).not.toHaveTextContent('old-display-name');
+      expect(target).toHaveTextContent('Type not recorded');
+      expect(target).toHaveTextContent('old-provider');
+      expect(within(target).queryByRole('button')).not.toBeInTheDocument();
+      expect(source).toHaveTextContent(raw);
+      expect(source).toHaveTextContent('Legacy record');
+      const details = openDetails('Providers disabled update');
+      expect(detail(details, 'Actor ID')).toBeNull();
+      expect(detail(details, 'Legacy source')).toHaveTextContent(raw);
+      expect(detail(details, 'Recorded target ID')).toHaveTextContent('old-provider');
+      expect(detail(details, 'Affected user')).toBeNull();
+    },
+  );
+
+  it('renders model and provider targets without offering a user filter', async () => {
+    vi.mocked(listAuditLog).mockResolvedValue(
+      page(
+        entry({
+          id: 1,
+          action: 'model.update',
+          actor_type: 'admin',
+          actor_id: ADMIN_ID,
+          target_type: 'model',
+          target_id: 'model-a',
+        }),
+        entry({
+          id: 2,
+          action: 'provider.update',
+          actor_type: 'admin_token',
+          target_type: 'provider',
+          target_id: 'provider-a',
+        }),
+      ),
+    );
+    render(<AuditTab />);
+    for (const [action, label, id] of [
+      ['Model update', 'Model', 'model-a'],
+      ['Provider update', 'Provider', 'provider-a'],
+    ]) {
+      const { target } = cellsOf(await rowOf(action));
+      expect(target).toHaveTextContent(label);
+      expect(target).toHaveTextContent(id);
+      expect(within(target).queryByRole('button')).not.toBeInTheDocument();
+    }
+    expect(
+      screen.queryByRole('button', { name: /Show entries affecting user/ }),
+    ).not.toBeInTheDocument();
+    const details = openDetails('Model update');
+    expect(detail(details, 'Target ID')).toHaveTextContent('model-a');
+    expect(detail(details, 'Affected user')).toBeNull();
   });
 
   it('sums each change up in one line and discloses the whole record on request', async () => {

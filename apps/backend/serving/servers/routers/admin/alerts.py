@@ -9,9 +9,12 @@ import time
 import uuid
 from urllib.parse import parse_qsl, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config import app_config
+from serving.observability.alert_history import hooks as alert_history
+from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_mutes import (
     AlertMute,
     list_mutes,
@@ -35,8 +38,7 @@ from serving.schemas_admin import (
     TestAlertResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, verify_admin_access
-from serving.utils.request_ip import get_client_ip
+from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -144,9 +146,9 @@ def _test_webhook(payload: TestAlertRequest) -> str:
 
 @router.post("/alerts/test", response_model=TestAlertResponse)
 async def test_alert_endpoint(
-    request: Request,
     payload: TestAlertRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> TestAlertResponse:
     """Send a marked test directly, bypassing incident suppression and state.
@@ -189,27 +191,44 @@ async def test_alert_endpoint(
     test_id = f"alert-test-{uuid.uuid4().hex[:12]}"
     sink = SlackSink(webhook_url) if payload.channel == "slack" else WeComSink(webhook_url)
     sent = False
+    attempt = None
+    test_context = {
+        "test_id": test_id,
+        "message": "Sent from Admin Configuration. No alert incident was created.",
+    }
     try:
-        message = "[TEST]\n" + sink.render(
-            AlertSeverity.INFO,
-            "Test notification",
-            {
-                "test_id": test_id,
-                "message": "Sent from Admin Configuration. No alert incident was created.",
-            },
+        message = "[TEST]\n" + sink.render(AlertSeverity.INFO, "Test notification", test_context)
+        # One capture path only: the test is recorded here, as origin=test and
+        # joined to the audit row by its test id, and never as an incident.
+        attempt = alert_history.attempt_begin(
+            test_id,
+            episode_id=None,
+            resolution=False,
+            sink=sink,
+            severity=AlertSeverity.INFO,
+            title="Test notification",
+            context=test_context,
+            status="firing",
+            sent_message=message,
+            origin="test",
+            audit_ref=test_id,
+            prefix="[TEST]\n",
         )
-        sent = await sink.post(message, dedupe_key=test_id)
+        outcome = await sink.post_detailed(message, dedupe_key=test_id)
+        sent = outcome.accepted
+        alert_history.attempt_end(attempt, outcome)
+        attempt = None
     except Exception:
         # Adapter exceptions may contain the credential; retain only safe context.
         logger.warning("alert test failed: channel=%s test_id=%s", payload.channel, test_id)
+        alert_history.attempt_end(attempt, DeliveryOutcome(False, "unknown", "exception"))
     try:
         await log_admin_action(
             op_store,
-            get_client_ip(request),
-            "alerts.test",
-            None,
-            {"channel": payload.channel, "test_id": test_id, "sent": sent},
+            action="alerts.test",
+            details={"channel": payload.channel, "test_id": test_id, "sent": sent},
             success=sent,
+            actor=actor,
         )
     except Exception:
         # A delivered message cannot be undone; report its result even if audit is down.
@@ -246,9 +265,9 @@ async def get_alert_snooze_endpoint(
 
 @router.post("/alerts/snooze", response_model=AlertSnoozeStatus)
 async def snooze_alerts_endpoint(
-    request: Request,
     payload: SnoozeAlertsRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> AlertSnoozeStatus:
     """Suppress all alerts for ``duration_seconds`` from now.
@@ -263,10 +282,9 @@ async def snooze_alerts_endpoint(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "alerts.snooze",
-        None,
-        {"duration_seconds": payload.duration_seconds, "snooze_until": snooze_until},
+        action="alerts.snooze",
+        details={"duration_seconds": payload.duration_seconds, "snooze_until": snooze_until},
+        actor=actor,
     )
 
     return _status(snooze_until)
@@ -274,8 +292,8 @@ async def snooze_alerts_endpoint(
 
 @router.delete("/alerts/snooze", response_model=AlertSnoozeStatus)
 async def clear_alert_snooze_endpoint(
-    request: Request,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> AlertSnoozeStatus:
     """Resume alerting immediately by clearing any active snooze.
@@ -287,13 +305,7 @@ async def clear_alert_snooze_endpoint(
 
     await clear_snooze(admin_id)
 
-    await log_admin_action(
-        op_store,
-        get_client_ip(request),
-        "alerts.snooze_clear",
-        None,
-        {},
-    )
+    await log_admin_action(op_store, action="alerts.snooze_clear", details={}, actor=actor)
 
     return _status(0.0)
 
@@ -348,9 +360,9 @@ async def list_alert_mutes_endpoint(
 @router.put("/alerts/mutes/{alert_type}", response_model=AlertTypeMuteStatus)
 async def mute_alert_type_endpoint(
     alert_type: str,
-    request: Request,
     payload: MuteAlertTypeRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> AlertTypeMuteStatus:
     """Mute one alert type for ``duration_seconds``, or until unmuted when null.
@@ -370,10 +382,10 @@ async def mute_alert_type_endpoint(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "alerts.mute",
-        None,
-        {
+        action="alerts.mute",
+        actor=actor,
+        target=AuditTarget("alert_type", entry.id),
+        details={
             "alert_type": entry.id,
             "duration_seconds": payload.duration_seconds,
             "muted_until": until,
@@ -386,8 +398,7 @@ async def mute_alert_type_endpoint(
 @router.delete("/alerts/mutes/{alert_type}", response_model=AlertTypeMuteStatus)
 async def unmute_alert_type_endpoint(
     alert_type: str,
-    request: Request,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> AlertTypeMuteStatus:
     """Lift the mute on one alert type. A no-op for a type that is not muted.
@@ -402,10 +413,10 @@ async def unmute_alert_type_endpoint(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "alerts.unmute",
-        None,
-        {"alert_type": entry.id, "removed": removed},
+        action="alerts.unmute",
+        details={"alert_type": entry.id, "removed": removed},
+        actor=actor,
+        target=AuditTarget("alert_type", entry.id),
     )
 
     return _mute_status(entry, None, time.time())

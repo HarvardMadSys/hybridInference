@@ -13,6 +13,7 @@ import {
   BroadcastListItem,
   type BroadcastPreviewRequest,
   type BroadcastPreviewResponse,
+  type Role,
   cancelBroadcast,
   createBroadcast,
   getBroadcastDetail,
@@ -48,6 +49,9 @@ import {
   TEXT_FIELD,
 } from './adminStyles';
 
+/** Every account role, lowest first. A new broadcast targets all of them. */
+const BROADCAST_ROLES: readonly Role[] = ['free', 'pro', 'internal', 'admin'];
+
 function relTime(s: string | null): string {
   if (!s) return 'Never';
   const ms = Date.now() - new Date(s).getTime();
@@ -64,10 +68,14 @@ function relTime(s: string | null): string {
 /** A recipient preview, with the request it was computed for. */
 type CountedPreview = BroadcastPreviewResponse & { key: string };
 
+/** The `key` of a test send, which names it while it runs. */
+const TEST_SEND = 'test send';
+
 /**
- * Email broadcasts. Preview & Count is a direct read; Send Now / Schedule,
- * Send Test to Me and cancelling a scheduled broadcast each open a
- * confirmation first, and only its Confirm sends anything.
+ * Email broadcasts. Preview & Count is a direct read, and Send Test to Me sends
+ * at once, to the signed-in administrator only. Send Now / Schedule and
+ * cancelling a scheduled broadcast each open a confirmation first, and only its
+ * Confirm sends or cancels anything.
  */
 export function BroadcastsTab() {
   const toast = useAccountToast();
@@ -112,7 +120,7 @@ export function BroadcastsTab() {
     focusOnToggle.current = true;
     setComposerOpen(open);
   };
-  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>(['free', 'internal', 'admin']);
+  const [bcTargetRoles, setBcTargetRoles] = useState<string[]>([...BROADCAST_ROLES]);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
   // USD today (UTC). Empty string means no spend filter.
@@ -147,6 +155,7 @@ export function BroadcastsTab() {
   // A count is shown and confirmed only for the content and filters it was computed for.
   const freshPreview = bcPreview?.key === previewKey ? bcPreview : null;
   const busy = confirmation.busy;
+  const testSending = confirmation.savingKey === TEST_SEND;
 
   const loadBroadcasts = useCallback(async () => {
     setBroadcastLoading(true);
@@ -225,7 +234,7 @@ export function BroadcastsTab() {
               ...audienceRows(request),
               {
                 label: 'Delivery',
-                after: later ? new Date(scheduledAt).toLocaleString() : 'Immediately',
+                after: later ? new Date(scheduledAt).toLocaleString('en-US') : 'Immediately',
               },
             ]}
           />
@@ -244,27 +253,19 @@ export function BroadcastsTab() {
     });
   }
 
-  function reviewTestSend() {
+  // A test reaches nobody in the audience, only the signed-in administrator, so
+  // it is sent on the click.
+  async function sendTest() {
     if (busy || isSpendInvalid) return;
     const request = previewRequest;
-    confirmation.request({
-      title: adminEmail
-        ? `Send a test email to ${adminEmail}?`
-        : 'Send a test email to your account?',
-      confirmLabel: 'Send test',
-      busyLabel: 'Sending…',
-      body: (
-        <p className="[overflow-wrap:anywhere]">
-          {adminEmail
-            ? `Only ${adminEmail} receives it, with [TEST] before the subject. Nobody in the audience is emailed.`
-            : 'Your account has no email address, so the server has nowhere to send a test.'}
-        </p>
-      ),
+    const failure = await confirmation.perform({
+      key: TEST_SEND,
       run: async () => {
         await sendTestBroadcastEmail(request);
         toast.success('Test email sent to your address');
       },
     });
+    if (failure) toast.error(failure);
   }
 
   function confirmCancel(bc: BroadcastListItem) {
@@ -277,7 +278,7 @@ export function BroadcastsTab() {
       body: (
         <p>
           {`It will not be sent to its ${plural(bc.recipient_count, 'recipient')}${
-            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString()}` : ''
+            bc.scheduled_at ? ` at ${new Date(bc.scheduled_at).toLocaleString('en-US')}` : ''
           }. This cannot be undone.`}
         </p>
       ),
@@ -539,7 +540,7 @@ export function BroadcastsTab() {
                   <fieldset>
                     <legend className={FORM_LABEL}>Roles</legend>
                     <div className="mt-1 space-y-1">
-                      {['free', 'internal', 'admin'].map((role) => (
+                      {BROADCAST_ROLES.map((role) => (
                         <label
                           key={role}
                           className="flex items-center gap-2 text-[13px] text-gray-700"
@@ -681,10 +682,16 @@ export function BroadcastsTab() {
                 <button
                   type="button"
                   disabled={busy || isSpendInvalid}
-                  onClick={reviewTestSend}
+                  onClick={() => void sendTest()}
+                  aria-busy={testSending || undefined}
+                  title={
+                    adminEmail
+                      ? `Only ${adminEmail} receives it, with [TEST] before the subject.`
+                      : 'Your account has no email address, so the server has nowhere to send a test.'
+                  }
                   className={BUTTON_SECONDARY}
                 >
-                  Send Test to Me
+                  {testSending ? 'Sending…' : 'Send Test to Me'}
                 </button>
 
                 <button
@@ -788,11 +795,11 @@ export function BroadcastsTab() {
                           </td>
                           <td className="whitespace-nowrap px-4 py-2.5 align-top text-[12px] text-gray-500">
                             {bc.sent_at ? (
-                              <span title={new Date(bc.sent_at).toLocaleString()}>
+                              <span title={new Date(bc.sent_at).toLocaleString('en-US')}>
                                 Sent {relTime(bc.sent_at)}
                               </span>
                             ) : bc.scheduled_at ? (
-                              <span>For {new Date(bc.scheduled_at).toLocaleString()}</span>
+                              <span>For {new Date(bc.scheduled_at).toLocaleString('en-US')}</span>
                             ) : (
                               '—'
                             )}
@@ -807,6 +814,8 @@ export function BroadcastsTab() {
                                     e.stopPropagation();
                                     confirmCancel(bc);
                                   }}
+                                  // A test send in flight holds it, as it holds the sends.
+                                  disabled={busy}
                                   className={ROW_ACTION_DANGER}
                                 >
                                   Cancel

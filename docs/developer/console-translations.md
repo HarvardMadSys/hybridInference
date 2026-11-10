@@ -46,8 +46,12 @@ const t = useT();
   catalog check can read them.
 
 Administration pages (`/dashboard/admin`) are for operators, not users, and stay
-in English: they do not go through `t()`, and their container is marked
-`lang="en"`. The rest of what stays in English is listed below.
+in English: their layout provides an English `LocaleProvider` without a
+translation catalog, and their container is marked `lang="en"`. This also keeps
+shared components using `t()` and React portals in English without changing the
+reader’s saved language. Admin date/time labels use an explicit `en-US` locale
+while preserving their existing time zone. The rest of what stays in English is
+listed below.
 
 ## The catalog
 
@@ -86,8 +90,8 @@ prune in the same change that edits the English.
 ## What stays in English
 
 - What only the people running the deployment see: administration
-  (`/dashboard/admin`), first-run setup (`/setup`), the Configuration tab, and
-  the API Playground, which only internal accounts can open.
+  (`/dashboard/admin`), first-run setup (`/setup`), and the API Playground,
+  which only internal accounts can open.
 - The last-resort error screens (`global-error` and the boundary around the
   whole application), which render outside the language provider.
 - Error messages from the gateway, model names, and Markdown written by

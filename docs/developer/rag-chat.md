@@ -29,8 +29,10 @@ through the normal `/v1/embeddings` and `/v1/chat/completions` handlers: they
 are logged in `api_logs` and counted toward cost, quota and concurrency like any
 other request. They also carry `X-On-Behalf-Of: <user id>`, so that usage is
 charged to the signed-in user who asked rather than to the shared key, and
-counts against that user's own daily quota. The gateway honours the header only
-on requests made with `RAG_API_KEY`, and ignores it on every other key.
+counts against that user's own daily and monthly quotas (for an account with no
+API key, the daily quota its first key would get). The gateway honours the
+header only on requests made with `RAG_API_KEY`, and ignores it on every other
+key.
 
 - **Corpus:** the active distribution overlay's documentation source
   (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
@@ -51,7 +53,7 @@ on requests made with `RAG_API_KEY`, and ignores it on every other key.
 
 Set `RAG_API_KEY` to a valid user API key, and point `RAG_API_BASE_URL` at the
 gateway's own address; both are settings under **Integrations** on the admin
-console's Configuration tab. The default, `http://localhost:8080/v1`, matches
+console's Settings tab. The default, `http://localhost:8080/v1`, matches
 the port the Compose backend listens on; a deployment that binds the backend
 somewhere else must set it, or every RAG request fails at the self-call.
 
@@ -65,7 +67,7 @@ RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
 ```
 
 When the `DB_*` settings in `.env` reach the gateway's database, the indexer
-reads the stored settings first, so a value stored on the Configuration tab
+reads the stored settings first, so a value stored on the Settings tab
 wins over one set on the command line. When they do not, it warns and uses the
 environment alone; with `DB_ENABLED=false` it does not try.
 
@@ -150,7 +152,7 @@ The general model APIs are not affected either way.
 
 Only `RAG_API_KEY` is required. The path defaults point inside the active distribution.
 Each of these is a [setting](configuration.md#settings-stored-in-the-database),
-under **Integrations** on the Configuration tab.
+under **Integrations** on the Settings tab.
 
 | Setting | Default | Purpose |
 |---|---|---|

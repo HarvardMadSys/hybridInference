@@ -19,6 +19,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import threading
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from serving.adapters.key_pool import DEFAULT_MIN_ROLE, normalize_min_role
@@ -50,6 +51,18 @@ _disabled_env_key_hashes: dict[str, set[str]] = {}
 # tier a pool entry enforces; ``_apply_min_roles_locked`` writes it.
 _env_key_min_roles: dict[str, dict[str, str]] = {}
 _db_key_min_roles: dict[str, dict[str, str]] = {}
+
+
+@dataclass(frozen=True)
+class _AdapterKeySources:
+    env: frozenset[str]
+    bound_db: frozenset[str]
+
+
+# Source ownership must survive pool mutation. Runtime adapters carry DB keys in
+# config.api_keys too; treating every configured key as an environment source
+# would resurrect a revoked DB credential during a later refresh.
+_adapter_key_sources: dict[str, dict[int, _AdapterKeySources]] = {}
 _MAX_NUMBERED_ENV_KEYS = 20
 _PROVIDER_ENV_KEY_VARS: dict[str, tuple[str, str]] = {
     "chutes": ("CHUTES_API_KEY", "CHUTES_API_KEY"),
@@ -75,6 +88,7 @@ def reset() -> None:
         _disabled_env_key_hashes.clear()
         _env_key_min_roles.clear()
         _db_key_min_roles.clear()
+        _adapter_key_sources.clear()
 
 
 def register_adapter_for_provider(
@@ -82,6 +96,7 @@ def register_adapter_for_provider(
     adapter: object,
     *,
     allow_db_key_injection: bool = True,
+    api_key_id: str | None = None,
 ) -> None:
     """Register an adapter under *provider* so its KeyPool can be located later.
 
@@ -100,6 +115,20 @@ def register_adapter_for_provider(
         bucket = _adapters_by_provider.setdefault(provider, [])
         if adapter not in bucket:
             bucket.append(adapter)
+        sources = _adapter_key_sources.setdefault(provider, {})
+        if id(adapter) not in sources:
+            statics = set(_gather_static_keys(adapter))
+            pool = getattr(adapter, "_key_pool", None)
+            if pool is not None:
+                statics.update(pool.snapshot_keys())
+            if api_key_id is not None:
+                env_keys = statics if api_key_id.startswith("env:") else set()
+                bound_db = statics - env_keys
+            else:
+                database_keys = statics & _db_injected_keys.get(provider, set())
+                env_keys = statics - database_keys
+                bound_db = database_keys if not allow_db_key_injection else set()
+            sources[id(adapter)] = _AdapterKeySources(frozenset(env_keys), frozenset(bound_db))
         disabled = _db_injection_disabled_adapter_ids.setdefault(provider, set())
         if allow_db_key_injection:
             disabled.discard(id(adapter))
@@ -126,6 +155,11 @@ def unregister_adapter_for_provider(provider: str, adapter: object) -> None:
             disabled.discard(id(adapter))
             if not disabled:
                 _db_injection_disabled_adapter_ids.pop(provider, None)
+        sources = _adapter_key_sources.get(provider)
+        if sources is not None:
+            sources.pop(id(adapter), None)
+            if not sources:
+                _adapter_key_sources.pop(provider, None)
 
 
 def register_known_provider(provider: str) -> None:
@@ -154,6 +188,7 @@ def unregister_known_provider(provider: str) -> bool:
         # shared key would come back restricted until a restart.
         _env_key_min_roles.pop(provider, None)
         _db_key_min_roles.pop(provider, None)
+        _adapter_key_sources.pop(provider, None)
         return before
 
 
@@ -447,14 +482,19 @@ def is_active_env_static_key(provider: str, key: str) -> bool:
 
     Used to avoid evicting a raw value from the pool when disabling a DB row
     that happens to share its value with a (non-disabled) env-sourced key.
+    Judged by each adapter's recorded key sources: a runtime route pinned to a
+    DB key carries it in its config too, and counting that as an env copy kept
+    a disabled or deleted key in the route's pool.
     """
     with _lock:
         if env_key_hash(key) in _disabled_env_key_hashes.get(provider, set()):
             return False
-        return any(
-            key in _gather_static_keys(adapter)
-            for adapter in _adapters_by_provider.get(provider, [])
-        )
+        sources = _adapter_key_sources.get(provider, {})
+        for adapter in _adapters_by_provider.get(provider, []):
+            owned = sources.get(id(adapter))
+            if key in (owned.env if owned is not None else _gather_static_keys(adapter)):
+                return True
+        return False
 
 
 def env_key_hash(key: str) -> str:
@@ -489,7 +529,7 @@ def configured_env_keys_for_provider(provider: str) -> list[str]:
     first and the environment variable second.
 
     The base setting, then every numbered one from ``1`` to
-    :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Configuration tab accepts as
+    :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Settings tab accepts as
     pooled with the base. A blank one is skipped rather than ending the scan,
     so a key cleared from the middle does not drop the ones after it, and a
     value already listed is not listed twice.
@@ -724,6 +764,10 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
     The key is tracked as DB-injected so a future ``remove_key_from_provider``
     call can distinguish it from env-configured keys that happen to share
     the same raw value.
+
+    A route that pins *key* gets it back too: re-enabling the key it is bound
+    to restores the route at once, as disabling took the key out of it at once,
+    instead of at the next routing refresh (``reconcile_db_keys``).
     """
     with _lock:
         if min_role is not None:
@@ -731,14 +775,23 @@ def add_key_to_provider(provider: str, key: str, min_role: str | None = None) ->
         adapters = _adapters_by_provider.get(provider, [])
         # Route-bound adapters opt out of global DB-key injection — a DB key
         # added for the whole provider must not land on a route reserved for a
-        # specific key (mirrors ``_pools_for_provider_locked(..., False)``).
+        # specific key (mirrors ``_pools_for_provider_locked(..., False)``) —
+        # except the key that route is bound to, which ``reconcile_db_keys``
+        # would also put back (``sources.bound_db & active``).
         disabled_ids = _db_injection_disabled_adapter_ids.get(provider, set())
         disabled = _disabled_env_key_hashes.get(provider, set())
+        sources = _adapter_key_sources.get(provider, {})
+
+        def receives(adapter: object) -> bool:
+            if id(adapter) not in disabled_ids:
+                return True
+            bound = sources.get(id(adapter))
+            return bound is not None and key in bound.bound_db
+
         attached = sum(
             1
             for adapter in adapters
-            if id(adapter) not in disabled_ids
-            and _attach_key_to_adapter_locked(adapter, key, disabled)
+            if receives(adapter) and _attach_key_to_adapter_locked(adapter, key, disabled)
         )
         _db_injected_keys.setdefault(provider, set()).add(key)
         # Attaching leaves keys untiered and may have promoted a single-``api_key``
@@ -940,3 +993,60 @@ async def apply_db_keys_at_boot(operational_store: OperationalStore) -> None:
                 len(keys),
                 provider,
             )
+
+
+async def reconcile_db_keys(operational_store: OperationalStore) -> None:
+    """Publish a strict database snapshot, including revocations and empty sets.
+
+    Read every provider before changing a pool. Failures propagate to the
+    routing synchronizer so an incomplete read is never acknowledged. Only
+    provider-wide DB keys enter unbound adapters; pinned DB keys stay with their
+    owning adapters, and environment keys stay with their configured owners.
+    """
+    providers = get_known_providers()
+    bound_ids = await _list_route_bound_db_key_ids(operational_store)
+    snapshots = {}
+    for provider in providers:
+        active = set(await operational_store.list_provider_keys_full(provider))
+        shared = set(
+            await operational_store.list_provider_keys_full(provider, exclude_ids=bound_ids)
+        )
+        disabled = set(await operational_store.list_disabled_provider_env_key_hashes(provider))
+        env_roles = await operational_store.list_provider_env_key_min_roles(provider)
+        db_roles = await operational_store.list_provider_key_min_roles(provider)
+        snapshots[provider] = (active, shared, disabled, env_roles, db_roles)
+
+    with _lock:
+        for provider, (active, shared, disabled, env_roles, db_roles) in snapshots.items():
+            _disabled_env_key_hashes[provider] = disabled
+            _env_key_min_roles[provider] = dict(env_roles)
+            _db_key_min_roles[provider] = {
+                key: role for key, role in db_roles.items() if role and role != DEFAULT_MIN_ROLE
+            }
+            injection_disabled = _db_injection_disabled_adapter_ids.get(provider, set())
+            for adapter in _adapters_by_provider.get(provider, []):
+                sources = _adapter_key_sources[provider][id(adapter)]
+                desired = {key for key in sources.env if env_key_hash(key) not in disabled}
+                desired |= sources.bound_db & active
+                if id(adapter) not in injection_disabled:
+                    desired |= shared
+                pool = getattr(adapter, "_key_pool", None)
+                if pool is None:
+                    current = set(_gather_static_keys(adapter))
+                    if current == desired:
+                        continue
+                    ensure = getattr(adapter, "ensure_key_pool", None)
+                    pool = ensure() if callable(ensure) else None
+                    if pool is None and desired:
+                        for key in desired:
+                            _attach_key_to_adapter_locked(adapter, key, disabled)
+                        pool = getattr(adapter, "_key_pool", None)
+                    if pool is None:
+                        raise RuntimeError("Provider adapter cannot apply its credential snapshot")
+                present = set(pool.snapshot_keys())
+                for key in present - desired:
+                    pool.remove_key(key)
+                for key in sorted(desired - present):
+                    pool.add_key(key)
+            _db_injected_keys[provider] = active
+            _apply_min_roles_locked(provider)

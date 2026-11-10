@@ -12,6 +12,7 @@ from serving.admin.provider_key_probe import (
     ProviderKeyProbeError,
     probe_provider_key_with_existing_route,
 )
+from serving.audit import AuditActor, AuditTarget
 from serving.config.settings import ROLE_RANK
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
@@ -34,7 +35,12 @@ from serving.schemas_admin import (
     VerifyProviderApiKeyResponse,
 )
 from serving.servers.auth import log_admin_action
-from serving.servers.deps import get_operational_store, get_services, verify_admin_access
+from serving.servers.deps import (
+    get_admin_audit_actor,
+    get_operational_store,
+    get_services,
+    verify_admin_access,
+)
 from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/admin")
@@ -319,6 +325,7 @@ async def verify_provider_key(
 async def add_provider_key(
     payload: AddProviderApiKeyRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> AddProviderApiKeyResponse:
     """Persist a new provider API key and inject it into matching pools."""
@@ -335,7 +342,7 @@ async def add_provider_key(
     # ``add_key_to_provider`` below puts it straight into the pools — so a
     # tombstone left over from an earlier env-key disable has to go, or the key
     # runs live while a disabled record still exists for it.
-    await _clear_env_tombstone_for_key(op_store, payload.provider, api_key, admin_id)
+    await _clear_env_tombstone_for_key(op_store, payload.provider, api_key, actor)
 
     key_id = await op_store.add_provider_key(
         provider=payload.provider,
@@ -366,10 +373,10 @@ async def add_provider_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "add_provider_key",
-        None,
-        {
+        action="add_provider_key",
+        actor=actor,
+        target=AuditTarget("provider_key", key_id),
+        details={
             "id": key_id,
             "provider": payload.provider,
             "key_prefix": _mask(api_key),
@@ -409,6 +416,7 @@ async def add_provider_key(
 async def disable_provider_env_key(
     payload: DisableProviderEnvKeyRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> DisableProviderEnvKeyResponse:
     """Persistently disable an env-sourced provider API key."""
@@ -436,7 +444,9 @@ async def disable_provider_env_key(
     if target_key is None:
         raise HTTPException(404, "Env provider key not found")
 
-    pools_updated = await _tombstone_env_key(op_store, payload.provider, target_key, admin_id)
+    pools_updated = await _tombstone_env_key(
+        op_store, payload.provider, target_key, admin_id, actor
+    )
 
     return DisableProviderEnvKeyResponse(
         id=payload.env_key_id,
@@ -445,7 +455,9 @@ async def disable_provider_env_key(
     )
 
 
-async def _tombstone_env_key(op_store, provider: str, raw_key: str, admin_id: str) -> int:
+async def _tombstone_env_key(
+    op_store, provider: str, raw_key: str, admin_id: str, actor: AuditActor
+) -> int:
     """Record the disable tombstone for *raw_key* and drop it from the pools.
 
     Shared by the ``disable-env`` endpoint — which resolves the raw value from
@@ -464,10 +476,10 @@ async def _tombstone_env_key(op_store, provider: str, raw_key: str, admin_id: st
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "disable_provider_env_key",
-        None,
-        {
+        action="disable_provider_env_key",
+        actor=actor,
+        target=AuditTarget("provider_key", dynamic_keys.env_key_id(raw_key)),
+        details={
             "id": dynamic_keys.env_key_id(raw_key),
             "provider": provider,
             "key_prefix": key_prefix,
@@ -480,7 +492,7 @@ async def _tombstone_env_key(op_store, provider: str, raw_key: str, admin_id: st
 @router.post("/provider-keys/enable-env", response_model=EnableProviderEnvKeyResponse)
 async def enable_provider_env_key(
     payload: EnableProviderEnvKeyRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> EnableProviderEnvKeyResponse:
     """Re-enable a previously disabled env-sourced provider API key."""
@@ -508,7 +520,7 @@ async def enable_provider_env_key(
     if target_hash is None:
         raise HTTPException(404, "Disabled env provider key not found")
 
-    pools_updated = await _clear_env_tombstone(op_store, payload.provider, target_hash, admin_id)
+    pools_updated = await _clear_env_tombstone(op_store, payload.provider, target_hash, actor)
 
     return EnableProviderEnvKeyResponse(
         id=payload.env_key_id,
@@ -628,6 +640,7 @@ async def _resolve_env_key_id(
 async def set_provider_env_key_min_role(
     payload: SetProviderEnvKeyMinRoleRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> SetProviderApiKeyMinRoleResponse:
     """Reserve an env-sourced provider key for a tier (or release it to all).
@@ -664,10 +677,10 @@ async def set_provider_env_key_min_role(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "set_provider_env_key_min_role",
-        None,
-        {
+        action="set_provider_env_key_min_role",
+        actor=actor,
+        target=AuditTarget("provider_key", payload.env_key_id),
+        details={
             "id": payload.env_key_id,
             "provider": payload.provider,
             "key_prefix": key_prefix,
@@ -688,7 +701,7 @@ async def _clear_env_tombstone_for_key(
     op_store,
     provider: str,
     raw_key: str,
-    admin_id: str,
+    actor: AuditActor,
 ) -> bool:
     """Clear the tombstone for *raw_key* if it carries one. Returns True if so.
 
@@ -712,11 +725,11 @@ async def _clear_env_tombstone_for_key(
     if not tombstoned and not dynamic_keys.is_env_key_disabled(provider, key_hash):
         return False
 
-    await _clear_env_tombstone(op_store, provider, key_hash, admin_id)
+    await _clear_env_tombstone(op_store, provider, key_hash, actor)
     return True
 
 
-async def _clear_env_tombstone(op_store, provider: str, key_hash: str, admin_id: str) -> int:
+async def _clear_env_tombstone(op_store, provider: str, key_hash: str, actor: AuditActor) -> int:
     """Drop the tombstone for *key_hash* and put the key back in its pools.
 
     *key_hash* is the full hash, not the truncated ``key_ref`` form. Returns the
@@ -727,10 +740,10 @@ async def _clear_env_tombstone(op_store, provider: str, key_hash: str, admin_id:
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "enable_provider_env_key",
-        None,
-        {
+        action="enable_provider_env_key",
+        actor=actor,
+        target=AuditTarget("provider_key", f"env:{key_hash[:32]}"),
+        details={
             "id": f"env:{key_hash[:32]}",
             "provider": provider,
             "pools_updated": pools_updated,
@@ -859,6 +872,7 @@ async def _resolve_key_ref(op_store, provider: str, key_ref: str) -> _KeyRefTarg
 async def disable_provider_key_by_ref(
     payload: ProviderKeyByRefRequest,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> ProviderKeyByRefResponse:
     """Disable one provider key identified by the quota dashboard's ``key_ref``.
@@ -887,10 +901,10 @@ async def disable_provider_key_by_ref(
     # has to stop counting as active before the DB rows are evicted.
     if targets.env_hash is not None and not targets.env_disabled and targets.raw_key is not None:
         pools_updated += await _tombstone_env_key(
-            op_store, payload.provider, targets.raw_key, admin_id
+            op_store, payload.provider, targets.raw_key, admin_id, actor
         )
     for key_id in targets.db_ids:
-        db_result = await disable_provider_key(key_id, admin_id, op_store)
+        db_result = await disable_provider_key(key_id, actor, op_store)
         pools_updated += db_result.pools_updated
 
     return ProviderKeyByRefResponse(
@@ -905,7 +919,7 @@ async def disable_provider_key_by_ref(
 @router.post("/provider-keys/by-ref/enable", response_model=ProviderKeyByRefResponse)
 async def enable_provider_key_by_ref(
     payload: ProviderKeyByRefRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> ProviderKeyByRefResponse:
     """Re-enable one provider key identified by the quota dashboard's ``key_ref``.
@@ -931,10 +945,10 @@ async def enable_provider_key_by_ref(
     pools_updated = 0
     if targets.env_hash is not None and targets.env_disabled:
         pools_updated += await _clear_env_tombstone(
-            op_store, payload.provider, targets.env_hash, admin_id
+            op_store, payload.provider, targets.env_hash, actor
         )
     for key_id in targets.disabled_db_ids:
-        db_result = await enable_provider_key(key_id, admin_id, op_store)
+        db_result = await enable_provider_key(key_id, actor, op_store)
         pools_updated += db_result.pools_updated
 
     return ProviderKeyByRefResponse(
@@ -949,7 +963,7 @@ async def enable_provider_key_by_ref(
 @router.post("/provider-keys/{key_id}/disable", response_model=SetProviderApiKeyStatusResponse)
 async def disable_provider_key(
     key_id: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> SetProviderApiKeyStatusResponse:
     """Disable a DB-sourced provider key (reversible) and drop it from pools."""
@@ -986,10 +1000,10 @@ async def disable_provider_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "disable_provider_key",
-        None,
-        {
+        action="disable_provider_key",
+        actor=actor,
+        target=AuditTarget("provider_key", key_id),
+        details={
             "id": key_id,
             "provider": provider,
             "key_prefix": _mask(raw_key),
@@ -1009,7 +1023,7 @@ async def disable_provider_key(
 @router.post("/provider-keys/{key_id}/enable", response_model=SetProviderApiKeyStatusResponse)
 async def enable_provider_key(
     key_id: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> SetProviderApiKeyStatusResponse:
     """Re-enable a disabled DB-sourced provider key and re-add it to pools."""
@@ -1044,10 +1058,10 @@ async def enable_provider_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "enable_provider_key",
-        None,
-        {
+        action="enable_provider_key",
+        actor=actor,
+        target=AuditTarget("provider_key", key_id),
+        details={
             "id": key_id,
             "provider": provider,
             "key_prefix": _mask(raw_key),
@@ -1067,7 +1081,7 @@ async def enable_provider_key(
 async def set_provider_key_min_role(
     key_id: str,
     payload: SetProviderApiKeyMinRoleRequest,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> SetProviderApiKeyMinRoleResponse:
     """Reserve a DB-sourced provider key for a tier (or release it back to all).
@@ -1118,10 +1132,10 @@ async def set_provider_key_min_role(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "set_provider_key_min_role",
-        None,
-        {
+        action="set_provider_key_min_role",
+        actor=actor,
+        target=AuditTarget("provider_key", key_id),
+        details={
             "id": key_id,
             "provider": provider,
             "key_prefix": _mask(raw_key),
@@ -1141,7 +1155,7 @@ async def set_provider_key_min_role(
 @router.delete("/provider-keys/{key_id}", response_model=DeleteProviderApiKeyResponse)
 async def delete_provider_key(
     key_id: str,
-    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> DeleteProviderApiKeyResponse:
     """Hard-delete a DB-sourced provider key and remove it from pools."""
@@ -1182,10 +1196,10 @@ async def delete_provider_key(
 
     await log_admin_action(
         op_store,
-        admin_id,
-        "delete_provider_key",
-        None,
-        {
+        action="delete_provider_key",
+        actor=actor,
+        target=AuditTarget("provider_key", key_id),
+        details={
             "id": key_id,
             "provider": provider,
             "key_prefix": _mask(raw_key),

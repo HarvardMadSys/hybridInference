@@ -260,7 +260,7 @@ export function UserRecentRequests({ userId }: { userId: string }) {
                           {formatCost(req.cost_usd)}
                         </td>
                         <td className="whitespace-nowrap px-2 py-2 pr-3 text-right text-[12px] text-gray-400">
-                          <span title={new Date(req.timestamp).toLocaleString()}>
+                          <span title={new Date(req.timestamp).toLocaleString('en-US')}>
                             {relTime(req.timestamp)}
                           </span>
                         </td>

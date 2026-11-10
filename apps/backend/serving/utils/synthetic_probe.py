@@ -8,7 +8,7 @@ response header to tell which backend answered.
 It is still just a request header, which anyone can send. Every consumer must
 therefore split two questions the original implementation conflated:
 
-* *was the marker sent?* — :func:`probe_header_present`; and
+* *was the marker sent?* — :func:`probe_marker_in`; and
 * *is this caller allowed to mean it?* — :func:`is_trusted_probe_caller`.
 
 A trusted probe caller is an **authenticated** internal/admin key that is not
@@ -42,15 +42,18 @@ from serving.config.settings import has_role
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-    from fastapi import Request
 
 PROBE_HEADER = "x-probe"
 PROBE_HEADER_VALUE = "synthetic"
 
 
-def probe_header_present(request: Request) -> bool:
-    """Return whether the request carries the synthetic-probe marker at all."""
-    return request.headers.get(PROBE_HEADER, "").lower() == PROBE_HEADER_VALUE
+def probe_marker_in(headers: Mapping[str, str]) -> bool:
+    """Return whether *headers* carry the synthetic-probe marker at all.
+
+    *headers* is looked up as Starlette's ``Headers`` is: case-insensitively,
+    the first value of a repeated header.
+    """
+    return headers.get(PROBE_HEADER, "").lower() == PROBE_HEADER_VALUE
 
 
 def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
@@ -69,6 +72,8 @@ def is_trusted_probe_caller(user_ctx: Mapping[str, Any] | None) -> bool:
     return bool(user_ctx.get("authenticated"))
 
 
-def is_trusted_probe(request: Request, user_ctx: Mapping[str, Any] | None) -> bool:
-    """Marker present *and* the caller is allowed to mean it."""
-    return probe_header_present(request) and is_trusted_probe_caller(user_ctx)
+def is_trusted_probe_headers(
+    headers: Mapping[str, str], user_ctx: Mapping[str, Any] | None
+) -> bool:
+    """Marker present in *headers* *and* the caller is allowed to mean it."""
+    return probe_marker_in(headers) and is_trusted_probe_caller(user_ctx)

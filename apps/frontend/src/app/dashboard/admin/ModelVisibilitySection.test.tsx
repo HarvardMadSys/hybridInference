@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -127,93 +127,87 @@ describe('ModelVisibilitySection', () => {
     };
   }
 
-  async function openEditor() {
+  async function renderSection() {
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Visibility' }));
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
   }
+
+  const saveButton = () =>
+    screen.queryByRole('button', { name: 'Save changes to Model Visibility' });
 
   function save() {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Model Visibility' }));
   }
 
-  function confirmSave() {
-    fireEvent.click(
-      within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }),
-    );
-  }
-
-  it('shows overrides read-only until Edit', async () => {
+  it('edits overrides in place, with no Edit step and no save bar until a change', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />);
 
-    const value = await screen.findByLabelText('Runtime override for gpt-4o-mini');
-    expect(value.tagName).toBe('OUTPUT');
-    expect(value).toHaveTextContent('Use default');
-    expect(screen.queryByRole('combobox')).toBeNull();
-    expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Edit Model Visibility' }));
     expect(
-      screen.getByRole('combobox', { name: 'Runtime override for gpt-4o-mini' }),
+      await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' }),
     ).toHaveTextContent('Use default');
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to Model Visibility' })).toBeDisabled();
-  });
+    expect(
+      screen.getByRole('combobox', { name: 'Runtime override for claude-3-5-sonnet' }),
+    ).toHaveTextContent('internal');
+    expect(screen.queryByRole('button', { name: /^Edit / })).toBeNull();
+    expect(saveButton()).toBeNull();
 
-  it('keeps changes as drafts: Cancel writes nothing and restores the saved values', async () => {
-    vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
-    await openEditor();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     expect(screen.getByText('1 unsaved change')).toBeVisible();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel editing Model Visibility' }));
-    expect(screen.getByLabelText('Runtime override for gpt-4o-mini')).toHaveTextContent(
-      'Use default',
-    );
+    expect(saveButton()).toBeEnabled();
     expect(updateModelVisibility).not.toHaveBeenCalled();
   });
 
-  it('treats a select changed back to its saved value as no change', async () => {
+  it('keeps changes as drafts: Discard writes nothing and restores the saved values', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
-    await openEditor();
+    await renderSection();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
-    chooseOption('Runtime override for gpt-4o-mini', 'Use default');
-    expect(screen.getByRole('button', { name: 'Save changes to Model Visibility' })).toBeDisabled();
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Model Visibility' }));
+    expect(screen.getByLabelText('Runtime override for gpt-4o-mini')).toHaveTextContent(
+      'Use default',
+    );
+    expect(saveButton()).toBeNull();
+    expect(updateModelVisibility).not.toHaveBeenCalled();
   });
 
-  it('lists old -> new, keeps drafts on Back, and saves each changed model once on Confirm', async () => {
+  it('hides the save bar again once a select is changed back to its saved value', async () => {
+    vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
+    await renderSection();
+    chooseOption('Runtime override for gpt-4o-mini', 'internal');
+    expect(saveButton()).toBeEnabled();
+    chooseOption('Runtime override for gpt-4o-mini', 'Use default');
+    expect(saveButton()).toBeNull();
+  });
+
+  it('saves each changed model once on Save, with no confirmation', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     vi.mocked(updateModelVisibility).mockImplementation(async (modelId, role) =>
       updated(modelId, role),
     );
-    await openEditor();
+    await renderSection();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     chooseOption('Runtime override for claude-3-5-sonnet', 'Use default');
-    save();
-
-    const dialog = screen.getByRole('dialog', { name: 'Save 2 visibility changes?' });
-    expect(dialog).toHaveTextContent('gpt-4o-miniUse default → internal');
-    expect(dialog).toHaveTextContent('claude-3-5-sonnetinternal → Use default');
-    expect(updateModelVisibility).not.toHaveBeenCalled();
-
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Back to editing' }));
-    expect(
-      screen.getByRole('combobox', { name: 'Runtime override for gpt-4o-mini' }),
-    ).toHaveTextContent('internal');
+    expect(screen.getByText('2 unsaved changes')).toBeVisible();
     expect(updateModelVisibility).not.toHaveBeenCalled();
 
     save();
-    confirmSave();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(saveButton()).toBeNull());
     expect(vi.mocked(updateModelVisibility).mock.calls).toEqual([
       ['gpt-4o-mini', 'internal'],
       ['claude-3-5-sonnet', null],
     ]);
     expect(onToast).toHaveBeenCalledWith('Updated visibility for 2 models.');
-    expect(screen.getByLabelText('Runtime override for gpt-4o-mini').tagName).toBe('OUTPUT');
+    // The saved values stay in place, and nothing is left to save.
+    expect(
+      screen.getByRole('combobox', { name: 'Runtime override for gpt-4o-mini' }),
+    ).toHaveTextContent('internal');
+    expect(saveButton()).toBeNull();
   });
 
-  it('blocks a second Confirm and closing while the save is in flight', async () => {
+  it('holds a second Save, Discard and the selects while the save is in flight', async () => {
     let finish!: (value: QueuedUpdate) => void;
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     vi.mocked(updateModelVisibility).mockImplementationOnce(
@@ -222,44 +216,47 @@ describe('ModelVisibilitySection', () => {
           finish = resolve;
         }),
     );
-    await openEditor();
+    await renderSection();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     save();
-    confirmSave();
 
-    const dialog = screen.getByRole('dialog');
-    expect(within(dialog).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-    expect(within(dialog).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Saving…' }));
-    fireEvent.keyDown(window, { key: 'Escape' });
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    const saving = screen.getByRole('button', { name: 'Save changes to Model Visibility' });
+    expect(saving).toHaveTextContent('Saving…');
+    expect(saving).toBeDisabled();
+    expect(
+      screen.getByRole('button', { name: 'Discard changes to Model Visibility' }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole('combobox', { name: 'Runtime override for claude-3-5-sonnet' }),
+    ).toBeDisabled();
+    fireEvent.click(saving);
     expect(updateModelVisibility).toHaveBeenCalledTimes(1);
 
     finish(updated('gpt-4o-mini', 'internal'));
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(saveButton()).toBeNull());
     expect(updateModelVisibility).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the dialog and drafts after a failure, and retries from the dialog', async () => {
+  it('keeps the drafts and shows the error after a failure, and saves them again', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     vi.mocked(updateModelVisibility)
       .mockRejectedValueOnce(new Error('write failed'))
       .mockResolvedValueOnce(updated('gpt-4o-mini', 'internal'));
-    await openEditor();
+    await renderSection();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     save();
-    confirmSave();
 
-    const dialog = screen.getByRole('dialog');
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    expect(await screen.findByRole('alert')).toHaveTextContent(
       'gpt-4o-mini could not be saved: write failed',
     );
     expect(
       screen.getByRole('combobox', { name: 'Runtime override for gpt-4o-mini' }),
     ).toHaveTextContent('internal');
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
 
-    confirmSave();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    save();
+    await waitFor(() => expect(saveButton()).toBeNull());
+    expect(screen.queryByRole('alert')).toBeNull();
     expect(updateModelVisibility).toHaveBeenCalledTimes(2);
   });
 
@@ -268,25 +265,19 @@ describe('ModelVisibilitySection', () => {
     vi.mocked(updateModelVisibility)
       .mockResolvedValueOnce(updated('gpt-4o-mini', 'internal'))
       .mockRejectedValueOnce(new Error('write failed'));
-    await openEditor();
+    await renderSection();
     chooseOption('Runtime override for gpt-4o-mini', 'internal');
     chooseOption('Runtime override for claude-3-5-sonnet', 'admin');
     save();
-    confirmSave();
 
     expect(
       await screen.findByText(/claude-3-5-sonnet could not be saved: write failed/),
     ).toHaveTextContent('1 change was saved; the rest are still unsaved.');
-    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.getByText('1 unsaved change')).toBeVisible();
 
     vi.mocked(updateModelVisibility).mockResolvedValueOnce(updated('claude-3-5-sonnet', 'admin'));
     save();
-    expect(screen.getByRole('dialog', { name: 'Save 1 visibility change?' })).not.toHaveTextContent(
-      'gpt-4o-mini',
-    );
-    confirmSave();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    await waitFor(() => expect(saveButton()).toBeNull());
     expect(vi.mocked(updateModelVisibility).mock.calls.map(([id]) => id)).toEqual([
       'gpt-4o-mini',
       'claude-3-5-sonnet',
@@ -294,26 +285,25 @@ describe('ModelVisibilitySection', () => {
     ]);
   });
 
-  it('invalidates the dashboard model list after a confirmed save', async () => {
+  it('invalidates the dashboard model list after a save', async () => {
     const queryClient = createTestQueryClient();
     const invalidateSpy = vi.spyOn(queryClient, 'invalidateQueries');
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     vi.mocked(updateModelVisibility).mockResolvedValue(updated('gpt-4o-mini', 'admin'));
 
     renderWithQueryClient(<ModelVisibilitySection onToast={onToast} />, queryClient);
-    fireEvent.click(await screen.findByRole('button', { name: 'Edit Model Visibility' }));
+    await screen.findByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
     chooseOption('Runtime override for gpt-4o-mini', 'admin');
-    save();
     expect(invalidateSpy).not.toHaveBeenCalled();
-    confirmSave();
+    save();
 
     await waitFor(() => {
       expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ['user', 'models'] });
     });
   });
-  it('writes nothing when the list is only opened, browsed and dismissed in edit mode', async () => {
+  it('writes nothing when the list is only opened, browsed and dismissed', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
-    await openEditor();
+    await renderSection();
     const select = screen.getByRole('combobox', { name: 'Runtime override for gpt-4o-mini' });
     fireEvent.click(select);
     fireEvent.keyDown(select, { key: 'ArrowDown' });
@@ -322,25 +312,22 @@ describe('ModelVisibilitySection', () => {
 
     expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
     expect(select).toHaveTextContent('Use default');
-    expect(screen.getByText('No changes yet')).toBeVisible();
-    expect(screen.getByRole('button', { name: 'Save changes to Model Visibility' })).toBeDisabled();
+    expect(saveButton()).toBeNull();
     expect(updateModelVisibility).not.toHaveBeenCalled();
   });
 
-  it('treats reselecting the saved role as no change, and writes a different one once on Confirm', async () => {
+  it('treats reselecting the saved role as no change, and writes a different one once on Save', async () => {
     vi.mocked(listModelVisibility).mockResolvedValue(TWO_MODELS);
     vi.mocked(updateModelVisibility).mockResolvedValue(updated('claude-3-5-sonnet', 'admin'));
-    await openEditor();
+    await renderSection();
     // claude-3-5-sonnet is saved as internal: choosing it again changes nothing.
     chooseOption('Runtime override for claude-3-5-sonnet', 'internal');
-    expect(screen.getByRole('button', { name: 'Save changes to Model Visibility' })).toBeDisabled();
+    expect(saveButton()).toBeNull();
 
     chooseOption('Runtime override for claude-3-5-sonnet', 'admin');
     expect(updateModelVisibility).not.toHaveBeenCalled();
     save();
-    confirmSave();
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-    expect(updateModelVisibility).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(updateModelVisibility).toHaveBeenCalledTimes(1));
     expect(updateModelVisibility).toHaveBeenCalledWith('claude-3-5-sonnet', 'admin');
   });
 });

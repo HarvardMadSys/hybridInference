@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving.adapters.reasoning_effort import declared_public_levels
 from serving.model_access import model_access_denial
 
 if TYPE_CHECKING:
@@ -56,7 +57,12 @@ async def agent_visible_models(
     visibility_resolver: Any | None = None,
     user_ctx: dict[str, Any] | None = None,
 ) -> list[str]:
-    """Canonical chat-model ids this user's agent jobs can call, in registry order."""
+    """Canonical chat-model ids this user's agent jobs can call, in registry order.
+
+    Chat routes only: /v1/embeddings is outside the grant surface, so a minted
+    scope can never name an embedding model and a grant-authenticated caller
+    is refused there as outside its scope.
+    """
     visible: list[str] = []
     seen: set[str] = set()
     for _model_id, route in tuple(router_exec.routes.items()):
@@ -109,10 +115,9 @@ def agent_model_reasoning_efforts(router_exec: Any, models: Sequence[str]) -> di
         configs = [adapter.config for adapter, _ in getattr(route, "adapters", None) or ()]
         if not configs:
             continue
-        cfg = configs[0]
-        if "reasoning_effort" not in (getattr(cfg, "supported_params", None) or ()):
-            continue
-        declared = [str(value) for value in (getattr(cfg, "reasoning_efforts", None) or ())]
+        # The public levels (a route's reasoning_effort_map keys, else its
+        # declared reasoning_efforts), never the upstream values a map sends.
+        declared = [str(value) for value in declared_public_levels(configs[0])]
         if declared:
             efforts[model_id] = declared
     return efforts

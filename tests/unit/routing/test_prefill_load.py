@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import random
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -16,19 +17,22 @@ from routing.prefill_load import (
 )
 from routing.routers import FixedRouter, _Affinity
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.adapters.dispatch_watch import report_sent
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-def _cfg(mid: str, provider: str = "p", base_url: str = "http://test") -> ModelConfig:
+def _cfg(
+    mid: str, provider: str = "p", base_url: str = "http://test", context_length: int = 8192
+) -> ModelConfig:
     return ModelConfig(
         id=mid,
         name=mid,
         provider=provider,
         base_url=base_url,
-        context_length=8192,
+        context_length=context_length,
         max_output_length=4096,
     )
 
@@ -44,7 +48,10 @@ class _EchoAdapter(BaseAdapter):
 
 
 class _KeepAliveAdapter(BaseAdapter):
-    """Emits an empty delta before any real token, so prefill is still in flight."""
+    """Emits an empty delta before any real token, so prefill is still in flight.
+
+    Reports the request sent first, as a real adapter's outbound slot does.
+    """
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         return self.format_response(content="ok", model=self.config.id)
@@ -52,6 +59,7 @@ class _KeepAliveAdapter(BaseAdapter):
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        report_sent()
         yield self.format_stream_chunk(model=self.config.id, content="")
         yield self.format_stream_chunk(model=self.config.id, content="ok")
 
@@ -602,7 +610,9 @@ def test_router_breaks_affinity_when_pinned_endpoint_backlogged():
     # avoid + mega-prefill IndexError reach production through this call path.
     r.prefill_load.acquire("A", 10_000_000)
     assert r._select_adapter("m", prefill_tokens=500_000) is b
-    assert r._affinity[("whale", "m")].endpoint_id == "B"
+    # For this request only: the pin stays on A, so the caller goes back to its
+    # warm prefix once A's queue drains.
+    assert r._affinity[("whale", "m")].endpoint_id == "A"
 
 
 @pytest.mark.unit
@@ -660,8 +670,9 @@ async def test_router_warm_session_keeps_its_endpoint_under_parallel_turns():
     """End-to-end guard for the regression: parallel turns of one warm
     conversation must not evict themselves onto a cold replica."""
     r = FixedRouter()
-    a = _KeepAliveAdapter(_cfg("m", provider="A", base_url="http://A"))
-    b = _KeepAliveAdapter(_cfg("m", provider="B", base_url="http://B"))
+    window = 1_048_576
+    a = _KeepAliveAdapter(_cfg("m", provider="A", base_url="http://A", context_length=window))
+    b = _KeepAliveAdapter(_cfg("m", provider="B", base_url="http://B", context_length=window))
     r.register_route("m", [(a, 0.5), (b, 0.5)])
     req_ctx.set({"affinity_key": "whale"})
 
@@ -671,7 +682,7 @@ async def test_router_warm_session_keeps_its_endpoint_under_parallel_turns():
     gen = r.stream_chat_completion("m", big)
     await gen.__anext__()
     await gen.__anext__()  # keep-alive: this turn is still prefilling on A
-    assert r.prefill_load.backlog("A") == 500_000
+    assert r.prefill_load.dispatched_backlog("A") == 500_000
 
     # A second turn arrives while the first is in flight. Its own load must not
     # push it off A.
@@ -840,9 +851,13 @@ class _PriorityCapturingAdapter(BaseAdapter):
     An adapter is the only place that observation is meaningful: ``req_ctx.push``
     unwinds when the router leaves the block, so reading it afterwards proves
     nothing about what the upstream request would have carried.
+
+    It stands for a route that runs priority scheduling, the only kind the
+    router computes and publishes a priority for.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, *, priority_scheduling: bool = True) -> None:
+        config.priority_scheduling = priority_scheduling
         super().__init__(config)
         self.seen: list[Any] = []
 
@@ -1110,6 +1125,54 @@ def test_elephant_gate_is_not_fooled_by_a_sibling_conversation():
     other = t.acquire("ep", 500_000, affinity_key="key1", fingerprint="conv-b")
     assert other.elephant is True
     assert t.elephants("ep") == 1
+
+
+def _sibling_conversation_setup(tracker: PrefillLoadTracker) -> None:
+    """Key K's conversation A left a warm prefix on A; a stranger's elephant fills A."""
+    tracker.release(
+        tracker.acquire("A", 300_000, affinity_key="K", fingerprint="conv-a"),
+        prefill_confirmed=True,
+    )
+    tracker.acquire("A", 400_000, affinity_key="stranger", fingerprint="x")
+    assert tracker.elephants("A") == 1  # A is at ELEPHANT_LIMIT
+
+
+@pytest.mark.unit
+def test_selection_keeps_a_sibling_conversations_elephant_off_a_saturated_endpoint():
+    """Selection must judge an elephant the way ``acquire`` then counts it.
+
+    Read on the loose caller-scoped discount, K's unrelated conversation B
+    looked warm on A and kept A eligible at its elephant limit; ``acquire``
+    then counted it as an elephant there, stacking two mega-prefills on A.
+    """
+    t = PrefillLoadTracker()
+    _sibling_conversation_setup(t)
+    rng = random.Random(1)
+
+    picks = {
+        t.select_index(["A", "B"], [0.5, 0.5], 300_000, rng.random, "K", fingerprint="conv-b")
+        for _ in range(500)
+    }
+
+    assert picks == {1}
+
+
+@pytest.mark.unit
+def test_router_selection_passes_the_conversation_fingerprint(monkeypatch):
+    r = FixedRouter()
+    a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))
+    b = _EchoAdapter(_cfg("m", provider="B", base_url="http://B"))
+    r.register_route("m", [(a, 0.5), (b, 0.5)])
+    req_ctx.set({"affinity_key": "K"})
+    _sibling_conversation_setup(r.prefill_load)
+    # Both of the two draws land on A unless A is filtered out.
+    monkeypatch.setattr("routing.routers.random.random", lambda: 0.0)
+
+    chosen, claim = r._select_and_claim_adapter("m", prefill_tokens=300_000, fingerprint="conv-b")
+
+    assert chosen is b
+    if claim is not None:
+        r._health_registry.end_dispatch(claim)
 
 
 @pytest.mark.unit

@@ -1,6 +1,6 @@
 /**
- * What a reviewed edit changes, for the confirmation dialog: one row per
- * changed field, `before → after`.
+ * What a confirmed action changes, for its dialog: one row per field,
+ * `before → after`, or the value alone.
  *
  * Callers pass display strings. A secret's row says only what happens to it
  * ("Set → Replace", "Clear"), never its value. Long values (URLs, lists) wrap
@@ -28,7 +28,7 @@ export function ChangeList({ changes }: { changes: readonly Change[] }) {
 }
 
 /** How an empty value reads in a change row. */
-export function shown(value: string | number | boolean | null | undefined, empty = '(empty)') {
+function shown(value: string | number | boolean | null | undefined, empty = '(empty)') {
   if (value === null || value === undefined || value === '') return empty;
   if (typeof value === 'boolean') return value ? 'On' : 'Off';
   return String(value);

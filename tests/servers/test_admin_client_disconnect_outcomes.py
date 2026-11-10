@@ -30,13 +30,14 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics, request_volume
 from serving.servers.routers.admin._common import (
     CLIENT_DISCONNECT_STATUS_CODE,
     CLIENT_DISCONNECT_TERMINAL_STATE,
 )
+from tests.fixtures.audit import ADMIN_ACTOR
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -51,6 +52,8 @@ _BUCKET = {
     "client_disconnect_count": 3,
     "latency_count": 6,
     "latency_sum_ms": 1200,
+    # None of them run by the batch worker.
+    **{f"batch_{name}": 0 for name in request_volume.COUNT_COLUMNS[:6]},
 }
 
 
@@ -105,6 +108,7 @@ def _build_app(logger: Any) -> FastAPI:
     app = FastAPI(title="Admin Client Disconnect Test")
     app.state.services = AppServices(router=FixedRouter(), db_logger=logger)  # type: ignore[attr-defined]
     app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
+    app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
     app.include_router(admin.router)
     return app
 

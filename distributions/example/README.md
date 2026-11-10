@@ -58,7 +58,7 @@ the code — it stays the same, and is printed again at every start, until setup
 is done — and create the administrator with the username `admin` and a
 demo-only password that you do not reuse elsewhere. After that the normal UI supports signup,
 login, API-key creation, the Playground, request history, and the application
-Admin Console, whose Configuration tab now holds the example's settings. Other
+Admin Console, whose Settings tab now holds the example's settings. Other
 accounts come from public signup and are not administrators. Email
 verification is deliberately disabled for this loopback-only demo.
 
@@ -130,7 +130,7 @@ account, cookie, paid key or GPU is involved.
 
 Follow [Quota reporting](../../docs/developer/backend-extensions.md#quota-reporting)
 for the complete three-terminal walkthrough using
-`config/examples/models.routewise.quota.yaml`. It demonstrates the same source
+`config/examples/models.routewise.quota.json`. It demonstrates the same source
 feeding the admin quota API and RouteWise, a priced fallback on cold start or
 exhaustion, and how to replace the simulation with an authorized data source.
 The simulation is not production accounting and resets when its process
@@ -193,11 +193,11 @@ HybridInference stack.
 ```text
 distributions/example/
 ├── EXAMPLE_OVERLAY
-├── distribution.yaml
-├── distribution.demo.yaml
+├── distribution.json
+├── distribution.demo.json
 ├── config/
-│   ├── models.yaml
-│   └── routing.yaml
+│   ├── models.json
+│   └── routing.json
 ├── deploy/
 │   ├── backend.env
 │   ├── docker-compose.yml

@@ -3,8 +3,9 @@
 The Responses API is a re-shaping of Chat Completions. Rather than duplicate
 routing, fallback, cost accounting, DB logging and metrics, this router
 translates a Responses request into a Chat Completions request and **delegates
-to the existing ``chat_completions`` handler**, then translates the result back
-into a Responses object. Field translation lives in
+to the chat execution** (:func:`~serving.servers.routers.completions.execute_chat`,
+called once, under the same execution context and admission), then translates
+the result back into a Responses object. Field translation lives in
 ``serving.responses_translator``; this router owns:
 
   - auth, concurrency (shared dependencies)
@@ -19,13 +20,14 @@ global HTTP exception handler formats them correctly with no special-casing.
 from __future__ import annotations
 
 import asyncio
-import json
-from typing import Any
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
-from starlette.datastructures import Headers
+from pydantic import TypeAdapter, ValidationError
 
+from serving.request_limits import responses_limit_problem
 from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
@@ -48,8 +50,22 @@ from serving.servers.deps import (
     get_response_store,
     get_router,
 )
-from serving.servers.routers.completions import chat_completions
+from serving.servers.middleware.body_limit import configured_max_body_bytes
+from serving.servers.routers.completions import (
+    ChatOptions,
+    ChatResponse,
+    ChatServices,
+    ChatStream,
+    execute_chat,
+    release_unstarted_chat_streams,
+)
+from serving.servers.surface_http import client_origin, timeout_probe
+from serving.storage.responses_store import decode_conversation
+from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -77,39 +93,115 @@ def _schedule(coro: Any) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-def _force_reasoning_passthrough(request: Request) -> None:
-    """Drop ``X-Reasoning-Passthrough`` before delegating to chat completions.
+#: How the chat request schema reads ``stream`` (``ChatCompletionRequest.stream``).
+_STREAM_FLAG: TypeAdapter[bool | None] = TypeAdapter(bool | None)
 
-    The Responses surface never exposes reasoning text, but ``reasoning_content``
-    must survive into the persisted assistant turn for ``previous_response_id``
-    chaining (some providers require the reasoning history echoed back). A
-    strict-mode header on the inbound request would otherwise make the delegated
-    handler strip reasoning before the translator can capture it.
+
+def _requests_stream(value: Any) -> bool:
+    """Read ``stream`` as the chat request this one is translated to reads it.
+
+    ``bool("false")`` is true, while the chat schema reads ``"false"`` (or
+    ``"0"``, ``"no"``, ``"off"``) as false and answers unstreamed: the route
+    then streamed an empty response, discarding the answer it was billed for,
+    and stored an empty turn. A value the schema refuses it refuses itself,
+    with a 422, before this is used.
     """
-    raw = request.scope.get("headers") or []
-    filtered = [(k, v) for (k, v) in raw if k.lower() != b"x-reasoning-passthrough"]
-    if len(filtered) != len(raw):
-        request.scope["headers"] = filtered
-        request._headers = Headers(scope=request.scope)  # type: ignore[attr-defined]
+    try:
+        return bool(_STREAM_FLAG.validate_python(value))
+    except ValidationError:
+        return False
+
+
+#: Dropped from what the chat execution sees. The Responses surface never
+#: exposes reasoning text, but ``reasoning_content`` must survive into the
+#: persisted assistant turn for ``previous_response_id`` chaining (some
+#: providers require the reasoning history echoed back). A strict-mode header on
+#: the inbound request would otherwise make chat strip reasoning before the
+#: translator can capture it. Every entry, in any case, is removed.
+_REASONING_PASSTHROUGH_HEADER = "x-reasoning-passthrough"
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ResponsesServices:
+    """What :func:`execute_responses` serves a request with."""
+
+    chat: ChatServices
+    #: Where responses are kept for GET and ``previous_response_id``; None
+    #: stores nothing (and a batch item never has one).
+    response_store: Any
+
+
+@dataclass(frozen=True, slots=True)
+class ResponsesResult:
+    """A served non-streaming request: the Responses object."""
+
+    body: dict[str, Any]
+
+
+@dataclass(frozen=True, slots=True)
+class ResponsesStream:
+    """A streaming request: Responses SSE events, re-framed from the chat stream.
+
+    The chat stream behind it is already primed (its uncommitted failures were
+    raised before this existed). Terminal events are emitted only once the
+    response is stored; an interrupted stream is stored as ``incomplete``.
+    """
+
+    events: AsyncIterator[bytes]
+    #: The primed chat stream the events re-frame (None if chat answered unary).
+    chat_stream: ChatStream | None = None
 
 
 async def _load_prior_messages(
     response_store: Any,
     previous_response_id: str,
     user_id: str | None,
+    *,
+    store: bool,
 ) -> list[dict[str, Any]]:
     """Return the stored cumulative conversation for ``previous_response_id``.
 
+    The store matches the owner and reports the stored JSON text's size with
+    the row, so a conversation too large to store another turn of (when
+    *store*) is refused before it is decoded.
+
     Raises 404 (Responses/OpenAI error envelope) when statefulness is
-    unavailable, the prior response is unknown, or it belongs to another user.
+    unavailable, the prior response is unknown, or it belongs to another user;
+    400 for an oversized conversation (:func:`_refuse_an_oversized_stored_conversation`).
     """
-    if response_store is None:
+    if response_store is None or user_id is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    row = await response_store.get(previous_response_id)
-    if not row or row.get("user_id") != user_id:
+    found = await response_store.get_conversation(previous_response_id, user_id=user_id)
+    if found is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    msgs = row.get("messages")
-    return msgs if isinstance(msgs, list) else []
+    stored, size = found
+    if store:
+        _refuse_an_oversized_stored_conversation(previous_response_id, size)
+    return decode_conversation(stored)
+
+
+def _refuse_an_oversized_stored_conversation(previous_response_id: str, size: int) -> None:
+    """Refuse to store another turn of a conversation already larger than a request body may be.
+
+    Every stored turn holds the whole conversation so far, so a chain kept
+    growing would cost the store its size again on each turn. The limit is the
+    request body limit (``REQUEST_MAX_BODY_MB``): what a client could send as
+    the history itself. Checked before the model is called, so nothing is
+    served or billed. Continuing with ``store`` set to false is not refused:
+    nothing is kept.
+
+    Raises:
+        HTTPException: 400, saying what to do instead.
+    """
+    limit = configured_max_body_bytes()
+    if size <= limit:
+        return
+    raise HTTPException(
+        400,
+        f"The conversation stored for previous response '{previous_response_id}' is "
+        f"{size} bytes, more than the {limit} bytes a stored conversation may hold. "
+        "Start a new conversation, or continue this one with 'store' set to false.",
+    )
 
 
 @router.post("/v1/responses", response_model=None)
@@ -127,28 +219,93 @@ async def create_response(
     cost_tracker=Depends(get_cost_tracker),
     response_store=Depends(get_response_store),
     _concurrency_slot=Depends(enforce_user_concurrency),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
 ):
     """Handle an OpenAI Responses API create request (stream or non-stream)."""
     try:
         body = await request.json()
     except Exception as exc:
         raise HTTPException(400, "Invalid JSON in request body") from exc
+    result = await execute_responses(
+        body,
+        ExecutionContext(
+            user_ctx=read_only(user_ctx),
+            origin=client_origin(request, authorization=authorization),
+            # This route's own slot and tracker: the chat execution it delegates
+            # to retargets the same tracker and takes no slot of its own.
+            admission=admission_from(_concurrency_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        ResponsesServices(
+            chat=ChatServices(
+                router=router_exec,
+                model_router_registry=model_router_registry,
+                visibility=model_visibility_resolver,
+                log_store=log_store,
+                completions_logger=completions_logger,
+                pricing_lookup=pricing_lookup,
+                cost_tracker=cost_tracker,
+                app_services=getattr(request.app.state, "services", None),
+            ),
+            response_store=response_store,
+        ),
+    )
+    if isinstance(result, ResponsesStream):
+        if result.chat_stream is not None:
+            # Closed at the end of the request if the response never started.
+            _streams.append(result.chat_stream)
+        return StreamingResponse(
+            result.events, media_type="text/event-stream", headers=_SSE_HEADERS
+        )
+    return JSONResponse(content=result.body)
+
+
+async def execute_responses(
+    body: Any, ctx: ExecutionContext, services: ResponsesServices
+) -> ResponsesResult | ResponsesStream:
+    """Serve one Responses request, online or as a batch item.
+
+    Validates and translates it, then delegates once to the chat execution with
+    ``ChatOptions.delegated()`` -- answered as requested, never force-streamed
+    -- under this request's own context: its admission (so the chat retarget
+    moves this request's count, and no second slot is taken), and its origin
+    without ``X-Reasoning-Passthrough``. Routing, billing, logging and the
+    routing observation all happen there, once. Raises ``HTTPException`` with
+    the status the route answers with.
+    """
     if not isinstance(body, dict):
         raise HTTPException(400, "Request body must be a JSON object")
+    response_store = services.response_store
 
     model = body.get("model")
     if not model:
         raise HTTPException(400, "Missing required parameter: 'model'")
     if "input" not in body and "previous_response_id" not in body:
         raise HTTPException(400, "Missing required parameter: 'input'")
+    # Element counts before translation walks the input (serving/request_limits.py).
+    limit_problem = responses_limit_problem(body)
+    if limit_problem is not None:
+        raise HTTPException(400, limit_problem)
 
     # Normalise the owner key so anonymous/auth-disabled callers share a stable,
     # non-None identity — never let a None user_id bypass ownership scoping.
-    user_id = user_ctx.get("user_id") or "anonymous"
+    user_id = ctx.user_ctx.get("user_id") or "anonymous"
     previous_response_id = body.get("previous_response_id")
+    # store defaults to true; only an explicit ``false`` disables persistence
+    # (missing or null → true). Persistence also requires a write-enabled store
+    # (privacy mode disables writes), so the echoed value reflects whether the
+    # response is actually stored.
+    store = (
+        body.get("store") is not False
+        and response_store is not None
+        and getattr(response_store, "persist_enabled", True)
+    )
     prior_messages: list[dict[str, Any]] = []
     if previous_response_id:
-        prior_messages = await _load_prior_messages(response_store, previous_response_id, user_id)
+        prior_messages = await _load_prior_messages(
+            response_store, previous_response_id, user_id, store=store
+        )
 
     instructions = body.get("instructions")
     # Conversation messages (no system/instructions message — that is per-turn
@@ -156,9 +313,11 @@ async def create_response(
     input_messages = responses_input_to_messages(body.get("input"))
     params, dropped_tools = responses_request_to_chat_params(body)
     if dropped_tools:
+        # Each as text: a ``type`` may be any JSON value, and a list (unhashable)
+        # or a mix of types (unorderable) made this warning a 500.
         logger.warning(
             "Dropped unsupported hosted tool types for Responses request: %s",
-            sorted(set(dropped_tools)),
+            sorted({str(tool_type) for tool_type in dropped_tools}),
         )
 
     convo_messages = prior_messages + input_messages
@@ -174,80 +333,60 @@ async def create_response(
     chat_messages = merge_leading_system_messages(chat_messages)
 
     chat_body: dict[str, Any] = {"model": model, "messages": chat_messages, **params}
-    # Neither is a chat parameter, but the delegated handler reads both to
-    # resolve the session the client declared (serving/utils/session_identity.py)
-    # -- Codex uses ``client_metadata``, other clients ``metadata``. Translation
-    # replaces the body the handler sees, so without carrying them over a
-    # Responses client's declaration would be dropped here and its requests would
-    # log unlabelled. The chat request schema ignores extra fields, so nothing
+    # Neither is a chat parameter, but the chat execution reads both to resolve
+    # the session the client declared (serving/utils/session_identity.py) --
+    # Codex uses ``client_metadata``, other clients ``metadata``. Translation
+    # replaces the body chat sees, so without carrying them over a Responses
+    # client's declaration would be dropped here and its requests would log
+    # unlabelled. The chat request schema ignores extra fields, so nothing
     # else reads them and nothing reaches a provider.
     for field in ("metadata", "client_metadata"):
         if isinstance(body.get(field), dict):
             chat_body[field] = body[field]
 
-    # Overwrite the cached parsed body so the delegated handler validates and
-    # logs the translated chat request (Starlette caches both `_json` and the
-    # raw `_body`). This is the same delegation pattern used by compat.py.
-    request._json = chat_body  # type: ignore[attr-defined]
-    request._body = json.dumps(chat_body).encode()  # type: ignore[attr-defined]
-    # Keep reasoning_content available for persisted chaining regardless of any
-    # strict-reasoning header on the inbound request.
-    _force_reasoning_passthrough(request)
+    # Chat validates and logs the translated request (it is the body it is
+    # given), and keeps reasoning_content available for persisted chaining
+    # regardless of any strict-reasoning header on the inbound request.
+    chat_ctx = replace(ctx, origin=ctx.origin.without(_REASONING_PASSTHROUGH_HEADER))
 
-    is_stream = bool(body.get("stream"))
-    # store defaults to true; only an explicit ``false`` disables persistence
-    # (missing or null → true). Persistence also requires a write-enabled store
-    # (privacy mode disables writes), so the echoed value reflects whether the
-    # response is actually stored.
-    store = (
-        body.get("store") is not False
-        and response_store is not None
-        and getattr(response_store, "persist_enabled", True)
-    )
+    is_stream = _requests_stream(body.get("stream"))
     response_id = new_response_id()
     created_at = now_ts()
 
+    # Never force-streamed: a non-streaming request gets a plain answer.
+    outcome = await execute_chat(chat_body, chat_ctx, services.chat, ChatOptions.delegated())
+
     if is_stream:
-        return await _stream_response(
-            request=request,
-            http_response=http_response,
-            authorization=authorization,
-            user_ctx=user_ctx,
-            router_exec=router_exec,
-            log_store=log_store,
-            model_router_registry=model_router_registry,
-            model_visibility_resolver=model_visibility_resolver,
-            completions_logger=completions_logger,
-            pricing_lookup=pricing_lookup,
-            cost_tracker=cost_tracker,
-            response_store=response_store,
-            body=body,
-            model=model,
-            response_id=response_id,
-            created_at=created_at,
-            previous_response_id=previous_response_id,
-            store=store,
-            convo_messages=convo_messages,
-            user_id=user_id,
+        # Pre-stream failures (model not found, role gate, unsupported
+        # modality, an upstream refusal before the first byte) propagate as
+        # ``HTTPException`` here -- before any byte is sent -- so the client gets
+        # a clean JSON error rather than a broken stream.
+        frames = None
+        chat_stream = None
+        if isinstance(outcome, ChatStream):
+            await outcome.prime()
+            frames = outcome.frames()
+            chat_stream = outcome
+        return ResponsesStream(
+            _response_events(
+                frames,
+                response_store=response_store,
+                body=body,
+                model=model,
+                response_id=response_id,
+                created_at=created_at,
+                previous_response_id=previous_response_id,
+                store=store,
+                convo_messages=convo_messages,
+                user_id=user_id,
+            ),
+            chat_stream=chat_stream,
         )
 
-    # Non-streaming: delegate, then translate the chat completion to a Response.
-    # `runtime_settings=None` keeps the delegate on its plain non-streaming path
-    # (the force-streaming keepalive path returns a StreamingResponse).
-    chat_result = await chat_completions(
-        request,
-        http_response,
-        authorization=authorization,
-        user_ctx=user_ctx,
-        router_exec=router_exec,
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-        model_visibility_resolver=model_visibility_resolver,
-        runtime_settings=None,
-        completions_logger=completions_logger,
-        pricing_lookup=pricing_lookup,
-        cost_tracker=cost_tracker,
-    )
+    # Non-streaming: translate the chat completion to a Response.
+    chat_result = outcome.body if isinstance(outcome, ChatResponse) else outcome
+    if isinstance(outcome, ChatStream):
+        await outcome.aclose()
     if not isinstance(chat_result, dict):
         raise HTTPException(502, "Unexpected upstream response shape")
 
@@ -273,22 +412,12 @@ async def create_response(
             model=model,
         )
 
-    return JSONResponse(content=responses_obj)
+    return ResponsesResult(responses_obj)
 
 
-async def _stream_response(
+async def _response_events(
+    frames: AsyncIterator[Any] | None,
     *,
-    request: Request,
-    http_response: Response,
-    authorization: str | None,
-    user_ctx: dict,
-    router_exec: Any,
-    log_store: Any,
-    model_router_registry: Any,
-    model_visibility_resolver: Any,
-    completions_logger: Any,
-    pricing_lookup: Any,
-    cost_tracker: Any,
     response_store: Any,
     body: dict[str, Any],
     model: str,
@@ -298,28 +427,8 @@ async def _stream_response(
     store: bool,
     convo_messages: list[dict[str, Any]],
     user_id: str | None,
-) -> StreamingResponse:
-    """Delegate streaming to ``chat_completions`` and re-frame chunks as events.
-
-    Pre-stream validation errors (model not found, role gate, unsupported
-    modality) propagate as ``HTTPException`` here — before any byte is sent — so
-    the client gets a clean JSON error rather than a broken stream.
-    """
-    delegate = await chat_completions(
-        request,
-        http_response,
-        authorization=authorization,
-        user_ctx=user_ctx,
-        router_exec=router_exec,
-        log_store=log_store,
-        model_router_registry=model_router_registry,
-        model_visibility_resolver=model_visibility_resolver,
-        runtime_settings=None,
-        completions_logger=completions_logger,
-        pricing_lookup=pricing_lookup,
-        cost_tracker=cost_tracker,
-    )
-
+) -> AsyncIterator[bytes]:
+    """Re-frame the chat stream's *frames* as Responses events, storing the turn."""
     translator = ResponsesStreamTranslator(
         response_id=response_id,
         created_at=created_at,
@@ -329,77 +438,70 @@ async def _stream_response(
         store=store,
     )
 
-    # ``body_iterator`` is Starlette's StreamingResponse stream attribute — the
-    # same access compat.py relies on to re-wrap a delegated streaming response.
-    body_iterator = getattr(delegate, "body_iterator", None)
-
     def _persist_messages() -> list[dict[str, Any]]:
         assistant_msg = translator.assistant_message
         return [*convo_messages, assistant_msg] if assistant_msg else list(convo_messages)
 
-    async def _gen() -> Any:
-        persisted = False
-        try:
-            if body_iterator is not None:
-                async for chunk in body_iterator:
-                    if isinstance(chunk, bytes):
-                        chunk = chunk.decode("utf-8", errors="replace")
-                    for event in translator.feed(chunk):
-                        yield event.encode()
-            # Build the terminal events, then persist *before* emitting them so a
-            # client that issues GET / previous_response_id immediately after
-            # ``response.completed`` cannot race the store write and 404.
-            closing = list(translator.finalize())
-            if (
-                store
-                and response_store is not None
-                and translator.final_response is not None
-                and not translator.failed
-            ):
-                await _persist(
-                    response_store,
-                    response_id=response_id,
-                    user_id=user_id or "anonymous",
-                    response=translator.final_response,
-                    messages=_persist_messages(),
-                    previous_response_id=previous_response_id,
-                    model=model,
-                )
-            persisted = True
-            for event in closing:
-                yield event.encode()
-        finally:
-            # Early client disconnect / cancellation interrupts the loop before
-            # the synchronous persist above runs. Force-finalize and persist
-            # best-effort (fire-and-forget — the client is gone) so the partial
-            # turn is still stored for ``previous_response_id`` chaining, but
-            # mark it ``incomplete`` so an aborted stream is never recorded as a
-            # normal completion.
-            if not persisted and store and response_store is not None and not translator.failed:
-                if translator.final_response is None:
-                    for _ in translator.finalize():
-                        pass
-                if translator.final_response is not None:
-                    aborted = translator.final_response
-                    aborted["status"] = "incomplete"
-                    # finalize() already set incomplete_details (to None for a
-                    # non-truncated finish), so setdefault would be a no-op —
-                    # assign explicitly when it is unset.
-                    if not aborted.get("incomplete_details"):
-                        aborted["incomplete_details"] = {"reason": "interrupted"}
-                    _schedule(
-                        _persist(
-                            response_store,
-                            response_id=response_id,
-                            user_id=user_id or "anonymous",
-                            response=aborted,
-                            messages=_persist_messages(),
-                            previous_response_id=previous_response_id,
-                            model=model,
-                        )
+    persisted = False
+    try:
+        if frames is not None:
+            async for chunk in frames:
+                if isinstance(chunk, bytes):
+                    chunk = chunk.decode("utf-8", errors="replace")
+                for event in translator.feed(chunk):
+                    yield event.encode()
+        # Build the terminal events, then persist *before* emitting them so a
+        # client that issues GET / previous_response_id immediately after
+        # ``response.completed`` cannot race the store write and 404.
+        closing = list(translator.finalize())
+        if (
+            store
+            and response_store is not None
+            and translator.final_response is not None
+            and not translator.failed
+        ):
+            await _persist(
+                response_store,
+                response_id=response_id,
+                user_id=user_id or "anonymous",
+                response=translator.final_response,
+                messages=_persist_messages(),
+                previous_response_id=previous_response_id,
+                model=model,
+            )
+        persisted = True
+        for event in closing:
+            yield event.encode()
+    finally:
+        # Early client disconnect / cancellation interrupts the loop before
+        # the synchronous persist above runs. Force-finalize and persist
+        # best-effort (fire-and-forget — the client is gone) so the partial
+        # turn is still stored for ``previous_response_id`` chaining, but
+        # mark it ``incomplete`` so an aborted stream is never recorded as a
+        # normal completion.
+        if not persisted and store and response_store is not None and not translator.failed:
+            if translator.final_response is None:
+                for _ in translator.finalize():
+                    pass
+            if translator.final_response is not None:
+                aborted = translator.final_response
+                aborted["status"] = "incomplete"
+                # finalize() already set incomplete_details (to None for a
+                # non-truncated finish), so setdefault would be a no-op —
+                # assign explicitly when it is unset.
+                if not aborted.get("incomplete_details"):
+                    aborted["incomplete_details"] = {"reason": "interrupted"}
+                _schedule(
+                    _persist(
+                        response_store,
+                        response_id=response_id,
+                        user_id=user_id or "anonymous",
+                        response=aborted,
+                        messages=_persist_messages(),
+                        previous_response_id=previous_response_id,
+                        model=model,
                     )
-
-    return StreamingResponse(_gen(), media_type="text/event-stream", headers=_SSE_HEADERS)
+                )
 
 
 async def _persist(
@@ -434,14 +536,18 @@ async def get_response(
     user_ctx: dict = Depends(verify_api_key),
     response_store=Depends(get_response_store),
 ):
-    """Retrieve a previously stored response by id."""
+    """Retrieve a previously stored response by id.
+
+    Served as stored: the store matches the owner and reads the Responses
+    object alone, never the conversation stored beside it.
+    """
     if response_store is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    row = await response_store.get(response_id)
     owner = user_ctx.get("user_id") or "anonymous"
-    if not row or row.get("user_id") != owner:
+    body = await response_store.get_response(response_id, user_id=owner)
+    if body is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    return JSONResponse(content=row.get("response") or {})
+    return Response(content=body, media_type="application/json")
 
 
 @router.delete("/v1/responses/{response_id}", response_model=None)

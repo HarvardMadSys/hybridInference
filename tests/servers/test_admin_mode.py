@@ -74,7 +74,9 @@ async def test_playground_models_hide_unpublished_routes() -> None:
     router.register_route("visible-model", [(visible, 1.0)])
     router.register_route("staged-model", [(staged, 1.0)], published=False)
 
-    result = await playground.list_models(_admin={}, router_exec=router)
+    result = await playground.list_models(
+        _admin={}, router_exec=router, model_visibility_resolver=None
+    )
 
     assert [model["id"] for model in result["models"]] == ["visible-model"]
 
@@ -95,7 +97,9 @@ async def test_playground_source_pricing_is_checked_before_stream_response(monke
         model="alias", messages=[{"role": "user", "content": "hi"}]
     )
     with req_ctx.push(pricing_snapshot=None), pytest.raises(HTTPException) as exc:
-        await playground.playground_chat(body, _admin={}, router_exec=router)
+        await playground.playground_chat(
+            body, _admin={}, router_exec=router, model_visibility_resolver=None
+        )
     assert exc.value.status_code == 503
     dispatch.assert_not_called()
 
@@ -207,7 +211,7 @@ class TestAdminModeUnit:
             '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test", show_host=True)
 
         assert "_routing" not in sanitized
         assert "user:pw" not in sanitized
@@ -278,7 +282,7 @@ class TestAdminModeUnit:
             '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
         )
 
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
+        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test", show_host=True)
 
         assert "_routing" not in sanitized
         assert "user:pw" not in sanitized

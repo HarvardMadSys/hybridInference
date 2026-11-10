@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 138  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 155  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -59,6 +59,8 @@ def test_admin_router_has_expected_route_count() -> None:
     # plus provider availability list + disable/enable toggle,
     # plus the geo-temporal analytics endpoint,
     # plus the daily growth-rate analytics endpoint.
+    # +3: batch/jobs, batch/summary and batch/jobs/{id}/cancel, the overview of
+    # every user's batches.
     # 111 -> 108 at H4: agent runner-hosts list/set-active/forget went to
     # the cloud agent's repository with the pool they administer.
     # 110 -> 111: recent-requests/performance, the per-(model, endpoint) TTFT
@@ -87,6 +89,16 @@ def test_admin_router_has_expected_route_count() -> None:
     # provider-route-removals POST/DELETE (delete and restore a config route).
     # 136 -> 138: batch/models list and per-model update, the batch
     # concurrency caps an administrator sets per model.
+    # 138 -> 140: config/backup GET and config/restore POST, portable
+    # configuration backup and restore across all admin-editable domains.
+    # 140 -> 145: alert-history status, events, episode, source-incident and
+    # request-evidence reads (read-only; scoped reader tokens accepted).
+    # 148 -> 149: config/live, how each process applied the live configuration groups.
+    # 149 -> 150: batch/jobs/{id}/requests, one batch's prompts and answers (audited).
+    # 150 -> 152: config/backup POST, a backup with secret values after the admin's
+    # password, and config/restore/preview, what a restore would change before it does.
+    # 152 -> 153: batch/model-queue, an on-demand model host's scheduler queue.
+    # 153 -> 154: routing/provider-route-batch, whether batch work may use a route.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

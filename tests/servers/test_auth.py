@@ -31,6 +31,7 @@ def mock_op_store():
     store.get_auth_context_by_key_hash = AsyncMock()
     store.update_key_last_used = AsyncMock()
     store.get_user_cost_today = AsyncMock(return_value=0.0)
+    store.get_personal_org_status = AsyncMock(return_value=None)
     return store
 
 
@@ -644,6 +645,9 @@ async def test_on_behalf_of_trusted_service_key_attributes_to_target(
         }
     )
     mock_op_store.get_user_cost_today.return_value = 2.5
+    mock_op_store.get_quota_context_for_user = AsyncMock(
+        return_value=[{"quota_daily_cost_usd": 5.0, "quota_monthly_cost_usd": None}]
+    )
 
     result = await verify_api_key(
         request=mock_request,
@@ -657,12 +661,102 @@ async def test_on_behalf_of_trusted_service_key_attributes_to_target(
     assert result["user_id"] == "end-user-1"
     assert result["role"] == "free"
     assert result["is_admin"] is False
+    assert result["quota_daily_cost_usd"] == 5.0
     mock_op_store.get_user_by_id.assert_awaited_once_with("end-user-1")
     # Cost/quota are checked against the end user.
     mock_op_store.get_user_cost_today.assert_awaited_once_with("end-user-1")
     # last_used is still bumped on the *presented* (service) key.
     await _settle_last_used_write()
     mock_op_store.update_key_last_used.assert_awaited_once_with(7)
+    # Its usage is the end user's, not the service key's: no key is charged.
+    assert result["api_key_id"] is None
+
+
+def _on_behalf_store(mock_op_store, *, quota_rows, spent_today=0.0, spent_month=0.0):
+    mock_op_store.get_auth_context_by_key_hash.return_value = _service_account_ctx()
+    mock_op_store.get_user_by_id = AsyncMock(
+        return_value={
+            "id": "end-user-1",
+            "user_name": "End User",
+            "role": "free",
+            "status": "active",
+            "preferences": None,
+            "max_concurrent_requests": None,
+        }
+    )
+    mock_op_store.get_quota_context_for_user = AsyncMock(return_value=quota_rows)
+    mock_op_store.get_user_cost_today = AsyncMock(return_value=spent_today)
+    mock_op_store.get_user_cost_period = AsyncMock(return_value=spent_month)
+    return mock_op_store
+
+
+async def _on_behalf(monkeypatch, mock_request, store, mock_ls) -> dict:
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    service_key = "hyi-rag-service"
+    _hashed_key(monkeypatch, service_key)
+    monkeypatch.setenv("RAG_API_KEY", service_key)
+    return await verify_api_key(
+        request=mock_request,
+        authorization=f"Bearer {service_key}",
+        x_on_behalf_of="end-user-1",
+        op_store=store,
+        log_store=mock_ls,
+    )
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_stops_at_the_end_users_daily_quota(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """A request made for a user spends that user's quota, not the $1000 default."""
+    store = _on_behalf_store(
+        mock_op_store,
+        quota_rows=[{"quota_daily_cost_usd": 2.0, "quota_monthly_cost_usd": None}],
+        spent_today=2.0,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await _on_behalf(monkeypatch, mock_request, store, mock_ls)
+    assert exc.value.status_code == 429
+    store.get_quota_context_for_user.assert_awaited_once_with("end-user-1")
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_stops_at_the_end_users_monthly_quota(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    store = _on_behalf_store(
+        mock_op_store,
+        quota_rows=[{"quota_daily_cost_usd": 100.0, "quota_monthly_cost_usd": 30.0}],
+        spent_today=1.0,
+        spent_month=30.0,
+    )
+    with pytest.raises(HTTPException) as exc:
+        await _on_behalf(monkeypatch, mock_request, store, mock_ls)
+    assert exc.value.status_code == 429
+    store.get_user_cost_period.assert_awaited_once_with("end-user-1", "month")
+
+
+@pytest.mark.asyncio
+async def test_on_behalf_of_a_keyless_account_gets_its_roles_default_quota(
+    monkeypatch, mock_request, mock_op_store, mock_ls
+):
+    """No key, so no stored quota: the one its first key would get, not $1000."""
+    from serving.servers.routers import user_routes
+
+    seen: list[str] = []
+
+    async def role_default(role, runtime_settings):
+        seen.append(role)
+        return 3
+
+    monkeypatch.setattr(user_routes, "get_default_daily_quota_for_role", role_default)
+    store = _on_behalf_store(mock_op_store, quota_rows=[], spent_today=1.0)
+
+    result = await _on_behalf(monkeypatch, mock_request, store, mock_ls)
+
+    assert seen == ["free"]
+    assert result["quota_daily_cost_usd"] == 3.0
+    assert result["quota_remaining_cost_usd"] == 2.0
 
 
 @pytest.mark.asyncio
@@ -696,6 +790,8 @@ async def test_on_behalf_of_from_untrusted_key_is_ignored(
 
     # Fail safe: the request attributes to the caller, never the named target.
     assert result["user_id"] == "normal-user"
+    # ...and so does its usage, to the key it presented.
+    assert result["api_key_id"] == 3
     mock_op_store.get_user_by_id.assert_not_awaited()
     mock_op_store.get_user_cost_today.assert_awaited_once_with("normal-user")
 

@@ -457,6 +457,27 @@ async def test_streaming_does_not_run_the_backend_before_the_first_read() -> Non
     await stream.aclose()  # type: ignore[attr-defined]
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_selection_error_surfaces_on_the_first_read_of_the_stream() -> None:
+    """As FixedRouter's does: the stream is created first and read inside the session.
+
+    The serving layer maps an error raised while the stream is read to its status
+    (every circuit open is a 503). Raised by the call itself, it escaped that
+    handling and answered 500.
+    """
+    router = _hybrid(
+        policy=_ForceBackend("greedy"),
+        local=_local_backend(_adapter(_LOCAL_ENDPOINT)),
+        cloud=_cloud_backend(_adapter(_CLOUD_ENDPOINT)),
+    )
+
+    stream = router.stream_chat_completion(_MODEL_ID, _MESSAGES, request_id="stream-unknown")
+
+    with pytest.raises(HybridRoutingError, match="unknown backend 'greedy'"):
+        await anext(stream)
+
+
 class _ClosingBackend:
     """Backend double exposing an inspectable, non-generator stream iterator."""
 

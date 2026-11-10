@@ -14,7 +14,7 @@ import {
 } from '@/components/features/configuration/configDrafts';
 import { Button } from '@/components/ui/Button';
 import { listRuntimeSettings, updateRuntimeSetting } from '@/lib/api/admin';
-import { getConfig, patchConfig, type ConfigResponse } from '@/lib/api/config';
+import { getConfig, patchConfig, type ConfigEntry, type ConfigResponse } from '@/lib/api/config';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 /** The two runtime settings that decide who can create an account. */
@@ -32,6 +32,13 @@ const SIGNUP_SETTINGS = [
 ] as const;
 
 type SignupKey = (typeof SIGNUP_SETTINGS)[number]['key'];
+
+/** The keys among `keys` whose change needs the administrator's password. */
+function guardedKeys(entries: readonly ConfigEntry[], keys: readonly string[]): string[] {
+  return keys.filter(
+    (key) => entries.find((entry) => entry.key === key)?.security_relevant === true,
+  );
+}
 type SignupValues = Partial<Record<SignupKey, boolean>>;
 
 /**
@@ -54,6 +61,9 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
   const [entryErrors, setEntryErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  // The administrator's password, which a security-relevant setting -- the
+  // public URLs, mail delivery -- needs to be saved.
+  const [password, setPassword] = useState('');
 
   const load = useCallback(async () => {
     setLoadError(null);
@@ -113,6 +123,11 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       setSaveError('Some values are not valid. Correct them and save again.');
       return;
     }
+    const guarded = guardedKeys(entries, Object.keys(values));
+    if (guarded.length > 0 && !password) {
+      setSaveError('Enter your password to save these settings.');
+      return;
+    }
 
     setSaving(true);
     setSaveError(null);
@@ -131,7 +146,7 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       // written, so its `missing` list already reflects them.
       let next: ConfigResponse;
       if (keys.length > 0) {
-        next = await patchConfig({ values });
+        next = await patchConfig(guarded.length > 0 ? { values, password } : { values });
         wrote = true;
       } else {
         next = await getConfig();
@@ -146,7 +161,7 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       setSaving(false);
       // The server-rendered site configuration carries sign-up and whether
       // required settings are missing; re-read it after any write, even one
-      // followed by a failure, as the Configuration tab does.
+      // followed by a failure, as the admin Settings tab does.
       if (wrote) router.refresh();
     }
   };
@@ -176,6 +191,9 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
   }
 
   const signupKeys = SIGNUP_SETTINGS.filter(({ key }) => signupDraft[key] !== undefined);
+  const pendingEntries = groups.flatMap((group) => group.entries);
+  const needsPassword =
+    guardedKeys(pendingEntries, Object.keys(buildPatch(pendingEntries, drafts).values)).length > 0;
 
   return (
     // A form, so Enter continues, and one browsers do not offer to remember:
@@ -271,6 +289,27 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
           </section>
         ))
       )}
+
+      {needsPassword ? (
+        <div>
+          <label htmlFor="setup-confirm-password" className="text-[13px] font-medium text-gray-900">
+            Your password
+          </label>
+          <p className="mt-0.5 text-[12px] text-gray-500">
+            The public URLs and mail settings decide where users and their sign-in links go, so
+            saving them needs the password you just set.
+          </p>
+          <input
+            id="setup-confirm-password"
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={saving}
+            autoComplete="current-password"
+            className="mt-2 w-full max-w-sm rounded-md border border-gray-300 px-3 py-2 text-sm text-gray-900 focus:border-gray-500 focus:outline-none"
+          />
+        </div>
+      ) : null}
 
       {saveError ? (
         <div

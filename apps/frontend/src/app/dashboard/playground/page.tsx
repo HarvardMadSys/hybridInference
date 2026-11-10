@@ -197,7 +197,12 @@ export default function PlaygroundPage() {
   const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
   const [showJump, setShowJump] = useState(false);
   const [undo, setUndo] = useState<UndoAction | null>(null);
-  const chatRef = useRef<HTMLDivElement>(null);
+  // Below `md` the sessions and settings are a drawer over the conversation,
+  // opened from the header; from `md` up they are the sidebar beside it.
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const settingsButtonRef = useRef<HTMLButtonElement>(null);
+  const settingsCloseRef = useRef<HTMLButtonElement>(null);
+  const chatRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
   const counterRef = useRef(2);
@@ -211,6 +216,30 @@ export default function PlaygroundPage() {
   useEffect(() => {
     visibleSessionRef.current = activeSessionId;
   }, [activeSessionId]);
+
+  useEffect(() => {
+    if (!settingsOpen) return;
+    settingsCloseRef.current?.focus();
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      // A picker inside the drawer consumes its own Escape.
+      if (event.key !== 'Escape' || event.defaultPrevented) return;
+      setSettingsOpen(false);
+      settingsButtonRef.current?.focus();
+    };
+    // Widened past `md`, the sidebar is back in place: drop the drawer rather
+    // than have it reappear over the conversation on the next narrowing.
+    const wide =
+      typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 768px)') : null;
+    const onWidth = () => {
+      if (wide?.matches) setSettingsOpen(false);
+    };
+    document.addEventListener('keydown', onKey);
+    wide?.addEventListener('change', onWidth);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      wide?.removeEventListener('change', onWidth);
+    };
+  }, [settingsOpen]);
 
   // Navigating away must not leave generations running until the network or
   // idle timeout ends them: every live abort controller fires on unmount. The
@@ -798,19 +827,42 @@ export default function PlaygroundPage() {
   return (
     <ProtectedRoute>
       <div className="flex h-full flex-col bg-gray-950 text-white">
-        <header className="flex h-14 shrink-0 items-center justify-between border-b border-gray-800 px-5">
-          <div className="flex items-center gap-4">
+        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-gray-800 px-3 sm:px-5">
+          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+            <button
+              ref={settingsButtonRef}
+              type="button"
+              onClick={() => setSettingsOpen(true)}
+              aria-expanded={settingsOpen}
+              aria-controls="playground-settings"
+              aria-label="Chat settings"
+              className="-ml-1 rounded-md p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white md:hidden"
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
+              </svg>
+            </button>
             <Link
               href="/dashboard"
-              className="text-sm font-semibold text-gray-400 transition hover:text-white"
+              className="truncate text-sm font-semibold text-gray-400 transition hover:text-white"
             >
               {branding.appName}
             </Link>
             <span className="text-gray-700">/</span>
-            <span className="text-sm font-medium text-white">Playground</span>
+            <span className="text-sm font-medium text-white">Chat</span>
           </div>
-          <div className="flex items-center gap-3">
-            <span className="rounded-md bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-300">
+          <div className="flex shrink-0 items-center gap-3">
+            {/* Below `sm` the composer names the model instead. */}
+            <span className="hidden max-w-[16rem] truncate rounded-md bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-300 sm:block">
               {model ? model.name : 'No model'}
             </span>
             <span
@@ -824,7 +876,49 @@ export default function PlaygroundPage() {
         </header>
 
         <div className="flex min-h-0 flex-1 overflow-hidden">
-          <aside className="flex w-80 shrink-0 flex-col border-r border-gray-800 bg-gray-900">
+          {settingsOpen && (
+            <div
+              aria-hidden="true"
+              onClick={() => setSettingsOpen(false)}
+              className="fixed inset-0 z-30 bg-black/60 md:hidden"
+            />
+          )}
+          <aside
+            id="playground-settings"
+            aria-label="Chat settings"
+            // Shown at once on opening, so focus can move into it; hidden only
+            // once it has slid away on closing.
+            className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col border-r border-gray-800 bg-gray-900 shadow-2xl shadow-black/50 duration-200 motion-reduce:transition-none md:visible md:static md:z-auto md:w-80 md:max-w-none md:shrink-0 md:transform-none md:shadow-none ${
+              settingsOpen
+                ? 'visible translate-x-0 transition-transform'
+                : 'invisible -translate-x-full transition-[transform,visibility]'
+            }`}
+          >
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-800 pl-4 pr-2 md:hidden">
+              <span className="text-sm font-semibold text-white">Chat settings</span>
+              <button
+                ref={settingsCloseRef}
+                type="button"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  settingsButtonRef.current?.focus();
+                }}
+                aria-label="Close chat settings"
+                className="rounded-md p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-5 w-5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={1.75}
+                  strokeLinecap="round"
+                >
+                  <path d="M6 6l12 12M18 6L6 18" />
+                </svg>
+              </button>
+            </div>
             <div className="border-b border-gray-800 px-4 py-4">
               <div className="mb-3 flex items-center justify-between">
                 <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
@@ -832,7 +926,10 @@ export default function PlaygroundPage() {
                 </span>
                 <button
                   type="button"
-                  onClick={newSession}
+                  onClick={() => {
+                    newSession();
+                    setSettingsOpen(false);
+                  }}
                   className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
                 >
                   + New
@@ -852,7 +949,10 @@ export default function PlaygroundPage() {
                     >
                       <button
                         type="button"
-                        onClick={() => switchSession(s.id)}
+                        onClick={() => {
+                          switchSession(s.id);
+                          setSettingsOpen(false);
+                        }}
                         className="w-full px-3 py-2.5 text-left text-sm"
                       >
                         <div className="truncate pr-6 font-medium">{getSessionTitle(s)}</div>
@@ -1043,10 +1143,11 @@ export default function PlaygroundPage() {
           </aside>
 
           <div className="flex min-w-0 flex-1 flex-col bg-gray-950">
-            <div
+            <section
               ref={chatRef}
               onScroll={onChatScroll}
-              className="dark-scrollbar flex-1 overflow-y-auto px-6 py-6"
+              aria-label="Conversation"
+              className="dark-scrollbar flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6"
             >
               {msgs.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
@@ -1070,6 +1171,14 @@ export default function PlaygroundPage() {
                     <p className="mt-2 text-sm leading-6 text-gray-500">
                       Choose a model and system prompt in the sidebar, then type a message below.
                     </p>
+                    {/* On a phone the sidebar is behind the header's settings button. */}
+                    <button
+                      type="button"
+                      onClick={() => setSettingsOpen(true)}
+                      className="mt-4 rounded-lg border border-gray-700 px-3 py-2 text-sm font-medium text-gray-300 transition hover:border-gray-600 hover:text-white md:hidden"
+                    >
+                      Open chat settings
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -1091,7 +1200,7 @@ export default function PlaygroundPage() {
 
                     return (
                       <div key={msg.id} className="group">
-                        <div className="mb-1.5 flex items-center justify-between gap-3">
+                        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
                           <div className="flex min-w-0 items-center gap-2">
                             <span
                               className={`text-xs font-medium ${
@@ -1224,7 +1333,7 @@ export default function PlaygroundPage() {
                           </ul>
                         )}
                         <div
-                          className={`rounded-2xl px-5 py-4 text-sm leading-7 ${
+                          className={`rounded-2xl px-4 py-3 text-sm leading-7 sm:px-5 sm:py-4 ${
                             isUser
                               ? 'bg-indigo-600 text-white'
                               : 'bg-gray-900 text-gray-200 ring-1 ring-gray-800'
@@ -1309,9 +1418,9 @@ export default function PlaygroundPage() {
                   })}
                 </div>
               )}
-            </div>
+            </section>
 
-            <div className="relative shrink-0 border-t border-gray-800 bg-gray-950 px-6 py-4">
+            <div className="relative shrink-0 border-t border-gray-800 bg-gray-950 px-3 py-3 sm:px-6 sm:py-4">
               {showJump && msgs.length > 0 && (
                 <button
                   type="button"
@@ -1362,8 +1471,8 @@ export default function PlaygroundPage() {
                     rows={1}
                     className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-6 text-white outline-none placeholder:text-gray-600"
                   />
-                  <div className="flex items-center justify-between border-t border-gray-800 px-2 pt-3">
-                    <div className="text-xs text-gray-600">
+                  <div className="flex items-center justify-between gap-3 border-t border-gray-800 px-2 pt-3">
+                    <div className="min-w-0 text-xs text-gray-600">
                       {(() => {
                         if (!model) return modelsLoading ? 'Loading...' : 'No model selected';
                         const parts = [model.name];
@@ -1374,7 +1483,7 @@ export default function PlaygroundPage() {
                         return parts.join(' / ');
                       })()}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                       {activeStreaming && (
                         <button
                           type="button"

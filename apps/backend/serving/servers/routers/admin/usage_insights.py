@@ -19,12 +19,14 @@ report is based on.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import UTC, datetime
 
 import aiohttp
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException
 
+from serving.audit import AuditActor, AuditTarget
 from serving.config.site_identity import get_site_identity
 from serving.http import AsyncHTTPClient
 from serving.schemas_admin import (
@@ -37,6 +39,7 @@ from serving.schemas_admin import (
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
+    get_admin_audit_actor,
     get_db_logger,
     get_operational_store,
     verify_admin_access,
@@ -45,12 +48,12 @@ from serving.utils.logging import get_logger
 from serving.utils.prompt_sampling import (
     as_payload_dict,
     block_text,
+    messages_of,
     referer_from_metadata,
     system_opener,
     user_agent_from_metadata,
     user_messages,
 )
-from serving.utils.request_ip import get_client_ip
 
 logger = get_logger(__name__)
 
@@ -252,23 +255,33 @@ async def _fetch_samples(conn, user_id: str | None, payload: UsageInsightsReques
     rows = dated + undated
     samples: list[dict] = []
     for r in rows:
-        body = as_payload_dict(r["request_payload"])
-        # The turns live in the prompt column; request_payload keeps a copy only
-        # on rows logged before the de-duplication, which the extractors fall
-        # back to on their own.
-        turns = r["prompt"]
-        samples.append(
-            {
-                "timestamp": r["timestamp"].isoformat() if r["timestamp"] else None,
-                "model_id": r["model_id"],
-                "provider": r["provider"],
-                "user_agent": user_agent_from_metadata(r["metadata"]),
-                "referer": referer_from_metadata(r["metadata"]),
-                "system_opener": system_opener(body, payload.max_chars, turns),
-                "user_messages": user_messages(body, payload.max_chars, turns),
-            }
-        )
+        samples.append(_sample_of(r, payload.max_chars))
+        # Up to 200 stored conversations, each up to megabytes, are decoded
+        # here: one per step, with the event loop given back between them.
+        await asyncio.sleep(0)
     return samples
+
+
+def _sample_of(row, max_chars: int) -> dict:
+    """What one sampled row shows: its client, its system opener and its user turns.
+
+    Each stored value is decoded once. The turns live in the prompt column;
+    request_payload keeps a copy only on rows logged before the
+    de-duplication, which :func:`messages_of` falls back to. Both extractors
+    take the decoded list as it is.
+    """
+    body = as_payload_dict(row["request_payload"])
+    turns = messages_of(body, row["prompt"])
+    metadata = as_payload_dict(row["metadata"])
+    return {
+        "timestamp": row["timestamp"].isoformat() if row["timestamp"] else None,
+        "model_id": row["model_id"],
+        "provider": row["provider"],
+        "user_agent": user_agent_from_metadata(metadata),
+        "referer": referer_from_metadata(metadata),
+        "system_opener": system_opener(body, max_chars, turns),
+        "user_messages": user_messages(body, max_chars, turns),
+    }
 
 
 def _render_samples(samples: list[dict]) -> tuple[str, int]:
@@ -413,9 +426,9 @@ async def get_usage_insights_settings(
 
 @router.put("/usage-insights/settings", response_model=UsageInsightsSettings)
 async def update_usage_insights_settings(
-    request: Request,
     payload: UsageInsightsSettingsUpdate,
     admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> UsageInsightsSettings:
     """Set or clear the analysis API key and/or model."""
@@ -442,12 +455,12 @@ async def update_usage_insights_settings(
 
     await log_admin_action(
         op_store,
-        get_client_ip(request),
-        "usage_insights_settings_update",
+        action="usage_insights_settings_update",
         details={
             "api_key_changed": payload.api_key is not None,
             "model_changed": payload.model is not None,
         },
+        actor=actor,
     )
 
     api_key, model = await _load_provider(op_store)
@@ -472,9 +485,8 @@ async def _collect_samples(
 
 @router.post("/usage-insights/samples", response_model=UsageInsightsSamplesResponse)
 async def admin_sample_usage(
-    request: Request,
     payload: UsageInsightsRequest,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
 ) -> UsageInsightsSamplesResponse:
     """Return the same random sample Analyze usage would send to the LLM.
@@ -491,10 +503,10 @@ async def admin_sample_usage(
 
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "usage_insights_samples",
-        target_user_id=user_id,
+        action="usage_insights_samples",
         details={"sampled_requests": len(samples), "scope": scope},
+        actor=actor,
+        target=AuditTarget.user(user_id) if user_id else None,
     )
 
     return UsageInsightsSamplesResponse(
@@ -506,9 +518,8 @@ async def admin_sample_usage(
 
 @router.post("/usage-insights/analyze", response_model=UsageInsightsResponse)
 async def admin_analyze_usage(
-    request: Request,
     payload: UsageInsightsRequest,
-    _admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
     db_logger=Depends(get_db_logger),
     op_store=Depends(get_operational_store),
 ) -> UsageInsightsResponse:
@@ -540,10 +551,10 @@ async def admin_analyze_usage(
 
     await log_admin_action(
         db_logger,
-        get_client_ip(request),
-        "usage_insights_analyze",
-        target_user_id=user_id,
+        action="usage_insights_analyze",
         details={"sampled_requests": used, "model": model, "scope": scope},
+        actor=actor,
+        target=AuditTarget.user(user_id) if user_id else None,
     )
 
     return UsageInsightsResponse(

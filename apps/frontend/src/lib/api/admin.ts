@@ -39,7 +39,7 @@ export interface AdminUser {
   usage_alltime_tokens: number | null;
 }
 
-export type UserSortBy =
+type UserSortBy =
   | 'created'
   | 'cost_today'
   | 'cost_month'
@@ -48,7 +48,7 @@ export type UserSortBy =
   | 'requests'
   | 'tokens';
 
-export interface StatusCounts {
+interface StatusCounts {
   all: number;
   pending_approval: number;
   active: number;
@@ -57,13 +57,13 @@ export interface StatusCounts {
   deleted: number;
 }
 
-export interface ListUsersResponse {
+interface ListUsersResponse {
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
 }
 
-export interface ApproveRejectResponse {
+interface ApproveRejectResponse {
   user_id: string;
   email: string | null;
   phone?: string | null;
@@ -71,7 +71,7 @@ export interface ApproveRejectResponse {
   message: string;
 }
 
-export interface ListUsersOptions {
+interface ListUsersOptions {
   status?: string;
   search?: string;
   sortBy?: UserSortBy;
@@ -112,7 +112,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
 // Users cost-history + summary (new in admin Users redesign)
 // ========================================
 
-export interface BulkCostHistoryResponse {
+interface BulkCostHistoryResponse {
   days: number;
   histories: Record<string, CostHistoryPoint[]>;
 }
@@ -139,7 +139,7 @@ export interface UserFilterProvider {
   routable: boolean;
 }
 
-export interface ListUserFilterProvidersResponse {
+interface ListUserFilterProvidersResponse {
   providers: UserFilterProvider[];
 }
 
@@ -241,7 +241,7 @@ export interface UserTurnAverages {
   avg_user_turns: number | null;
 }
 
-export interface BulkTurnAveragesResponse {
+interface BulkTurnAveragesResponse {
   averages: Record<string, UserTurnAverages>;
 }
 
@@ -258,7 +258,7 @@ export interface UserAskQuestionFraction {
   n_ask_requests: number;
 }
 
-export interface BulkAskQuestionFractionsResponse {
+interface BulkAskQuestionFractionsResponse {
   fractions: Record<string, UserAskQuestionFraction>;
 }
 
@@ -297,7 +297,7 @@ export interface UserAutomationScore {
   detail: Record<string, number | null>;
 }
 
-export interface BulkAutomationScoresResponse {
+interface BulkAutomationScoresResponse {
   days: number;
   scores: Record<string, UserAutomationScore>;
 }
@@ -333,6 +333,8 @@ export interface UpdateUserData {
   max_concurrent_requests?: number | null;
   admin_note?: string | null;
   suspension_message?: string | null;
+  /** The signed-in administrator's password: needed to raise `role`. */
+  password?: string;
 }
 
 export async function updateUser(
@@ -365,7 +367,7 @@ export async function resumeUser(userId: string, reason?: string): Promise<Appro
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
-export interface HardDeleteUserResponse {
+interface HardDeleteUserResponse {
   user_id: string;
   email: string | null;
   phone?: string | null;
@@ -392,14 +394,55 @@ export async function hardDeleteUser(
 // Audit Log
 // ========================================
 
+/**
+ * Who made a change. `admin` and `user` are signed-in accounts with a stable
+ * `actor_id`; `admin_token` is the shared admin token, which names no account;
+ * `anonymous` is a registration, `bootstrap` the first-run setup.
+ */
+export type AuditActorType =
+  | 'admin'
+  | 'user'
+  | 'admin_token'
+  | 'anonymous'
+  | 'bootstrap'
+  | 'system';
+
+/** What a change was made to. The list is open: a newer gateway may add kinds. */
+export type AuditTargetType =
+  | 'user'
+  | 'model'
+  | 'provider'
+  | 'provider_key'
+  | 'setting'
+  | 'config'
+  | 'alert_type'
+  | 'auth_block'
+  | 'signup_domain'
+  | 'site_update'
+  | 'broadcast'
+  | (string & {});
+
 export interface AuditLogEntry {
   id: number;
   timestamp: string;
+  /**
+   * The source as historically recorded, unvalidated: an address, a login or
+   * an email. Newer entries carry `source_ip` and may repeat it here.
+   */
   admin_ip: string;
   action: string;
+  /** Affected user for typed entries; an untyped raw ID on legacy entries. */
   target_user_id: string | null;
   details: Record<string, unknown> | null;
   success: boolean;
+  // Absent from an older gateway, and null on entries recorded before it
+  // stored them: nothing about the actor, target or source is known then.
+  actor_type?: AuditActorType | null;
+  actor_id?: string | null;
+  /** The trusted request address, or null when unavailable. */
+  source_ip?: string | null;
+  target_type?: AuditTargetType | null;
+  target_id?: string | null;
 }
 
 export interface ListAuditLogResponse {
@@ -437,6 +480,10 @@ export interface AdminRequestMetricsBucket {
   error_count: number;
   client_disconnect_count?: number;
   avg_latency_ms?: number | null;
+  // The batch worker's requests in the bucket, and how many failed, whatever
+  // `source` the counts above are of. Omitted by a gateway that predates them.
+  batch_request_count?: number;
+  batch_error_count?: number;
 }
 
 export interface AdminRequestMetricsWindow {
@@ -449,16 +496,26 @@ export interface AdminRequestMetricsWindow {
   error_requests: number;
   client_disconnect_requests?: number;
   avg_latency_ms?: number | null;
+  batch_requests?: number;
+  batch_error_requests?: number;
   buckets: AdminRequestMetricsBucket[];
 }
 
-export interface AdminRequestMetricsResponse {
+interface AdminRequestMetricsResponse {
   generated_at: string;
+  // Whose requests the counts count. A gateway that predates the field counts
+  // every request, whatever was asked.
+  source?: RequestSource | 'all';
   windows: AdminRequestMetricsWindow[];
 }
 
-export async function getRequestMetrics(): Promise<AdminRequestMetricsResponse> {
-  const resp = await fetchWithAuth(API_BASE, '/admin/request-metrics');
+export async function getRequestMetrics(
+  // Whose requests to count; the batch worker's are reported beside them in
+  // every bucket either way. Omitted: every request.
+  source?: RequestSource,
+): Promise<AdminRequestMetricsResponse> {
+  const query = source ? `?${new URLSearchParams({ source }).toString()}` : '';
+  const resp = await fetchWithAuth(API_BASE, `/admin/request-metrics${query}`);
   return jsonOrThrow<AdminRequestMetricsResponse>(resp);
 }
 
@@ -494,7 +551,7 @@ export interface AdminPerformanceMetricsWindow {
   throughput_tps: AdminMetricDistribution;
 }
 
-export interface AdminPerformanceMetricsResponse {
+interface AdminPerformanceMetricsResponse {
   /** When the server computed these; null while its first computation runs. */
   generated_at: string | null;
   windows: AdminPerformanceMetricsWindow[];
@@ -521,7 +578,7 @@ export async function getPerformanceMetrics({
 export interface AdminTtftScatterPoint {
   prompt_tokens: number;
   ttft_ms: number;
-  cache_hit: boolean;
+  cache_hit: boolean | null;
   timestamp: string;
 }
 
@@ -531,7 +588,7 @@ export interface AdminTtftScatterModel {
   points: AdminTtftScatterPoint[];
 }
 
-export interface AdminTtftScatterResponse {
+interface AdminTtftScatterResponse {
   /** When the server computed this scatter; null while its first computation runs. */
   generated_at: string | null;
   models: AdminTtftScatterModel[];
@@ -628,6 +685,9 @@ export interface AdminRecentRequestItem {
   num_turns?: number | null;
   num_user_turns?: number | null;
   num_tool_calls?: number | null;
+  // The batch whose worker ran this request (`api_logs.batch_job_id`); null
+  // for a request a caller made directly. An older gateway omits it.
+  batch_job_id?: string | null;
 }
 
 // Per-request RouteWise decision blob. The backend passes the raw persisted
@@ -690,6 +750,31 @@ export type RequestOutcome =
   | 'errors_excluding_disconnects'
   | 'client_disconnect';
 
+// Who ran a logged request. `interactive` is every request a caller made
+// directly (API, console, Playground) and is what Recent Requests lists;
+// `batch` is the batch worker's, listed under Batches → Requests. The backend
+// tells them apart by `api_logs.batch_job_id`.
+export type RequestSource = 'interactive' | 'batch';
+
+// The request views' filters on who ran a request: a source, and optionally
+// one batch (exact id).
+interface RequestSourceFilter {
+  source?: RequestSource;
+  batchId?: string;
+}
+
+function setSourceParams(params: URLSearchParams, filter: RequestSourceFilter = {}): void {
+  if (filter.source) params.set('source', filter.source);
+  if (filter.batchId) params.set('batch_id', filter.batchId);
+}
+
+// One stretch of time, as ISO 8601 instants: from `start` (inclusive) to `end`
+// (exclusive), like a Request volume bar.
+export interface RequestWindow {
+  start: string;
+  end: string;
+}
+
 export async function listRecentRequests(
   limit = 50,
   offset = 0,
@@ -705,6 +790,11 @@ export async function listRecentRequests(
   // Count the total again instead of reusing the one the backend counted for
   // these filters moments ago. Set by an explicit Refresh, not by paging.
   refresh = false,
+  // Interactive or batch requests, or one batch's. Omitted: both sources.
+  sourceFilter: RequestSourceFilter = {},
+  // Only the requests of one stretch (a clicked Request volume bar). The
+  // backend widens `days` to reach its start.
+  window: RequestWindow | null = null,
 ): Promise<AdminRecentRequestsResponse> {
   const params = new URLSearchParams({ limit: String(limit), offset: String(offset) });
   if (userId) params.set('user_id', userId);
@@ -714,6 +804,11 @@ export async function listRecentRequests(
   if (days != null) params.set('days', String(days));
   if (sessionId) params.set('session_id', sessionId);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, sourceFilter);
+  if (window) {
+    params.set('start_time', window.start);
+    params.set('end_time', window.end);
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests?${params.toString()}`);
   return jsonOrThrow<AdminRecentRequestsResponse>(resp);
 }
@@ -742,7 +837,7 @@ export interface AdminRequestPerfGroup {
   decode_throughput_tps: AdminRequestPerfDistribution;
 }
 
-export interface AdminRequestPerfBreakdownResponse {
+interface AdminRequestPerfBreakdownResponse {
   generated_at: string;
   days: number;
   groups: AdminRequestPerfGroup[];
@@ -755,8 +850,10 @@ export async function getRecentRequestsPerformance({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -773,6 +870,7 @@ export async function getRecentRequestsPerformance({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -817,8 +915,10 @@ export async function getRecentRequestOffloads({
   sessionId,
   modelId,
   requestType,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -835,6 +935,7 @@ export async function getRecentRequestOffloads({
   if (modelId) params.set('model_id', modelId);
   if (requestType) params.set('request_type', requestType);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -879,8 +980,10 @@ export async function getRecentRequestsPerformanceTrend({
   requestType,
   servedModel,
   servedEndpoint,
+  source,
+  batchId,
   refresh = false,
-}: {
+}: RequestSourceFilter & {
   days?: number;
   userId?: string;
   sessionId?: string;
@@ -902,6 +1005,7 @@ export async function getRecentRequestsPerformanceTrend({
   if (servedModel) params.set('served_model', servedModel);
   if (servedEndpoint) params.set('served_endpoint', servedEndpoint);
   if (refresh) params.set('refresh', 'true');
+  setSourceParams(params, { source, batchId });
   const query = params.toString();
   const resp = await fetchWithAuth(
     API_BASE,
@@ -912,7 +1016,7 @@ export async function getRecentRequestsPerformanceTrend({
   return jsonOrThrow<AdminRequestPerfTrendResponse>(resp);
 }
 
-export interface AdminRecentRequestContentResponse {
+interface AdminRecentRequestContentResponse {
   prompt: string | null;
   response: string | null;
   reasoning_content: string | null;
@@ -928,16 +1032,25 @@ export async function getRecentRequestContent(
   return jsonOrThrow<AdminRecentRequestContentResponse>(resp);
 }
 
-export interface ClearErrorRequestsResponse {
+interface ClearErrorRequestsResponse {
   deleted_count: number;
   hours: number;
   message: string;
 }
 
-export async function clearErrorRequests(hours = 1): Promise<ClearErrorRequestsResponse> {
-  const resp = await fetchWithAuth(API_BASE, `/admin/recent-requests/clear-errors?hours=${hours}`, {
-    method: 'POST',
-  });
+export async function clearErrorRequests(
+  hours = 1,
+  // Whose errors: `interactive` clears what Recent Requests shows and leaves
+  // the batch worker's rows alone. Omitted: every source's.
+  source?: RequestSource,
+): Promise<ClearErrorRequestsResponse> {
+  const params = new URLSearchParams({ hours: String(hours) });
+  if (source) params.set('source', source);
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/recent-requests/clear-errors?${params.toString()}`,
+    { method: 'POST' },
+  );
   return jsonOrThrow<ClearErrorRequestsResponse>(resp);
 }
 
@@ -967,19 +1080,25 @@ export interface AnalyticsBreakdownEntry {
   fraction: number;
 }
 
-export interface AnalyticsModelUserEntry {
+interface AnalyticsModelUserEntry {
   email: string | null;
   login_name?: string | null;
   phone?: string | null;
   user_id: string;
   requests: number;
   tokens: number; // prompt + completion tokens for this user + model
+  prompt_tokens: number; // prefill tokens, cached ones included
+  cache_read_tokens: number; // prefill tokens served from the prompt cache
+  completion_tokens: number; // output tokens, reasoning included
 }
 
 export interface AnalyticsModelUsers {
   model: string; // model_id
   requests: number; // total signed-in-user requests for this model
   tokens: number; // total signed-in-user tokens for this model
+  prompt_tokens: number;
+  cache_read_tokens: number;
+  completion_tokens: number;
   users: AnalyticsModelUserEntry[];
 }
 
@@ -1016,7 +1135,7 @@ export interface GrowthPoint {
   partial: boolean; // today, still accumulating — excluded from the trends
 }
 
-export interface GetGrowthAnalyticsOptions {
+interface GetGrowthAnalyticsOptions {
   signal?: AbortSignal;
 }
 
@@ -1046,8 +1165,6 @@ export async function getGrowthAnalytics(
   return jsonOrThrow<AdminGrowthResponse>(resp);
 }
 
-export type GeoBucketColumn = 'c' | 'cont' | 'n' | 'tout';
-
 export type GeoMetric = 'n' | 'tout';
 
 export type GeoBucketRow = [
@@ -1057,7 +1174,7 @@ export type GeoBucketRow = [
   outputTokens: number,
 ];
 
-export interface GeoIpAttribution {
+interface GeoIpAttribution {
   label: string;
   url: string;
 }
@@ -1091,7 +1208,7 @@ export interface GeoAnalyticsResponse {
   hours: GeoHour[];
 }
 
-export interface GetGeoAnalyticsOptions {
+interface GetGeoAnalyticsOptions {
   days?: 7 | 14 | 30 | 90;
   signal?: AbortSignal;
 }
@@ -1190,7 +1307,7 @@ export async function getGeoAnalytics(
 
 // The analysis provider (API key + model) is configured server-side in Admin →
 // Settings; the request only chooses the scope and sample size.
-export interface UsageInsightsRequest {
+interface UsageInsightsRequest {
   user_id?: string;
   user_email?: string;
   limit?: number;
@@ -1253,7 +1370,7 @@ export interface UsageInsightsSettings {
   model: string;
 }
 
-export interface UsageInsightsSettingsUpdate {
+interface UsageInsightsSettingsUpdate {
   // Omit api_key to keep the current one; '' clears it; any other value replaces it.
   api_key?: string;
   model?: string;
@@ -1300,7 +1417,7 @@ export interface BroadcastPreviewResponse {
   rendered_body_text: string;
 }
 
-export interface CreateBroadcastRequest extends BroadcastPreviewRequest {
+interface CreateBroadcastRequest extends BroadcastPreviewRequest {
   scheduled_at?: string | null;
 }
 
@@ -1322,7 +1439,7 @@ export interface BroadcastListItem {
   created_at: string;
 }
 
-export interface ListBroadcastsResponse {
+interface ListBroadcastsResponse {
   total: number;
   broadcasts: BroadcastListItem[];
 }
@@ -1404,7 +1521,7 @@ export async function cancelBroadcast(id: string): Promise<void> {
 // Request Export
 // ========================================
 
-export interface ExportRequestsParams {
+interface ExportRequestsParams {
   startTime: string;
   endTime?: string;
   userId?: string;
@@ -1414,6 +1531,9 @@ export interface ExportRequestsParams {
   modelId?: string;
   outcome?: RequestOutcome;
   requestType?: 'chat' | 'embedding';
+  // Interactive or batch requests, or one batch's, as on the list.
+  source?: RequestSource;
+  batchId?: string;
   includeContent?: boolean;
 }
 
@@ -1427,6 +1547,7 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   if (params.modelId) qs.set('model_id', params.modelId);
   if (params.outcome && params.outcome !== 'all') qs.set('outcome', params.outcome);
   if (params.requestType) qs.set('request_type', params.requestType);
+  setSourceParams(qs, { source: params.source, batchId: params.batchId });
   if (params.includeContent) qs.set('include_content', 'true');
 
   const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
@@ -1480,7 +1601,7 @@ export interface ProviderQuotaResult {
   key_disabled: boolean;
 }
 
-export interface AdminProviderQuotasResponse {
+interface AdminProviderQuotasResponse {
   generated_at: string;
   providers: ProviderQuotaResult[];
 }
@@ -1524,11 +1645,11 @@ export interface RoutableProvider {
   disabled: boolean;
 }
 
-export interface ListRoutableProvidersResponse {
+interface ListRoutableProvidersResponse {
   providers: RoutableProvider[];
 }
 
-export interface SetProviderDisabledResponse {
+interface SetProviderDisabledResponse {
   provider: string;
   disabled: boolean;
   affected_model_count: number;
@@ -1621,12 +1742,12 @@ export interface ProviderStatsRow {
   total_reasoning_tokens: number | null;
 }
 
-export interface ProviderModelPair {
+interface ProviderModelPair {
   provider: string;
   model_id: string;
 }
 
-export interface ProviderStatsResponse {
+interface ProviderStatsResponse {
   rows: ProviderStatsRow[];
   providers: string[];
   models: string[];
@@ -1664,6 +1785,7 @@ export interface ProviderObservabilityTotals {
   cache_eligible_count: number;
   cache_hit_count: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
 }
@@ -1676,6 +1798,7 @@ export interface ProviderObservabilityBucket {
   cache_hit_count: number;
   cache_read_tokens: number;
   input_tokens: number;
+  cache_eligible_input_tokens: number;
 }
 
 export interface ProviderErrorTypeRow {
@@ -1771,7 +1894,7 @@ export interface SignupAllowedDomain {
   created_by_email: string | null;
 }
 
-export interface ListSignupAllowedDomainsResponse {
+interface ListSignupAllowedDomainsResponse {
   domains: SignupAllowedDomain[];
 }
 
@@ -1886,7 +2009,7 @@ export interface AlertTypeMute {
   muted_at: number | null;
 }
 
-export interface ListAlertMutesResponse {
+interface ListAlertMutesResponse {
   types: AlertTypeMute[];
 }
 
@@ -1934,7 +2057,7 @@ export interface AdminModelVisibilityItem {
   effective_required_role: Role;
 }
 
-export interface ListAdminModelVisibilityResponse {
+interface ListAdminModelVisibilityResponse {
   models: AdminModelVisibilityItem[];
 }
 
@@ -1945,7 +2068,7 @@ export interface RoleQuotaPreview {
   users_affected: number;
 }
 
-export interface RoleQuotaApplyResult {
+interface RoleQuotaApplyResult {
   role: Role;
   quota: number;
   keys_updated: number;
@@ -1994,7 +2117,7 @@ export interface AdminModelConcurrencyItem {
   exempt: boolean;
 }
 
-export interface ListAdminModelConcurrencyResponse {
+interface ListAdminModelConcurrencyResponse {
   models: AdminModelConcurrencyItem[];
 }
 
@@ -2034,7 +2157,7 @@ export interface AdminBatchModelLimit {
   queued: number;
 }
 
-export interface ListAdminBatchModelLimitsResponse {
+interface ListAdminBatchModelLimitsResponse {
   /** `BATCH_MODEL_CONCURRENCY`: the cap of a model without its own. */
   default_concurrency: number;
   models: AdminBatchModelLimit[];
@@ -2069,7 +2192,7 @@ export interface RouteWeight {
   effective_weight: number;
 }
 
-export interface ListRouteWeightsResponse {
+interface ListRouteWeightsResponse {
   model_id?: string;
   routes: RouteWeight[];
 }
@@ -2089,7 +2212,7 @@ export interface RoutewiseSettingItem {
   max?: number | null;
 }
 
-export interface ListRoutewiseSettingsResponse {
+interface ListRoutewiseSettingsResponse {
   model_id: string;
   settings: RoutewiseSettingItem[];
 }
@@ -2103,18 +2226,18 @@ export interface RoutewiseProbeSampleItem {
   checked_at: string;
 }
 
-export interface ListRoutewiseProbeSamplesResponse {
+interface ListRoutewiseProbeSamplesResponse {
   samples: RoutewiseProbeSampleItem[];
 }
 
-export interface ListRoutewiseProbeSamplesOptions {
+interface ListRoutewiseProbeSamplesOptions {
   modelId?: string;
   endpointId?: string;
   sinceSeconds?: number;
   limit?: number;
 }
 
-export interface RunRoutewiseProbeRequest {
+interface RunRoutewiseProbeRequest {
   model_id?: string | null;
   endpoint_id?: string | null;
   idle_only?: boolean;
@@ -2191,7 +2314,7 @@ export interface OffloadRoute {
   updated_by: string | null;
 }
 
-export interface ListOffloadRoutesResponse {
+interface ListOffloadRoutesResponse {
   /**
    * False while UPSTREAM_CONCURRENCY_ENABLED is off: nothing queues for a remote
    * route. A local engine under an engine queue limit still holds its requests.
@@ -2202,7 +2325,7 @@ export interface ListOffloadRoutesResponse {
   offload_routes: OffloadRoute[];
 }
 
-export interface ModelOffloadRouteResponse {
+interface ModelOffloadRouteResponse {
   model_id: string;
   offload: OffloadRoute | null;
 }
@@ -2213,7 +2336,7 @@ export async function listOffloadRoutes(): Promise<ListOffloadRoutesResponse> {
 }
 
 /** The optional limits of an offload policy. A null or absent one is off. */
-export interface OffloadRouteLimits {
+interface OffloadRouteLimits {
   engineQueueLimit?: number | null;
   maxInputTokens?: number | null;
 }
@@ -2383,7 +2506,7 @@ export async function getRoutewiseDecisions(
 // Provider Routes (admin-managed runtime route targets)
 // ========================================
 
-export type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
+type ProviderRouteKeySource = 'default' | 'db' | 'env' | 'missing';
 export type ProviderRouteSource = 'yaml' | 'override' | 'runtime';
 export type RouteDeploymentType = 'auto' | 'self_hosted' | 'provider_api';
 
@@ -2445,6 +2568,15 @@ export interface ProviderRoute {
   disabled?: boolean;
   /** A config route deleted from this deployment; listed so it can be restored. */
   removed?: boolean;
+  /**
+   * Whether batch work may use the route: the admin's choice
+   * (`batch_allowed_choice`) or, without one, its locality
+   * (`batch_allowed_default`: true for a server the gateway runs itself).
+   * Omitted by a gateway that predates batch route choices.
+   */
+  batch_allowed?: boolean;
+  batch_allowed_default?: boolean;
+  batch_allowed_choice?: boolean | null;
   updated_at: string | null;
   updated_by: string | null;
   /** What the route serves with now. */
@@ -2452,6 +2584,10 @@ export interface ProviderRoute {
   /** What it has from models.yaml or its creation; differs only while overridden. */
   capabilities_baseline?: RouteCapabilities;
   capabilities_overridden?: boolean;
+  /** Whether this route's adapter sends `reasoning_effort`, so a map can apply. */
+  reasoning_effort_mappable?: boolean;
+  /** The public levels the live route delivers; `null` when unknown. */
+  reasoning_efforts_published?: string[] | null;
 }
 
 /** A route's context window, output cap, input modalities and tool support, as served. */
@@ -2460,9 +2596,14 @@ export interface RouteCapabilities {
   max_output_length: number;
   input_modalities: string[];
   supports_tools: boolean;
+  /**
+   * Public level -> the value the upstream receives as `reasoning_effort`, in
+   * the order the levels are offered; `null` when the route has none.
+   */
+  reasoning_effort_map?: Record<string, string> | null;
 }
 
-export interface ListProviderRoutesResponse {
+interface ListProviderRoutesResponse {
   model_id?: string;
   strategy?: string;
   provider_options: ProviderRouteOption[];
@@ -2470,12 +2611,22 @@ export interface ListProviderRoutesResponse {
   routes: ProviderRoute[];
 }
 
-export interface ListOpenRouterProviderOptionsResponse {
+interface ListOpenRouterProviderOptionsResponse {
   provider_model_id: string;
   providers: OpenRouterProviderOption[];
 }
 
-export interface UpdateProviderRoutePayload {
+/**
+ * A route edit's capability change, saved in the same request as its other
+ * fields. Leave both out to keep the capabilities; `reset_capabilities` clears
+ * the values set in the console, so the route follows its defaults again.
+ */
+type RouteCapabilityEdit =
+  | { capabilities?: undefined; reset_capabilities?: undefined }
+  | { capabilities: RuntimeModelCapabilities; reset_capabilities?: undefined }
+  | { capabilities?: undefined; reset_capabilities: true };
+
+interface UpdateProviderRoutePayload {
   upstream_provider: string;
   openrouter_provider?: string | null;
   openrouter_sort?: OpenRouterSortPolicy | null;
@@ -2490,7 +2641,7 @@ export interface UpdateProviderRoutePayload {
 export type ProviderRouteStrategy = 'fixed' | 'routewise';
 export type ProviderRouteType = 'quota' | 'concurrency' | 'on_demand';
 
-export interface CreateProviderRoutePayload {
+interface CreateProviderRoutePayload {
   route_type: ProviderRouteType;
   upstream_provider: string;
   openrouter_provider?: string | null;
@@ -2512,7 +2663,7 @@ export interface CreateProviderRoutePayload {
  * ID) replaces it whole, and the gateway checks a changed target upstream
  * before saving it.
  */
-export interface UpdateProviderRouteCandidatePayload {
+interface UpdateProviderRouteCandidatePayload {
   upstream_provider?: string;
   openrouter_provider?: string | null;
   openrouter_sort?: OpenRouterSortPolicy | null;
@@ -2531,16 +2682,21 @@ export interface RuntimeModelCapabilities {
   /** `text`, plus any of `image`, `audio` and `video`. */
   input_modalities: string[];
   supports_tools: boolean;
+  /**
+   * Optional: `null` (or absent) keeps the route's own map from models.yaml or
+   * its creation; a map replaces it. Keys are public levels, values upstream.
+   */
+  reasoning_effort_map?: Record<string, string> | null;
 }
 
-export interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
   model_id: string;
   strategy: ProviderRouteStrategy;
   required_role?: Role;
   pricing: Record<string, string>;
 }
 
-export interface VerifyProviderRouteResponse {
+interface VerifyProviderRouteResponse {
   ok: boolean;
 }
 
@@ -2601,7 +2757,7 @@ export async function verifyProviderRouteModel(
 export async function updateProviderRoute(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRoutePayload,
+  payload: UpdateProviderRoutePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2619,6 +2775,8 @@ export async function updateProviderRoute(
         provider_model_id: payload.provider_model_id ?? null,
         quota_limit: payload.quota_limit ?? null,
         concurrency_limit: payload.concurrency_limit ?? null,
+        ...(payload.capabilities ? { capabilities: payload.capabilities } : {}),
+        ...(payload.reset_capabilities ? { reset_capabilities: true } : {}),
       }),
     },
   );
@@ -2671,7 +2829,7 @@ export async function createProviderRouteCandidate(
 export async function updateProviderRouteCandidate(
   modelId: string,
   routeId: string,
-  payload: UpdateProviderRouteCandidatePayload,
+  payload: UpdateProviderRouteCandidatePayload & RouteCapabilityEdit,
 ): Promise<ProviderRoute> {
   const resp = await fetchWithAuth(
     API_BASE,
@@ -2768,6 +2926,27 @@ export async function updateProviderRouteState(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
+/**
+ * Allow or forbid batch work on a route, or let it follow its locality again
+ * (`null`: the gateway's own servers take batch work, cloud routes do not).
+ */
+export async function updateProviderRouteBatch(
+  modelId: string,
+  routeId: string,
+  payload: { batch_allowed: boolean | null },
+): Promise<ProviderRoute> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    providerRoutePath('provider-route-batch', modelId, routeId),
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    },
+  );
+  return jsonOrThrow<ProviderRoute>(resp);
+}
+
 /** Delete a config (models.yaml) route from this deployment; it can be restored. */
 export async function removeProviderRoute(
   modelId: string,
@@ -2813,7 +2992,7 @@ export async function deleteProviderRouteCandidate(
 // ========================================
 
 export type ProviderDefinitionSource = 'built_in' | 'custom';
-export type ProviderDefinitionAdapterKind = 'openai_compat';
+type ProviderDefinitionAdapterKind = 'openai_compat';
 
 export interface ProviderDefinitionItem {
   provider: string;
@@ -2828,12 +3007,12 @@ export interface ProviderDefinitionItem {
   updated_at: string | null;
 }
 
-export interface ListProviderDefinitionsResponse {
+interface ListProviderDefinitionsResponse {
   providers: ProviderDefinitionItem[];
   adapter_kinds: ProviderDefinitionAdapterKind[];
 }
 
-export interface ProbeProviderDefinitionPayload {
+interface ProbeProviderDefinitionPayload {
   default_base_url: string;
   api_key: string;
   probe_model_id: string;
@@ -2847,7 +3026,7 @@ export interface ProbeProviderDefinitionResponse {
   preview: string | null;
 }
 
-export interface CreateProviderDefinitionPayload extends ProbeProviderDefinitionPayload {
+interface CreateProviderDefinitionPayload extends ProbeProviderDefinitionPayload {
   provider: string;
   display_name: string;
   adapter_kind: ProviderDefinitionAdapterKind;
@@ -2861,7 +3040,7 @@ export interface UpdateProviderDefinitionPayload {
   probe_model_id?: string | null;
 }
 
-export interface DeleteProviderDefinitionResponse {
+interface DeleteProviderDefinitionResponse {
   provider: string;
   deleted_keys: number;
 }
@@ -2954,34 +3133,34 @@ export interface ListProviderApiKeysResponse {
   keys: ProviderApiKeyItem[];
 }
 
-export interface ListProviderApiKeyProvidersResponse {
+interface ListProviderApiKeyProvidersResponse {
   providers: string[];
 }
 
-export interface AddProviderApiKeyResponse {
+interface AddProviderApiKeyResponse {
   key: ProviderApiKeyItem;
   pools_updated: number;
 }
 
-export interface DeleteProviderApiKeyResponse {
+interface DeleteProviderApiKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface DisableProviderEnvKeyResponse {
+interface DisableProviderEnvKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface EnableProviderEnvKeyResponse {
+interface EnableProviderEnvKeyResponse {
   id: string;
   provider: string;
   pools_updated: number;
 }
 
-export interface SetProviderApiKeyStatusResponse {
+interface SetProviderApiKeyStatusResponse {
   id: string;
   provider: string;
   status: 'active' | 'disabled';
@@ -2995,7 +3174,7 @@ export interface SetProviderApiKeyMinRoleResponse {
   pools_updated: number;
 }
 
-export interface VerifyProviderApiKeyResponse {
+interface VerifyProviderApiKeyResponse {
   ok: boolean;
 }
 
@@ -3141,7 +3320,7 @@ export interface SiteUpdateItem {
   updated_at: string;
 }
 
-export interface ListSiteUpdatesResponse {
+interface ListSiteUpdatesResponse {
   total: number;
   updates: SiteUpdateItem[];
 }

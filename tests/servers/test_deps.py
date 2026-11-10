@@ -71,7 +71,7 @@ class TestAppServices:
 class TestDependencyFunctions:
     """Test dependency injection functions."""
 
-    def test_get_services(self, app_services):
+    async def test_get_services(self, app_services):
         """Test get_services returns services from app.state."""
         app = FastAPI()
         app.state.services = app_services
@@ -79,60 +79,60 @@ class TestDependencyFunctions:
         request = Mock(spec=Request)
         request.app = app
 
-        result = get_services(request)
+        result = await get_services(request)
 
         assert result is app_services
 
-    def test_get_router(self, app_services):
+    async def test_get_router(self, app_services):
         """Test get_router extracts router from services."""
 
         # Create a mock that simulates the Depends behavior
         def mock_get_services():
             return app_services
 
-        result = get_router(mock_get_services())
+        result = await get_router(mock_get_services())
 
         assert result is app_services.router
 
-    def test_get_db_logger(self, app_services):
+    async def test_get_db_logger(self, app_services):
         """Test get_db_logger extracts database logger from services."""
 
         def mock_get_services():
             return app_services
 
-        result = get_db_logger(mock_get_services())
+        result = await get_db_logger(mock_get_services())
 
         assert result is app_services.db_logger
 
-    def test_get_model_visibility_resolver(self, app_services):
+    async def test_get_model_visibility_resolver(self, app_services):
         """Test get_model_visibility_resolver extracts resolver from services."""
 
         def mock_get_services():
             return app_services
 
-        result = get_model_visibility_resolver(mock_get_services())
+        result = await get_model_visibility_resolver(mock_get_services())
 
         assert result is app_services.model_visibility_resolver
 
-    def test_get_model_visibility_resolver_when_none(self):
+    async def test_get_model_visibility_resolver_when_none(self):
         """Test get_model_visibility_resolver returns None when not configured."""
         services = AppServices(router=FixedRouter())
 
         def mock_get_services():
             return services
 
-        result = get_model_visibility_resolver(mock_get_services())
+        result = await get_model_visibility_resolver(mock_get_services())
 
         assert result is None
 
-    def test_get_db_logger_when_none(self):
+    async def test_get_db_logger_when_none(self):
         """Test get_db_logger returns None when not configured."""
         services = AppServices(router=FixedRouter())
 
         def mock_get_services():
             return services
 
-        result = get_db_logger(mock_get_services())
+        result = await get_db_logger(mock_get_services())
 
         assert result is None
 
@@ -176,7 +176,7 @@ class TestDependencyIntegration:
         assert response.status_code == 200
         assert response.json()["has_resolver"] is True
 
-    def test_dependencies_with_missing_state(self):
+    async def test_dependencies_with_missing_state(self):
         """Test that dependencies fail gracefully when app.state is not set."""
         app = FastAPI()
         # Don't set app.state.services
@@ -185,7 +185,7 @@ class TestDependencyIntegration:
         request.app = app
 
         with pytest.raises(AttributeError):
-            get_services(request)
+            await get_services(request)
 
     def test_nested_dependency_chain(self, app_services):
         """Test that nested dependencies work correctly."""
@@ -217,7 +217,7 @@ class TestDependencyIntegration:
 class TestDependencyEdgeCases:
     """Test edge cases and error conditions."""
 
-    def test_get_services_with_none_state(self):
+    async def test_get_services_with_none_state(self):
         """Test get_services when app.state exists but services is None."""
         app = FastAPI()
         app.state.services = None
@@ -225,7 +225,7 @@ class TestDependencyEdgeCases:
         request = Mock(spec=Request)
         request.app = app
 
-        result = get_services(request)
+        result = await get_services(request)
 
         assert result is None
 

@@ -40,11 +40,11 @@ type ChartPoint = {
 export function bucketLabel(iso: string, bucketMinutes: number, days: number): string {
   const at = new Date(iso);
   if (bucketMinutes >= 1440) {
-    return at.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   }
-  const time = at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const time = at.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
   if (days <= 1) return time;
-  return `${at.toLocaleDateString([], { month: 'short', day: 'numeric' })} ${time}`;
+  return `${at.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} ${time}`;
 }
 
 export function buildTrendPoints(

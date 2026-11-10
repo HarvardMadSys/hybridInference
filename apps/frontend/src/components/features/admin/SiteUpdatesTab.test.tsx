@@ -127,7 +127,7 @@ describe('SiteUpdatesTab', () => {
   it('lists updates read-only, with no form until New update or Edit', async () => {
     await renderTab();
     expect(screen.queryByRole('textbox')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Create Update' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Create / })).toBeNull();
     expect(screen.queryByRole('button', { name: /^Save changes/ })).toBeNull();
     expect(screen.getByRole('button', { name: 'New update' })).toBeVisible();
   });
@@ -152,17 +152,16 @@ describe('SiteUpdatesTab', () => {
     expectNoWrites();
   });
 
-  it('creates an update with the same payload after review and closes the editor', async () => {
+  it('creates an update with the same payload on the click and closes the editor', async () => {
     await renderPricingNote();
     fireEvent.click(screen.getByRole('button', { name: 'New update' }));
 
-    fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
     expect(createSiteUpdate).not.toHaveBeenCalled();
 
     fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'New model' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-    expect(createSiteUpdate).not.toHaveBeenCalled();
-    clickInDialog('Create and publish');
+    fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
+    expect(screen.queryByRole('dialog')).toBeNull();
 
     await waitFor(() =>
       expect(createSiteUpdate).toHaveBeenCalledWith({
@@ -175,7 +174,6 @@ describe('SiteUpdatesTab', () => {
       }),
     );
     await waitFor(() => expect(screen.queryByLabelText('Title')).not.toBeInTheDocument());
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
     expect(createSiteUpdate).toHaveBeenCalledTimes(1);
     expect(screen.getByRole('button', { name: 'New update' })).toHaveFocus();
   });
@@ -195,13 +193,11 @@ describe('SiteUpdatesTab', () => {
       // has one, so the save button must not be one.
       expect(composer.querySelector('[type="submit"], button:not([type])')).toBeNull();
 
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-      expect(createSiteUpdate).not.toHaveBeenCalled();
-      clickInDialog('Create and publish');
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
       await waitFor(() => expect(createSiteUpdate).toHaveBeenCalledTimes(1));
     });
 
-    it('opens no review and writes nothing when Enter submits an edit', async () => {
+    it('writes nothing when Enter submits an edit', async () => {
       await openEditor();
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Llama 4 is here' } });
       const composer = screen.getByRole('form', { name: 'Edit update' });
@@ -232,12 +228,12 @@ describe('SiteUpdatesTab', () => {
       target: { value: 'Pricing note, revised' },
     });
     saveEdit('Pricing note');
-    clickInDialog('Confirm save');
     await waitFor(() =>
       expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([
         ['u1', { title: 'Pricing note, revised' }],
       ]),
     );
+    expect(screen.queryByRole('dialog')).toBeNull();
   });
 
   describe('drafts when another update is opened for editing', () => {
@@ -391,7 +387,7 @@ describe('SiteUpdatesTab', () => {
     it('keeps the title requirement and writes nothing for an empty title', async () => {
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'New update' }));
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
       expect(toast.error).toHaveBeenCalledWith('Title is required');
       expect(screen.queryByRole('dialog')).toBeNull();
       expect(createSiteUpdate).not.toHaveBeenCalled();
@@ -406,7 +402,7 @@ describe('SiteUpdatesTab', () => {
       expect(createSiteUpdate).not.toHaveBeenCalled();
     });
 
-    it('reviews what will be published, keeps the form on Back, and creates once on Confirm', async () => {
+    it('creates what the form holds, once, on Create and publish', async () => {
       vi.mocked(createSiteUpdate).mockResolvedValue({ ...PUBLISHED, id: 'u3' });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'New update' }));
@@ -418,26 +414,11 @@ describe('SiteUpdatesTab', () => {
       fireEvent.change(screen.getByLabelText('Link URL (optional)'), {
         target: { value: 'https://docs.example.com/gpt-5' },
       });
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-
-      const review = screen.getByRole('dialog', { name: 'Create and publish this update?' });
-      expect(review).toHaveTextContent('TitleGPT-5 support');
-      expect(review).toHaveTextContent('PlacementBanner');
-      expect(review).toHaveTextContent('BodyNow live.');
-      expect(review).toHaveTextContent('Link URLhttps://docs.example.com/gpt-5');
-      expect(review).toHaveTextContent('Link label(empty)');
-      expect(review).toHaveTextContent('VisibilityPublished');
-      expect(review).toHaveTextContent('It appears as the homepage banner');
       expect(createSiteUpdate).not.toHaveBeenCalled();
 
-      clickInDialog('Back to editing');
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
       expect(screen.queryByRole('dialog')).toBeNull();
-      expect(screen.getByLabelText('Title')).toHaveValue('GPT-5 support');
-      expect(createSiteUpdate).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-      clickInDialog('Create and publish');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
       expect(vi.mocked(createSiteUpdate).mock.calls).toEqual([
         [
           {
@@ -451,38 +432,72 @@ describe('SiteUpdatesTab', () => {
         ],
       ]);
       expect(toast.success).toHaveBeenCalledWith('Update created');
-      expect(screen.queryByLabelText('Title')).toBeNull();
       expect(listSiteUpdates).toHaveBeenCalledTimes(2);
     });
 
-    it('names an unpublished create as a draft', async () => {
+    it('names the button after the Published choice, and creates an unchecked one as a draft', async () => {
+      vi.mocked(createSiteUpdate).mockResolvedValue({ ...DRAFT, id: 'u3', title: 'Later' });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'New update' }));
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Later' } });
+      expect(screen.getByRole('button', { name: 'Create and publish' })).toBeVisible();
+
       fireEvent.click(screen.getByLabelText('Published (visible on homepage)'));
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-      const review = screen.getByRole('dialog', { name: 'Create this update as a draft?' });
-      expect(review).toHaveTextContent('VisibilityDraft');
-      expect(within(review).getByRole('button', { name: 'Create draft' })).toBeVisible();
+      expect(screen.queryByRole('button', { name: 'Create and publish' })).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Create draft' }));
+      await waitFor(() => expect(createSiteUpdate).toHaveBeenCalledTimes(1));
+      expect(vi.mocked(createSiteUpdate).mock.calls[0][0]).toMatchObject({
+        title: 'Later',
+        published: false,
+      });
     });
 
-    it('keeps the review open with the error when the create fails, and retries', async () => {
+    it('holds the composer, a second create and the row actions while the create is in flight', async () => {
+      let finish!: (value: SiteUpdateItem) => void;
+      vi.mocked(createSiteUpdate).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      await renderTab();
+      fireEvent.click(screen.getByRole('button', { name: 'New update' }));
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Busy' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
+
+      const creating = screen.getByRole('button', { name: 'Creating…' });
+      expect(creating).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Hide' })).toBeDisabled();
+      expect(screen.getByLabelText('Title')).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Publish Maintenance window' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Delete Maintenance window' })).toBeDisabled();
+      fireEvent.click(creating);
+      expect(createSiteUpdate).toHaveBeenCalledTimes(1);
+
+      finish({ ...PUBLISHED, id: 'u3', title: 'Busy' });
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
+      expect(createSiteUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the draft with the error when the create fails, and creates it on a retry', async () => {
       vi.mocked(createSiteUpdate)
         .mockRejectedValueOnce(new Error('link_url must be https'))
         .mockResolvedValueOnce({ ...PUBLISHED, id: 'u3' });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'New update' }));
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Retry me' } });
-      fireEvent.click(screen.getByRole('button', { name: 'Create Update' }));
-      clickInDialog('Create and publish');
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
 
-      expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
-        'link_url must be https',
-      );
+      expect(await screen.findByRole('alert')).toHaveTextContent('link_url must be https');
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(screen.getByLabelText('Title')).toHaveValue('Retry me');
-      clickInDialog('Create and publish');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(toast.success).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Create and publish' }));
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
       expect(createSiteUpdate).toHaveBeenCalledTimes(2);
+      expect(toast.success).toHaveBeenCalledWith('Update created');
     });
   });
 
@@ -531,7 +546,7 @@ describe('SiteUpdatesTab', () => {
       expect(updateSiteUpdate).not.toHaveBeenCalled();
     });
 
-    it('lists old -> new, keeps drafts on Back, and writes only the changed fields once', async () => {
+    it('writes only the changed fields, once, on Save changes', async () => {
       vi.mocked(updateSiteUpdate).mockResolvedValue({ ...PUBLISHED, title: 'Llama 4 is here' });
       await openEditor();
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Llama 4 is here' } });
@@ -539,31 +554,18 @@ describe('SiteUpdatesTab', () => {
         target: { value: 'https://docs.example.com/llama' },
       });
       expect(screen.getByText('2 unsaved changes')).toBeVisible();
-      saveEdit();
-
-      const review = screen.getByRole('dialog', {
-        name: 'Save 2 changes to “Llama 4 available”?',
-      });
-      expect(review).toHaveTextContent('TitleLlama 4 available → Llama 4 is here');
-      expect(review).toHaveTextContent('Link URL(empty) → https://docs.example.com/llama');
-      expect(review).not.toHaveTextContent('Placement');
-      expect(updateSiteUpdate).not.toHaveBeenCalled();
-
-      clickInDialog('Back to editing');
-      expect(screen.getByLabelText('Title')).toHaveValue('Llama 4 is here');
       expect(updateSiteUpdate).not.toHaveBeenCalled();
 
       saveEdit();
-      clickInDialog('Confirm save');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
       expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([
         ['u1', { title: 'Llama 4 is here', link_url: 'https://docs.example.com/llama' }],
       ]);
       expect(toast.success).toHaveBeenCalledWith('Update saved');
-      expect(screen.queryByLabelText('Title')).toBeNull();
     });
 
-    it('blocks a second Confirm and closing while the save is in flight', async () => {
+    it('holds the editor, a second save and the row actions while the save is in flight', async () => {
       let finish!: (value: SiteUpdateItem) => void;
       vi.mocked(updateSiteUpdate).mockImplementationOnce(
         () =>
@@ -574,35 +576,41 @@ describe('SiteUpdatesTab', () => {
       await openEditor();
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Busy' } });
       saveEdit();
-      clickInDialog('Confirm save');
 
-      expect(within(dialog()).getByRole('button', { name: 'Saving…' })).toBeDisabled();
-      expect(within(dialog()).getByRole('button', { name: 'Back to editing' })).toBeDisabled();
+      const saving = screen.getByRole('button', { name: 'Save changes to Llama 4 available' });
+      expect(saving).toHaveTextContent('Saving…');
+      expect(saving).toBeDisabled();
+      expect(
+        screen.getByRole('button', { name: 'Cancel editing Llama 4 available' }),
+      ).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Hide' })).toBeDisabled();
       expect(screen.getByLabelText('Title')).toBeDisabled();
       expect(screen.getByRole('combobox', { name: 'Placement' })).toBeDisabled();
-      fireEvent.click(within(dialog()).getByRole('button', { name: 'Saving…' }));
-      fireEvent.keyDown(window, { key: 'Escape' });
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Edit Maintenance window' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Publish Maintenance window' })).toBeDisabled();
+      fireEvent.click(saving);
       expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
 
       finish({ ...PUBLISHED, title: 'Busy' });
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
       expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps the dialog and drafts after a failure, and retries from the dialog', async () => {
+    it('keeps the drafts with the error after a failure, and saves them on a retry', async () => {
       vi.mocked(updateSiteUpdate)
         .mockRejectedValueOnce(new Error('write failed'))
         .mockResolvedValueOnce({ ...PUBLISHED, title: 'Retry' });
       await openEditor();
       fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Retry' } });
       saveEdit();
-      clickInDialog('Confirm save');
 
-      expect(await within(dialog()).findByRole('alert')).toHaveTextContent('write failed');
+      expect(await screen.findByRole('alert')).toHaveTextContent('write failed');
+      expect(screen.queryByRole('dialog')).toBeNull();
       expect(screen.getByLabelText('Title')).toHaveValue('Retry');
-      clickInDialog('Confirm save');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.getByText('1 unsaved change')).toBeVisible();
+
+      saveEdit();
+      await waitFor(() => expect(screen.queryByLabelText('Title')).toBeNull());
       expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([
         ['u1', { title: 'Retry' }],
         ['u1', { title: 'Retry' }],
@@ -625,41 +633,97 @@ describe('SiteUpdatesTab', () => {
   });
 
   describe('publish / unpublish', () => {
-    it('confirms an unpublish naming the update; Cancel writes nothing, Confirm writes once', async () => {
+    it('unpublishes on the click, once, with no confirmation', async () => {
       vi.mocked(updateSiteUpdate).mockResolvedValue({ ...PUBLISHED, published: false });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'Unpublish Llama 4 available' }));
-      const review = screen.getByRole('dialog', { name: 'Unpublish “Llama 4 available”?' });
-      expect(review).toHaveTextContent('disappears from the homepage');
-      clickInDialog('Cancel');
       expect(screen.queryByRole('dialog')).toBeNull();
-      expect(updateSiteUpdate).not.toHaveBeenCalled();
-
-      fireEvent.click(screen.getByRole('button', { name: 'Unpublish Llama 4 available' }));
-      clickInDialog('Unpublish');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      await waitFor(() => expect(listSiteUpdates).toHaveBeenCalledTimes(2));
       expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([['u1', { published: false }]]);
-      expect(listSiteUpdates).toHaveBeenCalledTimes(2);
     });
 
-    it('confirms a publish with where it appears', async () => {
+    it('publishes on the click, once, with no confirmation', async () => {
       vi.mocked(updateSiteUpdate).mockResolvedValue({ ...DRAFT, published: true });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'Publish Maintenance window' }));
-      const review = screen.getByRole('dialog', { name: 'Publish “Maintenance window”?' });
-      expect(review).toHaveTextContent('It appears as the homepage banner right away.');
-      clickInDialog('Publish');
-      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(screen.queryByRole('dialog')).toBeNull();
+      await waitFor(() => expect(listSiteUpdates).toHaveBeenCalledTimes(2));
       expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([['u2', { published: true }]]);
     });
 
-    it('keeps the dialog with the error when the toggle fails', async () => {
-      vi.mocked(updateSiteUpdate).mockRejectedValueOnce(new Error('toggle failed'));
+    it('holds every row action while a publish is in flight, so a second click writes nothing', async () => {
+      let finish!: (value: SiteUpdateItem) => void;
+      vi.mocked(updateSiteUpdate).mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            finish = resolve;
+          }),
+      );
+      await renderTab();
+      const publish = screen.getByRole('button', { name: 'Publish Maintenance window' });
+      fireEvent.click(publish);
+
+      expect(publish).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Unpublish Llama 4 available' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Delete Llama 4 available' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Edit Llama 4 available' })).toBeDisabled();
+      fireEvent.click(publish);
+      expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
+
+      finish({ ...DRAFT, published: true });
+      await waitFor(() => expect(publish).toBeEnabled());
+      expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
+    });
+
+    it('holds the editor bar while another update is published, then saves the edit', async () => {
+      let finish!: (value: SiteUpdateItem) => void;
+      vi.mocked(updateSiteUpdate)
+        .mockImplementationOnce(
+          () =>
+            new Promise((resolve) => {
+              finish = resolve;
+            }),
+        )
+        .mockResolvedValueOnce({ ...PUBLISHED, title: 'Llama 4 is here' });
+      await openEditor();
+      fireEvent.change(screen.getByLabelText('Title'), { target: { value: 'Llama 4 is here' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Publish Maintenance window' }));
+
+      // Not the editor's own write, so it does not say "Saving…"; it waits for the publish.
+      const save = screen.getByRole('button', { name: 'Save changes to Llama 4 available' });
+      expect(save).toHaveTextContent('Save changes');
+      expect(save).toBeDisabled();
+      expect(
+        screen.getByRole('button', { name: 'Cancel editing Llama 4 available' }),
+      ).toBeDisabled();
+      fireEvent.click(save);
+      expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
+
+      finish({ ...DRAFT, published: true });
+      await waitFor(() => expect(save).toBeEnabled());
+      saveEdit();
+      await waitFor(() =>
+        expect(updateSiteUpdate).toHaveBeenLastCalledWith('u1', { title: 'Llama 4 is here' }),
+      );
+      expect(updateSiteUpdate).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows why a toggle failed, leaves the update as it was, and toggles on a retry', async () => {
+      vi.mocked(updateSiteUpdate)
+        .mockRejectedValueOnce(new Error('toggle failed'))
+        .mockResolvedValueOnce({ ...DRAFT, published: true });
       await renderTab();
       fireEvent.click(screen.getByRole('button', { name: 'Publish Maintenance window' }));
-      clickInDialog('Publish');
-      expect(await within(dialog()).findByRole('alert')).toHaveTextContent('toggle failed');
-      expect(updateSiteUpdate).toHaveBeenCalledTimes(1);
+      await waitFor(() => expect(toast.error).toHaveBeenCalledWith('toggle failed'));
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(listSiteUpdates).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByRole('button', { name: 'Publish Maintenance window' }));
+      await waitFor(() => expect(listSiteUpdates).toHaveBeenCalledTimes(2));
+      expect(vi.mocked(updateSiteUpdate).mock.calls).toEqual([
+        ['u2', { published: true }],
+        ['u2', { published: true }],
+      ]);
     });
   });
 

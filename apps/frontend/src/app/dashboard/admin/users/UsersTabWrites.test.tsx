@@ -11,6 +11,7 @@ import {
   getUserDetail,
   listModelVisibility,
   listUsers,
+  rejectUser,
   updateUser,
   type AdminUser,
   type UserDetail,
@@ -127,11 +128,11 @@ function renderUsers() {
   );
 }
 
-it('sends exactly one PATCH for a confirmed account-settings save', async () => {
+it('sends exactly one PATCH for an account-settings save', async () => {
   mockList('active');
   vi.mocked(getUserDetail)
-    .mockResolvedValueOnce(detail())
-    .mockResolvedValueOnce(detail({ role: 'pro' }));
+    .mockResolvedValueOnce(detail({ role: 'pro' }))
+    .mockResolvedValueOnce(detail({ role: 'free' }));
   vi.mocked(updateUser).mockResolvedValue({
     user_id: 'fixture-user',
     updated_fields: ['role'],
@@ -140,18 +141,64 @@ it('sends exactly one PATCH for a confirmed account-settings save', async () => 
   renderUsers();
 
   fireEvent.click(await screen.findByText('fixture@example.test'));
-  fireEvent.click(await screen.findByRole('button', { name: 'Edit account settings' }));
-  chooseOption('Role', 'pro');
-  fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+  await screen.findByRole('combobox', { name: 'Role' });
+  chooseOption('Role', 'free');
   expect(updateUser).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
 
-  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Confirm save' }));
-  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  expect(vi.mocked(updateUser).mock.calls).toEqual([['fixture-user', { role: 'pro' }]]);
-  expect(toast.success).toHaveBeenCalledWith('Saved');
+  // A lower role is the administrator's to set: nothing to confirm.
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Saved'));
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull(),
+  );
+  expect(vi.mocked(updateUser).mock.calls).toEqual([['fixture-user', { role: 'free' }]]);
 });
 
-it('shows a failed write inside the confirmation instead of a toast', async () => {
+it('asks for the password before it raises a role, and sends it with the one PATCH', async () => {
+  mockList('active');
+  vi.mocked(getUserDetail)
+    .mockResolvedValueOnce(detail())
+    .mockResolvedValueOnce(detail({ role: 'admin' }));
+  vi.mocked(updateUser)
+    .mockRejectedValueOnce(new Error('Current password is incorrect.'))
+    .mockResolvedValueOnce({ user_id: 'fixture-user', updated_fields: ['role'], message: 'ok' });
+  renderUsers();
+
+  fireEvent.click(await screen.findByText('fixture@example.test'));
+  await screen.findByRole('combobox', { name: 'Role' });
+  chooseOption('Role', 'admin');
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+
+  const dialog = await screen.findByRole('dialog');
+  expect(dialog).toHaveTextContent('Give fixture@example.test the admin role?');
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Enter your password to raise this role.',
+  );
+  expect(updateUser).not.toHaveBeenCalled();
+
+  fireEvent.change(within(dialog).getByLabelText('Your password'), {
+    target: { value: 'wrong' },
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  // A refusal keeps the dialog open, with the reason, for another try.
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Current password is incorrect.',
+  );
+
+  fireEvent.change(within(dialog).getByLabelText('Your password'), {
+    target: { value: 'right' },
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(vi.mocked(updateUser).mock.calls).toEqual([
+    ['fixture-user', { role: 'admin', password: 'wrong' }],
+    ['fixture-user', { role: 'admin', password: 'right' }],
+  ]);
+});
+
+it('approves on the click and toasts a failure, then approves on the next click', async () => {
   mockList('pending_approval');
   vi.mocked(approveUser)
     .mockRejectedValueOnce(new Error('User is not pending approval'))
@@ -164,8 +211,35 @@ it('shows a failed write inside the confirmation instead of a toast', async () =
   renderUsers();
 
   fireEvent.click(await screen.findByRole('button', { name: 'Approve' }));
-  const dialog = screen.getByRole('dialog', { name: 'Approve fixture@example.test?' });
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  await waitFor(() => expect(toast.error).toHaveBeenCalledWith('User is not pending approval'));
+  expect(toast.success).not.toHaveBeenCalled();
+
+  fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Approved fixture@example.test'));
+  expect(approveUser).toHaveBeenCalledTimes(2);
+  expect(approveUser).toHaveBeenLastCalledWith('fixture-user');
+  expect(toast.error).toHaveBeenCalledTimes(1);
+});
+
+it('shows a failed rejection inside its confirmation instead of a toast', async () => {
+  mockList('pending_approval');
+  vi.mocked(rejectUser)
+    .mockRejectedValueOnce(new Error('User is not pending approval'))
+    .mockResolvedValueOnce({
+      user_id: 'fixture-user',
+      email: 'fixture@example.test',
+      status: 'rejected',
+      message: 'ok',
+    });
+  renderUsers();
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Reject' }));
+  const dialog = screen.getByRole('dialog', { name: 'Reject fixture@example.test?' });
+  fireEvent.change(within(dialog).getByLabelText('Reason for rejection (required)'), {
+    target: { value: 'not a student' },
+  });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Reject' }));
 
   expect(await within(dialog).findByRole('alert')).toHaveTextContent(
     'User is not pending approval',
@@ -173,9 +247,9 @@ it('shows a failed write inside the confirmation instead of a toast', async () =
   expect(toast.error).not.toHaveBeenCalled();
   expect(toast.success).not.toHaveBeenCalled();
 
-  fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }));
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Reject' }));
   await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
-  expect(approveUser).toHaveBeenCalledTimes(2);
-  expect(approveUser).toHaveBeenLastCalledWith('fixture-user');
-  expect(toast.success).toHaveBeenCalledWith('Approved fixture@example.test');
+  expect(rejectUser).toHaveBeenCalledTimes(2);
+  expect(rejectUser).toHaveBeenLastCalledWith('fixture-user', 'not a student');
+  expect(toast.success).toHaveBeenCalledWith('Rejected fixture@example.test');
 });

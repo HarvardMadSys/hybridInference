@@ -5,6 +5,18 @@ from __future__ import annotations
 import codecs
 from dataclasses import dataclass
 
+#: The longest frame, in characters, the parser holds while it waits for the
+#: blank line that ends it. Generous: one frame can carry a whole tool call
+#: (an upstream that buffers a call sends its arguments in one delta), and a
+#: model's longest output escaped as JSON fits several times over. What it
+#: bounds is an upstream that never ends its frame, which would otherwise keep
+#: every byte it sends for as long as the stream stays open.
+MAX_FRAME_CHARS = 16 * 1024 * 1024
+
+
+class SSEFrameTooLarge(ValueError):
+    """An upstream frame grew past the parser's limit without ending."""
+
 
 @dataclass
 class SSEMessage:
@@ -18,7 +30,7 @@ class SSEMessage:
 class SSEParser:
     """Incremental parser for Server-Sent Events streams."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_frame_chars: int = MAX_FRAME_CHARS) -> None:
         # ``errors="replace"``, not the default strict mode: one malformed byte
         # must not cost the whole read. The strict decoder raises for the entire
         # chunk, and the only thing a caller can do with that is drop all 4 KiB
@@ -29,11 +41,23 @@ class SSEParser:
         # replacement applies only to genuinely invalid bytes, and costs one
         # U+FFFD inside a field instead of every frame in the chunk.
         self._decoder = codecs.getincrementaldecoder("utf-8")("replace")
-        self._buffer: str = ""
+        # The frame still waiting for its blank line, kept as the pieces it
+        # arrived in and joined once, when it ends. Appending each read to one
+        # string instead copied the whole frame per read, and searching all of
+        # it for the blank line rescanned it per read: quadratic in the frame.
+        # Only the new text is searched, plus the one character before it.
+        self._pending: list[str] = []
+        self._pending_chars = 0
         self._pending_cr: str = ""
+        self._max_frame_chars = max_frame_chars
 
     def feed(self, chunk: bytes) -> list[SSEMessage]:
-        """Feed raw bytes and yield complete SSE messages when available."""
+        """Feed raw bytes and yield complete SSE messages when available.
+
+        Raises:
+            SSEFrameTooLarge: The frame being received passed ``max_frame_chars``
+                without its closing blank line.
+        """
         decoded = self._decoder.decode(chunk, final=False)
 
         # Providers use CRLF; normalise to LF so frame boundaries are stable.
@@ -46,14 +70,26 @@ class SSEParser:
         if data.endswith("\r"):
             self._pending_cr = "\r"
             data = data[:-1]
-        self._buffer += data.replace("\r\n", "\n").replace("\r", "\n")
+        data = data.replace("\r\n", "\n").replace("\r", "\n")
 
         messages: list[SSEMessage] = []
-        while "\n\n" in self._buffer:
-            frame, self._buffer = self._buffer.split("\n\n", 1)
-            if not frame.strip():
-                continue
-            messages.append(self._parse_frame(frame))
+        pos = 0
+        # The blank line can straddle two reads: the held frame ends with the
+        # LF of its last line, and this read starts with the empty line's LF.
+        if data.startswith("\n") and self._pending and self._pending[-1].endswith("\n"):
+            self._add_frame(self._take_pending()[:-1], messages)
+            pos = 1
+        while (end := data.find("\n\n", pos)) >= 0:
+            self._add_frame(self._take_pending() + data[pos:end], messages)
+            pos = end + 2
+        if pos < len(data):
+            rest = data[pos:]
+            self._pending.append(rest)
+            self._pending_chars += len(rest)
+            if self._pending_chars > self._max_frame_chars:
+                raise SSEFrameTooLarge(
+                    f"upstream SSE frame exceeded {self._max_frame_chars} characters without ending"
+                )
         return messages
 
     def flush(self) -> list[SSEMessage]:
@@ -79,16 +115,26 @@ class SSEParser:
         metadata, not a frame a consumer can act on. Idempotent -- a second call
         returns nothing.
         """
-        residue = self._buffer
+        residue = self._take_pending()
         if self._pending_cr:
             # A held-back trailing CR is itself a line terminator (see feed).
             residue += "\n"
-        self._buffer = ""
         self._pending_cr = ""
         if not residue.strip():
             return []
         message = self._parse_frame(residue)
         return [message] if message.data else []
+
+    def _take_pending(self) -> str:
+        """Return the held frame text, joined, and start a new frame."""
+        text = "".join(self._pending)
+        self._pending = []
+        self._pending_chars = 0
+        return text
+
+    def _add_frame(self, frame: str, messages: list[SSEMessage]) -> None:
+        if frame.strip():
+            messages.append(self._parse_frame(frame))
 
     @staticmethod
     def _parse_frame(frame: str) -> SSEMessage:
@@ -96,7 +142,11 @@ class SSEParser:
         event: str | None = None
         msg_id: str | None = None
 
-        for raw_line in frame.splitlines():
+        # Split on LF only: ``feed`` has already turned CR and CRLF into LF, the
+        # only line ends SSE knows. ``str.splitlines`` would also break on
+        # U+2028, U+2029 and U+0085, which JSON carries raw inside strings, and
+        # cut the payload in two.
+        for raw_line in frame.split("\n"):
             line = raw_line.rstrip("\r")
             if line.startswith(":"):
                 continue

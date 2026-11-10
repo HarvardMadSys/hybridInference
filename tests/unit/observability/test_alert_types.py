@@ -150,6 +150,7 @@ def test_type_ids_are_unique_and_match_their_key_patterns() -> None:
         ("circuit_open:zhipu", "circuit_open"),
         ("cost_overrun:user-1:2026-09-27", "cost_overrun"),
         ("db_disconnect:postgres_log", "db_disconnect"),
+        ("key_pool_exhaustion_burst:glm-4.6:zai-api", "key_pool_exhaustion_burst"),
         ("upstream_auth:glm-4.6:local-12003", "upstream_auth"),
     ],
 )

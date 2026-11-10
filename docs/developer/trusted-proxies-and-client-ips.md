@@ -16,6 +16,7 @@ gateway:
 | Cloudflare, connecting straight to the gateway | `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1` and `TRUSTED_CLOUDFLARE_NETWORKS=<Cloudflare's published ranges>` |
 | Cloudflare, then your own proxy, then the gateway | As above, but `TRUSTED_CLOUDFLARE_NETWORKS=<your proxy's address>/32`, and only if that proxy accepts connections from Cloudflare alone and handles the header correctly |
 | Clients on a private network (such as `10.x`) connecting directly | `TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>` |
+| The bundled Compose file's console, and your edge in front of it | Trust the console only for the header your edge sets: see [Behind the console](#behind-the-console) |
 
 Each of these is a setting under **Network** on the admin console's
 **Configuration** tab; the `NAME=value` forms on this page are how they look
@@ -23,13 +24,13 @@ in the environment, from which a new deployment's first start copies them. See
 [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 
 After that first start the stored values win, so change proxy trust on the
-Configuration tab or with `python -m serving.config.manage set`, not in `.env`.
+Settings tab or with `python -m serving.config.manage set`, not in `.env`.
 An environment value that conflicts with a stored one — `TRUST_X_REAL_IP=1`
 while the stored `TRUST_PROXY_HEADERS` is off, say — is set aside with a
 warning in the log, and its default applies. The bundled Compose file passes
 `TRUST_PROXY_HEADERS` and `TRUST_CLOUDFLARE_HEADERS` with a default of `0`, and
 the first start stores what it passes. If every client appears with your
-proxy's address, look at these settings on the Configuration tab first: a
+proxy's address, look at these settings on the Settings tab first: a
 stored `0` outranks a `1` in `.env`.
 
 The rest of this page explains each setting, how the address is resolved, and
@@ -67,6 +68,40 @@ Two consequences of the server never interpreting forwarded headers:
 - `peer_ip` below is the genuine TCP peer again, which is what makes it usable
   as the un-forgeable anchor the rest of this page treats it as.
 
+## Behind the console
+
+In the bundled Compose file the Next.js console stands in front of the
+gateway, so every request through it reaches the gateway from the console's
+address. The console relays; it does not vouch:
+
+- It forwards `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and
+  `CF-Connecting-IPv6` exactly as it received them.
+- It does not add the address it received the request from, and it cannot
+  tell a request that came through your edge from one that did not: a Next.js
+  route handler cannot see the connection's address once the caller has sent
+  an `X-Forwarded-For`. When the caller sent none, Next fills in that address
+  on the gateway's API paths (`/v1`, `/anthropic`, `/auth`, `/user`, `/admin`
+  and the published `/internal` paths); the rewritten `/health`,
+  `/site-updates`, `/site-config` and `/public-stats` carry none at all.
+
+Naming the console in `TRUSTED_PROXIES` or `TRUSTED_CLOUDFLARE_NETWORKS`
+therefore trusts whatever reached the console, as it arrived. That is right
+only when every request reaches the console through one edge, and that edge
+sets the header the gateway reads:
+
+| In front of the console | What to trust | Why it holds |
+|---|---|---|
+| Cloudflare, as a proxy or a tunnel | `CF-Connecting-IP`: `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1`, `TRUSTED_CLOUDFLARE_NETWORKS=<the console's address>/32` | Cloudflare overwrites that header on every request |
+| A reverse proxy that writes `X-Forwarded-For` (nginx's `$proxy_add_x_forwarded_for` or `$remote_addr`) | `X-Forwarded-For`: `TRUST_PROXY_HEADERS=1`, `TRUSTED_PROXIES=<the console's address>/32` | the right-most entry, the one the gateway reads, is the one that proxy wrote |
+| Nothing: clients reach the console directly | Nothing | a client chooses every header the console relays |
+
+Keep the console's port reachable from that edge alone. The bundled Compose
+file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every
+process on the host and every container on its network able to reach it, and
+any of them can claim any address. Without such an edge, leave the console
+untrusted: every browser then resolves to `"unknown"`, with the shared sign-in
+limits described under [The "unknown" outcome](#the-unknown-outcome).
+
 ## Trust configuration
 
 Forwarding headers (`X-Forwarded-For`, `CF-Connecting-IP`, etc.) are
@@ -92,6 +127,57 @@ within that subnet to assert client identity on any request.
 An invalid CIDR is refused: the **Configuration** tab will not save it, and in
 the environment it stops the gateway at startup unless the database holds a
 valid value for the setting.
+
+### Kubernetes proxy discovery (optional)
+
+For a controlled Kubernetes proxy whose Pod addresses change, opt in with
+`TRUST_KUBERNETES_PROXY_DISCOVERY=true`. This mode defaults off; installing
+the code leaves existing deployments unchanged. This switch and the
+`KUBERNETES_PROXY_*` settings are **environment-only deployment wiring**:
+they require a gateway restart and cannot be edited through Admin
+Configuration or overridden by `app_config`. The effective database-backed
+`TRUST_PROXY_HEADERS` setting remains the master kill switch.
+
+Read-only discovery pins a Service by immutable UID and checks matching Pods
+against their direct controller's UID. Only those Pods' exact `/32` or `/128`
+addresses are admitted. At runtime this set replaces the static proxy list
+for both the immediate peer and XFF chain traversal. Missing or expired
+discovery, unrecognized peers and a disabled master switch return `unknown`
+with `resolved=false`, even for public-looking Pod addresses; there is no
+fallback to static proxies, direct-client exemptions or the socket peer.
+Cloudflare trust is disabled in this mode; X-Real-IP remains a separate opt-in.
+
+Each gateway worker refreshes independently. Membership can remain stale
+until its snapshot expires: one second by default, configurable up to five
+seconds. A failed refresh never extends that deadline. Requests arriving
+before a replacement is discovered can remain unresolved, so this is not a
+zero-window traffic gate. An admitted request keeps its identity throughout
+a stream; it is not reclassified when membership changes.
+
+With discovery enabled and the effective `TRUST_PROXY_HEADERS` on,
+`/health/ready` also requires a fresh, nonempty proxy set from the same
+per-worker cache. With `TRUST_PROXY_HEADERS` off, discovery makes no API
+reads, every identity is `unknown`, and readiness depends only on the store
+checks.
+
+A refresh is three Kubernetes API GETs, so continuous traffic costs about
+`3 × total gateway workers / KUBERNETES_PROXY_MAX_AGE_SECONDS` GETs per
+second. After a failure each worker waits 0.25 seconds before trying again,
+at one to three GETs per attempt. More than 500 selector-matching Pods,
+counted before any are excluded, or an API response over 2,000,000 bytes
+fails closed. The deployment guide covers these limits, controller UIDs, Pod
+deletion and the `reason` and `proxy_discovery_ms` log fields.
+
+Before enabling this mode, verify that the gateway sees the proxy Pod's
+actual socket address, protect Service selectors and Pod ownership with
+RBAC, and enforce network isolation and trusted ingress header handling.
+Metadata and exact IPs do not authenticate each connection or eliminate IP
+reuse during the cache window. Keep auth-failure blocking disabled during
+acceptance; discovery does not change its setting.
+
+Download the deployment guide {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>`
+and namespace-scoped RBAC example {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>`
+for the required identity, TLS, token and rollout checks.
 
 ### Direct private client networks
 
@@ -173,7 +259,7 @@ forwarding identity header was **actually authorized** for this request. The
 more specific `trusted_forwarded_headers` and `trusted_cloudflare_headers`
 fields identify which authority applied.
 
-Resolution walks the trust boundary correctly:
+In the default static mode, resolution walks the trust boundary as follows:
 
 1. **Peer not authorized** — forwarding headers are ignored entirely. The
    socket peer is used if routable; otherwise `"unknown"`.
@@ -283,11 +369,11 @@ trustworthy forwarding provenance, `"unknown"` is more useful than
 Sign-in limits are a consumer you will notice. They count attempts per
 address — five per username from one address in 15 minutes, twenty per
 address in an hour — and every browser whose address resolves to `"unknown"`
-shares one. Behind the bundled Compose file's console proxy, without
-`TRUST_PROXY_HEADERS` and a `TRUSTED_PROXIES` entry for the console, that is
-every browser: anyone's wrong passwords then count against everyone else's
-sign-ins. Only a browser that has signed in to the account before escapes
-this, with the device cookie that gives it attempts of its own; see
+shares one. Behind the bundled Compose file's console, unless the gateway
+trusts the header your edge sets (see [Behind the console](#behind-the-console)),
+that is every browser: anyone's wrong passwords then count against everyone
+else's sign-ins. Only a browser that has signed in to the account before
+escapes this, with the device cookie that gives it attempts of its own; see
 [The first admin account](deployment.md#the-first-admin-account).
 
 Downstream consumers that key on `client_ip` (rate limits, auth-failure
@@ -368,17 +454,23 @@ provenance: `remote_ip`, `peer_ip`, `ip_source`, `x_forwarded_for`, `x_real_ip`,
 Keeping the raw headers next to the verdict is what makes a wrong address
 diagnosable: you can see which rung fired and what the alternatives said.
 
+The client chooses these values, so the line keeps a bounded copy of each: cut
+to 256 characters (the path to 512), with control characters escaped. `origin`
+and `referer` keep only the scheme, host and path: a page's address can carry a
+secret in its query, as a password-reset link does.
+
 At `DEBUG` the middleware additionally emits an `http_request_headers` line with
-every request header, truncated to 256 characters each and with `authorization`
-and `x-api-key` replaced by `***`.
+every request header, cut and escaped the same way. A credential is replaced by
+`***`: `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `cookie`,
+`x-on-behalf-of`, and any header whose name mentions a key, token, secret,
+password, session, signature, cookie or auth.
 
 ## What is persisted
 
 The output of this module does not stay in the log file. It is written to the
 database.
 
-**`api_logs.metadata`** (a JSONB column; see
-`apps/backend/serving/storage/log_schema.py` and the insert in
+**`api_logs.metadata`** (a JSONB column; see the insert in
 `apps/backend/serving/storage/postgres_log.py`) receives, per request:
 
 | Surface | Handler | IP-related keys stored |

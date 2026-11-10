@@ -7,6 +7,7 @@ import pytest
 from serving.utils.token_utils import (
     extract_cache_tokens,
     normalize_usage,
+    optional_token_count,
     sanitize_usage,
     usage_count,
 )
@@ -326,11 +327,61 @@ class TestNormalizeUsageCacheTokens:
         result = normalize_usage(usage)
         assert result["cache_read_tokens"] == 0
 
+    def test_invalid_direct_cache_counts_are_removed(self):
+        """Invalid canonical counts must not reach cost or persistence."""
+        usage = {
+            "prompt_tokens": 1000,
+            "cache_read_tokens": -100,
+            "cache_write_tokens": 1.5,
+        }
+
+        result = normalize_usage(usage)
+
+        assert "cache_read_tokens" not in result
+        assert "cache_write_tokens" not in result
+        assert usage["cache_read_tokens"] == -100  # the raw response is untouched
+
     def test_provider_without_cache_reporting_stays_absent(self):
         """A provider that sends no cache key at all is unknown, not a miss."""
         usage = {"prompt_tokens": 415, "completion_tokens": 64, "total_tokens": 479}
         result = normalize_usage(usage)
         assert "cache_read_tokens" not in result
+
+    def test_invalid_alias_cache_counts_are_removed_before_sanitizing(self):
+        """An invalid alias count stays unknown: sanitize must not measure it as 0.
+
+        sanitize_usage coerces an unreadable count to a readable 0 for billing;
+        run before that coercion, the removal keeps a negative alias (Anthropic
+        style here) flowing to api_logs as NULL -- unknown -- instead of a
+        fabricated measured miss.
+        """
+        usage = {
+            "prompt_tokens": 1000,
+            "completion_tokens": 64,
+            "cache_read_input_tokens": -100,
+            "cache_creation_input_tokens": "lots",
+        }
+
+        result = normalize_usage(usage)
+
+        assert "cache_read_tokens" not in result
+        assert "cache_write_tokens" not in result
+        assert result["prompt_tokens"] == 1000
+        assert usage["cache_read_input_tokens"] == -100  # the raw response is untouched
+
+    def test_valid_alias_cache_counts_survive_sanitizing(self):
+        """A valid alias count is still extracted after the pre-sanitize filter."""
+        usage = {
+            "prompt_tokens": 1000,
+            "completion_tokens": 64,
+            "cached_tokens": 256,
+            "cache_creation_input_tokens": 0,
+        }
+
+        result = normalize_usage(usage)
+
+        assert result["cache_read_tokens"] == 256
+        assert result["cache_write_tokens"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -413,3 +464,189 @@ def test_normalize_usage_hands_billing_readable_counts():
 
     assert normalized is not None
     assert (normalized["prompt_tokens"], normalized["completion_tokens"]) == (0, 7)
+
+
+class TestExplicitCacheReportedFlag:
+    """A producer's explicit state flag outranks field presence.
+
+    The Responses surface emits ``cache_read_reported: false`` when the
+    provider reported no cache measurement, while still serializing
+    ``input_tokens_details.cached_tokens: 0`` because the public schema
+    requires a number there. Reading that nested 0 as a measurement would
+    score a miss that was never made, poisoning RouteWise locality learning
+    and the api_logs cache columns.
+    """
+
+    def test_unknown_flag_suppresses_a_nested_zero(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": False,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read is None
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        # The count is absent, not zero: a consumer reading cache_read_tokens
+        # must not see a measured miss.
+        assert "cache_read_tokens" not in normalized
+        assert normalized.get("cache_read_reported") is False
+
+    def test_measured_miss_with_flag_is_a_zero_count(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": True,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read == 0
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+
+    def test_measured_hit_with_flag_is_positive(self):
+        usage = {
+            "input_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 79},
+            "cache_read_reported": True,
+        }
+        read, _write = extract_cache_tokens(usage)
+        assert read == 79
+
+    def test_absent_flag_keeps_the_legacy_field_inference(self):
+        """No flag: the shared extractor still reads the provider's own
+        shapes, so a provider that reports a nested 0 is a measured miss."""
+        read, _write = extract_cache_tokens(
+            {"input_tokens": 100, "input_tokens_details": {"cached_tokens": 0}}
+        )
+        assert read == 0
+
+    def test_flag_false_does_not_suppress_cache_write_accounting(self):
+        usage = {
+            "input_tokens": 100,
+            "cache_read_reported": False,
+            "cache_write_tokens": 12,
+        }
+        read, write = extract_cache_tokens(usage)
+        assert read is None
+        assert write == 12
+
+    @pytest.mark.parametrize("bad_write", [True, float("inf"), -1, "not-a-count"])
+    def test_flag_false_rejects_unreadable_cache_write_counts(self, bad_write):
+        """A boolean/infinite/negative write count is not a measurement."""
+        usage = {
+            "input_tokens": 100,
+            "cache_read_reported": False,
+            "cache_write_tokens": bad_write,
+        }
+        read, write = extract_cache_tokens(usage)
+        assert read is None
+        assert write is None
+
+
+class TestUnknownFlagDropsALeftoverFlatCounter:
+    """A flat counter copied in from the source must not survive UNKNOWN.
+
+    ``normalize_usage`` copies the original usage dict, so a flat
+    ``cache_read_tokens: 0`` that the producer serialized alongside
+    ``cache_read_reported: false`` would otherwise be published as a
+    measured miss — the schema placeholder read as a real measurement.
+    """
+
+    def test_flat_zero_does_not_survive_an_unknown_flag(self):
+        usage = {
+            "prompt_tokens": 100,
+            "completion_tokens": 5,
+            "total_tokens": 105,
+            "cache_read_tokens": 0,
+            "cache_read_reported": False,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert "cache_read_tokens" not in normalized
+        assert normalized.get("cache_read_reported") is False
+
+    def test_nested_zero_does_not_survive_an_unknown_flag(self):
+        usage = {
+            "prompt_tokens": 100,
+            "input_tokens_details": {"cached_tokens": 0},
+            "cache_read_reported": False,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert "cache_read_tokens" not in normalized
+
+    def test_a_measured_miss_keeps_its_zero(self):
+        """The fix must not erase a real measurement."""
+        usage = {
+            "prompt_tokens": 100,
+            "cache_read_tokens": 0,
+            "cache_read_reported": True,
+        }
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+        assert normalized.get("cache_read_reported") is True
+
+    def test_without_the_flag_a_flat_zero_is_still_a_measured_miss(self):
+        usage = {"prompt_tokens": 100, "cache_read_tokens": 0}
+        normalized = normalize_usage(usage)
+        assert normalized is not None
+        assert normalized.get("cache_read_tokens") == 0
+
+
+# ---------------------------------------------------------------------------
+# optional_token_count
+# ---------------------------------------------------------------------------
+
+
+class TestOptionalTokenCount:
+    """The None-vs-zero contract for a reported token count.
+
+    A provider that omits a cache field is not reporting a measured zero, and
+    the two must survive to different places: None becomes a NULL api_logs
+    column and an "unknown" cache state, 0 is a measured miss. This helper is
+    the single coercion the cost and log call sites share.
+    """
+
+    def test_none_stays_none(self):
+        assert optional_token_count(None) is None
+
+    def test_reported_zero_stays_zero(self):
+        # A real measurement: the provider said "0 cached".
+        assert optional_token_count(0) == 0
+
+    def test_positive_int_passes_through(self):
+        assert optional_token_count(25344) == 25344
+
+    def test_numeric_string_coerces(self):
+        assert optional_token_count("4096") == 4096
+
+    def test_non_numeric_is_unknown(self):
+        assert optional_token_count("not-a-number") is None
+
+    def test_negative_is_unknown(self):
+        # A negative count is nonsense; treat it as unreported, not as 0.
+        assert optional_token_count(-5) is None
+
+    def test_fractional_is_unknown(self):
+        # A fractional token count is not a real measurement -- reject it
+        # rather than silently truncating to a plausible-looking int.
+        assert optional_token_count(12.9) is None
+        assert optional_token_count(0.5) is None
+
+    def test_whole_float_is_accepted(self):
+        # 12.0 is exactly 12; no information is lost.
+        assert optional_token_count(12.0) == 12
+
+    def test_positive_infinity_is_unknown(self):
+        # int(float("inf")) raises OverflowError; must be caught as unknown.
+        assert optional_token_count(float("inf")) is None
+
+    def test_nan_is_unknown(self):
+        assert optional_token_count(float("nan")) is None
+
+    def test_bool_is_unknown(self):
+        # bool is an int subclass; True/False are not token counts.
+        assert optional_token_count(True) is None
+        assert optional_token_count(False) is None

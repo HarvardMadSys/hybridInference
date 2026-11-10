@@ -1,10 +1,13 @@
 import type { Change } from '@/components/features/admin/confirm/ChangeList';
 import { Select } from '@/components/ui/Select';
-import type { RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
+import type { ProviderRoute, RouteCapabilities, RuntimeModelCapabilities } from '@/lib/api/admin';
 
 export type DeclaredChoice = '' | 'yes' | 'no';
 
-/** The four capability fields as typed, before they are a valid declaration. */
+/** One row of a reasoning-effort map: the level clients send, and what the upstream gets. */
+export type EffortRow = { publicLevel: string; upstreamLevel: string };
+
+/** The capability fields as typed, before they are a valid declaration. */
 export type CapabilityDraft = {
   contextLength: string;
   maxOutputLength: string;
@@ -13,6 +16,9 @@ export type CapabilityDraft = {
   // Input modalities the form has no field for (audio, video): sent back as
   // they came, so saving the other fields never drops one.
   otherInputModalities: string[];
+  // The route's reasoning-effort map, one row per public level, in offer order.
+  // No rows: the route keeps the map it has by default (or none).
+  effortRows: EffortRow[];
 };
 
 export const emptyCapabilityDraft: CapabilityDraft = {
@@ -21,7 +27,73 @@ export const emptyCapabilityDraft: CapabilityDraft = {
   imageInput: '',
   toolCalling: '',
   otherInputModalities: [],
+  effortRows: [],
 };
+
+type EffortMap = Record<string, string>;
+
+function effortRowsFrom(map: EffortMap | null | undefined): EffortRow[] {
+  return Object.entries(map ?? {}).map(([publicLevel, upstreamLevel]) => ({
+    publicLevel,
+    upstreamLevel,
+  }));
+}
+
+/** Whether two maps send the same levels the same way, in the same order (none = empty). */
+export function sameEffortMap(a: EffortMap | null | undefined, b: EffortMap | null | undefined) {
+  const left = Object.entries(a ?? {});
+  const right = Object.entries(b ?? {});
+  return (
+    left.length === right.length &&
+    left.every(([level, value], index) => right[index][0] === level && right[index][1] === value)
+  );
+}
+
+/** "low → high, high → xhigh, max → max" */
+export function describeEffortMap(map: EffortMap | null | undefined) {
+  const entries = Object.entries(map ?? {});
+  return entries.length
+    ? entries.map(([level, value]) => `${level} → ${value}`).join(', ')
+    : 'No mapping';
+}
+
+// The backend's rule (serving.adapters.reasoning_effort): a short token.
+const EFFORT_LEVEL_RE = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
+const MAX_EFFORT_ROWS = 16;
+
+/** The rows as a map, or why they are not one. Blank rows are ignored. */
+export function readEffortRows(rows: EffortRow[]): {
+  map: EffortMap | null;
+  error: string | null;
+} {
+  const filled = rows
+    .map((row) => ({
+      publicLevel: row.publicLevel.trim(),
+      upstreamLevel: row.upstreamLevel.trim(),
+    }))
+    .filter((row) => row.publicLevel || row.upstreamLevel);
+  if (filled.length === 0) return { map: null, error: null };
+  if (filled.length > MAX_EFFORT_ROWS) {
+    return { map: null, error: `Map at most ${MAX_EFFORT_ROWS} levels.` };
+  }
+  const map: EffortMap = {};
+  for (const row of filled) {
+    if (!row.publicLevel || !row.upstreamLevel) {
+      return { map: null, error: 'Fill in both levels of each row, or remove the row.' };
+    }
+    if (!EFFORT_LEVEL_RE.test(row.publicLevel) || !EFFORT_LEVEL_RE.test(row.upstreamLevel)) {
+      return {
+        map: null,
+        error: 'A level is one short word: letters, digits, "_", "." or "-" (up to 32).',
+      };
+    }
+    if (row.publicLevel in map) {
+      return { map: null, error: `Public level "${row.publicLevel}" is listed twice.` };
+    }
+    map[row.publicLevel] = row.upstreamLevel;
+  }
+  return { map, error: null };
+}
 
 /** A draft holding what a route serves with now, for editing or as a new route's start. */
 export function capabilityDraftFrom(capabilities: RouteCapabilities): CapabilityDraft {
@@ -33,6 +105,7 @@ export function capabilityDraftFrom(capabilities: RouteCapabilities): Capability
     otherInputModalities: capabilities.input_modalities.filter(
       (modality) => modality !== 'text' && modality !== 'image',
     ),
+    effortRows: effortRowsFrom(capabilities.reasoning_effort_map),
   };
 }
 
@@ -47,10 +120,11 @@ function tokenCountOrNull(value: string) {
   return parsed > 0 && parsed <= MAX_DECLARED_TOKENS ? parsed : null;
 }
 
-export type CapabilityDraftReading = {
+type CapabilityDraftReading = {
   payload: RuntimeModelCapabilities | null;
   contextLengthError: string | null;
   maxOutputLengthError: string | null;
+  effortMapError: string | null;
 };
 
 // One reading of the four fields, used both for the inline messages and to
@@ -66,10 +140,12 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
   if (contextLength !== null && maxOutputLength !== null && maxOutputLength > contextLength) {
     maxOutputLengthError = 'Max output cannot exceed the context length.';
   }
+  const effort = readEffortRows(draft.effortRows);
   const payload: RuntimeModelCapabilities | null =
     contextLength !== null &&
     maxOutputLength !== null &&
     maxOutputLengthError === null &&
+    effort.error === null &&
     draft.imageInput &&
     draft.toolCalling
       ? {
@@ -81,9 +157,66 @@ export function readCapabilityDraft(draft: CapabilityDraft): CapabilityDraftRead
             ...draft.otherInputModalities,
           ],
           supports_tools: draft.toolCalling === 'yes',
+          // No rows: no map is sent, which keeps the route's default one.
+          ...(effort.map ? { reasoning_effort_map: effort.map } : {}),
         }
       : null;
-  return { payload, contextLengthError, maxOutputLengthError };
+  return { payload, contextLengthError, maxOutputLengthError, effortMapError: effort.error };
+}
+
+/**
+ * Whether two declarations are the same as this form shows them. Text input is
+ * implied: the form always sends it, so a declaration without it (which
+ * models.yaml does not refuse) is not a different one.
+ */
+export function sameCapabilities(a: RouteCapabilities, b: RouteCapabilities) {
+  const modalities = (capabilities: RouteCapabilities) =>
+    [...new Set(capabilities.input_modalities.filter((modality) => modality !== 'text'))]
+      .sort()
+      .join(',');
+  return (
+    a.context_length === b.context_length &&
+    a.max_output_length === b.max_output_length &&
+    a.supports_tools === b.supports_tools &&
+    modalities(a) === modalities(b) &&
+    sameEffortMap(a.reasoning_effort_map, b.reasoning_effort_map)
+  );
+}
+
+/**
+ * Whether two drafts hold the same answers: "8192" and "08192" are one
+ * count, and a value the form would refuse is compared as typed.
+ */
+export function sameCapabilityDraft(a: CapabilityDraft, b: CapabilityDraft) {
+  const sameCount = (x: string, y: string) =>
+    x.trim() === y.trim() ||
+    (/^\d+$/.test(x.trim()) && /^\d+$/.test(y.trim()) && Number(x) === Number(y));
+  return (
+    sameCount(a.contextLength, b.contextLength) &&
+    sameCount(a.maxOutputLength, b.maxOutputLength) &&
+    a.imageInput === b.imageInput &&
+    a.toolCalling === b.toolCalling &&
+    [...a.otherInputModalities].sort().join(',') === [...b.otherInputModalities].sort().join(',') &&
+    sameEffortRows(a.effortRows, b.effortRows)
+  );
+}
+
+/** Whether two sets of rows hold the same answers, blank rows aside. */
+function sameEffortRows(a: EffortRow[], b: EffortRow[]) {
+  const answers = (rows: EffortRow[]) =>
+    rows
+      .map((row) => [row.publicLevel.trim(), row.upstreamLevel.trim()])
+      .filter(([level, value]) => level || value)
+      .map(([level, value]) => `${level}=${value}`)
+      .join(',');
+  return answers(a) === answers(b);
+}
+
+/** Where a route's default capabilities come from, as a label. */
+export function capabilityDefaultsLabel(route: Pick<ProviderRoute, 'source'>) {
+  return route.source === 'runtime'
+    ? 'Default from when this route was added'
+    : 'Default from models.yaml';
 }
 
 /** "text, images and audio" */
@@ -103,11 +236,14 @@ export function describeCapabilities(capabilities: RouteCapabilities) {
     `${capabilities.max_output_length.toLocaleString('en-US')} output`,
     media.length ? listWords(['text', ...media]) : 'text only',
     capabilities.supports_tools ? 'tools' : 'no tools',
+    ...(capabilities.reasoning_effort_map && Object.keys(capabilities.reasoning_effort_map).length
+      ? [`effort ${describeEffortMap(capabilities.reasoning_effort_map)}`]
+      : []),
   ].join(' · ');
 }
 
-/** One review row per capability, as the form names them. */
-export function capabilityRows(capabilities: RouteCapabilities): Change[] {
+/** One row per capability, as the form names them, for listing changes. */
+function capabilityRows(capabilities: RouteCapabilities): Change[] {
   const others = capabilities.input_modalities.filter(
     (modality) => modality !== 'text' && modality !== 'image',
   );
@@ -126,6 +262,7 @@ export function capabilityRows(capabilities: RouteCapabilities): Change[] {
     },
     ...(others.length ? [{ label: 'Other input', after: listWords(others) }] : []),
     { label: 'Tool calling', after: capabilities.supports_tools ? 'Supported' : 'Not supported' },
+    { label: 'Reasoning effort', after: describeEffortMap(capabilities.reasoning_effort_map) },
   ];
 }
 
@@ -151,18 +288,132 @@ export function capabilityChanges(before: RouteCapabilities, after: RouteCapabil
 const FIELD_CLASS =
   'mt-1 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] focus:border-gray-400 focus:outline-none';
 
+/** What the form knows about an existing route's reasoning effort. */
+export type RouteEffortContext = {
+  /** The route's adapter sends `reasoning_effort`; otherwise no map can apply. */
+  mappable: boolean;
+  /** The public levels the live route offers clients now (`null`: unknown). */
+  published?: string[] | null;
+  /** The map the route has without a console value, kept when no rows are set. */
+  defaultMap?: EffortMap | null;
+};
+
+function ReasoningEffortFields({
+  idPrefix,
+  rows,
+  error,
+  onChange,
+  context,
+  disabled,
+}: {
+  idPrefix: string;
+  rows: EffortRow[];
+  error: string | null;
+  onChange: (rows: EffortRow[]) => void;
+  context?: RouteEffortContext;
+  disabled: boolean;
+}) {
+  const labelId = `${idPrefix}-effort-label`;
+  if (context && !context.mappable) {
+    return (
+      <div className="mt-4">
+        <p id={labelId} className="text-[12px] font-medium text-gray-500">
+          Reasoning effort levels
+        </p>
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">
+          This route&apos;s adapter does not send reasoning_effort, so no mapping applies to it.
+        </p>
+      </div>
+    );
+  }
+  const update = (index: number, change: Partial<EffortRow>) =>
+    onChange(rows.map((row, at) => (at === index ? { ...row, ...change } : row)));
+  const keeps =
+    context?.defaultMap && Object.keys(context.defaultMap).length
+      ? `keeps its default mapping (${describeEffortMap(context.defaultMap)})`
+      : 'handles reasoning_effort as it did before, with no mapping';
+  return (
+    <div className="mt-4" role="group" aria-labelledby={labelId}>
+      <p id={labelId} className="text-[12px] font-medium text-gray-500">
+        Reasoning effort levels
+      </p>
+      <p className="mt-1 text-[11px] leading-5 text-gray-500">
+        One row per level clients may choose: the public level they send (and are offered), and the
+        value this route&apos;s upstream receives as reasoning_effort. With rows, only these levels
+        are accepted here and any other is refused. Without rows, the route {keeps}.
+      </p>
+      {rows.map((row, index) => (
+        <div key={index} className="mt-2 flex items-center gap-2">
+          <input
+            aria-label={`Public level ${index + 1}`}
+            placeholder="Public level, e.g. high"
+            value={row.publicLevel}
+            onChange={(event) => update(index, { publicLevel: event.target.value })}
+            disabled={disabled}
+            className={`${FIELD_CLASS} mt-0`}
+          />
+          <span aria-hidden className="text-gray-400">
+            →
+          </span>
+          <input
+            aria-label={`Upstream value ${index + 1}`}
+            placeholder="Sent upstream as"
+            value={row.upstreamLevel}
+            onChange={(event) => update(index, { upstreamLevel: event.target.value })}
+            disabled={disabled}
+            className={`${FIELD_CLASS} mt-0`}
+          />
+          <button
+            type="button"
+            onClick={() => onChange(rows.filter((_row, at) => at !== index))}
+            disabled={disabled}
+            className="shrink-0 rounded-lg border border-gray-200 px-2 py-2 text-[12px] text-gray-600 hover:bg-gray-50"
+          >
+            Remove
+          </button>
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange([...rows, { publicLevel: '', upstreamLevel: '' }])}
+        disabled={disabled}
+        className="mt-2 rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] text-gray-700 hover:bg-gray-50"
+      >
+        Add level
+      </button>
+      {error && <p className="mt-1 text-[11px] leading-5 text-red-600">{error}</p>}
+      {context && context.published !== undefined && (
+        <p className="mt-1 text-[11px] leading-5 text-gray-500">
+          Offered to clients now:{' '}
+          {context.published === null
+            ? 'not declared (clients are offered no levels)'
+            : context.published.length
+              ? context.published.join(', ')
+              : 'none'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function RouteCapabilityFields({
   idPrefix,
   draft,
   reading,
   onChange,
   help,
+  disabled = false,
+  effort,
 }: {
   idPrefix: string;
   draft: CapabilityDraft;
   reading: CapabilityDraftReading;
   onChange: (change: Partial<CapabilityDraft>) => void;
   help: string;
+  /** While the values are being written: they stay what was saved. */
+  disabled?: boolean;
+  /** An existing route's effort facts; omitted for a route being added. */
+  effort?: RouteEffortContext;
 }) {
   return (
     <div>
@@ -181,6 +432,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.contextLength}
             onChange={(event) => onChange({ contextLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -202,6 +454,7 @@ export function RouteCapabilityFields({
             step="1"
             value={draft.maxOutputLength}
             onChange={(event) => onChange({ maxOutputLength: event.target.value })}
+            disabled={disabled}
             className={FIELD_CLASS}
             required
           />
@@ -222,6 +475,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-image-input`}
             value={draft.imageInput}
             onValueChange={(imageInput) => onChange({ imageInput })}
+            disabled={disabled}
             // "" is unanswered, not "no": the form stays invalid until one is chosen.
             options={[
               { value: '', label: 'Choose…' },
@@ -244,6 +498,7 @@ export function RouteCapabilityFields({
             id={`${idPrefix}-tool-calling`}
             value={draft.toolCalling}
             onValueChange={(toolCalling) => onChange({ toolCalling })}
+            disabled={disabled}
             options={[
               { value: '', label: 'Choose…' },
               { value: 'no', label: 'Not supported' },
@@ -262,6 +517,14 @@ export function RouteCapabilityFields({
         </p>
       )}
       <p className="mt-1 text-[11px] leading-5 text-gray-400">{help}</p>
+      <ReasoningEffortFields
+        idPrefix={idPrefix}
+        rows={draft.effortRows}
+        error={reading.effortMapError}
+        onChange={(effortRows) => onChange({ effortRows })}
+        context={effort}
+        disabled={disabled}
+      />
     </div>
   );
 }

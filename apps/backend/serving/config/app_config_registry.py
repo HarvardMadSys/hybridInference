@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 import yaml
 
+from serving.config.revisions import GroupContract
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
 # settings_init_name is re-exported: callers map a registry entry's field to
@@ -49,14 +50,31 @@ Origin = Literal["static", "discovered", "numbered", "custom"]
 
 @dataclass(frozen=True)
 class Category:
-    """A group of entries in the admin Configuration tab."""
+    """A group of entries on the admin Settings tab."""
 
     id: str
     label: str
     description: str
+    #: Whether its settings can take effect in this deployment; the console
+    #: offers none of them while it returns false. ``None`` is always.
+    in_effect: Callable[[], bool] | None = None
+    #: Every setting in it is usually set once (:attr:`ConfigEntry.one_time`).
+    one_time: bool = False
+
+
+def _sms_provider_registered() -> bool:
+    # Phone sign-in needs a provider an extension registers; "none" is always listed.
+    from serving.utils.delivery import sms_provider_names
+
+    return len(sms_provider_names()) > 1
 
 
 CATEGORIES: tuple[Category, ...] = (
+    Category(
+        "application",
+        "Application",
+        "Models, routing policy, alert rules and public site configuration.",
+    ),
     Category("general", "General", "Public addresses, site identity and logging."),
     Category(
         "security",
@@ -72,8 +90,14 @@ CATEGORIES: tuple[Category, ...] = (
         "email",
         "Email",
         "Outgoing mail for verification, password reset and notifications.",
+        one_time=True,
     ),
-    Category("phone", "Phone authentication", "Optional phone sign-in and SMS delivery."),
+    Category(
+        "phone",
+        "Phone authentication",
+        "Optional phone sign-in and SMS delivery.",
+        in_effect=_sms_provider_registered,
+    ),
     Category(
         "providers",
         "Providers",
@@ -92,18 +116,23 @@ CATEGORIES: tuple[Category, ...] = (
         "and results are kept.",
     ),
     Category(
-        "network", "Network", "Browser origins and which proxies may report client addresses."
+        "network",
+        "Network",
+        "Browser origins and which proxies may report client addresses.",
+        one_time=True,
     ),
     Category("alerts", "Alerts", "Backend alert notifications."),
     Category(
         "integrations",
         "Integrations",
         "Cloud agent identity, the documentation assistant and Qdrant.",
+        one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
 )
 
 CATEGORY_IDS: frozenset[str] = frozenset(category.id for category in CATEGORIES)
+_CATEGORY_BY_ID: dict[str, Category] = {category.id: category for category in CATEGORIES}
 
 
 @dataclass(frozen=True)
@@ -142,6 +171,10 @@ class ConfigEntry:
     restart_required: bool = False
     #: Shown on the first-run configuration step.
     setup: bool = False
+    #: Usually set once, when the gateway is deployed, and seldom changed
+    #: afterwards: the console lists it after the settings changed more often.
+    #: A category can say this of all its settings (:attr:`Category.one_time`).
+    one_time: bool = False
     #: Cannot be changed once set.
     immutable: bool = False
     #: Generated on first boot when neither the database nor the environment has it.
@@ -160,6 +193,7 @@ class ConfigEntry:
     flag: bool = False
     #: The key whose value applies while this one is empty.
     fallback_key: str | None = None
+    validator: Callable[[str], None] | None = None
 
     def is_required(self, context: RequirementContext) -> bool:
         """Evaluate ``required`` against the effective configuration."""
@@ -236,7 +270,55 @@ def _setting(
 # Static entries, grouped by category in the order the console lists them.
 # Descriptions are operator-facing; they come from the comments in settings.py
 # and .env.example.
+def _document_validator(key: str) -> Callable[[str], None]:
+    def validate(text: str) -> None:
+        from serving.config.documents import validate as validate_document
+
+        validate_document(key, text)
+
+    return validate
+
+
 _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
+    *(
+        ConfigEntry(
+            key,
+            "application",
+            description,
+            type="text",
+            setup=True,
+            one_time=True,
+            restart_required=restart,
+            validator=_document_validator(key),
+        )
+        for key, description, restart in (
+            (
+                "MODEL_CATALOG",
+                "Model catalog as JSON. Add models and routes here or in Admin Routing. Credentials reference separate secret settings as ${NAME}.",
+                True,
+            ),
+            (
+                "ROUTING_POLICY",
+                "Optional routing policy as JSON. Omit to use the default Fixed router.",
+                True,
+            ),
+            (
+                "ALERT_RULES",
+                "Alert thresholds and rule switches as JSON. Omit to use built-in thresholds.",
+                True,
+            ),
+            (
+                "SITE_CONFIGURATION",
+                "Public site identity and feature policy as JSON. No file paths are accepted.",
+                False,
+            ),
+            (
+                "SITE_BRANDING",
+                "Public branding as JSON. Only validated public branding fields are accepted.",
+                False,
+            ),
+        )
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -246,6 +328,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "behind a TLS-terminating proxy; set it on any HTTPS deployment.",
         "str",
         setup=True,
+        one_time=True,
     ),
     _setting(
         "frontend_url",
@@ -254,6 +337,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "approval). Must be absolute and reachable by your users.",
         "str",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_NAME",
@@ -261,12 +345,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Name rendered into emails, broadcast templates and the docs assistant. Falls "
         "back to the active distribution manifest, then to HybridInference.",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_PUBLIC_BASE_URL",
         "general",
         "Public site URL rendered into backend-produced content. Falls back to the "
         "active distribution manifest.",
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_SUPPORT_EMAIL",
@@ -274,12 +360,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Support address rendered into emails and help text. Falls back to the active "
         "distribution manifest.",
         setup=True,
+        one_time=True,
     ),
     ConfigEntry(
         "SITE_DOCS_URL",
         "general",
         "HTTPS documentation URL rendered into backend-produced content. Overrides the "
         "manifest's branding.",
+        one_time=True,
     ),
     ConfigEntry(
         "LOG_LEVEL",
@@ -296,6 +384,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         # The logger treats every value but "json" as plain text; "text" is
         # the spelling older deployments and the installation guide use.
         choices=("plain", "text", "json"),
+        one_time=True,
     ),
     # --- security ----------------------------------------------------------
     _setting(
@@ -306,6 +395,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
         required=_auth_secret_required,
         generated=True,
+        one_time=True,
     ),
     _setting(
         "api_key_secret",
@@ -317,6 +407,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         required=_auth_secret_required,
         generated=True,
         immutable=True,
+        one_time=True,
     ),
     _setting(
         "admin_token",
@@ -324,6 +415,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Optional legacy bearer token for the admin API. Blank disables only this login path.",
         "str",
         secret=True,
+        one_time=True,
     ),
     _setting(
         "admin_emails",
@@ -341,6 +433,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         choices=("HS256", "HS384", "HS512"),
         case_sensitive=True,
+        one_time=True,
     ),
     _setting(
         "jwt_access_token_expire_minutes",
@@ -349,6 +442,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "int",
         minimum=1,
         maximum=43_200,
+        one_time=True,
     ),
     _setting(
         "jwt_refresh_token_expire_days",
@@ -357,6 +451,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "int",
         minimum=1,
         maximum=3650,
+        one_time=True,
     ),
     _setting(
         "cookie_secure",
@@ -364,12 +459,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Mark the refresh-token cookie Secure (sent over HTTPS only). Turn it off only "
         "for a plain-http local run.",
         "bool",
+        one_time=True,
     ),
     _setting(
         "cookie_domain",
         "security",
         "Domain attribute of the refresh-token cookie. Empty for a host-only cookie.",
         "str",
+        one_time=True,
     ),
     _setting(
         "cookie_samesite",
@@ -377,6 +474,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "SameSite attribute of the refresh-token cookie.",
         "str",
         choices=("lax", "strict", "none"),
+        one_time=True,
     ),
     _setting(
         "login_rate_limit_per_15min",
@@ -480,6 +578,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "runtime setting applies.",
         "float",
         minimum=0,
+        one_time=True,
     ),
     _setting(
         "signup_rate_limit_per_hour",
@@ -521,6 +620,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Cloudflare Turnstile secret for the signup captcha. Empty turns verification off.",
         "str",
         secret=True,
+        one_time=True,
     ),
     # --- phone authentication -----------------------------------------------
     _setting(
@@ -536,12 +636,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         choices=("none",),
         case_sensitive=True,
+        one_time=True,
     ),
     _setting(
         "sms_default_country_code",
         "phone",
         "Optional country calling code for local input, without +; empty requires international format.",
         "str",
+        one_time=True,
     ),
     _setting(
         "sms_allowed_prefixes",
@@ -616,9 +718,21 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         case_sensitive=True,
         setup=True,
     ),
-    _setting("smtp_host", "email", "SMTP server host.", "str", setup=True),
     _setting(
-        "smtp_port", "email", "SMTP server port.", "int", setup=True, minimum=1, maximum=65_535
+        "smtp_host",
+        "email",
+        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_port",
+        "email",
+        "SMTP server port. Port 465 uses TLS from the start; any other port must offer STARTTLS.",
+        "int",
+        setup=True,
+        minimum=1,
+        maximum=65_535,
     ),
     _setting(
         "smtp_user",
@@ -647,24 +761,28 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "provider=type[|type] entries (for example chutes=quota,openrouter=concurrency|"
         "on_demand). Unlisted providers may use any type.",
         "str",
+        one_time=True,
     ),
     ConfigEntry(
         "CHUTES_BASE_URL",
         "providers",
         "Default base URL offered for new Chutes routes.",
         default="https://llm.chutes.ai/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "FEATHERLESS_BASE_URL",
         "providers",
         "Default base URL offered for new Featherless routes.",
         default="https://api.featherless.ai/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "MINIMAX_BASE_URL",
         "providers",
         "Default base URL offered for new MiniMax routes.",
         default="https://api.minimax.io/v1",
+        one_time=True,
     ),
     ConfigEntry(
         "LOCAL_API_KEY",
@@ -673,6 +791,22 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "assistant's ingest key when RAG_GATEWAY_API_KEY is empty.",
         secret=True,
         restart_required=True,
+        one_time=True,
+    ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_URL",
+        "providers",
+        "Queue status address of an on-demand model host, as this backend reaches it "
+        "(for example an HPC on-demand proxy's /status). Admin -> Batches -> Model queue "
+        "shows the jobs it reports and the batch requests waiting for each model. Empty "
+        "shows no queue.",
+    ),
+    ConfigEntry(
+        "MODEL_QUEUE_STATUS_API_KEY",
+        "providers",
+        "Bearer key the queue status address requires. Empty uses LOCAL_API_KEY.",
+        secret=True,
+        fallback_key="LOCAL_API_KEY",
     ),
     # --- routing -----------------------------------------------------------
     _setting(
@@ -772,6 +906,30 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="int",
         default="86400",
         minimum=0,
+    ),
+    ConfigEntry(
+        "ROUTING_OFFLOAD_ENGINE_WAIT_EXTENSION",
+        "routing",
+        "Extend a first-token wait for the un-cached prefill a cold prompt imposes.",
+        type="bool",
+        default="0",
+        flag=True,
+    ),
+    ConfigEntry(
+        "ROUTING_OFFLOAD_PREFILL_RATE_TOKENS_PER_SEC",
+        "routing",
+        "Tokens per second of un-cached prefill the engine wait budgets for.",
+        type="int",
+        default="2560",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "ROUTING_OFFLOAD_MAX_ENGINE_WAIT_SECONDS",
+        "routing",
+        "Ceiling on the extended first-token wait, in seconds.",
+        type="int",
+        default="8",
+        minimum=1,
     ),
     ConfigEntry(
         "ROUTING_PREFILL_AWARE_ENABLED",
@@ -923,6 +1081,20 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="float",
         default="3600",
     ),
+    # Read per request by serving.servers.middleware.body_limit, which falls
+    # back to the same default for a missing or invalid value and holds a
+    # larger one to the same maximum.
+    ConfigEntry(
+        "REQUEST_MAX_BODY_MB",
+        "routing",
+        "Largest request body, in MiB, the gateway reads; a larger one gets 413 before "
+        "it is parsed. Raise it for requests that carry many images or long media, up "
+        "to 256. Batch uploads keep their own limit, BATCH_MAX_BODY_MB.",
+        type="int",
+        default="32",
+        minimum=1,
+        maximum=256,
+    ),
     # --- batch inference ---------------------------------------------------
     # Read through serving.batch.config, which falls back to the same defaults
     # and bounds; tests/unit/config/test_app_config_registry.py holds the two
@@ -930,8 +1102,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_ENABLED",
         "batch",
-        "Serve batch inference (/v1/batches) and run its worker. Off, every batch route "
-        "answers 404 and no queued request starts; stored batches are kept.",
+        "Serve batch inference (/v1/batches) and run its worker, and offer the console's "
+        "Batches page. Off, user/API batch data and write routes answer 404, the dashboard "
+        "hides the entry and no queued request starts; stored batches are kept. Capability "
+        "discovery and administrator operational controls remain available.",
         type="bool",
         default="1",
         flag=True,
@@ -939,9 +1113,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "BATCH_MIN_ROLE",
         "batch",
-        "Lowest role that may submit batches. A queued request starts only while its "
-        "owner still holds this role; owners can always read, cancel and delete their "
-        "own batches.",
+        "Lowest role that may submit batches and change a batch webhook. A queued request "
+        "starts only while its owner still holds this role. While Batch is enabled, owners below it can "
+        "read, download, cancel and delete their own batches and read or remove their "
+        "webhook; they keep the dashboard's Batches entry while they have any.",
         default="internal",
         choices=("free", "pro", "internal", "admin"),
     ),
@@ -953,7 +1128,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Batch Concurrency; this is only the default. 0 pauses batch work on every "
         "model without a cap.",
         type="int",
-        default="4",
+        default="64",
         minimum=0,
     ),
     ConfigEntry(
@@ -994,19 +1169,149 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "BATCH_COMPLETION_WINDOW_HOURS",
         "batch",
         "Hours a new batch has to finish, at most a week. Requests not started by then "
-        "expire; those already running finish.",
+        "expire; those already running finish. 0 means no limit: new batches, inline "
+        "and from a file, never expire and run until every request is done, however "
+        "long upstream capacity takes. A change applies to batches created afterwards.",
         type="int",
         default="24",
-        minimum=1,
+        minimum=0,
         maximum=168,
     ),
     ConfigEntry(
         "BATCH_RETENTION_DAYS",
         "batch",
-        "Days a finished batch and its results are kept before they are deleted.",
+        "Days a finished batch and its results are kept before they are deleted. A "
+        "change applies to batches created afterwards.",
         type="int",
         default="7",
         minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_SHARED_INTERACTIVE_LOAD",
+        "batch",
+        "Count the interactive requests in flight on every gateway process, not only "
+        "this one, when batch work yields to interactive traffic. If that shared count "
+        "cannot be read, no new batch request starts until it can.",
+        type="bool",
+        default="1",
+        flag=True,
+        one_time=True,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_QUEUED_REQUESTS_PER_USER",
+        "batch",
+        "Unfinished batch requests one user may have across all their batches. A batch "
+        "that would go past it is refused, however it is split.",
+        type="int",
+        default="100000",
+        minimum=1,
+    ),
+    *(
+        ConfigEntry(
+            f"BATCH_ROLE_CONCURRENCY_{role.upper()}",
+            "batch",
+            f"Batch requests one {role} user may have running at once, across every "
+            "model (counted per gateway process). Separate from the role's interactive concurrency limit: batch work "
+            "neither waits on nor takes the slots of the user's own interactive requests. "
+            "0 removes this cap (the per-model batch limits still apply).",
+            type="int",
+            default=str(default),
+            minimum=0,
+        )
+        for role, default in (("free", 8), ("pro", 16), ("internal", 64), ("admin", 64))
+    ),
+    ConfigEntry(
+        "BATCH_INTERACTIVE_RESERVE",
+        "batch",
+        "Slots of every model's batch cap always left free for interactive requests, on "
+        "top of those interactive requests already in flight take (while batch work "
+        "yields to interactive traffic). 0 keeps no extra room.",
+        type="int",
+        default="0",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_QUEUED_ALERT_HOURS",
+        "batch",
+        "Hours a model may answer batch requests with 'waiting for capacity' (an "
+        "on-demand model whose GPU job is queued) before one alert says so; it resolves "
+        "when the model next serves a batch request. Shorter waits alert nothing. 0 "
+        "never alerts.",
+        type="int",
+        default="6",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_LINE_KB",
+        "batch",
+        "Largest line of an uploaded batch input file, in KiB.",
+        type="int",
+        default="4096",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_RESULT_KB",
+        "batch",
+        "Largest response one batch request may store, in KiB. A larger response fails "
+        "the request with result_too_large.",
+        type="int",
+        default="4096",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_MAX_RESULTS_MB_PER_BATCH",
+        "batch",
+        "Responses one batch may store in all, in MiB (counted by each gateway process "
+        "from the results it records). Once a batch's results reach it, a response that "
+        "does not fit fails with result_too_large, and so does every request of that "
+        "batch still to run, without running. 0 removes the limit.",
+        type="int",
+        default="8192",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "BATCH_FILES_MAX_TOTAL_MB_PER_USER",
+        "batch",
+        "Uploaded batch input files one user may keep at once, in MiB.",
+        type="int",
+        default="512",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_FILE_UPLOADS_PER_HOUR",
+        "batch",
+        "Batch input files one user may upload per hour, uploads that failed included.",
+        type="int",
+        default="60",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_FILE_RETENTION_DAYS",
+        "batch",
+        "Days an uploaded batch input file is kept before it is deleted.",
+        type="int",
+        default="30",
+        minimum=1,
+    ),
+    ConfigEntry(
+        "BATCH_ANTHROPIC_VERSIONS",
+        "batch",
+        "Comma-separated anthropic-version values a new /v1/messages batch may name. "
+        "Known versions: 2023-06-01, 2026-10-21. A batch with any other version is "
+        "refused.",
+        default="2023-06-01,2026-10-21",
+        one_time=True,
+    ),
+    ConfigEntry(
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "batch",
+        "Let batch webhooks reach private, loopback and link-local addresses. For "
+        "isolated test deployments only: on, a user can make the gateway send requests "
+        "into its own network. Cloud metadata addresses stay refused.",
+        type="bool",
+        default="0",
+        flag=True,
+        one_time=True,
     ),
     # --- network -----------------------------------------------------------
     _setting(
@@ -1065,30 +1370,35 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "slack_alerts_webhook_url",
         "alerts",
-        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. "
-        "Takes effect after a restart, together with the WeCom channel it alternates with.",
+        "Slack webhook for alerts. Empty uses SLACK_WEBHOOK_URL. Saved together with the "
+        "WeCom channel it alternates with. Part of the alerts.runtime group: applies without "
+        "a restart once the group is activated, after a restart until then.",
         "str",
         secret=True,
         fallback_key="SLACK_WEBHOOK_URL",
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "wecom_alerts_webhook_url",
         "alerts",
-        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel. "
-        "Takes effect after a restart, like the failed-request detector it enables.",
+        "WeCom group-bot webhook for alerts. Empty disables the WeCom channel; setting it also "
+        "runs the failed-request detector. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "slack_webhook_url",
         "alerts",
         "Slack webhook for the failed-request alerter, and for alerts when "
-        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty turns the failed-request alerter off.",
+        "SLACK_ALERTS_WEBHOOK_URL is empty. Empty, with WECOM_ALERTS_WEBHOOK_URL empty too, "
+        "pauses the failed-request alerter. Part of the alerts.runtime group.",
         "str",
         secret=True,
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "failed_request_alert_threshold",
@@ -1130,11 +1440,52 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "alerts",
         "Environment name shown on alerts, such as production or staging. Empty infers "
         "it from BASE_URL.",
+        one_time=True,
     ),
     ConfigEntry(
         "ENVIRONMENT",
         "alerts",
         "Older name of DEPLOYMENT_ENV, used while DEPLOYMENT_ENV is empty.",
+        one_time=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_ENABLED",
+        "alerts",
+        "Keep a history of every backend alert, suppression and delivery result in the "
+        "gateway database, and accept history from sources with a writer credential. On "
+        "whenever the gateway has a database; false turns capture off, and history already "
+        "stored stays readable. Nothing is deleted automatically.",
+        type="bool",
+        default="true",
+        restart_required=True,
+        one_time=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_DEPLOYMENT_ID",
+        "alerts",
+        "Deployment id written on this gateway's alert history and matched by reader "
+        "credentials. Empty is 'default'.",
+        restart_required=True,
+        one_time=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_READ_CREDENTIALS",
+        "alerts",
+        "JSON list of read-only alert-history credentials: SHA-256 of each token, the "
+        "deployments and environments it may read, and its expiry. Tokens themselves are "
+        "never stored.",
+        type="text",
+        secret=True,
+        one_time=True,
+    ),
+    ConfigEntry(
+        "ALERT_HISTORY_WRITER_CREDENTIALS",
+        "alerts",
+        "JSON list of alert-history source credentials: SHA-256 of each token and the "
+        "source, namespace, deployment and environments it may write, and its expiry.",
+        type="text",
+        secret=True,
+        one_time=True,
     ),
     # --- integrations ------------------------------------------------------
     ConfigEntry(
@@ -1270,6 +1621,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "written. Weigh your users' expectations before turning it on.",
         "bool",
         restart_required=True,
+        one_time=True,
     ),
     _setting(
         "erasure_fence_secret",
@@ -1282,6 +1634,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         restart_required=True,
         immutable=True,
         fallback_key="API_KEY_SECRET",
+        one_time=True,
     ),
     _setting(
         "erasure_fence_protocol_ready",
@@ -1289,6 +1642,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Allow permanent account deletion. Leave it off until every process that writes "
         "the request log checks the erasure fence.",
         "bool",
+        one_time=True,
     ),
 )
 
@@ -1301,13 +1655,6 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "DB_USER": "database connection",
     "DB_PASSWORD": "database connection",
     "DB_ENABLED": "database connection",
-    "MODELS_CONFIG_PATH": "configuration file location",
-    "MODELS_CONFIG": "configuration file location",
-    "ROUTING_CONFIG_PATH": "configuration file location",
-    "ROUTING_CONFIG": "configuration file location",
-    "ALERTS_CONFIG_PATH": "configuration file location",
-    "DISTRIBUTION_CONFIG_PATH": "configuration file location",
-    "DISTRIBUTION_CONFIG_MODE": "configuration file location",
     "LOG_FILE": "process wiring",
     "BACKEND_EXTENSIONS": "process wiring: imports code at boot",
     "GEOIP_COUNTRY_DB": "process wiring",
@@ -1317,6 +1664,31 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "GUNICORN_WORKERS": "process wiring",
     "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
+    "TRUST_KUBERNETES_PROXY_DISCOVERY": "network wiring: opt-in authenticated proxy discovery",
+    "KUBERNETES_PROXY_NAMESPACE": "network wiring: namespace containing the proxy Service",
+    "KUBERNETES_PROXY_SERVICE_NAME": "network wiring: exact proxy Service identity",
+    "KUBERNETES_PROXY_SERVICE_UID": "network wiring: pins the proxy Service across replacement",
+    "KUBERNETES_PROXY_WORKLOAD_UID": "network wiring: pins the controller owning proxy Pods",
+    "KUBERNETES_PROXY_API_URL": "network wiring: trusted Kubernetes API origin",
+    "KUBERNETES_PROXY_CA_FILE": "network wiring: Kubernetes API TLS trust root",
+    "KUBERNETES_PROXY_TOKEN_FILE": "network wiring: projected read-only service-account token",
+    "KUBERNETES_PROXY_MAX_AGE_SECONDS": "network wiring: maximum lifetime of a proxy snapshot",
+}
+
+#: Settings an earlier version read that no longer control anything, with what
+#: replaced each. A row or environment value left behind is kept as it is -- a
+#: rollback to that version reads it again -- but it is neither listed, imported
+#: nor written here, and every boot that finds one warns about it once. An
+#: administrator may still delete the row.
+RETIRED_SETTINGS: Mapping[str, str] = {
+    "MODELS_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "MODELS_CONFIG": "application documents are configured in Admin Settings",
+    "ROUTING_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "ROUTING_CONFIG": "application documents are configured in Admin Settings",
+    "ALERTS_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "DISTRIBUTION_CONFIG_PATH": "application documents are configured in Admin Settings",
+    "DISTRIBUTION_CONFIG_MODE": "application documents are configured in Admin Settings",
+    "BATCH_EXPANSION_ENABLED": "every batch kind is available whenever BATCH_ENABLED is on",
 }
 
 #: ``Settings`` fields deliberately left out of the registry, and why.
@@ -1335,6 +1707,70 @@ DERIVED_SETTINGS_FIELDS: tuple[str, ...] = (
     "trusted_direct_client_parsed",
     "trusted_cloudflare_parsed",
 )
+
+#: The first live configuration group (:mod:`serving.config.live`).
+ALERTS_RUNTIME_GROUP = "alerts.runtime"
+
+#: Live configuration groups and the keys each one owns. A key belongs to at
+#: most one group. Every owned key stays ``restart_required`` here: that is how
+#: it behaves until an operator activates the group's persisted contract
+#: (``python -m serving.config.manage live activate``), and again after one
+#: deactivates it in a process that never applied it. A key moves into a group
+#: only once its adapter, every reader on its execution path and the tests
+#: are in place; ``tests/unit/config/test_live_groups.py`` holds the list to
+#: the readers.
+MANAGED_GROUPS: Mapping[str, GroupContract] = {
+    ALERTS_RUNTIME_GROUP: GroupContract(
+        ALERTS_RUNTIME_GROUP,
+        schema_version=1,
+        keys=(
+            "SLACK_ALERTS_WEBHOOK_URL",
+            "SLACK_WEBHOOK_URL",
+            "WECOM_ALERTS_WEBHOOK_URL",
+            "FAILED_REQUEST_ALERT_THRESHOLD",
+            "FAILED_REQUEST_ALERT_WINDOW_MINUTES",
+            "FAILED_REQUEST_ALERT_COOLDOWN_MINUTES",
+            "FAILED_REQUEST_ALERT_RATE",
+            "FAILED_REQUEST_ALERT_RATE_MIN_COUNT",
+        ),
+    ),
+}
+
+_GROUP_OF_KEY: dict[str, str] = {
+    key: name for name, contract in MANAGED_GROUPS.items() for key in contract.keys
+}
+
+#: How a change to a setting reaches the code that reads it.
+ApplyMode = Literal["live", "managed", "restart", "immutable"]
+
+
+def managed_group(key: str) -> str | None:
+    """Return the live configuration group that owns *key*, if one does."""
+    return _GROUP_OF_KEY.get(key)
+
+
+def apply_mode(entry: ConfigEntry, *, group_managed: bool = False) -> ApplyMode:
+    """Return how a change to *entry* applies.
+
+    ``live`` is the older in-place apply (the overlay and :func:`on_change`
+    listeners, read at use), ``managed`` a group the live protocol applies and
+    acknowledges, ``restart`` a value captured at startup and ``immutable`` a
+    value that cannot change once set.
+
+    Args:
+        entry: The setting.
+        group_managed: Whether this process applies *entry*'s group through
+            the live protocol now (its contract is active). Otherwise an owned
+            key is restart-required, as declared.
+    """
+    if entry.immutable:
+        return "immutable"
+    if group_managed and managed_group(entry.key) is not None:
+        return "managed"
+    if entry.restart_required:
+        return "restart"
+    return "live"
+
 
 #: Environment-variable spellings of the runtime settings, which ``site_settings``
 #: holds and the Settings tab edits.
@@ -1465,9 +1901,34 @@ def _static_by_key() -> dict[str, ConfigEntry]:
     return {entry.key: entry for entry in static_entries()}
 
 
+def is_offered(entry: ConfigEntry) -> bool:
+    """Return whether the admin console offers *entry* for editing.
+
+    It offers neither a setting with a single accepted value, which leaves
+    nothing to choose, nor the settings of a category that cannot take effect
+    here: the phone settings do nothing until an extension registers an SMS
+    provider.
+    """
+    if len(entry.choices) == 1:
+        return False
+    category = _CATEGORY_BY_ID.get(entry.category)
+    return category is None or category.in_effect is None or category.in_effect()
+
+
+def is_one_time(entry: ConfigEntry) -> bool:
+    """Return whether *entry* is usually set once, by its own flag or its category's."""
+    category = _CATEGORY_BY_ID.get(entry.category)
+    return entry.one_time or (category is not None and category.one_time)
+
+
 def is_environment_only(key: str) -> bool:
     """Return whether *key* stays in the environment."""
     return key in ENVIRONMENT_ONLY
+
+
+def is_retired(key: str) -> bool:
+    """Return whether *key* is a setting no code reads any more (:data:`RETIRED_SETTINGS`)."""
+    return key in RETIRED_SETTINGS
 
 
 def is_runtime_setting_name(key: str) -> bool:
@@ -1594,6 +2055,14 @@ def _load_yaml(path: Path | None) -> Any:
         return None
 
 
+def _load_yaml_text(text: str) -> Any:
+    """Parse a stored document. An unreadable document contributes no references."""
+    try:
+        return yaml.safe_load(text)
+    except yaml.YAMLError:
+        return None
+
+
 def _note(
     found: dict[str, DiscoveredReference],
     key: str,
@@ -1673,10 +2142,27 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
         _note(found, key, "alerts")
 
 
+def discover_documents(models: Any, routing: Any, alerts: Any) -> dict[str, DiscoveredReference]:
+    """Discover settings referenced by parsed database application documents."""
+    found: dict[str, DiscoveredReference] = {}
+    _discover_models(models, found)
+    _discover_routing(routing, found)
+    _discover_alerts(alerts, found)
+    for data in (models, routing, alerts):
+        for key in _credential_references(data):
+            if key in found:
+                found[key].credential = True
+    return found
+
+
 def discover_references(
     models_path: Path | None,
     routing_path: Path | None,
     alerts_path: Path | None,
+    *,
+    models_text: str | None = None,
+    routing_text: str | None = None,
+    alerts_text: str | None = None,
 ) -> dict[str, DiscoveredReference]:
     """Find every ``${VAR}`` reference in the three configuration files.
 
@@ -1684,11 +2170,25 @@ def discover_references(
     for nothing. A missing or unreadable file contributes no references. A
     reference from a field that carries a credential is marked as one
     (:attr:`DiscoveredReference.credential`).
+
+    A stored catalog document replaces its file. Passing the text, including an
+    empty string, does not fall back to the path. Alerts have no stored
+    document and always come from the file.
+
+    Args:
+        models_path: Model registry file, used when ``models_text`` is None.
+        routing_path: Routing file, used when ``routing_text`` is None.
+        alerts_path: Alerts file.
+        models_text: Stored model registry, when the database has that row.
+        routing_text: Stored routing document, when the database has that row.
+        alerts_text: Explicit stored alert document; used instead of a file when provided.
     """
     found: dict[str, DiscoveredReference] = {}
-    models, routing, alerts = (
-        _load_yaml(path) for path in (models_path, routing_path, alerts_path)
+    models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
+    routing = (
+        _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
     )
+    alerts = _load_yaml_text(alerts_text) if alerts_text is not None else _load_yaml(alerts_path)
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
@@ -1752,7 +2252,7 @@ def build_entries(
     entries: dict[str, ConfigEntry] = {entry.key: entry for entry in static_entries()}
 
     for key, reference in discovered.items():
-        if is_environment_only(key) or is_runtime_setting_name(key):
+        if is_environment_only(key) or is_runtime_setting_name(key) or is_retired(key):
             continue
         requirement = _discovered_requirement(reference)
         used_by = tuple(sorted(reference.used_by))
@@ -1792,7 +2292,12 @@ def build_entries(
             entries[key] = numbered
 
     for key in sorted(stored):
-        if key in entries or is_environment_only(key) or is_runtime_setting_name(key):
+        if (
+            key in entries
+            or is_environment_only(key)
+            or is_runtime_setting_name(key)
+            or is_retired(key)
+        ):
             continue
         entries[key] = custom_entry(key)
 

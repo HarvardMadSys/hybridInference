@@ -35,6 +35,7 @@ def test_every_settings_field_is_classified() -> None:
         for name in Settings.model_fields
         if name not in registered
         and registry.settings_env_name(name) not in registry.ENVIRONMENT_ONLY
+        and registry.settings_env_name(name) not in registry.RETIRED_SETTINGS
         and name not in RUNTIME_SETTINGS_REGISTRY
         and name not in registry.UNREGISTERED_SETTINGS_FIELDS
     ]
@@ -50,6 +51,7 @@ def test_a_field_is_classified_only_once() -> None:
         homes = [
             name in registered,
             registry.settings_env_name(name) in registry.ENVIRONMENT_ONLY,
+            registry.settings_env_name(name) in registry.RETIRED_SETTINGS,
             name in RUNTIME_SETTINGS_REGISTRY,
             name in registry.UNREGISTERED_SETTINGS_FIELDS,
         ]
@@ -60,6 +62,24 @@ def test_unregistered_fields_name_a_reason() -> None:
     for name, reason in registry.UNREGISTERED_SETTINGS_FIELDS.items():
         assert name in Settings.model_fields
         assert reason.strip()
+
+
+def test_kubernetes_proxy_discovery_stays_in_deployment_environment() -> None:
+    keys = {
+        "TRUST_KUBERNETES_PROXY_DISCOVERY",
+        "KUBERNETES_PROXY_NAMESPACE",
+        "KUBERNETES_PROXY_SERVICE_NAME",
+        "KUBERNETES_PROXY_SERVICE_UID",
+        "KUBERNETES_PROXY_WORKLOAD_UID",
+        "KUBERNETES_PROXY_API_URL",
+        "KUBERNETES_PROXY_CA_FILE",
+        "KUBERNETES_PROXY_TOKEN_FILE",
+        "KUBERNETES_PROXY_MAX_AGE_SECONDS",
+    }
+    for key in keys:
+        assert registry.is_environment_only(key)
+        assert registry.static_entry(key) is None
+        assert key.lower() in Settings.model_fields
 
 
 def test_static_entries_are_unique_and_well_formed() -> None:
@@ -118,6 +138,63 @@ def test_flags_the_spec_names() -> None:
     # The routing switches are read as value != "0" and must be stored that way.
     assert by_key["ROUTING_AFFINITY_ENABLED"].flag
     assert by_key["ROUTING_PREFILL_AWARE_ENABLED"].flag
+
+
+def test_what_a_deployment_sets_up_is_one_time() -> None:
+    """The console lists these last: what first-run setup asks for, a generated secret, and more."""
+    for entry in registry.static_entries():
+        if entry.setup or entry.generated or entry.immutable:
+            assert registry.is_one_time(entry), entry.key
+    by_key = {entry.key: entry for entry in registry.static_entries()}
+    for key in (
+        "SITE_DOCS_URL",
+        "COOKIE_SAMESITE",
+        "TURNSTILE_SECRET_KEY",
+        "PROVIDER_ROUTE_TYPES",
+        "SLACK_ALERTS_WEBHOOK_URL",
+        "ALERT_HISTORY_READ_CREDENTIALS",
+        "DB_STORE_FULL_CONTENT",
+        # Each setting of a one-time category, without a flag of its own.
+        "SMTP_HOST",
+        "TRUSTED_PROXIES",
+        "RAG_TOP_K",
+    ):
+        assert registry.is_one_time(by_key[key]), key
+    assert not by_key["TRUSTED_PROXIES"].one_time
+    for key in (
+        "LOG_LEVEL",
+        "ADMIN_EMAILS",
+        "LOGIN_RATE_LIMIT_PER_15MIN",
+        "SIGNUP_NOTIFY_EMAILS",
+        "ALERTS_ENABLED",
+        "FAILED_REQUEST_ALERT_THRESHOLD",
+        "BATCH_ENABLED",
+        "ENABLE_ROUTEWISE",
+        "REQUEST_TIMEOUT_SECONDS",
+    ):
+        assert not registry.is_one_time(by_key[key]), key
+
+
+def test_provider_keys_and_registry_variables_are_not_one_time() -> None:
+    """Keys are added and rotated while the gateway runs."""
+    reference = registry.DiscoveredReference("CHAT_UPSTREAM_KEY", "providers", set())
+    entries = registry.build_entries(
+        {"CHAT_UPSTREAM_KEY": reference}, {"BOX_REGION": False}, {"MINIMAX_API_KEY2": "k2"}
+    )
+    # A model-registry reference, a numbered pool key and an administrator's variable.
+    variables = ("CHAT_UPSTREAM_KEY", "MINIMAX_API_KEY2", "BOX_REGION")
+    assert {entries[key].origin for key in variables} == {"discovered", "numbered", "custom"}
+    assert [
+        key
+        for key, entry in entries.items()
+        if entry.category == "providers" and registry.is_one_time(entry)
+    ] == [
+        "PROVIDER_ROUTE_TYPES",
+        "CHUTES_BASE_URL",
+        "FEATHERLESS_BASE_URL",
+        "MINIMAX_BASE_URL",
+        "LOCAL_API_KEY",
+    ]
 
 
 def test_auth_secrets_are_required_unless_database_free_and_auth_off() -> None:
@@ -209,7 +286,7 @@ def test_runtime_and_environment_only_names() -> None:
     assert registry.is_runtime_setting_name("USER_AUTH_ENABLED")
     assert registry.is_runtime_setting_name("SIGNUP_ENABLED")
     assert registry.is_environment_only("DB_HOST")
-    assert registry.is_environment_only("MODELS_CONFIG")
+    assert registry.is_retired("MODELS_CONFIG")
     assert registry.is_environment_only("REFRESH_TOKEN_COOKIE_NAME")
 
 
@@ -228,7 +305,9 @@ def test_every_batch_setting_is_registered_and_applies_live() -> None:
     assert category.label == "Batch inference"
     entries = _batch_entries()
     # Every key serving.batch.config reads, and nothing else.
-    assert set(entries) == {value for name, value in vars(batch).items() if name.endswith("_KEY")}
+    assert set(entries) == {
+        value for name, value in vars(batch).items() if name.endswith("_KEY")
+    } | set(batch.ROLE_CONCURRENCY_KEYS.values())
     for entry in entries.values():
         assert entry.field is None, entry.key
         assert not entry.restart_required, entry.key
@@ -262,6 +341,10 @@ def test_the_batch_entries_accept_exactly_what_the_batch_config_reads(monkeypatc
         batch.MAX_ACTIVE_KEY: lambda config: config.max_active_per_user,
         batch.WINDOW_HOURS_KEY: lambda config: config.completion_window_hours,
         batch.RETENTION_DAYS_KEY: lambda config: config.retention_days,
+        **{
+            key: (lambda config, role=role: config.role_concurrency[role])
+            for role, key in batch.ROLE_CONCURRENCY_KEYS.items()
+        },
     }
     for key, read in reads.items():
         entry = entries[key]

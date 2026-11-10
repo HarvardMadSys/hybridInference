@@ -48,6 +48,59 @@ class _FakeBatchStore:
     async def model_stats(self) -> dict[str, dict[str, int]]:
         return {model_id: dict(counts) for model_id, counts in self.stats.items()}
 
+    async def cancel_batch(self, batch_id: str) -> dict | None:
+        self.writes.append(("cancel", batch_id))
+        return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
+
+    async def list_batches(self, **_filters) -> list[dict]:
+        return [
+            {"id": "batch_a", "user_id": "u-named"},
+            {"id": "batch_b", "user_id": "u-gone"},
+        ]
+
+    async def get_batch(self, batch_id: str) -> dict | None:
+        return {"id": batch_id, "user_id": "u-owner"} if batch_id == "batch_1" else None
+
+    async def item_contents(self, batch_id: str, *, after: int, limit: int) -> list[dict]:
+        self.writes.append(("contents", batch_id, after, limit))
+        items = [
+            {
+                "id": n,
+                "custom_id": f"req-{n}",
+                "request": {"messages": [{"role": "user", "content": f"q{n}"}]},
+                "completed_at": None,
+            }
+            for n in (1, 2, 3)
+        ]
+        return [item for item in items if item["id"] > after][:limit]
+
+    async def user_labels(self, user_ids: list[str]) -> dict[str, dict]:
+        self.writes.append(("labels", tuple(user_ids)))
+        return {"u-named": {"user_name": "Ada", "email": "ada@example.test"}}
+
+    async def batch_summary(self) -> list[dict]:
+        usage = {
+            "batches": 1,
+            "active": 0,
+            "requests": 2,
+            "completed": 2,
+            "failed": 0,
+            "cancelled": 0,
+            "expired": 0,
+            "cost_usd": 0.5,
+            "prompt_tokens": 100,
+            "completion_tokens": 10,
+            "unknown_cost_attempts": 0,
+            "cached_tokens": 30,
+            "cache_unrecorded_batches": 0,
+            "last_created_at": None,
+            "email": None,
+        }
+        return [
+            {**usage, "user_id": "u-1", "user_name": "Ada"},
+            {**usage, "user_id": "u-2", "user_name": None, "cache_unrecorded_batches": 1},
+        ]
+
 
 def _make_adapter(model_id: str):
     adapter = MagicMock()
@@ -114,13 +167,13 @@ async def test_list_shows_every_canonical_chat_model_at_the_default(admin_client
 
     assert response.status_code == 200
     body = response.json()
-    assert body["default_concurrency"] == 4
+    assert body["default_concurrency"] == 64
     # Aliases, unpublished routes and embedding models are not listed.
     assert [model["model_id"] for model in body["models"]] == ["provider/model", "public-model"]
     assert _by_id(body)["public-model"] == {
         "model_id": "public-model",
         "max_concurrency": None,
-        "effective_concurrency": 4,
+        "effective_concurrency": 64,
         "running": 0,
         "queued": 0,
     }
@@ -145,7 +198,7 @@ async def test_list_reports_overrides_load_and_models_only_the_store_knows(admin
     assert models["public-model"]["effective_concurrency"] == 0
     assert models["public-model"]["queued"] == 5
     assert models["provider/model"]["max_concurrency"] is None
-    assert models["provider/model"]["effective_concurrency"] == 4
+    assert models["provider/model"]["effective_concurrency"] == 64
     assert models["provider/model"]["running"] == 3
     # A cap left behind by a model that is no longer routed, and a model that
     # still has batch requests open, stay visible.
@@ -336,11 +389,140 @@ async def test_patch_writes_an_audit_record(admin_client):
     client.audit.assert_awaited_once()
     args = client.audit.await_args.args
     assert args[0] is client.app.state.services.operational_store
-    assert args[2:] == (
-        "batch.models.update",
-        None,
-        {"model_id": "public-model", "old_max_concurrency": 3, "new_max_concurrency": 1},
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.models.update"
+    assert kwargs["actor"].type == "admin_token"
+    assert kwargs["actor"].id is None
+    assert kwargs["target"].type == "model"
+    assert kwargs["target"].id == "public-model"
+    assert kwargs["details"] == {
+        "model_id": "public-model",
+        "old_max_concurrency": 3,
+        "new_max_concurrency": 1,
+    }
+
+
+async def test_cancelling_a_users_batch_audits_it_against_its_owner(admin_client, monkeypatch):
+    client, store = admin_client
+    monkeypatch.setattr(
+        "serving.servers.routers.batch_console.batch_view", lambda row: {"id": row["id"]}
     )
+
+    response = await client.post("/admin/batch/jobs/batch_1/cancel", headers=ADMIN)
+
+    assert response.status_code == 200
+    assert store.writes == [("cancel", "batch_1")]
+    client.audit.assert_awaited_once()
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.jobs.cancel"
+    assert kwargs["actor"].type == "admin_token"
+    assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
+    assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_the_batch_list_names_each_owner(admin_client, monkeypatch):
+    client, store = admin_client
+    monkeypatch.setattr(
+        "serving.servers.routers.batch_console.batch_view",
+        lambda row: {"id": row["id"], "user_id": row["user_id"]},
+    )
+
+    response = await client.get("/admin/batch/jobs", headers=ADMIN)
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data == [
+        {
+            "id": "batch_a",
+            "user_id": "u-named",
+            "user_name": "Ada",
+            "user_email": "ada@example.test",
+        },
+        # An owner with no account (or no name) still lists, by id.
+        {"id": "batch_b", "user_id": "u-gone", "user_name": None, "user_email": None},
+    ]
+    # One lookup for the page, not one per batch.
+    assert store.writes == [("labels", ("u-named", "u-gone"))]
+
+
+async def test_the_summary_totals_cached_input_and_names_each_owner(admin_client):
+    client, _ = admin_client
+
+    response = await client.get("/admin/batch/summary", headers=ADMIN)
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [user["user_name"] for user in body["users"]] == ["Ada", None]
+    assert body["totals"]["cached_tokens"] == 60
+    assert body["totals"]["cache_unrecorded_batches"] == 1
+    assert body["totals"]["prompt_tokens"] == 200
+
+
+def _store_prompts(client, enabled: bool) -> None:
+    client.app.state.services.log_store = MagicMock(store_full_prompts=enabled)
+
+
+async def test_an_admin_reads_a_batchs_prompts_page_by_page(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    first = await client.get("/admin/batch/jobs/batch_1/requests?limit=2", headers=ADMIN)
+    assert first.status_code == 200
+    body = first.json()
+    assert [item["custom_id"] for item in body["data"]] == ["req-1", "req-2"]
+    assert body["data"][0]["request"]["messages"][0]["content"] == "q1"
+    assert (body["has_more"], body["last_id"]) == (True, 2)
+
+    second = await client.get("/admin/batch/jobs/batch_1/requests?limit=2&after=2", headers=ADMIN)
+    assert [item["custom_id"] for item in second.json()["data"]] == ["req-3"]
+    assert second.json()["has_more"] is False
+
+    # Opening the batch's requests is audited once, against its owner.
+    client.audit.assert_awaited_once()
+    kwargs = client.audit.await_args.kwargs
+    assert kwargs["action"] == "batch.requests.read"
+    assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
+    assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_prompts_stay_unreadable_where_the_gateway_does_not_keep_them(admin_client):
+    client, store = admin_client
+    _store_prompts(client, False)
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests", headers=ADMIN)
+
+    assert response.status_code == 403
+    assert "db_store_full_content" in response.json()["detail"]
+    assert not any(write[0] == "contents" for write in store.writes)
+    client.audit.assert_not_awaited()
+
+
+async def test_reading_an_unknown_batchs_prompts_is_a_404(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    response = await client.get("/admin/batch/jobs/batch_missing/requests", headers=ADMIN)
+
+    assert response.status_code == 404
+    client.audit.assert_not_awaited()
+
+
+async def test_reading_prompts_needs_an_administrator(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests")
+
+    assert response.status_code == 401
+
+
+async def test_cancelling_an_unknown_batch_is_a_404_and_not_audited(admin_client):
+    client, _ = admin_client
+
+    response = await client.post("/admin/batch/jobs/batch_missing/cancel", headers=ADMIN)
+
+    assert response.status_code == 404
+    client.audit.assert_not_awaited()
 
 
 # --- access ----------------------------------------------------------------------------

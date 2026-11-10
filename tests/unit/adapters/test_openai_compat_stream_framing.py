@@ -250,3 +250,61 @@ async def test_null_error_on_a_content_chunk_is_not_an_error_frame(monkeypatch):
     chunks = await _stream(_adapter())
 
     assert chunks[-1].strip() == "data: [DONE]"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_error_frame_that_also_carries_a_finish_reason_of_error_raises(monkeypatch):
+    """OpenRouter's mid-stream error: a top-level error *and* ``finish_reason: "error"``.
+
+    It ends a stream that failed after tokens were sent with one frame holding
+    both. ``"error"`` is not a finish, and the frame must not pass for a
+    completed generation.
+    """
+    payload = {
+        "id": "cmpl-abc123",
+        "object": "chat.completion.chunk",
+        "model": "glm-5.2",
+        "error": {"code": "server_error", "message": "Provider disconnected unexpectedly"},
+        "choices": [{"index": 0, "delta": {"content": ""}, "finish_reason": "error"}],
+    }
+    _serve(
+        monkeypatch,
+        [_frame({"content": "The answer is"}), f"data: {json.dumps(payload)}\n\n".encode()],
+    )
+
+    with pytest.raises(UpstreamStreamError) as excinfo:
+        async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert excinfo.value.status == 502
+    assert "Provider disconnected unexpectedly" in str(excinfo.value)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_429_error_frame_releases_the_outbound_slot_as_a_429(monkeypatch):
+    """The AIMD limiter shrinks only on a 429, so the slot must hear the frame's status."""
+    released: list[int | None] = []
+
+    class _Slot:
+        def release(self, *, status_code=None):
+            released.append(status_code)
+
+    async def fake_slot(self, api_key):
+        return _Slot()
+
+    monkeypatch.setattr(OpenAICompatAdapter, "_acquire_upstream_slot", fake_slot)
+    _serve(
+        monkeypatch,
+        [
+            _frame({"content": "a"}),
+            _error_frame({"message": "too many concurrent requests", "code": 429}),
+        ],
+    )
+
+    with pytest.raises(UpstreamStreamError):
+        async for _ in _adapter().stream_chat_completion([{"role": "user", "content": "hi"}]):
+            pass
+
+    assert released[0] == 429

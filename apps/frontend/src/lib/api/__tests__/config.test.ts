@@ -4,7 +4,6 @@ import { setAccessToken } from '../client';
 import {
   checkBackendHealth,
   getConfig,
-  markConfigSecret,
   patchConfig,
   resetConfigKey,
   restartBackend,
@@ -122,6 +121,18 @@ describe('configuration client', () => {
     expect(init.method).toBe('DELETE');
   });
 
+  it('sends the password a security-relevant reset needs in the DELETE body', async () => {
+    fetchMock.mockResolvedValueOnce(json(EMPTY));
+
+    await resetConfigKey('SMTP_PASSWORD', { password: 'admin-password' });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(String(url)).toMatch(/\/admin\/config\/SMTP_PASSWORD$/);
+    expect(init.method).toBe('DELETE');
+    expect(JSON.parse(init.body as string)).toEqual({ password: 'admin-password' });
+    expect(new Headers(init.headers).get('Content-Type')).toBe('application/json');
+  });
+
   it('asks for a restart with POST /admin/system/restart', async () => {
     fetchMock.mockResolvedValueOnce(json({ restarting: true, instance: 'abc123' }, 202));
 
@@ -129,20 +140,6 @@ describe('configuration client', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toMatch(/\/admin\/system\/restart$/);
     expect(init.method).toBe('POST');
-  });
-
-  it('marks a stored variable secret with a PATCH that changes no value', async () => {
-    fetchMock.mockResolvedValueOnce(json(EMPTY));
-
-    await markConfigSecret('MY_ROUTE_HEADER');
-
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toMatch(/\/admin\/config$/);
-    expect(init.method).toBe('PATCH');
-    expect(JSON.parse(init.body as string)).toEqual({
-      values: {},
-      secrets: { MY_ROUTE_HEADER: true },
-    });
   });
 
   it.each([
@@ -153,7 +150,9 @@ describe('configuration client', () => {
       json({ error: { type: 'invalid_request_error', message, code: 400 } }, 400),
     );
 
-    const error = await markConfigSecret('MY_KEY').catch((e: unknown) => e);
+    const error = await patchConfig({ values: {}, secrets: { MY_KEY: true } }).catch(
+      (e: unknown) => e,
+    );
 
     expect(error).toBeInstanceOf(APIError);
     expect((error as APIError).statusCode).toBe(400);
@@ -196,7 +195,6 @@ describe('configuration client', () => {
     for (const call of [
       () => getConfig(),
       () => patchConfig({ values: { SMTP_HOST: 'smtp.example.test' } }),
-      () => markConfigSecret('SMTP_PASSWORD'),
       () => resetConfigKey('SMTP_HOST'),
     ]) {
       fetchMock.mockResolvedValueOnce(json(leaky));

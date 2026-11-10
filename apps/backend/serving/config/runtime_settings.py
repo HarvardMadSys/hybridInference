@@ -37,6 +37,26 @@ logger = get_logger(__name__)
 REFRESH_INTERVAL_SECONDS = 10.0
 
 RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
+    "analytics_token_usage_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Token Usage on Admin Analytics for all administrators.",
+    },
+    "analytics_users_and_requests_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Users and Requests on Admin Analytics for all administrators.",
+    },
+    "analytics_performance_metrics_enabled": {
+        "type": "bool",
+        "default": True,
+        "description": "Show Performance Metrics on Admin Analytics for all administrators.",
+    },
+    "analytics_growth_rate_enabled": {
+        "type": "bool",
+        "default": False,
+        "description": "Show the Growth Rate card on Admin Analytics for all administrators.",
+    },
     "user_auth_enabled": {
         "type": "bool",
         "default": True,
@@ -188,12 +208,6 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "min": 0.1,
         "description": "Latency SLO in seconds for Routewise LP decisions",
     },
-    "routewise_latency_min_samples": {
-        "type": "int",
-        "default": 10,
-        "min": 1,
-        "description": "Legacy RouteWise latency sample threshold retained for compatibility",
-    },
     "routewise_probe_enabled": {
         "type": "bool",
         "default": False,
@@ -227,7 +241,14 @@ class RuntimeSettings:
         if raw is None:
             return None
         if value_type == "bool":
-            return raw.lower() in ("true", "1", "yes")
+            # Parsed as Settings parses the variable, so every spelling a write
+            # accepts reads as it means: a configuration restore stored the
+            # backup's word as it was, and ``on`` read as false here turned
+            # user_auth_enabled off. A word no write accepts still reads false.
+            try:
+                return _PARSERS["bool"].validate_python(raw.strip())
+            except ValidationError:
+                return False
         if value_type == "int":
             return int(raw)
         if value_type == "float":

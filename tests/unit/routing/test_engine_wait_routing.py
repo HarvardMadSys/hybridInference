@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -91,7 +92,10 @@ class _Engine(BaseAdapter):
 
     def _record(self) -> None:
         self.calls += 1
-        self.watches.append(req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH))
+        # Every attempt is pushed the router's dispatch report; the first-token
+        # watch, when the attempt has one, rides on it.
+        report = req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH)
+        self.watches.append(report.watch)
 
     async def _first_token(self) -> None:
         if self.delay is not None:
@@ -162,6 +166,18 @@ def _limiter():
     )
     yield
     reset_upstream_limiter()
+
+
+@pytest.fixture(autouse=True)
+def _extension_on(monkeypatch):
+    """Turn the engine-wait extension on: it is what this module tests.
+
+    The extension ships dark -- it is off until an operator has staging
+    evidence for it -- so the module turns it on explicitly.
+    """
+    from routing import offload
+
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
 
 
 @pytest.fixture(autouse=True)
@@ -762,3 +778,55 @@ async def test_a_stream_whose_retry_fails_reports_the_engines_own_error():
         "m:reserved-api",
         "m:engine-api",
     ]
+
+
+@needs_timeout
+async def test_a_warm_continuation_through_the_router_keeps_the_short_wait():
+    """A warm continuation is not charged as a cold prefill.
+
+    The hint's anchor is what proves the prompt still contains the remembered
+    one, and the wait is sized on the un-cached remainder. When the anchor is
+    not computed, the strict estimate counts the whole prompt as un-cached and
+    the warm continuation is given the cold wait -- up to the ceiling.
+    """
+    engine = _Engine("engine", answered=True, delay=0.25)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+
+    first = _prompt(24_000)
+    await _collect(router.stream_chat_completion(MODEL, first))
+    # The second turn grows the prompt, so it prefills only the growth.
+    second = _prompt(24_576)
+    chunks = await _collect(router.stream_chat_completion(MODEL, second))
+
+    assert _content(chunks) == "engine"
+    # The second turn's watch is the last one the engine saw.
+    watch = engine.watches[-1]
+    assert watch.uncached_prefill_tokens < 1_000
+
+
+@needs_timeout
+async def test_the_expired_attempt_logs_its_own_wait(caplog):
+    """The telemetry describes the attempt that expired.
+
+    The offload route is chosen after the expiry, so logging the wait at the
+    offload would report the target's numbers rather than the abandoned
+    attempt's.
+    """
+    engine = _Engine("engine", answered=False, delay=0.0)
+    reserved = _Engine("reserved", route_id="offload", answered=True)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+
+    with caplog.at_level(logging.INFO):
+        await _collect(router.stream_chat_completion(MODEL, _prompt(24_576)))
+
+    records = [r for r in caplog.records if r.getMessage() == "route_engine_wait_expired"]
+    assert records, "the expired attempt logged nothing"
+    fields = records[0].__dict__
+    assert fields["endpoint_id"] == "m:engine-api"
+    assert fields["engine_wait_uncached_tokens"] == 24_576
+    assert fields["engine_wait_seconds"] == pytest.approx(policy.engine_wait_seconds(24_576))

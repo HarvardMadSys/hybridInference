@@ -106,7 +106,7 @@ class _SlotAdapter(BaseAdapter):
 
 
 class _Policies:
-    """Minimal ``OffloadPolicySource``."""
+    """Minimal offload policy source: ``get_offload_policy`` from a dict."""
 
     def __init__(self, policies: dict[str, OffloadPolicy] | None = None) -> None:
         self.policies = dict(policies or {})
@@ -197,7 +197,7 @@ def test_engine_wait_keeps_the_base_for_a_warm_prompt():
     assert policy.engine_wait_seconds(-1) == 0.05
 
 
-def test_engine_wait_adds_a_prefill_allowance_to_the_base():
+def test_engine_wait_adds_a_prefill_allowance_to_the_base(monkeypatch):
     """The allowance is calibrated in tokens/second, independent of the base.
 
     The old proportional form made a low base cancel the same measured prefills
@@ -205,6 +205,7 @@ def test_engine_wait_adds_a_prefill_allowance_to_the_base():
     measured 18.3k case, while a 2 s base receives the same 3.58 s prefill
     allowance rather than reaching the cap at ~12k tokens.
     """
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
     measured_tail = [
         (1_819, 0.56),
         (2_659, 0.97),
@@ -230,8 +231,22 @@ def test_engine_wait_adds_a_prefill_allowance_to_the_base():
     assert all(abs(value - uncapped[0]) < 1e-9 for value in uncapped[1:])
 
 
-def test_engine_wait_extends_with_the_uncached_prefill():
+def test_the_engine_wait_extension_is_off_until_the_staging_evidence_is_in():
+    """The behaviour change ships dark.
+
+    Extending the first-token wait holds a cold prompt of 18k tokens or more
+    for up to eight seconds instead of the configured base, and the rate
+    behind it is calibrated from one staging model. An operator turns it on
+    with the setting once their own evidence supports it.
+    """
+    assert offload.OFFLOAD_ENGINE_WAIT_EXTENSION is False
+    policy = _policy(wait_seconds=0.05)
+    assert policy.engine_wait_seconds(18_319) == pytest.approx(0.05)
+
+
+def test_engine_wait_extends_with_the_uncached_prefill(monkeypatch):
     """A cold prefill of a long prompt gets time proportional to the work."""
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
     policy = _policy(wait_seconds=0.05)
     assert policy.engine_wait_seconds(4_096) == pytest.approx(1.65)
     assert policy.engine_wait_seconds(8_192) == pytest.approx(3.25)
@@ -240,6 +255,7 @@ def test_engine_wait_extends_with_the_uncached_prefill():
 
 def test_engine_wait_extension_can_be_disabled_without_restarting_routing(monkeypatch):
     """Rollback restores the configured base on the next request."""
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
     policy = _policy(wait_seconds=0.3)
     assert policy.engine_wait_seconds(18_319) > policy.wait_seconds
     monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", False)

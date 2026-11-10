@@ -16,6 +16,7 @@ from serving.rag.embedder import HashEmbedder
 from serving.rag.store import VectorStore
 from serving.servers.deps import get_current_user
 from serving.servers.routers import rag as rag_module
+from tests.fixtures.application_documents import seed_site
 
 # --------------------------------------------------------------------------- #
 # Fakes for the gateway-as-a-user HTTP helpers (monkeypatched onto rag_module).
@@ -138,7 +139,7 @@ def _configure_distribution(tmp_path, monkeypatch, *, mode="active", features=" 
     manifest.write_text(
         "schema_version: 1\ndistribution:\n  id: test\nfeatures:\n" + features + "\n"
     )
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -179,7 +180,7 @@ def test_disabled_rag_rejects_before_index_or_upstream(
         ("active", "  rag: true"),
         ("active", "  rag: null"),
         ("active", "  {}"),
-        ("dark", "  rag: false"),
+        ("dark", "  rag: true"),
     ],
 )
 @pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
@@ -198,7 +199,7 @@ def test_rag_preserves_enabled_and_legacy_paths(
 @pytest.mark.parametrize("endpoint", ["status", "json", "stream"])
 @pytest.mark.parametrize(
     "problem",
-    ["empty-mode", "typo-mode", "no-path", "missing-file", "bad-yaml", "typo-key", "root-key"],
+    ["bad-yaml", "typo-key", "root-key"],
 )
 def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint, problem):
     manifest = _configure_distribution(tmp_path, monkeypatch)
@@ -216,6 +217,8 @@ def test_invalid_rag_policy_fails_closed(client, tmp_path, monkeypatch, endpoint
         manifest.write_text(manifest.read_text().replace("rag:", "RAG:"))
     elif problem == "root-key":
         manifest.write_text(manifest.read_text().replace("features:\n  rag:", "rag:"))
+    seed_site(monkeypatch, manifest)
+    get_distribution_config.cache_clear()
     get_settings.cache_clear()
     index = AsyncMock(return_value=None)
     monkeypatch.setattr(rag_module, "_load_store", index)
@@ -439,3 +442,69 @@ async def test_open_chat_stream_preflight_error_raises(monkeypatch):
         )
     # 401 from upstream => our RAG_API_KEY is bad => 502 to the client.
     assert ei.value.status_code == 502
+
+
+def _deny_auth():
+    raise HTTPException(status_code=401, detail="unauthorized")
+
+
+def test_chat_authenticates_before_it_parses_the_body(client):
+    """An anonymous caller is refused before its body is parsed at all.
+
+    With the body model on the route, FastAPI parsed the body before any
+    dependency ran, so a malformed body answered 422 to a caller who had not
+    authenticated -- and a large one was parsed for them.
+    """
+    client.app.dependency_overrides[get_current_user] = _deny_auth
+    response = client.post(
+        "/v1/rag/chat", content=b"{not json", headers={"content-type": "application/json"}
+    )
+    assert response.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_chat_does_not_read_an_anonymous_body(client):
+    client.app.dependency_overrides[get_current_user] = _deny_auth
+    read = []
+
+    async def body():
+        read.append(True)
+        yield b'{"messages": [{"role": "user", "content": "hi"}]}'
+
+    transport = httpx.ASGITransport(app=client.app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as async_client:
+        response = await async_client.post(
+            "/v1/rag/chat", content=body(), headers={"content-type": "application/json"}
+        )
+    assert response.status_code == 401
+    assert read == []
+
+
+@pytest.mark.parametrize(
+    ("content", "content_type", "field"),
+    [
+        (b'{"messages": []}', "application/json", "messages"),
+        (b'{"messages": [{"role": "user"}]}', "application/json", "content"),
+        (b'{"messages": [', "application/json", None),
+        (b'{"messages": [{"role": "user", "content": "hi"}]}', "text/plain", None),
+        (b"", "application/json", None),
+    ],
+    ids=["empty-messages", "missing-content", "malformed-json", "not-json", "no-body"],
+)
+def test_chat_still_answers_an_invalid_body_with_422(client, content, content_type, field):
+    response = client.post("/v1/rag/chat", content=content, headers={"content-type": content_type})
+    assert response.status_code == 422
+    locations = [error["loc"] for error in response.json()["detail"]]
+    assert all(location[0] == "body" for location in locations)
+    if field is not None:
+        assert any(field in location for location in locations)
+
+
+def test_chat_body_is_still_described_in_the_api_schema(client):
+    spec = client.app.openapi()
+    operation = spec["paths"]["/v1/rag/chat"]["post"]
+    schema = operation["requestBody"]["content"]["application/json"]["schema"]
+    if "$ref" in schema:
+        schema = spec["components"]["schemas"][schema["$ref"].rsplit("/", 1)[-1]]
+    assert schema["properties"]["messages"]["type"] == "array"
+    assert schema["required"] == ["messages"]

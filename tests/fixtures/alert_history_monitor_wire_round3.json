@@ -1,0 +1,698 @@
+{
+  "generated_by": "status-monitor runAlerts/runCycleAlert + createMonitorHistory + historyWireV1 (round 3)",
+  "note": "Synthetic data. One request per invocation; each carries the final source_status with stopped_at/stop_reason/lost_at_stop.",
+  "requests": [
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.925Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.925Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-1",
+        "started_at": "2026-10-26T08:14:41.919Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.925Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "a45e11d1-0521-4bcd-90e9-c1951727cdd9:slack_webhook",
+          "channel": "slack",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.921Z",
+          "origin_record_id": "sm:legacy:a45e11d1-0521-4bcd-90e9-c1951727cdd9:slack_webhook:start",
+          "severity": "error",
+          "source_event_id": "a45e11d1-0521-4bcd-90e9-c1951727cdd9",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-1",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "a45e11d1-0521-4bcd-90e9-c1951727cdd9:slack_webhook",
+          "channel": "slack",
+          "duration_ms": 1,
+          "error_code": "http_unknown",
+          "facts": {
+            "delivery_owner": "legacy",
+            "http_status": 500,
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "🚨 *Model down: `synthetic-model-a`*\n_2026-10-26T08:13:42.919Z · test_\n\n• *Failed the last 2 probes in a row.*\n• *Last error:* [omitted] reason=upstream_error\n• *Gateway:* [omitted]",
+            "format": "slack_mrkdwn",
+            "format_version": "status-monitor.legacy-text.v1",
+            "omitted_fields": [
+              "gateway_url",
+              "last_error"
+            ],
+            "redacted": true,
+            "title": "Model down: synthetic-model-a",
+            "truncated": false
+          },
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.922Z",
+          "origin_record_id": "sm:legacy:a45e11d1-0521-4bcd-90e9-c1951727cdd9:slack_webhook:result",
+          "outcome": "unknown",
+          "severity": "error",
+          "source_event_id": "a45e11d1-0521-4bcd-90e9-c1951727cdd9",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-1",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "delivery_owner": "legacy",
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "incident_state": "not_committed",
+            "notification": "not_delivered",
+            "reason": "upstream_error",
+            "record_role": "evaluation",
+            "storm_incident": false,
+            "threshold_met": true,
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:13:42.919Z",
+          "origin_record_id": "sm:fixture-invocation-1:obs:5cbcaebf6dbf3992:firing",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "error",
+          "source_event_id": "a45e11d1-0521-4bcd-90e9-c1951727cdd9",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-1",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.927Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.927Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-2",
+        "started_at": "2026-10-26T08:14:41.927Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.927Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "2613d70c-a701-4580-af2f-6a45a1cbed02:slack_webhook",
+          "channel": "slack",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.927Z",
+          "origin_record_id": "sm:legacy:2613d70c-a701-4580-af2f-6a45a1cbed02:slack_webhook:start",
+          "severity": "error",
+          "source_event_id": "2613d70c-a701-4580-af2f-6a45a1cbed02",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-2",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "2613d70c-a701-4580-af2f-6a45a1cbed02:slack_webhook",
+          "channel": "slack",
+          "duration_ms": 0,
+          "facts": {
+            "delivery_owner": "legacy",
+            "http_status": 200,
+            "transition": "firing",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "🚨 *Model down: `synthetic-model-a`*\n_2026-10-26T08:13:43.919Z · test_\n\n• *Failed the last 2 probes in a row.*\n• *Last error:* [omitted] reason=upstream_error\n• *Gateway:* [omitted]",
+            "format": "slack_mrkdwn",
+            "format_version": "status-monitor.legacy-text.v1",
+            "omitted_fields": [
+              "gateway_url",
+              "last_error"
+            ],
+            "redacted": true,
+            "title": "Model down: synthetic-model-a",
+            "truncated": false
+          },
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.927Z",
+          "origin_record_id": "sm:legacy:2613d70c-a701-4580-af2f-6a45a1cbed02:slack_webhook:result",
+          "outcome": "accepted",
+          "severity": "error",
+          "source_event_id": "2613d70c-a701-4580-af2f-6a45a1cbed02",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-2",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "delivery_owner": "legacy",
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "incident_state": "committed",
+            "notification": "delivered",
+            "reason": "upstream_error",
+            "record_role": "evaluation",
+            "storm_incident": false,
+            "threshold_met": true,
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:13:43.919Z",
+          "origin_record_id": "sm:fixture-invocation-2:obs:5cbcaebf6dbf3992:firing",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "error",
+          "source_event_id": "2613d70c-a701-4580-af2f-6a45a1cbed02",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-2",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.928Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.928Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-3",
+        "started_at": "2026-10-26T08:14:41.928Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.928Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "bucket_end": "2026-10-26T08:13:44.919Z",
+          "bucket_start": "2026-10-26T08:13:44.919Z",
+          "count": 1,
+          "decision_reason": "source_suppressed",
+          "error_code": "incident_already_open",
+          "facts": {
+            "reason": "upstream_error"
+          },
+          "kind": "suppression_summary",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:13:44.919Z",
+          "origin_record_id": "sm:fixture-invocation-3:supp:5cbcaebf6dbf3992:incident_already_open",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-3",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.929Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.929Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-4",
+        "started_at": "2026-10-26T08:14:41.928Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.929Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "02ce8388-75d3-418f-aaa3-663e076ca4e6:slack_webhook",
+          "channel": "slack",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "resolved",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.928Z",
+          "origin_record_id": "sm:legacy:02ce8388-75d3-418f-aaa3-663e076ca4e6:slack_webhook:start",
+          "severity": "info",
+          "source_event_id": "02ce8388-75d3-418f-aaa3-663e076ca4e6",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-4",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "02ce8388-75d3-418f-aaa3-663e076ca4e6:slack_webhook",
+          "channel": "slack",
+          "duration_ms": 1,
+          "error_code": "http_rejected",
+          "facts": {
+            "delivery_owner": "legacy",
+            "http_status": 400,
+            "transition": "resolved",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "✅ *Model recovered: `synthetic-model-a`*\n_2026-10-26T08:13:45.919Z · test_\n\n• *Gateway:* [omitted]",
+            "format": "slack_mrkdwn",
+            "format_version": "status-monitor.legacy-text.v1",
+            "omitted_fields": [
+              "gateway_url"
+            ],
+            "redacted": true,
+            "title": "Model recovered: synthetic-model-a",
+            "truncated": false
+          },
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.929Z",
+          "origin_record_id": "sm:legacy:02ce8388-75d3-418f-aaa3-663e076ca4e6:slack_webhook:result",
+          "outcome": "rejected",
+          "severity": "info",
+          "source_event_id": "02ce8388-75d3-418f-aaa3-663e076ca4e6",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-4",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "observed_healthy",
+          "facts": {
+            "delivery_owner": "legacy",
+            "incident_state": "not_committed",
+            "latency_ms": 25,
+            "notification": "not_delivered",
+            "record_role": "evaluation",
+            "storm_incident": false,
+            "transition": "resolved"
+          },
+          "kind": "condition_ended",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:13:45.919Z",
+          "origin_record_id": "sm:fixture-invocation-4:obs:5cbcaebf6dbf3992:resolved",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "info",
+          "source_event_id": "02ce8388-75d3-418f-aaa3-663e076ca4e6",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-4",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.929Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.929Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-5",
+        "started_at": "2026-10-26T08:14:41.929Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.929Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "3b898b38-4f4a-4499-bbfb-5794a70f2163:slack_webhook",
+          "channel": "slack",
+          "facts": {
+            "delivery_owner": "legacy",
+            "transition": "resolved",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.929Z",
+          "origin_record_id": "sm:legacy:3b898b38-4f4a-4499-bbfb-5794a70f2163:slack_webhook:start",
+          "severity": "info",
+          "source_event_id": "3b898b38-4f4a-4499-bbfb-5794a70f2163",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-5",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "3b898b38-4f4a-4499-bbfb-5794a70f2163:slack_webhook",
+          "channel": "slack",
+          "duration_ms": 0,
+          "facts": {
+            "delivery_owner": "legacy",
+            "http_status": 200,
+            "transition": "resolved",
+            "transport": "slack_webhook"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "✅ *Model recovered: `synthetic-model-a`*\n_2026-10-26T08:13:46.919Z · test_\n\n• *Gateway:* [omitted]",
+            "format": "slack_mrkdwn",
+            "format_version": "status-monitor.legacy-text.v1",
+            "omitted_fields": [
+              "gateway_url"
+            ],
+            "redacted": true,
+            "title": "Model recovered: synthetic-model-a",
+            "truncated": false
+          },
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:14:41.929Z",
+          "origin_record_id": "sm:legacy:3b898b38-4f4a-4499-bbfb-5794a70f2163:slack_webhook:result",
+          "outcome": "accepted",
+          "severity": "info",
+          "source_event_id": "3b898b38-4f4a-4499-bbfb-5794a70f2163",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-5",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "observed_healthy",
+          "facts": {
+            "delivery_owner": "legacy",
+            "incident_state": "committed",
+            "latency_ms": 25,
+            "notification": "delivered",
+            "record_role": "evaluation",
+            "storm_incident": false,
+            "transition": "resolved"
+          },
+          "kind": "condition_ended",
+          "model_id": "synthetic-model-a",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:13:46.919Z",
+          "origin_record_id": "sm:fixture-invocation-5:obs:5cbcaebf6dbf3992:resolved",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "info",
+          "source_event_id": "3b898b38-4f4a-4499-bbfb-5794a70f2163",
+          "source_incident_id": "status-monitor:model:synthetic-model-a",
+          "source_instance_id": "status-monitor:fixture-invocation-5",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.931Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.931Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-6",
+        "started_at": "2026-10-26T08:14:41.930Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.931Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "reason": "discovery_failed",
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:13:47.919Z",
+          "origin_record_id": "sm:evt:cc668ec7-537f-4215-95fc-825e8d2a7514:transition",
+          "rule_id": "status_monitor.cycle_health",
+          "rule_version": "1",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "status-monitor:cycle",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "attempt_id": "cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-6:1",
+          "channel": "other",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "kind": "delivery_attempt",
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:14:41.930Z",
+          "origin_record_id": "sm:rpc:cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-6:1:start",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "status-monitor:cycle",
+          "source_instance_id": "status-monitor:fixture-invocation-6",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "attempt_id": "cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-6:1",
+          "channel": "other",
+          "duration_ms": 0,
+          "error_code": "control_plane.control_plane_unavailable",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "handoff_outcome": "rejected",
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "kind": "delivery_result",
+          "message": {
+            "body": "The monitoring cycle failed; no models could be probed.",
+            "format": "plain",
+            "format_version": "status-monitor.canonical-event.v1",
+            "omitted_fields": [],
+            "redacted": true,
+            "title": "Monitoring cycle failing",
+            "truncated": false
+          },
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:14:41.930Z",
+          "origin_record_id": "sm:rpc:cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-6:1:result",
+          "outcome": "rejected",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "status-monitor:cycle",
+          "source_instance_id": "status-monitor:fixture-invocation-6",
+          "target_environment": "test"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:14:41.931Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:14:41.931Z",
+        "release_id": "synthetic-release",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "legacy",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:34708c25c8deda91dc8296aac58d9093c05560d4a41b0c2438fa163ef1641518",
+        "source_instance_id": "status-monitor:fixture-invocation-7",
+        "started_at": "2026-10-26T08:14:41.931Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:14:41.931Z",
+        "target_environment": "test"
+      },
+      "events": [
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "reason": "discovery_failed",
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:13:47.919Z",
+          "origin_record_id": "sm:evt:cc668ec7-537f-4215-95fc-825e8d2a7514:transition",
+          "rule_id": "status_monitor.cycle_health",
+          "rule_version": "1",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "status-monitor:cycle",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "attempt_id": "cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-7:1",
+          "channel": "other",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "kind": "delivery_attempt",
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:14:41.931Z",
+          "origin_record_id": "sm:rpc:cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-7:1:start",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "status-monitor:cycle",
+          "source_instance_id": "status-monitor:fixture-invocation-7",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "attempt_id": "cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-7:1",
+          "channel": "other",
+          "duration_ms": 0,
+          "error_code": "control_plane_handoff_accepted",
+          "facts": {
+            "control_plane_action": "opened",
+            "delivery_owner": "control-plane",
+            "handoff_outcome": "accepted",
+            "lifecycle_state": "opening",
+            "monitor_incident_key": "status-monitor:cycle",
+            "occurrence_count": 1,
+            "state_version": 1,
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "The monitoring cycle failed; no models could be probed.",
+            "format": "plain",
+            "format_version": "status-monitor.canonical-event.v1",
+            "omitted_fields": [],
+            "redacted": true,
+            "title": "Monitoring cycle failing",
+            "truncated": false
+          },
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:14:41.931Z",
+          "origin_record_id": "sm:rpc:cc668ec7-537f-4215-95fc-825e8d2a7514:fixture-invocation-7:1:result",
+          "outcome": "unknown",
+          "severity": "critical",
+          "source_event_id": "cc668ec7-537f-4215-95fc-825e8d2a7514",
+          "source_incident_id": "incident_fixture_cycle",
+          "source_instance_id": "status-monitor:fixture-invocation-7",
+          "target_environment": "test"
+        },
+        {
+          "alert_type": "monitoring_cycle_failure",
+          "bucket_end": "2026-10-26T08:13:48.919Z",
+          "bucket_start": "2026-10-26T08:13:48.919Z",
+          "count": 1,
+          "decision_reason": "in_flight",
+          "error_code": "cycle_evaluation_deferred",
+          "facts": {
+            "observed_cycle_ok": false,
+            "pending_firing": true,
+            "pending_resolved": false,
+            "pending_transitions": 1,
+            "reason": "discovery_failed",
+            "replays_accepted": 1
+          },
+          "kind": "suppression_summary",
+          "observation_scope": "monitor_cycle",
+          "occurred_at": "2026-10-26T08:13:48.919Z",
+          "origin_record_id": "sm:fixture-invocation-7:supp:20f352ff28646a93:cycle_evaluation_deferred",
+          "source_incident_id": "status-monitor:cycle",
+          "source_instance_id": "status-monitor:fixture-invocation-7",
+          "target_environment": "test"
+        }
+      ]
+    }
+  ]
+}

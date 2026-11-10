@@ -157,6 +157,20 @@ def test_get_explains_names_it_cannot_show(store, capsys) -> None:
     assert "NOT_A_SETTING is not a known setting" in err
 
 
+def test_get_explains_a_retired_setting_instead_of_offering_it_as_custom(store, capsys) -> None:
+    store.rows["BATCH_EXPANSION_ENABLED"] = row(
+        "BATCH_EXPANSION_ENABLED", "synthetic-retired-value", secret=True
+    )
+
+    assert manage.main(["get", "BATCH_EXPANSION_ENABLED"]) == 1
+
+    err = capsys.readouterr().err
+    assert "BATCH_EXPANSION_ENABLED is retired and no longer controls anything" in err
+    assert "BATCH_ENABLED is on" in err
+    assert "custom variable" not in err
+    assert "synthetic-retired-value" not in err
+
+
 @pytest.mark.parametrize(
     "argv",
     [[], ["set", "SMTP_PORT"], ["get"], ["frobnicate"], ["reset", "A", "B"]],
@@ -366,3 +380,42 @@ def test_db_enabled_false_in_dotenv_is_honoured(monkeypatch, capsys) -> None:
 
     assert manage.main(["list"]) == 1
     assert "DB_ENABLED=false" in capsys.readouterr().err
+
+
+def test_import_legacy_imports_an_active_manifest_and_its_alert_rules(
+    store, tmp_path, monkeypatch, capsys
+) -> None:
+    import json
+
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+    monkeypatch.delenv("ALERTS_CONFIG_PATH", raising=False)
+    get_settings.cache_clear()
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text("schema_version: 1\ndistribution: {id: imported}\n")
+    rules = tmp_path / "alerts.yaml"
+    rules.write_text("rules:\n  client_error_burst:\n    threshold_count: 7\n")
+
+    assert manage.main(["import-legacy", str(manifest), "--alerts", str(rules)]) == 0
+    out = capsys.readouterr().out
+    assert "Imported ALERT_RULES, SITE_CONFIGURATION." in out
+    # Imported alert rules need a restart as a catalog does; the site document does not.
+    assert "ALERT_RULES: Restart the backend to apply it." in out
+    assert "SITE_CONFIGURATION: Running backends apply it within" in out
+    assert json.loads(store.rows["SITE_CONFIGURATION"].value)["distribution"]["id"] == "imported"
+    # Run again, it replaces nothing.
+    assert manage.main(["import-legacy", str(manifest), "--alerts", str(rules)]) == 0
+    assert "Nothing imported" in capsys.readouterr().out
+
+
+def test_import_legacy_leaves_a_dark_manifest_unless_asked(
+    store, tmp_path, monkeypatch, capsys
+) -> None:
+    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
+    get_settings.cache_clear()
+    manifest = tmp_path / "distribution.yaml"
+    manifest.write_text("schema_version: 1\ndistribution: {id: dark}\n")
+
+    assert manage.main(["import-legacy", str(manifest)]) == 0
+    assert "SITE_CONFIGURATION" not in store.rows
+    assert manage.main(["import-legacy", str(manifest), "--include-dark"]) == 0
+    assert "SITE_CONFIGURATION" in store.rows

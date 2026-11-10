@@ -1,0 +1,1544 @@
+{
+  "generated_by": "alert-control-plane runtime (IncidentStateMachine, OutboxRunner, SlackSink, quota executor, history observer, ControlPlaneHistory, HistoryExporter, historyWireV1) via test/history-cp-harness.ts; counterpart: status-monitor runAlerts + createMonitorHistory over the real submitStatusMonitorRpcEvent",
+  "note": "Synthetic data only. Each request is the exact body the exporter POSTed. 'requests' = source alert_control_plane / namespace example-control-plane; 'status_monitor_counterpart_requests' = source status_monitor / namespace example-monitor (separate writer credential).",
+  "summary": {
+    "control_plane": {
+      "requests": 21,
+      "kinds": {
+        "condition_triggered": 7,
+        "delivery_attempt": 6,
+        "delivery_result": 8,
+        "suppression_summary": 2,
+        "condition_ended": 3,
+        "resolution_retry_terminated": 2,
+        "notification_decision": 1
+      },
+      "stored_rows": 29
+    },
+    "status_monitor_counterpart": {
+      "requests": 2,
+      "kinds": {
+        "condition_triggered": 1,
+        "delivery_attempt": 2,
+        "delivery_result": 2,
+        "condition_ended": 1
+      },
+      "stored_rows": 6
+    }
+  },
+  "cases": [
+    {
+      "case": "A1 ingress opened via real status-monitor RPC (mixed-case model)",
+      "requests": [
+        0
+      ],
+      "status_monitor_counterpart_requests": [
+        0
+      ]
+    },
+    {
+      "case": "A2 post_parent rejected (rate limited), retried, accepted",
+      "requests": [
+        1,
+        2
+      ],
+      "status_monitor_counterpart_requests": []
+    },
+    {
+      "case": "A3 repeat coalesced; update_parent unknown (Slack 500) then reconciliation accepted",
+      "requests": [
+        3,
+        4,
+        5
+      ],
+      "status_monitor_counterpart_requests": []
+    },
+    {
+      "case": "A4 recovery via real RPC; post_recovery commit rolled back (unknown), reconciliation accepted",
+      "requests": [
+        6,
+        7,
+        8
+      ],
+      "status_monitor_counterpart_requests": [
+        1
+      ]
+    },
+    {
+      "case": "B post_recovery permanently rejected (channel_not_found) -> resolution_retry_terminated",
+      "requests": [
+        9,
+        10,
+        11,
+        12
+      ],
+      "status_monitor_counterpart_requests": []
+    },
+    {
+      "case": "D quota refused (principal active limit) -> decision; repeat -> quota_suppressed summary",
+      "requests": [
+        13,
+        14,
+        15
+      ],
+      "status_monitor_counterpart_requests": []
+    },
+    {
+      "case": "C opened, resolving, reopened (recovery superseded)",
+      "requests": [
+        16,
+        17,
+        18
+      ],
+      "status_monitor_counterpart_requests": []
+    },
+    {
+      "case": "E/F identity omission: overlong model_id omitted; refused-word producer event ID replaced",
+      "requests": [
+        19,
+        20
+      ],
+      "status_monitor_counterpart_requests": []
+    }
+  ],
+  "requests": [
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.218Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.218Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-rpc-1",
+        "started_at": "2026-10-26T08:35:23.217Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.218Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "upstream_error",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:24.698Z",
+          "origin_record_id": "cp:inc:incident_a0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.234Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.234Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-3",
+        "started_at": "2026-10-26T08:35:23.233Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.234Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a2:a1",
+          "channel": "slack",
+          "facts": {
+            "action_type": "post_parent",
+            "attempt": 1,
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:29.198Z",
+          "origin_record_id": "cp:act:action_a2:a1:c1:start",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-3",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_a2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a2:a1",
+          "channel": "slack",
+          "duration_ms": 2,
+          "error_code": "slack_rate_limited",
+          "facts": {
+            "action_status_after": "pending",
+            "action_type": "post_parent",
+            "attempt": 1,
+            "check": "send",
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "❌ PRODUCTION · Firing\n*Model unavailable: Example-Org/Synthetic-Model-7B*\n*Environment:* PRODUCTION\n*Severity:* ERROR\n*Incident:* incident_a0\n*Generation:* 1\n*First seen:* 2026-10-26T08:25:24.698Z\n*Last seen:* 2026-10-26T08:25:24.698Z\n*Occurrences:* 1\n*Model:* Example-Org/Synthetic-Model-7B\n*Reason:* upstream_error\n*Consecutive failures:* 2\n*Failure threshold:* 2\nSource: status-monitor",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "deployment",
+              "fingerprint",
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model unavailable: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.232Z",
+          "origin_record_id": "cp:act:action_a2:a1:c1:result",
+          "outcome": "rejected",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-3",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.237Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.237Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-4",
+        "started_at": "2026-10-26T08:35:23.236Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.237Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a2:a2",
+          "channel": "slack",
+          "facts": {
+            "action_type": "post_parent",
+            "attempt": 2,
+            "claim_epoch": 2,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:37.198Z",
+          "origin_record_id": "cp:act:action_a2:a2:c2:start",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-4",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_a2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a2:a2",
+          "channel": "slack",
+          "duration_ms": 2,
+          "facts": {
+            "action_status_after": "completed",
+            "action_type": "post_parent",
+            "attempt": 2,
+            "check": "send",
+            "claim_epoch": 2,
+            "claim_mode": "execute",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "❌ PRODUCTION · Firing\n*Model unavailable: Example-Org/Synthetic-Model-7B*\n*Environment:* PRODUCTION\n*Severity:* ERROR\n*Incident:* incident_a0\n*Generation:* 1\n*First seen:* 2026-10-26T08:25:24.698Z\n*Last seen:* 2026-10-26T08:25:24.698Z\n*Occurrences:* 1\n*Model:* Example-Org/Synthetic-Model-7B\n*Reason:* upstream_error\n*Consecutive failures:* 2\n*Failure threshold:* 2\nSource: status-monitor",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "deployment",
+              "fingerprint",
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model unavailable: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.236Z",
+          "origin_record_id": "cp:act:action_a2:a2:c2:result",
+          "outcome": "accepted",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-4",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.239Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.239Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-a-1",
+        "started_at": "2026-10-26T08:35:23.239Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.239Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "bucket_end": "2026-10-26T08:25:41.698Z",
+          "bucket_start": "2026-10-26T08:25:41.698Z",
+          "count": 1,
+          "decision_reason": "in_flight",
+          "error_code": "coalesced_into_parent_update",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "repeated",
+            "lifecycle_state": "firing",
+            "occurrence_count": 2,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 4,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "suppression_summary",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:41.698Z",
+          "origin_record_id": "cp:evt:a-repeat-1:coalesced_into_parent_update",
+          "severity": "error",
+          "source_event_id": "a-repeat-1",
+          "source_incident_id": "incident_a0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.242Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.242Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-6",
+        "started_at": "2026-10-26T08:35:23.242Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.242Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a5",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a5:a1",
+          "channel": "slack",
+          "facts": {
+            "action_type": "update_parent",
+            "attempt": 1,
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:45.698Z",
+          "origin_record_id": "cp:act:action_a5:a1:c1:start",
+          "severity": "error",
+          "source_event_id": "a-repeat-1",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-6",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_a5",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a5:a1",
+          "channel": "slack",
+          "duration_ms": 1,
+          "error_code": "slack_server_uncertain",
+          "facts": {
+            "action_status_after": "uncertain",
+            "action_type": "update_parent",
+            "attempt": 1,
+            "check": "send",
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "❌ PRODUCTION · Firing\n*Model unavailable: Example-Org/Synthetic-Model-7B*\n*Environment:* PRODUCTION\n*Severity:* ERROR\n*Incident:* incident_a0\n*Generation:* 1\n*First seen:* 2026-10-26T08:25:24.698Z\n*Last seen:* 2026-10-26T08:25:41.698Z\n*Occurrences:* 2\n*Model:* Example-Org/Synthetic-Model-7B\n*Reason:* timeout\n*Consecutive failures:* 2\n*Failure threshold:* 2\nSource: status-monitor",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "deployment",
+              "fingerprint",
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model unavailable: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.241Z",
+          "origin_record_id": "cp:act:action_a5:a1:c1:result",
+          "outcome": "unknown",
+          "severity": "error",
+          "source_event_id": "a-repeat-1",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-6",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.244Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.244Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-7",
+        "started_at": "2026-10-26T08:35:23.244Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.244Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a5",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a5:a1",
+          "channel": "slack",
+          "duration_ms": 1,
+          "facts": {
+            "action_status_after": "completed",
+            "action_type": "update_parent",
+            "attempt": 1,
+            "check": "reconciliation",
+            "claim_epoch": 2,
+            "claim_mode": "reconcile",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.244Z",
+          "origin_record_id": "cp:act:action_a5:a1:c2:reconcile",
+          "outcome": "accepted",
+          "severity": "error",
+          "source_event_id": "a-repeat-1",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-7",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.247Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.247Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-rpc-2",
+        "started_at": "2026-10-26T08:35:23.247Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.247Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "source_closed",
+          "facts": {
+            "latency_ms": 30,
+            "lifecycle_action": "resolving",
+            "lifecycle_state": "resolving",
+            "occurrence_count": 2,
+            "producer_source": "status-monitor",
+            "recovery_notification": "pending",
+            "state_version": 5
+          },
+          "generation": 1,
+          "kind": "condition_ended",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:47.198Z",
+          "origin_record_id": "cp:inc:incident_a0:g1:ended:cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "incident_a0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.251Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.251Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-8",
+        "started_at": "2026-10-26T08:35:23.251Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.251Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a6",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a6:a1",
+          "channel": "slack",
+          "facts": {
+            "action_type": "post_recovery",
+            "attempt": 1,
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 1,
+            "state_version": 5
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:50.198Z",
+          "origin_record_id": "cp:act:action_a6:a1:c1:start",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-8",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_a6",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a6:a1",
+          "channel": "slack",
+          "duration_ms": 0,
+          "facts": {
+            "action_status_after": "uncertain",
+            "action_type": "post_recovery",
+            "attempt": 1,
+            "check": "send",
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "commit": "unknown",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 1,
+            "state_version": 5
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "✅ Recovery confirmed\n*Model recovered: Example-Org/Synthetic-Model-7B*\n*Incident:* incident_a0\n*Generation:* 1\n*Resolved:* 2026-10-26T08:25:47.198Z",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model recovered: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.250Z",
+          "origin_record_id": "cp:act:action_a6:a1:c1:result",
+          "outcome": "accepted",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-8",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.254Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.254Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-a-9",
+        "started_at": "2026-10-26T08:35:23.254Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.254Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_a6",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_a6:a1",
+          "channel": "slack",
+          "duration_ms": 1,
+          "facts": {
+            "action_status_after": "completed",
+            "action_type": "post_recovery",
+            "attempt": 1,
+            "check": "reconciliation",
+            "claim_epoch": 2,
+            "claim_mode": "reconcile",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 1,
+            "state_version": 5
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.253Z",
+          "origin_record_id": "cp:act:action_a6:a1:c2:reconcile",
+          "outcome": "accepted",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "alert-control-plane:cp-alarm-a-9",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.256Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.256Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-b-2",
+        "started_at": "2026-10-26T08:35:23.256Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.256Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:56.198Z",
+          "origin_record_id": "cp:inc:incident_b0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "b-firing-1",
+          "source_incident_id": "incident_b0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.261Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.261Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-b-3",
+        "started_at": "2026-10-26T08:35:23.260Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.261Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_b2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_b2:a1",
+          "channel": "slack",
+          "facts": {
+            "action_type": "post_parent",
+            "attempt": 1,
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:00.698Z",
+          "origin_record_id": "cp:act:action_b2:a1:c1:start",
+          "severity": "error",
+          "source_event_id": "b-firing-1",
+          "source_incident_id": "incident_b0",
+          "source_instance_id": "alert-control-plane:cp-alarm-b-3",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_b2",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_b2:a1",
+          "channel": "slack",
+          "duration_ms": 0,
+          "facts": {
+            "action_status_after": "completed",
+            "action_type": "post_parent",
+            "attempt": 1,
+            "check": "send",
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 0,
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "❌ PRODUCTION · Firing\n*Model unavailable: example-model-b*\n*Environment:* PRODUCTION\n*Severity:* ERROR\n*Incident:* incident_b0\n*Generation:* 1\n*First seen:* 2026-10-26T08:25:56.198Z\n*Last seen:* 2026-10-26T08:25:56.198Z\n*Occurrences:* 1\n*Model:* example-model-b\n*Reason:* timeout\n*Consecutive failures:* 2\n*Failure threshold:* 2\nSource: status-monitor",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "deployment",
+              "fingerprint",
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model unavailable: example-model-b",
+            "truncated": false
+          },
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.260Z",
+          "origin_record_id": "cp:act:action_b2:a1:c1:result",
+          "outcome": "accepted",
+          "severity": "error",
+          "source_event_id": "b-firing-1",
+          "source_incident_id": "incident_b0",
+          "source_instance_id": "alert-control-plane:cp-alarm-b-3",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.262Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.262Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-b-3",
+        "started_at": "2026-10-26T08:35:23.261Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.262Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "source_closed",
+          "facts": {
+            "latency_ms": 40,
+            "lifecycle_action": "resolving",
+            "lifecycle_state": "resolving",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "recovery_notification": "pending",
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "condition_ended",
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:03.698Z",
+          "origin_record_id": "cp:inc:incident_b0:g1:ended:b-resolved-1",
+          "severity": "info",
+          "source_event_id": "b-resolved-1",
+          "source_incident_id": "incident_b0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.263Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.263Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-b-5",
+        "started_at": "2026-10-26T08:35:23.263Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.263Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_b5",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_b5:a1",
+          "channel": "slack",
+          "facts": {
+            "action_type": "post_recovery",
+            "attempt": 1,
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "producer_source": "status-monitor",
+            "resolution_epoch": 1,
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "delivery_attempt",
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:06.698Z",
+          "origin_record_id": "cp:act:action_b5:a1:c1:start",
+          "severity": "info",
+          "source_event_id": "b-resolved-1",
+          "source_incident_id": "incident_b0",
+          "source_instance_id": "alert-control-plane:cp-alarm-b-5",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_b5",
+          "alert_type": "model_unavailable",
+          "attempt_id": "action_b5:a1",
+          "channel": "slack",
+          "duration_ms": 1,
+          "error_code": "slack_configuration_rejected",
+          "facts": {
+            "action_status_after": "failed",
+            "action_type": "post_recovery",
+            "attempt": 1,
+            "check": "send",
+            "claim_epoch": 1,
+            "claim_mode": "execute",
+            "commit": "applied",
+            "executor_threw": false,
+            "producer_source": "status-monitor",
+            "resolution_epoch": 1,
+            "state_version": 4
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "✅ Recovery confirmed\n*Model recovered: example-model-b*\n*Incident:* incident_b0\n*Generation:* 1\n*Resolved:* 2026-10-26T08:26:03.698Z",
+            "format": "slack_mrkdwn",
+            "format_version": "alert-control-plane.slack-blocks.v1",
+            "omitted_fields": [
+              "summary"
+            ],
+            "redacted": true,
+            "title": "Model recovered: example-model-b",
+            "truncated": false
+          },
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.263Z",
+          "origin_record_id": "cp:act:action_b5:a1:c1:result",
+          "outcome": "rejected",
+          "severity": "info",
+          "source_event_id": "b-resolved-1",
+          "source_incident_id": "incident_b0",
+          "source_instance_id": "alert-control-plane:cp-alarm-b-5",
+          "target_environment": "production"
+        },
+        {
+          "action_id": "action_b5",
+          "alert_type": "model_unavailable",
+          "error_code": "slack_configuration_rejected",
+          "facts": {
+            "action_status": "failed",
+            "action_type": "post_recovery",
+            "attempt": 1
+          },
+          "generation": 1,
+          "kind": "resolution_retry_terminated",
+          "model_id": "example-model-b",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:06.698Z",
+          "origin_record_id": "cp:act:action_b5:v2:terminal",
+          "severity": "info",
+          "source_incident_id": "incident_b0",
+          "source_instance_id": "alert-control-plane:cp-alarm-b-5",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.264Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.264Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-d-4",
+        "started_at": "2026-10-26T08:35:23.264Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.264Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "example-model-d",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:09.698Z",
+          "origin_record_id": "cp:inc:incident_d0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "d-firing-1",
+          "source_incident_id": "incident_d0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.265Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.265Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-alarm-d-1",
+        "started_at": "2026-10-26T08:35:23.265Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.265Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "action_id": "action_d1",
+          "alert_type": "model_unavailable",
+          "decision_reason": "rate_limited",
+          "error_code": "principal_active_quota_exceeded",
+          "generation": 1,
+          "kind": "notification_decision",
+          "model_id": "example-model-d",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:12.698Z",
+          "origin_record_id": "cp:inc:incident_d0:g1:quota_suppressed",
+          "severity": "error",
+          "source_incident_id": "incident_d0",
+          "source_instance_id": "alert-control-plane:cp-alarm-d-1",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.265Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.265Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-d-5",
+        "started_at": "2026-10-26T08:35:23.265Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.265Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "bucket_end": "2026-10-26T08:26:14.198Z",
+          "bucket_start": "2026-10-26T08:26:14.198Z",
+          "count": 1,
+          "decision_reason": "rate_limited",
+          "error_code": "principal_active_quota_exceeded",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "quota_suppressed",
+            "lifecycle_state": "suppressed",
+            "occurrence_count": 2,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 3,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "suppression_summary",
+          "model_id": "example-model-d",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:14.198Z",
+          "origin_record_id": "cp:evt:d-repeat-1:principal_active_quota_exceeded",
+          "severity": "error",
+          "source_event_id": "d-repeat-1",
+          "source_incident_id": "incident_d0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.266Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.266Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-c-6",
+        "started_at": "2026-10-26T08:35:23.266Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.266Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "example-model-c",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:17.198Z",
+          "origin_record_id": "cp:inc:incident_c0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "c-firing-1",
+          "source_incident_id": "incident_c0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.266Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.266Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-c-7",
+        "started_at": "2026-10-26T08:35:23.266Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.266Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "source_closed",
+          "facts": {
+            "latency_ms": 40,
+            "lifecycle_action": "resolving",
+            "lifecycle_state": "resolving",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "recovery_notification": "pending",
+            "state_version": 2
+          },
+          "generation": 1,
+          "kind": "condition_ended",
+          "model_id": "example-model-c",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:20.198Z",
+          "origin_record_id": "cp:inc:incident_c0:g1:ended:c-resolved-1",
+          "severity": "info",
+          "source_event_id": "c-resolved-1",
+          "source_incident_id": "incident_c0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.267Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.267Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-c-8",
+        "started_at": "2026-10-26T08:35:23.267Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.267Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "reopened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 2,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 3,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "example-model-c",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:23.198Z",
+          "origin_record_id": "cp:inc:incident_c0:g1:reopened:c-firing-2",
+          "severity": "error",
+          "source_event_id": "c-firing-2",
+          "source_incident_id": "incident_c0",
+          "target_environment": "production"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "error_code": "superseded_by_new_firing",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "reopened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 2,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 3,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "resolution_retry_terminated",
+          "model_id": "example-model-c",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:23.198Z",
+          "origin_record_id": "cp:inc:incident_c0:g1:recovery_superseded:c-firing-2",
+          "severity": "error",
+          "source_event_id": "c-firing-2",
+          "source_incident_id": "incident_c0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.268Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.268Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-e-9",
+        "started_at": "2026-10-26T08:35:23.268Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.268Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "model_id_omitted": "too_long",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:26.198Z",
+          "origin_record_id": "cp:inc:incident_e0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "e-firing-1",
+          "source_incident_id": "incident_e0",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.268Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.268Z",
+        "release_id": "example-release-1",
+        "source_instance_id": "alert-control-plane:cp-request-f-10",
+        "started_at": "2026-10-26T08:35:23.268Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.268Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "lifecycle_action": "opened",
+            "lifecycle_state": "opening",
+            "occurrence_count": 1,
+            "producer_source": "status-monitor",
+            "reason": "timeout",
+            "source_event_id_form": "fnv64",
+            "state_version": 1,
+            "threshold_met": true
+          },
+          "generation": 1,
+          "kind": "condition_triggered",
+          "model_id": "example-model-f",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:26:29.198Z",
+          "origin_record_id": "cp:inc:incident_f0:g1:triggered",
+          "severity": "error",
+          "source_event_id": "h:fe06f3bf99f52a8a",
+          "source_incident_id": "incident_f0",
+          "target_environment": "production"
+        }
+      ]
+    }
+  ],
+  "status_monitor_counterpart_requests": [
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.222Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.222Z",
+        "release_id": "example-release-1",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "control-plane",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:31231f1c0f3a60ae23bf2ac6e3e8a15fbc168fe3911081fe1543c28f70415add",
+        "source_instance_id": "status-monitor:sm-fixture-1",
+        "started_at": "2026-10-26T08:35:23.201Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.222Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "failure_streak_at_least": 2,
+            "failure_threshold": 2,
+            "reason": "upstream_error",
+            "threshold_met": true,
+            "transition": "firing"
+          },
+          "kind": "condition_triggered",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:24.698Z",
+          "origin_record_id": "sm:evt:64fb9df6-e707-4555-bb58-f375da4065c2:transition",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+          "target_environment": "production"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "64fb9df6-e707-4555-bb58-f375da4065c2:sm-fixture-1:1",
+          "channel": "other",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.204Z",
+          "origin_record_id": "sm:rpc:64fb9df6-e707-4555-bb58-f375da4065c2:sm-fixture-1:1:start",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+          "source_instance_id": "status-monitor:sm-fixture-1",
+          "target_environment": "production"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "64fb9df6-e707-4555-bb58-f375da4065c2:sm-fixture-1:1",
+          "channel": "other",
+          "duration_ms": 16,
+          "error_code": "control_plane_handoff_accepted",
+          "facts": {
+            "control_plane_action": "opened",
+            "delivery_owner": "control-plane",
+            "handoff_outcome": "accepted",
+            "lifecycle_state": "opening",
+            "monitor_incident_key": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+            "occurrence_count": 1,
+            "state_version": 1,
+            "transition": "firing",
+            "transport": "control_plane_rpc"
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "Example-Org/Synthetic-Model-7B failed 2 consecutive synthetic probes.",
+            "format": "plain",
+            "format_version": "status-monitor.canonical-event.v1",
+            "omitted_fields": [],
+            "redacted": true,
+            "title": "Model unavailable: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.220Z",
+          "origin_record_id": "sm:rpc:64fb9df6-e707-4555-bb58-f375da4065c2:sm-fixture-1:1:result",
+          "outcome": "unknown",
+          "severity": "error",
+          "source_event_id": "64fb9df6-e707-4555-bb58-f375da4065c2",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "status-monitor:sm-fixture-1",
+          "target_environment": "production"
+        }
+      ]
+    },
+    {
+      "schema_version": 1,
+      "source_status": {
+        "dropped_count": 0,
+        "lost_at_stop": 0,
+        "observed_at": "2026-10-26T08:35:23.248Z",
+        "pending_count": 0,
+        "pending_reported_at": "2026-10-26T08:35:23.248Z",
+        "release_id": "example-release-1",
+        "rules_snapshot": {
+          "cycle_owner": "legacy",
+          "default_owner": "control-plane",
+          "failure_threshold": 2,
+          "rule_version": "1",
+          "storm_threshold": 5
+        },
+        "rules_snapshot_hash": "sha256:31231f1c0f3a60ae23bf2ac6e3e8a15fbc168fe3911081fe1543c28f70415add",
+        "source_instance_id": "status-monitor:sm-fixture-2",
+        "started_at": "2026-10-26T08:35:23.245Z",
+        "stop_reason": "invocation_complete",
+        "stopped_at": "2026-10-26T08:35:23.248Z",
+        "target_environment": "production"
+      },
+      "events": [
+        {
+          "alert_type": "model_unavailable",
+          "end_basis": "observed_healthy",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "latency_ms": 30,
+            "transition": "resolved"
+          },
+          "kind": "condition_ended",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:25:47.198Z",
+          "origin_record_id": "sm:evt:cad4d8f7-b9cd-4699-b3ab-0ca43e78803c:transition",
+          "rule_id": "status_monitor.model_failure_streak",
+          "rule_version": "1",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+          "target_environment": "production"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c:sm-fixture-2:1",
+          "channel": "other",
+          "facts": {
+            "delivery_owner": "control-plane",
+            "transition": "resolved",
+            "transport": "control_plane_rpc"
+          },
+          "kind": "delivery_attempt",
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.245Z",
+          "origin_record_id": "sm:rpc:cad4d8f7-b9cd-4699-b3ab-0ca43e78803c:sm-fixture-2:1:start",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+          "source_instance_id": "status-monitor:sm-fixture-2",
+          "target_environment": "production"
+        },
+        {
+          "alert_type": "model_unavailable",
+          "attempt_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c:sm-fixture-2:1",
+          "channel": "other",
+          "duration_ms": 3,
+          "error_code": "control_plane_handoff_accepted",
+          "facts": {
+            "control_plane_action": "resolving",
+            "delivery_owner": "control-plane",
+            "handoff_outcome": "accepted",
+            "lifecycle_state": "resolving",
+            "monitor_incident_key": "status-monitor:model:Example-Org/Synthetic-Model-7B",
+            "occurrence_count": 2,
+            "state_version": 5,
+            "transition": "resolved",
+            "transport": "control_plane_rpc"
+          },
+          "generation": 1,
+          "kind": "delivery_result",
+          "message": {
+            "body": "Example-Org/Synthetic-Model-7B accepted a successful synthetic probe.",
+            "format": "plain",
+            "format_version": "status-monitor.canonical-event.v1",
+            "omitted_fields": [],
+            "redacted": true,
+            "title": "Model recovered: Example-Org/Synthetic-Model-7B",
+            "truncated": false
+          },
+          "model_id": "Example-Org/Synthetic-Model-7B",
+          "observation_scope": "model",
+          "occurred_at": "2026-10-26T08:35:23.248Z",
+          "origin_record_id": "sm:rpc:cad4d8f7-b9cd-4699-b3ab-0ca43e78803c:sm-fixture-2:1:result",
+          "outcome": "unknown",
+          "severity": "info",
+          "source_event_id": "cad4d8f7-b9cd-4699-b3ab-0ca43e78803c",
+          "source_incident_id": "incident_a0",
+          "source_instance_id": "status-monitor:sm-fixture-2",
+          "target_environment": "production"
+        }
+      ]
+    }
+  ]
+}

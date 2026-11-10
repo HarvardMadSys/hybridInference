@@ -16,9 +16,10 @@ import pytest
 from fastapi import FastAPI, HTTPException
 from httpx import ASGITransport, AsyncClient
 
-from serving.servers.deps import AppServices, verify_admin_access
+from serving.servers.deps import AppServices, get_admin_audit_actor, verify_admin_access
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import usage_insights
+from tests.fixtures.audit import ADMIN_ACTOR
 
 
 def _sample_rows():
@@ -160,6 +161,7 @@ class TestAdminUsageInsightsAnalyze:
     @pytest.mark.asyncio
     async def test_analyze_returns_markdown(self, admin_app, _patch_llm):
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/analyze", json={})
@@ -195,6 +197,7 @@ class TestAdminUsageInsightsAnalyze:
         mock_conn.fetch = AsyncMock(return_value=_sample_rows_new_shape())
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/analyze", json={})
@@ -214,6 +217,7 @@ class TestAdminUsageInsightsAnalyze:
     @pytest.mark.asyncio
     async def test_analyze_scopes_to_user_email(self, admin_app, _patch_llm):
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
@@ -228,6 +232,7 @@ class TestAdminUsageInsightsAnalyze:
     @pytest.mark.asyncio
     async def test_analyze_scopes_to_user_id(self, admin_app, _patch_llm):
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
@@ -238,6 +243,38 @@ class TestAdminUsageInsightsAnalyze:
 
         assert resp.status_code == 200
         assert resp.json()["scope"] == "user-999"
+
+    @pytest.mark.asyncio
+    async def test_analyze_audit_row_names_actor_and_user_target(
+        self, admin_app, mock_db_logger, _patch_llm
+    ):
+        """The DatabaseLogger (raw pool) path writes the same attributed row as the store.
+
+        The row's actor is the admitted admin account and its source the
+        trusted address; the analysed user is a typed user target, so it is
+        also in ``target_user_id`` for the user filter and erasure.
+        """
+        from serving.storage.audit_schema import INSERT_SQL
+
+        mock_conn = mock_db_logger.pool.acquire.return_value.__aenter__.return_value
+        admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
+        transport = ASGITransport(app=admin_app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.post(
+                "/admin/usage-insights/analyze", json={"user_id": "user-999", "limit": 10}
+            )
+        admin_app.dependency_overrides.clear()
+
+        assert resp.status_code == 200
+        inserts = [c.args for c in mock_conn.execute.await_args_list if c.args[0] == INSERT_SQL]
+        assert len(inserts) == 1
+        _sql, admin_ip, action, target_user_id, _details, success, *attribution = inserts[0]
+        assert action == "usage_insights_analyze"
+        assert success is True
+        assert admin_ip == "203.0.113.10"
+        assert target_user_id == "user-999"
+        assert attribution == ["admin", "admin-1", "203.0.113.10", "user", "user-999"]
 
     @pytest.mark.asyncio
     async def test_analyze_400_when_not_configured(self, mock_db_logger, _patch_llm):
@@ -251,6 +288,7 @@ class TestAdminUsageInsightsAnalyze:
         app.state.services = services  # type: ignore[attr-defined]
         app.include_router(admin_router.router)
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
 
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
@@ -267,6 +305,7 @@ class TestAdminUsageInsightsAnalyze:
         mock_conn.fetch = AsyncMock(return_value=[])
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/analyze", json={})
@@ -280,6 +319,7 @@ class TestAdminUsageInsightsAnalyze:
         mock_conn.fetchrow = AsyncMock(return_value=None)
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
@@ -332,6 +372,7 @@ class TestAdminUsageInsightsSamples:
         monkeypatch.setattr(usage_insights, "_call_analysis_model", _should_not_run)
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/samples", json={})
@@ -357,6 +398,7 @@ class TestAdminUsageInsightsSamples:
         mock_conn.fetch = AsyncMock(return_value=_sample_rows_new_shape())
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/samples", json={})
@@ -370,6 +412,7 @@ class TestAdminUsageInsightsSamples:
     @pytest.mark.asyncio
     async def test_scopes_to_user_id(self, admin_app):
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post(
@@ -387,6 +430,7 @@ class TestAdminUsageInsightsSamples:
         mock_conn.fetch = AsyncMock(return_value=[])
 
         admin_app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        admin_app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=admin_app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.post("/admin/usage-insights/samples", json={})
@@ -422,6 +466,7 @@ class TestAdminUsageInsightsSettings:
     async def test_get_returns_masked_hint(self, app_with_store):
         app = app_with_store(_make_op_store(api_key="sk-abcd1234", model="minimax-m3"))
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/admin/usage-insights/settings")
@@ -435,6 +480,7 @@ class TestAdminUsageInsightsSettings:
     async def test_get_unconfigured_uses_default_model(self, app_with_store):
         app = app_with_store(_make_op_store(api_key=None, model=None))
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/admin/usage-insights/settings")
@@ -449,6 +495,7 @@ class TestAdminUsageInsightsSettings:
         store = _make_op_store(api_key=None, model=None)
         app = app_with_store(store)
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.put(
@@ -470,6 +517,7 @@ class TestAdminUsageInsightsSettings:
         store = _make_op_store()
         app = app_with_store(store)
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.put(
@@ -486,6 +534,7 @@ class TestAdminUsageInsightsSettings:
         store = _make_op_store()
         app = app_with_store(store)
         app.dependency_overrides[verify_admin_access] = lambda: "admin@test"
+        app.dependency_overrides[get_admin_audit_actor] = lambda: ADMIN_ACTOR
         transport = ASGITransport(app=app)
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.put("/admin/usage-insights/settings", json={"api_key": ""})
@@ -583,6 +632,76 @@ class TestFetchSamples:
         # Newest-first, and genuinely reordered from the oldest-first input.
         assert timestamps == sorted(timestamps, reverse=True)
         assert samples[0]["model_id"] == "minimax-m3"  # the 12:05 row, now first
+
+
+class TestSamplingWork:
+    """Up to 200 stored conversations are decoded per request (review L31)."""
+
+    @staticmethod
+    def _rows(count: int) -> list[dict]:
+        rows = []
+        for i in range(count):
+            row = _sample_rows_new_shape()[0]
+            # A payload without ``system``: the opener comes from the turns.
+            row["timestamp"] = datetime(2026, 6, 25, 12, i % 60, tzinfo=UTC)
+            row["metadata"] = json.dumps({"user_agent": f"agent/{i}", "referer": "r"})
+            rows.append(row)
+        return rows
+
+    @pytest.mark.asyncio
+    async def test_each_stored_value_is_decoded_once(self, monkeypatch):
+        rows = self._rows(3)
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=rows)
+        decoded: list[str] = []
+        real_loads = json.loads
+
+        def counting_loads(text, *args, **kwargs):
+            decoded.append(text)
+            return real_loads(text, *args, **kwargs)
+
+        monkeypatch.setattr(json, "loads", counting_loads)
+        samples = await usage_insights._fetch_samples(
+            conn, None, usage_insights.UsageInsightsRequest(limit=3)
+        )
+
+        # Once each: the prompt column was decoded twice per row, and the
+        # metadata twice, when the payload had no system prompt.
+        assert decoded.count(rows[0]["prompt"]) == 3
+        assert sum(1 for text in decoded if "user_agent" in text) == 3
+        assert {s["system_opener"] for s in samples} == {"You are Claude Code."}
+        assert all(s["user_messages"] == ["Fix the bug in foo.py"] for s in samples)
+        assert sorted(s["user_agent"] for s in samples) == ["agent/0", "agent/1", "agent/2"]
+        assert {s["referer"] for s in samples} == {"r"}
+
+    @pytest.mark.asyncio
+    async def test_the_event_loop_runs_between_samples(self):
+        import asyncio
+
+        rows = self._rows(20)
+        conn = MagicMock()
+        conn.fetch = AsyncMock(return_value=rows)
+        ticks = 0
+        done = False
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not done:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        task = asyncio.create_task(ticker())
+        await asyncio.sleep(0)
+        start = ticks
+        samples = await usage_insights._fetch_samples(
+            conn, None, usage_insights.UsageInsightsRequest(limit=20)
+        )
+        turns = ticks - start
+        done = True
+        await task
+
+        assert len(samples) == 20
+        assert turns >= 19
 
 
 class TestRenderSamples:

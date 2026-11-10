@@ -190,3 +190,78 @@ async def test_get_usage_propagates_is_admin_to_helper(monkeypatch):
     )
     assert resp.quota.max_concurrency == 50
     assert helper_calls == [("free", True)]
+
+
+@pytest.mark.asyncio
+async def test_get_usage_shows_per_user_override(monkeypatch):
+    """An admin-set per-user cap is what the limiter enforces, so it is shown."""
+    from serving.servers.routers import user_routes
+
+    op_store = AsyncMock()
+    op_store.get_active_key_by_account.return_value = None
+
+    async def _fake_helper(role, rt, *, is_admin=False):
+        raise AssertionError("role cap must not be read when an override is set")
+
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", _fake_helper)
+
+    current_user = {"user_id": "u1", "role": "free", "max_concurrent_requests": 256}
+
+    resp = await user_routes.get_usage(
+        period="today",
+        current_user=current_user,
+        op_store=op_store,
+        log_store=None,
+    )
+    assert resp.quota.max_concurrency == 256
+
+
+@pytest.mark.asyncio
+async def test_get_usage_null_override_uses_role_cap(monkeypatch):
+    from serving.servers.routers import user_routes
+
+    op_store = AsyncMock()
+    op_store.get_active_key_by_account.return_value = None
+
+    async def _fake_helper(role, rt, *, is_admin=False):
+        return 4
+
+    monkeypatch.setattr(user_routes, "get_user_concurrency_for_role", _fake_helper)
+    monkeypatch.setattr(user_routes, "get_runtime_settings_instance", lambda: None)
+
+    current_user = {"user_id": "u1", "role": "free", "max_concurrent_requests": None}
+
+    resp = await user_routes.get_usage(
+        period="today",
+        current_user=current_user,
+        op_store=op_store,
+        log_store=None,
+    )
+    assert resp.quota.max_concurrency == 4
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("override", [None, 256])
+async def test_dashboard_user_context_carries_override(override, monkeypatch):
+    """``get_current_user`` hands ``/user/usage`` the per-user override."""
+    from serving.config.settings import get_settings
+    from serving.servers.deps import get_current_user
+    from serving.utils.jwt import create_access_token
+
+    monkeypatch.setattr(
+        get_settings(), "jwt_secret_key", "test-secret-for-usage-override-long-enough"
+    )
+
+    op_store = AsyncMock()
+    op_store.get_user_by_id.return_value = {
+        "id": "u1",
+        "email": "u1@example.com",
+        "role": "free",
+        "status": "active",
+        "email_verified": True,
+        "max_concurrent_requests": override,
+    }
+    token, _ = create_access_token(user_id="u1", email="u1@example.com")
+
+    user = await get_current_user("Bearer " + token, op_store)
+    assert user["max_concurrent_requests"] == override

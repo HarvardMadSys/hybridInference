@@ -4,7 +4,6 @@ import asyncio
 import contextlib
 import os
 import sys
-from collections.abc import Generator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -28,20 +27,11 @@ from tests.fixtures.auth_helpers import (
     assert_test_db_from_pool,
     assert_test_db_name,
     build_auth_test_env_defaults,
-    login_and_get_auth_headers,
 )
 
 # ============================================================================
 # Session-level fixtures
 # ============================================================================
-
-
-@pytest.fixture(scope="session")
-def event_loop() -> Generator:
-    """Create an event loop for the test session."""
-    loop = asyncio.get_event_loop_policy().new_event_loop()
-    yield loop
-    loop.close()
 
 
 async def _skip_if_test_db_unavailable(context: str = "") -> None:
@@ -128,6 +118,14 @@ def _reset_login_rate_limit():
     from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
     reset_login_rate_limit_state()
+    yield
+
+
+@pytest.fixture(autouse=True)
+def _reset_mail_rate_limit():
+    from serving.utils.mail_rate_limit import reset_mail_rate_limit_state
+
+    reset_mail_rate_limit_state()
     yield
 
 
@@ -251,13 +249,17 @@ def mock_log_store():
     store.get_user_cost_today = AsyncMock(return_value=0.0)
     store.get_user_cost_period = AsyncMock(return_value=0.0)
     store.get_batch_usage = AsyncMock(return_value={})
+    _zero_usage = {
+        "requests": 0,
+        "cost_usd": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
     store.get_user_usage_detail = AsyncMock(
-        return_value={
-            "today": {"cost_usd": 0.0, "requests": 0},
-            "week": {"cost_usd": 0.0, "requests": 0},
-            "month": {"cost_usd": 0.0, "requests": 0},
-            "alltime": {"cost_usd": 0.0, "requests": 0},
-        }
+        return_value={window: dict(_zero_usage) for window in ("today", "week", "month", "alltime")}
     )
     store.log_request = AsyncMock()
     return store
@@ -453,45 +455,6 @@ async def require_db(auth_app):
     return op_store
 
 
-@pytest_asyncio.fixture(name="auth_client_test_user")
-async def auth_client_test_user_fixture(auth_client):
-    """Create a test user for auth tests."""
-    user_data = {
-        "email": f"test_{os.urandom(4).hex()}@signuptest.dev",
-        "password": "TestPass123!",
-        "user_name": "Test User",
-        "accepted_tos": True,
-    }
-
-    response = await auth_client.post("/auth/signup", json=user_data)
-    assert response.status_code == 201
-
-    user_id = response.json()["user_id"]
-
-    return {
-        **user_data,
-        "user_id": user_id,
-        "id": user_id,  # Add 'id' field for compatibility with conftest_auth tests
-        "status": "active",  # Default status for new users
-        "email_verified": False,  # Email verification is disabled in tests by default
-    }
-
-
-@pytest_asyncio.fixture(name="auth_client_authenticated_user")
-async def auth_client_authenticated_user_fixture(auth_client, auth_client_test_user):
-    """Create and authenticate a test user."""
-    headers = await login_and_get_auth_headers(
-        auth_client,
-        email=auth_client_test_user["email"],
-        password=auth_client_test_user["password"],
-    )
-
-    return {
-        **auth_client_test_user,
-        "access_token": headers["Authorization"].removeprefix("Bearer "),
-    }
-
-
 # ============================================================================
 # Utility fixtures
 # ============================================================================
@@ -628,14 +591,19 @@ async def anthropic_app_services(
 ):
     """AppServices instance for anthropic compat router tests."""
     from serving.servers.deps import AppServices
+    from serving.servers.routers.completions_logging import CompletionsLogger
 
-    return AppServices(
+    completions_logger = CompletionsLogger(log_store=mock_log_store)
+    services = AppServices(
         router=anthropic_compat_router,
         db_logger=mock_db_logger,
         operational_store=mock_operational_store,
         log_store=mock_log_store,
         routing_manager=None,
+        completions_logger=completions_logger,
     )
+    yield services
+    await completions_logger.stop(timeout=0.1)
 
 
 @pytest_asyncio.fixture
@@ -673,6 +641,7 @@ async def anthropic_test_app(anthropic_app_services):
             "user_id": "test-user",
             "role": "internal",
             "auth_key_hash": "anthropic-test-key-hash",
+            "api_key_id": 5,
         }
 
     app.dependency_overrides[verify_api_key] = fake_verify
