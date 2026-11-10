@@ -44,7 +44,19 @@ class _Connection:
 
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         self.sql.append((sql, args))
+        if "hard_delete_pending" in sql:
+            # The row-lock read in PostgresOperationalStore.update_user_fields.
+            if self.row is None:
+                return None
+            return {
+                "status": self.row.get("status", "active"),
+                "hard_delete_pending": False,
+            }
         return self.row
+
+    @contextlib.asynccontextmanager
+    async def transaction(self):
+        yield
 
     async def execute(self, sql: str, *args: Any) -> str:
         self.sql.append((sql, args))

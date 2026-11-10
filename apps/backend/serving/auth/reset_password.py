@@ -115,9 +115,11 @@ class AccountStore:
             "lower(login_name) = $1 AND login_name IS NOT NULL", login_name.strip().lower()
         )
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
+    async def update_user_fields(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Update columns of the account, as the operational store does."""
-        await self._store.update_user_fields(user_id, **fields)
+        await self._store.update_user_fields(user_id, expected_status=expected_status, **fields)
 
     async def delete_user_sessions(self, user_id: str) -> None:
         """Revoke every session of the account, as the operational store does."""
