@@ -611,7 +611,44 @@ def handle_stream_event(
     if event_type == "message_stop":
         return StreamEventResult(is_done=True)
 
+    if event_type == "error":
+        raise stream_error(event.get("error"))
+
     return StreamEventResult()
+
+
+#: The status Anthropic answers each error type with before a stream starts.
+#: Inside a stream the 200 is already sent, so the ``error`` event's type is
+#: all that says which it was.
+_ERROR_TYPE_STATUS = {
+    "invalid_request_error": 400,
+    "authentication_error": 401,
+    "permission_error": 403,
+    "not_found_error": 404,
+    "request_too_large": 413,
+    "rate_limit_error": 429,
+    "api_error": 500,
+    "overloaded_error": 529,
+}
+
+
+def stream_error(error: Any) -> Exception:
+    """Return the exception for an ``error`` event a Messages stream ended with.
+
+    Skipped as an unknown event, it let the stream end as though complete
+    (``finish_reason: "stop"``): a cut-off answer passed off as finished, a
+    partial tool call dropped, nothing for the router to fall back from. An
+    ``UpstreamStreamError`` carries the status the type stands for, so the
+    circuit breaker classifies it as it would the same refusal before the
+    stream began; an unknown type is a 502.
+    """
+    from .openai_compat import UpstreamStreamError
+
+    error_type = error.get("type") if isinstance(error, dict) else None
+    message = error.get("message") if isinstance(error, dict) else None
+    status = _ERROR_TYPE_STATUS.get(error_type, 502) if isinstance(error_type, str) else 502
+    text = message.strip() if isinstance(message, str) and message.strip() else None
+    return UpstreamStreamError(text or "Upstream reported an error mid-stream", status)
 
 
 class StreamEventResult:

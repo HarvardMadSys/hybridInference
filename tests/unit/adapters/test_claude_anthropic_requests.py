@@ -403,6 +403,36 @@ async def test_claude_maps_the_stop_reason(upstream, stop_reason, finish_reason)
     assert out["choices"][0]["finish_reason"] == finish_reason
 
 
+@pytest.mark.parametrize(
+    ("error_type", "status"), [("overloaded_error", 529), ("rate_limit_error", 429)]
+)
+async def test_an_error_event_mid_stream_fails_the_stream(upstream, error_type, status):
+    """Anthropic reports a failure inside the stream it already answered 200 for.
+
+    The ``error`` event was skipped as one the handler did not know, and the
+    stream ended with ``finish_reason: "stop"``: a cut-off answer passed off as
+    complete, nothing for the router to fall back from, and no output billed.
+    """
+    from serving.adapters.openai_compat import UpstreamStreamError
+
+    start, block, delta = _text_events("Partial ans")[:3]
+    upstream.sse = [
+        start,
+        block,
+        delta,
+        {"type": "error", "error": {"type": error_type, "message": "Overloaded"}},
+    ]
+    chunks: list[str] = []
+
+    with pytest.raises(UpstreamStreamError, match="Overloaded") as raised:
+        async for chunk in _adapter("anthropic", upstream).stream_chat_completion(USER):
+            chunks.append(chunk)
+
+    assert raised.value.status == status
+    assert "Partial ans" in "".join(chunks)
+    assert "finish_reason" not in "".join(chunks).replace('"finish_reason": null', "")
+
+
 async def test_a_vertex_error_body_is_raised_not_returned_as_text(upstream):
     upstream.reply = {"Code": 429, "Error": "quota exhausted"}
 
