@@ -36,6 +36,7 @@ from serving.storage.base import (
     OperationalStore,
     ProviderDefinitionRow,
     ProviderKeyRow,
+    ResetRedemption,
     Row,
 )
 from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
@@ -2950,6 +2951,43 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """Delete all reset tokens for a user."""
         async with self._pool.acquire() as conn:
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", user_id)
+
+    async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
+        """Spend reset link *token* on *password_hash*; see the base class.
+
+        The account row is locked before any link is read under a lock, as the
+        account deletions lock it before deleting its links and sessions, so
+        one account's redemptions take turns in that order and cannot deadlock
+        with each other or with a deletion. The link is then read again under
+        the lock: a redemption that waited finds it gone, spent with every
+        sibling by the one that went first.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            owner = await conn.fetchval(
+                "SELECT user_id FROM password_reset_tokens WHERE token = $1", token
+            )
+            if owner is None:
+                return ResetRedemption("invalid")
+            if await conn.fetchval("SELECT id FROM users WHERE id = $1 FOR UPDATE", owner) is None:
+                return ResetRedemption("invalid")
+            link = await conn.fetchrow(
+                "SELECT used_at, expires_at < NOW() AS expired "
+                "FROM password_reset_tokens WHERE token = $1 AND user_id = $2 FOR UPDATE",
+                token,
+                owner,
+            )
+            if link is None:
+                return ResetRedemption("invalid")
+            if link["used_at"] is not None:
+                return ResetRedemption("used")
+            if link["expired"]:
+                return ResetRedemption("expired")
+            await conn.execute(
+                "UPDATE users SET password_hash = $2 WHERE id = $1", owner, password_hash
+            )
+            await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", owner)
+            await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", owner)
+        return ResetRedemption("reset", owner)
 
     # -- identity authorization codes ----------------------------------------
 

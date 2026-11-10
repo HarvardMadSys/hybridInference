@@ -198,17 +198,20 @@ weights, and disable or remove routes. Resetting a catalog-route override return
 it to its database catalog baseline. The legacy API source label `yaml` and
 `yaml_weight` field remain compatibility names for that baseline.
 
-The same edit carries a route's reasoning-effort map (`reasoning_effort_map`,
-see [Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route)):
-**Reasoning effort levels**, one row per public level and the value the
-upstream receives for it. It is optional in the body: left out, the route keeps
-the map it has, so saving the other capabilities never clears one; `null`
-returns the route to its own map from the catalog or its creation. A route
-whose adapter does not send `reasoning_effort` refuses a map (422), and a route
-added from the console never takes another route's map. Route listings report
-`reasoning_effort_mappable` and `reasoning_efforts_published`, the levels the
-live route offers clients. A save answers only once the route this process
-serves uses the saved map; otherwise it answers 409.
+The **Reasoning effort levels** summary shows the route's client choices and
+where they come from. Open **Advanced mapping** to change what each public
+level sends upstream. **Use default effort settings** clears the effort
+override while keeping other capability changes. A route without declared
+effort capability can still run a model that thinks.
+
+The request field is `reasoning_effort_map`. Omitting it keeps an existing
+override. Sending `null` clears the override and follows the route's catalog
+or creation map, its legacy effort settings, or a matching preset. An
+inherited preset is resolved when the adapter is built and is never copied
+into the saved route or capability override. Existing database routes pick
+it up on reload without rewriting their catalog. Route listings include
+`reasoning_efforts_published` and `reasoning_effort_source`. See
+[Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route).
 
 ### Settings tab
 

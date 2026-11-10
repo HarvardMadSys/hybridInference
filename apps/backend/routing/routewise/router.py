@@ -52,6 +52,11 @@ if TYPE_CHECKING:
 
     from .config import RouteWiseConfig
 
+# The module, not its constants: ``PRIORITY_INTERACTIVE`` is recomputed when
+# the configuration changes, so importing it by name would freeze the value
+# the process happened to have at import time. Reading it through the module
+# keeps the priority a runtime configuration, not a startup snapshot.
+from routing import prefill_load as prefill_load_module
 from routing.backends import LeafBackend
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import (
@@ -61,7 +66,6 @@ from routing.endpoint_health import (
 )
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
-    PRIORITY_INTERACTIVE,
     PrefillLoadTracker,
     conversation_fingerprint,
     estimate_prefill_tokens,
@@ -1296,7 +1300,7 @@ class RouteWiseRouter:
         # the traffic it measures, and the latency profile would skew
         # pessimistic -- which then steers traffic away from a healthy endpoint.
         priority_context = (
-            req_ctx.push(**{req_ctx.UPSTREAM_PRIORITY: PRIORITY_INTERACTIVE})
+            req_ctx.push(**{req_ctx.UPSTREAM_PRIORITY: prefill_load_module.PRIORITY_INTERACTIVE})
             if getattr(getattr(adapter, "config", None), "priority_scheduling", False) is True
             else contextlib.nullcontext()
         )

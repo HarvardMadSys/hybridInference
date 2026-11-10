@@ -288,9 +288,9 @@ def test_reserved_labels_cover_every_dispatchable_kind():
 
     from serving.servers import registry
 
-    source = inspect.getsource(registry._make_adapter)
+    source = inspect.getsource(registry._build_adapter)
     quoted = set(__import__("re").findall(r'"([a-z0-9_]+)"', source))
-    # Names in _make_adapter that are config keys or profile values, not kinds.
+    # Names in _build_adapter that are config keys or profile values, not kinds.
     non_kinds = {
         "provider_profile",
         "openrouter_pinned_provider",

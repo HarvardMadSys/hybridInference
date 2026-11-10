@@ -22,6 +22,7 @@ from serving.config.settings import settings
 from serving.servers.deps import get_db_logger, get_operational_store
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers import auth_routes, user_routes
+from serving.storage.base import ResetRedemption
 from serving.utils import password as password_utils
 from serving.utils.jwt import create_access_token
 from tests.fixtures import browser_sessions
@@ -85,8 +86,14 @@ def op_store() -> MagicMock:
         for row in sessions_of(user_id):
             row["revoked"] = True
 
+    async def redeem_reset_token(token: str, *, password_hash: str) -> ResetRedemption:
+        # The emailed link is live; spending it ends the account's sessions.
+        await delete_user_sessions(USER_ID)
+        return ResetRedemption("reset", USER_ID)
+
     store.revoke_user_sessions = AsyncMock(side_effect=revoke_user_sessions)
     store.delete_user_sessions = AsyncMock(side_effect=delete_user_sessions)
+    store.redeem_reset_token = AsyncMock(side_effect=redeem_reset_token)
     return store
 
 
