@@ -79,7 +79,10 @@ class _Engine(BaseAdapter):
 
     def _record(self) -> None:
         self.calls += 1
-        self.watches.append(req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH))
+        # Every attempt is pushed the router's dispatch report; the first-token
+        # watch, when the attempt has one, rides on it.
+        report = req_ctx.get().get(req_ctx.UPSTREAM_DISPATCH_WATCH)
+        self.watches.append(report.watch)
 
     async def _first_token(self) -> None:
         if self.delay is not None:

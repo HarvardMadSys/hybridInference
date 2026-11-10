@@ -72,11 +72,6 @@ def _build_histogram(
     return buckets
 
 
-def _escape_ilike_substring_term(term: str) -> str:
-    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
-    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-
-
 def _round_or_none(value: Any, digits: int = 2) -> float | None:
     """Coerce a numeric DB value to float and round, or return None."""
     if value is None:
@@ -205,3 +200,51 @@ def resolve_request_outcome_filter(
             status_code=422,
             detail=(f"`outcome` must be one of: {', '.join(sorted(REQUEST_OUTCOME_FILTERS))}"),
         ) from None
+
+
+# Where a logged request came from. The batch worker stamps every request it
+# runs with its batch (``api_logs.batch_job_id``, see serving/batch/dispatch.py),
+# and no other path sets that column, so ``interactive`` is everything else: API,
+# console and Playground traffic. The admin Recent Requests tab lists only that;
+# the Batches tab lists the batch requests on their own. Constant predicates, like
+# the outcome filters, so a caller appends them without renumbering placeholders.
+# ``idx_api_logs_source`` (timestamp, batch_job_id), built in the background by
+# ``serving.storage.perf_metrics_index``, keeps a window's count under either
+# predicate an index-only scan, as the unfiltered count is.
+REQUEST_SOURCE_FILTERS: dict[str, str] = {
+    # No predicate: every row in the window.
+    "all": "",
+    "interactive": "l.batch_job_id IS NULL",
+    "batch": "l.batch_job_id IS NOT NULL",
+}
+
+
+def resolve_request_source_filter(source: str | None) -> str:
+    """Return the SQL predicate for a Recent Requests ``source`` filter.
+
+    Empty when no predicate applies: no ``source`` at all, or ``"all"``. As for
+    ``outcome``, an unrecognized value is a 422 rather than ignored: answering
+    "the batch requests" with every request would pass for a window that held
+    nothing but batch traffic.
+    """
+    if source is None or source == "":
+        return ""
+    try:
+        return REQUEST_SOURCE_FILTERS[source]
+    except KeyError:
+        raise HTTPException(
+            status_code=422,
+            detail=f"`source` must be one of: {', '.join(sorted(REQUEST_SOURCE_FILTERS))}",
+        ) from None
+
+
+def request_source_is_batch(source: str | None) -> bool | None:
+    """Say which rows a ``source`` filter keeps, for a store that takes no SQL.
+
+    None for every row, False for the requests the batch worker did not run,
+    True for those it did. Validated as :func:`resolve_request_source_filter`.
+    """
+    predicate = resolve_request_source_filter(source)
+    if not predicate:
+        return None
+    return predicate == REQUEST_SOURCE_FILTERS["batch"]

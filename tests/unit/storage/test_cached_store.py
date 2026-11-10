@@ -159,9 +159,9 @@ class TestCacheHits:
         recorded: list[int] = []
         original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int, **kw: Any) -> bool:
             recorded.append(ttl)
-            return await original_set_if(key, value, ttl, generation=generation)
+            return await original_set_if(key, value, ttl, generation=generation, **kw)
 
         cache.set_if_generation = _record_ttl
 
@@ -197,9 +197,9 @@ class TestCacheHits:
         recorded: list[int] = []
         original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int, **kw: Any) -> bool:
             recorded.append(ttl)
-            return await original_set_if(key, value, ttl, generation=generation)
+            return await original_set_if(key, value, ttl, generation=generation, **kw)
 
         cache.set_if_generation = _record_ttl
 
@@ -225,9 +225,9 @@ class TestCacheHits:
         recorded: list[int] = []
         original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int, **kw: Any) -> bool:
             recorded.append(ttl)
-            return await original_set_if(key, value, ttl, generation=generation)
+            return await original_set_if(key, value, ttl, generation=generation, **kw)
 
         cache.set_if_generation = _record_ttl
 
@@ -250,9 +250,9 @@ class TestCacheHits:
         recorded: list[int] = []
         original_set_if = cache.set_if_generation
 
-        async def _record_ttl(key, value: Any, ttl: int, *, generation: int) -> bool:
+        async def _record_ttl(key, value: Any, ttl: int, *, generation: int, **kw: Any) -> bool:
             recorded.append(ttl)
-            return await original_set_if(key, value, ttl, generation=generation)
+            return await original_set_if(key, value, ttl, generation=generation, **kw)
 
         cache.set_if_generation = _record_ttl
 
@@ -263,15 +263,19 @@ class TestCacheHits:
     async def test_get_key_owner_for_audit_is_cleared_by_a_key_write(
         self, cached, inner_store, cache
     ):
-        """A revoked key's audit entry must not outlive the next key write.
+        """A revoked key's audit entry must not outlive the next write to its owner's keys.
 
         It caches rows the auth lookups never see — including dead credentials
-        — so it is the entry most likely to be stale, and its key lives under
-        the ``auth_light:`` namespace precisely so every existing invalidation
-        clears it.
+        — so it is the entry most likely to be stale, and it is tagged with its
+        key's owner like the auth entries, so every invalidation of that
+        account clears it. Another account's key write leaves it alone.
         """
         await cached.get_key_owner_for_audit("h1")
-        await cached.revoke_key("h1")
+        await cached.revoke_key("someone-else")
+        await cached.get_key_owner_for_audit("h1")
+        assert inner_store.get_key_owner_for_audit.await_count == 1
+
+        await cached.revoke_key("u1")
         await cached.get_key_owner_for_audit("h1")
 
         assert inner_store.get_key_owner_for_audit.await_count == 2

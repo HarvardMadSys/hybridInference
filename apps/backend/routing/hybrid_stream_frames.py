@@ -16,6 +16,10 @@ about the frame's bytes rather than about any backend's state:
 Both helpers are pure: they read a chunk and, at most, add one key to a routing
 payload. Neither decides whether to fall back -- that stays with
 :mod:`routing.hybrid` -- and neither changes framing or ordering.
+
+Neither parses a frame that cannot carry ``_routing`` (:func:`carries_routing`):
+nearly every frame of a stream is a content delta, and each used to be parsed
+two or three times on its way through this layer.
 """
 
 from __future__ import annotations
@@ -23,7 +27,25 @@ from __future__ import annotations
 import json
 from typing import Any
 
-__all__ = ["is_client_visible", "tag_backend_chunk"]
+__all__ = ["carries_routing", "is_client_visible", "tag_backend_chunk"]
+
+# How a routing key reads in a serialized frame. The gateway writes every frame
+# that carries one with ``json.dumps``, which writes an ASCII key verbatim.
+_ROUTING_KEY = '"_routing"'
+
+
+def carries_routing(chunk: Any) -> bool:
+    """Return whether ``chunk`` can carry a ``_routing`` object, without parsing it.
+
+    True for any non-string chunk, which is read as it is, and for a string
+    whose text contains the key. A string without it is skipped unparsed: every
+    frame the gateway writes spells the key out, so a frame that does not cannot
+    be one of them. Only an upstream that spelled the key with JSON escapes
+    could tell the difference, and its frame then reads as visible and is
+    forwarded untagged -- the direction that forgoes a fallback, never the one
+    that splices two answers together.
+    """
+    return not isinstance(chunk, str) or _ROUTING_KEY in chunk
 
 
 def is_client_visible(chunk: Any) -> bool:
@@ -41,6 +63,8 @@ def is_client_visible(chunk: Any) -> bool:
     would splice two answers into one stream.
     """
     if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        return True
+    if not carries_routing(chunk):
         return True
     raw = chunk[6:].strip()
     if raw == "[DONE]":
@@ -64,6 +88,8 @@ def tag_backend_chunk(chunk: Any, backend_name: str) -> Any:
     is forwarded byte-for-byte.
     """
     if not isinstance(chunk, str) or not chunk.startswith("data: "):
+        return chunk
+    if not carries_routing(chunk):
         return chunk
     raw = chunk[6:].strip()
     if raw == "[DONE]":

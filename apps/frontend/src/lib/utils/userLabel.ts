@@ -49,7 +49,7 @@ export function userAccountLabel(user: UserIdentity | null | undefined): string 
 }
 
 /** What `userAccountLabel` returned, so a prompt can say what to type. */
-export type AccountLabelKind = 'email' | 'login_name' | 'phone' | 'id';
+type AccountLabelKind = 'email' | 'login_name' | 'phone' | 'id';
 
 export function userAccountLabelKind(user: UserIdentity | null | undefined): AccountLabelKind {
   if (user?.email?.trim()) return 'email';

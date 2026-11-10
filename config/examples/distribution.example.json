@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "distribution": {
+    "id": "example",
+    "display_name": "Example Inference",
+    "release": "2026.07.1"
+  },
+  "site": {
+    "public_base_url": "https://inference.example.com",
+    "support_email": "admin@inference.example.com"
+  },
+  "features": {
+    "routers": [
+      "fixed"
+    ],
+    "public_signup": false,
+    "rag": false
+  },
+  "deployment": {
+    "target": "staging"
+  }
+}

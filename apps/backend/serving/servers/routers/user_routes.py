@@ -8,19 +8,23 @@ from typing import TYPE_CHECKING, Any
 from serving.config.runtime_settings import get_runtime_settings_instance
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
+from serving.servers.routers import recent_requests
 
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditTarget
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    PreferencesTooLargeError,
+    ProjectNotFoundError,
     UserNotFoundError,
 )
 from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
+from serving.quota import DEFAULT_DAILY_QUOTA_USD
 from serving.schemas import ModelList
 from serving.schemas_auth import (
     APIKeyCreateRequest,
@@ -30,6 +34,8 @@ from serving.schemas_auth import (
     APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
+    APIKeyRevealRequest,
+    APIKeyRevealResponse,
     APIKeyUpdateRequest,
     APIKeyUpdateResponse,
     ChangePasswordRequest,
@@ -64,14 +70,14 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
-from serving.servers.routers.recent_requests import (
-    present_recent_requests,
-    query_recent_requests,
-)
+from serving.storage.base import USER_PREFERENCES_MAX_BYTES
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
+from serving.utils.login_rate_limit import refusal_worth_recording
 from serving.utils.phone_auth import phone_identity_unverified
+from serving.utils.request_ip import get_client_ip
+from serving.utils.token_utils import optional_token_count
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
@@ -81,9 +87,14 @@ LOCALE_PREFERENCE_KEY = "locale"
 #: A safety ceiling on an account's active API keys, not a product limit: the
 #: console does not show it and ordinary use never reaches it. Every key spends
 #: the same account quota, so it is not about spend; it bounds what a runaway
-#: or hostile script can write through the unthrottled create route, and the
-#: listing, which decrypts every active key.
+#: or hostile script can write through the unthrottled create route, and what
+#: the listing reads.
 MAX_ACTIVE_API_KEYS_PER_ACCOUNT = 100
+
+#: The statuses of a key whose saved value its owner may still reveal. A
+#: revoked key stays revealable for reference; showing it does not make it
+#: valid again.
+_REVEALABLE_STATUSES = ("active", "revoked")
 
 
 def _clean_key_name(name: str | None) -> str | None:
@@ -303,13 +314,30 @@ async def update_llm_prober_layout(
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> LLMProberLayoutResponse:
-    """Persist the current user's preferred llm-prober layout."""
+    """Persist the current user's preferred llm-prober layout.
+
+    Refused with 413, nothing stored, when it would take the account's saved
+    preferences over ``USER_PREFERENCES_MAX_BYTES``.
+    """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    if not await op_store.set_user_preference(
-        current_user["user_id"], LLM_PROBER_LAYOUT_KEY, body.model_dump()
-    ):
+    try:
+        found = await op_store.set_user_preference(
+            current_user["user_id"],
+            LLM_PROBER_LAYOUT_KEY,
+            body.model_dump(),
+            max_total_bytes=USER_PREFERENCES_MAX_BYTES,
+        )
+    except PreferencesTooLargeError:
+        raise HTTPException(
+            status_code=413,
+            detail=(
+                "The layout is too large to save: an account's saved preferences "
+                f"may take at most {USER_PREFERENCES_MAX_BYTES} bytes"
+            ),
+        ) from None
+    if not found:
         raise UserNotFoundError(current_user["user_id"])
 
     logger.info("llm_prober_layout_updated user_id=%s", current_user["user_id"])
@@ -411,6 +439,14 @@ async def create_api_key(
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
     name = _clean_key_name(payload.name if payload else None)
+    project_id = payload.project_id if payload else None
+    if project_id:
+        project = await op_store.get_project(current_user["user_id"], project_id)
+    else:
+        project = await op_store.get_default_project(current_user["user_id"])
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    project_id = project["id"]
 
     # Generate new API key
     api_key = generate_api_key()
@@ -433,7 +469,10 @@ async def create_api_key(
             inherit_account_quota=True,
             name=name,
             max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
+            project_id=project_id,
         )
+    except ProjectNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Project not found") from exc
     except APIKeyLimitReachedError as exc:
         raise HTTPException(
             status_code=409,
@@ -462,6 +501,8 @@ async def create_api_key(
         api_key=api_key,
         key_prefix=key_prefix,
         name=name,
+        project_id=project_id,
+        project_name=project["name"],
         warning="Save this API key now. It will not be shown again.",
         created_at=created_at or datetime.now(UTC),
     )
@@ -494,6 +535,8 @@ async def get_api_key_info(
         created_at=key_row["created_at"],
         last_used_at=key_row["last_used_at"],
         status=key_row["status"],
+        project_id=key_row.get("project_id"),
+        project_name=key_row.get("project_name"),
     )
 
 
@@ -504,8 +547,11 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user, live ones first.
 
-    Active and revoked keys carry their saved full value for the owner to
-    show and copy. Revealing a revoked key does not make it valid again.
+    Every key is masked. A bearer token is all this takes, and one lifted from
+    a browser is good for minutes while an API key lasts until revoked, so the
+    full value of a saved key comes only from
+    ``POST /user/api-keys/{key_prefix}/reveal``, which asks for the password;
+    ``revealable`` says which keys have one saved.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -514,29 +560,139 @@ async def list_api_keys(
 
     keys: list[APIKeyListItem] = []
     for row in rows:
-        full_key: str | None = None
-        if row["status"] in ("active", "revoked") and row["api_key_encrypted"]:
-            # Display-only decryption: never break the listing on a bad
-            # ciphertext — log and fall back to a masked (api_key=None) row.
-            try:
-                full_key = decrypt_api_key(row["api_key_encrypted"])
-            except Exception:
-                logger.warning("api_key_decrypt_failed key_prefix=%s", row["key_prefix"])
         keys.append(
             APIKeyListItem(
-                api_key=full_key,
                 key_prefix=row["key_prefix"],
                 key_masked=mask_key_prefix(row["key_prefix"]),
+                revealable=row["status"] in _REVEALABLE_STATUSES
+                and bool(row.get("api_key_encrypted")),
                 name=row.get("name"),
                 created_at=row["created_at"],
                 last_used_at=row["last_used_at"],
                 status=row["status"],
                 spent_today_usd=float(row.get("spent_today_usd") or 0),
                 spent_month_usd=float(row.get("spent_month_usd") or 0),
+                project_id=row.get("project_id"),
+                project_name=row.get("project_name"),
                 **_key_limits(row),
             )
         )
     return APIKeyListResponse(keys=keys)
+
+
+@router.post("/api-keys/{key_prefix}/reveal", response_model=APIKeyRevealResponse)
+async def reveal_api_key(
+    request: Request,
+    response: Response,
+    key_prefix: str,
+    body: APIKeyRevealRequest,
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> APIKeyRevealResponse:
+    """Show one of the current user's saved keys in full, once its owner gives the password.
+
+    The session alone is not enough: its token proves a browser, not a
+    person, and the key it would hand out outlives it. The password is checked
+    as :func:`confirm_account_owner` checks it for every sensitive change,
+    each attempt counting against the sign-in limits. An account without a
+    password (one made by phone) is refused: it can set one, or regenerate the
+    key, which shows the new value once. Every reveal is audited, and so is
+    every one refused for a wrong password -- what a stolen session trying
+    its luck looks like; refusals past the sign-in limit, which come as fast
+    as they are sent, once a minute per address.
+
+    Raises:
+        HTTPException: 400 without the right password, or for an account
+            without one; 404 when the account has no such key with a saved
+            value; 409 when the saved value cannot be read; 429 when
+            rate-limited.
+    """
+    if not op_store:
+        raise HTTPException(status_code=500, detail="Database not available")
+
+    user_id = current_user["user_id"]
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user_row.get("password_hash"):
+        raise HTTPException(
+            status_code=400,
+            detail="Showing a saved key needs your password, and this account has none. "
+            "Set one in Settings, or regenerate the key to see a new one.",
+        )
+
+    row = next(
+        (
+            key
+            for key in await op_store.list_account_keys(user_id)
+            if key["key_prefix"] == key_prefix
+        ),
+        None,
+    )
+    if row is None or row["status"] not in _REVEALABLE_STATUSES or not row["api_key_encrypted"]:
+        raise HTTPException(status_code=404, detail="API key not found")
+
+    try:
+        await confirm_account_owner(
+            request,
+            op_store,
+            user_row,
+            password=body.password,
+            phone_code=None,
+            purpose="reveal_api_key",
+        )
+    except HTTPException as exc:
+        limited = exc.status_code == 429
+        if not limited or refusal_worth_recording(get_client_ip(request), "reveal_key"):
+            await _audit_refused_reveal(
+                request,
+                current_user,
+                db_logger,
+                key_prefix,
+                "rate_limited" if limited else "wrong_password",
+            )
+        raise
+
+    try:
+        api_key = decrypt_api_key(row["api_key_encrypted"])
+    except Exception:
+        logger.warning("api_key_decrypt_failed key_prefix=%s", key_prefix)
+        raise HTTPException(
+            status_code=409,
+            detail="This key's saved value cannot be read. Regenerate the key to get a new one.",
+        ) from None
+
+    await log_admin_action(
+        db_logger,
+        action="reveal_key",
+        details={"actor": "user", "key_prefix": key_prefix},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(user_id),
+    )
+    response.headers["Cache-Control"] = "no-store"
+    return APIKeyRevealResponse(key_prefix=key_prefix, api_key=api_key)
+
+
+async def _audit_refused_reveal(
+    request: Request,
+    current_user: dict[str, Any],
+    db_logger: Any,
+    key_prefix: str,
+    reason: str,
+) -> None:
+    """Audit a reveal refused at the owner check; a failed write never hides the refusal."""
+    try:
+        await log_admin_action(
+            db_logger,
+            action="reveal_key",
+            details={"actor": "user", "key_prefix": key_prefix, "refused": reason},
+            success=False,
+            actor=user_audit_actor(request, current_user),
+            target=AuditTarget.user(current_user["user_id"]),
+        )
+    except Exception:
+        logger.exception("reveal_key_refusal_audit_failed key_prefix=%s", key_prefix)
 
 
 def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
@@ -672,6 +828,15 @@ async def update_api_key(
     return APIKeyUpdateResponse(key_prefix=key_prefix, **new)
 
 
+async def _new_key_daily_quota(current_user: dict[str, Any]) -> Decimal:
+    """The daily quota the current user's account would give a key it starts afresh."""
+    try:
+        runtime_settings = get_runtime_settings_instance()
+    except RuntimeError:
+        runtime_settings = None
+    return await get_default_daily_quota_for_role(current_user["role"], runtime_settings)
+
+
 @router.delete("/api-keys/{key_prefix}", response_model=APIKeyDeleteResponse)
 async def delete_api_key(
     request: Request,
@@ -680,7 +845,12 @@ async def delete_api_key(
     db_logger=Depends(get_db_logger),
     op_store=Depends(get_operational_store),
 ) -> APIKeyDeleteResponse:
-    """Revoke an active key or remove a revoked key owned by the current user."""
+    """Revoke an active key or remove a revoked key owned by the current user.
+
+    A revoked key is not removed (409) while it holds the account's quota for
+    the next key -- the account has no unrevoked key -- and that quota is
+    tighter than a new key's.
+    """
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -688,6 +858,9 @@ async def delete_api_key(
     response: APIKeyDeleteResponse | None = None
     audit_action: str | None = None
     audit_details: dict[str, Any] | None = None
+    # Whose cached auth the change evicts: the key's owner, which is the
+    # account it was found under.
+    key_owner: str = current_user["user_id"]
 
     async with db_logger.pool.acquire() as conn:
         revoked = await conn.fetchrow(
@@ -695,12 +868,13 @@ async def delete_api_key(
             UPDATE api_keys
             SET status = 'revoked'
             WHERE account_id = $1 AND key_prefix = $2 AND status = 'active'
-            RETURNING key_prefix, status
+            RETURNING key_prefix, status, user_id
             """,
             current_user["user_id"],
             key_prefix,
         )
         if revoked:
+            key_owner = revoked.get("user_id") or key_owner
             logger.info(
                 "API key revoked for user: %s key_prefix=%s",
                 current_user["user_id"],
@@ -724,15 +898,41 @@ async def delete_api_key(
                 key_prefix,
             )
             if existing and existing["status"] == "revoked":
+                # With no unrevoked key, the revoked keys are where the account's
+                # quota is kept: the next key takes it from them (the store's
+                # ``create_key``). One that holds a tighter limit than a new key
+                # would start with stays until the account has a live key again,
+                # or removing it would reset a limit an admin set.
                 deleted = await conn.fetchrow(
                     """
-                    DELETE FROM api_keys
-                    WHERE account_id = $1 AND key_prefix = $2 AND status = 'revoked'
-                    RETURNING key_prefix
+                    DELETE FROM api_keys AS k
+                    WHERE k.account_id = $1 AND k.key_prefix = $2 AND k.status = 'revoked'
+                      AND (
+                        EXISTS (
+                          SELECT 1 FROM api_keys AS live
+                          WHERE live.user_id = k.user_id AND live.status <> 'revoked'
+                        )
+                        OR (
+                          k.quota_monthly_cost_usd IS NULL
+                          AND COALESCE(k.quota_daily_cost_usd, $4::numeric) >= $3::numeric
+                        )
+                      )
+                    RETURNING k.key_prefix, k.user_id
                     """,
                     current_user["user_id"],
                     key_prefix,
+                    await _new_key_daily_quota(current_user),
+                    Decimal(str(DEFAULT_DAILY_QUOTA_USD)),
                 )
+                if deleted is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "This revoked key holds your account's limits while you have no "
+                            "other key. Create a new key first; this one can be removed then."
+                        ),
+                    )
+                key_owner = deleted.get("user_id") or key_owner
                 logger.info(
                     "Revoked API key removed for user: %s key_prefix=%s",
                     current_user["user_id"],
@@ -759,9 +959,10 @@ async def delete_api_key(
         # by the store. Revoking, so the key cannot be used afterwards; and
         # deleting, because the audit lookup caches revoked rows the auth
         # lookups never did (see ``get_key_owner_for_audit``) and would go on
-        # naming the former owner of a key that no longer exists.
+        # naming the former owner of a key that no longer exists. Only the
+        # owner's entries: every one of them is tagged with the owner.
         if op_store:
-            await op_store.invalidate_auth_caches()
+            await op_store.invalidate_user_auth_caches(key_owner)
         return response
 
     if not existing:
@@ -870,6 +1071,8 @@ async def get_usage(
     Supports periods: today, week, month, all. ``today`` and ``month`` start at
     00:00 UTC, when the daily quota resets; ``week`` is the last 7 days.
     """
+    from serving.storage.pools import DatabaseBusyError
+
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
@@ -924,13 +1127,20 @@ async def get_usage(
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
     try:
         if log_store:
-            all_usage = await log_store.get_user_usage_detail(current_user["user_id"])
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
+            # The period shown, and the month, whose cost is the quota's
+            # spent_month_usd; nothing else is read.
+            all_usage = await log_store.get_user_usage_detail(
+                current_user["user_id"], windows=(period_key, "month")
+            )
             period_data = all_usage.get(period_key, _zero)
             spent_month = all_usage.get("month", _zero).get("cost_usd", 0.0)
         else:
             period_data = _zero
             spent_month = 0.0
+    except DatabaseBusyError:
+        # No connection for it in time: a 503 the console retries, not zeros.
+        raise
     except Exception as exc:
         logger.warning(
             "Failed to query usage stats for user_id=%s: %s",
@@ -973,7 +1183,10 @@ async def get_usage(
             completion_tokens=int(period_data.get("completion_tokens") or 0),
             cache_read_tokens=int(period_data.get("cache_read_tokens") or 0),
             cache_write_tokens=int(period_data.get("cache_write_tokens") or 0),
-            reasoning_tokens=int(period_data.get("reasoning_tokens") or 0),
+            reasoning_tokens=optional_token_count(period_data.get("reasoning_tokens")),
+            reasoning_tokens_known_requests=int(
+                period_data.get("reasoning_tokens_known_requests") or 0
+            ),
             cost_usd=float(period_data.get("cost_usd") or 0),
         ),
     )
@@ -1072,7 +1285,8 @@ async def change_password(
             status_code=400, detail="New password must be different from current password."
         )
 
-    new_password_hash = password_utils.hash_password(body.new_password)
+    # A signed-in owner, confirmed just above: not refused for a busy queue.
+    new_password_hash = await password_utils.hash_password_async(body.new_password, shed=False)
     await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.
@@ -1112,13 +1326,34 @@ async def get_recent_requests(
     and cost information. Supports optional filtering by model_id, and by
     ``key_prefix``: one of the account's keys, any status, 404 otherwise. Each
     request names the key it was made with, when it was attributed to one.
+
+    Reaches back over the account's newest :data:`RECENT_REQUESTS_WINDOW`
+    requests: ``offset`` must be below that, ``total`` counts no further, and
+    ``total_capped`` says the account has older ones. Each read runs on the
+    general pool as a history read (:func:`serving.storage.pools.history_read_connection`):
+    when none can start in time, or one runs past
+    :data:`RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC`, the answer is a 503 with
+    ``Retry-After``.
     """
+    import asyncpg
+
+    from serving.storage.pools import DatabaseBusyError, history_read_connection
+
     if not db_logger or not db_logger.pool:
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Clamp limit to prevent excessive queries
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
+    if offset >= recent_requests.RECENT_REQUESTS_WINDOW:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Recent requests reach back over your newest {recent_requests.RECENT_REQUESTS_WINDOW} "
+                f"requests: offset must be less than {recent_requests.RECENT_REQUESTS_WINDOW}."
+            ),
+        )
+    limit = min(limit, recent_requests.RECENT_REQUESTS_WINDOW - offset)
 
     # The account's keys, to resolve the filter and to name each row's key.
     prefixes: dict[str, str] = {}
@@ -1134,18 +1369,24 @@ async def get_recent_requests(
             raise HTTPException(status_code=404, detail="API key not found")
         api_key_id = matches[0]
 
-    async with db_logger.pool.acquire() as conn:
+    async with history_read_connection(db_logger.pool) as conn:
         try:
-            # The COUNT is cached; the page is always a fresh read. Both use the
-            # same filters, so the total and the page describe one result set.
-            rows, total = await query_recent_requests(
-                conn,
-                user_id=current_user["user_id"],
-                model_id=model_id,
-                api_key_id=api_key_id,
-                limit=limit,
-                offset=offset,
-            )
+            async with conn.transaction(readonly=True):
+                await conn.execute(recent_requests._RECENT_REQUESTS_READ_SETTINGS)
+                # Cached COUNT(*) — see ``get_cached_user_request_count``.
+                rows, total, total_capped = await recent_requests.query_recent_requests(
+                    conn,
+                    user_id=current_user["user_id"],
+                    model_id=model_id,
+                    api_key_id=api_key_id,
+                    limit=limit,
+                    offset=offset,
+                )
+        except asyncpg.QueryCanceledError as exc:
+            # Stopped at its statement timeout: the database is too slow just now.
+            raise DatabaseBusyError(
+                f"recent requests read ran past {recent_requests.RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC:g}s"
+            ) from exc
         except Exception as exc:
             logger.warning(
                 "Failed to query recent requests for user_id=%s: %s",
@@ -1155,7 +1396,9 @@ async def get_recent_requests(
             return RecentRequestsResponse(requests=[], total=0, limit=limit, offset=offset)
 
     # Presentation stays outside the query's error boundary: a malformed row is
-    # a code defect, not an unavailable database, and used to surface as a 500.
-    requests = present_recent_requests(rows, prefixes)
+    # a code defect, not an unavailable database, and surfaces as a 500.
+    requests = recent_requests.present_recent_requests(rows, prefixes)
 
-    return RecentRequestsResponse(requests=requests, total=total, limit=limit, offset=offset)
+    return RecentRequestsResponse(
+        requests=requests, total=total, total_capped=total_capped, limit=limit, offset=offset
+    )

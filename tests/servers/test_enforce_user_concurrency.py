@@ -19,8 +19,10 @@ from httpx import ASGITransport, AsyncClient
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import (
     EXEMPT_MODEL_USER_CONCURRENCY_LIMIT,
+    INTAKE_USER_CONCURRENCY_LIMIT,
     UserConcurrencyLimiter,
     _exempt_slot_key,
+    _intake_slot_key,
     enforce_user_concurrency,
     static_limits_provider,
 )
@@ -679,3 +681,124 @@ async def test_concurrency_429_calls_log_rejection(monkeypatch):
     assert call["status_code"] == 429
     assert call["error_code"] == "concurrency_limit_exceeded"
     assert call["user"]["user_id"] == "u1"
+
+
+@pytest.mark.asyncio
+async def test_the_body_limit_applies_before_the_gate_parses_a_body():
+    """The gate reads the body before admission to find the model's budget.
+
+    That read is bounded by the request body limit, which refuses an oversized
+    body as its bytes arrive: the gate never parses it, and the request ends
+    there without taking a slot or reaching the handler.
+    """
+    from serving.servers.middleware.body_limit import RequestBodyLimitMiddleware
+
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    app.add_middleware(RequestBodyLimitMiddleware, max_body_bytes=4096)
+    app.unary_event.set()  # type: ignore[attr-defined]
+    produced: list[int] = []
+
+    async def oversized():
+        yield b'{"model": "exempt-model", "messages": [{"role": "user", "content": "'
+        for i in range(64):
+            produced.append(i)
+            yield b"x" * 1024
+        yield b'"}]}'
+
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        refused = await client.post(
+            "/probe", content=oversized(), headers={"content-type": "application/json"}
+        )
+        # The body was cut off at the limit, not read to its end and parsed,
+        # and the refused request never reached admission: it took no request
+        # slot, and gave its intake slot back.
+        assert refused.status_code == 413
+        assert len(produced) < 8
+        assert set(limiter._slots) == {_intake_slot_key("u1")}
+        assert limiter._slots[_intake_slot_key("u1")].in_use == 0
+
+        accepted = await client.post("/probe", json={"model": "exempt-model"})
+
+    assert accepted.status_code == 200
+    assert limiter._slots[_exempt_slot_key("u1")].in_use == 0
+
+
+@pytest.mark.asyncio
+async def test_a_caller_at_its_intake_budget_is_refused_before_another_body_is_read():
+    """Bodies read before admission are bounded per caller (M17).
+
+    The gate reads a body before admission to find its model's budget. Without
+    a budget of its own, a caller already at its cap could keep any number of
+    bodies in flight waiting for the 429.
+    """
+    user = {"user_id": "u1", "role": "free", "is_admin": False}
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_exempt_app(user, limiter, exempt_models={"exempt-model"})
+    app.unary_event.set()  # type: ignore[attr-defined]
+    arrive = asyncio.Event()
+
+    async def slow_body():
+        yield b'{"model": "exempt-model", "messages": [{"role": "user", "content": "'
+        await arrive.wait()
+        yield b'hi"}]}'
+
+    produced: list[bytes] = []
+
+    async def watched_body():
+        for part in (b'{"model": "exempt-model", ', b'"messages": []}'):
+            produced.append(part)
+            yield part
+
+    headers = {"content-type": "application/json"}
+    transport = ASGITransport(app=app, raise_app_exceptions=False)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        slow = [
+            asyncio.create_task(client.post("/probe", content=slow_body(), headers=headers))
+            for _ in range(INTAKE_USER_CONCURRENCY_LIMIT)
+        ]
+        await _wait_until_in_use(limiter, _intake_slot_key("u1"), INTAKE_USER_CONCURRENCY_LIMIT)
+
+        refused = await client.post("/probe", content=watched_body(), headers=headers)
+
+        assert refused.status_code == 429
+        assert refused.json()["detail"]["error"]["code"] == "concurrency_limit_exceeded"
+        assert produced == []
+        arrive.set()
+        assert [(await task).status_code for task in slow] == [200] * len(slow)
+
+    # Each gave its intake slot back once it was admitted.
+    assert limiter._slots[_intake_slot_key("u1")].in_use == 0
+    assert limiter._slots[_exempt_slot_key("u1")].in_use == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scope", ["project", "org"])
+async def test_scope_cap_rejects_and_releases_other_slots(scope):
+    user = {
+        "user_id": "u-scope",
+        "role": "pro",
+        "api_key_id": 7,
+        "project_id": "proj_test",
+        "org_id": "org_test",
+        f"{scope}_max_concurrent_requests": 1,
+    }
+    limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
+    app = _make_app(user, limiter)
+    scoped_id = {"project": "proj_test", "org": "org_test"}[scope]
+    scoped_key = f"scope:{scope}:{scoped_id}"
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        pending = asyncio.create_task(client.get("/probe"))
+        try:
+            await _wait_until_in_use(limiter, scoped_key, 1)
+            response = await client.get("/probe")
+            assert response.status_code == 429
+            assert response.json()["detail"]["error"]["scope"] == scope
+            assert limiter._slots["u-scope"].in_use == 1
+        finally:
+            app.unary_event.set()
+            await pending
+    assert limiter._slots["u-scope"].in_use == 0
+    assert limiter._slots[scoped_key].in_use == 0

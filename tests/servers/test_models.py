@@ -267,7 +267,7 @@ async def test_example_chat_is_public_but_unpriced_external_route_stays_restrict
 
     router = FixedRouter()
     example_models = (
-        Path(__file__).resolve().parents[2] / "distributions/example/config/models.yaml"
+        Path(__file__).resolve().parents[2] / "distributions/example/config/models.json"
     )
     registry.register_from_models_yaml(router, example_models)
 

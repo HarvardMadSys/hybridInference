@@ -15,7 +15,7 @@ interface ValidationItem {
   msg?: unknown;
 }
 
-export interface ApiErrorDetail {
+interface ApiErrorDetail {
   /** A sentence to show; empty when the body had none. */
   message: string;
   /**

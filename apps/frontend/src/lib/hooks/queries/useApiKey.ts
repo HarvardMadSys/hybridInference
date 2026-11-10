@@ -5,6 +5,7 @@ import {
   listApiKeys,
   regenerateApiKey,
   renameApiKey,
+  revealApiKey,
   updateApiKey,
   type ApiKeyUpdate,
 } from '@/lib/api/user';
@@ -17,11 +18,21 @@ export function useApiKeys() {
   });
 }
 
+/** Show one saved key in full; the answer is dropped as soon as nothing observes it. */
+export function useRevealApiKey() {
+  return useMutation({
+    mutationFn: ({ keyPrefix, password }: { keyPrefix: string; password: string }) =>
+      revealApiKey(keyPrefix, password),
+    gcTime: 0,
+  });
+}
+
 export function useCreateApiKey() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (name?: string | null) => createApiKey(name),
+    mutationFn: (args?: { name?: string | null; projectId?: string | null }) =>
+      createApiKey(args?.name ?? null, args?.projectId ?? null),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
       queryClient.invalidateQueries({ queryKey: ['usage'] });

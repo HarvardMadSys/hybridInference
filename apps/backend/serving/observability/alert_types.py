@@ -196,6 +196,26 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         group="Cost",
         key_pattern="provider_spend:<provider>:<hour>",
     ),
+    AlertType(
+        id="cost_counter_write_refused",
+        label="Cost counters refused an entry",
+        description=(
+            "The cost counters refused a cost for its own values, such as one that would "
+            "overflow its counter; it was set aside unwritten for an operator to reconcile."
+        ),
+        group="Cost",
+        key_pattern="cost_counter_write_refused",
+    ),
+    AlertType(
+        id="cost_above_request_ceiling",
+        label="Request cost above the per-request ceiling",
+        description=(
+            "A request cost more than any real request can, so its usage report or price is "
+            "wrong; it was recorded as the ceiling."
+        ),
+        group="Cost",
+        key_pattern="cost_above_request_ceiling",
+    ),
 )
 
 _BY_ID: dict[str, AlertType] = {alert_type.id: alert_type for alert_type in ALERT_TYPES}

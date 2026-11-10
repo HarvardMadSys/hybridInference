@@ -24,12 +24,12 @@ from typing import TYPE_CHECKING, Any
 import pytest
 import pytest_asyncio
 
-from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.grant_auth import ledger_attribution
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.utils import calculate_cost
 from serving.utils.token_utils import normalize_usage
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -81,7 +81,7 @@ async def log_store(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     )
     assert pool is not None
     async with pool.acquire() as conn:
-        await ensure_api_logs_schema(conn)
+        await prepare_current_schema(conn)
     try:
         yield PostgresLogStore(pool, store_full_prompts=False)
     finally:

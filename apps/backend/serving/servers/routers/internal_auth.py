@@ -50,8 +50,10 @@ def require_dispatch_token(authorization: str | None = Header(None)) -> None:
     if authorization and authorization.startswith("Bearer "):
         presented = authorization[7:]
     # Constant-time: this compares a shared secret, and a timing oracle on it
-    # is worth more to an attacker than on a per-user credential.
-    if not presented or not hmac.compare_digest(presented, expected):
+    # is worth more to an attacker than on a per-user credential. As bytes:
+    # compare_digest refuses two str with non-ASCII characters (a TypeError,
+    # so a 500), and a header can carry any byte.
+    if not presented or not hmac.compare_digest(presented.encode(), expected.encode()):
         raise error(status.HTTP_401_UNAUTHORIZED, "unauthorized", "Invalid dispatch token.")
 
 

@@ -163,3 +163,172 @@ describe('refresh across tabs', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });
+
+// A page running a third-party script -- the analytics counter -- keeps its
+// document signed out: whatever the page holds, the script can read.
+describe('a document kept signed out', () => {
+  let reload: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    reload = vi.fn();
+    vi.stubGlobal('location', { ...window.location, reload });
+  });
+
+  it('drops the token the tab held from an earlier page', () => {
+    client.setAccessToken(token('user-a', 900));
+
+    client.keepDocumentSignedOut();
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+  });
+
+  // A cookie the document request did not carry (SameSite=Strict, arriving
+  // from another site) would otherwise be turned into a token right here.
+  it('mints no token: a request that needs a session is refused unsent', async () => {
+    client.keepDocumentSignedOut();
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'SESSION_NOT_FOUND',
+    });
+    await expect(
+      client.uploadWithAuth(API, '/user/batch-files', 'body', { expectedUserId: 'user-a' }),
+    ).rejects.toMatchObject({ code: 'SESSION_NOT_FOUND' });
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authExpiredEvents).toBe(0);
+  });
+
+  it('installs no token: a sign-in answered anyway reloads the page instead', () => {
+    client.keepDocumentSignedOut();
+
+    client.setAccessToken(token('user-a', 900));
+    client.setAccessToken(token('user-a', 900));
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(sessionStorage.getItem('access_token')).toBeNull();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(client.isDocumentReloading()).toBe(true);
+  });
+
+  it('still signs out', () => {
+    client.keepDocumentSignedOut();
+
+    client.setAccessToken(null);
+
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('is only this document: an ordinary one refreshes as before', async () => {
+    fetchMock.mockResolvedValueOnce(refreshAnswer(token('user-a', 900)));
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+
+    await client.fetchWithAuth(API, '/user/me');
+
+    expect(client.isDocumentKeptSignedOut()).toBe(false);
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/auth/refresh`);
+  });
+});
+
+// Only the server's refusal of the session ends it. A 5xx or a 429 on the
+// refresh -- the gateway restarting, its pool busy, a rate limit -- says
+// nothing about the session, so the tab keeps it and the request fails with
+// an error its caller can retry.
+describe('refresh failures that are not a refusal', () => {
+  function answer(status: number): Response {
+    return new Response(JSON.stringify({ detail: 'busy' }), { status });
+  }
+
+  it.each([
+    [503, 'SERVICE_UNAVAILABLE'],
+    [502, 'SERVICE_UNAVAILABLE'],
+    [500, 'SERVER_ERROR'],
+    [504, 'TIMEOUT_ERROR'],
+    [429, 'RATE_LIMIT_EXCEEDED'],
+  ])('keep the session through a %s, failing the request as retryable', async (status, code) => {
+    const held = token('user-a', -60);
+    client.setAccessToken(held);
+    fetchMock.mockResolvedValueOnce(answer(status));
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code,
+      statusCode: status,
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(client.getAccessToken()).toBe(held);
+    expect(sessionStorage.getItem('access_token')).toBe(held);
+    expect(authExpiredEvents).toBe(0);
+    expect(accountChangedEvents).toBe(0);
+  });
+
+  it('keep it after a 401 on the request too', async () => {
+    const held = token('user-a', 900);
+    client.setAccessToken(held);
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 401 }));
+    fetchMock.mockResolvedValueOnce(answer(503));
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'SERVICE_UNAVAILABLE',
+    });
+
+    expect(client.getAccessToken()).toBe(held);
+    expect(authExpiredEvents).toBe(0);
+  });
+
+  it('let the next request refresh again, and succeed', async () => {
+    client.setAccessToken(token('user-a', -60));
+    fetchMock.mockResolvedValueOnce(answer(503));
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'SERVICE_UNAVAILABLE',
+    });
+
+    const renewed = token('user-a', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(renewed));
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+    await client.fetchWithAuth(API, '/user/me');
+
+    expect(sentAuthorization(2)).toBe(`Bearer ${renewed}`);
+  });
+
+  it('fail every request waiting on that refresh, with one refresh sent', async () => {
+    client.setAccessToken(token('user-a', -60));
+    fetchMock.mockResolvedValueOnce(answer(503));
+
+    const results = await Promise.allSettled([
+      client.fetchWithAuth(API, '/user/me'),
+      client.fetchWithAuth(API, '/user/usage'),
+    ]);
+
+    expect(results.map((result) => result.status)).toEqual(['rejected', 'rejected']);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('refresh refused with 401 or 403', () => {
+  it.each([401, 403])('ends the session, and says it expired: %s', async (status) => {
+    client.setAccessToken(token('user-a', -60));
+    fetchMock.mockResolvedValueOnce(new Response('{}', { status }));
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'TOKEN_EXPIRED',
+    });
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(authExpiredEvents).toBe(1);
+    expect(accountChangedEvents).toBe(0);
+  });
+
+  it('says the account changed when another session took its place meanwhile', async () => {
+    client.setAccessToken(token('user-a', 900));
+    fetchMock.mockImplementationOnce(async () => {
+      // Signed in as someone else in this tab while the request was out.
+      client.setAccessToken(token('user-b', 900));
+      return new Response('{}', { status: 401 });
+    });
+
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'ACCOUNT_CHANGED',
+    });
+  });
+});

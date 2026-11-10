@@ -34,7 +34,7 @@ export function DashboardView() {
         </div>
       </div>
 
-      <div className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+      <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
         <h2 className="text-base sm:text-lg font-semibold tracking-tight text-gray-900 mb-2">
           {t('dashboard.account.title', 'Account Information')}
         </h2>

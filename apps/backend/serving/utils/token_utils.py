@@ -247,6 +247,27 @@ def extract_cache_tokens(
     if not usage or not isinstance(usage, dict):
         return None, None
 
+    # An explicit state flag from the producer is authoritative over field
+    # presence. The Responses surface emits ``cache_read_reported: false``
+    # when the provider reported no cache measurement at all, while still
+    # serializing ``input_tokens_details.cached_tokens: 0`` for SDK
+    # compatibility. Without this short-circuit the nested 0 would be read as
+    # a measured miss by whatever reads that payload back: the batch worker's
+    # per-item cache count (serving/batch/dispatch.py), or a client using this
+    # parser. The gateway's own api_logs, billing and RouteWise observations
+    # read the chat usage before translation, which carries no such 0.
+    explicit = usage.get("cache_read_reported")
+    if isinstance(explicit, bool) and not explicit:
+        # The producer asserts nothing was measured. Cache write accounting is
+        # a separate measurement and is unaffected.
+        cache_write = None
+        for field in _CACHE_WRITE_FIELDS:
+            count = optional_token_count(usage.get(field))
+            if count is not None:
+                cache_write = count
+                break
+        return None, cache_write
+
     # --- cache read tokens ---
     cache_read: int | None = None
 
@@ -356,6 +377,11 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
 
     # Extract cache tokens from nested locations
     cache_read, cache_write = extract_cache_tokens(normalized)
+    # An explicit producer flag is authoritative about whether a measurement
+    # exists at all; extract_cache_tokens already honors it, and the
+    # normalized dict must honor it too.
+    cache_read_reported = normalized.get("cache_read_reported")
+    cache_read_reported = cache_read_reported if isinstance(cache_read_reported, bool) else None
 
     # Add reasoning_tokens at top level if found
     if reasoning_tokens is not None:
@@ -364,6 +390,13 @@ def normalize_usage(usage: dict[str, Any] | None) -> dict[str, Any] | None:
     # Add cache tokens at top level if found
     if cache_read is not None:
         normalized["cache_read_tokens"] = cache_read
+    elif cache_read_reported is False:
+        # The producer asserted that no cache measurement was made. A flat
+        # ``cache_read_tokens: 0`` copied in from the original dict is the
+        # serializer's schema placeholder, not a measurement, so it must not
+        # survive as a published count: a consumer reading
+        # ``cache_read_tokens`` would score a miss that was never measured.
+        normalized.pop("cache_read_tokens", None)
     if cache_write is not None:
         normalized["cache_write_tokens"] = cache_write
 

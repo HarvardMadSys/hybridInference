@@ -74,8 +74,8 @@ function SettingsSection({
     <section
       className={
         tone === 'danger'
-          ? 'rounded-xl border border-red-200/80 bg-white p-6 shadow-sm'
-          : 'rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200'
+          ? 'rounded-xl border border-red-200/80 bg-white p-4 shadow-sm sm:p-6'
+          : 'rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6'
       }
     >
       <div className="grid grid-cols-1 gap-6 md:grid-cols-3 md:gap-8">

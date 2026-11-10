@@ -212,3 +212,68 @@ following should now fail to connect:
 ```bash
 curl -s --max-time 5 http://127.0.0.1:8001/v1/models
 ```
+
+## 7. Show the queue in the admin console
+
+A host that starts a model's job only when the model is asked for can make
+requests wait for the scheduler. Its proxy answers `503` with error code
+`model_queued` while the job waits: interactive callers get that message, and
+batch requests wait until the model serves. To see the queue itself, have the
+proxy describe it at a status address, and give the gateway that address:
+
+- `MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers) is the address as the
+  gateway's backend reaches it, for example
+  `http://host.docker.internal:8010/status`.
+- `MODEL_QUEUE_STATUS_API_KEY` is the bearer key the address requires. Empty, the
+  gateway sends `LOCAL_API_KEY`.
+
+A request that runs longer than the proxy waits for one answer gets `504` with
+error code `upstream_timeout`. The gateway passes the `504` to the caller but
+does not count it against the endpoint's health, so one caller's long
+generations cannot open the circuit for every caller of the model.
+
+**Admin → Batches → Model queue** then lists each model the proxy serves: its
+state, its jobs, the gateway models routed to it, and the batch requests
+waiting for those models. A route is counted as the proxy's when its
+`base_url` has the status address's scheme, host and port. The gateway follows
+no redirect from the address, and reports a failure on the page rather than
+failing the request.
+
+The status is a JSON object with times in epoch seconds. Each model needs only
+`model` (the name the proxy serves it under) and `state` (`serving`,
+`loading`, `queued` or `idle`); every other field may be left out, and the
+gateway ignores fields it does not know:
+
+```json
+{
+  "cluster": "Cluster A",
+  "scheduler": "slurm",
+  "refreshed_at": 1800000050,
+  "models": [
+    {
+      "model": "meta-llama/Llama-3.1-8B-Instruct",
+      "state": "queued",
+      "last_request_at": 1800000000,
+      "walltime_seconds": 3600,
+      "avoided_nodes": ["node-7"],
+      "jobs": [
+        {
+          "job_id": "1001",
+          "state": "PENDING",
+          "reason": "Priority",
+          "partition": "gpu_requeue",
+          "submitted_at": 1799993000,
+          "expected_start_at": 1800002000
+        }
+      ]
+    }
+  ],
+  "failed_nodes": [
+    {"node": "node-7", "jobs": ["od-llama31-8b"], "avoided_until": 1800020600}
+  ]
+}
+```
+
+`refreshed_at` is when the proxy last read the scheduler's queue; a job's
+`nodes`, `started_at` and `ends_at` describe a running job, and
+`expected_start_at` is the scheduler's own estimate for a pending one.

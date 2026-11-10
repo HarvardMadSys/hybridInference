@@ -5,7 +5,8 @@ Usage:
     python ops/admin/create_admin.py --email admin@example.com
     python ops/admin/create_admin.py --email admin@example.com --username admin
 
-Run from the project root so that the serving package is importable.
+Run it from the project root in the project's environment (`make setup-dev`
+installs `serving` editable, which is what makes it importable).
 """
 
 from __future__ import annotations
@@ -15,8 +16,6 @@ import asyncio
 import getpass
 import os
 import sys
-
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import asyncpg
 from dotenv import load_dotenv

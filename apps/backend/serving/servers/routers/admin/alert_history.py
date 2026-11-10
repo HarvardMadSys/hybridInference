@@ -408,20 +408,6 @@ async def history_status(
 
 # -- events -------------------------------------------------------------------
 
-_EVENT_FILTERS = (
-    "source",
-    "source_namespace",
-    "deployment_id",
-    "target_environment",
-    "kind",
-    "alert_type",
-    "model_id",
-    "endpoint_id",
-    "channel",
-    "outcome",
-    "origin",
-)
-
 
 def _public(row: dict[str, Any]) -> dict[str, Any]:
     return dict(row)

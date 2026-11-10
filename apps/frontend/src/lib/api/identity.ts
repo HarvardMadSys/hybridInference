@@ -3,14 +3,14 @@ import { config } from '@/config/env';
 
 const API_BASE = config.apiBase;
 
-export interface AuthorizationCodeRequest {
+interface AuthorizationCodeRequest {
   client_id: string;
   redirect_uri: string;
   code_challenge: string;
   code_challenge_method: 'S256';
 }
 
-export interface AuthorizationCodeResponse {
+interface AuthorizationCodeResponse {
   code: string;
   expires_in: number;
 }

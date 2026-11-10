@@ -810,8 +810,9 @@ describe('UserTable account settings: in place, written by Save', () => {
   });
 
   it('leaves an unsaved (null) quota out of a save that changes other fields', async () => {
+    // A lower role saves on the click; a higher one asks for the password first.
     vi.mocked(getUserDetail).mockResolvedValue(
-      detailFixture({ role: 'free', quota_daily_usd: null, max_concurrent_requests: null }),
+      detailFixture({ role: 'internal', quota_daily_usd: null, max_concurrent_requests: null }),
     );
     const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');
@@ -863,7 +864,7 @@ describe('UserTable account settings: in place, written by Save', () => {
 
   it('lets a refresh show through a note typed back to its saved text', async () => {
     vi.mocked(getUserDetail)
-      .mockResolvedValueOnce(detailFixture({ role: 'free', admin_note: null }))
+      .mockResolvedValueOnce(detailFixture({ role: 'internal', admin_note: null }))
       .mockResolvedValueOnce(detailFixture({ role: 'pro', admin_note: 'Set elsewhere' }));
     await renderAccountSettings();
     const note = screen.getByLabelText('Admin note');
@@ -880,6 +881,9 @@ describe('UserTable account settings: in place, written by Save', () => {
   });
 
   it('writes every changed field in one patch on Save, with no confirmation', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({ role: 'internal', quota_daily_usd: 100, max_concurrent_requests: null }),
+    );
     const onUpdate = await renderAccountSettings();
     chooseOption('Role', 'pro');
     fireEvent.change(screen.getByRole('spinbutton', { name: 'Max concurrent' }), {
@@ -910,7 +914,7 @@ describe('UserTable account settings: in place, written by Save', () => {
     vi.mocked(getUserDetail).mockImplementation(async (userId: string) =>
       userId === 'user-2'
         ? detailFixture({ id: 'user-2', email: 'other@example.com', role: 'pro' })
-        : detailFixture({ role: 'free', quota_daily_usd: 100, max_concurrent_requests: null }),
+        : detailFixture({ role: 'internal', quota_daily_usd: 100, max_concurrent_requests: null }),
     );
     let finish!: () => void;
     const onUpdate = vi.fn(
@@ -943,6 +947,9 @@ describe('UserTable account settings: in place, written by Save', () => {
   });
 
   it('holds the fields, Save and Discard while the save is in flight, and writes once', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(
+      detailFixture({ role: 'internal', quota_daily_usd: 100, max_concurrent_requests: null }),
+    );
     let finish!: () => void;
     const onUpdate = vi.fn(
       () =>

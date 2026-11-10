@@ -96,7 +96,15 @@ export interface ConsoleBatch {
   created_via?: 'console' | 'api';
   /** Set while the batch is paused: until when, and why (`quota`, `role`, or null if unknown). */
   paused_until?: number | null;
-  paused_reason?: 'quota' | 'monthly_quota' | 'role' | 'key_budget' | string | null;
+  paused_reason?:
+    | 'quota'
+    | 'monthly_quota'
+    | 'role'
+    | 'key_budget'
+    | 'project_budget'
+    | 'account_budget'
+    | string
+    | null;
 }
 
 /** A source file's state for its owner. */
@@ -190,7 +198,7 @@ export async function getMyBatchCapabilities(): Promise<BatchCapabilities> {
 }
 
 /** Filters of the batch list: a category (or exact status), and a name or exact id. */
-export interface MyBatchFilters {
+interface MyBatchFilters {
   category?: BatchCategory | '';
   status?: BatchStatus | '';
   q?: string;
@@ -296,10 +304,6 @@ export async function downloadSourceFile(fileId: string, filename: string): Prom
 
 /** The two types the console creates. */
 export type ConsoleTarget = 'chat' | 'embeddings';
-export const CONSOLE_ENDPOINTS: Record<ConsoleTarget, string> = {
-  chat: '/v1/chat/completions',
-  embeddings: '/v1/embeddings',
-};
 
 export interface CatalogModel {
   id: string;
@@ -323,7 +327,8 @@ export interface BatchCreateContext {
     max_active_batches: number;
     file_retention_days: number;
     result_retention_days: number;
-    completion_window_hours: number;
+    /** Null when new batches have no window: none of their requests expire. */
+    completion_window_hours: number | null;
     /** How long the gateway is certain to recognise a submission key again. */
     submission_replay_seconds: number;
   };
@@ -581,7 +586,7 @@ export async function listMyWebhookEvents(): Promise<{ data: BatchWebhookEvent[]
 
 // -- administrators ------------------------------------------------------------------
 
-export interface AdminBatchFilters {
+interface AdminBatchFilters {
   userId?: string;
   /** A status as the list shows it (a file batch being sealed is `finalizing`). */
   status?: BatchStatus | '';
@@ -655,7 +660,7 @@ export interface AdminBatchItem {
   completed_at: number | null;
 }
 
-export interface AdminBatchItemPage {
+interface AdminBatchItemPage {
   object: 'list';
   data: AdminBatchItem[];
   has_more: boolean;
@@ -694,4 +699,90 @@ export const FINAL_STATUSES = new Set<BatchStatus>(['completed', 'failed', 'expi
 /** Whether a batch can still be cancelled. */
 export function isCancellable(batch: ConsoleBatch): boolean {
   return ['validating', 'in_progress'].includes(batch.status) && batch.phase !== 'sealing';
+}
+
+// ----------------------------------------------------------------------------
+// Model queue — an on-demand model host's scheduler queue (Admin → Batches)
+// ----------------------------------------------------------------------------
+
+/** One scheduler job serving, or waiting to serve, a model. Times are epoch seconds. */
+export interface ModelQueueJob {
+  job_id: string | null;
+  /** The scheduler's own state, e.g. `PENDING` or `RUNNING`. */
+  state: string;
+  /** Why a pending job waits, as the scheduler says (`Priority`, `Resources`, …). */
+  reason: string | null;
+  partition: string | null;
+  /** The node(s) a running job holds. */
+  nodes: string | null;
+  submitted_at: number | null;
+  started_at: number | null;
+  /** The scheduler's estimate of when a pending job starts. */
+  expected_start_at: number | null;
+  /** When a running job's walltime ends. */
+  ends_at: number | null;
+}
+
+export interface ModelQueueModel {
+  /** The name the host serves the model under. */
+  model: string;
+  /**
+   * How the host stands with the model: usually `serving`, `loading`, `queued`
+   * (waiting for a GPU) or `idle`; kept open for a host that reports another.
+   */
+  state: string;
+  job_name: string | null;
+  last_request_at: number | null;
+  walltime_seconds: number | null;
+  startup_estimate_seconds: number | null;
+  partitions: string | null;
+  constraint: string | null;
+  /** Nodes its next job keeps off, after failures there. */
+  avoided_nodes: string[];
+  jobs: ModelQueueJob[];
+  /** This gateway's models routed to it on the host. */
+  gateway_models: string[];
+  /** Batch requests of those models waiting / running; null when unknown. */
+  batch_queued: number | null;
+  batch_running: number | null;
+}
+
+export interface ModelQueueFailedNode {
+  node: string;
+  jobs: string[];
+  last_failed_at: number | null;
+  avoided_until: number | null;
+  /** Every model's jobs avoid it, not only those that failed there. */
+  avoided_by_all: boolean;
+}
+
+export interface ModelQueuePolicy {
+  pending_idle_cancel_seconds: number | null;
+  running_idle_stop_seconds: number | null;
+  renew_before_seconds: number | null;
+  node_avoid_seconds: number | null;
+}
+
+export interface ModelQueue {
+  /** Whether `MODEL_QUEUE_STATUS_URL` is set. */
+  configured: boolean;
+  /** Why the host's status could not be read. */
+  error: string | null;
+  /** The host's name for itself, e.g. its cluster. */
+  cluster: string | null;
+  scheduler: string | null;
+  generated_at: number | null;
+  /** When the host last read its scheduler's queue; null if never. */
+  refreshed_at: number | null;
+  started_at: number | null;
+  poll_interval_seconds: number | null;
+  policy: ModelQueuePolicy | null;
+  models: ModelQueueModel[];
+  failed_nodes: ModelQueueFailedNode[];
+}
+
+/** The on-demand model host's queue, with the batch requests waiting per model. */
+export async function getModelQueue(): Promise<ModelQueue> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/batch/model-queue');
+  return jsonOrThrow<ModelQueue>(resp);
 }

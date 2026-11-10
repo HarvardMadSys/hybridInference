@@ -153,6 +153,8 @@ async def test_native_batch_version_reaches_wire_without_leaking_scope(monkeypat
             provider="anthropic",
             base_url="https://anthropic.example.test",
             api_key="test-key",
+            # Allowed for batch work as the gateway's own server would be.
+            deployment_type="self_hosted",
         )
     )
     app, services = _setup(_Upstream())

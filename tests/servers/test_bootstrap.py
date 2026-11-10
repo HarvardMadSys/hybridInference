@@ -11,6 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 project_root = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(project_root))
 
+from pathlib import Path
+
 import pytest
 
 from routing.manager import RoutingManager
@@ -22,6 +24,7 @@ from serving.config.model_visibility import ModelVisibilityResolver
 from serving.servers import bootstrap
 from serving.servers.deps import AppServices
 from serving.servers.registry import ModelRegistrationInfo
+from tests.fixtures.application_documents import seed_models
 
 
 @pytest.fixture(autouse=True)
@@ -366,7 +369,7 @@ class TestBootstrapInitialization:
     @pytest.mark.asyncio
     async def test_initialize_loads_models_yaml(self, mock_env, temp_models_yaml, monkeypatch):
         """Test that models.yaml is loaded and registered."""
-        monkeypatch.setenv("MODELS_CONFIG", temp_models_yaml)
+        seed_models(monkeypatch, Path(temp_models_yaml))
         monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
@@ -413,7 +416,7 @@ models:
         base_url: ${LOCAL_DEPLOYMENT_URL}
 """
         )
-        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
+        seed_models(monkeypatch, models_yaml)
         monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
@@ -467,7 +470,12 @@ models:
     @pytest.mark.asyncio
     async def test_initialize_with_routing_manager(self, mock_env, temp_routing_yaml, monkeypatch):
         """Test initialization with routing manager."""
-        monkeypatch.setenv("ROUTING_CONFIG", temp_routing_yaml)
+        monkeypatch.setenv(
+            "ROUTING_POLICY",
+            __import__("json").dumps(
+                __import__("yaml").safe_load(Path(temp_routing_yaml).read_text())
+            ),
+        )
         monkeypatch.setenv("LOCAL_DEPLOYMENT_URL", "http://localhost:8001")
 
         with (
@@ -492,7 +500,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         # A spec-backed instance keeps the production isinstance boundary honest.
@@ -902,7 +909,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         registry_instance = MagicMock()
@@ -944,7 +950,6 @@ models:
         info.model_id = "m"
         info.aliases = []
         info.router = "routewise"
-        info.strategy = None
         info.router_params = None
 
         override = SimpleNamespace(canonical_model_id="m", configured_strategy="fixed")
@@ -1078,7 +1083,7 @@ models:
 """
         )
 
-        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
+        seed_models(monkeypatch, models_yaml)
 
         router = FixedRouter()
 
@@ -1111,7 +1116,7 @@ models:
         api_key: test-key
 """
         )
-        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
+        seed_models(monkeypatch, models_yaml)
 
         router = FixedRouter()
         await bootstrap._init_router_and_models(router)
@@ -1143,7 +1148,7 @@ models:
         provider_model_id: "gemini-2.5-flash"
 """
         )
-        monkeypatch.setenv("MODELS_CONFIG", str(models_yaml))
+        seed_models(monkeypatch, models_yaml)
 
         router = FixedRouter()
         await bootstrap._init_router_and_models(router)

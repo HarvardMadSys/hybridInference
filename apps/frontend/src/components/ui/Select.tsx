@@ -32,7 +32,7 @@ export interface SelectOptionGroup<V extends string = string> {
 
 export type SelectItem<V extends string = string> = SelectOption<V> | SelectOptionGroup<V>;
 
-export interface SelectProps<V extends string = string> {
+interface SelectProps<V extends string = string> {
   value: V;
   /**
    * Called once, on a deliberate choice of a *different* value: never while

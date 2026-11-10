@@ -23,7 +23,7 @@ export const ORIGIN_COLORS = {
   land: '#94a3b8',
 } as const;
 
-export type GeoColumnIndex = Readonly<Record<string, number>>;
+type GeoColumnIndex = Readonly<Record<string, number>>;
 
 export interface GeoMetricModel {
   metric: GeoMetric;
@@ -50,7 +50,7 @@ export interface OriginSummary {
   topShare: number;
 }
 
-export type HourOriginSummary = OriginSummary;
+type HourOriginSummary = OriginSummary;
 
 export function buildColumnIndex(columns: readonly string[]): GeoColumnIndex {
   return Object.fromEntries(columns.map((column, index) => [column, index]));
@@ -183,23 +183,6 @@ export function deriveGeoMetricModel(
     countryWindowP99: positiveNearestRankPercentile([...countryWindowValues.values()], 0.99),
     continentHourP99: positiveNearestRankPercentile(continentHourValues, 0.99),
   };
-}
-
-/** Map each observed request-origin country to its continent. */
-export function buildCountryContinentMap(data: GeoAnalyticsResponse): Map<string, string> {
-  const bucketIndex = buildColumnIndex(data.bucket_cols);
-  const countryPosition = requiredIndex(bucketIndex, 'c');
-  const continentPosition = requiredIndex(bucketIndex, 'cont');
-  const result = new Map<string, string>();
-  for (const hour of data.hours) {
-    for (const row of hour.b) {
-      const country = stringAt(row, countryPosition);
-      if (country && !result.has(country)) {
-        result.set(country, stringAt(row, continentPosition));
-      }
-    }
-  }
-  return result;
 }
 
 function emptyOriginSummary(): OriginSummary {

@@ -74,6 +74,8 @@ def _adapter(model_id: str) -> _Adapter:
             name=model_id,
             provider="test",
             base_url="http://test",
+            # The gateway's own server, so batch work may use it.
+            deployment_type="self_hosted",
             context_length=8192,
             max_output_length=4096,
             pricing={"prompt": "0", "completion": "0"},
@@ -101,7 +103,7 @@ class FakeBatchStore:
         model_ids: list[str],
         items: list[dict[str, Any]],
         metadata: dict[str, Any] | None,
-        completion_window_seconds: int,
+        completion_window_seconds: int | None,
         **options: Any,
     ) -> dict[str, Any]:
         self.options = options
@@ -138,7 +140,11 @@ class FakeBatchStore:
             "expired_at": None,
             "cancelling_at": None,
             "cancelled_at": None,
-            "expires_at": now + timedelta(seconds=completion_window_seconds),
+            "expires_at": (
+                None
+                if completion_window_seconds is None
+                else now + timedelta(seconds=completion_window_seconds)
+            ),
             "paused_until": None,
             "api_surface": options.get("api_surface", "openai_inline"),
             "target": options.get("target", "chat"),
@@ -206,6 +212,41 @@ class FakeBatchStore:
             {key: value for key, value in item.items() if key not in ("model_id", "request")}
             for item in items[:limit]
         ]
+
+    async def result_page(
+        self,
+        batch_id: str,
+        *,
+        max_bytes: int,
+        after: int = 0,
+        limit: int = 200,
+        statuses: frozenset[str] | None = None,
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """As the store pages: by count and by the size of each stored response."""
+        items = [
+            i
+            for i in self.items.get(batch_id, [])
+            if i["id"] > after and (statuses is None or i["status"] in statuses)
+        ]
+        page, total = [], 0
+        for item in items[:limit]:
+            text = json.dumps(item["response"]) if item["response"] is not None else None
+            size = len(text or "")
+            if page and total + size > max_bytes:
+                break
+            page.append(
+                {
+                    **{
+                        k: v
+                        for k, v in item.items()
+                        if k not in ("model_id", "request", "response")
+                    },
+                    "response_text": text,
+                    "bytes": size,
+                }
+            )
+            total += size
+        return page, len(page) < len(items)
 
     async def cancel_batch(self, batch_id: str, *, user_id: str | None = None) -> dict | None:
         row = self.batches.get(batch_id)
@@ -480,6 +521,62 @@ async def test_a_demoted_owner_can_still_read_cancel_and_delete(client, users):
     cancelled = await client.post(f"{path}/cancel", headers=_auth())
     assert cancelled.json()["status"] == "cancelled"
     assert (await client.delete(path, headers=_auth())).status_code == 200
+
+
+class _CountedBody:
+    """A request body that records how many bytes of it were read."""
+
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.read = 0
+
+    async def __aiter__(self):
+        for start in range(0, len(self.payload), 4096):
+            chunk = self.payload[start : start + 4096]
+            self.read += len(chunk)
+            yield chunk
+
+
+async def test_a_caller_who_may_not_create_uploads_nothing_with_an_idempotency_key(client, store):
+    body = _CountedBody(json.dumps(_body(count=50)).encode())
+    headers = {**_auth("key-dave"), "Idempotency-Key": "k", "content-type": "application/json"}
+
+    response = await client.post("/v1/batches", content=body, headers=headers)
+
+    assert response.status_code == 403
+    assert body.read == 0
+    assert store.created == []
+
+
+async def test_a_demoted_owner_still_gets_the_batch_its_key_created(client, store, users):
+    batch = await _create(client, "key-alice")
+    digest = admission.request_digest(
+        "openai_inline",
+        requests=[_request("req-0")],
+        metadata=None,
+    )
+    records = {("alice", "openai_inline", "k"): batch["id"]}
+
+    async def find_idempotent(*, owner_id: str, api_surface: str, key: str):
+        batch_id = records.get((owner_id, api_surface, key))
+        if batch_id is None:
+            return None
+        return {"batch_id": batch_id, "request_digest": digest, "deleted": False}
+
+    store.find_idempotent = find_idempotent
+    users["key-alice"]["role"] = "free"
+
+    replay = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "k"}
+    )
+    other = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "other"}
+    )
+
+    assert replay.status_code == 200, replay.text
+    assert replay.json()["id"] == batch["id"]
+    assert other.status_code == 403
+    assert len(store.created) == 1
 
 
 @pytest.mark.parametrize(
@@ -900,6 +997,41 @@ async def test_the_batch_object_is_openai_shaped(client, settings):
     assert batch["in_progress_at"] is None
     assert batch["cost_usd"] == 0.0
     assert batch["error"] is None
+
+
+async def test_a_window_of_zero_hours_creates_a_batch_that_never_expires(client, store, settings):
+    settings["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+
+    batch = await _create(client, body=_body(2))
+
+    (created,) = store.created
+    assert created["completion_window_seconds"] is None
+    assert batch["expires_at"] is None
+    assert batch["completion_window"] == "none"
+
+    fetched = await client.get(f"/v1/batches/{batch['id']}", headers=_auth())
+    assert fetched.status_code == 200
+    assert fetched.json()["expires_at"] is None
+    listed = await client.get("/v1/batches", headers=_auth())
+    assert listed.status_code == 200
+    assert [b["expires_at"] for b in listed.json()["data"]] == [None]
+
+
+def test_a_file_batch_with_no_window_still_reports_the_protocol_s_window():
+    created = datetime(2026, 11, 6, tzinfo=UTC)
+    config = batch_config_module.BatchConfig(completion_window_hours=0)
+    row = {"id": "batch_x", "created_at": created, "expires_at": None, "status": "in_progress"}
+
+    file_batch = batches.batch_object({**row, "api_surface": "openai_file"}, config)
+    inline = batches.batch_object({**row, "api_surface": "openai_inline"}, config)
+
+    assert (file_batch.completion_window, file_batch.expires_at) == ("24h", None)
+    assert (inline.completion_window, inline.expires_at) == ("none", None)
+    windowed = batches.batch_object(
+        {**row, "api_surface": "openai_inline", "expires_at": created + timedelta(hours=48)},
+        config,
+    )
+    assert windowed.completion_window == "48h"
 
 
 async def test_the_key_hash_is_stored_but_never_returned(client, store):
@@ -1405,6 +1537,29 @@ async def test_an_admin_may_read_cancel_and_delete_any_batch(client, store):
     assert batch["id"] not in store.batches
 
 
+async def test_the_anonymous_caller_of_an_auth_disabled_gateway_reaches_only_its_own(
+    client, users, store
+):
+    """Its admin role opens the API, not the batches stored under real accounts."""
+    users["anon"] = {"user_id": "anonymous", "role": "admin", "authenticated": False}
+    theirs = await _create(client, "key-alice")
+    own = await _create(client, "anon")
+    path = f"/v1/batches/{theirs['id']}"
+
+    responses = [
+        await client.get(path, headers=_auth("anon")),
+        await client.get(f"{path}/results", headers=_auth("anon")),
+        await client.get(f"{path}/output.jsonl", headers=_auth("anon")),
+        await client.post(f"{path}/cancel", headers=_auth("anon")),
+        await client.delete(path, headers=_auth("anon")),
+    ]
+
+    assert [r.status_code for r in responses] == [404] * 5
+    assert store.batches[theirs["id"]]["status"] == "validating"
+    read = await client.get(f"/v1/batches/{own['id']}", headers=_auth("anon"))
+    assert read.json()["id"] == own["id"]
+
+
 async def test_an_unknown_batch_is_404(client):
     response = await client.get("/v1/batches/batch_missing", headers=_auth())
 
@@ -1475,6 +1630,49 @@ async def test_results_carry_each_requests_outcome(client, store):
     assert second["response"] is None
     assert second["error"] == {"code": "invalid_request", "message": "bad", "status": 400}
     assert (third["status"], third["response"], third["error"]) == ("queued", None, None)
+
+
+async def test_a_page_of_results_stops_at_its_size_budget(client, store, monkeypatch):
+    """Large results come a few to a page, each page still saying more follow."""
+    monkeypatch.setattr(batches, "RESULTS_PAGE_BYTES", 2500)
+    batch = await _create(client, body=_body(5))
+    for item in store.items[batch["id"]]:
+        item.update(
+            status="completed",
+            status_code=200,
+            response={"object": "list", "data": [{"embedding": [0.5] * 200}]},
+        )
+
+    seen: list[str] = []
+    after = None
+    pages = 0
+    while True:
+        params = {"limit": 1000, **({"after": after} if after else {})}
+        page = (
+            await client.get(f"/v1/batches/{batch['id']}/results", params=params, headers=_auth())
+        ).json()
+        pages += 1
+        seen += [r["custom_id"] for r in page["data"]]
+        assert len(page["data"]) <= 2
+        if not page["has_more"]:
+            break
+        after = page["last_id"]
+
+    assert seen == [f"req-{i}" for i in range(5)]
+    assert pages == 3
+
+
+async def test_a_result_larger_than_the_budget_still_comes_alone(client, store, monkeypatch):
+    monkeypatch.setattr(batches, "RESULTS_PAGE_BYTES", 10)
+    batch = await _create(client, body=_body(2))
+    for item in store.items[batch["id"]]:
+        item.update(status="completed", status_code=200, response={"text": "x" * 100})
+
+    page = (await client.get(f"/v1/batches/{batch['id']}/results", headers=_auth())).json()
+
+    assert [r["custom_id"] for r in page["data"]] == ["req-0"]
+    assert page["data"][0]["response"]["body"] == {"text": "x" * 100}
+    assert page["has_more"] is True
 
 
 @pytest.mark.parametrize("after", ["12", "req_12", "batch_req_x", "batch_req_" + "9" * 19])
@@ -1600,3 +1798,69 @@ async def test_delete_is_409_while_an_upstream_request_lease_is_live(client, sto
         "running requests to finish before deleting it"
     )
     assert batch["id"] in store.batches
+
+
+@pytest.mark.parametrize("number", ["1e999", "-1e999"])
+async def test_overflowing_json_number_is_refused_before_storage(client, store, number):
+    raw = json.dumps(_body()).replace('"hello"', '{"nested": [' + number + "]}")
+    response = await client.post("/v1/batches", content=raw, headers=_auth())
+    assert response.status_code == 400, response.text
+    assert not store.created
+
+
+@pytest.mark.parametrize(
+    "extra", [{"temperature": 3}, {"top_p": 2}, {"max_output_tokens": 0}, {"seed": []}]
+)
+async def test_invalid_responses_parameters_refuse_entire_batch(client, store, extra):
+    body = {"model": MODEL, "input": "hello", **extra}
+    response = await client.post(
+        "/v1/batches",
+        json={"requests": [_request("bad", body, url="/v1/responses")]},
+        headers=_auth(),
+    )
+    assert response.status_code == 400, response.text
+    assert not store.created
+
+
+@pytest.mark.parametrize("target", ["chat", "messages", "responses"])
+async def test_admission_checks_online_element_limits(client, store, monkeypatch, target):
+    from serving import request_limits
+
+    monkeypatch.setattr(request_limits, "MAX_MESSAGES", 1)
+    if target == "responses":
+        body = {"model": MODEL, "input": ["one", "two"]}
+        url, headers = "/v1/responses", _auth()
+    else:
+        body = _chat()
+        body["messages"] *= 2
+        if target == "messages":
+            body["max_tokens"] = 16
+        url = "/v1/messages" if target == "messages" else "/v1/chat/completions"
+        headers = _versioned("2023-06-01") if target == "messages" else _auth()
+    response = await client.post(
+        "/v1/batches", json={"requests": [_request("bad", body, url=url)]}, headers=headers
+    )
+    assert response.status_code == 400, response.text
+    assert "Too many" in _message(response)
+    assert not store.created
+
+
+@pytest.mark.parametrize("case", ["instructions", "stop"])
+async def test_responses_admission_checks_translated_chat_limits(client, store, monkeypatch, case):
+    from serving import request_limits
+
+    body = {"model": MODEL, "input": "hello"}
+    if case == "instructions":
+        monkeypatch.setattr(request_limits, "MAX_MESSAGES", 1)
+        body["instructions"] = "be brief"
+    else:
+        monkeypatch.setattr(request_limits, "MAX_STOP_SEQUENCES", 1)
+        body["stop"] = ["one", "two"]
+    response = await client.post(
+        "/v1/batches",
+        json={"requests": [_request("bad", body, url="/v1/responses")]},
+        headers=_auth(),
+    )
+    assert response.status_code == 400, response.text
+    assert "Too many" in _message(response)
+    assert not store.created

@@ -37,6 +37,8 @@ dependencies = [
     "maxminddb>=3.1.1",
     # Language identification for the public usage stats job (bundled lid.176 model).
     "fast-langdetect>=1.0.1",
+    # Checks structured-output replies against the caller's response_format schema.
+    "jsonschema>=4.18",
 ]
 
 [tool.setuptools]
@@ -49,8 +51,6 @@ include = [
   "serving.*",
   "routing",
   "routing.*",
-  "utils",
-  "utils.*",
   "migrations",
   "migrations.*",
 ]
@@ -64,9 +64,8 @@ prepend_sys_path = ["apps/backend"]
 [tool.pytest.ini_options]
 pythonpath = ["apps/backend", "."]
 asyncio_mode = "auto"
-# "distributions" collects distribution-owned tests (e.g. the FreeInference
-# overlay manifest invariants) so they run in the default suite while living
-# with the overlay they validate.
+# "distributions" collects tests an overlay ships with itself, so they run in
+# the default suite while living with the overlay they validate.
 testpaths = ["tests", "distributions"]
 timeout = 300
 addopts = [

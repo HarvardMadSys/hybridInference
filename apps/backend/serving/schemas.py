@@ -215,6 +215,12 @@ class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
     # probe traffic itself pins the shared GPUs and fails the rest of the set.
     on_demand: bool = False
     openrouter: dict[str, Any] | None = None
+    # The reasoning-effort values every route of this model delivers, in
+    # OpenRouter's shape: ``{"supported_efforts": [...]}``, an empty list when
+    # none is. ``None`` when the configuration does not say (an adapter that
+    # does not forward the parameter itself, or a missing or malformed domain).
+    # See ``serving.model_effort_capabilities``.
+    reasoning: dict[str, Any] | None = None
 
 
 class ModelList(BaseModel):  # type: ignore[no-any-unimported]
@@ -246,12 +252,19 @@ class ErrorResponse(BaseModel):  # type: ignore[no-any-unimported]
 
 # Embedding schemas
 
+#: The most inputs one embeddings request may carry: OpenAI's own limit, so a
+#: client written for it never meets this one. The response grows with the
+#: inputs -- each brings back a vector of about 20 bytes a dimension as JSON
+#: floats -- and the gateway reads, validates and re-encodes all of it; 12,000
+#: one-character inputs made about 255 MiB of it.
+MAX_EMBEDDING_INPUTS = 2048
+
 
 class EmbeddingRequest(BaseModel):  # type: ignore[no-any-unimported]
     """OpenAI-compatible embeddings request payload."""
 
     model: str
-    input: str | list[str]
+    input: str | Annotated[list[str], Field(max_length=MAX_EMBEDDING_INPUTS)]
     encoding_format: Literal["float", "base64"] | None = None
     dimensions: int | None = None
 

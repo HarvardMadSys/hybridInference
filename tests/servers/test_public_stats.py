@@ -13,6 +13,7 @@ from serving.config.distribution import get_distribution_config
 from serving.config.settings import get_settings
 from serving.servers.deps import get_db_logger
 from serving.servers.routers import public_stats, site_config
+from tests.fixtures.application_documents import seed_site
 
 MANIFEST = """\
 schema_version: 1
@@ -41,7 +42,7 @@ def _clean(monkeypatch):
 def _activate(monkeypatch, tmp_path, extra: str = "") -> None:
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST.format(extra=extra))
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
+    seed_site(monkeypatch, manifest)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -125,3 +126,52 @@ async def test_site_config_reports_the_flag_when_enabled(monkeypatch, tmp_path):
     _activate(monkeypatch, tmp_path, "  public_stats: true\n")
     features = (await _get(_db(), "/site-config")).json()["features"]
     assert features["public_stats"] is True
+
+
+async def _get_many(db, count: int, path: str = "/public-stats"):
+    app = FastAPI()
+    app.include_router(public_stats.router)
+    app.dependency_overrides[get_db_logger] = lambda: db
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        return [await client.get(path) for _ in range(count)]
+
+
+def _reads(db) -> int:
+    return db.pool.acquire.return_value.__aenter__.return_value.fetchrow.await_count
+
+
+@pytest.mark.asyncio
+async def test_anonymous_callers_share_one_read_of_the_snapshot(monkeypatch, tmp_path):
+    """Anyone may ask, as often as they like: the database sees one read a window."""
+    _activate(monkeypatch, tmp_path, "  public_stats: true\n")
+    db = _db({"payload": json.dumps(SNAPSHOT)})
+
+    responses = await _get_many(db, 5)
+
+    assert {r.status_code for r in responses} == {200}
+    assert all(r.json() == SNAPSHOT for r in responses)
+    assert all(r.headers["cache-control"] == "public, max-age=600" for r in responses)
+    assert _reads(db) == 1
+
+
+@pytest.mark.asyncio
+async def test_no_snapshot_yet_is_kept_too_and_a_failure_is_not(monkeypatch, tmp_path):
+    _activate(monkeypatch, tmp_path, "  public_stats: true\n")
+    missing = _db(None)
+    assert [r.status_code for r in await _get_many(missing, 3)] == [404, 404, 404]
+    assert _reads(missing) == 1
+
+    failing = _db(fail=True)
+    assert [r.status_code for r in await _get_many(failing, 2)] == [503, 503]
+    assert _reads(failing) == 2
+
+
+@pytest.mark.asyncio
+async def test_turning_the_flag_off_hides_a_kept_snapshot_at_once(monkeypatch, tmp_path):
+    _activate(monkeypatch, tmp_path, "  public_stats: true\n")
+    db = _db({"payload": json.dumps(SNAPSHOT)})
+    assert (await _get_many(db, 1))[0].status_code == 200
+
+    _activate(monkeypatch, tmp_path, "  public_stats: false\n")
+
+    assert (await _get_many(db, 1))[0].status_code == 404

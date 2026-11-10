@@ -130,7 +130,7 @@ export function ModelVisibilitySection({ onToast, onUnsavedChange }: ModelVisibi
   return (
     <AdminSection
       title={SECTION}
-      description="Override each model's runtime required role without changing the YAML baseline."
+      description="Override each model's runtime required role without changing the catalog baseline."
     >
       {error && (
         <div className="mb-3">

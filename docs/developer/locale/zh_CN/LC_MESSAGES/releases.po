@@ -290,3 +290,12 @@ msgstr ""
 "切回旧镜像不会撤销数据库变更，也不需要撤销：迁移会让上一版在新的 schema "
 "上继续能用，所以恢复它的产物和配置就是回滚。不要为它执行上一版镜像的迁移。如果某个版本的迁移删掉了旧代码还在用的东西，它的发布说明会写明，旧后端在那样的数据库上会拒绝启动，而不是读错数据；要退回到这样的版本之前，就得恢复配套的升级前数据库备份，这会丢弃备份之后的写入。没有"
 " schema 降级命令；`make down` 会保留数据，删除 volume 是重置而非回滚。"
+
+msgid "Upgrading from a release that read its site identity, branding and alert rules from files, import them between the migrations and the restart, with the new image: add `LEGACY_MANIFEST=<manifest>` to `make deploy` or `make build`, or run the import command yourself at that point. Until it runs, the new release serves neutral site settings and the built-in alert thresholds. See [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database)."
+msgstr "如果是从一个从文件读取站点标识、品牌和告警规则的版本升级，请在迁移和重启之间用新镜像导入它们：给 `make deploy` 或 `make build` 加上 `LEGACY_MANIFEST=<manifest>`，或者在这个时间点自己运行导入命令。导入运行之前，新版本使用中性站点设置和内置告警阈值提供服务。见[数据库中的模型和路由文档](configuration.md#model-and-routing-documents-in-the-database)。"
+
+msgid "`make rollback` returns to the images the last accepted `make deploy` replaced. A release from before the database-backed configuration reads its manifest, alert rules and other files through `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE` and the `*_CONFIG_PATH` variables, which Compose still passes to the backend. Keep them in the deployment's env files, and keep the files they name, until a rollback to such a release is no longer an option."
+msgstr "`make rollback` 会回到上一次通过验收的 `make deploy` 所替换的镜像。数据库配置引入之前的版本通过 `DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE` 和 `*_CONFIG_PATH` 变量读取自己的清单、告警规则和其他文件，Compose 仍会把这些变量传给后端。在不再可能回退到这类版本之前，请把它们保留在部署的 env 文件中，并保留它们指向的文件。"
+
+msgid "`make deploy` deploys published images by digest, restores the previous ones if they fail acceptance, and pins the deployment to them, after which `make build` refuses until you return to source builds; see [Diagnostics, deployment and recovery](deployment.md#diagnostics-deployment-and-recovery)."
+msgstr "`make deploy` 按摘要部署已发布的镜像，它们没有通过验收时恢复上一组镜像，并把部署固定到这些镜像上，此后 `make build` 会拒绝执行，直到你回到源码构建；见[诊断、部署与恢复](deployment.md#diagnostics-deployment-and-recovery)。"

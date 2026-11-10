@@ -9,6 +9,8 @@ of each maintaining their own sessions.
 from __future__ import annotations
 
 import asyncio
+import codecs
+import json as jsonlib
 import logging
 import re
 import sys
@@ -21,8 +23,13 @@ import aiohttp
 # timeout=None is NOT equivalent: aiohttp treats it as "no timeout at all".
 from aiohttp.helpers import sentinel as _aiohttp_sentinel
 
-from serving.exceptions import UpstreamModelQueued, is_model_queued_body
-from serving.servers.sse import SSEMessage, SSEParser
+from serving.exceptions import (
+    UpstreamModelQueued,
+    UpstreamRequestTimedOut,
+    is_model_queued_body,
+    is_upstream_timeout_body,
+)
+from serving.servers.sse import MAX_FRAME_CHARS, SSEFrameTooLarge, SSEMessage, SSEParser
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 from serving.utils.metadata_addresses import refuse_metadata_socket
@@ -66,7 +73,11 @@ def _upstream_status_error(resp: Any, error_body: str) -> aiohttp.ClientResponse
             extra={"event": "upstream_media_rejection", "upstream_status": resp.status},
         )
     queued = status == 503 and is_model_queued_body(error_body)
-    error_type = UpstreamModelQueued if queued else aiohttp.ClientResponseError
+    error_type: type[aiohttp.ClientResponseError] = aiohttp.ClientResponseError
+    if queued:
+        error_type = UpstreamModelQueued
+    elif status == 504 and is_upstream_timeout_body(error_body):
+        error_type = UpstreamRequestTimedOut
     error = error_type(
         request_info=resp.request_info,
         history=resp.history,
@@ -91,6 +102,352 @@ def _retry_after_seconds(headers: Any) -> float | None:
     return seconds if seconds >= 0 else None
 
 
+# -- What an upstream response may make the gateway hold ----------------------
+
+#: Error responses are read for the provider's message only. This much holds
+#: any provider's; the rest of the body is not read.
+MAX_ERROR_BODY_BYTES = 64 * 1024
+
+#: The largest non-streaming response body read. Generous on purpose: the
+#: biggest legitimate answers -- an embeddings batch of large vectors encoded as
+#: JSON floats, a long completion with ``top_logprobs`` -- reach about a hundred
+#: MiB. What it bounds is an upstream that never stops sending, which the total
+#: timeout alone lets fill memory at line rate for as long as it runs.
+MAX_RESPONSE_BODY_BYTES = 256 * 1024 * 1024
+
+#: An NDJSON line may be as long as an SSE frame, for the same reasons.
+MAX_LINE_CHARS = MAX_FRAME_CHARS
+
+_READ_CHUNK_BYTES = 64 * 1024
+
+#: A JSON response this long or longer is decoded a part at a time, the event
+#: loop running between the parts (:func:`loads_yielding`). Shorter ones decode
+#: in about 10 ms, and in one piece.
+YIELDING_DECODE_MIN_CHARS = 1024 * 1024
+
+#: About how much of a large JSON response is decoded between two turns of the
+#: event loop: some 5 ms of the C decoder.
+_YIELDING_DECODE_SLICE_CHARS = 256 * 1024
+
+#: Connection bounds for a request with no total timeout -- a stream, which then
+#: runs for as long as generation does. ``connect`` covers the whole acquisition
+#: of a connection (a wait for the pool, DNS, the handshakes), ``sock_connect``
+#: the TCP and TLS handshake with one address. Without them a stream to an
+#: unreachable host waited as long as the kernel kept retrying, and one waiting
+#: for a pooled connection waited forever, holding its user's and its
+#: provider's slots the whole time.
+STREAM_CONNECT_TIMEOUT_S = 30.0
+STREAM_SOCK_CONNECT_TIMEOUT_S = 10.0
+
+#: The most connections the shared upstream pool keeps open at once. A safety
+#: net, far above what the gateway's own limits let through (64 per provider
+#: key): at the per-process open-file limit, a connection's ``EMFILE`` failed
+#: every request in the process, client sockets and database connections
+#: included, not only the upstream one. Capped at half that limit, since each
+#: relayed request also holds its client's socket (see
+#: :func:`upstream_connection_limit`).
+MAX_UPSTREAM_CONNECTIONS = 4096
+_MIN_UPSTREAM_CONNECTIONS = 256
+
+
+def upstream_connection_limit() -> int:
+    """Return how many connections the shared upstream pool may open at once.
+
+    Half the process's soft open-file limit, between 256 and
+    :data:`MAX_UPSTREAM_CONNECTIONS`. A request past it waits for a pooled
+    connection, within its connect timeout, instead of failing on a file
+    descriptor it cannot get.
+    """
+    try:
+        import resource
+
+        soft, _hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    except (ImportError, OSError, ValueError):
+        return MAX_UPSTREAM_CONNECTIONS
+    if soft == resource.RLIM_INFINITY or soft <= 0:
+        return MAX_UPSTREAM_CONNECTIONS
+    return max(_MIN_UPSTREAM_CONNECTIONS, min(MAX_UPSTREAM_CONNECTIONS, soft // 2))
+
+
+class UpstreamPayloadTooLarge(aiohttp.ClientPayloadError):
+    """An upstream response body, or one frame of a stream, passed the size read.
+
+    A ``ClientPayloadError``, the type a truncated body raises, so every caller
+    already fails the attempt for it as for any other broken upstream payload:
+    the router records it against the endpoint and falls back, and a stream ends
+    with the usual upstream error.
+    """
+
+
+def stream_timeout(timeout: aiohttp.ClientTimeout | None = None) -> aiohttp.ClientTimeout:
+    """Return the timeout for opening a stream: ``timeout`` with connection bounds.
+
+    A missing ``timeout`` means no total, as a generation runs as long as it
+    runs. Whatever the caller set (``total``, ``sock_read``) is kept; only an
+    unset ``connect`` / ``sock_connect`` is filled in. Running out of either
+    raises ``aiohttp.ConnectionTimeoutError``, a ``ClientError`` and a
+    ``TimeoutError``, which callers already treat as a failed attempt that has
+    sent nothing: the router falls back from it like any unreachable upstream.
+    """
+    if timeout is None:
+        timeout = aiohttp.ClientTimeout(total=None)
+    return connect_bounded(timeout)
+
+
+def connect_bounded(timeout: aiohttp.ClientTimeout) -> aiohttp.ClientTimeout:
+    """Return *timeout* with a bounded ``connect`` / ``sock_connect`` where it has none.
+
+    Non-streaming requests need the bounds as much as streams do: their total
+    timeout (600 s for a completion) was all that bounded opening the
+    connection, so a black-holed host held a request for as long as the kernel
+    retried its SYN, about 127 s per key, before it could fail over.
+    """
+    return aiohttp.ClientTimeout(
+        total=timeout.total,
+        connect=STREAM_CONNECT_TIMEOUT_S if timeout.connect is None else timeout.connect,
+        sock_read=timeout.sock_read,
+        sock_connect=(
+            STREAM_SOCK_CONNECT_TIMEOUT_S if timeout.sock_connect is None else timeout.sock_connect
+        ),
+        ceil_threshold=timeout.ceil_threshold,
+    )
+
+
+async def read_body(resp: Any, limit: int | None = None) -> bytes:
+    """Read a response body, refusing one longer than ``limit`` bytes.
+
+    ``limit`` defaults to :data:`MAX_RESPONSE_BODY_BYTES`. A ``Content-Length``
+    over it is refused before anything is read; otherwise the body is counted as
+    it arrives and refused the moment it passes the limit, so no more than
+    ``limit`` bytes are ever held.
+
+    Raises:
+        UpstreamPayloadTooLarge: The body is longer than ``limit``.
+    """
+    if limit is None:
+        limit = MAX_RESPONSE_BODY_BYTES
+    declared = resp.content_length
+    if declared is not None and declared > limit:
+        raise UpstreamPayloadTooLarge(
+            f"upstream response body of {declared} bytes exceeds the {limit}-byte limit"
+        )
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.content.iter_chunked(_READ_CHUNK_BYTES):
+        size += len(chunk)
+        if size > limit:
+            raise UpstreamPayloadTooLarge(f"upstream response body exceeds the {limit}-byte limit")
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
+async def read_error_text(resp: Any, limit: int | None = None) -> str:
+    """Return the start of an error response's body as text: at most ``limit`` bytes.
+
+    ``limit`` defaults to :data:`MAX_ERROR_BODY_BYTES`. Only the provider's
+    message is wanted from the body, so the rest is left unread (the connection
+    is then closed rather than reused). Decoded with the response's charset,
+    UTF-8 by default; a malformed byte costs a replacement character, not the
+    message.
+    """
+    if limit is None:
+        limit = MAX_ERROR_BODY_BYTES
+    chunks: list[bytes] = []
+    size = 0
+    async for chunk in resp.content.iter_chunked(_READ_CHUNK_BYTES):
+        piece = chunk[: limit - size]
+        chunks.append(piece)
+        size += len(piece)
+        if size >= limit:
+            break
+    return b"".join(chunks).decode(_response_charset(resp), errors="replace")
+
+
+def _response_charset(resp: Any) -> str:
+    """The charset ``resp`` declares, when Python knows it; UTF-8 otherwise."""
+    charset = getattr(resp, "charset", None)
+    if charset:
+        try:
+            return codecs.lookup(charset).name
+        except LookupError:
+            pass
+    return "utf-8"
+
+
+# What ``ClientResponse.json`` accepts by default: application/json and any
+# ``+json`` type.
+_JSON_CONTENT_TYPE_RE = re.compile(r"^application/(?:[\w.+-]+?\+)?json")
+
+
+async def _json_from_body(resp: Any, body: bytes) -> Any:
+    """Decode a body read with :func:`read_body` as ``resp.json()`` would have.
+
+    The same content-type check (an ``aiohttp.ContentTypeError`` for anything
+    but JSON), ``None`` for an empty body, and the declared charset. A large
+    body is decoded with :func:`loads_yielding`, so the event loop keeps
+    running while it is.
+    """
+    content_type = str(resp.headers.get("Content-Type", "")).lower()
+    if not _JSON_CONTENT_TYPE_RE.match(content_type):
+        raise aiohttp.ContentTypeError(
+            resp.request_info,
+            resp.history,
+            status=resp.status,
+            message=f"Attempt to decode JSON with unexpected mimetype: {content_type}",
+            headers=resp.headers,
+        )
+    stripped = body.strip()
+    if not stripped:
+        return None
+    text = stripped.decode(_response_charset(resp))
+    if len(text) < YIELDING_DECODE_MIN_CHARS:
+        return jsonlib.loads(text)
+    return await loads_yielding(text)
+
+
+_JSON_DECODER = jsonlib.JSONDecoder()
+# JSON's own whitespace: what ``json.decoder`` skips between tokens.
+_JSON_WHITESPACE = re.compile(r"[ \t\n\r]*")
+
+
+def _skip_whitespace(text: str, pos: int) -> int:
+    """Return the position of the first non-whitespace character at or after *pos*."""
+    match = _JSON_WHITESPACE.match(text, pos)
+    return match.end() if match else pos
+
+
+async def loads_yielding(text: str) -> Any:
+    """Return ``json.loads(text)``, letting the event loop run while it decodes.
+
+    ``json.loads`` holds the GIL from the first character to the last, so
+    running it in a thread does not free the loop either: a 40 MiB embeddings
+    response took 0.6 s, all of it a stall for every other request. Here the
+    top-level object's members, and each element of an array of objects or
+    arrays it holds, are decoded one at a time by the same decoder, yielding to
+    the loop every :data:`_YIELDING_DECODE_SLICE_CHARS` or so. An embeddings
+    response is one such array, with one vector per element.
+
+    The result is what ``json.loads`` returns; malformed text raises
+    ``json.JSONDecodeError`` as it does, though the message may differ.
+    """
+    decoder = _YieldingDecoder(text)
+    value, pos = await decoder.value(_skip_whitespace(text, 0), depth=0)
+    pos = _skip_whitespace(text, pos)
+    if pos != len(text):
+        raise jsonlib.JSONDecodeError("Extra data", text, pos)
+    return value
+
+
+class _YieldingDecoder:
+    """The container walk behind :func:`loads_yielding`."""
+
+    def __init__(self, text: str) -> None:
+        self._text = text
+        self._yielded_at = 0
+
+    async def value(self, pos: int, *, depth: int) -> tuple[Any, int]:
+        """Decode the value at *pos* and return it with the position after it.
+
+        The top level and, one level down, an array whose first element is an
+        object or an array are walked; any other value is decoded in one piece.
+        """
+        text = self._text
+        opener = text[pos] if pos < len(text) else ""
+        if depth == 0 and opener == "{":
+            return await self._object(pos + 1, depth)
+        if opener == "[" and (depth == 0 or (depth == 1 and self._holds_containers(pos))):
+            return await self._array(pos + 1, depth)
+        value, end = _JSON_DECODER.raw_decode(text, pos)
+        if end - self._yielded_at >= _YIELDING_DECODE_SLICE_CHARS:
+            self._yielded_at = end
+            await asyncio.sleep(0)
+        return value, end
+
+    def _holds_containers(self, pos: int) -> bool:
+        first = _skip_whitespace(self._text, pos + 1)
+        return first < len(self._text) and self._text[first] in "{["
+
+    def _skip(self, pos: int) -> int:
+        return _skip_whitespace(self._text, pos)
+
+    def _expect(self, pos: int, char: str, message: str) -> int:
+        if pos >= len(self._text) or self._text[pos] != char:
+            raise jsonlib.JSONDecodeError(message, self._text, pos)
+        return pos + 1
+
+    async def _object(self, pos: int, depth: int) -> tuple[dict[str, Any], int]:
+        text = self._text
+        members: dict[str, Any] = {}
+        pos = self._skip(pos)
+        if pos < len(text) and text[pos] == "}":
+            return members, pos + 1
+        while True:
+            if pos >= len(text) or text[pos] != '"':
+                raise jsonlib.JSONDecodeError(
+                    "Expecting property name enclosed in double quotes", text, pos
+                )
+            key, pos = _JSON_DECODER.raw_decode(text, pos)
+            pos = self._skip(self._expect(self._skip(pos), ":", "Expecting ':' delimiter"))
+            members[key], pos = await self.value(pos, depth=depth + 1)
+            pos = self._skip(pos)
+            if pos < len(text) and text[pos] == "}":
+                return members, pos + 1
+            pos = self._skip(self._expect(pos, ",", "Expecting ',' delimiter"))
+
+    async def _array(self, pos: int, depth: int) -> tuple[list[Any], int]:
+        text = self._text
+        elements: list[Any] = []
+        pos = self._skip(pos)
+        if pos < len(text) and text[pos] == "]":
+            return elements, pos + 1
+        while True:
+            element, pos = await self.value(pos, depth=depth + 1)
+            elements.append(element)
+            pos = self._skip(pos)
+            if pos < len(text) and text[pos] == "]":
+                return elements, pos + 1
+            pos = self._skip(self._expect(pos, ",", "Expecting ',' delimiter"))
+
+
+class _LineSplitter:
+    """Split decoded text into lines without copying or rescanning what it holds.
+
+    The line still waiting for its newline is kept as the pieces it arrived in,
+    and only new text is searched: appending each read to one string and
+    searching all of it instead was quadratic in the length of a line.
+
+    Raises ``UpstreamPayloadTooLarge`` once a line passes ``max_chars``.
+    """
+
+    def __init__(self, max_chars: int | None = None) -> None:
+        self._pending: list[str] = []
+        self._pending_chars = 0
+        self._max_chars = MAX_LINE_CHARS if max_chars is None else max_chars
+
+    def feed(self, text: str) -> list[str]:
+        lines: list[str] = []
+        pos = 0
+        while (end := text.find("\n", pos)) >= 0:
+            lines.append(self.flush() + text[pos:end])
+            pos = end + 1
+        if pos < len(text):
+            rest = text[pos:]
+            self._pending.append(rest)
+            self._pending_chars += len(rest)
+            if self._pending_chars > self._max_chars:
+                raise UpstreamPayloadTooLarge(
+                    f"upstream NDJSON line exceeded {self._max_chars} characters without ending"
+                )
+        return lines
+
+    def flush(self) -> str:
+        """Return the unfinished line, and start a new one."""
+        text = "".join(self._pending)
+        self._pending = []
+        self._pending_chars = 0
+        return text
+
+
 class AsyncHTTPClient:
     """Shared async HTTP client with a single underlying session."""
 
@@ -109,12 +466,27 @@ class AsyncHTTPClient:
     async def _ensure_session(self) -> aiohttp.ClientSession:
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
-            timeout = aiohttp.ClientTimeout(total=60)
+            timeout = connect_bounded(aiohttp.ClientTimeout(total=60))
             # Every adapter's upstream request goes through this connector, so
             # it is where a Base URL whose name now resolves to a cloud metadata
             # endpoint is refused -- whatever it resolved to when it was saved.
+            #
+            # No connection limit per host, and only a safety net in total.
+            # What bounds the gateway's upstream concurrency is its own
+            # admission -- each user's concurrency limit, the per-account
+            # outbound limiter (``upstream_limiter``), engine holds for local
+            # servers -- and a request holds its slots there while it waits
+            # here. A pool limit under those ceilings only made the next
+            # request queue behind the pool instead: the 51st concurrent stream
+            # to one provider host waited, with no timeout at all, for one of
+            # fifty streams that each run for minutes. The total limit sits far
+            # above them, and below the open-file limit, where a connection
+            # failing with EMFILE took the rest of the process down with it; a
+            # request past it waits within its connect timeout.
             connector = aiohttp.TCPConnector(
-                limit=200, limit_per_host=50, socket_factory=refuse_metadata_socket
+                limit=upstream_connection_limit(),
+                limit_per_host=0,
+                socket_factory=refuse_metadata_socket,
             )
             self._session = aiohttp.ClientSession(
                 timeout=timeout,
@@ -129,6 +501,7 @@ class AsyncHTTPClient:
         json: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
+        max_body_bytes: int | None = None,
     ) -> dict[str, Any]:
         """Send a POST request with JSON payload.
 
@@ -140,25 +513,32 @@ class AsyncHTTPClient:
         ``timeout=None`` means "use the session default" (60s). It must NOT be
         forwarded verbatim: aiohttp treats an explicit ``None`` as *no timeout
         at all*, which would let a black-holed upstream hold the request (and
-        its connection-pool slot) forever.
+        its connection-pool slot) forever. Opening the connection is bounded
+        either way (:func:`connect_bounded`).
+
+        The body is read up to ``max_body_bytes``, by default
+        :data:`MAX_RESPONSE_BODY_BYTES` (a longer one raises
+        ``UpstreamPayloadTooLarge``), an error body up to
+        :data:`MAX_ERROR_BODY_BYTES`.
         """
         session = await self._ensure_session()
         async with session.post(
             url,
             json=json,
             headers=headers,
-            timeout=timeout if timeout is not None else _aiohttp_sentinel,
+            timeout=connect_bounded(timeout) if timeout is not None else _aiohttp_sentinel,
         ) as resp:
             if resp.status >= 400:
                 from contextlib import suppress
 
                 error_body = ""
                 with suppress(Exception):
-                    error_body = await resp.text()
+                    error_body = await read_error_text(resp)
                 raise _upstream_status_error(resp, error_body)
             from typing import cast
 
-            return cast("dict[str, Any]", await resp.json())
+            body = await read_body(resp, max_body_bytes)
+            return cast("dict[str, Any]", await _json_from_body(resp, body))
 
     async def json_post_with_retry(
         self,
@@ -170,16 +550,21 @@ class AsyncHTTPClient:
         retries: int = 3,
         backoff_base: float = 0.5,
         backoff_factor: float = 2.0,
+        max_body_bytes: int | None = None,
     ) -> dict[str, Any]:
         """POST JSON with simple exponential backoff retries.
 
         Retries on aiohttp client errors and timeouts. Backoff delays are
         computed as backoff_base * (backoff_factor ** attempt).
+        ``max_body_bytes`` is passed to :meth:`json_post`.
         """
         last_err: BaseException | None = None
+        limit = {} if max_body_bytes is None else {"max_body_bytes": max_body_bytes}
         for attempt in range(retries):
             try:
-                return await self.json_post(url, json=json, headers=headers, timeout=timeout)
+                return await self.json_post(
+                    url, json=json, headers=headers, timeout=timeout, **limit
+                )
             except (TimeoutError, aiohttp.ClientError) as err:
                 last_err = err
                 if attempt == retries - 1:
@@ -244,9 +629,9 @@ class AsyncHTTPClient:
         """
         session = await self._ensure_session()
         # Streaming responses can run for minutes (LLM generation + queue time).
-        # Let the upstream manage its own lifecycle via [DONE] sentinel.
-        if timeout is None:
-            timeout = aiohttp.ClientTimeout(total=None)
+        # Let the upstream manage its own lifecycle via [DONE] sentinel -- but
+        # not the connection: opening one is bounded (see ``stream_timeout``).
+        timeout = stream_timeout(timeout)
 
         # Phase 1: open connection. Retry once on a stale pooled keep-alive
         # socket, whether it surfaces as a clean disconnect or a reset/broken
@@ -314,7 +699,7 @@ class AsyncHTTPClient:
             from contextlib import suppress
 
             with suppress(Exception):
-                error_body = await resp.text()
+                error_body = await read_error_text(resp)
 
             raise _upstream_status_error(resp, error_body)
 
@@ -342,7 +727,7 @@ class AsyncHTTPClient:
             )
             logger.debug(f"Response headers: {dict(resp.headers)}")
 
-            parser = SSEParser()
+            parser = SSEParser(max_frame_chars=MAX_FRAME_CHARS)
             chunk_count = 0
             message_count = 0
 
@@ -364,7 +749,10 @@ class AsyncHTTPClient:
                         preview = raw[:200].decode("utf-8", errors="replace")
                         logger.debug(f"Chunk {chunk_count} preview: {preview}")
 
-                    messages = parser.feed(raw)
+                    try:
+                        messages = parser.feed(raw)
+                    except SSEFrameTooLarge as exc:
+                        raise UpstreamPayloadTooLarge(str(exc)) from exc
                     if messages and chunk_count <= 5:
                         logger.debug(
                             f"Chunk {chunk_count} parser produced {len(messages)} messages"
@@ -417,8 +805,6 @@ class AsyncHTTPClient:
             logger.info(f"Stream complete: chunks={chunk_count}, messages={message_count}")
         elif detected_mode == "ndjson":
             # Incremental UTF-8 decode + line buffering
-            import codecs
-
             # ``errors="replace"`` for the same reason as the SSE parser: the
             # strict decoder raises for a whole 4 KiB read, and the handler that
             # caught it dropped every line in that read. The comment it carried
@@ -428,18 +814,16 @@ class AsyncHTTPClient:
             # raising -- so the except branch only ever fired on genuinely
             # invalid bytes, and paid for one bad byte with the whole read.
             decoder = codecs.getincrementaldecoder("utf-8")("replace")
-            buffer = ""
+            lines = _LineSplitter()
             async for raw in resp.content.iter_chunked(4096):
                 text = decoder.decode(raw, final=False)
                 if text:
-                    buffer += text
-                    while "\n" in buffer:
-                        line, buffer = buffer.split("\n", 1)
+                    for line in lines.feed(text):
                         line = line.strip()
                         if line:
                             yield line
             # Flush tail
-            tail = buffer.strip()
+            tail = lines.flush().strip()
             if tail:
                 yield tail
         else:
@@ -455,11 +839,15 @@ class AsyncHTTPClient:
         data: bytes | None = None,
         headers: dict[str, str] | None = None,
         timeout: aiohttp.ClientTimeout | None = None,
+        max_body_bytes: int | None = None,
     ) -> tuple[int, bytes, str]:
         """Send an arbitrary HTTP request and return (status, body, content_type).
 
         Intended for proxy-style forwarding where we need the raw response.
         ``timeout=None`` falls back to the session default (see json_post).
+        The body is read up to *max_body_bytes*, by default
+        :data:`MAX_RESPONSE_BODY_BYTES`; a longer one raises
+        :class:`UpstreamPayloadTooLarge`.
         """
         session = await self._ensure_session()
         async with session.request(
@@ -469,7 +857,7 @@ class AsyncHTTPClient:
             headers=headers,
             timeout=timeout if timeout is not None else _aiohttp_sentinel,
         ) as resp:
-            body = await resp.read()
+            body = await read_body(resp, max_body_bytes)
             content_type = resp.headers.get("content-type", "application/json")
             return resp.status, body, content_type
 
