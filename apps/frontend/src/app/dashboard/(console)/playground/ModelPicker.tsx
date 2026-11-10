@@ -12,7 +12,7 @@ import {
 } from 'react';
 import { createPortal } from 'react-dom';
 
-import { useAnchoredPopover } from '@/components/ui/anchoredPopover';
+import { popoverContainer, useAnchoredPopover } from '@/components/ui/anchoredPopover';
 
 export interface PlaygroundModel {
   id: string;
@@ -51,6 +51,7 @@ export function ModelPicker({
   const listId = `${triggerId}-list`;
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  const [container, setContainer] = useState<HTMLElement | null>(null);
   const [activeId, setActiveId] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -97,6 +98,9 @@ export function ModelPicker({
     scrollActiveRef.current = true;
     setQuery('');
     setActiveId(selected?.id ?? (last ? models[models.length - 1]?.id : models[0]?.id) ?? null);
+    // Inside the console's theme wrapper, so the dark appearance's rules reach
+    // the popup just as they do the Provider select's.
+    setContainer(popoverContainer(triggerRef.current));
     setOpen(true);
   };
 
@@ -227,132 +231,133 @@ export function ModelPicker({
         </svg>
       </button>
 
-      {isOpen &&
-        createPortal(
-          <div
-            ref={popoverRef}
-            style={position}
-            className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-gray-900 shadow-lg"
-          >
-            <div className="shrink-0 border-b border-gray-100 p-2.5">
-              <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 focus-within:border-gray-400 focus-within:ring-1 focus-within:ring-gray-400/30">
-                <svg
-                  aria-hidden="true"
-                  className="h-4 w-4 shrink-0 text-gray-500"
-                  viewBox="0 0 20 20"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="1.5"
-                >
-                  <circle cx="8.5" cy="8.5" r="5.5" />
-                  <path d="m12.5 12.5 4 4" strokeLinecap="round" />
-                </svg>
-                <input
-                  ref={searchRef}
-                  type="text"
-                  role="combobox"
-                  aria-label="Search models"
-                  aria-autocomplete="list"
-                  aria-expanded="true"
-                  aria-controls={listId}
-                  aria-activedescendant={activeModel ? `${listId}-${activeIndex}` : undefined}
-                  value={query}
-                  onChange={(event) => {
-                    scrollActiveRef.current = true;
-                    setQuery(event.target.value);
-                    setActiveId(null);
-                  }}
-                  onKeyDown={onSearchKeyDown}
-                  placeholder="Search models or providers…"
-                  autoComplete="off"
-                  spellCheck={false}
-                  className="min-w-0 flex-1 bg-transparent py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400"
-                />
-                <span aria-hidden="true" className="text-[10px] text-gray-400">
-                  ESC
-                </span>
-              </div>
-              <div aria-live="polite" className="px-1 pt-2 text-xs text-gray-500">
-                {query.trim()
-                  ? `${filtered.length} of ${models.length} models`
-                  : `${models.length} ${models.length === 1 ? 'model' : 'models'}`}
-              </div>
-            </div>
-
+      {isOpen && container
+        ? createPortal(
             <div
-              id={listId}
-              role="listbox"
-              aria-label="Models"
-              className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
+              ref={popoverRef}
+              style={position}
+              className="fixed z-50 flex flex-col overflow-hidden rounded-xl border border-gray-200 bg-white text-gray-900 shadow-lg"
             >
-              {filtered.map((model, index) => {
-                const label = modelLabel(model.name);
-                const isSelected = model.id === value;
-                const isActive = model.id === activeModel?.id;
-                return (
-                  <div
-                    key={model.id}
-                    id={`${listId}-${index}`}
-                    ref={(element) => {
-                      if (element) optionRefs.current.set(model.id, element);
-                      else optionRefs.current.delete(model.id);
-                    }}
-                    role="option"
-                    aria-label={`${model.name}, ${model.id}`}
-                    aria-selected={isSelected}
-                    onPointerMove={() => {
-                      scrollActiveRef.current = false;
-                      setActiveId(model.id);
-                    }}
-                    onMouseDown={(event) => event.preventDefault()}
-                    onClick={() => choose(model.id)}
-                    className={`flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2.5 outline-none transition-colors ${
-                      isActive ? 'bg-gray-100' : isSelected ? 'bg-gray-50' : 'hover:bg-gray-50'
-                    }`}
+              <div className="shrink-0 border-b border-gray-100 p-2.5">
+                <div className="flex items-center gap-2 rounded-lg border border-gray-200 bg-white px-3 focus-within:border-gray-400 focus-within:ring-1 focus-within:ring-gray-400/30">
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4 shrink-0 text-gray-500"
+                    viewBox="0 0 20 20"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeWidth="1.5"
                   >
-                    <span className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                        <span className="max-w-full break-words text-sm font-medium leading-5 text-gray-900">
-                          {label.name}
-                        </span>
-                        {label.detail && (
-                          <span className="max-w-full rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-4 text-gray-500">
-                            {label.detail}
-                          </span>
-                        )}
-                      </span>
-                      <span className="mt-0.5 block break-all text-xs leading-4 text-gray-500">
-                        {model.id}
-                      </span>
-                    </span>
-                    {isSelected && (
-                      <svg
-                        aria-hidden="true"
-                        className="mt-0.5 h-4 w-4 shrink-0 text-gray-900"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        stroke="currentColor"
-                        strokeWidth="1.8"
-                      >
-                        <path d="m4 10 4 4 8-8" strokeLinecap="round" strokeLinejoin="round" />
-                      </svg>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-
-            {filtered.length === 0 && (
-              <div className="px-6 py-8 text-center">
-                <p className="text-sm font-medium text-gray-800">No models found</p>
-                <p className="mt-1 text-xs text-gray-500">
-                  Try another model name, ID, or provider.
-                </p>
+                    <circle cx="8.5" cy="8.5" r="5.5" />
+                    <path d="m12.5 12.5 4 4" strokeLinecap="round" />
+                  </svg>
+                  <input
+                    ref={searchRef}
+                    type="text"
+                    role="combobox"
+                    aria-label="Search models"
+                    aria-autocomplete="list"
+                    aria-expanded="true"
+                    aria-controls={listId}
+                    aria-activedescendant={activeModel ? `${listId}-${activeIndex}` : undefined}
+                    value={query}
+                    onChange={(event) => {
+                      scrollActiveRef.current = true;
+                      setQuery(event.target.value);
+                      setActiveId(null);
+                    }}
+                    onKeyDown={onSearchKeyDown}
+                    placeholder="Search models or providers…"
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="min-w-0 flex-1 bg-transparent py-2 text-sm text-gray-900 outline-none placeholder:text-gray-400"
+                  />
+                  <span aria-hidden="true" className="text-[10px] text-gray-400">
+                    ESC
+                  </span>
+                </div>
+                <div aria-live="polite" className="px-1 pt-2 text-xs text-gray-500">
+                  {query.trim()
+                    ? `${filtered.length} of ${models.length} models`
+                    : `${models.length} ${models.length === 1 ? 'model' : 'models'}`}
+                </div>
               </div>
-            )}
-          </div>,
-          document.body,
-        )}
+
+              <div
+                id={listId}
+                role="listbox"
+                aria-label="Models"
+                className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-1.5"
+              >
+                {filtered.map((model, index) => {
+                  const label = modelLabel(model.name);
+                  const isSelected = model.id === value;
+                  const isActive = model.id === activeModel?.id;
+                  return (
+                    <div
+                      key={model.id}
+                      id={`${listId}-${index}`}
+                      ref={(element) => {
+                        if (element) optionRefs.current.set(model.id, element);
+                        else optionRefs.current.delete(model.id);
+                      }}
+                      role="option"
+                      aria-label={`${model.name}, ${model.id}`}
+                      aria-selected={isSelected}
+                      onPointerMove={() => {
+                        scrollActiveRef.current = false;
+                        setActiveId(model.id);
+                      }}
+                      onMouseDown={(event) => event.preventDefault()}
+                      onClick={() => choose(model.id)}
+                      className={`flex cursor-pointer items-start gap-3 rounded-lg px-3 py-2.5 outline-none transition-colors ${
+                        isActive ? 'bg-gray-100' : isSelected ? 'bg-gray-50' : 'hover:bg-gray-50'
+                      }`}
+                    >
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
+                          <span className="max-w-full break-words text-sm font-medium leading-5 text-gray-900">
+                            {label.name}
+                          </span>
+                          {label.detail && (
+                            <span className="max-w-full rounded bg-gray-100 px-1.5 py-0.5 text-[11px] leading-4 text-gray-500">
+                              {label.detail}
+                            </span>
+                          )}
+                        </span>
+                        <span className="mt-0.5 block break-all text-xs leading-4 text-gray-500">
+                          {model.id}
+                        </span>
+                      </span>
+                      {isSelected && (
+                        <svg
+                          aria-hidden="true"
+                          className="mt-0.5 h-4 w-4 shrink-0 text-gray-900"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.8"
+                        >
+                          <path d="m4 10 4 4 8-8" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {filtered.length === 0 && (
+                <div className="px-6 py-8 text-center">
+                  <p className="text-sm font-medium text-gray-800">No models found</p>
+                  <p className="mt-1 text-xs text-gray-500">
+                    Try another model name, ID, or provider.
+                  </p>
+                </div>
+              )}
+            </div>,
+            container,
+          )
+        : null}
     </>
   );
 }

@@ -227,7 +227,7 @@ describe('PlaygroundPage', () => {
       target: { value: 'First session instructions' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
     fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
     chooseOption('Provider', 'Chutes');
@@ -276,7 +276,7 @@ describe('PlaygroundPage', () => {
 
     // Leaving the streaming session is allowed again, and the fresh session's
     // controls are live while the background turn runs.
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('');
     expect(screen.getByLabelText('Temperature')).not.toBeDisabled();
 
@@ -293,7 +293,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('one');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt('two');
 
     // Both turns are in flight; each writes into its own session.
@@ -309,7 +309,7 @@ describe('PlaygroundPage', () => {
     expect(screen.getByText(/reply-one/)).toBeInTheDocument();
     // Back to idle: the label reads Send again (disabled only because the
     // editor is empty, not because something is streaming).
-    expect(screen.getByRole('button', { name: 'Send' })).toHaveTextContent('Send');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
   it('protects the streaming session from deletion but not the others', async () => {
@@ -318,7 +318,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('busy');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     expect(screen.queryByRole('button', { name: /Delete session busy/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Delete session New session/ }));
@@ -336,7 +336,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('stoppable');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     // Another session's stream shows no Stop control here.
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
@@ -560,7 +560,7 @@ describe('PlaygroundPage', () => {
     await screen.findByText('answer');
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
-    expect(screen.getByText('Start a chat run')).toBeInTheDocument();
+    expect(screen.getByText('Start a conversation')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     expect(screen.getByText('answer')).toBeInTheDocument();
   });
@@ -569,7 +569,7 @@ describe('PlaygroundPage', () => {
     fetchWithAuth.mockResolvedValue(MODELS);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
 
     fireEvent.click(screen.getAllByRole('button', { name: /^Delete session/ })[0]);
@@ -583,15 +583,15 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.5' } });
-    fireEvent.change(screen.getByLabelText('Max Tokens'), { target: { value: '8192' } });
-    fireEvent.change(screen.getByLabelText('System instructions'), {
+    fireEvent.change(screen.getByLabelText('Max tokens'), { target: { value: '8192' } });
+    fireEvent.change(screen.getByLabelText('System prompt'), {
       target: { value: 'Be terse.' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
-    expect(screen.getByLabelText('Max Tokens')).toHaveValue('8192');
-    expect(screen.getByLabelText('System instructions')).toHaveValue('Be terse.');
+    expect(screen.getByLabelText('Max tokens')).toHaveValue('8192');
+    expect(screen.getByLabelText('System prompt')).toHaveValue('Be terse.');
   });
 
   it('keeps reasoning expansion to the message it was opened on', async () => {
@@ -605,7 +605,7 @@ describe('PlaygroundPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^(Thought for|Thinking)/ }));
     expect(screen.getByText('pondering')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt();
     await screen.findByRole('button', { name: /^(Thought for|Thinking)/ });
     expect(screen.queryByText('pondering')).toBeNull();
@@ -663,7 +663,7 @@ describe('PlaygroundPage', () => {
     await sendPrompt('background turn');
 
     // Switch to a fresh session C; the first turn keeps streaming in secret.
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     const scrollTo = vi.mocked(Element.prototype.scrollTo);
     scrollTo.mockClear();
 
@@ -728,7 +728,7 @@ describe('PlaygroundPage', () => {
 
       // Session C: idle, gets the Undo action. Its Undo is live even though
       // session A streams — the pause is per session, not global.
-      fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+      fireEvent.click(screen.getByRole('button', { name: 'New' }));
       fireEvent.click(screen.getAllByRole('button', { name: /Delete session/ })[0]);
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled();
 
@@ -811,7 +811,7 @@ describe('PlaygroundPage', () => {
     const toggle = screen.getByRole('button', { name: 'Chat settings' });
 
     fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(toggle);
@@ -854,7 +854,7 @@ describe('PlaygroundPage', () => {
     const toggle = screen.getByRole('button', { name: 'Chat settings' });
 
     fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(toggle);
@@ -869,7 +869,7 @@ describe('PlaygroundPage', () => {
     const { unmount } = render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('first stream');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt('second stream');
 
     // Both turns are parked mid-stream, one per session.

@@ -195,8 +195,8 @@ export default function PlaygroundPage() {
   const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
   const [showJump, setShowJump] = useState(false);
   const [undo, setUndo] = useState<UndoAction | null>(null);
-  // Below `lg` the settings panels are a drawer over the conversation, opened
-  // from the header; from `lg` up they are the sidebar beside it.
+  // Below `lg` the settings rail is a drawer over the conversation, opened
+  // from the header; from `lg` up it is the panel beside it.
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
@@ -224,7 +224,7 @@ export default function PlaygroundPage() {
       setSettingsOpen(false);
       settingsButtonRef.current?.focus();
     };
-    // Widened past `lg`, the sidebar is back in place: drop the drawer rather
+    // Widened past `lg`, the panel is back in place: drop the drawer rather
     // than have it reappear over the conversation on the next narrowing.
     const wide =
       typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 1024px)') : null;
@@ -819,10 +819,17 @@ export default function PlaygroundPage() {
 
   const lastUserIndex = msgs.map((m) => m.role).lastIndexOf('user');
 
+  const railLabel = 'text-[11px] font-semibold uppercase tracking-[0.14em] text-gray-400';
+  const railBlock = 'border-b border-gray-100 px-4 py-4';
+  const fieldLabel = 'block text-xs font-medium text-gray-600';
+  const control =
+    'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50';
+  const sliderLabelRow = 'mb-2 flex items-center justify-between';
+
   return (
     <ProtectedRoute>
-      <div className="flex h-[calc(100vh-14rem)] min-h-[32rem] flex-col text-gray-900">
-        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+      <div className="flex w-full flex-col text-gray-900 lg:h-[calc(100dvh-13.5rem)] lg:min-h-[36rem]">
+        <div className="mb-5 flex shrink-0 flex-wrap items-end justify-between gap-3">
           <div className="flex min-w-0 items-start gap-2">
             <button
               ref={settingsButtonRef}
@@ -847,29 +854,26 @@ export default function PlaygroundPage() {
               </svg>
             </button>
             <div className="min-w-0">
-              <h1 className="text-2xl font-bold tracking-tight">Chat</h1>
+              <h1 className="text-[22px] font-semibold tracking-tight">Chat</h1>
               <p className="mt-1 text-sm text-gray-500">
                 Talk to any model in your catalog. Each session keeps its own model and
                 instructions.
               </p>
             </div>
           </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {/* Below `sm` the composer names the model instead. */}
-            <span className="hidden max-w-[16rem] truncate rounded-md bg-gray-100 px-2.5 py-1 text-xs font-medium text-gray-700 sm:block">
-              {model ? model.name : 'No model'}
-            </span>
-            <span
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                streaming ? 'bg-green-50 text-green-700' : 'bg-gray-100 text-gray-500'
-              }`}
-            >
+          <div className="flex items-center gap-2">
+            <span className="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 sm:inline-flex">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  streaming ? 'animate-pulse bg-emerald-500' : 'bg-gray-300'
+                }`}
+              />
               {streaming ? 'Streaming' : 'Ready'}
             </span>
           </div>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col gap-4 lg:flex-row">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white lg:flex-row">
           {settingsOpen && (
             <div
               aria-hidden="true"
@@ -880,15 +884,13 @@ export default function PlaygroundPage() {
           <aside
             id="playground-settings"
             aria-label="Chat settings"
-            // Shown at once on opening, so focus can move into it; hidden only
-            // once it has slid away on closing.
-            className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col gap-4 overflow-y-auto bg-gray-50 p-4 shadow-2xl duration-200 motion-reduce:transition-none lg:visible lg:static lg:z-auto lg:w-72 lg:max-w-none lg:shrink-0 lg:transform-none lg:bg-transparent lg:p-0 lg:shadow-none ${
+            className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col overflow-hidden border-r border-gray-100 bg-gray-50 shadow-2xl duration-200 motion-reduce:transition-none lg:visible lg:static lg:z-auto lg:w-[19rem] lg:max-w-none lg:shrink-0 lg:transform-none lg:bg-gray-50/50 lg:shadow-none ${
               settingsOpen
                 ? 'visible translate-x-0 transition-transform'
                 : 'invisible -translate-x-full transition-[transform,visibility]'
             }`}
           >
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-200 lg:hidden">
+            <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-100 px-4 lg:hidden">
               <span className="text-sm font-semibold text-gray-900">Chat settings</span>
               <button
                 ref={settingsCloseRef}
@@ -913,106 +915,127 @@ export default function PlaygroundPage() {
                 </svg>
               </button>
             </div>
-            <section className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                  Sessions
-                </span>
-                <button
-                  type="button"
-                  onClick={() => {
-                    newSession();
-                    setSettingsOpen(false);
-                  }}
-                  className="rounded-md bg-black px-3 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-50"
+            <div className="flex items-center justify-between gap-2 border-b border-gray-100 px-4 py-3">
+              <span className={railLabel}>Sessions</span>
+              <button
+                type="button"
+                onClick={() => {
+                  newSession();
+                  setSettingsOpen(false);
+                }}
+                className="inline-flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 disabled:opacity-50"
+              >
+                <svg
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
                 >
-                  + New
-                </button>
-              </div>
-              <div className="max-h-48 space-y-1 overflow-y-auto">
-                {sessions.map((s) => {
-                  const active = s.id === activeSessionId;
-                  return (
-                    <div
-                      key={s.id}
-                      className={`group relative rounded-md transition ${
-                        active
-                          ? 'bg-gray-100 text-gray-900'
-                          : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
-                      }`}
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth={2}
+                    d="M12 5v14M5 12h14"
+                  />
+                </svg>
+                New
+              </button>
+            </div>
+
+            <div className="max-h-44 shrink-0 overflow-y-auto p-2">
+              {sessions.map((s) => {
+                const active = s.id === activeSessionId;
+                return (
+                  <div
+                    key={s.id}
+                    className={`group relative rounded-lg transition ${
+                      active
+                        ? 'bg-gray-100 text-gray-900'
+                        : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => {
+                        switchSession(s.id);
+                        setSettingsOpen(false);
+                      }}
+                      className="w-full px-2.5 py-2 text-left"
                     >
+                      <div className="flex items-center gap-2">
+                        <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                          {getSessionTitle(s)}
+                        </span>
+                        {streamingIds.has(s.id) && (
+                          <span
+                            className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
+                            aria-label="Streaming"
+                          />
+                        )}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] text-gray-400">
+                        {getMessageCount(s.messages)}
+                        {s.selectedModelId ? ` · ${s.selectedModelId}` : ''}
+                      </div>
+                    </button>
+                    {sessions.length > 1 && !streamingIds.has(s.id) && (
                       <button
                         type="button"
-                        onClick={() => {
-                          switchSession(s.id);
-                          setSettingsOpen(false);
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          deleteSession(s.id);
                         }}
-                        className="w-full px-3 py-2.5 text-left text-sm"
+                        className={`absolute right-1.5 top-1.5 rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 ${REVEAL_ON_HOVER}`}
+                        title="Delete session"
+                        aria-label={`Delete session ${getSessionTitle(s)}`}
                       >
-                        <div className="truncate pr-6 font-medium">{getSessionTitle(s)}</div>
-                        <div className="mt-1 truncate text-xs text-gray-500">
-                          {getMessageCount(s.messages)} · {s.selectedModelId || 'no model'}
-                        </div>
-                      </button>
-                      {sessions.length > 1 && !streamingIds.has(s.id) && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteSession(s.id);
-                          }}
-                          className={`absolute right-2 top-2.5 rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 ${REVEAL_ON_HOVER}`}
-                          title="Delete session"
-                          aria-label={`Delete session ${getSessionTitle(s)}`}
+                        <svg
+                          aria-hidden="true"
+                          className="h-3 w-3"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
                         >
-                          <svg
-                            aria-hidden="true"
-                            className="h-3.5 w-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M6 18L18 6M6 6l12 12"
+                          />
+                        </svg>
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
 
-            <section className="space-y-4 rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-              <div>
-                <label
-                  htmlFor="playground-model"
-                  className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                >
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <section className={railBlock}>
+                <label htmlFor="playground-model" className={railLabel}>
                   Model
                 </label>
-                <ModelPicker
-                  key={activeSessionId}
-                  id="playground-model"
-                  models={models}
-                  value={modelId}
-                  onChange={(newId) => {
-                    patch((s) => ({
-                      ...s,
-                      selectedModelId: newId,
-                      selectedProvider: null,
-                    }));
-                  }}
-                  disabled={activeStreaming}
-                  loading={modelsLoading}
-                  emptyLabel={modelsError ? 'Models unavailable' : undefined}
-                />
+                <div className="mt-2">
+                  <ModelPicker
+                    key={activeSessionId}
+                    id="playground-model"
+                    models={models}
+                    value={modelId}
+                    onChange={(newId) => {
+                      patch((s) => ({
+                        ...s,
+                        selectedModelId: newId,
+                        selectedProvider: null,
+                      }));
+                    }}
+                    disabled={activeStreaming}
+                    loading={modelsLoading}
+                    emptyLabel={modelsError ? 'Models unavailable' : undefined}
+                  />
+                </div>
                 {modelsError && !modelsLoading && (
-                  <div className="mt-2 flex items-start justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+                  <div className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700">
                     <span className="min-w-0 break-words">
                       Couldn&apos;t load models: {modelsError}
                     </span>
@@ -1025,115 +1048,112 @@ export default function PlaygroundPage() {
                     </button>
                   </div>
                 )}
-              </div>
 
-              {modelProviders.length > 1 && (
-                <div>
-                  <label
-                    htmlFor="playground-provider"
-                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                  >
-                    Provider
-                  </label>
-                  <Select
-                    id="playground-provider"
-                    size="lg"
-                    className="w-full"
-                    value={selectedProvider ?? ''}
-                    onValueChange={(value) =>
-                      patch((s) => ({
-                        ...s,
-                        selectedProvider: value || null,
-                      }))
+                {modelProviders.length > 1 && (
+                  <div className="mt-3">
+                    <label htmlFor="playground-provider" className={railLabel}>
+                      Provider
+                    </label>
+                    <Select
+                      id="playground-provider"
+                      size="lg"
+                      className="mt-2 w-full"
+                      value={selectedProvider ?? ''}
+                      onValueChange={(value) =>
+                        patch((s) => ({
+                          ...s,
+                          selectedProvider: value || null,
+                        }))
+                      }
+                      disabled={activeStreaming}
+                      options={[
+                        { value: '', label: 'Auto' },
+                        ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
+                      ]}
+                    />
+                  </div>
+                )}
+              </section>
+
+              <section className={railBlock}>
+                <span className={railLabel}>Parameters</span>
+                <div className="mt-3">
+                  <div className={sliderLabelRow}>
+                    <label htmlFor="playground-temperature" className={fieldLabel}>
+                      Temperature
+                    </label>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] tabular-nums text-gray-600">
+                      {temp.toFixed(1)}
+                    </span>
+                  </div>
+                  <input
+                    id="playground-temperature"
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="0.1"
+                    value={temp}
+                    onChange={(e) =>
+                      patch((s) => ({ ...s, temperature: parseFloat(e.target.value) }))
                     }
                     disabled={activeStreaming}
-                    options={[
-                      { value: '', label: 'Auto' },
-                      ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
-                    ]}
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
                   />
                 </div>
-              )}
 
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label
-                    htmlFor="playground-temperature"
-                    className="text-xs font-semibold uppercase tracking-wider text-gray-500"
-                  >
-                    Temperature
-                  </label>
-                  <span className="text-xs tabular-nums text-gray-600">{temp.toFixed(1)}</span>
+                <div className="mt-4">
+                  <div className={sliderLabelRow}>
+                    <label htmlFor="playground-max-tokens" className={fieldLabel}>
+                      Max tokens
+                    </label>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] tabular-nums text-gray-600">
+                      {maxTok}
+                    </span>
+                  </div>
+                  <input
+                    id="playground-max-tokens"
+                    type="range"
+                    min="256"
+                    max="32768"
+                    step="256"
+                    value={maxTok}
+                    onChange={(e) =>
+                      patch((s) => ({ ...s, maxTokens: parseInt(e.target.value, 10) }))
+                    }
+                    disabled={activeStreaming}
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
+                  />
                 </div>
-                <input
-                  id="playground-temperature"
-                  type="range"
-                  min="0"
-                  max="2"
-                  step="0.1"
-                  value={temp}
-                  onChange={(e) =>
-                    patch((s) => ({ ...s, temperature: parseFloat(e.target.value) }))
-                  }
-                  disabled={activeStreaming}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
-                />
-              </div>
+              </section>
 
-              <div>
-                <div className="mb-1.5 flex items-center justify-between">
-                  <label
-                    htmlFor="playground-max-tokens"
-                    className="text-xs font-semibold uppercase tracking-wider text-gray-500"
-                  >
-                    Max Tokens
-                  </label>
-                  <span className="text-xs tabular-nums text-gray-600">{maxTok}</span>
-                </div>
-                <input
-                  id="playground-max-tokens"
-                  type="range"
-                  min="256"
-                  max="32768"
-                  step="256"
-                  value={maxTok}
-                  onChange={(e) =>
-                    patch((s) => ({ ...s, maxTokens: parseInt(e.target.value, 10) }))
-                  }
-                  disabled={activeStreaming}
-                  className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
-                />
-              </div>
-
-              <div>
-                <label
-                  htmlFor="playground-system"
-                  className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                >
-                  System instructions
+              <section className="px-4 py-4">
+                <label htmlFor="playground-system" className={railLabel}>
+                  System prompt
                 </label>
                 <textarea
                   id="playground-system"
                   value={sysPrompt}
                   onChange={(e) => patch((s) => ({ ...s, systemPrompt: e.target.value }))}
                   placeholder="You are a research assistant..."
-                  rows={6}
+                  rows={5}
                   disabled={activeStreaming}
-                  className="w-full resize-none rounded-md border border-gray-200 bg-white px-3 py-2.5 text-sm leading-6 text-gray-900 outline-none transition placeholder:text-gray-400 focus:border-gray-400 focus:ring-1 focus:ring-gray-400/30 disabled:opacity-50"
+                  className={`${control} mt-2 resize-none leading-6`}
                 />
-              </div>
+              </section>
+            </div>
 
+            <div className="border-t border-gray-100 p-3">
               <button
                 type="button"
                 onClick={resetSession}
-                className="w-full rounded-md border border-gray-200 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[13px] font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
               >
                 Clear conversation
               </button>
-            </section>
+            </div>
           </aside>
 
-          <section className="flex min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+          <section className="flex min-h-[28rem] min-w-0 flex-1 flex-col overflow-hidden bg-white lg:min-h-0">
             <section
               ref={chatRef}
               onScroll={onChatScroll}
@@ -1142,9 +1162,10 @@ export default function PlaygroundPage() {
             >
               {msgs.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
-                  <div className="max-w-lg text-center">
-                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gray-100">
+                  <div className="max-w-md text-center">
+                    <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50">
                       <svg
+                        aria-hidden="true"
                         className="h-6 w-6 text-gray-400"
                         fill="none"
                         viewBox="0 0 24 24"
@@ -1158,23 +1179,25 @@ export default function PlaygroundPage() {
                         />
                       </svg>
                     </div>
-                    <h2 className="text-xl font-semibold text-gray-900">Start a chat run</h2>
-                    <p className="mt-2 text-sm leading-6 text-gray-500">
-                      Choose a model and system prompt in the settings panel, then type a message
-                      below.
+                    <h2 className="text-lg font-semibold tracking-tight text-gray-900">
+                      Start a conversation
+                    </h2>
+                    <p className="mx-auto mt-1.5 max-w-xs text-sm leading-6 text-gray-500">
+                      {model
+                        ? `You are talking to ${model.name}. Type a message below to begin.`
+                        : 'Choose a model in the settings panel, then type a message below.'}
                     </p>
-                    {/* On a phone the settings panel is behind the header's settings button. */}
                     <button
                       type="button"
                       onClick={() => setSettingsOpen(true)}
-                      className="mt-4 rounded-md border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 lg:hidden"
+                      className="mt-4 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 lg:hidden"
                     >
                       Open chat settings
                     </button>
                   </div>
                 </div>
               ) : (
-                <div className="mx-auto max-w-3xl space-y-6">
+                <div className="mx-auto max-w-3xl space-y-7">
                   {msgs.map((msg, i) => {
                     const isUser = msg.role === 'user';
                     const isLast = i === msgs.length - 1;
@@ -1194,11 +1217,12 @@ export default function PlaygroundPage() {
                       <div key={msg.id} className="group">
                         <div className="mb-1.5 flex items-center justify-between gap-3">
                           <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className={`text-xs font-medium ${
-                                isUser ? 'text-gray-700' : 'text-gray-500'
-                              }`}
-                            >
+                            {!isUser && (
+                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[10px] font-semibold text-white">
+                                AI
+                              </span>
+                            )}
+                            <span className="truncate text-[13px] font-medium text-gray-700">
                               {isUser ? 'You' : msg.modelName || model?.name || 'Assistant'}
                             </span>
                             {!isUser && msg.routing && (
@@ -1209,7 +1233,7 @@ export default function PlaygroundPage() {
                                 className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium transition ${
                                   msg.routing.fallback
                                     ? 'bg-amber-50 text-amber-700'
-                                    : 'bg-gray-100 text-gray-600'
+                                    : 'bg-gray-100 text-gray-500 hover:text-gray-700'
                                 }`}
                                 title={routingLines(msg.routing).join('\n')}
                               >
@@ -1218,9 +1242,9 @@ export default function PlaygroundPage() {
                               </button>
                             )}
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-1.5">
                             {!isUser && msg.durationMs != null && !isStreamingThis && (
-                              <span className="text-xs tabular-nums text-gray-500">
+                              <span className="hidden text-[11px] tabular-nums text-gray-400 sm:inline">
                                 {msg.ttftMs != null && `${msg.ttftMs}ms TTFT · `}
                                 {rate != null && `${rate.toFixed(1)} tok/s · `}
                                 {formatDuration(msg.durationMs)}
@@ -1230,7 +1254,7 @@ export default function PlaygroundPage() {
                               <button
                                 type="button"
                                 onClick={editLast}
-                                className={`rounded px-1.5 py-0.5 text-xs text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 ${REVEAL_ON_HOVER}`}
+                                className={`rounded px-1.5 py-0.5 text-[11px] text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 ${REVEAL_ON_HOVER}`}
                               >
                                 Edit
                               </button>
@@ -1240,7 +1264,7 @@ export default function PlaygroundPage() {
                                 type="button"
                                 onClick={regenerate}
                                 disabled={!modelId}
-                                className={`rounded px-1.5 py-0.5 text-xs transition hover:bg-gray-100 disabled:opacity-40 ${
+                                className={`rounded px-1.5 py-0.5 text-[11px] transition hover:bg-gray-100 disabled:opacity-40 ${
                                   msg.status || note
                                     ? 'text-gray-700 hover:text-gray-900'
                                     : `text-gray-500 hover:text-gray-900 ${REVEAL_ON_HOVER}`
@@ -1316,7 +1340,7 @@ export default function PlaygroundPage() {
                           </div>
                         </div>
                         {!isUser && msg.routing && isRoutingExpanded && (
-                          <ul className="mb-2 space-y-0.5 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-[11px] leading-5 text-gray-600">
+                          <ul className="mb-2 space-y-0.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-[11px] leading-5 text-gray-600">
                             {routingLines(msg.routing).map((line) => (
                               <li key={line} className="break-all">
                                 {line}
@@ -1325,11 +1349,11 @@ export default function PlaygroundPage() {
                           </ul>
                         )}
                         <div
-                          className={`rounded-2xl px-4 py-3 text-sm leading-7 sm:px-5 sm:py-4 ${
+                          className={
                             isUser
-                              ? 'bg-gray-900 text-white'
-                              : 'bg-gray-50 text-gray-800 ring-1 ring-gray-200'
-                          }`}
+                              ? 'ml-auto w-fit max-w-[85%] rounded-2xl rounded-tr-md bg-gray-100 px-4 py-2.5 text-sm leading-7 text-gray-800'
+                              : 'text-sm leading-7 text-gray-800'
+                          }
                         >
                           {isWaiting ? (
                             <div className="flex items-center gap-2.5 text-gray-500">
@@ -1348,9 +1372,7 @@ export default function PlaygroundPage() {
                                   >
                                     <svg
                                       aria-hidden="true"
-                                      className={`h-3 w-3 transition-transform ${
-                                        isThinkingExpanded ? 'rotate-90' : ''
-                                      }`}
+                                      className={`h-3 w-3 transition-transform ${isThinkingExpanded ? 'rotate-90' : ''}`}
                                       fill="none"
                                       viewBox="0 0 24 24"
                                       stroke="currentColor"
@@ -1371,7 +1393,7 @@ export default function PlaygroundPage() {
                                     </span>
                                   </button>
                                   {isThinkingExpanded && (
-                                    <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-4 py-3 text-xs leading-6 text-gray-600 whitespace-pre-wrap">
+                                    <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs leading-6 text-gray-600 whitespace-pre-wrap">
                                       {msg.reasoningContent}
                                     </div>
                                   )}
@@ -1383,7 +1405,7 @@ export default function PlaygroundPage() {
                                 msg.content && <Markdown text={msg.content} />
                               )}
                               {msg.status === 'error' && (
-                                <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
+                                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
                                   <p className="break-words">{`Error: ${msg.error}`}</p>
                                   <p className="mt-0.5 text-red-600/70">
                                     This turn is left out of the context for later messages.
@@ -1398,7 +1420,7 @@ export default function PlaygroundPage() {
                                 </p>
                               )}
                               {note && (
-                                <div className="mt-3 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
+                                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
                                   {note}
                                 </div>
                               )}
@@ -1412,7 +1434,7 @@ export default function PlaygroundPage() {
               )}
             </section>
 
-            <div className="relative shrink-0 border-t border-gray-200 px-3 py-3 sm:px-4 sm:py-4">
+            <div className="relative shrink-0 px-4 pb-4 sm:px-6">
               {showJump && msgs.length > 0 && (
                 <button
                   type="button"
@@ -1426,7 +1448,7 @@ export default function PlaygroundPage() {
                 {undo && (
                   <div
                     role="status"
-                    className="mb-3 flex items-center justify-between gap-3 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700"
+                    className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700"
                   >
                     <span className="min-w-0 truncate">{undo.label}</span>
                     <div className="flex shrink-0 items-center gap-3">
@@ -1452,7 +1474,7 @@ export default function PlaygroundPage() {
                     </div>
                   </div>
                 )}
-                <div className="rounded-2xl border border-gray-200 bg-white p-3 focus-within:border-gray-300">
+                <div className="rounded-[20px] border border-gray-200 bg-white p-2 shadow-sm transition focus-within:border-gray-300 focus-within:ring-2 focus-within:ring-gray-900/5">
                   <textarea
                     ref={textareaRef}
                     value={input}
@@ -1461,28 +1483,38 @@ export default function PlaygroundPage() {
                     aria-label="Message"
                     placeholder="Type a message... (Ctrl+Enter to send)"
                     rows={1}
-                    className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400"
+                    className="max-h-[200px] min-h-[48px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400"
                   />
-                  <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-2 pt-3">
-                    <div className="text-xs text-gray-500">
-                      {(() => {
-                        if (!model) return modelsLoading ? 'Loading...' : 'No model selected';
-                        const parts = [model.name];
-                        if (selectedProvider) parts.push(selectedProvider);
-                        parts.push(`temp ${temp.toFixed(1)}`);
-                        parts.push(`max ${maxTok}`);
-                        if (sysPrompt.trim()) parts.push('custom instructions');
-                        return parts.join(' / ');
-                      })()}
+                  <div className="flex items-center justify-between gap-3 px-1.5 pb-0.5 pt-1">
+                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                      <span className="max-w-[10rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
+                        {model ? model.name : modelsLoading ? 'Loading...' : 'No model'}
+                      </span>
+                      {selectedProvider && (
+                        <span className="hidden max-w-[8rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 sm:inline">
+                          {selectedProvider}
+                        </span>
+                      )}
+                      <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] tabular-nums text-gray-500 sm:inline">
+                        temp {temp.toFixed(1)}
+                      </span>
+                      <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] tabular-nums text-gray-500 md:inline">
+                        max {maxTok}
+                      </span>
+                      {sysPrompt.trim() && (
+                        <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 md:inline">
+                          instructions
+                        </span>
+                      )}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                       {activeStreaming && (
                         <button
                           type="button"
                           onClick={() => {
                             if (session) abortControllersRef.current.get(session.id)?.abort();
                           }}
-                          className="rounded-md border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
+                          className="rounded-full border border-gray-300 px-3 py-1.5 text-[11px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
                         >
                           Stop
                         </button>
@@ -1491,13 +1523,30 @@ export default function PlaygroundPage() {
                         type="button"
                         onClick={send}
                         disabled={activeStreaming || !input.trim() || !modelId}
-                        className="rounded-md bg-black px-4 py-1.5 text-xs font-medium text-white transition hover:bg-gray-800 disabled:opacity-40"
+                        aria-label={activeStreaming ? 'Sending...' : 'Send'}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-900 text-white transition hover:bg-black disabled:opacity-30"
                       >
-                        {activeStreaming ? 'Sending...' : 'Send'}
+                        <svg
+                          aria-hidden="true"
+                          className="h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 19V5m0 0l-6 6m6-6l6 6"
+                          />
+                        </svg>
                       </button>
                     </div>
                   </div>
                 </div>
+                <p className="mt-2 text-center text-[11px] text-gray-400">
+                  Responses are generated by the selected model and may be inaccurate.
+                </p>
               </div>
             </div>
           </section>
