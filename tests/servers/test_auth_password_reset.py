@@ -6,6 +6,9 @@ from unittest.mock import patch
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from serving.storage.base import ResetRedemption
+from serving.utils import password as password_utils
+
 
 @pytest.mark.asyncio
 async def test_forgot_password_success(test_app, test_client, mock_operational_store):
@@ -44,17 +47,19 @@ async def test_forgot_password_nonexistent_email(test_app, test_client, mock_ope
     assert "password reset link has been sent" in data["message"].lower()
 
 
-@pytest.mark.asyncio
-async def test_reset_password_success(test_app, test_client, mock_operational_store):
-    """Test successful password reset with valid token."""
-    mock_operational_store.get_reset_token.return_value = {
+def _live_link() -> dict:
+    return {
         "user_id": "user123",
         "expires_at": datetime.now(UTC) + timedelta(hours=1),
         "used_at": None,
     }
-    mock_operational_store.update_user_fields.return_value = None
-    mock_operational_store.mark_reset_used.return_value = None
-    mock_operational_store.delete_user_sessions.return_value = None
+
+
+@pytest.mark.asyncio
+async def test_reset_password_success(test_app, test_client, mock_operational_store):
+    """Test successful password reset with valid token."""
+    mock_operational_store.get_reset_token.return_value = _live_link()
+    mock_operational_store.redeem_reset_token.return_value = ResetRedemption("reset", "user123")
 
     response = await test_client.post(
         "/auth/reset-password", json={"token": "valid_token_123", "new_password": "NewPassword123"}
@@ -66,22 +71,56 @@ async def test_reset_password_success(test_app, test_client, mock_operational_st
 
 
 @pytest.mark.asyncio
-async def test_reset_password_retires_every_outstanding_link(
+async def test_reset_password_spends_the_link_in_one_redemption(
     test_app, test_client, mock_operational_store
 ):
-    """Every link the account still holds was sent to reset the password just replaced."""
-    mock_operational_store.get_reset_token.return_value = {
-        "user_id": "user123",
-        "expires_at": datetime.now(UTC) + timedelta(hours=1),
-        "used_at": None,
-    }
+    """The new password, the retired links and the ended sessions are one store call.
+
+    Separate writes could be interleaved by a second request with the same
+    link, or with another link of the account; the redemption is atomic.
+    """
+    mock_operational_store.get_reset_token.return_value = _live_link()
+    mock_operational_store.redeem_reset_token.return_value = ResetRedemption("reset", "user123")
 
     response = await test_client.post(
         "/auth/reset-password", json={"token": "valid_token_123", "new_password": "NewPassword123"}
     )
 
     assert response.status_code == 200
-    mock_operational_store.delete_user_reset_tokens.assert_awaited_once_with("user123")
+    mock_operational_store.redeem_reset_token.assert_awaited_once()
+    call = mock_operational_store.redeem_reset_token.await_args
+    assert call.args == ("valid_token_123",)
+    assert password_utils.verify_password("NewPassword123", call.kwargs["password_hash"])
+    mock_operational_store.update_user_fields.assert_not_awaited()
+    mock_operational_store.delete_user_reset_tokens.assert_not_awaited()
+    mock_operational_store.delete_user_sessions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("outcome", "detail"),
+    [
+        ("invalid", "invalid or expired reset token."),
+        ("used", "this reset link has already been used."),
+        ("expired", "reset link has expired. please request a new one."),
+    ],
+)
+async def test_reset_password_refused_where_the_link_is_spent(
+    test_app, test_client, mock_operational_store, outcome, detail
+):
+    """A link that passed the first check but is refused when spent is a 400, not a reset.
+
+    Another request may have spent it, or a sibling link, in the meantime.
+    """
+    mock_operational_store.get_reset_token.return_value = _live_link()
+    mock_operational_store.redeem_reset_token.return_value = ResetRedemption(outcome)
+
+    response = await test_client.post(
+        "/auth/reset-password", json={"token": "valid_token_123", "new_password": "NewPassword123"}
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"].lower() == detail
 
 
 @pytest.mark.asyncio
@@ -95,6 +134,7 @@ async def test_reset_password_invalid_token(test_app, test_client, mock_operatio
 
     assert response.status_code == 400
     assert "invalid" in response.json()["detail"].lower()
+    mock_operational_store.redeem_reset_token.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -112,6 +152,7 @@ async def test_reset_password_expired_token(test_app, test_client, mock_operatio
 
     assert response.status_code == 400
     assert "expired" in response.json()["detail"].lower()
+    mock_operational_store.redeem_reset_token.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -129,6 +170,7 @@ async def test_reset_password_already_used_token(test_app, test_client, mock_ope
 
     assert response.status_code == 400
     assert "already been used" in response.json()["detail"].lower()
+    mock_operational_store.redeem_reset_token.assert_not_awaited()
 
 
 @pytest.mark.asyncio
