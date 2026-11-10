@@ -23,11 +23,10 @@ async def confirm_administrator(
 ) -> None:
     """Raise unless the administrator behind this request gives the account's password.
 
-    The password is checked by :func:`confirm_account_owner`, as revealing a
-    saved API key checks it, so every attempt counts against the sign-in
-    limits. An ``ADMIN_TOKEN`` caller has no account to confirm, and an
-    account without a password (made by phone) is refused: confirming by phone
-    code would need a new code purpose.
+    The password is checked by :func:`confirm_account_owner`, so every attempt
+    counts against the sign-in limits. An ``ADMIN_TOKEN`` caller has no account
+    to confirm, and an account without a password (made by phone) is refused:
+    confirming by phone code would need a new code purpose.
 
     Args:
         request: The admin request; ``verify_admin_access`` has run on it.

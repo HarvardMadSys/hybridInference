@@ -16,11 +16,6 @@ vi.mock('@/lib/hooks', () => ({
   useRevealApiKey: vi.fn(),
 }));
 
-let authUser: { has_password?: boolean } | null = { has_password: true };
-vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: { isAuthenticated: true, loading: false, user: authUser } }),
-}));
-
 const push = vi.fn();
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ push }),
@@ -100,7 +95,7 @@ const MASKED = 'hyi-testkey01********************';
 
 function makeItem(overrides: Partial<ApiKeyListItem> = {}): ApiKeyListItem {
   return {
-    // The listing never carries the full key; the password reveals it.
+    // The listing never carries the full key; the reveal route shows it.
     api_key: null,
     revealable: true,
     key_prefix: 'hyi-testkey01',
@@ -115,7 +110,6 @@ function makeItem(overrides: Partial<ApiKeyListItem> = {}): ApiKeyListItem {
 let writeText: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
-  authUser = { has_password: true };
   vi.spyOn(window, 'prompt').mockImplementation(() => {
     throw new Error('prompt() is not supported.');
   });
@@ -136,19 +130,9 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function confirmPassword(password = 'my-password'): Promise<HTMLElement> {
-  const dialog = screen.getByRole('dialog', { name: "Confirm it's you" });
-  const field = within(dialog).getByLabelText('Password');
-  expect(field).toHaveFocus();
-  expect(field).toHaveAttribute('type', 'password');
-  fireEvent.change(field, { target: { value: password } });
-  fireEvent.submit(field.closest('form')!);
-  return dialog;
-}
-
 describe('ApiKeyManager reveal + copy', () => {
   it.each(['active', 'revoked'])(
-    'reveals a masked %s key only once the password confirms it',
+    'shows a masked %s key without asking anything',
     async (status) => {
       mockList(makeItem({ status }));
       render(<ApiKeyManager />);
@@ -157,40 +141,28 @@ describe('ApiKeyManager reveal + copy', () => {
       expect(screen.queryByText(FULL_KEY)).not.toBeInTheDocument();
 
       fireEvent.click(screen.getByRole('button', { name: 'Show key' }));
-      const dialog = screen.getByRole('dialog', { name: "Confirm it's you" });
-      // Nothing is asked of the server until a password is typed.
-      expect(within(dialog).getByRole('button', { name: 'Show key' })).toBeDisabled();
-      expect(mutations.reveal.mutateAsync).not.toHaveBeenCalled();
-      await confirmPassword();
 
       expect(await screen.findByText(FULL_KEY)).toBeInTheDocument();
-      expect(mutations.reveal.mutateAsync).toHaveBeenCalledWith({
-        keyPrefix: 'hyi-testkey01',
-        password: 'my-password',
-      });
+      expect(mutations.reveal.mutateAsync).toHaveBeenCalledWith('hyi-testkey01');
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
 
-      // Hidden and shown again on this page without asking again.
+      // Hidden and shown again on this page without fetching it again.
       fireEvent.click(screen.getByRole('button', { name: 'Hide key' }));
       expect(screen.getByText(MASKED)).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: 'Show key' }));
       expect(screen.getByText(FULL_KEY)).toBeInTheDocument();
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
       expect(mutations.reveal.mutateAsync).toHaveBeenCalledTimes(1);
     },
   );
 
-  it('copies a saved key once the password confirms it, and then without asking', async () => {
+  it('copies a saved key in one click, and then without fetching it again', async () => {
     mockList(makeItem());
     render(<ApiKeyManager />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Copy key' }));
-    expect(writeText).not.toHaveBeenCalled();
-    const dialog = screen.getByRole('dialog', { name: "Confirm it's you" });
-    expect(within(dialog).getByRole('button', { name: 'Copy key' })).toBeInTheDocument();
-    await confirmPassword();
 
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(FULL_KEY));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     // Copying does not put the key on the screen.
     expect(screen.queryByText(FULL_KEY)).not.toBeInTheDocument();
     await waitFor(() => expect(toast.success).toHaveBeenCalled());
@@ -200,30 +172,15 @@ describe('ApiKeyManager reveal + copy', () => {
     expect(mutations.reveal.mutateAsync).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps the key hidden and says why when the password is wrong', async () => {
+  it('keeps the key hidden and says why when it cannot be fetched', async () => {
     mockList(makeItem());
-    mutations.reveal.mutateAsync.mockRejectedValueOnce(new Error('Current password is incorrect.'));
+    mutations.reveal.mutateAsync.mockRejectedValueOnce(new Error('API key not found'));
     render(<ApiKeyManager />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Show key' }));
-    const dialog = await confirmPassword('wrong');
 
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-      'Current password is incorrect.',
-    );
+    await waitFor(() => expect(toast.error).toHaveBeenCalledWith('API key not found'));
     expect(screen.queryByText(FULL_KEY)).not.toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
-  });
-
-  it('reveals nothing when the password prompt is cancelled', () => {
-    mockList(makeItem());
-    render(<ApiKeyManager />);
-
-    fireEvent.click(screen.getByRole('button', { name: 'Show key' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
-
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    expect(mutations.reveal.mutateAsync).not.toHaveBeenCalled();
     expect(screen.getByText(MASKED)).toBeInTheDocument();
   });
 
@@ -258,16 +215,6 @@ describe('ApiKeyManager reveal + copy', () => {
     expect(
       screen.getByText(/Full key is only shown immediately after creation or regeneration/),
     ).toBeInTheDocument();
-  });
-
-  it('tells an account without a password how to get a key instead', () => {
-    authUser = { has_password: false };
-    mockList(makeItem());
-    render(<ApiKeyManager />);
-
-    expect(screen.queryByRole('button', { name: 'Show key' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Copy key' })).not.toBeInTheDocument();
-    expect(screen.getByText(/Showing a saved key needs your password/)).toBeInTheDocument();
   });
 });
 
