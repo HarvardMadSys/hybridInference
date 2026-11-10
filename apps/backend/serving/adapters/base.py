@@ -136,6 +136,11 @@ class ModelConfig:
     # upstream as its value, whatever ``supported_params`` / ``reasoning_efforts``
     # say. Only adapters that forward the parameter may carry one.
     reasoning_effort_map: dict[str, str] = field(default_factory=dict)
+    # Derived when the adapter is built. Never written into catalog documents
+    # or capability overrides, and recomputed whenever the target changes.
+    reasoning_effort_preset_label: str | None = None
+    reasoning_effort_preset_map: dict[str, str] = field(default_factory=dict)
+    reasoning_effort_declared: bool = True
     pricing: dict[str, str] = field(
         default_factory=lambda: {
             "prompt": "0",
@@ -274,6 +279,8 @@ class BaseAdapter(ABC):
     # (``serving.model_effort_capabilities``); for any other the configuration
     # does not say what reaches the provider.
     forwards_reasoning_effort: bool = False
+    # Set by the factory; provider labels identify key pools and may differ.
+    registered_kind: str | None = None
 
     def __init__(self, config: ModelConfig):
         self.config = config

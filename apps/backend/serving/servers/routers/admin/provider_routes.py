@@ -25,11 +25,18 @@ from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
-from serving.adapters.reasoning_effort import EFFORT_MAP_FIELD, read_effort_map, stored_effort_map
+from serving.adapters.reasoning_effort import (
+    EFFORT_MAP_FIELD,
+    has_legacy_effort_declaration,
+    inherited_effort_map,
+    read_effort_map,
+    stored_effort_map,
+)
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
 from serving.config.batch_routes import default_batch_allowed
 from serving.config.offload_routes import offload_route_setting_key
+from serving.config.reasoning_effort_presets import find_reasoning_effort_preset
 from serving.config.route_states import ENABLED, RouteState
 from serving.config.settings import (
     ROUTE_TYPE_ORDER,
@@ -50,6 +57,9 @@ from serving.schemas_admin import (
     ProviderRouteOption,
     RouteCapabilitiesItem,
     RouteCapabilityEdit,
+    RouteEffortPresetItem,
+    RouteEffortPresetTarget,
+    RouteLegacyEffortItem,
     RuntimeModelCapabilities,
     UpdateProviderRouteBatchRequest,
     UpdateProviderRouteCandidateRequest,
@@ -1100,13 +1110,14 @@ def _edited_endpoint_id(
     new target implies, so health learned at one upstream never describes another.
     """
     canonical_url = _canonical_base_url(base_url)
-    if (
-        canonical_url is not None
-        and canonical_url == _canonical_base_url(current_adapter.config.base_url)
-        and _same_upstream_target(target, _upstream_provider(current_adapter))
-    ):
-        return endpoint_id_for_adapter(current_adapter)
-    return _make_provider_id(model_id, target.kind, base_url)
+    kind = target.kind
+    if _same_upstream_target(target, _upstream_provider(current_adapter)):
+        if canonical_url is not None and canonical_url == _canonical_base_url(
+            current_adapter.config.base_url
+        ):
+            return endpoint_id_for_adapter(current_adapter)
+        kind = getattr(current_adapter, "registered_kind", None) or kind
+    return _make_provider_id(model_id, kind, base_url)
 
 
 def _same_upstream_target(target: ProviderTarget, current_provider: str) -> bool:
@@ -1662,14 +1673,17 @@ class _BaseUrlNotResolved(HTTPException):
     """
 
 
-async def _validate_base_url(base_url: str) -> str:
+def _normalize_base_url(base_url: str) -> str:
     cleaned = base_url.strip()
     if not cleaned:
         raise HTTPException(status_code=422, detail="base_url must not be blank")
-
     if "://" not in cleaned:
-        cleaned = f"https://{cleaned.lstrip('/')}"
+        return f"https://{cleaned.lstrip('/')}"
+    return cleaned
 
+
+async def _validate_base_url(base_url: str) -> str:
+    cleaned = _normalize_base_url(base_url)
     try:
         parsed = urlparse(cleaned)
         _ = parsed.port  # Validate malformed and out-of-range ports before DNS.
@@ -2129,12 +2143,8 @@ def _preserve_route_semantics(
     route_metadata["upstream_provider"] = upstream_provider
     route_metadata["openrouter_sort"] = cfg.get("openrouter_sort")
 
-    # The caller already set cfg["provider"] to the upstream this target
-    # implies. For a route relabelled in models.yaml that would silently merge
-    # it back into the upstream's dashboard cohort and leave its own disable
-    # switch inert — and because persisted overrides are replayed through this
-    # path at every boot, the label would not come back on restart. Keep the
-    # label and re-pin the key pool to the (possibly new) upstream.
+    # A route relabelled in models.yaml keeps its dashboard label across
+    # updates and restarts. Its key pool follows the (possibly new) upstream.
     analytics_label = _relabelled_analytics_label(current_adapter)
     if analytics_label is not None:
         cfg["provider"] = analytics_label
@@ -2786,6 +2796,9 @@ async def _prepare_route_candidate(
 
     template_adapter = entries[0][0]
     cfg = _config_to_dict(template_adapter.config, strip_route_capabilities=True)
+    # Cloned legacy params keep their existing fallback behavior. They are not
+    # an effort declaration about this new upstream.
+    cfg["reasoning_effort_declared"] = False
     cfg.update(
         {
             "id": model_id,
@@ -3026,6 +3039,35 @@ async def _prepare_model_route_candidate(
     )
 
 
+def _effort_catalog_adapter(
+    route, route_id: str, target: ProviderTarget, base_url: str, provider_model_id: str
+):
+    """The original adapter if the edit points at its catalog upstream."""
+    baseline = getattr(route, BASELINE_ENTRIES_ATTR, None)
+    if baseline is None:
+        baseline = _raw_route_entries(route)
+    catalog_adapter = next(
+        (
+            adapter
+            for adapter, _weight, endpoint_id in baseline
+            if _route_id_for_entry(adapter, endpoint_id) == route_id
+        ),
+        None,
+    )
+    if catalog_adapter is None or _is_runtime_candidate(catalog_adapter):
+        return None
+    config = catalog_adapter.config
+    url = _canonical_base_url(base_url)
+    if (
+        url is not None
+        and url == _canonical_base_url(config.base_url)
+        and _same_upstream_target(target, _upstream_provider(catalog_adapter))
+        and provider_model_id == (getattr(config, "provider_model_id", None) or config.id)
+    ):
+        return catalog_adapter
+    return None
+
+
 async def _prepare_route_update(
     services,
     op_store,
@@ -3119,6 +3161,16 @@ async def _prepare_route_update(
         current_adapter.config,
         strip_route_capabilities=not (same_target and same_url),
     )
+    # Legacy effort fields come from the catalog target. Preserve their
+    # fallback behavior, but only let them outrank a preset on that target.
+    # Compare against the catalog entry so moving back and replaying saved
+    # edits at startup agree even after several consecutive target edits.
+    catalog_adapter = _effort_catalog_adapter(
+        route, route_id, target, cleaned_base_url, provider_model_id
+    )
+    cfg["reasoning_effort_declared"] = catalog_adapter is not None and getattr(
+        catalog_adapter.config, "reasoning_effort_declared", True
+    )
     deployment_type_declaration = deployment_type_override
     if deployment_type_declaration is None and not (same_target and same_url):
         # Older clients and legacy DB overrides omit this field. A declaration
@@ -3142,9 +3194,15 @@ async def _prepare_route_update(
         concurrency["limit"] = concurrency_limit_override
         cfg["concurrency"] = concurrency
 
-    provider_for_cfg = _model_config_provider_for_target(target)
-    cfg["provider"] = provider_for_cfg
-    _apply_target_adapter_defaults(cfg, target)
+    # The same provider keeps its registered protocol even when moving to
+    # a newly validated URL. Endpoint-specific capabilities are handled above.
+    registered_kind = getattr(current_adapter, "registered_kind", None)
+    if same_target and registered_kind:
+        adapter_kind = registered_kind
+    else:
+        adapter_kind = target.kind
+        cfg["provider"] = _model_config_provider_for_target(target)
+        _apply_target_adapter_defaults(cfg, target)
     _carry_endpoint_facts_if_unmoved(
         cfg,
         current_adapter=current_adapter,
@@ -3163,7 +3221,7 @@ async def _prepare_route_update(
         openrouter_sort=openrouter_sort,
     )
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(adapter_kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -4440,6 +4498,24 @@ async def _route_row(
         else getattr(adapter.config, "provider_model_id", None)
     )
     source = "runtime" if is_runtime else ("override" if stored_override else "yaml")
+    capabilities = _config_capabilities(adapter.config)
+    baseline = _baseline_capabilities(adapter.config)
+    preset = inherited_effort_map(adapter.config)
+    published = adapter_effort_domain(adapter)
+    live_route = services.router.routes.get(model_id)
+    overrides = getattr(live_route, CAPABILITY_OVERRIDES_ATTR, None) or {}
+    if overrides.get(route_id, {}).get(EFFORT_MAP_FIELD) and EFFORT_MAP_FIELD in capabilities:
+        effort_source = "override"
+    elif EFFORT_MAP_FIELD in capabilities:
+        effort_source = "configured"
+    elif preset:
+        effort_source = "preset"
+        capabilities[EFFORT_MAP_FIELD] = dict(preset)
+    else:
+        effort_source = "unknown" if published is None else "configured"
+    uses_preset_baseline = bool(preset and EFFORT_MAP_FIELD not in baseline)
+    if uses_preset_baseline:
+        baseline[EFFORT_MAP_FIELD] = dict(preset)
     return ProviderRouteItem(
         model_id=model_id,
         strategy=strategy,
@@ -4469,11 +4545,15 @@ async def _route_row(
         **_batch_fields(services, model_id, route_id, adapter),
         updated_at=stored_override.get("updated_at") if stored_override else None,
         updated_by=stored_override.get("updated_by") if stored_override else None,
-        capabilities=RouteCapabilitiesItem(**_config_capabilities(adapter.config)),
-        capabilities_baseline=RouteCapabilitiesItem(**_baseline_capabilities(adapter.config)),
+        capabilities=RouteCapabilitiesItem(**capabilities),
+        capabilities_baseline=RouteCapabilitiesItem(**baseline),
         capabilities_overridden=isinstance(route_metadata.get(_CAPABILITY_BASELINE), dict),
         reasoning_effort_mappable=bool(getattr(adapter, "forwards_reasoning_effort", False)),
-        reasoning_efforts_published=adapter_effort_domain(adapter),
+        reasoning_efforts_published=published,
+        reasoning_effort_source=effort_source,
+        reasoning_effort_preset_label=(
+            adapter.config.reasoning_effort_preset_label if uses_preset_baseline else None
+        ),
     )
 
 
@@ -4632,6 +4712,43 @@ async def list_all_provider_routes(
         openrouter_provider_options=_openrouter_provider_options(services),
         routes=all_rows,
     )
+
+
+@router.post(
+    "/routing/reasoning-effort-preset",
+    response_model=RouteEffortPresetItem | RouteLegacyEffortItem | None,
+)
+async def preview_reasoning_effort_preset(
+    payload: RouteEffortPresetTarget,
+    _admin_id: str = Depends(verify_admin_access),
+    services=Depends(get_services),
+) -> RouteEffortPresetItem | RouteLegacyEffortItem | None:
+    """Preview the effective effort default without probing the selected upstream."""
+    target = _target_for_provider(
+        _target_provider_from_request(payload.provider, payload.openrouter_provider)
+    )
+    base_url = _normalize_base_url(payload.base_url)
+    provider_model_id = payload.provider_model_id.strip()
+    adapter_kind = target.kind
+    if payload.model_route_path:
+        _model_id, route_id, route = _split_model_route_path(services, payload.model_route_path)
+        catalog_adapter = _effort_catalog_adapter(
+            route, route_id, target, base_url, provider_model_id
+        )
+        if catalog_adapter is not None and has_legacy_effort_declaration(catalog_adapter.config):
+            return RouteLegacyEffortItem(
+                reasoning_efforts_published=adapter_effort_domain(catalog_adapter, legacy=True)
+            )
+        entries = _raw_route_entries(route)
+        current_adapter = entries[_route_index_for_id(entries, route_id)][0]
+        if _same_upstream_target(target, _upstream_provider(current_adapter)):
+            adapter_kind = getattr(current_adapter, "registered_kind", None) or adapter_kind
+    preset = find_reasoning_effort_preset(
+        target.provider, adapter_kind, provider_model_id, base_url
+    )
+    if preset is None:
+        return None
+    return RouteEffortPresetItem(label=preset.label, reasoning_effort_map=dict(preset.effort_map))
 
 
 @router.get(

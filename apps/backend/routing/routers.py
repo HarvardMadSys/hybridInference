@@ -2121,6 +2121,7 @@ class FixedRouter:
                 gets is the cache-blind one.
             messages: This request's messages, so locality can also require that
                 the prompt still contains the remembered one.
+
         Returns:
             Selected adapter or None if no route configured / no match.
         """
@@ -2241,6 +2242,7 @@ class FixedRouter:
                 :meth:`PrefillLoadTracker.select_index`.
             messages: This request's messages, so locality can also require that
                 the prompt still contains the remembered one.
+
         Returns:
             Selected adapter or None if no route configured / no match.
         """
