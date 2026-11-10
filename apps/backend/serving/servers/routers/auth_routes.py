@@ -1051,6 +1051,18 @@ async def forgot_password(
     )
 
 
+_RESET_REFUSALS = {
+    "invalid": "Invalid or expired reset token.",
+    "used": "This reset link has already been used.",
+    "expired": "Reset link has expired. Please request a new one.",
+}
+
+
+def _reset_refused(reason: str) -> HTTPException:
+    """The 400 answering a reset link refused for *reason* (a ``ResetRedemption`` outcome)."""
+    return HTTPException(status_code=400, detail=_RESET_REFUSALS[reason])
+
+
 @router.post("/reset-password", response_model=PasswordResetResponse)
 async def reset_password(
     body: ResetPasswordRequest,
@@ -1058,7 +1070,13 @@ async def reset_password(
 ) -> PasswordResetResponse:
     """Reset password using token from email.
 
-    Validates the reset token and updates the user's password.
+    Validates the reset token and updates the user's password. The link is
+    checked twice: first on its own, so a dead link costs no password hash,
+    then again where it is spent (:meth:`redeem_reset_token`), in the
+    transaction that sets the password, retires every link the account holds
+    and ends its sessions. Only that second check decides: of two requests
+    with one link, or with two links of one account, one resets the password
+    and the other is refused.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -1071,28 +1089,20 @@ async def reset_password(
     token_row = await op_store.get_reset_token(body.token)
 
     if not token_row:
-        raise HTTPException(status_code=400, detail="Invalid or expired reset token.")
+        raise _reset_refused("invalid")
 
     if token_row["used_at"]:
-        raise HTTPException(status_code=400, detail="This reset link has already been used.")
+        raise _reset_refused("used")
 
     if token_row["expires_at"] < datetime.now(UTC):
-        raise HTTPException(
-            status_code=400, detail="Reset link has expired. Please request a new one."
-        )
+        raise _reset_refused("expired")
 
-    # Update password
     password_hash_str = await password_utils.hash_password_async(body.new_password)
-    await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
+    redemption = await op_store.redeem_reset_token(body.token, password_hash=password_hash_str)
+    if redemption.outcome != "reset":
+        raise _reset_refused(redemption.outcome)
 
-    # The link is spent, and so is every other one the account still holds:
-    # each was sent to reset the password just replaced.
-    await op_store.delete_user_reset_tokens(token_row["user_id"])
-
-    # Revoke all existing sessions for security
-    await op_store.delete_user_sessions(token_row["user_id"])
-
-    logger.info(f"Password reset completed for user: {token_row['user_id']}")
+    logger.info(f"Password reset completed for user: {redemption.user_id}")
 
     return PasswordResetResponse(
         message="Password has been reset successfully. Please login with your new password."
