@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from routing.endpoint_health import http_status_of
-from routing.endpoints import endpoint_id_for_adapter
+from routing.endpoints import endpoint_id_for_adapter, endpoint_publishable_for_adapter
 from routing.prefill_load import conversation_fingerprint
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
@@ -446,10 +446,10 @@ def _total_usage(usages: list[dict[str, Any] | None]) -> dict[str, Any] | None:
     totals = [optional_token_count(usage.get("total_tokens")) for usage in reported]
     known_totals = [count for count in totals if count is not None]
     total["total_tokens"] = sum(known_totals) if len(known_totals) == len(totals) else None
-    for field in ("reasoning_tokens", "cache_read_tokens", "cache_write_tokens"):
-        counts = [optional_token_count(usage.get(field)) for usage in reported]
+    for token_field in ("reasoning_tokens", "cache_read_tokens", "cache_write_tokens"):
+        counts = [optional_token_count(usage.get(token_field)) for usage in reported]
         if any(count is not None for count in counts):
-            total[field] = sum(count or 0 for count in counts)
+            total[token_field] = sum(count or 0 for count in counts)
     return total
 
 
@@ -1413,19 +1413,18 @@ async def execute_chat(
 
         provider_name = getattr(routing_info, "provider", None)
         endpoint_id = getattr(routing_info, "endpoint_id", None)
-        base_url = getattr(routing_info, "base_url", None)
+        publishable = bool(getattr(routing_info, "endpoint_publishable", False))
         if (not provider_name or not endpoint_id) and len(route.adapters) == 1:
             adapter = route.adapters[0][0]
             provider_name = getattr(adapter.config, "provider", None)
             endpoint_id = endpoint_id_for_adapter(adapter)
-            base_url = getattr(adapter.config, "base_url", None)
-        config = get_adapter_config_for_provider(provider_name, base_url) if provider_name else None
+            publishable = endpoint_publishable_for_adapter(adapter)
         return served_identity_headers(
             requested_model=requested_model,
             served_model=canonical_model,
             endpoint_id=endpoint_id,
             provider=provider_name,
-            endpoint_publishable=bool(getattr(config, "endpoint_identity_publishable", False)),
+            endpoint_publishable=publishable,
         )
 
     # Pre-flight: reject media content when the model does not support it.

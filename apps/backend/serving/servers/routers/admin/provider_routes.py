@@ -1178,17 +1178,18 @@ def _finalize_admin_endpoint_publishability(
     kind decides publishability only for those minted ids. An admin-supplied
     route_id reused as endpoint_id is free text and must never be published,
     even on a dedicated kind.
+
+    The two kind-change resets below run before the early return: they are
+    derived from the adapter kind, and ``cfg`` is a copy of another route's
+    config, whose values would otherwise outlive a change of kind. An
+    OpenRouter pin on a Chutes route lists, keys and probes it as OpenRouter.
     """
+    cfg["openrouter_pinned_provider"] = None
+    cfg["provider_profile"] = None
     if endpoint_id is None:
         return
     if endpoint_id != _make_provider_id(model_id, target.kind, base_url):
         cfg["endpoint_identity_publishable"] = False
-    # Derived from the adapter kind, and set by ``_make_adapter`` only for the
-    # kinds that have them. ``cfg`` is a copy of another route's config, whose
-    # values would otherwise outlive a change of kind: an OpenRouter pin on a
-    # Chutes route lists, keys and probes it as OpenRouter.
-    cfg["openrouter_pinned_provider"] = None
-    cfg["provider_profile"] = None
 
 
 def _target_provider_from_request(

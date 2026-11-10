@@ -283,7 +283,12 @@ _KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models
 
 #: What the auth lookups add about the presented key itself: its limits, and
 #: how a refusal names it.
-_AUTH_KEY_COLUMNS = f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}"
+#: ``k.metadata`` carries the key's admin-set settings bag. The served-identity
+#: diagnostic entitlement rides in it, so a key can hold it without a new
+#: column or migration.
+_AUTH_KEY_COLUMNS = (
+    f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}, k.metadata AS key_metadata"
+)
 
 #: The settings an account's owner may change on one of its keys.
 KEY_SETTINGS_COLUMNS = ("name", "budget_daily_usd", "budget_monthly_usd", "allowed_models")

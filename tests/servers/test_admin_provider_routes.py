@@ -9496,6 +9496,8 @@ def test_apply_target_adapter_defaults_sets_publishability_from_kind():
         endpoint_id="custom-route-id",
     )
     assert cfg2["endpoint_identity_publishable"] is False
+
+
 # ---------------------------------------------------------------------------
 # Batch work: which routes it may use
 # ---------------------------------------------------------------------------

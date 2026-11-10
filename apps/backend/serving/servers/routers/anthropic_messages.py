@@ -30,7 +30,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from routing.endpoint_health import failure_may_lose_prefix_cache
-from routing.endpoints import endpoint_id_for_adapter
+from routing.endpoints import endpoint_id_for_adapter, endpoint_publishable_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
     estimate_prefill_tokens,
@@ -2314,9 +2314,7 @@ async def execute_messages(
             served_model=None if auto_selection is not None else canonical,
             endpoint_id=None if auto_selection is not None else dispatch_endpoint_id,
             provider=None if auto_selection is not None else adapter.config.provider,
-            endpoint_publishable=bool(
-                getattr(adapter.config, "endpoint_identity_publishable", False)
-            ),
+            endpoint_publishable=endpoint_publishable_for_adapter(adapter),
         )
         if should_include_served_identity_headers(ctx.origin.headers, user_ctx)
         else {}

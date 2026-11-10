@@ -509,7 +509,17 @@ async def test_multi_backend_streaming_uses_observed_route_identity(chat_app, id
     """Authorized diagnostic paths receive the selected stream route identity."""
 
     class _SecondAdapter(DummyAdapter):
-        pass
+        async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
+            resp = await super().chat_completion(messages, **params)
+            resp["choices"][0]["message"]["content"] = "sglang served"
+            return resp
+
+        async def stream_chat_completion(self, messages, **params):
+            yield self.format_stream_chunk(model=self.config.id, content="sglang served")
+            yield make_final_usage_chunk(
+                model=self.config.id, messages=messages, total_content="sglang served"
+            )
+            yield done_sentinel()
 
     second_cfg = _chat_cfg(CHAT_MODEL)
     second_cfg.provider = "sglang"
@@ -540,11 +550,18 @@ async def test_multi_backend_streaming_uses_observed_route_identity(chat_app, id
     assert r.status_code == 200
     assert r.headers["x-fi-requested-model"] == CHAT_MODEL
     assert r.headers["x-fi-served-model"] == CHAT_MODEL
-    assert r.headers["x-fi-served-provider"] in {"zai", "sglang"}
-    if r.headers["x-fi-served-provider"] == "zai":
-        assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
-    else:
+    # The header names the route that actually served, not merely one of the
+    # two the route holds. The two adapters emit distinguishable content, so
+    # the body says which one served and the header must agree with it.
+    served_provider = r.headers["x-fi-served-provider"]
+    assert served_provider in {"zai", "sglang"}
+    if "sglang" in r.text:
+        assert served_provider == "sglang"
+        # The second route's endpoint id is not publishable, so it is withheld.
         assert "x-fi-served-endpoint" not in r.headers
+    else:
+        assert served_provider == "zai"
+        assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
 
 
 @pytest.mark.asyncio

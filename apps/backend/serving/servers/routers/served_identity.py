@@ -145,12 +145,3 @@ def served_identity_headers(
     if safe_endpoint is not None:
         headers[SERVED_ENDPOINT_HEADER] = safe_endpoint
     return headers
-
-
-def copy_served_identity_headers(headers: Any) -> dict[str, str]:
-    """Copy only the opt-in identity headers from a delegated response."""
-    return {
-        name: value
-        for name in SERVED_IDENTITY_HEADER_NAMES
-        if (value := headers.get(name)) is not None
-    }
