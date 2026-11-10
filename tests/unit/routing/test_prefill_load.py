@@ -17,19 +17,22 @@ from routing.prefill_load import (
 )
 from routing.routers import FixedRouter, _Affinity
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.adapters.dispatch_watch import report_sent
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
 
-def _cfg(mid: str, provider: str = "p", base_url: str = "http://test") -> ModelConfig:
+def _cfg(
+    mid: str, provider: str = "p", base_url: str = "http://test", context_length: int = 8192
+) -> ModelConfig:
     return ModelConfig(
         id=mid,
         name=mid,
         provider=provider,
         base_url=base_url,
-        context_length=8192,
+        context_length=context_length,
         max_output_length=4096,
     )
 
@@ -45,7 +48,10 @@ class _EchoAdapter(BaseAdapter):
 
 
 class _KeepAliveAdapter(BaseAdapter):
-    """Emits an empty delta before any real token, so prefill is still in flight."""
+    """Emits an empty delta before any real token, so prefill is still in flight.
+
+    Reports the request sent first, as a real adapter's outbound slot does.
+    """
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         return self.format_response(content="ok", model=self.config.id)
@@ -53,6 +59,7 @@ class _KeepAliveAdapter(BaseAdapter):
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
+        report_sent()
         yield self.format_stream_chunk(model=self.config.id, content="")
         yield self.format_stream_chunk(model=self.config.id, content="ok")
 
@@ -527,14 +534,20 @@ def test_locality_preserves_configured_traffic_ratios(weights):
     """A cache-warm endpoint must not become absorbing at an asymmetric ratio.
 
     Each conversation keeps its own remembered prefix and reuses the tracker's
-    routing path across ten turns. The configured ratios are intentionally
-    coarse integration-like bounds: with only 4 000 samples, a binomial 70/30
-    split has a 95% interval of roughly +/-1.4 percentage points, while the
-    pre-fix behavior sends only about 5% to the light endpoint.
+    routing path across ten turns. The endpoints are named by weight: index 0
+    carries ``weights[0]``, so it is the *heavier* of the pair when the first
+    weight is larger.
+
+    The tolerance is the sample size's own resolution. A conversation that
+    lands on one endpoint stays there, so 400 conversations are 400
+    independent observations, not 4 000: at a 50/50 split the standard error
+    is about 2.5 percentage points, so the bound is three of those. The
+    pre-fix behaviour sends only about 5% to the lighter endpoint, which is
+    far outside it.
     """
     rng = random.Random(1_636)
     counts = [0, 0]
-    endpoints = ("light", "heavy")
+    endpoints = ("heavy", "light")
     for conversation in range(400):
         affinity_key = f"caller-{conversation}"
         fingerprint = f"conversation-{conversation}"
@@ -553,8 +566,53 @@ def test_locality_preserves_configured_traffic_ratios(weights):
             )
             counts[chosen] += 1
             warm_index = chosen
-    observed_light = counts[0] / sum(counts)
-    assert observed_light == pytest.approx(weights[0], abs=0.02)
+    observed_heavy = counts[0] / sum(counts)
+    assert observed_heavy == pytest.approx(weights[0], abs=0.075)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("weights", [(0.65, 0.35), (0.6, 0.4)])
+def test_locality_does_not_absorb_a_key_with_several_conversations(weights):
+    """Several conversations on one key must not all pile onto one endpoint.
+
+    The hint table keeps one prefix per (key, endpoint), so once two
+    conversations from one key sit on different endpoints, each stays on its
+    own. That is a real narrowing of the configured split -- the heavy
+    endpoint draws more than its weight -- and it is bounded: the drift is
+    small compared with the pre-fix behaviour, where locality made the heavy
+    endpoint absorbing outright.
+    """
+    rng = random.Random(1_636)
+    counts = [0, 0]
+    endpoints = ("heavy", "light")
+    conversations_per_key = 2
+    for key in range(150):
+        affinity_key = f"caller-{key}"
+        tracker = PrefillLoadTracker()
+        warm_index: dict[str, int] = {}
+        for conversation in range(conversations_per_key):
+            fingerprint = f"conversation-{key}-{conversation}"
+            for _turn in range(10):
+                if fingerprint in warm_index:
+                    _remember(
+                        tracker, endpoints[warm_index[fingerprint]], 5_000, fingerprint=fingerprint
+                    )
+                chosen = tracker.select_index(
+                    endpoints,
+                    weights,
+                    10_000,
+                    rng.random,
+                    affinity_key,
+                    fingerprint=fingerprint,
+                )
+                counts[chosen] += 1
+                warm_index[fingerprint] = chosen
+    observed_heavy = counts[0] / sum(counts)
+    # The drift the review measured at 65/35 with two conversations per key is
+    # about 52.7% against a configured 65%: the split narrows, but the heavy
+    # endpoint does not absorb the traffic.
+    assert observed_heavy < weights[0]
+    assert observed_heavy > weights[0] - 0.20
 
 
 @pytest.mark.unit
@@ -933,7 +991,9 @@ def test_router_breaks_affinity_when_pinned_endpoint_backlogged():
     # avoid + mega-prefill IndexError reach production through this call path.
     r.prefill_load.acquire("A", 10_000_000)
     assert r._select_adapter("m", prefill_tokens=500_000) is b
-    assert r._affinity[("whale", "m")].endpoint_id == "B"
+    # For this request only: the pin stays on A, so the caller goes back to its
+    # warm prefix once A's queue drains.
+    assert r._affinity[("whale", "m")].endpoint_id == "A"
 
 
 @pytest.mark.unit
@@ -991,8 +1051,9 @@ async def test_router_warm_session_keeps_its_endpoint_under_parallel_turns():
     """End-to-end guard for the regression: parallel turns of one warm
     conversation must not evict themselves onto a cold replica."""
     r = FixedRouter()
-    a = _KeepAliveAdapter(_cfg("m", provider="A", base_url="http://A"))
-    b = _KeepAliveAdapter(_cfg("m", provider="B", base_url="http://B"))
+    window = 1_048_576
+    a = _KeepAliveAdapter(_cfg("m", provider="A", base_url="http://A", context_length=window))
+    b = _KeepAliveAdapter(_cfg("m", provider="B", base_url="http://B", context_length=window))
     r.register_route("m", [(a, 0.5), (b, 0.5)])
     req_ctx.set({"affinity_key": "whale"})
 
@@ -1002,7 +1063,7 @@ async def test_router_warm_session_keeps_its_endpoint_under_parallel_turns():
     gen = r.stream_chat_completion("m", big)
     await gen.__anext__()
     await gen.__anext__()  # keep-alive: this turn is still prefilling on A
-    assert r.prefill_load.backlog("A") == 500_000
+    assert r.prefill_load.dispatched_backlog("A") == 500_000
 
     # A second turn arrives while the first is in flight. Its own load must not
     # push it off A.
@@ -1171,9 +1232,13 @@ class _PriorityCapturingAdapter(BaseAdapter):
     An adapter is the only place that observation is meaningful: ``req_ctx.push``
     unwinds when the router leaves the block, so reading it afterwards proves
     nothing about what the upstream request would have carried.
+
+    It stands for a route that runs priority scheduling, the only kind the
+    router computes and publishes a priority for.
     """
 
-    def __init__(self, config: ModelConfig) -> None:
+    def __init__(self, config: ModelConfig, *, priority_scheduling: bool = True) -> None:
+        config.priority_scheduling = priority_scheduling
         super().__init__(config)
         self.seen: list[Any] = []
 
@@ -2260,4 +2325,131 @@ async def test_router_forgets_hints_when_a_dispatch_fails():
             messages=messages,
         )
         > prefill_load.ELEPHANT_TOKENS
+    )
+
+
+# ---------------------------------------------------------------------------
+# The three locality findings
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_locality_stops_after_the_max_age():
+    """A conversation cannot stay on one endpoint for ever.
+
+    Each completed turn writes a fresh hint with a new expiry, so the hint's
+    own age never lapses while a conversation is active. The locality age cap
+    measures the time the conversation *first* landed on the endpoint, across
+    those refreshes, so a reweight or a recovery can still reach it.
+    """
+    now = [1000.0]
+    t = PrefillLoadTracker(clock=lambda: now[0])
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+
+    # Still inside the cap: locality still prefers the warm endpoint.
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 1
+
+    # Past the cap, the endpoint is no longer preferred. The hint's own expiry
+    # is refreshed by the turn, so only the age cap can end the stickiness.
+    now[0] += prefill_load.LOCALITY_MAX_AGE_SEC + 1
+    lease = t.acquire("warm", 5_000, affinity_key="caller", fingerprint="conv-a", anchor=None)
+    t.release(lease, prefill_confirmed=True)
+
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_locality_does_not_reverse_the_load_tie_break():
+    """The load judgement wins over the prefix when the two disagree.
+
+    The warm endpoint carries a large backlog from other callers, so the
+    draw's two samples are separated by load and the request is moved to the
+    idle cold endpoint. Locality must not move it back into that queue.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    # Another caller's dispatched load on the warm endpoint: past the point
+    # where the load comparison decides (INTERVENE_TOKENS), but below the
+    # backlog ceiling, so the locality gate would otherwise move the request
+    # back into that queue.
+    other = t.acquire("warm", 60_000, affinity_key="other", fingerprint="other-conv")
+    t.mark_dispatched(other, dispatched=True)
+
+    # The first draw lands on the warm endpoint, the second on the cold one,
+    # and the load comparison moves the request to the cold one.
+    chosen = t.select_index(
+        ["warm", "cold"],
+        [0.5, 0.5],
+        10_000,
+        _fixed_rand(0.0, 0.99),
+        "caller",
+        fingerprint="conv-a",
+    )
+    assert chosen == 1
+
+
+@pytest.mark.unit
+def test_locality_ignores_the_callers_own_in_flight_load():
+    """The caller's own load must not count against its own locality.
+
+    ``should_keep_affinity`` excludes the caller's own in-flight work for the
+    same reason: breaking a caller's affinity because of the load the caller
+    itself put there relocates that work to a cold endpoint and pays a full
+    prefill for nothing.
+    """
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+    # The caller's own dispatched load on the warm endpoint. It is the
+    # caller's, so it is not a reason to move the conversation off it -- but
+    # counted as if it were foreign it would exceed the backlog ceiling, and
+    # the warm endpoint would be refused.
+    own = t.acquire("warm", 200_000, affinity_key="caller", fingerprint="conv-a")
+    t.mark_dispatched(own, dispatched=True)
+
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 1
+    # The caller's own load is not a reason to move the conversation.
+    assert t.should_keep_affinity("warm", affinity_key="caller") is True
+
+
+@pytest.mark.unit
+def test_locality_has_its_own_off_switch(monkeypatch):
+    """Locality can be turned off without giving up all prefill-aware routing."""
+    monkeypatch.setattr(prefill_load, "LOCALITY_ENABLED", False)
+    t = PrefillLoadTracker()
+    _remember(t, "warm", 5_000, fingerprint="conv-a")
+
+    chosen = t.select_index(
+        ["cold", "warm"], [0.5, 0.5], 10_000, _fixed_rand(0.0), "caller", fingerprint="conv-a"
+    )
+    assert chosen == 0
+
+
+@pytest.mark.unit
+def test_locality_reads_the_anchor_on_a_non_priority_endpoint():
+    """Locality needs the prompt anchor, not just the priority endpoints.
+
+    The anchor is stored with the warm-prefix hint so a later turn can prove
+    it still contains the remembered prompt. A route that schedules by
+    priority computes it for the priority; a route under locality needs it
+    for the locality, or the strict check refuses the discount and locality
+    never moves anything.
+    """
+    t = PrefillLoadTracker()
+    messages = [{"role": "user", "content": "hello"}]
+    _remember(t, "warm", 5_000, fingerprint="conv-a", messages=messages)
+
+    # The hint carries the anchor, so the strict estimate discounts the warm
+    # endpoint for this same conversation.
+    size = prefill_load.estimate_prefill_tokens(messages)
+    assert (
+        t.uncached_estimate("warm", size, "caller", fingerprint="conv-a", messages=messages) < size
     )

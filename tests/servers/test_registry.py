@@ -871,7 +871,7 @@ def test_register_from_models_yaml_invalid_processor_override_raises(tmp_path):
     p.write_text(yaml_text)
 
     exe = FixedRouter()
-    with pytest.raises(ValueError, match="Unknown processor override 'not_a_processor'"):
+    with pytest.raises(ValueError, match=r"processor must be one of: default, glm.*route 1"):
         registry.register_from_models_yaml(exe, Path(p))
 
 

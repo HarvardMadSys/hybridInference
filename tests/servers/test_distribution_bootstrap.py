@@ -6,6 +6,7 @@ import pytest
 
 from routing.routers import FixedRouter
 from serving.servers import bootstrap
+from tests.fixtures.application_documents import seed_models
 
 MODELS_YAML = """\
 models:
@@ -31,6 +32,7 @@ def _write(tmp_path, models_name: str = "dist-models.yaml"):
 @pytest.mark.asyncio
 async def test_manifest_models_path_registers_routes(monkeypatch, tmp_path):
     manifest = _write(tmp_path)
+    seed_models(monkeypatch, manifest.parent / "dist-models.yaml")
     for var in ("MODELS_CONFIG", "MODELS_CONFIG_PATH"):
         monkeypatch.delenv(var, raising=False)
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
@@ -46,11 +48,12 @@ async def test_manifest_models_path_registers_routes(monkeypatch, tmp_path):
 @pytest.mark.asyncio
 async def test_env_var_beats_manifest_in_bootstrap(monkeypatch, tmp_path):
     manifest = _write(tmp_path)
+    seed_models(monkeypatch, manifest.parent / "dist-models.yaml")
     env_models = tmp_path / "env-models.yaml"
     env_models.write_text(MODELS_YAML.replace("dist-model", "env-model"))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
     monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
-    monkeypatch.setenv("MODELS_CONFIG", str(env_models))
+    seed_models(monkeypatch, env_models)
 
     router = FixedRouter()
     await bootstrap._init_router_and_models(router)

@@ -28,6 +28,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING, Any
 
+from serving.stream import StreamText
 from serving.utils.messages import merge_leading_system_messages
 from serving.utils.token_utils import normalize_usage
 
@@ -120,7 +121,9 @@ def _function_call_output_to_content(output: Any) -> Any:
 
     The spec's array form (``input_text`` / ``input_image`` parts) is translated
     as message content is: text alone collapses to a string, and an image stays
-    an image block, so the modality check sees it. Anything else is serialized.
+    an image block, so the modality check sees it. The OpenAI-compatible
+    adapter then moves it out of the tool message, which holds text only
+    (``serving.utils.messages.move_tool_media``). Anything else is serialized.
     """
     if isinstance(output, str):
         return output
@@ -365,7 +368,30 @@ def _map_status(finish_reason: str | None) -> tuple[str, dict[str, Any] | None]:
 
 
 def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Translate chat ``usage`` to the Responses usage shape."""
+    """Translate chat ``usage`` to the Responses usage shape.
+
+    Preserve three distinct cache-evidence states for those who read the
+    Responses usage: clients (the FI Gateway among them) and the batch worker,
+    which takes an item's cache count from it. (The gateway's own api_logs,
+    billing and RouteWise observations read the chat usage before
+    translation.) The states:
+
+    - UNKNOWN: the provider reported no cache measurement at all. Emit
+      ``cache_read_reported: false``; ``cached_tokens`` stays 0 only because
+      the public Responses schema requires a number there, and is NOT
+      evidence of a miss.
+    - MISS: the provider explicitly reported a count of 0. Emit
+      ``cache_read_reported: true`` with ``cached_tokens: 0``.
+    - HIT: the provider reported a positive count. Emit
+      ``cache_read_reported: true`` with ``cached_tokens: N``.
+
+    The indicator is the single authority for the state. A consumer that
+    reads only ``cached_tokens`` cannot tell UNKNOWN from MISS, which is the
+    defect that made staging MiniMax-M3 traffic score a fabricated miss on
+    every request: the upstream chat surface there omits cache fields
+    entirely, so the previous code emitted ``cached_tokens: 0`` and every
+    reader of the Responses usage saw a measured miss.
+    """
     if not chat_usage:
         return None
     input_tokens = int(chat_usage.get("prompt_tokens", 0) or 0)
@@ -378,6 +404,11 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
     normalized = normalize_usage(chat_usage) or {}
     completion_details = normalized.get("completion_tokens_details") or {}
     cached = normalized.get("cache_read_tokens")
+    # A normalized count is a measurement only when it is a real count.
+    # Presence alone is not enough: ``normalize_usage`` keeps a None-valued
+    # ``cache_read_tokens`` key, and such a null means the provider reported
+    # nothing, which must not be coerced into a miss.
+    cache_reported = cached is not None
     reasoning = int(
         normalized.get("reasoning_tokens") or completion_details.get("reasoning_tokens") or 0
     )
@@ -388,6 +419,11 @@ def _map_usage(chat_usage: dict[str, Any] | None) -> dict[str, Any] | None:
             # measurement is serialized as 0 for SDK compatibility.
             "cached_tokens": cached if cached is not None else 0,
         },
+        # Distinguishes a provider-reported miss (true) from an unreported
+        # measurement (false). Consumers that need the three-state contract
+        # read this flag; a consumer reading only cached_tokens cannot tell
+        # UNKNOWN from MISS.
+        "cache_read_reported": cache_reported,
         "output_tokens": output_tokens,
         "output_tokens_details": {"reasoning_tokens": reasoning},
         "total_tokens": total,
@@ -558,13 +594,17 @@ class ResponsesStreamTranslator:
         # text → tool call → text). Each is tracked as its own output item.
         self._cur_text_id: str | None = None
         self._cur_text_index: int | None = None
-        self._cur_text = ""
+        # The open item's text, and the reasoning, kept as ``StreamText`` and
+        # read once: appending to a string held in an attribute or a dict copies
+        # all of it on every delta, quadratic in the answer. Tool-call arguments
+        # below are kept the same way.
+        self._cur_text = StreamText()
         # Completed text segments: {"item_id", "output_index", "text"}.
         self._text_segments: list[dict[str, Any]] = []
         # Accumulated reasoning_content (not emitted as Responses output, but
         # carried into the persisted assistant message for chaining — some
         # providers require it echoed in thinking-mode tool flows).
-        self._reasoning_accum = ""
+        self._reasoning_accum = StreamText()
 
         # Tool call accumulation, keyed by chat delta index.
         self._tool_calls: dict[int, dict[str, Any]] = {}
@@ -691,7 +731,7 @@ class ResponsesStreamTranslator:
             delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
         )
         if isinstance(reasoning, str) and reasoning:
-            self._reasoning_accum += reasoning
+            self._reasoning_accum.append(reasoning)
 
         tool_calls = delta.get("tool_calls")
         if tool_calls:
@@ -702,7 +742,7 @@ class ResponsesStreamTranslator:
             self._cur_text_id = _msg_item_id()
             self._cur_text_index = self._next_output_index
             self._next_output_index += 1
-            self._cur_text = ""
+            self._cur_text = StreamText()
             item = {
                 "type": "message",
                 "id": self._cur_text_id,
@@ -723,7 +763,7 @@ class ResponsesStreamTranslator:
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 },
             )
-        self._cur_text += content
+        self._cur_text.append(content)
         yield self._emit(
             "response.output_text.delta",
             {
@@ -751,7 +791,7 @@ class ResponsesStreamTranslator:
                     "output_index": self._next_output_index,
                     "call_id": "",
                     "name": "",
-                    "arguments": "",
+                    "arguments": StreamText(),
                 }
                 self._next_output_index += 1
                 self._tool_order.append(idx)
@@ -779,7 +819,10 @@ class ResponsesStreamTranslator:
                 )
             arg_delta = fn.get("arguments")
             if arg_delta:
-                state["arguments"] += arg_delta
+                if not isinstance(arg_delta, str):
+                    # What appending it to the arguments raised, here, as before.
+                    raise TypeError(f"arguments delta is {type(arg_delta).__name__}, not str")
+                state["arguments"].append(arg_delta)
                 yield self._emit(
                     "response.function_call_arguments.delta",
                     {
@@ -794,11 +837,11 @@ class ResponsesStreamTranslator:
         if item_id is None:
             return
         text_oi = self._cur_text_index
-        text = self._cur_text
+        text = self._cur_text.text
         # Reset current-item state so a later text run opens a fresh item.
         self._cur_text_id = None
         self._cur_text_index = None
-        self._cur_text = ""
+        self._cur_text = StreamText()
         yield self._emit(
             "response.output_text.done",
             {
@@ -877,6 +920,7 @@ class ResponsesStreamTranslator:
         tool_calls_for_msg: list[dict[str, Any]] = []
         for idx in self._tool_order:
             st = self._tool_calls[idx]
+            st["arguments"] = st["arguments"].text
             item = {
                 "type": "function_call",
                 "id": st["item_id"],
@@ -924,8 +968,9 @@ class ResponsesStreamTranslator:
         }
         if tool_calls_for_msg:
             assistant_msg["tool_calls"] = tool_calls_for_msg
-        if self._reasoning_accum:
-            assistant_msg["reasoning_content"] = self._reasoning_accum
+        reasoning = self._reasoning_accum.text
+        if reasoning:
+            assistant_msg["reasoning_content"] = reasoning
         self._assistant_message = assistant_msg
 
         # Truncated responses (length / content_filter) terminate with

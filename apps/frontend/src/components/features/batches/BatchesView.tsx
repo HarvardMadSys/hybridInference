@@ -30,7 +30,7 @@ import { BatchCategoryBadge } from './BatchCategoryBadge';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
 
-export { inputLabel, progress, statusLabel, targetLabel } from './batchText';
+export { progress } from './batchText';
 
 function BatchRow({
   batch,
@@ -270,10 +270,7 @@ function PageHeader({ subtitle, children }: { subtitle?: string; children?: Reac
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
       <div>
-        <Link href="/dashboard" className="text-sm text-gray-500 hover:text-gray-900">
-          ← {t('batches.back', 'Dashboard')}
-        </Link>
-        <h1 className="mt-1 text-2xl font-semibold tracking-tight text-gray-900">
+        <h1 className="text-2xl font-semibold tracking-tight text-gray-900">
           {t('batches.title', 'Batches')}
         </h1>
         {subtitle && <p className="mt-1 text-sm text-gray-500">{subtitle}</p>}
@@ -289,7 +286,7 @@ function Unavailable({ status }: { status: BatchCapabilities['status'] }) {
   return (
     <section
       role="status"
-      className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200"
+      className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6"
       data-testid="batches-unavailable"
     >
       <h2 className="text-base font-semibold text-gray-900">
@@ -474,7 +471,7 @@ function BatchesManager({
         </p>
       )}
 
-      <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+      <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
         <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center">
           <input
             type="search"

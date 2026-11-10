@@ -25,7 +25,9 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import TypeAdapter, ValidationError
 
+from serving.request_limits import responses_limit_problem
 from serving.responses_translator import (
     ResponsesStreamTranslator,
     assistant_message_from_chat,
@@ -48,6 +50,7 @@ from serving.servers.deps import (
     get_response_store,
     get_router,
 )
+from serving.servers.middleware.body_limit import configured_max_body_bytes
 from serving.servers.routers.completions import (
     ChatOptions,
     ChatResponse,
@@ -57,6 +60,7 @@ from serving.servers.routers.completions import (
     release_unstarted_chat_streams,
 )
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.storage.responses_store import decode_conversation
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils.logging import get_logger
 
@@ -87,6 +91,25 @@ def _schedule(coro: Any) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+
+
+#: How the chat request schema reads ``stream`` (``ChatCompletionRequest.stream``).
+_STREAM_FLAG: TypeAdapter[bool | None] = TypeAdapter(bool | None)
+
+
+def _requests_stream(value: Any) -> bool:
+    """Read ``stream`` as the chat request this one is translated to reads it.
+
+    ``bool("false")`` is true, while the chat schema reads ``"false"`` (or
+    ``"0"``, ``"no"``, ``"off"``) as false and answers unstreamed: the route
+    then streamed an empty response, discarding the answer it was billed for,
+    and stored an empty turn. A value the schema refuses it refuses itself,
+    with a 422, before this is used.
+    """
+    try:
+        return bool(_STREAM_FLAG.validate_python(value))
+    except ValidationError:
+        return False
 
 
 #: Dropped from what the chat execution sees. The Responses surface never
@@ -133,19 +156,52 @@ async def _load_prior_messages(
     response_store: Any,
     previous_response_id: str,
     user_id: str | None,
+    *,
+    store: bool,
 ) -> list[dict[str, Any]]:
     """Return the stored cumulative conversation for ``previous_response_id``.
 
+    The store matches the owner and reports the stored JSON text's size with
+    the row, so a conversation too large to store another turn of (when
+    *store*) is refused before it is decoded.
+
     Raises 404 (Responses/OpenAI error envelope) when statefulness is
-    unavailable, the prior response is unknown, or it belongs to another user.
+    unavailable, the prior response is unknown, or it belongs to another user;
+    400 for an oversized conversation (:func:`_refuse_an_oversized_stored_conversation`).
     """
-    if response_store is None:
+    if response_store is None or user_id is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    row = await response_store.get(previous_response_id)
-    if not row or row.get("user_id") != user_id:
+    found = await response_store.get_conversation(previous_response_id, user_id=user_id)
+    if found is None:
         raise HTTPException(404, f"Previous response '{previous_response_id}' not found")
-    msgs = row.get("messages")
-    return msgs if isinstance(msgs, list) else []
+    stored, size = found
+    if store:
+        _refuse_an_oversized_stored_conversation(previous_response_id, size)
+    return decode_conversation(stored)
+
+
+def _refuse_an_oversized_stored_conversation(previous_response_id: str, size: int) -> None:
+    """Refuse to store another turn of a conversation already larger than a request body may be.
+
+    Every stored turn holds the whole conversation so far, so a chain kept
+    growing would cost the store its size again on each turn. The limit is the
+    request body limit (``REQUEST_MAX_BODY_MB``): what a client could send as
+    the history itself. Checked before the model is called, so nothing is
+    served or billed. Continuing with ``store`` set to false is not refused:
+    nothing is kept.
+
+    Raises:
+        HTTPException: 400, saying what to do instead.
+    """
+    limit = configured_max_body_bytes()
+    if size <= limit:
+        return
+    raise HTTPException(
+        400,
+        f"The conversation stored for previous response '{previous_response_id}' is "
+        f"{size} bytes, more than the {limit} bytes a stored conversation may hold. "
+        "Start a new conversation, or continue this one with 'store' set to false.",
+    )
 
 
 @router.post("/v1/responses", response_model=None)
@@ -227,14 +283,29 @@ async def execute_responses(
         raise HTTPException(400, "Missing required parameter: 'model'")
     if "input" not in body and "previous_response_id" not in body:
         raise HTTPException(400, "Missing required parameter: 'input'")
+    # Element counts before translation walks the input (serving/request_limits.py).
+    limit_problem = responses_limit_problem(body)
+    if limit_problem is not None:
+        raise HTTPException(400, limit_problem)
 
     # Normalise the owner key so anonymous/auth-disabled callers share a stable,
     # non-None identity — never let a None user_id bypass ownership scoping.
     user_id = ctx.user_ctx.get("user_id") or "anonymous"
     previous_response_id = body.get("previous_response_id")
+    # store defaults to true; only an explicit ``false`` disables persistence
+    # (missing or null → true). Persistence also requires a write-enabled store
+    # (privacy mode disables writes), so the echoed value reflects whether the
+    # response is actually stored.
+    store = (
+        body.get("store") is not False
+        and response_store is not None
+        and getattr(response_store, "persist_enabled", True)
+    )
     prior_messages: list[dict[str, Any]] = []
     if previous_response_id:
-        prior_messages = await _load_prior_messages(response_store, previous_response_id, user_id)
+        prior_messages = await _load_prior_messages(
+            response_store, previous_response_id, user_id, store=store
+        )
 
     instructions = body.get("instructions")
     # Conversation messages (no system/instructions message — that is per-turn
@@ -242,9 +313,11 @@ async def execute_responses(
     input_messages = responses_input_to_messages(body.get("input"))
     params, dropped_tools = responses_request_to_chat_params(body)
     if dropped_tools:
+        # Each as text: a ``type`` may be any JSON value, and a list (unhashable)
+        # or a mix of types (unorderable) made this warning a 500.
         logger.warning(
             "Dropped unsupported hosted tool types for Responses request: %s",
-            sorted(set(dropped_tools)),
+            sorted({str(tool_type) for tool_type in dropped_tools}),
         )
 
     convo_messages = prior_messages + input_messages
@@ -276,16 +349,7 @@ async def execute_responses(
     # regardless of any strict-reasoning header on the inbound request.
     chat_ctx = replace(ctx, origin=ctx.origin.without(_REASONING_PASSTHROUGH_HEADER))
 
-    is_stream = bool(body.get("stream"))
-    # store defaults to true; only an explicit ``false`` disables persistence
-    # (missing or null → true). Persistence also requires a write-enabled store
-    # (privacy mode disables writes), so the echoed value reflects whether the
-    # response is actually stored.
-    store = (
-        body.get("store") is not False
-        and response_store is not None
-        and getattr(response_store, "persist_enabled", True)
-    )
+    is_stream = _requests_stream(body.get("stream"))
     response_id = new_response_id()
     created_at = now_ts()
 
@@ -472,14 +536,18 @@ async def get_response(
     user_ctx: dict = Depends(verify_api_key),
     response_store=Depends(get_response_store),
 ):
-    """Retrieve a previously stored response by id."""
+    """Retrieve a previously stored response by id.
+
+    Served as stored: the store matches the owner and reads the Responses
+    object alone, never the conversation stored beside it.
+    """
     if response_store is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    row = await response_store.get(response_id)
     owner = user_ctx.get("user_id") or "anonymous"
-    if not row or row.get("user_id") != owner:
+    body = await response_store.get_response(response_id, user_id=owner)
+    if body is None:
         raise HTTPException(404, f"Response '{response_id}' not found")
-    return JSONResponse(content=row.get("response") or {})
+    return Response(content=body, media_type="application/json")
 
 
 @router.delete("/v1/responses/{response_id}", response_model=None)

@@ -9,7 +9,7 @@ from typing import Any
 
 import aiohttp
 
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_tokens
 
 from .base import BaseAdapter, UsageInfo
 from .openai_compat import (
@@ -162,14 +162,21 @@ class GeminiAdapter(BaseAdapter):
                 # or a scalar there with 400, so any other value is wrapped.
                 if not isinstance(response_payload, dict):
                     response_payload = {"output": response_payload}
-                contents.append(
-                    {
-                        "role": "user",
-                        "parts": [
-                            {"functionResponse": {"name": name, "response": response_payload}}
-                        ],
-                    }
-                )
+                part = {"functionResponse": {"name": name, "response": response_payload}}
+                # The results of one turn's parallel calls answer it together:
+                # Gemini refuses a function-response content with fewer parts
+                # than the turn had calls, so a result following another joins
+                # its content rather than starting one of its own.
+                previous = contents[-1] if contents else None
+                if (
+                    previous is not None
+                    and previous["role"] == "user"
+                    and previous["parts"]
+                    and all("functionResponse" in p for p in previous["parts"])
+                ):
+                    previous["parts"].append(part)
+                else:
+                    contents.append({"role": "user", "parts": [part]})
                 continue
 
         request_body: dict[str, Any] = {"contents": contents}
@@ -471,9 +478,11 @@ class GeminiAdapter(BaseAdapter):
                 reasoning_tokens=int(reasoning_tokens),
                 cache_read_tokens=int(cached_tokens),  # Gemini: cached tokens are read from cache
                 cache_read_reported="cachedContentTokenCount" in usage_meta,
+                reasoning_reported="thoughtsTokenCount" in usage_meta,
             )
         else:
-            prompt_tokens = estimate_prompt_tokens(messages)
+            # Bounded, on the event loop: exact up to the inline bound.
+            prompt_tokens = estimate_prompt_tokens_bounded(messages)
             completion_tokens = estimate_text_tokens(text_content)
             usage = UsageInfo(
                 prompt_tokens=int(prompt_tokens),
@@ -536,6 +545,7 @@ class GeminiAdapter(BaseAdapter):
         total_content = ""
         prompt_tokens = 0
         reasoning_tokens = 0
+        reasoning_reported = False
         cached_tokens = 0
         cache_read_reported = False
         completion_tokens_upstream = 0
@@ -683,6 +693,9 @@ class GeminiAdapter(BaseAdapter):
                         usage_meta = data["usageMetadata"]
                         prompt_tokens = usage_meta.get("promptTokenCount", prompt_tokens)
                         reasoning_tokens = usage_meta.get("thoughtsTokenCount", reasoning_tokens)
+                        reasoning_reported = (
+                            reasoning_reported or "thoughtsTokenCount" in usage_meta
+                        )
                         cached_tokens = usage_meta.get("cachedContentTokenCount", cached_tokens)
                         cache_read_reported = (
                             cache_read_reported or "cachedContentTokenCount" in usage_meta
@@ -715,8 +728,9 @@ class GeminiAdapter(BaseAdapter):
             # so it comes back on every exit path this ``finally`` covers.
             slot.release(status_code=upstream_outcome)
 
-        # Prefer upstream precise values, fall back to estimation
-        final_prompt_tokens = prompt_tokens or estimate_prompt_tokens(messages)
+        # Prefer upstream precise values, fall back to estimation: bounded, as
+        # this runs on the event loop and the prompt is the caller's size.
+        final_prompt_tokens = prompt_tokens or estimate_prompt_tokens_bounded(messages)
 
         if completion_tokens_upstream > 0:
             final_completion_tokens = completion_tokens_upstream
@@ -763,7 +777,7 @@ class GeminiAdapter(BaseAdapter):
         }
 
         # Add optional fields for OpenAI compatibility
-        if reasoning_tokens > 0:
+        if reasoning_reported or reasoning_tokens > 0:
             usage_chunk["usage"]["reasoning_tokens"] = int(reasoning_tokens)
         if cache_read_reported or cached_tokens > 0:
             usage_chunk["usage"]["cache_read_tokens"] = int(cached_tokens)

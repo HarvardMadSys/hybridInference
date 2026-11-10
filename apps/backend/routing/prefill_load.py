@@ -30,6 +30,16 @@ first token arrives, because at that point the prompt is resident and the
 endpoint is decoding rather than prefilling. Holding the lease for the whole
 stream would let a long, cheap decode masquerade as prefill pressure.
 
+Nor is a request prefilling before it reaches the endpoint. A lease is taken
+when selection commits, so that concurrent selections see it and spread, but it
+counts against other callers' affinity ceiling only once its request has left
+the gateway (:meth:`PrefillLoadTracker.mark_dispatched`). A request can wait
+here for up to half a minute -- fetching remote media, queued for an outbound
+slot -- and counted from selection, one large prompt stalled that way moved
+every caller pinned to its endpoint onto a cold one, without ever reaching an
+engine. No lease charges more than its route's context window either: that is
+the most one endpoint can be made to prefill for one request.
+
 Accounting only: this module never blocks, rejects, or queues a request. The
 worst it does is prefer a different endpoint that is already admissible.
 """
@@ -112,6 +122,14 @@ INTERVENE_TOKENS: int = 50_000
 # locality was considered.
 LOCALITY_MIN_SAVING_TOKENS: int = 4_096
 
+# Whether locality may move a request at all.
+#
+# Locality has its own switch because it changes routing on every
+# FixedRouter request, and the only other way to turn it off --
+# ``ROUTING_PREFILL_AWARE_ENABLED=0`` -- gives up all prefill-aware
+# routing with it.
+LOCALITY_ENABLED: bool = True
+
 # Minimum symmetric weight ratio between the drawn and warmer candidate before
 # locality may move the request.
 #
@@ -124,6 +142,17 @@ LOCALITY_MIN_SAVING_TOKENS: int = 4_096
 # directions and a first turn with no prefix at all is unaffected. Both weights
 # must be positive; an unweighted pool is unaffected.
 LOCALITY_MIN_WEIGHT_SHARE: float = 0.5
+
+# Longest a conversation may stay on one endpoint under locality.
+#
+# Each completed turn writes a fresh warm-prefix hint with a new expiry, so
+# the hint's own age never lapses while a conversation is active: locality
+# would otherwise hold a conversation on one endpoint for ever. The affinity
+# pin carries the same cap for the same reason -- a reweight or a recovery
+# from a failover must reach a busy caller. This is that cap, measured from
+# the time the conversation first landed on the endpoint, across the hint's
+# refreshes.
+LOCALITY_MAX_AGE_SEC: float = 24 * 60 * 60
 
 # Session affinity is a cache-locality optimization, not a correctness
 # guarantee. Above this in-flight backlog the pin costs more (queueing behind a
@@ -177,6 +206,7 @@ def _load_settings() -> None:
     """Read the ``ROUTING_PREFILL_*`` and ``ROUTING_PRIORITY_*`` settings."""
     global PREFILL_AWARE_ENABLED, ELEPHANT_TOKENS, ELEPHANT_LIMIT, INTERVENE_TOKENS
     global AFFINITY_BACKLOG_CEILING, PRIORITY_INTERACTIVE, PRIORITY_LARGE, PRIORITY_ELEPHANT
+    global LOCALITY_ENABLED, LOCALITY_MAX_AGE_SEC
     global _PREFIX_HINT_TTL_SEC
     PREFILL_AWARE_ENABLED = config_value("ROUTING_PREFILL_AWARE_ENABLED", "1") != "0"
     ELEPHANT_TOKENS = _env_int("ROUTING_PREFILL_ELEPHANT_TOKENS", 200_000)
@@ -187,6 +217,8 @@ def _load_settings() -> None:
     PRIORITY_LARGE = _env_int("ROUTING_PRIORITY_LARGE", 15)
     PRIORITY_ELEPHANT = _env_int("ROUTING_PRIORITY_ELEPHANT", 0)
     _PREFIX_HINT_TTL_SEC = float(_env_int("ROUTING_PREFILL_HINT_TTL_SEC", 20 * 60))
+    LOCALITY_ENABLED = config_value("ROUTING_PREFILL_LOCALITY_ENABLED", "1") != "0"
+    LOCALITY_MAX_AGE_SEC = float(_env_int("ROUTING_PREFILL_LOCALITY_MAX_AGE_SEC", 24 * 60 * 60))
 
 
 _load_settings()
@@ -633,6 +665,12 @@ class _PrefixHint:
     expires_at: float
     fingerprint: str | None = None
     anchor: tuple[int, str] | None = None
+    #: When this conversation first landed on this endpoint, preserved across
+    #: the hint's own refreshes. Each completed turn writes a fresh hint with a
+    #: new expiry, so the hint's age never lapses on its own; this is what the
+    #: locality age cap reads, so a conversation cannot stay pinned here for
+    #: ever by sending another turn.
+    first_seen_at: float = 0.0
 
 
 @dataclass
@@ -654,6 +692,10 @@ class PrefillLease:
             hint so a later turn can prove it is the same one.
         anchor: This prompt's length and tail digest, stored with that hint so a
             later turn can prove it contains this one.
+        dispatched: Whether the request has left the gateway, so that its
+            tokens count against other callers' affinity ceiling
+            (:meth:`PrefillLoadTracker.should_keep_affinity`). Changed only
+            through :meth:`PrefillLoadTracker.mark_dispatched`.
     """
 
     endpoint_id: str
@@ -664,6 +706,7 @@ class PrefillLease:
     prompt_tokens: int = 0
     fingerprint: str | None = None
     anchor: tuple[int, str] | None = None
+    dispatched: bool = False
 
 
 class PrefillLoadTracker:
@@ -701,13 +744,21 @@ class PrefillLoadTracker:
         # accounting lock held through expensive candidate computation.
         self._lock = threading.RLock()
         self._routing_lock = threading.RLock()
+        # Every live lease, from selection on: what selection spreads over.
         self._backlog: dict[str, int] = {}
         self._elephants: dict[str, int] = {}
-        # Load attributed to one caller on one endpoint, so a caller's own work
-        # never counts against its own affinity ceiling.
+        # The live leases whose request has left the gateway: what the affinity
+        # ceiling compares (see ``mark_dispatched``).
+        self._dispatched: dict[str, int] = {}
+        # The share of ``_dispatched`` attributed to one caller on one endpoint,
+        # so a caller's own work never counts against its own affinity ceiling.
         self._by_caller: dict[tuple[str, str], int] = {}
         # (affinity_key, endpoint_id) -> (last prompt tokens, expiry).
         self._prefix_hints: OrderedDict[tuple[str, str], _PrefixHint] = OrderedDict()
+        # endpoint_id -> the affinity keys holding a hint on it: the same keys as
+        # ``_prefix_hints``, indexed so that forgetting one endpoint costs the
+        # hints it holds rather than a scan of every caller's.
+        self._hint_callers: dict[str, set[str]] = {}
         self._fixed_elephant_tokens = elephant_tokens
         self._fixed_elephant_limit = elephant_limit
         self._clock = clock
@@ -805,6 +856,11 @@ class PrefillLoadTracker:
         with self._lock:
             return self._backlog.get(endpoint_id, 0)
 
+    def dispatched_backlog(self, endpoint_id: str) -> int:
+        """Return the part of :meth:`backlog` whose requests have left the gateway."""
+        with self._lock:
+            return self._dispatched.get(endpoint_id, 0)
+
     def elephants(self, endpoint_id: str) -> int:
         """Return the number of elephants currently prefilling on an endpoint."""
         with self._lock:
@@ -818,6 +874,8 @@ class PrefillLoadTracker:
         affinity_key: str | None = None,
         fingerprint: str | None = None,
         anchor: tuple[int, str] | None = None,
+        dispatched: bool = True,
+        context_window: int | None = None,
     ) -> PrefillLease:
         """Charge a request's estimated un-cached prefill to an endpoint.
 
@@ -838,12 +896,22 @@ class PrefillLoadTracker:
             affinity_key: Caller identity, when known.
             fingerprint: Conversation identity, carried on the lease and stored
                 with the hint when prefill completes.
+            dispatched: Whether the request is already on its way to the
+                endpoint. A caller that learns when the request leaves the
+                gateway passes False and reports it through
+                :meth:`mark_dispatched`; until then the lease counts for
+                selection's spread but not against anyone's affinity ceiling.
+            context_window: The route's context window, when known. The charge
+                never exceeds it: an endpoint refuses a longer prompt rather
+                than prefill it.
 
         Returns:
             The lease to hand back to :meth:`release`.
         """
         total = max(int(tokens), 0)
         charged = self.uncached_estimate(endpoint_id, total, affinity_key)
+        if context_window is not None and context_window > 0:
+            charged = min(charged, int(context_window))
         # The elephant count is admission, not load, so it is gated on the
         # conversation matching -- unlike ``charged``, which keeps the loose
         # caller-scoped discount #1267 shipped for routing.
@@ -868,10 +936,7 @@ class PrefillLoadTracker:
             self._backlog[endpoint_id] = self._backlog.get(endpoint_id, 0) + charged
             if elephant:
                 self._elephants[endpoint_id] = self._elephants.get(endpoint_id, 0) + 1
-            if affinity_key is not None:
-                caller = (endpoint_id, affinity_key)
-                self._by_caller[caller] = self._by_caller.get(caller, 0) + charged
-        return PrefillLease(
+        lease = PrefillLease(
             endpoint_id=endpoint_id,
             tokens=charged,
             elephant=elephant,
@@ -880,6 +945,36 @@ class PrefillLoadTracker:
             fingerprint=fingerprint,
             anchor=anchor,
         )
+        if dispatched:
+            self.mark_dispatched(lease)
+        return lease
+
+    def mark_dispatched(self, lease: PrefillLease | None, dispatched: bool = True) -> None:
+        """Record whether a lease's request is out of the gateway.
+
+        A request out of the gateway is on its way to the endpoint or there, so
+        its tokens count against every other caller's affinity ceiling. One
+        that waits here again -- for another key's slot after a refusal -- has
+        left the endpoint, and stops counting until it is sent again.
+
+        Idempotent, None-tolerant, and a no-op once the lease is released, so
+        whatever reports the request's progress needs no bookkeeping of its own.
+
+        Args:
+            lease: The lease from :meth:`acquire`, or None.
+            dispatched: True when the request has left the gateway, False when
+                it waits here again.
+        """
+        if lease is None:
+            return
+        with self._lock:
+            if lease.released or lease.dispatched == dispatched:
+                return
+            lease.dispatched = dispatched
+            delta = lease.tokens if dispatched else -lease.tokens
+            _add_locked(self._dispatched, lease.endpoint_id, delta)
+            if lease.affinity_key is not None:
+                _add_locked(self._by_caller, (lease.endpoint_id, lease.affinity_key), delta)
 
     def _remember_prompt_locked(
         self,
@@ -892,35 +987,48 @@ class PrefillLoadTracker:
     ) -> None:
         """Record a prompt size for warm-continuation discounting. Caller holds the lock."""
         key = (affinity_key, endpoint_id)
+        previous = self._prefix_hints.get(key)
         self._prefix_hints[key] = _PrefixHint(
             tokens=tokens,
             expires_at=now + _PREFIX_HINT_TTL_SEC,
             fingerprint=fingerprint,
             anchor=anchor,
+            # The first landing is what the locality age cap measures, so a
+            # refresh keeps the original time rather than starting a new one.
+            first_seen_at=previous.first_seen_at if previous is not None else now,
         )
         self._prefix_hints.move_to_end(key)
+        self._hint_callers.setdefault(endpoint_id, set()).add(affinity_key)
         while len(self._prefix_hints) > _PREFIX_HINT_MAX_ENTRIES:
-            self._prefix_hints.popitem(last=False)
+            (evicted_caller, evicted_endpoint), _ = self._prefix_hints.popitem(last=False)
+            callers = self._hint_callers.get(evicted_endpoint)
+            if callers is not None:
+                callers.discard(evicted_caller)
+                if not callers:
+                    del self._hint_callers[evicted_endpoint]
 
     def forget_endpoint(self, endpoint_id: str) -> None:
         """Drop every warm-prefix hint recorded against one endpoint.
 
-        Called when an endpoint fails, because the most likely explanations --
-        a restart, an OOM, a container replaced under the same ``endpoint_id``
-        -- all empty its radix cache while leaving the hints describing it
-        untouched. The TTL bounds how long a *quiet* endpoint is believed; this
-        bounds a *broken* one, which can lose its cache at any point inside that
-        window.
+        Called when an endpoint fails in a way that can mean it lost its cache
+        (``routing.endpoint_health.failure_may_lose_prefix_cache``): a restart,
+        an OOM, a container replaced under the same ``endpoint_id`` -- all empty
+        its radix cache while leaving the hints describing it untouched. The TTL
+        bounds how long a *quiet* endpoint is believed; this bounds a *broken*
+        one, which can lose its cache at any point inside that window.
 
-        Over-invalidates on purpose: a 4xx from one caller says nothing about
-        the cache, but forgetting costs at most a discount, while keeping a hint
-        for a cache that no longer exists costs a cold mega-prefill the
-        interactive tier -- and that tier preempts.
+        Errs toward forgetting within that class: a single dropped connection
+        need not mean a restart, but forgetting costs at most a discount, while
+        keeping a hint for a cache that no longer exists costs a cold
+        mega-prefill the interactive tier -- and that tier preempts. An endpoint
+        that answered with a 4xx is up, so its hints stay.
+
+        Costs the hints held on this endpoint, found through ``_hint_callers``,
+        not a scan of every hint the tracker holds.
         """
         with self._lock:
-            stale = [key for key in self._prefix_hints if key[1] == endpoint_id]
-            for key in stale:
-                del self._prefix_hints[key]
+            for affinity_key in self._hint_callers.pop(endpoint_id, ()):
+                self._prefix_hints.pop((affinity_key, endpoint_id), None)
 
     def release(self, lease: PrefillLease | None, *, prefill_confirmed: bool = False) -> None:
         """Return a lease's tokens to an endpoint's budget.
@@ -967,13 +1075,11 @@ class PrefillLoadTracker:
                     self._elephants[lease.endpoint_id] = left
                 else:
                     self._elephants.pop(lease.endpoint_id, None)
-            if lease.affinity_key is not None:
-                caller = (lease.endpoint_id, lease.affinity_key)
-                owed = self._by_caller.get(caller, 0) - lease.tokens
-                if owed > 0:
-                    self._by_caller[caller] = owed
-                else:
-                    self._by_caller.pop(caller, None)
+            if lease.dispatched:
+                _add_locked(self._dispatched, lease.endpoint_id, -lease.tokens)
+                if lease.affinity_key is not None:
+                    caller = (lease.endpoint_id, lease.affinity_key)
+                    _add_locked(self._by_caller, caller, -lease.tokens)
 
     def should_keep_affinity(
         self,
@@ -991,6 +1097,11 @@ class PrefillLoadTracker:
         this, a client issuing parallel turns on one conversation would evict
         itself from its own warm endpoint.
 
+        Only requests that have left the gateway count (:meth:`mark_dispatched`):
+        one still fetching media or waiting for a slot is in no endpoint's
+        queue, and counting it let a request that never reached an engine move
+        every caller pinned to that engine.
+
         Args:
             endpoint_id: The endpoint the caller is currently pinned to.
             affinity_key: Caller identity, whose own load is discounted.
@@ -1007,7 +1118,7 @@ class PrefillLoadTracker:
         if ceiling is None:
             ceiling = AFFINITY_BACKLOG_CEILING
         with self._lock:
-            total = self._backlog.get(endpoint_id, 0)
+            total = self._dispatched.get(endpoint_id, 0)
             own = (
                 self._by_caller.get((endpoint_id, affinity_key), 0)
                 if affinity_key is not None
@@ -1025,6 +1136,7 @@ class PrefillLoadTracker:
         avoid: str | None = None,
         fingerprint: str | None = None,
         messages: Sequence[dict[str, Any]] | None = None,
+        affinity_ceiling: int | None = None,
     ) -> int:
         """Pick a candidate by weight, then break toward the lighter endpoint.
 
@@ -1125,6 +1237,7 @@ class PrefillLoadTracker:
         if not PREFILL_AWARE_ENABLED:
             return first
         second = _weighted_pick(eligible, weights, rand)
+        load_tie_break = False
         if first != second:
             with self._lock:
                 first_load = self._backlog.get(keys[first], 0)
@@ -1133,6 +1246,10 @@ class PrefillLoadTracker:
                 chosen = first
             else:
                 chosen = first if first_load <= second_load else second
+                # The draw's preference lost to the load comparison, so the
+                # load judgement is what moved the request. Locality must not
+                # undo it.
+                load_tie_break = chosen != first
         else:
             chosen = first
         locality_here: dict[int, int] | None = None
@@ -1150,7 +1267,54 @@ class PrefillLoadTracker:
                 )
                 for i in eligible
             }
-        return self._prefer_cached(chosen, eligible, keys, locality_here, weights)
+        return self._prefer_cached(
+            chosen,
+            eligible,
+            keys,
+            locality_here,
+            weights,
+            affinity_key=affinity_key,
+            affinity_ceiling=affinity_ceiling,
+            load_tie_break=load_tie_break,
+        )
+
+    def _foreign_backlog_locked(self, endpoint_id: str, affinity_key: str | None) -> int:
+        """Return an endpoint's backlog without the caller's own load.
+
+        Only requests that have left the gateway count, as in
+        :meth:`should_keep_affinity`: one still fetching media or waiting for a
+        slot is in no endpoint's queue. Caller holds the lock.
+        """
+        total = self._dispatched.get(endpoint_id, 0)
+        own = self._by_caller.get((endpoint_id, affinity_key), 0) if affinity_key is not None else 0
+        return total - own
+
+    def _locality_within_max_age(
+        self,
+        endpoint_id: str,
+        affinity_key: str | None,
+        now: float | None,
+    ) -> bool:
+        """Return whether the conversation may still prefer this endpoint.
+
+        The age is measured from the first time the conversation landed on the
+        endpoint, which the hint preserves across its own refreshes. A
+        conversation with no hint there, or one whose hint has aged out, is
+        free to move.
+        """
+        if affinity_key is None:
+            return True
+        # The hint's clock is the tracker's own clock (see ``acquire``), so
+        # the comparison must use that one.
+        current = self._clock() if now is None else now
+        with self._lock:
+            hint = self._prefix_hints.get((affinity_key, endpoint_id))
+            if hint is None:
+                return True
+            first_seen = hint.first_seen_at
+        if first_seen <= 0.0:
+            return True
+        return (current - first_seen) <= LOCALITY_MAX_AGE_SEC
 
     def _prefer_cached(
         self,
@@ -1159,6 +1323,11 @@ class PrefillLoadTracker:
         keys: Sequence[str],
         uncached: dict[int, int] | None,
         weights: Sequence[float],
+        *,
+        affinity_key: str | None = None,
+        affinity_ceiling: int | None = None,
+        load_tie_break: bool = False,
+        now: float | None = None,
     ) -> int:
         """Return ``chosen``, or a comparable candidate holding more of the prefix.
 
@@ -1188,13 +1357,27 @@ class PrefillLoadTracker:
         - it must not be carrying a foreign backlog past
           :data:`AFFINITY_BACKLOG_CEILING` -- past that the queue costs more
           than the prefill it saves, which is the same judgement
-          :meth:`should_keep_affinity` makes for a sticky pin.
+          :meth:`should_keep_affinity` makes for a sticky pin;
+        - it must not reverse a load tie-break: when the draw already moved
+          the request off a busy endpoint, moving it back to save a prefix
+          costs more than it saves;
+        - and the conversation must not have been on that endpoint for longer
+          than :data:`LOCALITY_MAX_AGE_SEC`, the same cap the affinity pin
+          carries.
         """
+        if not LOCALITY_ENABLED:
+            return chosen
         chosen_cost = None if uncached is None else uncached.get(chosen)
         if chosen_cost is None or len(eligible) < 2:
             return chosen
         chosen_weight = max(weights[chosen], 0.0)
         if chosen_weight <= 0.0:
+            return chosen
+        if load_tie_break:
+            # The draw already moved this request off a busy endpoint because
+            # of load. Moving it back to save a prefix would put it in the
+            # queue it just left, and the queue costs more than the prefill it
+            # saves. The load judgement wins.
             return chosen
         # Filter first, then take the lowest strict cost among the survivors.
         # Picking the globally cheapest candidate first and gating it afterwards
@@ -1202,7 +1385,16 @@ class PrefillLoadTracker:
         # the cheapest one fails one -- a model with three or more ordinary
         # candidates would keep sending warm conversations cold.
         with self._lock:
-            backlogs = {i: self._backlog.get(keys[i], 0) for i in eligible if i != chosen}
+            # The caller's own in-flight load is excluded, as
+            # :meth:`should_keep_affinity` excludes it for a sticky pin:
+            # breaking a caller's affinity because of the load the caller
+            # itself put there relocates that work to a cold endpoint and pays
+            # a full prefill for nothing.
+            backlogs = {
+                i: self._foreign_backlog_locked(keys[i], affinity_key)
+                for i in eligible
+                if i != chosen
+            }
         best, best_cost = chosen, chosen_cost
         for i in eligible:
             if i == chosen:
@@ -1215,10 +1407,15 @@ class PrefillLoadTracker:
                 # Either candidate is the operator's preference by more than a
                 # prefix-cache hit is worth. Leave the decision with the weights.
                 continue
-            if backlogs[i] > AFFINITY_BACKLOG_CEILING:
+            if backlogs[i] > (affinity_ceiling or AFFINITY_BACKLOG_CEILING):
                 # Past that the queue costs more than the prefill it saves,
                 # the same judgement :meth:`should_keep_affinity` makes for a
                 # sticky pin.
+                continue
+            if not self._locality_within_max_age(keys[i], affinity_key, now):
+                # This conversation has been on that endpoint for longer than
+                # the cap the affinity pin carries, so a reweight or a
+                # recovery must be able to reach it.
                 continue
             cost = uncached.get(i)
             if cost is not None and cost < best_cost:
@@ -1237,6 +1434,15 @@ class PrefillLoadTracker:
                 }
                 for endpoint_id, tokens in self._backlog.items()
             }
+
+
+def _add_locked(counts: dict[Any, int], key: Any, delta: int) -> None:
+    """Add ``delta`` to one counter, dropping it at zero. Caller holds the lock."""
+    remaining = counts.get(key, 0) + delta
+    if remaining > 0:
+        counts[key] = remaining
+    else:
+        counts.pop(key, None)
 
 
 def _weighted_pick(

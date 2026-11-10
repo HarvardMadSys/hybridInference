@@ -11,6 +11,7 @@ Usage::
     python -m serving.config.manage get KEY
     python -m serving.config.manage set KEY VALUE [--secret]
     python -m serving.config.manage reset KEY
+    python -m serving.config.manage import-legacy [MANIFEST] [--alerts PATH] [--include-dark]
 
     python -m serving.config.manage live status
     python -m serving.config.manage live preview GROUP
@@ -381,6 +382,50 @@ async def run(args: argparse.Namespace) -> list[str]:
     if args.command == "live":
         return await run_live(args)
     async with app_config.command_line_session():
+        if args.command == "status":
+            body = app_config.describe()
+            return [
+                json.dumps(
+                    {
+                        "source": "database",
+                        "version": body.get("source_version"),
+                        "missing": [e["key"] for e in body["entries"] if e["missing"]],
+                        "pending_restart": [
+                            e["key"] for e in body["entries"] if e["pending_restart"]
+                        ],
+                        "invalid": [e["key"] for e in body["entries"] if e["invalid"]],
+                    }
+                )
+            ]
+        if args.command == "import-legacy":
+            from pathlib import Path
+
+            from serving.config.documents import KEY_KINDS
+            from serving.config.import_legacy import import_legacy
+
+            keys = await import_legacy(
+                Path(args.path) if args.path else None,
+                alerts=Path(args.alerts) if args.alerts else None,
+                include_dark=args.include_dark,
+            )
+            if not keys:
+                return ["Nothing imported: every document found is already stored."]
+            # Catalogs and alert rules wait for a restart; the site documents do
+            # not. Say which is which rather than one hint for all of them.
+            return [
+                "Imported " + ", ".join(keys) + ".",
+                *(f"{key}: {_how_it_applies(_find(key))}" for key in keys if key in KEY_KINDS),
+            ]
+        if args.command == "document":
+            from pathlib import Path
+
+            from serving.config.documents import DOCUMENT_KEYS, encode, parse, validate
+
+            key = DOCUMENT_KEYS[args.kind]
+            text = encode(parse(Path(args.path).read_text()))
+            validate(key, text)
+            await app_config.update({key: text}, updated_by=UPDATED_BY)
+            return [f"Saved {args.kind}. " + _how_it_applies(_find(key))]
         if args.command == "list":
             return list_entries(app_config.describe())
         if args.command == "get":
@@ -412,6 +457,39 @@ def build_parser() -> argparse.ArgumentParser:
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     commands.add_parser("list", help="list every setting")
+    commands.add_parser("status", help="show configuration status without values")
+    legacy = commands.add_parser(
+        "import-legacy",
+        help="explicitly import a previous-release manifest and the files it was in force with",
+        description=(
+            "Import the configuration a previous release had in force: the manifest "
+            "(DISTRIBUTION_CONFIG_PATH) when it ran with DISTRIBUTION_CONFIG_MODE=active, "
+            "the documents it names, and the files the environment named ahead of it "
+            "(ALERTS_CONFIG_PATH, MODELS_CONFIG_PATH, ROUTING_CONFIG_PATH). A setting "
+            "already stored is never replaced."
+        ),
+    )
+    legacy.add_argument("path", nargs="?", help="the previous release's YAML manifest")
+    legacy.add_argument(
+        "--alerts",
+        metavar="PATH",
+        help="an alert rules file (YAML or JSON), ahead of ALERTS_CONFIG_PATH and the manifest",
+    )
+    legacy.add_argument(
+        "--include-dark",
+        action="store_true",
+        help=(
+            "also import a manifest the previous release ran dark, which applies its site "
+            "identity, features and branding now"
+        ),
+    )
+    document = commands.add_parser(
+        "document", help="validate and store an application JSON document"
+    )
+    document.add_argument(
+        "kind", choices=("models", "routing", "alerts", "distribution", "branding")
+    )
+    document.add_argument("path")
     get = commands.add_parser("get", help="show one setting")
     get.add_argument("key", help="the setting's name, e.g. JWT_ALGORITHM")
     store = commands.add_parser("set", help="store a value, validated as the console does")
@@ -481,7 +559,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except app_config.ConfigUpdateError as exc:
         print(f"Refused: {exc.detail}", file=sys.stderr)
         return 1
-    except ManageError as exc:
+    except (ManageError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 1
     except _DATABASE_ERRORS as exc:

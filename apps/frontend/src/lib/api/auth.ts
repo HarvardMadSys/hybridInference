@@ -7,10 +7,11 @@ import {
   withSessionLock,
 } from './client';
 import { config } from '@/config/env';
+import { APIError } from '@/lib/utils/errors';
 
 const API_BASE = config.apiBase;
 
-export interface SignupRequest {
+interface SignupRequest {
   email: string;
   password: string;
   user_name: string;
@@ -27,7 +28,7 @@ export interface SignupResponse {
   requires_approval: boolean;
 }
 
-export interface LoginRequest {
+interface LoginRequest {
   /**
    * An email address, or the login name of an account created without one
    * (the first-run administrator). The field keeps its name on the wire: the
@@ -62,7 +63,7 @@ export type PhoneCodePurpose =
   | 'bind_email'
   | 'set_password';
 
-export interface PhoneSignupRequest {
+interface PhoneSignupRequest {
   phone: string;
   code: string;
   user_name: string;
@@ -119,7 +120,7 @@ export async function loginPhone(data: { phone: string; code: string }): Promise
   return result;
 }
 
-export interface BindEmailResponse {
+interface BindEmailResponse {
   message: string;
   email: string;
   email_verified: boolean;
@@ -187,17 +188,32 @@ export async function login(data: LoginRequest): Promise<LoginResponse> {
   return result;
 }
 
+/**
+ * Sign the current account out of this browser.
+ *
+ * Done only on the server's word: an ok answer, or a 401 -- its session had
+ * already ended, the way a refused token renewal says too. Anything else (a
+ * 5xx while the gateway restarts, a 503 from a busy pool, a 429, no answer)
+ * leaves the session and its 30-day cookie in place, so this throws and keeps
+ * the token: the console goes on showing the account, and the caller says so
+ * and lets the user try again.
+ */
 export async function logout(): Promise<void> {
   const token = getAccessToken();
   if (!token) return;
 
+  let resp: Response;
   try {
-    await fetchWithAuth(API_BASE, '/auth/logout', {
+    resp = await fetchWithAuth(API_BASE, '/auth/logout', {
       method: 'POST',
     });
-  } finally {
-    setAccessToken(null);
+  } catch (error) {
+    // The session ended as its token was renewed; the client has let it go.
+    if (error instanceof APIError && error.code === 'TOKEN_EXPIRED') return;
+    throw error;
   }
+  if (!resp.ok && resp.status !== 401) await jsonOrThrow(resp);
+  setAccessToken(null);
 }
 
 /**
@@ -239,7 +255,7 @@ export interface AccountSummary {
   agent_access?: boolean | null;
 }
 
-export interface AccountsResponse {
+interface AccountsResponse {
   active_user_id: string | null;
   accounts: AccountSummary[];
   max_accounts: number;
@@ -293,16 +309,16 @@ export async function removeAccount(userId: string): Promise<AccountsResponse> {
   return jsonOrThrow<AccountsResponse>(resp);
 }
 
-/** Sign every account out of this browser. */
+/**
+ * Sign every account out of this browser. Like `logout`, only on the server's
+ * word: a failure leaves the cookie, so it throws and keeps the token.
+ */
 export async function logoutAll(): Promise<void> {
-  try {
-    const resp = await withSessionLock(() =>
-      safeFetch(`${API_BASE}/auth/logout-all`, { method: 'POST', credentials: 'include' }),
-    );
-    await jsonOrThrow(resp);
-  } finally {
-    setAccessToken(null);
-  }
+  const resp = await withSessionLock(() =>
+    safeFetch(`${API_BASE}/auth/logout-all`, { method: 'POST', credentials: 'include' }),
+  );
+  await jsonOrThrow(resp);
+  setAccessToken(null);
 }
 
 /**

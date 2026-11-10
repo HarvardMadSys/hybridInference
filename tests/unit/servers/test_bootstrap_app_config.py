@@ -16,6 +16,12 @@ from serving.servers import bootstrap
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
 
+@pytest.fixture(autouse=True)
+def _schema_is_current(monkeypatch):
+    """These boots run on fake connections; the schema check has tests of its own."""
+    monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+
+
 @pytest.fixture
 def boot_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_ENABLED", "true")
@@ -31,6 +37,12 @@ def boot_env(monkeypatch, tmp_path):
 def _connection() -> MagicMock:
     connection = MagicMock()
     connection.close = AsyncMock()
+    connection.execute = AsyncMock()
+    connection.fetch = AsyncMock(return_value=[])
+    transaction = AsyncMock()
+    transaction.__aenter__ = AsyncMock(return_value=transaction)
+    transaction.__aexit__ = AsyncMock(return_value=False)
+    connection.transaction = MagicMock(return_value=transaction)
     return connection
 
 
@@ -128,6 +140,10 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
 
     db_logger = AsyncMock()
     db_logger.pool = MagicMock()
+    connection = AsyncMock()
+    connection.fetch.return_value = []
+    connection.execute.return_value = "INSERT 0 0"
+    db_logger.pool.acquire.return_value.__aenter__.return_value = connection
     monkeypatch.setattr(bootstrap, "_init_db_logger", MagicMock(return_value=db_logger))
     monkeypatch.setattr(bootstrap, "_init_router_and_models", AsyncMock(return_value=({}, [])))
     monkeypatch.setattr(bootstrap, "_apply_routing_manager", MagicMock(return_value=None))

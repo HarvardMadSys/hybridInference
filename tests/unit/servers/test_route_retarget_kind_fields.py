@@ -47,7 +47,7 @@ def _pinned_openrouter_route() -> FixedRouter:
 def _op_store() -> MagicMock:
     op_store = MagicMock()
     op_store.list_disabled_provider_env_key_hashes = AsyncMock(return_value=set())
-    op_store.list_provider_keys_full = AsyncMock(return_value=[])
+    op_store.list_provider_keys_full = AsyncMock(return_value=["cpk_chutes-db-key-1234567890"])
     op_store.get_provider_key_full = AsyncMock(
         return_value=("chutes", "cpk_chutes-db-key-1234567890")
     )

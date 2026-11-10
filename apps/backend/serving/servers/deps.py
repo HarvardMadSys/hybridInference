@@ -66,6 +66,7 @@ if TYPE_CHECKING:
     from serving.auto_mode import AutoMode
     from serving.batch.model_limits import BatchModelLimits
     from serving.batch.scheduler import BatchScheduler
+    from serving.config.batch_routes import BatchRouteResolver
     from serving.config.disabled_providers import DisabledProviderResolver
     from serving.config.model_concurrency import ModelConcurrencyResolver
     from serving.config.model_visibility import ModelVisibilityResolver
@@ -111,6 +112,7 @@ class AppServices:
     disabled_provider_resolver: DisabledProviderResolver | None = None
     route_state_resolver: RouteStateResolver | None = None
     offload_route_resolver: OffloadRouteResolver | None = None
+    batch_route_resolver: BatchRouteResolver | None = None
     user_concurrency_limiter: UserConcurrencyLimiter | None = None
     alert_engine: AlertEngine | None = None
     runtime_settings: Any | None = None
@@ -131,14 +133,12 @@ class AppServices:
     # Batch input/output files and webhooks, over the batch store's pool.
     batch_file_store: BatchFileStore | None = None
     batch_webhook_store: BatchWebhookStore | None = None
-    # The batch store while its schema migration waits for a lock at boot:
-    # nothing is served from it, but the hard-delete purge still goes through it.
-    batch_store_pending: BatchStore | None = None
     weight_override_refresh_task: Any | None = None
     routewise_settings_refresh_task: Any | None = None
     disabled_provider_refresh_task: Any | None = None
     route_state_refresh_task: Any | None = None
     offload_route_refresh_task: Any | None = None
+    routing_sync: Any | None = None
 
 
 def model_router_transition_lock(
@@ -221,8 +221,8 @@ async def get_batch_webhook_store(
 async def get_batch_store_for_purge(
     services: AppServices = Depends(get_services),
 ) -> BatchStore | None:
-    """Dependency to obtain the batch store an erasure must purge, ready or not."""
-    return getattr(services, "batch_store", None) or getattr(services, "batch_store_pending", None)
+    """Dependency to obtain the batch store an erasure must purge, whatever ``BATCH_ENABLED`` says."""
+    return getattr(services, "batch_store", None)
 
 
 async def get_batch_model_limits(
@@ -230,13 +230,6 @@ async def get_batch_model_limits(
 ) -> BatchModelLimits | None:
     """Dependency to obtain the per-model batch concurrency caps (if configured)."""
     return getattr(services, "batch_model_limits", None)
-
-
-async def get_batch_scheduler(
-    services: AppServices = Depends(get_services),
-) -> BatchScheduler | None:
-    """Dependency to obtain the in-process batch worker (if running)."""
-    return getattr(services, "batch_scheduler", None)
 
 
 async def get_user_concurrency_limiter(
@@ -329,6 +322,31 @@ async def get_cost_tracker(
     return _CT(op_store=services.operational_store, pricing=pricing)
 
 
+async def require_live_session(op_store: Any, payload: dict[str, Any]) -> None:
+    """Refuse an access token whose session has ended.
+
+    A token is good until it expires, but its session can end first: signing
+    out, a password change or reset, signing out the other devices, a
+    suspension or deletion all revoke or delete the ``auth_sessions`` row its
+    ``sid`` names. The store answers from a cache of a few seconds that every
+    such revocation in this process clears
+    (:meth:`serving.storage.cache.CachedOperationalStore.session_is_live`).
+    Every token this gateway mints carries a ``sid``; one without is refused.
+
+    Raises:
+        HTTPException: 401 when the session is not live; the console then
+            refreshes, which fails the same way for an ended session.
+    """
+    sid = payload.get("sid")
+    if not isinstance(sid, str) or not sid:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+    if not await op_store.session_is_live(payload["sub"], sid):
+        raise HTTPException(
+            status_code=401,
+            detail="This session has ended. Please login again.",
+        )
+
+
 async def get_current_user(
     authorization: str | None = Header(None),
     op_store=Depends(get_operational_store),
@@ -347,7 +365,8 @@ async def get_current_user(
         setup administrator), whose token carries an empty ``email`` claim.
 
     Raises:
-        HTTPException: 401 if token is missing, invalid, or expired.
+        HTTPException: 401 if token is missing, invalid, or expired, or its
+            session has ended (see :func:`require_live_session`).
     """
     from serving.utils.jwt import verify_access_token
 
@@ -388,6 +407,8 @@ async def get_current_user(
             status_code=503,
             detail=auth_database_detail(),
         )
+
+    await require_live_session(op_store, payload)
 
     user_row = await op_store.get_user_by_id(user_id)
 
@@ -494,6 +515,7 @@ async def verify_admin_access(
         user_id = payload.get("sub")
 
         if op_store and user_id:
+            await require_live_session(op_store, payload)
             user_row = await op_store.get_user_by_id(user_id)
             if not user_row or user_row["status"] != "active":
                 raise HTTPException(status_code=403, detail="Admin account is no longer active.")
@@ -542,7 +564,9 @@ async def verify_admin_access(
 
     import hmac as _hmac
 
-    if not _hmac.compare_digest(token, admin_token):
+    # As bytes: compare_digest refuses two str with non-ASCII characters, and
+    # the header can carry any byte -- a TypeError there was a 500, not a 401.
+    if not _hmac.compare_digest(token.encode(), admin_token.encode()):
         raise HTTPException(
             status_code=401,
             detail="Invalid authentication token.",

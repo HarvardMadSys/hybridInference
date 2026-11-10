@@ -22,6 +22,11 @@ for a slot instead of piling onto the wire:
   handled by the decrease rule above, which exactly undoes the probe — logged as
   such so an operator can see the ceiling being found rather than a limit
   oscillating for no visible reason.
+- A success also probes once ``probe_interval_s`` (60 s) have passed since the
+  limit last moved, so a burst of 429s costs minutes rather than hours: at one
+  request at a time, 100 successes took about two hours. Each probe a 429 takes
+  back doubles that wait for the bucket, up to 32 times, and a probe that holds
+  resets it, so a bucket at its provider's real ceiling probes it rarely.
 
 Only a 200 advances that counter. An error is not evidence the provider has
 headroom, so a 4xx, a 5xx, a timeout or a connection failure must never earn a
@@ -46,6 +51,11 @@ work. Routes declare ``deployment_type`` explicitly; the default ``auto``
 reuses ``registry._LOCAL_HOSTS`` for backward-compatible hostname detection.
 The one queue a local endpoint can have here is the engine hold below, which a
 router asks for and which counts something else entirely.
+
+**A pooled route looks for room before it waits.** A request whose key is at
+its limit takes a sibling key's free slot instead, when one has one
+(:meth:`UpstreamConcurrencyLimiter.try_acquire`); only when every key the caller
+may use is full does it queue, on the key it would have used.
 
 **At the limit a request waits, then fails over.** Waiting is FIFO through a
 future queue, bounded by ``acquire_timeout``. On timeout the caller gets
@@ -144,6 +154,13 @@ class UpstreamQueueWaitExpired(UpstreamSaturated):
     reader (key rotation, the breaker exemption, the Anthropic surface) must keep
     treating it that way.
     """
+
+
+#: Seconds after a bucket's limit last moved that a success probes it upward,
+#: however few successes it has counted.
+DEFAULT_PROBE_INTERVAL_S = 60.0
+#: How many times that a bucket waits at most, after probes a 429 took back.
+_MAX_PROBE_BACKOFF = 32
 
 
 def key_fingerprint(api_key: str | None) -> str:
@@ -349,9 +366,18 @@ class _Bucket:
     # Successful (HTTP 200) responses since the last probe or 429. Nothing else
     # touches it: every other outcome leaves it unchanged, and a 429 resets it.
     successes_since_probe: int = 0
-    # True between a probe raising the limit and the next 429 or probe. Only
-    # used to label the log line when a 429 undoes the probe it just granted.
+    # True between a probe raising the limit and the next 429 or probe. Labels
+    # the log line when a 429 undoes the probe it just granted, and tells a
+    # probe whether the one before it held.
     probing: bool = False
+    # Seconds after the limit last moved that a success probes, whatever the
+    # count: the recovery from a burst of 429s.
+    probe_interval_s: float = 60.0
+    # When the limit last moved (``time.monotonic``), and how many times
+    # ``probe_interval_s`` the next time-based probe waits: doubled by each probe
+    # a 429 takes back, reset by one that holds.
+    last_change: float = field(default_factory=time.monotonic)
+    probe_backoff: int = 1
     waiters: deque[asyncio.Future[None]] = field(default_factory=deque)
     # The loop the queued futures belong to. Futures are bound to the loop that
     # created them, so a bucket that outlives its loop (tests build a fresh loop
@@ -425,8 +451,13 @@ class _Bucket:
         # one, so there is no separate rollback — but say so in the log, or the
         # pair reads as an unexplained limit flapping up and down.
         reverted_probe = self.probing
+        if reverted_probe:
+            # The provider refused the headroom just probed: wait longer before
+            # the next time-based probe of this bucket.
+            self.probe_backoff = min(self.probe_backoff * 2, _MAX_PROBE_BACKOFF)
         self.probing = False
         self.successes_since_probe = 0
+        self.last_change = time.monotonic()
         # A bucket already at the floor logs nothing, unless it is a probe being
         # taken back: that one is a state change an operator should see even
         # though the number did not move.
@@ -434,11 +465,17 @@ class _Bucket:
             self._log_limit_change(old, "429_reverted_probe" if reverted_probe else "429")
 
     def _count_success(self) -> None:
-        """Count one HTTP 200 and probe for headroom every N of them."""
+        """Count one HTTP 200 and probe for headroom every N of them, or when it is time."""
         self.successes_since_probe += 1
-        if self.successes_since_probe < self.probe_success_interval:
+        now = time.monotonic()
+        due_by_time = now - self.last_change >= self.probe_interval_s * self.probe_backoff
+        if self.successes_since_probe < self.probe_success_interval and not due_by_time:
             return
+        if self.probing:
+            # The previous probe drew no 429 before this one: it held.
+            self.probe_backoff = 1
         self.successes_since_probe = 0
+        self.last_change = now
         old = self.limit
         self.limit = min(self.max_limit, self.limit + 1)
         self.probing = True
@@ -566,12 +603,14 @@ class UpstreamConcurrencyLimiter:
         max_limit: int = 64,
         probe_success_interval: int = 100,
         acquire_timeout: float = 30.0,
+        probe_interval_s: float = DEFAULT_PROBE_INTERVAL_S,
     ) -> None:
         self._enabled = enabled
         self._max_limit = max(1, int(max_limit))
         self._initial_limit = min(self._max_limit, max(1, int(initial_limit)))
         self._probe_success_interval = max(1, int(probe_success_interval))
         self._acquire_timeout = float(acquire_timeout)
+        self._probe_interval_s = max(0.0, float(probe_interval_s))
         self._buckets: dict[tuple[str, str], _Bucket] = {}
         self._gates: dict[str, _EngineGate] = {}
 
@@ -706,6 +745,36 @@ class UpstreamConcurrencyLimiter:
             bucket.abandon(waiter)
             raise
         # Woken: ``wake_waiters`` already reserved the slot in our name.
+        report_sent()
+        return UpstreamSlot(bucket)
+
+    def try_acquire(
+        self,
+        provider: str,
+        api_key: str | None,
+        *,
+        base_url: str | None = None,
+        deployment_type: DeploymentType = "auto",
+    ) -> UpstreamSlot | None:
+        """Take an outbound slot for *provider*/*api_key* if one is free now, else None.
+
+        Never waits, and changes nothing when it returns None: a pooled adapter
+        asks each key the caller may use before it queues on one, so a request
+        never waits on a full key while a sibling key has room. A key with
+        waiters is full for a newcomer, as in :meth:`acquire`. A self-hosted
+        endpoint returns None: its admission is the engine's, the same whichever
+        key is used, and :meth:`acquire` decides it.
+        """
+        if is_local_endpoint(base_url, deployment_type=deployment_type):
+            return None
+        if not self._enabled:
+            report_sent()
+            return _INERT_SLOT
+        bucket = self._bucket_for(provider, api_key)
+        bucket.rebind_loop(asyncio.get_running_loop())
+        if not bucket.has_free_slot():
+            return None
+        bucket.take_slot()
         report_sent()
         return UpstreamSlot(bucket)
 
@@ -866,6 +935,7 @@ class UpstreamConcurrencyLimiter:
                 limit=self._initial_limit,
                 max_limit=self._max_limit,
                 probe_success_interval=self._probe_success_interval,
+                probe_interval_s=self._probe_interval_s,
             )
             self._buckets[(label, fingerprint)] = bucket
         return bucket
@@ -933,6 +1003,19 @@ async def acquire_upstream_slot(
 ) -> UpstreamSlot:
     """Acquire a slot from the process-wide limiter. See :meth:`acquire`."""
     return await get_upstream_limiter().acquire(
+        provider, api_key, base_url=base_url, deployment_type=deployment_type
+    )
+
+
+def try_acquire_upstream_slot(
+    provider: str,
+    api_key: str | None,
+    *,
+    base_url: str | None = None,
+    deployment_type: DeploymentType = "auto",
+) -> UpstreamSlot | None:
+    """Take a free slot from the process-wide limiter now, or None. See :meth:`try_acquire`."""
+    return get_upstream_limiter().try_acquire(
         provider, api_key, base_url=base_url, deployment_type=deployment_type
     )
 

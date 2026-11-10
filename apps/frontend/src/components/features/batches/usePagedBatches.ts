@@ -5,7 +5,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
 import { getErrorMessage } from '@/lib/utils/errors';
 
-export interface PagedBatches {
+interface PagedBatches {
   batches: ConsoleBatch[];
   hasMore: boolean;
   loading: boolean;

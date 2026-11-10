@@ -57,12 +57,24 @@ export interface ConsoleBatch {
   request_counts: { total: number; completed: number; failed: number };
   cancelled: number;
   expired: number;
-  usage: { input_tokens: number; output_tokens: number; total_tokens: number };
+  usage: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    /**
+     * The part of `input_tokens` the upstream served from its prompt cache.
+     * Null for a batch stored before cache hits were recorded; absent from an
+     * older gateway.
+     */
+    cached_input_tokens?: number | null;
+  };
   /** What the batch's finished attempts were billed; attempts of unknown cost are not in it. */
   cost_usd: number;
   /** Attempts whose cost is unknown (an upstream may have run without reporting back). */
   cost_unknown_attempts: number;
   created_at: number | null;
+  /** When its requests began to run; null while it is validating. Absent from an older gateway. */
+  started_at?: number | null;
   expires_at: number | null;
   ended_at: number | null;
   results_expires_at: number | null;
@@ -76,12 +88,23 @@ export interface ConsoleBatch {
   protocol_profile: string | null;
   /** The name and description given in the console (null for a batch the API created). */
   name?: string | null;
+  /** The owner's display (or login) name and email: in the administrators' list only. */
+  user_name?: string | null;
+  user_email?: string | null;
   description?: string | null;
   /** `console` or `api`: where the batch was created. */
   created_via?: 'console' | 'api';
   /** Set while the batch is paused: until when, and why (`quota`, `role`, or null if unknown). */
   paused_until?: number | null;
-  paused_reason?: 'quota' | 'role' | string | null;
+  paused_reason?:
+    | 'quota'
+    | 'monthly_quota'
+    | 'role'
+    | 'key_budget'
+    | 'project_budget'
+    | 'account_budget'
+    | string
+    | null;
 }
 
 /** A source file's state for its owner. */
@@ -175,7 +198,7 @@ export async function getMyBatchCapabilities(): Promise<BatchCapabilities> {
 }
 
 /** Filters of the batch list: a category (or exact status), and a name or exact id. */
-export interface MyBatchFilters {
+interface MyBatchFilters {
   category?: BatchCategory | '';
   status?: BatchStatus | '';
   q?: string;
@@ -281,10 +304,6 @@ export async function downloadSourceFile(fileId: string, filename: string): Prom
 
 /** The two types the console creates. */
 export type ConsoleTarget = 'chat' | 'embeddings';
-export const CONSOLE_ENDPOINTS: Record<ConsoleTarget, string> = {
-  chat: '/v1/chat/completions',
-  embeddings: '/v1/embeddings',
-};
 
 export interface CatalogModel {
   id: string;
@@ -308,7 +327,8 @@ export interface BatchCreateContext {
     max_active_batches: number;
     file_retention_days: number;
     result_retention_days: number;
-    completion_window_hours: number;
+    /** Null when new batches have no window: none of their requests expire. */
+    completion_window_hours: number | null;
     /** How long the gateway is certain to recognise a submission key again. */
     submission_replay_seconds: number;
   };
@@ -566,7 +586,7 @@ export async function listMyWebhookEvents(): Promise<{ data: BatchWebhookEvent[]
 
 // -- administrators ------------------------------------------------------------------
 
-export interface AdminBatchFilters {
+interface AdminBatchFilters {
   userId?: string;
   /** A status as the list shows it (a file batch being sealed is `finalizing`). */
   status?: BatchStatus | '';
@@ -593,21 +613,75 @@ export interface AdminBatchUserSummary {
   failed: number;
   /** Requests a cancel settled before they ran: done, never answered. */
   cancelled: number;
+  /**
+   * Requests that never started before their batch's window closed: a part of
+   * `failed`, as in each batch's counts. Absent from a gateway older than it.
+   */
+  expired?: number;
   cost_usd: number;
   prompt_tokens: number;
   completion_tokens: number;
   unknown_cost_attempts: number;
+  /** Of `prompt_tokens`, those served from a prompt cache, over the batches that recorded it. */
+  cached_tokens?: number;
+  /** Batches stored before cached input was recorded: left out of `cached_tokens`. */
+  cache_unrecorded_batches?: number;
   last_created_at: number | null;
+  /** The owner's display (or login) name and email, when the account has them. */
+  user_name?: string | null;
+  email?: string | null;
 }
 
 export interface AdminBatchSummary {
   users: AdminBatchUserSummary[];
-  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at'>;
+  totals: Omit<AdminBatchUserSummary, 'user_id' | 'last_created_at' | 'user_name' | 'email'>;
 }
 
 export async function getBatchSummary(): Promise<AdminBatchSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/batch/summary');
   return jsonOrThrow<AdminBatchSummary>(resp);
+}
+
+/** One request of a batch, with what was sent and answered: administrators only. */
+export interface AdminBatchItem {
+  id: number;
+  custom_id: string;
+  model_id: string;
+  status: string;
+  status_code: number | null;
+  attempts: number;
+  /** The request body as it was stored. */
+  request: unknown;
+  /** The answer, once the request succeeded. */
+  response: unknown;
+  error: { code?: string; message?: string } | null;
+  prompt_tokens: number | null;
+  completion_tokens: number | null;
+  completed_at: number | null;
+}
+
+interface AdminBatchItemPage {
+  object: 'list';
+  data: AdminBatchItem[];
+  has_more: boolean;
+  last_id: number | null;
+}
+
+/**
+ * A page of one batch's requests with their prompts and answers. Refused (403)
+ * where the gateway does not keep prompts; opening the first page is audited.
+ */
+export async function getAdminBatchRequests(
+  batchId: string,
+  after = 0,
+  limit = 25,
+): Promise<AdminBatchItemPage> {
+  const params = new URLSearchParams({ after: String(after), limit: String(limit) });
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/batch/jobs/${encodeURIComponent(batchId)}/requests?${params.toString()}`,
+  );
+  return jsonOrThrow<AdminBatchItemPage>(resp);
 }
 
 export async function adminCancelBatch(batchId: string): Promise<ConsoleBatch> {
@@ -625,4 +699,90 @@ export const FINAL_STATUSES = new Set<BatchStatus>(['completed', 'failed', 'expi
 /** Whether a batch can still be cancelled. */
 export function isCancellable(batch: ConsoleBatch): boolean {
   return ['validating', 'in_progress'].includes(batch.status) && batch.phase !== 'sealing';
+}
+
+// ----------------------------------------------------------------------------
+// Model queue — an on-demand model host's scheduler queue (Admin → Batches)
+// ----------------------------------------------------------------------------
+
+/** One scheduler job serving, or waiting to serve, a model. Times are epoch seconds. */
+export interface ModelQueueJob {
+  job_id: string | null;
+  /** The scheduler's own state, e.g. `PENDING` or `RUNNING`. */
+  state: string;
+  /** Why a pending job waits, as the scheduler says (`Priority`, `Resources`, …). */
+  reason: string | null;
+  partition: string | null;
+  /** The node(s) a running job holds. */
+  nodes: string | null;
+  submitted_at: number | null;
+  started_at: number | null;
+  /** The scheduler's estimate of when a pending job starts. */
+  expected_start_at: number | null;
+  /** When a running job's walltime ends. */
+  ends_at: number | null;
+}
+
+export interface ModelQueueModel {
+  /** The name the host serves the model under. */
+  model: string;
+  /**
+   * How the host stands with the model: usually `serving`, `loading`, `queued`
+   * (waiting for a GPU) or `idle`; kept open for a host that reports another.
+   */
+  state: string;
+  job_name: string | null;
+  last_request_at: number | null;
+  walltime_seconds: number | null;
+  startup_estimate_seconds: number | null;
+  partitions: string | null;
+  constraint: string | null;
+  /** Nodes its next job keeps off, after failures there. */
+  avoided_nodes: string[];
+  jobs: ModelQueueJob[];
+  /** This gateway's models routed to it on the host. */
+  gateway_models: string[];
+  /** Batch requests of those models waiting / running; null when unknown. */
+  batch_queued: number | null;
+  batch_running: number | null;
+}
+
+export interface ModelQueueFailedNode {
+  node: string;
+  jobs: string[];
+  last_failed_at: number | null;
+  avoided_until: number | null;
+  /** Every model's jobs avoid it, not only those that failed there. */
+  avoided_by_all: boolean;
+}
+
+export interface ModelQueuePolicy {
+  pending_idle_cancel_seconds: number | null;
+  running_idle_stop_seconds: number | null;
+  renew_before_seconds: number | null;
+  node_avoid_seconds: number | null;
+}
+
+export interface ModelQueue {
+  /** Whether `MODEL_QUEUE_STATUS_URL` is set. */
+  configured: boolean;
+  /** Why the host's status could not be read. */
+  error: string | null;
+  /** The host's name for itself, e.g. its cluster. */
+  cluster: string | null;
+  scheduler: string | null;
+  generated_at: number | null;
+  /** When the host last read its scheduler's queue; null if never. */
+  refreshed_at: number | null;
+  started_at: number | null;
+  poll_interval_seconds: number | null;
+  policy: ModelQueuePolicy | null;
+  models: ModelQueueModel[];
+  failed_nodes: ModelQueueFailedNode[];
+}
+
+/** The on-demand model host's queue, with the batch requests waiting per model. */
+export async function getModelQueue(): Promise<ModelQueue> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/batch/model-queue');
+  return jsonOrThrow<ModelQueue>(resp);
 }

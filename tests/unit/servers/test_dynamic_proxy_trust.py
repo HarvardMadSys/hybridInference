@@ -16,7 +16,7 @@ from starlette.routing import Route
 
 from serving.config.settings import Settings
 from serving.servers.middleware.proxy_trust import KubernetesProxyTrustMiddleware
-from serving.utils.request_ip import ClientIpInfo, get_client_ip_info, preset_client_ip_info
+from serving.utils.request_ip import ClientIpInfo, get_client_ip_info
 
 if TYPE_CHECKING:
     from starlette.requests import Request
@@ -198,10 +198,7 @@ async def test_network_admission_replaces_any_preexisting_identity(monkeypatch, 
         # admission must still derive identity from its fresh proxy snapshot,
         # even if a caller left a typed internal identity or malformed value.
         state = scope.setdefault("state", {})
-        if isinstance(preset, ClientIpInfo):
-            preset_client_ip_info(state, preset)
-        else:
-            state["_hybrid_inference_client_ip_info"] = preset
+        state["_hybrid_inference_client_ip_info"] = preset
         await app(scope, receive, send)
 
     response = await _request(seeded_scope)
@@ -285,6 +282,7 @@ def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middlewar
     from fastapi import FastAPI
 
     from serving.servers.routers import health
+    from serving.utils.single_flight import SingleFlightCache
 
     monkeypatch.setattr("serving.servers.middleware.proxy_trust.get_settings", lambda: settings)
     monkeypatch.setattr("serving.utils.request_ip.get_settings", lambda: settings)
@@ -298,6 +296,10 @@ def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middlewar
         }
     )
     monkeypatch.setattr(health, "_test_store_health", store_check)
+    # Readiness shares /health's probe: start each app without one kept.
+    monkeypatch.setattr(
+        health, "_HEALTH_PROBES", SingleFlightCache(health.HEALTH_PROBE_TTL_SEC, max_entries=1)
+    )
     inner = FastAPI()
     inner.include_router(health.router)
     inner.dependency_overrides[health.get_operational_store] = lambda: None
@@ -489,15 +491,34 @@ async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch
     import asyncio
     import logging
 
+    # Each 50 ms hold begins only once the waiting request's clock is running.
+    # A task starts its clock when it is first scheduled, after the holder has
+    # begun, so an ungated hold could measure a few ms short of 100.
     class Serialized(_Discovery):
         def __init__(self, result):
             super().__init__(result)
             self.lock = asyncio.Lock()
+            self.entered = 0
+            self.both_entered = asyncio.Event()
 
         async def get_snapshot(self):
+            self.entered += 1  # this request's clock is already running
+            if self.entered == 2:
+                self.both_entered.set()
             async with self.lock:  # one refresh at a time, like the real provider
+                await self.both_entered.wait()
                 await asyncio.sleep(0.05)
                 return await super().get_snapshot()
+
+    class Contended(asyncio.Lock):
+        def __init__(self):
+            super().__init__()
+            self.waiter = asyncio.Event()
+
+        async def acquire(self):
+            if self.locked():
+                self.waiter.set()  # the middleware started its clock before this
+            return await super().acquire()
 
     discovery = Serialized(_snapshot("11.0.0.21/32"))
     app = _logged_app(monkeypatch, _settings(), discovery)
@@ -509,8 +530,10 @@ async def test_request_log_includes_provider_and_snapshot_lock_waits(monkeypatch
     assert second >= 100.0  # waited for the other request's refresh
 
     caplog.clear()
+    app._lock = Contended()
     async with app._lock:  # hold the provider lock, e.g. during reconfiguration
         pending = asyncio.ensure_future(_request(app))
+        await app._lock.waiter.wait()
         await asyncio.sleep(0.05)
     await pending
     (record,) = _request_records(caplog)

@@ -52,7 +52,8 @@ MAX_BODY_MB_KEY = "BATCH_MAX_BODY_MB"
 MAX_ACTIVE_KEY = "BATCH_MAX_ACTIVE_PER_USER"
 #: Unfinished requests one user may have, across every batch.
 MAX_QUEUED_KEY = "BATCH_MAX_QUEUED_REQUESTS_PER_USER"
-#: Hours an inline batch has to finish before its unstarted requests expire.
+#: Hours a new batch has to start its requests before the unstarted ones
+#: expire; 0 means no limit, for inline and file batches alike.
 WINDOW_HOURS_KEY = "BATCH_COMPLETION_WINDOW_HOURS"
 #: Days a finished batch, with its results, is kept before it is purged.
 RETENTION_DAYS_KEY = "BATCH_RETENTION_DAYS"
@@ -60,6 +61,8 @@ RETENTION_DAYS_KEY = "BATCH_RETENTION_DAYS"
 MAX_LINE_KB_KEY = "BATCH_MAX_LINE_KB"
 #: Largest stored result of one request, in KiB.
 MAX_RESULT_KB_KEY = "BATCH_MAX_RESULT_KB"
+#: Results one batch may store in all, in MiB; 0 means no limit.
+MAX_RESULTS_PER_BATCH_MB_KEY = "BATCH_MAX_RESULTS_MB_PER_BATCH"
 #: Bytes of uploaded files one user may store, in MiB.
 FILES_MAX_TOTAL_MB_KEY = "BATCH_FILES_MAX_TOTAL_MB_PER_USER"
 #: Files one user may upload per hour.
@@ -77,6 +80,8 @@ INTERACTIVE_RESERVE_KEY = "BATCH_INTERACTIVE_RESERVE"
 ANTHROPIC_VERSIONS_KEY = "BATCH_ANTHROPIC_VERSIONS"
 #: Webhooks may target private, loopback or link-local addresses (testing only).
 WEBHOOK_ALLOW_PRIVATE_KEY = "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS"
+#: Hours a model may wait for capacity upstream before one alert says so.
+QUEUED_ALERT_HOURS_KEY = "BATCH_QUEUED_ALERT_HOURS"
 
 DEFAULT_MIN_ROLE = "internal"
 DEFAULT_MODEL_CONCURRENCY = 64
@@ -89,18 +94,25 @@ MAX_WINDOW_HOURS = 168
 DEFAULT_RETENTION_DAYS = 7
 DEFAULT_MAX_LINE_KB = 4096
 DEFAULT_MAX_RESULT_KB = 4096
+#: Fits the largest ordinary batch -- 50,000 one-input requests to a 4096-dimension
+#: embeddings model store about 4.3 GB -- while a batch of large results (48
+#: inputs a request: about 195 GiB at 4 MiB a result) stops far short of that.
+DEFAULT_MAX_RESULTS_PER_BATCH_MB = 8192
 DEFAULT_FILES_MAX_TOTAL_MB = 512
 DEFAULT_FILE_UPLOADS_PER_HOUR = 60
 DEFAULT_FILE_RETENTION_DAYS = 30
 #: 0 means no cap for that role.
 DEFAULT_ROLE_CONCURRENCY: dict[str, int] = {"free": 8, "pro": 16, "internal": 64, "admin": 64}
 DEFAULT_INTERACTIVE_RESERVE = 0
+#: 0 means never.
+DEFAULT_QUEUED_ALERT_HOURS = 6
 #: Every Anthropic version a batch can be validated and run under (see
 #: :mod:`serving.batch.profiles`); the setting chooses among these.
 KNOWN_ANTHROPIC_VERSIONS: tuple[str, ...] = ("2023-06-01", "2026-10-21")
 DEFAULT_ANTHROPIC_VERSIONS = ",".join(KNOWN_ANTHROPIC_VERSIONS)
 
-#: The window of file batches: the protocol fixes it at 24 hours.
+#: The window of file batches: the protocol fixes it at 24 hours, unless
+#: ``BATCH_COMPLETION_WINDOW_HOURS`` is 0 (no limit for any batch).
 PROTOCOL_WINDOW_SECONDS = 24 * 3600
 
 
@@ -121,6 +133,8 @@ class BatchConfig:
     retention_days: int = DEFAULT_RETENTION_DAYS
     max_line_bytes: int = DEFAULT_MAX_LINE_KB * 1024
     max_result_bytes: int = DEFAULT_MAX_RESULT_KB * 1024
+    #: 0 means no limit.
+    max_results_per_batch_bytes: int = DEFAULT_MAX_RESULTS_PER_BATCH_MB * 1024 * 1024
     files_max_total_bytes: int = DEFAULT_FILES_MAX_TOTAL_MB * 1024 * 1024
     file_uploads_per_hour: int = DEFAULT_FILE_UPLOADS_PER_HOUR
     file_retention_days: int = DEFAULT_FILE_RETENTION_DAYS
@@ -128,11 +142,26 @@ class BatchConfig:
     interactive_reserve: int = DEFAULT_INTERACTIVE_RESERVE
     anthropic_versions: tuple[str, ...] = KNOWN_ANTHROPIC_VERSIONS
     webhook_allow_private: bool = False
+    queued_alert_hours: int = DEFAULT_QUEUED_ALERT_HOURS
 
     @property
-    def completion_window_seconds(self) -> int:
-        """The completion window of an inline batch, in seconds."""
-        return self.completion_window_hours * 3600
+    def unlimited_window(self) -> bool:
+        """Whether new batches never expire (``BATCH_COMPLETION_WINDOW_HOURS`` is 0)."""
+        return self.completion_window_hours == 0
+
+    @property
+    def completion_window_seconds(self) -> int | None:
+        """The completion window of a new inline batch, in seconds; None for no limit."""
+        return None if self.unlimited_window else self.completion_window_hours * 3600
+
+    @property
+    def file_window_seconds(self) -> int | None:
+        """The completion window of a new file batch, in seconds; None for no limit.
+
+        The protocol's 24 hours, unless the operator lifted the limit for every
+        batch.
+        """
+        return None if self.unlimited_window else PROTOCOL_WINDOW_SECONDS
 
     @property
     def retention_seconds(self) -> int:
@@ -181,11 +210,16 @@ def batch_config() -> BatchConfig:
         max_active_per_user=_int(MAX_ACTIVE_KEY, DEFAULT_MAX_ACTIVE_PER_USER, minimum=1),
         max_queued_per_user=_int(MAX_QUEUED_KEY, DEFAULT_MAX_QUEUED_PER_USER, minimum=1),
         completion_window_hours=_int(
-            WINDOW_HOURS_KEY, DEFAULT_WINDOW_HOURS, minimum=1, maximum=MAX_WINDOW_HOURS
+            WINDOW_HOURS_KEY, DEFAULT_WINDOW_HOURS, minimum=0, maximum=MAX_WINDOW_HOURS
         ),
         retention_days=_int(RETENTION_DAYS_KEY, DEFAULT_RETENTION_DAYS, minimum=1),
         max_line_bytes=_int(MAX_LINE_KB_KEY, DEFAULT_MAX_LINE_KB, minimum=1) * 1024,
         max_result_bytes=_int(MAX_RESULT_KB_KEY, DEFAULT_MAX_RESULT_KB, minimum=1) * 1024,
+        max_results_per_batch_bytes=_int(
+            MAX_RESULTS_PER_BATCH_MB_KEY, DEFAULT_MAX_RESULTS_PER_BATCH_MB, minimum=0
+        )
+        * 1024
+        * 1024,
         files_max_total_bytes=_int(FILES_MAX_TOTAL_MB_KEY, DEFAULT_FILES_MAX_TOTAL_MB, minimum=1)
         * 1024
         * 1024,
@@ -200,6 +234,7 @@ def batch_config() -> BatchConfig:
         interactive_reserve=_int(INTERACTIVE_RESERVE_KEY, DEFAULT_INTERACTIVE_RESERVE, minimum=0),
         anthropic_versions=_versions(ANTHROPIC_VERSIONS_KEY),
         webhook_allow_private=_flag(WEBHOOK_ALLOW_PRIVATE_KEY, False),
+        queued_alert_hours=_int(QUEUED_ALERT_HOURS_KEY, DEFAULT_QUEUED_ALERT_HOURS, minimum=0),
     )
 
 

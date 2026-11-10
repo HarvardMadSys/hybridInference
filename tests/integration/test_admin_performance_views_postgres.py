@@ -7,7 +7,8 @@ restarted gateway serves it at once. These run the real DDL and SQL: the build
 in each state the index can be in, the planner choosing the index for the
 statements' own filter, identical numbers with and without it, the stored
 results, the table's autovacuum parameter, and a hard delete dropping what was
-computed over the deleted rows.
+computed over the deleted rows. The same builder makes the request lists' source
+index, which keeps the Recent Requests and Batches → Requests totals index-only.
 """
 
 from __future__ import annotations
@@ -22,9 +23,9 @@ from unittest.mock import MagicMock
 import pytest
 import pytest_asyncio
 
+from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.servers.routers.admin import metrics
 from serving.storage import admin_view_results, perf_metrics_index
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
 
@@ -230,6 +231,96 @@ async def test_the_numbers_are_the_same_with_and_without_the_index(db):
     month = next(w for w in without.windows if w.key == "1mo")
     assert month.prompt_tokens.count == 62
     assert month.prompt_tokens.max < 99999
+
+
+# ---------------------------------------------------------------------------
+# The request lists' source index
+# ---------------------------------------------------------------------------
+
+
+async def _state_of(pool, name: str) -> bool | None:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(perf_metrics_index._STATE_SQL, name)
+
+
+@pytest.mark.asyncio
+async def test_every_background_index_is_built_and_valid(db):
+    assert await perf_metrics_index.ensure_index(db) is True
+    for name, _ in perf_metrics_index.INDEXES:
+        assert await _state_of(db, name) is True, name
+    async with db.acquire() as conn:
+        definition = await conn.fetchval(
+            "SELECT pg_get_indexdef(to_regclass($1))", perf_metrics_index.SOURCE_INDEX_NAME
+        )
+    assert '("timestamp" DESC, batch_job_id)' in definition
+
+
+@pytest.mark.asyncio
+async def test_a_failed_build_does_not_keep_the_next_index_from_being_built(db, monkeypatch):
+    built = perf_metrics_index.INDEXES
+    monkeypatch.setattr(
+        perf_metrics_index,
+        "INDEXES",
+        (
+            ("idx_never_built", "CREATE INDEX CONCURRENTLY idx_never_built ON no_such_table (x)"),
+            *built,
+        ),
+    )
+    assert await perf_metrics_index.ensure_index(db) is False
+    for name, _ in built:
+        assert await _state_of(db, name) is True, name
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source", "batch_id"),
+    [("interactive", None), ("batch", None), ("batch", "batch_one")],
+    ids=["interactive", "batch", "one-batch"],
+)
+async def test_a_source_filtered_count_is_an_index_only_scan(db, source, batch_id):
+    """The Recent Requests and Batches → Requests totals never read the heap.
+
+    Unfiltered, the week's count was an index-only scan of the timestamp index;
+    the source predicate needs ``batch_job_id``, which only this index carries.
+    """
+    async with db.acquire() as conn:
+        # Rows as wide as logged ones, half of them a batch's, in time order: a
+        # narrow table read in timestamp order costs the planner little more
+        # than its index, so it would have no reason to prefer either.
+        await conn.execute(
+            "INSERT INTO api_logs (request_id, model_id, provider, timestamp, prompt, "
+            "batch_job_id) "
+            "SELECT md5(g::text), 'm', 'p', NOW() - g * interval '1 minute', "
+            "repeat('x', 1500), "
+            "CASE WHEN g % 2 = 1 THEN CASE WHEN g % 3 = 0 THEN 'batch_one' "
+            "ELSE 'batch_two' END END "
+            "FROM generate_series(1, 2000) AS g"
+        )
+    await perf_metrics_index.ensure_index(db)
+    async with db.acquire() as conn:
+        # The planner prices an index-only scan by the pages VACUUM has marked
+        # all-visible, as autovacuum keeps them on a live table. It marks a page
+        # only once it may set the rows' commit hint bits, which under the test
+        # server's synchronous_commit=off waits for the WAL to be flushed past
+        # their commits: wait for that rather than vacuum too early.
+        written = await conn.fetchval("SELECT pg_current_wal_insert_lsn()")
+        for _ in range(250):
+            if await conn.fetchval("SELECT pg_current_wal_flush_lsn() >= $1", written):
+                break
+            await asyncio.sleep(0.02)
+        await conn.execute("VACUUM ANALYZE api_logs")
+        assert await conn.fetchval(
+            "SELECT relallvisible = relpages FROM pg_class WHERE oid = 'api_logs'::regclass"
+        )
+    clauses, params, _ = metrics._build_recent_requests_filters(
+        days=7, source=source, batch_id=batch_id
+    )
+    count_sql = "SELECT COUNT(*) AS total FROM api_logs l WHERE " + " AND ".join(clauses)
+    async with db.acquire() as conn, conn.transaction():
+        await conn.execute("SET LOCAL enable_seqscan = off")
+        await conn.execute("SET LOCAL enable_bitmapscan = off")
+        plan = "\n".join(row[0] for row in await conn.fetch("EXPLAIN " + count_sql, *params))
+    assert f"Index Only Scan using {perf_metrics_index.SOURCE_INDEX_NAME}" in plan, plan
 
 
 # ---------------------------------------------------------------------------

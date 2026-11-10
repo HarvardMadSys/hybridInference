@@ -17,7 +17,6 @@ pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 async def store():
     pool = await postgres.create_pool(min_size=1, max_size=6)
     store = BatchStore(pool)
-    await store.initialize()
     async with pool.acquire() as conn:
         await conn.execute("TRUNCATE batch_jobs, batch_idempotency, batch_user_state CASCADE")
     try:
@@ -150,7 +149,7 @@ async def test_read_lease_cannot_succeed_behind_gc_deletion_snapshot(store):
         await gate.execute("SELECT pg_advisory_lock($1)", lock_id)
         from serving.storage.batch_store import _PURGE_ONE_SQL
 
-        deletion = asyncio.create_task(deleting.fetchval(_PURGE_ONE_SQL, 7))
+        deletion = asyncio.create_task(deleting.fetchval(_PURGE_ONE_SQL, 7, batch["id"]))
         lease = None
         try:
             for _ in range(100):

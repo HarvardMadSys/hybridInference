@@ -24,9 +24,9 @@ from httpx import ASGITransport, AsyncClient
 from serving.servers.deps import AppServices, get_db_logger, verify_admin_access
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.anthropic_messages import _schedule_log_store_task
-from serving.storage.log_schema import ensure_api_logs_schema
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 if TYPE_CHECKING:
     import asyncpg
@@ -71,7 +71,7 @@ async def pool():
         min_size=1, max_size=3, server_settings={"search_path": schema}
     )
     async with new_pool.acquire() as conn:
-        await ensure_api_logs_schema(conn)
+        await prepare_current_schema(conn)
 
     # Unique per fixture instance so assertions about exact counts hold per
     # test even if a future test in this module runs concurrently.

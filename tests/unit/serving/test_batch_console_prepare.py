@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from serving.batch import console_prepare as cp
@@ -145,3 +149,40 @@ def test_an_integer_past_pythons_conversion_limit_is_a_line_problem():
     import sys
 
     assert sys.get_int_max_str_digits() > 0
+
+
+async def test_preflight_rejects_online_message_limits_before_schema_validation(monkeypatch):
+    from serving import request_limits
+    from serving.batch.config import batch_config
+
+    monkeypatch.setattr(request_limits, "MAX_MESSAGES", 1)
+    monkeypatch.setattr(cp, "resolve_model", AsyncMock(return_value="m"))
+    body = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "one"}, {"role": "user", "content": "two"}],
+    }
+    raw = json.dumps({"custom_id": "row-one", "url": "/v1/chat/completions", "body": body}).encode()
+
+    async def chunks(_file_id, *, after_seq, limit):
+        return [(0, raw)] if after_seq < 0 else []
+
+    scan = cp.ConsoleScan(
+        store=SimpleNamespace(
+            take_read_lease=AsyncMock(return_value="lease"), drop_read_lease=AsyncMock()
+        ),
+        file_store=SimpleNamespace(read_chunks=chunks),
+        ctx=None,
+        config=batch_config(),
+        source={"id": "source", "bytes": len(raw)},
+        overrides=cp.Overrides(),
+    )
+
+    await scan.run(validate=True)
+
+    assert not scan.valid
+    assert scan.request_count == 0
+    assert len(scan.errors) == 1
+    assert scan.errors[0]["line"] == 1
+    assert scan.errors[0]["custom_id"] == "row-one"
+    assert scan.errors[0]["code"] == "invalid_request"
+    assert "Too many messages" in scan.errors[0]["message"]

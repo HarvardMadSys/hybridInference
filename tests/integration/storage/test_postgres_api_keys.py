@@ -9,14 +9,24 @@ never bring a revoked credential back.
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from decimal import Decimal
+from typing import TYPE_CHECKING, Any
 
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
+from serving.storage.cache import CachedOperationalStore
+from serving.storage.cache_backend import InMemoryCache
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -33,6 +43,8 @@ async def keys():
     async def _wipe() -> None:
         async with pool.acquire() as conn:
             await conn.execute(f"DELETE FROM api_keys WHERE key_prefix LIKE '{_PREFIX}%'")
+            await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id LIKE 'u-admkey-%'")
+            await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-admkey-%'")
             await conn.execute("DELETE FROM users WHERE id LIKE 'u-admkey-%'")
 
     await _wipe()
@@ -247,3 +259,808 @@ async def test_regenerate_without_an_active_key_changes_nothing(keys, history):
         )
 
     assert await _rows(pool, "u-admkey-noact") == before
+
+
+# --- the account quota: one value on every unrevoked key of an account ------
+
+
+async def _set_quota(pool: Any, name: str, daily: str | None, monthly: str | None = None) -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_daily_cost_usd = $2::numeric, "
+            "quota_monthly_cost_usd = $3::numeric WHERE key_prefix = $1",
+            f"{_PREFIX}-{name}",
+            daily,
+            monthly,
+        )
+
+
+async def _quotas(pool: Any, user_id: str) -> dict[str, tuple[Any, Any]]:
+    async with pool.acquire() as conn:
+        rows = await conn.fetch(
+            "SELECT key_prefix, quota_daily_cost_usd, quota_monthly_cost_usd "
+            "FROM api_keys WHERE user_id = $1",
+            user_id,
+        )
+    return {
+        row["key_prefix"].removeprefix(f"{_PREFIX}-"): (
+            None if row["quota_daily_cost_usd"] is None else str(row["quota_daily_cost_usd"]),
+            None if row["quota_monthly_cost_usd"] is None else str(row["quota_monthly_cost_usd"]),
+        )
+        for row in rows
+    }
+
+
+async def _create(store: PostgresOperationalStore, user_id: str, tag: str, **kwargs: Any) -> None:
+    """Create key ``{_PREFIX}-{tag}`` through the store; *kwargs* go to ``create_key``."""
+    await store.create_key(
+        key_hash=f"hash-{tag}", key_prefix=f"{_PREFIX}-{tag}", user_id=user_id, **kwargs
+    )
+
+
+async def test_a_users_new_key_inherits_the_account_quota(keys):
+    """A key a user adds takes the account's quota, not the role default it was offered."""
+    store, pool = keys
+    await _user(store, "u-admkey-inh")
+    await _key(pool, "u-admkey-inh", "inh-old", "suspended")
+    await _set_quota(pool, "inh-old", "42.0000", "500.0000")
+
+    await _create(
+        store, "u-admkey-inh", "inh-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-inh"))["inh-new"] == ("42.0000", "500.0000")
+
+
+async def test_an_inherited_null_quota_stays_null(keys):
+    """NULL is the default limit, and a sibling must read the same default -- not the offer."""
+    store, pool = keys
+    await _user(store, "u-admkey-inhnull")
+    await _key(pool, "u-admkey-inhnull", "inhnull-old", "suspended")
+    await _set_quota(pool, "inhnull-old", None)
+
+    await _create(
+        store,
+        "u-admkey-inhnull",
+        "inhnull-new",
+        quota_daily_cost_usd=100.0,
+        inherit_account_quota=True,
+    )
+
+    assert (await _quotas(pool, "u-admkey-inhnull"))["inhnull-new"] == (None, None)
+
+
+async def test_a_first_key_takes_the_offered_quota(keys):
+    """An account that never held a key has no quota of its own yet."""
+    store, pool = keys
+    await _user(store, "u-admkey-first")
+
+    await _create(
+        store, "u-admkey-first", "first-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-first"))["first-new"] == ("100.0000", None)
+
+
+async def test_revoking_every_key_does_not_reset_the_account_quota(keys):
+    """An admin's cut and monthly cap outlive the keys they were set on (H19).
+
+    Revoking every key and creating one used to give the new key the role
+    default and no monthly cap.
+    """
+    store, pool = keys
+    await _user(store, "u-admkey-cut")
+    await _key(pool, "u-admkey-cut", "cut-old", "revoked")
+    await _set_quota(pool, "cut-old", "2.0000", "20.0000")
+
+    await _create(
+        store, "u-admkey-cut", "cut-new", quota_daily_cost_usd=100.0, inherit_account_quota=True
+    )
+
+    assert (await _quotas(pool, "u-admkey-cut"))["cut-new"] == ("2.0000", "20.0000")
+
+
+async def test_with_no_live_key_the_most_recently_used_revoked_key_holds_the_quota(keys):
+    """The key revoked last carried the account's quota when it went.
+
+    Here an older key was used after a newer one was revoked, as it is when a
+    spare key is revoked unused: the older key, revoked later, holds the quota.
+    """
+    store, pool = keys
+    user = "u-admkey-last"
+    await _user(store, user)
+    await _key(pool, user, "last-old", "revoked")
+    await _key(pool, user, "last-spare", "revoked")
+    await _set_quota(pool, "last-old", "2.0000", "20.0000")
+    await _set_quota(pool, "last-spare", "100.0000")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '2 days', "
+            "last_used_at = NOW() - INTERVAL '1 hour' WHERE key_prefix = $1",
+            f"{_PREFIX}-last-old",
+        )
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '1 day', last_used_at = NULL "
+            "WHERE key_prefix = $1",
+            f"{_PREFIX}-last-spare",
+        )
+
+    await _create(store, user, "last-new", quota_daily_cost_usd=100.0, inherit_account_quota=True)
+
+    assert (await _quotas(pool, user))["last-new"] == ("2.0000", "20.0000")
+
+
+async def test_a_live_key_holds_the_quota_over_any_revoked_one(keys):
+    store, pool = keys
+    user = "u-admkey-live"
+    await _user(store, user)
+    await _key(pool, user, "live-dead", "revoked")
+    await _key(pool, user, "live-on", "active")
+    await _set_quota(pool, "live-dead", "2.0000", "20.0000")
+    await _set_quota(pool, "live-on", "300.0000")
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET last_used_at = NOW() + INTERVAL '1 hour' WHERE key_prefix = $1",
+            f"{_PREFIX}-live-dead",
+        )
+
+    await _create(store, user, "live-new", quota_daily_cost_usd=100.0, inherit_account_quota=True)
+
+    assert (await _quotas(pool, user))["live-new"] == ("300.0000", None)
+
+
+async def test_an_admin_key_sets_the_account_quota_on_every_live_key(keys):
+    """Without inheriting, the given quota becomes the account's; revoked rows keep theirs."""
+    store, pool = keys
+    await _user(store, "u-admkey-set")
+    await _key(pool, "u-admkey-set", "set-susp", "suspended")
+    await _key(pool, "u-admkey-set", "set-dead", "revoked")
+    await _set_quota(pool, "set-susp", "5.0000")
+    await _set_quota(pool, "set-dead", "6.0000")
+
+    await _create(
+        store,
+        "u-admkey-set",
+        "set-new",
+        quota_daily_cost_usd=250.0,
+        quota_monthly_cost_usd=900.0,
+    )
+
+    assert await _quotas(pool, "u-admkey-set") == {
+        "set-new": ("250.0000", "900.0000"),
+        "set-susp": ("250.0000", "900.0000"),
+        "set-dead": ("6.0000", None),
+    }
+
+
+async def test_update_writes_the_quota_to_every_live_key(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-updq")
+    await _key(pool, "u-admkey-updq", "updq-live", "active")
+    await _key(pool, "u-admkey-updq", "updq-susp", "suspended")
+    await _key(pool, "u-admkey-updq", "updq-dead", "revoked")
+
+    await store.update_key("u-admkey-updq", quota_daily_cost_usd=33)
+
+    quotas = await _quotas(pool, "u-admkey-updq")
+    assert quotas["updq-live"][0] == quotas["updq-susp"][0] == "33.0000"
+    assert quotas["updq-dead"][0] == "1000.0000"
+
+
+async def test_role_quota_reaches_suspended_keys_and_counts_what_it_writes(keys):
+    """A suspended key that missed the bulk write would come back with a stale limit."""
+    store, pool = keys
+    async with pool.acquire() as conn:
+        before_keys, before_users = await store.count_active_keys_for_role("pro")
+        await _user(store, "u-admkey-role")
+        await conn.execute("UPDATE users SET role = 'pro' WHERE id = 'u-admkey-role'")
+    await _key(pool, "u-admkey-role", "role-live", "active")
+    await _key(pool, "u-admkey-role", "role-susp", "suspended")
+    await _key(pool, "u-admkey-role", "role-dead", "revoked")
+
+    assert await store.count_active_keys_for_role("pro") == (before_keys + 2, before_users + 1)
+    updated = await store.apply_role_quota("pro", quota=Decimal("77.00"))
+
+    quotas = await _quotas(pool, "u-admkey-role")
+    assert updated >= 2
+    assert quotas["role-live"][0] == quotas["role-susp"][0] == "77.0000"
+    assert quotas["role-dead"][0] == "1000.0000"
+
+
+async def test_the_grant_quota_lookup_answers_with_one_row_per_account(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-grant")
+    await _key(pool, "u-admkey-grant", "grant-live", "active")
+    await _set_quota(pool, "grant-live", "12.0000")
+
+    rows = await store.get_quota_context_for_user("u-admkey-grant")
+
+    assert [str(row["quota_daily_cost_usd"]) for row in rows] == ["12.0000"]
+
+
+# --- several keys per account ------------------------------------------------
+
+
+async def test_the_baseline_drops_the_retired_one_key_indexes(keys):
+    """An upgraded database still carries the indexes that held an account to one key."""
+    _store, pool = keys
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_user_unique "
+            "ON api_keys(user_id) WHERE status = 'active'"
+        )
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_api_keys_account_active_unique "
+            "ON api_keys(account_id) WHERE status = 'active' AND account_id IS NOT NULL"
+        )
+
+    async with pool.acquire() as conn:
+        await operational_store.create_tables(conn)
+        remaining = await conn.fetchval(
+            "SELECT COUNT(*) FROM pg_indexes WHERE tablename = 'api_keys' "
+            "AND indexname = ANY($1::text[])",
+            ["idx_api_keys_user_unique", "idx_api_keys_account_active_unique"],
+        )
+    assert remaining == 0
+
+
+async def test_the_cap_counts_only_active_keys(keys):
+    from serving.exceptions import APIKeyLimitReachedError
+
+    store, pool = keys
+    await _user(store, "u-admkey-cap")
+    await _key(pool, "u-admkey-cap", "cap-a", "active")
+    await _key(pool, "u-admkey-cap", "cap-dead", "revoked")
+
+    await _create(store, "u-admkey-cap", "cap-b", max_active_keys=2)
+    with pytest.raises(APIKeyLimitReachedError) as refused:
+        await _create(store, "u-admkey-cap", "cap-c", max_active_keys=2)
+
+    assert refused.value.limit == 2
+    assert await store.count_active_keys("u-admkey-cap") == 2
+
+
+async def test_listing_puts_live_keys_first_and_carries_names(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-lst")
+    await _key(pool, "u-admkey-lst", "lst-old", "active")
+    await _key(pool, "u-admkey-lst", "lst-dead", "revoked")
+    await _create(store, "u-admkey-lst", "lst-new", name="deploy")
+
+    rows = await store.list_account_keys("u-admkey-lst")
+
+    assert [(row["key_prefix"].removeprefix(f"{_PREFIX}-"), row["name"]) for row in rows] == [
+        ("lst-new", "deploy"),
+        ("lst-old", None),
+        ("lst-dead", None),
+    ]
+    assert all("key_hash" not in row for row in rows)
+
+
+async def test_rotation_gives_one_key_a_new_secret_and_keeps_everything_else(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-rot")
+    await _key(pool, "u-admkey-rot", "rot-other", "active")
+    await _key(pool, "u-admkey-rot", "rot-old", "active", '{"team": "ml"}')
+    await _set_quota(pool, "rot-old", "9.0000", "90.0000")
+    await store.update_key_settings(
+        "u-admkey-rot",
+        f"{_PREFIX}-rot-old",
+        {"name": "eval", "budget_daily_usd": Decimal("2"), "allowed_models": ["m-a"]},
+    )
+    key_id = await _key_id(pool, "rot-old")
+    await store.increment_user_cost("u-admkey-rot", 1.5, api_key_id=key_id)
+
+    rotated = await store.rotate_key(
+        "u-admkey-rot",
+        f"{_PREFIX}-rot-old",
+        new_key_hash="hash-rot-new",
+        new_key_prefix=f"{_PREFIX}-rot-new",
+        api_key_encrypted="cipher",
+    )
+
+    assert rotated is not None and rotated["old_key_prefix"] == f"{_PREFIX}-rot-old"
+    # The same row: no revoked predecessor, no second key.
+    assert rotated["id"] == key_id
+    rows = await _rows(pool, "u-admkey-rot")
+    assert set(rows) == {f"{_PREFIX}-rot-other", f"{_PREFIX}-rot-new"}
+    assert rows[f"{_PREFIX}-rot-other"]["status"] == "active"
+    assert rows[f"{_PREFIX}-rot-new"]["status"] == "active"
+    assert json.loads(rows[f"{_PREFIX}-rot-new"]["metadata"]) == {"team": "ml"}
+    assert (await _quotas(pool, "u-admkey-rot"))["rot-new"] == ("9.0000", "90.0000")
+    listed = {row["key_prefix"]: row for row in await store.list_account_keys("u-admkey-rot")}
+    new = listed[f"{_PREFIX}-rot-new"]
+    assert new["id"] == key_id and new["name"] == "eval"
+    assert new["budget_daily_usd"] == Decimal("2") and new["allowed_models"] == ["m-a"]
+    # What it spent still counts against its budget.
+    assert float(new["spent_today_usd"]) == 1.5
+    # Only the new secret authenticates.
+    assert await store.get_auth_context_with_spend("hash-rot-new") is not None
+    assert await store.get_auth_context_with_spend("hash-rot-old") is None
+
+
+async def test_rotation_of_a_key_that_is_not_active_changes_nothing(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-rotno")
+    await _key(pool, "u-admkey-rotno", "rotno-dead", "revoked")
+    before = await _rows(pool, "u-admkey-rotno")
+
+    for prefix in (f"{_PREFIX}-rotno-dead", f"{_PREFIX}-missing"):
+        assert (
+            await store.rotate_key(
+                "u-admkey-rotno",
+                prefix,
+                new_key_hash="hash-rotno-new",
+                new_key_prefix=f"{_PREFIX}-rotno-new",
+                api_key_encrypted=None,
+            )
+            is None
+        )
+    assert await _rows(pool, "u-admkey-rotno") == before
+
+
+async def test_another_accounts_key_cannot_be_renamed_or_rotated(keys):
+    store, pool = keys
+    await _user(store, "u-admkey-own")
+    await _user(store, "u-admkey-thief")
+    await _key(pool, "u-admkey-own", "own", "active")
+
+    assert (
+        await store.update_key_settings("u-admkey-thief", f"{_PREFIX}-own", {"name": "x"}) is None
+    )
+    assert (
+        await store.rotate_key(
+            "u-admkey-thief",
+            f"{_PREFIX}-own",
+            new_key_hash="hash-own-new",
+            new_key_prefix=f"{_PREFIX}-own-new",
+            api_key_encrypted=None,
+        )
+        is None
+    )
+    assert (await _rows(pool, "u-admkey-own"))[f"{_PREFIX}-own"]["status"] == "active"
+
+
+# --- account-wide writes serialize with the keys being added ----------------
+#
+# Each test parks a create or rotation at its INSERT -- past its account lock
+# and its read of the account, before its commit -- by holding an uncommitted
+# row with the key_hash it is about to write. It then starts the competing
+# write and lets the parked one go only once PostgreSQL reports the competing
+# write blocked behind it. The order is decided by pg_blocking_pids, not by
+# timing.
+
+
+@asynccontextmanager
+async def _parked_insert(pool: Any, key_hash: str) -> AsyncIterator[int]:
+    """Hold an insert of *key_hash* open; yield the holder's backend pid."""
+    async with pool.acquire() as conn:
+        tx = conn.transaction()
+        await tx.start()
+        try:
+            await conn.execute(
+                "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id) "
+                "VALUES ($1, $2, 'u-admkey-parker', 'u-admkey-parker')",
+                key_hash,
+                f"{_PREFIX}-parker",
+            )
+            yield await conn.fetchval("SELECT pg_backend_pid()")
+        finally:
+            await tx.rollback()
+
+
+async def _blocked_behind(pool: Any, pid: int) -> int:
+    """Wait until a backend is blocked behind *pid*; return that backend's pid."""
+    async with pool.acquire() as probe:
+        for _ in range(1000):
+            waiter = await probe.fetchval(
+                "SELECT pid FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)) LIMIT 1",
+                pid,
+            )
+            if waiter is not None:
+                return waiter
+            await asyncio.sleep(0.01)
+    raise AssertionError(f"no backend became blocked behind backend {pid}")
+
+
+async def _while_parked(pool: Any, key_hash: str, parked: Any, competing: Any) -> None:
+    """Park *parked* at its insert of *key_hash*, start *competing* behind it, finish both.
+
+    Raises the first error either of them raised.
+    """
+    tasks: list[asyncio.Task[Any]] = []
+    try:
+        async with _parked_insert(pool, key_hash) as parker:
+            tasks.append(asyncio.create_task(parked()))
+            writer = await _blocked_behind(pool, parker)
+            tasks.append(asyncio.create_task(competing()))
+            await _blocked_behind(pool, writer)
+    finally:
+        outcomes = await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout=10
+        )
+    for outcome in outcomes:
+        if isinstance(outcome, BaseException):
+            raise outcome
+
+
+async def _account_with_one_key(store: Any, pool: Any, user_id: str, tag: str) -> None:
+    await _user(store, user_id)
+    await _key(pool, user_id, f"{tag}-old", "active")
+    await _set_quota(pool, f"{tag}-old", "100.0000")
+
+
+@pytest.mark.parametrize(
+    "write",
+    [
+        pytest.param(lambda s, uid: s.update_key(uid, quota_daily_cost_usd=10), id="admin"),
+        pytest.param(lambda s, uid: s.apply_role_quota("pro", Decimal("10")), id="role"),
+    ],
+)
+async def test_a_quota_write_reaches_a_key_created_while_it_waited(keys, write):
+    """Lowering the quota must not miss the key a concurrent create is inserting."""
+    store, pool = keys
+    uid = "u-admkey-qcreate"
+    await _account_with_one_key(store, pool, uid, "qcreate")
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET role = 'pro' WHERE id = $1", uid)
+
+    await _while_parked(
+        pool,
+        "hash-qcreate-new",
+        lambda: _create(store, uid, "qcreate-new", inherit_account_quota=True),
+        lambda: write(store, uid),
+    )
+
+    assert await _quotas(pool, uid) == {
+        "qcreate-old": ("10.0000", None),
+        "qcreate-new": ("10.0000", None),
+    }
+
+
+async def test_a_quota_write_reaches_the_key_a_rotation_issued_while_it_waited(keys):
+    store, pool = keys
+    uid = "u-admkey-qrot"
+    await _account_with_one_key(store, pool, uid, "qrot")
+
+    await _while_parked(
+        pool,
+        "hash-qrot-new",
+        lambda: store.rotate_key(
+            uid,
+            f"{_PREFIX}-qrot-old",
+            new_key_hash="hash-qrot-new",
+            new_key_prefix=f"{_PREFIX}-qrot-new",
+            api_key_encrypted=None,
+        ),
+        lambda: store.update_key(uid, quota_daily_cost_usd=10),
+    )
+
+    assert (await _quotas(pool, uid))["qrot-new"] == ("10.0000", None)
+
+
+@pytest.mark.parametrize(
+    "revoke",
+    [
+        pytest.param(lambda s, uid: s.revoke_key(uid), id="revoke"),
+        pytest.param(lambda s, uid: s.suspend_user(uid), id="suspend"),
+    ],
+)
+async def test_revoking_an_account_reaches_a_key_created_while_it_waited(keys, revoke):
+    """A key a create was inserting must not outlive the revocation of its account."""
+    store, pool = keys
+    uid = "u-admkey-rcreate"
+    await _account_with_one_key(store, pool, uid, "rcreate")
+
+    await _while_parked(
+        pool,
+        "hash-rcreate-new",
+        lambda: _create(store, uid, "rcreate-new", inherit_account_quota=True),
+        lambda: revoke(store, uid),
+    )
+
+    assert {row["status"] for row in (await _rows(pool, uid)).values()} == {"revoked"}
+
+
+async def test_rotating_the_only_key_is_decided_under_the_account_lock(keys):
+    """Legacy regenerate must not rotate a key created after it looked."""
+    from serving.exceptions import AmbiguousAPIKeyError
+
+    store, pool = keys
+    uid = "u-admkey-only"
+    await _account_with_one_key(store, pool, uid, "only")
+
+    with pytest.raises(AmbiguousAPIKeyError):
+        await _while_parked(
+            pool,
+            "hash-only-new",
+            lambda: _create(store, uid, "only-new", inherit_account_quota=True),
+            lambda: store.rotate_key(
+                uid,
+                None,
+                new_key_hash="hash-only-rotated",
+                new_key_prefix=f"{_PREFIX}-only-rotated",
+                api_key_encrypted=None,
+            ),
+        )
+
+    rows = await _rows(pool, uid)
+    assert {prefix: row["status"] for prefix, row in rows.items()} == {
+        f"{_PREFIX}-only-old": "active",
+        f"{_PREFIX}-only-new": "active",
+    }
+
+
+async def test_rotating_the_only_key_replaces_it(keys):
+    store, pool = keys
+    uid = "u-admkey-sole"
+    await _account_with_one_key(store, pool, uid, "sole")
+
+    async def rotate() -> Any:
+        return await store.rotate_key(
+            uid,
+            None,
+            new_key_hash="hash-sole-new",
+            new_key_prefix=f"{_PREFIX}-sole-new",
+            api_key_encrypted=None,
+        )
+
+    rotated = await rotate()
+
+    assert rotated is not None and rotated["old_key_prefix"] == f"{_PREFIX}-sole-old"
+    assert (await _rows(pool, uid))[f"{_PREFIX}-sole-new"]["status"] == "active"
+    await store.revoke_key(uid)
+    assert await rotate() is None
+
+
+# --- per-key usage: api_key_daily_cost beside the account's counter ----------
+
+
+async def _key_id(pool: Any, tag: str) -> int:
+    async with pool.acquire() as conn:
+        return await conn.fetchval(
+            "SELECT id FROM api_keys WHERE key_prefix = $1", f"{_PREFIX}-{tag}"
+        )
+
+
+async def _counters(pool: Any, user_id: str) -> tuple[Any, list[tuple[int, str, str, int]]]:
+    """``(account counter, [(key_id, day, cost, requests)])`` of *user_id*."""
+    async with pool.acquire() as conn:
+        account = await conn.fetchrow(
+            "SELECT cost_usd, requests FROM user_daily_cost WHERE user_id = $1", user_id
+        )
+        keys = await conn.fetch(
+            "SELECT key_id, day, cost_usd, requests FROM api_key_daily_cost "
+            "WHERE user_id = $1 ORDER BY key_id, day",
+            user_id,
+        )
+    return account, [
+        (row["key_id"], row["day"], str(row["cost_usd"]), row["requests"]) for row in keys
+    ]
+
+
+async def test_a_requests_cost_lands_on_the_account_and_on_its_key(keys):
+    store, pool = keys
+    uid = "u-admkey-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "spend-a", "active")
+    await _key(pool, uid, "spend-b", "active")
+    a, b = await _key_id(pool, "spend-a"), await _key_id(pool, "spend-b")
+
+    await store.increment_user_cost(uid, 0.25, day="2026-11-02", api_key_id=a)
+    await store.increment_user_cost(uid, 0.5, day="2026-11-02", api_key_id=a)
+    await store.increment_user_cost(uid, 1.0, day="2026-11-02", api_key_id=b)
+    # Charged to the account but made with none of its keys (a grant, say).
+    await store.increment_user_cost(uid, 2.0, day="2026-11-02")
+
+    account, per_key = await _counters(pool, uid)
+    assert (str(account["cost_usd"]), account["requests"]) == ("3.750000", 4)
+    assert per_key == [(a, "2026-11-02", "0.750000", 2), (b, "2026-11-02", "1.000000", 1)]
+
+
+async def test_the_listing_shows_what_each_key_spent_today_and_this_month(keys):
+    store, pool = keys
+    uid = "u-admkey-list-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "lspend-a", "active")
+    await _key(pool, uid, "lspend-b", "active")
+    a = await _key_id(pool, "lspend-a")
+    async with pool.acquire() as conn:
+        today, month_start, last_month = await conn.fetchrow(
+            "SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), "
+            "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD'), "
+            "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC') - interval '1 day', "
+            "'YYYY-MM-DD')"
+        )
+    await store.increment_user_cost(uid, 1.5, day=today, api_key_id=a)
+    if month_start != today:
+        await store.increment_user_cost(uid, 2.0, day=month_start, api_key_id=a)
+    await store.increment_user_cost(uid, 40.0, day=last_month, api_key_id=a)
+
+    listed = {row["key_prefix"]: row for row in await store.list_account_keys(uid)}
+
+    spent_a = listed[f"{_PREFIX}-lspend-a"]
+    assert float(spent_a["spent_today_usd"]) == 1.5
+    assert float(spent_a["spent_month_usd"]) == (1.5 if month_start == today else 3.5)
+    spent_b = listed[f"{_PREFIX}-lspend-b"]
+    assert (float(spent_b["spent_today_usd"]), float(spent_b["spent_month_usd"])) == (0.0, 0.0)
+
+
+async def test_removing_keys_removes_their_counters(keys):
+    store, pool = keys
+    uid = "u-admkey-purge"
+    await _user(store, uid)
+    await _key(pool, uid, "purge-a", "active")
+    await store.increment_user_cost(
+        uid, 1.0, day="2026-11-02", api_key_id=await _key_id(pool, "purge-a")
+    )
+
+    await store.revoke_key(uid, hard_delete=True)
+
+    assert (await _counters(pool, uid))[1] == []
+
+
+async def test_a_hard_delete_erases_the_accounts_key_counters(keys):
+    store, pool = keys
+    uid = "u-admkey-erase"
+    await _user(store, uid)
+    await _key(pool, uid, "erase-a", "active")
+    await store.increment_user_cost(
+        uid, 1.0, day="2026-11-02", api_key_id=await _key_id(pool, "erase-a")
+    )
+    await store.delete_user(uid)
+
+    wiped = await store.hard_delete_user(uid, claim_token=await store.begin_hard_delete_user(uid))
+
+    assert wiped["api_key_daily_cost"] == 1
+    assert (await _counters(pool, uid))[1] == []
+
+
+# --- a key's own limits (P2a) ------------------------------------------------
+
+
+async def test_key_settings_change_only_what_is_sent(keys):
+    store, pool = keys
+    uid = "u-admkey-set"
+    await _user(store, uid)
+    await _key(pool, uid, "set", "active")
+    prefix = f"{_PREFIX}-set"
+
+    before, after = await store.update_key_settings(
+        uid, prefix, {"name": "ci", "budget_daily_usd": Decimal("5")}
+    )
+    assert before == {
+        "name": None,
+        "budget_daily_usd": None,
+        "budget_monthly_usd": None,
+        "allowed_models": None,
+    }
+    assert after == {
+        "name": "ci",
+        "budget_daily_usd": Decimal("5.0000"),
+        "budget_monthly_usd": None,
+        "allowed_models": None,
+    }
+
+    _, after = await store.update_key_settings(uid, prefix, {"allowed_models": ["m-a", "m-b"]})
+    assert after["name"] == "ci" and after["budget_daily_usd"] == Decimal("5")
+    assert after["allowed_models"] == ["m-a", "m-b"]
+
+    _, after = await store.update_key_settings(uid, prefix, {"budget_daily_usd": None})
+    assert after["budget_daily_usd"] is None and after["allowed_models"] == ["m-a", "m-b"]
+
+
+async def test_key_settings_reach_neither_a_revoked_key_nor_other_columns(keys):
+    store, pool = keys
+    uid = "u-admkey-setno"
+    await _user(store, uid)
+    await _key(pool, uid, "setno-dead", "revoked")
+    await _key(pool, uid, "setno", "active")
+
+    assert await store.update_key_settings(uid, f"{_PREFIX}-setno-dead", {"name": "x"}) is None
+    for bad in ({}, {"status": "active"}, {"quota_daily_cost_usd": 1}):
+        with pytest.raises(ValueError):
+            await store.update_key_settings(uid, f"{_PREFIX}-setno", bad)
+
+
+async def test_the_auth_lookup_carries_a_budgeted_keys_spend(keys):
+    store, pool = keys
+    uid = "u-admkey-spend"
+    await _user(store, uid)
+    await _key(pool, uid, "spend-a", "active")
+    await _key(pool, uid, "spend-b", "active")
+    key_a, key_b = await _key_id(pool, "spend-a"), await _key_id(pool, "spend-b")
+    now = datetime.now(UTC)
+    today = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1)
+    last_month = (month_start - timedelta(days=1)).strftime("%Y-%m-%d")
+    for key_id in (key_a, key_b):
+        await store.increment_user_cost(uid, 2.0, day=today, api_key_id=key_id)
+        await store.increment_user_cost(uid, 7.0, day=last_month, api_key_id=key_id)
+        if month_start.strftime("%Y-%m-%d") != today:
+            await store.increment_user_cost(
+                uid, 3.0, day=month_start.strftime("%Y-%m-%d"), api_key_id=key_id
+            )
+    earlier = 0.0 if month_start.strftime("%Y-%m-%d") == today else 3.0
+    await store.update_key_settings(
+        uid, f"{_PREFIX}-spend-a", {"budget_monthly_usd": Decimal("100")}
+    )
+
+    budgeted = await store.get_auth_context_with_spend("hash-spend-a")
+    unbudgeted = await store.get_auth_context_with_spend("hash-spend-b")
+
+    assert float(budgeted["key_spent_today_usd"]) == 2.0
+    assert float(budgeted["key_spent_month_usd"]) == 2.0 + earlier
+    assert budgeted["budget_monthly_usd"] == Decimal("100")
+    assert budgeted["key_prefix"] == f"{_PREFIX}-spend-a"
+    # No budget, no counter read.
+    assert float(unbudgeted["key_spent_today_usd"]) == 0.0
+    assert float(unbudgeted["key_spent_month_usd"]) == 0.0
+    assert await store.get_key_spend(key_b) == (2.0, 2.0 + earlier)
+
+
+async def test_the_auth_lookup_carries_the_months_spend_under_a_monthly_quota(keys):
+    """The account's month, summed as the console sums it, read only under a monthly quota."""
+    store, pool = keys
+    capped, uncapped = "u-admkey-month", "u-admkey-nomonth"
+    now = datetime.now(UTC)
+    today = now.strftime("%Y-%m-%d")
+    month_start = now.replace(day=1).strftime("%Y-%m-%d")
+    last_month = (now.replace(day=1) - timedelta(days=1)).strftime("%Y-%m-%d")
+    for uid, name in ((capped, "month"), (uncapped, "nomonth")):
+        await _user(store, uid)
+        await _key(pool, uid, name, "active")
+        await store.increment_user_cost(uid, 2.0, day=today)
+        await store.increment_user_cost(uid, 7.0, day=last_month)
+        if month_start != today:
+            await store.increment_user_cost(uid, 3.0, day=month_start)
+    earlier = 0.0 if month_start == today else 3.0
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_monthly_cost_usd = 50 WHERE user_id = $1", capped
+        )
+
+    with_quota = await store.get_auth_context_with_spend("hash-month")
+    without = await store.get_auth_context_with_spend("hash-nomonth")
+
+    assert with_quota["quota_monthly_cost_usd"] == Decimal("50")
+    assert float(with_quota["account_spent_month_usd"]) == 2.0 + earlier
+    assert float(with_quota["account_spent_month_usd"]) == await store.get_user_cost_period(
+        capped, "month"
+    )
+    assert float(with_quota["cost_usd"]) == 2.0
+    # No monthly quota, no month read.
+    assert without["quota_monthly_cost_usd"] is None
+    assert float(without["account_spent_month_usd"]) == 0.0
+    # The identity-only lookup and the grant door's carry the quota too.
+    identity = await store.get_auth_context_by_key_hash("hash-month")
+    assert identity["quota_monthly_cost_usd"] == Decimal("50")
+    rows = await store.get_quota_context_for_user(capped)
+    assert [row["quota_monthly_cost_usd"] for row in rows] == [Decimal("50")]
+
+
+async def test_the_listing_lookup_carries_the_allowlist(keys):
+    store, pool = keys
+    uid = "u-admkey-light"
+    await _user(store, uid)
+    await _key(pool, uid, "light", "active")
+    await store.update_key_settings(uid, f"{_PREFIX}-light", {"allowed_models": ["m-a"]})
+
+    row = await store.get_auth_context_lightweight("hash-light")
+    listed = (await store.list_account_keys(uid))[0]
+
+    assert row["allowed_models"] == ["m-a"]
+    assert listed["allowed_models"] == ["m-a"]
+
+
+async def test_the_cache_drops_cached_contexts_when_a_limit_changes(keys):
+    store, pool = keys
+    uid = "u-admkey-cache"
+    await _user(store, uid)
+    await _key(pool, uid, "cache", "active")
+    cached = CachedOperationalStore(store, InMemoryCache())
+
+    assert (await cached.get_auth_context_lightweight("hash-cache"))["allowed_models"] is None
+    await cached.update_key_settings(uid, f"{_PREFIX}-cache", {"allowed_models": ["m-a"]})
+
+    assert (await cached.get_auth_context_lightweight("hash-cache"))["allowed_models"] == ["m-a"]

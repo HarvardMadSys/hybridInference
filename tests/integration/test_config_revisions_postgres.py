@@ -14,6 +14,7 @@ import json
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import app_config as baseline_app_config
 from serving.config import app_config, instances, live_control, revisions
 from serving.config.app_config_registry import ALERTS_RUNTIME_GROUP, MANAGED_GROUPS
 from serving.config.app_config_store import AppConfigStore, ConfigRow
@@ -38,6 +39,18 @@ async def _drop(connection) -> None:
     await connection.execute("DROP FUNCTION IF EXISTS config_source_bump_app_config() CASCADE")
 
 
+async def _build(connection) -> None:
+    """The configuration tables, revision row and trigger, as the baseline builds them."""
+    await baseline_app_config.ensure_schema(
+        connection, create_source_table=baseline_app_config.CREATE_TABLE_SQL
+    )
+
+
+async def _rebuild(connection) -> None:
+    await _drop(connection)
+    await _build(connection)
+
+
 @pytest.fixture
 def pg_dsn() -> str:
     return postgres.worker_dsn()
@@ -47,20 +60,18 @@ def pg_dsn() -> str:
 async def pool(pg_dsn: str):
     pool = await postgres.create_pool(min_size=1, max_size=4)
     async with pool.acquire() as connection:
-        await _drop(connection)
+        await _rebuild(connection)
     try:
         yield pool
     finally:
         async with pool.acquire() as connection:
-            await _drop(connection)
+            await _rebuild(connection)
         await pool.close()
 
 
 @pytest_asyncio.fixture
 async def store(pool) -> AppConfigStore:
-    store = AppConfigStore(pool)
-    await store.ensure_schema()
-    return store
+    return AppConfigStore(pool)
 
 
 async def _version(pool) -> revisions.SourceVersion:
@@ -80,9 +91,11 @@ async def test_schema_starts_at_revision_zero_with_nothing_active(pool, store) -
     assert snapshot.rows == {}
     assert snapshot.version == version
     assert snapshot.contracts.groups == {}
-    # Idempotent: a second boot neither resets the history nor activates anything.
+    # Idempotent: running the baseline again neither resets the history nor
+    # activates anything.
     await store.write([ConfigRow("SITE_NAME", "x")])
-    await store.ensure_schema()
+    async with pool.acquire() as connection:
+        await _build(connection)
     again = await _version(pool)
     assert again.epoch == version.epoch
     # An upsert fires both the INSERT and the UPDATE statement triggers: the
@@ -399,15 +412,62 @@ async def test_a_new_epoch_removes_every_registration(pool, store) -> None:
     )
     assert await reporter.report_once()
     version = await _version(pool)
+    async with pool.acquire() as connection:
+        routing_before, _ = await revisions.lock_version(connection, "routing")
     fresh = await live_control.reset_epoch(store, expected=version)
     assert fresh.epoch != version.epoch
     assert fresh.revision == version.revision + 1
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 0
+        routing_after, _ = await revisions.read_version(connection, "routing")
+        assert routing_after.epoch != routing_before.epoch
     # The process registers again on its next report.
     assert await reporter.report_once()
     async with pool.acquire() as connection:
         assert await connection.fetchval("SELECT COUNT(*) FROM config_instances") == 1
+
+
+@pytest.mark.asyncio
+async def test_prune_deletes_registrations_past_retention_and_keeps_current_ones(pool) -> None:
+    day = 24 * 3600.0
+    retention = instances.RETENTION_SECONDS
+    # Each registration's lifecycle, and how long ago, by the database clock,
+    # its process was last heard from.
+    registrations = {
+        "current": ("running", 0.0),
+        "heartbeat-lost": ("running", 120.0),  # Unknown, possibly offline.
+        "stopped-yesterday": ("stopped", day),
+        "just-within": ("running", retention - 60),
+        "just-past": ("running", retention + 60),
+        "stopped-last-month": ("stopped", 30 * day),
+    }
+    reporters = {}
+    for instance_id, (lifecycle, _) in registrations.items():
+        reporter = instances.InstanceReporter(
+            pool=pool,
+            instance_id=instance_id,
+            started_at=dt.datetime.now(dt.UTC),
+            capabilities={"protocol": 1, "groups": {}},
+        )
+        reporter.set_lifecycle(lifecycle)
+        assert await reporter.report_once()
+        reporters[instance_id] = reporter
+    async with pool.acquire() as connection:
+        for instance_id, (_, silent_for) in registrations.items():
+            await connection.execute(
+                "UPDATE config_instances SET heartbeat_at = NOW() - make_interval(secs => $2) "
+                "WHERE instance_id = $1",
+                instance_id,
+                silent_for,
+            )
+        before = {row["instance_id"] for row in await instances.fetch_instances(connection)}
+    assert before == set(registrations)
+
+    await reporters["current"].prune()
+
+    async with pool.acquire() as connection:
+        after = {row["instance_id"] for row in await instances.fetch_instances(connection)}
+    assert after == {"current", "heartbeat-lost", "stopped-yesterday", "just-within"}
 
 
 async def _boot_with_alerts_active(store: AppConfigStore, threshold: str) -> None:
@@ -503,21 +563,3 @@ async def test_a_restored_older_revision_and_a_new_epoch_still_apply(pool, store
     await settle()
     assert app_config.source_version() == fresh
     assert not alert_runtime.GROUP.status.regressed
-
-
-@pytest.mark.asyncio
-async def test_schema_creation_races_safely(pg_dsn, pool) -> None:
-    async with pool.acquire() as connection:
-        await connection.execute(
-            "CREATE TABLE IF NOT EXISTS app_config (key TEXT PRIMARY KEY, value TEXT NOT NULL, "
-            "secret BOOLEAN NOT NULL DEFAULT FALSE, source TEXT NOT NULL DEFAULT 'admin', "
-            "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), updated_by TEXT)"
-        )
-    stores = [AppConfigStore(pool) for _ in range(4)]
-    await asyncio.gather(*(each.ensure_schema() for each in stores))
-    async with pool.acquire() as connection:
-        triggers = await connection.fetchval(
-            "SELECT COUNT(*) FROM pg_trigger WHERE tgname = $1", revisions.TRIGGER_NAME
-        )
-    assert triggers == 1
-    assert (await _version(pool)).revision == 0

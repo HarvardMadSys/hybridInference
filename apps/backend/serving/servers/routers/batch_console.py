@@ -30,10 +30,9 @@ Every route writes only the caller's own webhook.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from serving.batch.config import batch_config, may_use_batch
@@ -53,7 +52,7 @@ from serving.servers.deps import (
     get_current_user,
 )
 from serving.servers.routers.batches import results_final
-from serving.servers.routers.files import content_disposition
+from serving.servers.routers.files import content_disposition, jsonl_download
 from serving.storage.batch_store import (
     PHASE_VALIDATING,
     SURFACE_OPENAI_FILE,
@@ -62,6 +61,9 @@ from serving.storage.batch_store import (
     BatchDeleteInProgress,
 )
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from fastapi.responses import StreamingResponse
 
 router = APIRouter()
 logger = get_logger(__name__)
@@ -77,6 +79,10 @@ def _require_store(store: Any) -> Any:
 
 def _epoch(value: Any) -> int | None:
     return int(value.timestamp()) if isinstance(value, datetime) else None
+
+
+def _optional_int(value: Any) -> int | None:
+    return int(value) if value is not None else None
 
 
 def batch_view(row: dict[str, Any]) -> dict[str, Any]:
@@ -114,10 +120,16 @@ def batch_view(row: dict[str, Any]) -> dict[str, Any]:
             "input_tokens": prompt,
             "output_tokens": completion,
             "total_tokens": prompt + completion,
+            # The part of input_tokens served from a prompt cache; None for a
+            # batch stored before cache hits were recorded.
+            "cached_input_tokens": _optional_int(row.get("cache_read_tokens")),
         },
         "cost_usd": float(row.get("cost_usd") or 0.0),
         "cost_unknown_attempts": int(row.get("unknown_cost_count") or 0),
         "created_at": _epoch(row.get("created_at")),
+        # When its requests began to run (None while validating): what the
+        # console measures a batch's pace from.
+        "started_at": _epoch(row.get("in_progress_at")),
         "expires_at": _epoch(row.get("expires_at")),
         "ended_at": _epoch(row.get("sealed_at")),
         "results_expires_at": _epoch(row.get("results_expires_at")),
@@ -370,7 +382,7 @@ async def get_my_batch(
 
 
 async def _requests_download(
-    store: Any, batch_id: str, owner: str, *, unfinished: bool
+    request: Request, store: Any, batch_id: str, owner: str, *, unfinished: bool
 ) -> StreamingResponse:
     row = await store.get_batch(batch_id, user_id=owner)
     if row is None:
@@ -389,9 +401,9 @@ async def _requests_download(
             raise HTTPException(409, "This batch has not finished; its results are not final")
         statuses = UNFINISHED_STATUSES
         name = f"{batch_id}_unfinished.jsonl"
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_requests(store=store, batch_id=batch_id, url=url, statuses=statuses),
-        media_type="application/jsonl",
         headers={
             "content-disposition": content_disposition(name),
             "cache-control": "no-store",
@@ -402,17 +414,21 @@ async def _requests_download(
 @router.get("/user/batches/{batch_id}/requests", response_model=None)
 async def download_my_requests(
     batch_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
     """Download a batch's stored requests as an input file (``custom_id, method, url, body``)."""
     store = _require_store(store)
-    return await _requests_download(store, batch_id, current_user["user_id"], unfinished=False)
+    return await _requests_download(
+        request, store, batch_id, current_user["user_id"], unfinished=False
+    )
 
 
 @router.get("/user/batches/{batch_id}/unfinished-requests", response_model=None)
 async def download_my_unfinished_requests(
     batch_id: str,
+    request: Request,
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
 ) -> StreamingResponse:
@@ -422,7 +438,9 @@ async def download_my_unfinished_requests(
     again. Not a retry: nothing runs until a new batch is submitted.
     """
     store = _require_store(store)
-    return await _requests_download(store, batch_id, current_user["user_id"], unfinished=True)
+    return await _requests_download(
+        request, store, batch_id, current_user["user_id"], unfinished=True
+    )
 
 
 @router.post("/user/batches/{batch_id}/cancel")
@@ -463,6 +481,7 @@ async def delete_my_batch(
 @router.get("/user/batches/{batch_id}/results", response_model=None)
 async def download_my_results(
     batch_id: str,
+    request: Request,
     kind: str = Query("all", pattern="^(all|output|error)$"),
     current_user: dict = Depends(get_current_user),
     store=Depends(get_batch_store),
@@ -476,9 +495,9 @@ async def download_my_results(
         raise HTTPException(409, "This batch has not finished; its results are not final")
     if row.get("api_surface") != SURFACE_OPENAI_FILE:
         kind = "all"
-    return StreamingResponse(
+    return jsonl_download(
+        request,
         stream_lines(store=store, batch_id=batch_id, kind=kind),
-        media_type="application/jsonl",
         headers={"content-disposition": content_disposition(f"{batch_id}_{kind}.jsonl")},
     )
 
@@ -513,6 +532,11 @@ def _require_webhooks(webhook_store: Any) -> Any:
     if webhook_store is None or not batch_config().enabled:
         raise HTTPException(404, _UNAVAILABLE)
     return webhook_store
+
+
+def _require_webhook_surface(webhook_store: Any = Depends(get_batch_webhook_store)) -> None:
+    """Hide API webhook routes before authentication and schema validation."""
+    _require_webhooks(webhook_store)
 
 
 async def _save_webhook(
@@ -622,7 +646,7 @@ def _key_owner(user_ctx: dict[str, Any]) -> str:
     return user_ctx.get("user_id") or "anonymous"
 
 
-@router.get("/v1/batch_webhook")
+@router.get("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def get_webhook(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),
@@ -632,7 +656,7 @@ async def get_webhook(
     return _webhook_view(await webhook_store.get_webhook(_key_owner(user_ctx)))
 
 
-@router.put("/v1/batch_webhook")
+@router.put("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def put_webhook(
     settings: WebhookSettings,
     user_ctx: dict = Depends(verify_batch_management_identity),
@@ -649,7 +673,7 @@ async def put_webhook(
     )
 
 
-@router.delete("/v1/batch_webhook")
+@router.delete("/v1/batch_webhook", dependencies=[Depends(_require_webhook_surface)])
 async def delete_webhook(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),
@@ -659,7 +683,7 @@ async def delete_webhook(
     return {"deleted": await webhook_store.delete_webhook(_key_owner(user_ctx))}
 
 
-@router.get("/v1/batch_webhook/events")
+@router.get("/v1/batch_webhook/events", dependencies=[Depends(_require_webhook_surface)])
 async def webhook_events(
     user_ctx: dict = Depends(verify_batch_management_identity),
     webhook_store=Depends(get_batch_webhook_store),

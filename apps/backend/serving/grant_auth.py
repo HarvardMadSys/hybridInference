@@ -25,8 +25,8 @@ bookkeeping:
   revoke that is forgotten or lost is a token that stops working at its next
   expiry — not a standing credential.
 - **Spend is metered as the owner.** A grant carries no budget of its own.
-  The account's daily quota — the same ceiling the direct path enforces — is
-  checked on every call, and spend is measured from the billing ledger, not
+  The account's daily and monthly quotas — the ceilings the direct path
+  enforces — are checked on every call, and spend is measured from the billing ledger, not
   from anything the agent reports about itself.
 
 Requests bill the grant's *owner*, so a job's usage shows up in that user's
@@ -36,11 +36,13 @@ account exactly like any other traffic, attributed via
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
+from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -66,7 +68,7 @@ class AgentModelAuthError(Exception):
 
 
 class AgentQuotaExceeded(AgentModelAuthError):
-    """The account behind a grant has spent its daily quota.
+    """The account behind a grant has spent its daily or monthly quota.
 
     Distinct from the base error because the HTTP layer must answer with the
     *same* body and ``X-RateLimit-*`` headers the direct path returns — a
@@ -74,10 +76,22 @@ class AgentQuotaExceeded(AgentModelAuthError):
     needs the numbers, not a rendered message.
     """
 
-    def __init__(self, *, quota_usd: float, spent_usd: float) -> None:
-        super().__init__("Daily cost quota exceeded", status_code=429)
+    def __init__(
+        self,
+        *,
+        quota_usd: float,
+        spent_usd: float,
+        window: quota.Window = "day",
+        refusal: quota.BudgetRefusal | None = None,
+    ) -> None:
+        super().__init__(
+            "Daily cost quota exceeded" if window == "day" else "Monthly cost quota exceeded",
+            status_code=429,
+        )
         self.quota_usd = quota_usd
         self.spent_usd = spent_usd
+        self.window = window
+        self.refusal = refusal or quota.BudgetRefusal("account", window, quota_usd, spent_usd)
 
 
 async def _resolve_grant(
@@ -125,17 +139,23 @@ async def _resolve_grant(
     return row
 
 
-async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
-    """Return ``(limit, spent)`` for the account behind a grant.
+async def _quota_check(
+    op_store: Any, user_id: str, context: dict[str, Any] | None = None
+) -> SpendCheck | None:
+    """Read the account quotas a grant's next call is checked against.
 
-    The limit lives on the user's API key and the spend on the user, so this
-    is two reads that the direct path gets in one — a grant carries no key to
-    join through.
+    The limits are the account's, stored on each of its API keys, and the
+    spend is the user's, so this is two reads (three with a monthly limit)
+    that the direct path gets in one — a grant carries no key to join through.
+    A grant uses the organization's Default project, without per-key limits.
+    The check (:meth:`SpendCheck.refusal`) counts the spend ledger's requests
+    in flight and costs not yet written on top of what was read, as the
+    direct path's does, and the request's admission reserves against it.
 
     Raises:
-        AgentModelAuthError: If the account has no active key, if it somehow
-            has more than one, or if either read fails. Every branch refuses;
-            none defaults to "no ceiling".
+        AgentModelAuthError: If the account has no active key, if the store
+            returns more than its one quota row, or if either read fails.
+            Every branch refuses; none defaults to "no ceiling".
     """
     try:
         keys = await op_store.get_quota_context_for_user(user_id)
@@ -157,9 +177,10 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             status_code=403,
         )
     if len(keys) > 1:
-        # UNIQUE (user_id) WHERE status='active' forbids this. Reaching it
-        # means the index is gone; picking a winner would settle a spending
-        # question by papering over a schema failure.
+        # The store answers with one row per account however many keys it
+        # holds (they share the account's quota). More means that contract is
+        # broken; picking a winner would settle a spending question by papering
+        # over the failure.
         logger.error(
             "agent_grant_duplicate_active_keys",
             extra={
@@ -173,8 +194,15 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             status_code=403,
         )
 
+    if context is not None:
+        context.update(keys[0])
+    monthly = keys[0].get("quota_monthly_cost_usd")
+    read_at = time.monotonic()
     try:
         spent = await op_store.get_user_cost_today(user_id)
+        spent_month = (
+            await op_store.get_user_cost_period(user_id, "month") if monthly is not None else 0.0
+        )
     except Exception as exc:
         logger.warning(
             "agent_grant_spend_lookup_failed",
@@ -185,7 +213,22 @@ async def _quota_context(op_store: Any, user_id: str) -> tuple[float, float]:
             "Spending cannot be measured right now.", status_code=503
         ) from exc
 
-    return quota.resolve_quota(keys[0].get("quota_daily_cost_usd")), float(spent or 0.0)
+    return SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=user_id,
+        key_id=None,
+        read_at=read_at,
+        account_quota_usd=quota.resolve_quota(keys[0].get("quota_daily_cost_usd")),
+        account_spent_usd=float(spent or 0.0),
+        account_quota_monthly_usd=None if monthly is None else float(monthly),
+        account_spent_month_usd=float(spent_month or 0.0),
+        project_budget_daily_usd=keys[0].get("project_budget_daily_usd"),
+        project_budget_monthly_usd=keys[0].get("project_budget_monthly_usd"),
+        project_spent_today_usd=float(keys[0].get("project_spent_today_usd") or 0.0),
+        project_spent_month_usd=float(keys[0].get("project_spent_month_usd") or 0.0),
+        project_id=keys[0].get("project_id"),
+        project_name=keys[0].get("project_name"),
+    )
 
 
 async def authenticate_grant_model_call(
@@ -196,8 +239,8 @@ async def authenticate_grant_model_call(
     """Resolve an inference grant into a user context for a model request.
 
     This is where the per-task budget went. A grant says *what* may be called;
-    the account's daily quota — the same one the direct path enforces — says
-    how much. Before grants existed, an agent token returned from
+    the account's daily and monthly quotas — the ones the direct path
+    enforces — say how much. Before grants existed, an agent token returned from
     ``verify_api_key`` above the quota gate and reached inference having been
     authenticated and never metered; that bypass closes here.
 
@@ -207,13 +250,18 @@ async def authenticate_grant_model_call(
     row = await _resolve_grant(api_key, op_store=op_store)
 
     user = await _active_subject(op_store, row["user_id"])
-    quota_usd, spent_usd = await _quota_context(op_store, row["user_id"])
-    try:
-        quota.check(quota_usd=quota_usd, spent_usd=spent_usd)
-    except quota.QuotaExceeded as exc:
-        raise AgentQuotaExceeded(quota_usd=exc.quota_usd, spent_usd=exc.spent_usd) from exc
+    scope: dict[str, Any] = {}
+    check = await _quota_check(op_store, row["user_id"], scope)
+    refusal = check.refusal() if check is not None else None
+    if refusal is not None:
+        raise AgentQuotaExceeded(
+            quota_usd=refusal.limit_usd,
+            spent_usd=refusal.spent_usd,
+            window=refusal.window,
+            refusal=refusal,
+        )
 
-    return {
+    context: dict[str, Any] = {
         "user_id": row["user_id"],
         # The owner's role: a grant's models were already clamped to it at mint
         # time, so this only has to agree with that decision.
@@ -233,7 +281,17 @@ async def authenticate_grant_model_call(
         "agent_job_id": row["external_job_id"],
         "agent_grant_id": row["grant_id"],
         "agent_allowed_models": row.get("allowed_models") or [],
+        "org_id": scope.get("org_id"),
+        "project_id": scope.get("project_id"),
+        "project_name": scope.get("project_name"),
+        "project_max_concurrent_requests": scope.get("project_max_concurrent_requests"),
+        "org_max_concurrent_requests": scope.get("org_max_concurrent_requests"),
+        PROJECT_ALLOWED_MODELS_KEY: scope.get("project_allowed_models"),
     }
+    if check is not None:
+        # The request's admission reserves against it (SpendCheck.admit).
+        context[SPEND_CHECK_KEY] = check
+    return context
 
 
 async def _active_subject(op_store: Any, user_id: str) -> dict[str, Any]:

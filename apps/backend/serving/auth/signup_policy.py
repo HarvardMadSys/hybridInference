@@ -81,7 +81,8 @@ async def is_public_signup_enabled() -> bool:
         if not distribution_allows_public_signup():
             return False
     except DistributionConfigError:
-        logger.error("Distribution configuration is invalid; public signup is disabled.")
+        # Every registration attempt arrives here. The distribution module has
+        # already logged it, once per configuration change, saying signup is closed.
         return False
 
     try:

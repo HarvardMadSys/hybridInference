@@ -45,7 +45,7 @@ from .claude_format import (
     parse_usage,
 )
 from .dispatch_watch import report_first_token
-from .openai_compat import _key_pool_provider_label
+from .openai_compat import _key_pool_provider_label, completion_timeout_s
 from .upstream_limiter import UpstreamSlot, acquire_upstream_slot, outcome_status, upstream_slot
 
 logger = get_logger(__name__)
@@ -157,16 +157,17 @@ class ClaudeAdapter(BaseAdapter):
         }
 
         # retries=1 => exactly one attempt, NO retry: a completion POST is
-        # non-idempotent. Re-sending after the 120s total timeout fires (i.e.
+        # non-idempotent. Re-sending after the total timeout fires (i.e.
         # after Vertex may have already generated and billed the response) or
         # on a deterministic 4xx would double-bill and add latency; resilience
         # comes from the router's fallback chain (same policy as openai_compat).
+        # The total is UPSTREAM_COMPLETION_TIMEOUT_S, as on the other adapters.
         async with self._upstream_slot():
             data = await self.http.json_post_with_retry(
                 endpoint,
                 json=payload,
                 headers=headers,
-                timeout=aiohttp.ClientTimeout(total=120),
+                timeout=aiohttp.ClientTimeout(total=completion_timeout_s()),
                 retries=1,
             )
 
@@ -278,13 +279,15 @@ class ClaudeAdapter(BaseAdapter):
         upstream_outcome: int | None = None
         try:
             # Google Vertex API may return non-streaming JSON instead of SSE
-            # Try to use ndjson mode which is more tolerant
+            # Try to use ndjson mode which is more tolerant. No total timeout:
+            # aiohttp applies one to reading the body too, and a fixed 120 s cut
+            # off every generation still streaming at two minutes. stream_post
+            # bounds opening the connection; the gateway bounds the request.
             async for line in self.http.stream_post(
                 endpoint,
                 json=payload,
                 headers=headers,
                 mode="auto",
-                timeout=aiohttp.ClientTimeout(total=120),
             ):
                 if not line.strip():
                     continue
@@ -469,8 +472,9 @@ class ClaudeAdapter(BaseAdapter):
             upstream_outcome = outcome_status(e)
             logger.error(f"[CLAUDE STREAM ERROR] {type(e).__name__}: {e}")
             if isinstance(e, aiohttp.ClientResponseError):
+                # Not ``e.request_info`` (nor ``repr(e)``, which embeds it): it
+                # carries the request's headers, this adapter's ``api-key`` among them.
                 logger.error(f"Response status: {e.status}, message: {e.message}")
-                logger.error(f"Request info: {e.request_info}")
                 # Try to get detailed error message from attached error_body
                 error_body = getattr(e, "error_body", None)
                 if error_body:

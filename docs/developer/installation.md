@@ -91,14 +91,13 @@ and:
    out of every browser that has not signed in to it before. The browser you
    set up with keeps a device cookie that gives it attempts of its own; see
    [The first admin account](deployment.md#the-first-admin-account).
-3. Fill in the settings the page lists. Out of the box the gateway serves the
-   three example models in `config/examples/models.openrouter.yaml`, which all
-   use [OpenRouter](https://openrouter.ai) (one tries a local Ollama server
-   first), so `OPENROUTER_API_KEY` is listed as missing: set it and they work.
-   To serve your own models instead, see [Adding a New Model](adding-models.md).
-4. Finish. The model registry reads provider credentials when the backend
-   starts, so the last step offers **Restart backend** when anything you saved
-   needs it.
+3. Fill in required deployment settings. The gateway does not install sample
+   models or assume a provider account. Missing configuration shows **Ask admin
+   to configure**.
+4. Finish setup, then add a provider/key and create a model in **Admin → Routing**.
+   Verify the route before making the model available to users. For advanced
+   metadata and aliases, edit the model catalog in **Admin → Settings → Models**.
+   Follow **Restart required** markers when saving a catalog or credential.
 
 Everything set here can be changed later on the admin console's
 **Settings** tab; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
@@ -263,15 +262,11 @@ restart; they join the same pool as the keys the registry names. See
 
 ### Where the config files live
 
-The gateway finds its model registry, routing file and alert rules through
-environment variables or a distribution's manifest, and falls back to the
-examples under `config/examples/` when neither names one.
-[How a gateway finds its config](configuration.md#how-a-gateway-finds-its-config)
-has the rules, and the rest of that page covers what goes inside the files.
-
-The Compose file mounts both `config/` and `distributions/` read-only into the
-backend, so editing either on the host and restarting the backend is enough —
-no image rebuild.
+Application configuration lives in PostgreSQL and is edited in Admin. Model,
+routing, alert, site and branding documents have no runtime file fallback.
+See [Configuration](configuration.md) for document formats and explicit legacy
+imports. Deployment overlays may still provide infrastructure, assets and
+trusted extension code.
 
 ```{note}
 A backend running directly on the host can reach a host inference server

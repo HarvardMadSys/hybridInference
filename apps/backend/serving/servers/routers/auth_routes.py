@@ -82,7 +82,8 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
-from serving.utils.login_rate_limit import check_and_record_login
+from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
+from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip, get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
@@ -92,6 +93,10 @@ router = APIRouter(prefix="/auth", tags=["Authentication"])
 router.include_router(phone_auth_router)
 logger = get_logger(__name__)
 
+# How long the link a reset request, or a verification resend, mails stays good.
+_RESET_LINK_LIFETIME = timedelta(hours=1)
+_VERIFICATION_LINK_LIFETIME = timedelta(hours=24)
+
 
 def get_base_url(request: Request) -> str:
     """Return the configured ``BASE_URL`` or fall back to the request scheme+host."""
@@ -99,6 +104,26 @@ def get_base_url(request: Request) -> str:
     if base_url:
         return base_url.rstrip("/")
     return f"{request.url.scheme}://{request.url.netloc}"
+
+
+async def _refuse_mail_flood(request: Request, kind: MailKind, email: str) -> None:
+    """Raise 429 when *email* or this client has asked for too much mail of *kind*.
+
+    One answer for either window, decided before any account is looked up, so
+    it says nothing about whether the address has one. A client whose address
+    could not be resolved is limited per address alone: counting every such
+    client together would let any one of them stop everyone's mail.
+    """
+    client = get_client_ip_info(request)
+    allowed, _reason = await check_and_record_mail_request(
+        kind, email, client.client_ip if client.resolved else None
+    )
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again later.",
+            headers={"Retry-After": "3600"},
+        )
 
 
 async def start_user_session(
@@ -284,7 +309,7 @@ async def signup(
     # created while verification is disabled would be stuck as unverified and
     # locked out if verification is later re-enabled.
     user_id = generate_ulid()
-    password_hash_str = password_utils.hash_password(body.password)
+    password_hash_str = await password_utils.hash_password_async(body.password)
 
     await op_store.create_user(
         user_id=user_id,
@@ -382,7 +407,8 @@ async def login(
     - 50 attempts per 15 minutes per email or login name from all addresses
     - 20 attempts per hour per IP
     A browser presenting a device cookie entry for the identifier, from an
-    earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead.
+    earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead,
+    and the account's recognized browsers to 50 per 15 minutes together.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -422,13 +448,21 @@ async def login(
     # Only rate limiting differs for a recognized browser: the password is
     # checked, and every outcome answered, exactly as for any other client.
     device = recognized_device(request, identifier)
+    if device is None:
+        # With as many password checks waiting as may (a flood of guesses),
+        # refuse before counting the attempt or looking the name up. The same
+        # for every name; and a recognized browser is never refused this way.
+        password_utils.ensure_password_capacity()
     allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this
         # browser) are 15-minute windows.
         retry_after = "3600" if reason == "ip" else "900"
-        await _record("failure", failure_reason="rate_limited", user_id=None)
+        # One row a minute per address and window, not one per attempt: a
+        # source that keeps trying past a limit costs no database write each.
+        if refusal_worth_recording(client_ip, reason or ""):
+            await _record("failure", failure_reason="rate_limited", user_id=None)
         raise HTTPException(
             status_code=429,
             detail="Too many login attempts. Please try again later.",
@@ -441,14 +475,20 @@ async def login(
     else:
         user_row = await op_store.get_user_by_login_name(identifier)
 
+    # Verified whether or not the account exists or has a password at all (an
+    # account made by phone has none): answering an unknown name before the
+    # hash a known one costs would tell from the timing who holds an account.
+    password_matches = await password_utils.verify_password_async(
+        body.password,
+        user_row.get("password_hash") if user_row else None,
+        shed=device is None,
+    )
+
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
-    # Verify password
-    if not user_row.get("password_hash") or not password_utils.verify_password(
-        body.password, user_row["password_hash"]
-    ):
+    if not password_matches:
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
@@ -566,13 +606,19 @@ async def logout(
 
     Other accounts signed in on the browser stay signed in, with none of them
     active; the cookie goes with the last one. Access tokens already issued
-    expire on their own (15 minutes).
+    for the session are refused from the next request on
+    (:func:`serving.servers.deps.require_live_session`).
 
     A cookie that names no browser is cleared. Unlike deleting an account,
     which takes it off every browser first, logout cannot tell which browser
     still holds the account when the cookie was rotated by another tab, and
     leaving it would let the account be chosen again without a password;
     signing the browser's other accounts out is the safe way to fail.
+
+    The session the access token was issued for (its ``sid``) is revoked
+    either way. A cookie that no longer resolves may have been rotated by
+    whoever copied it, and clearing it here alone would leave them signed
+    in, refreshing on the stolen browser session after the owner signed out.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -582,6 +628,8 @@ async def logout(
         await _sign_out_of_browser(op_store, response, browser, current_user["user_id"])
     else:
         delete_refresh_token_cookie(response)
+    if current_user.get("sid"):
+        await op_store.revoke_session_by_sid(current_user["user_id"], current_user["sid"])
 
     logger.info(f"User logged out: {current_user['user_id']}")
 
@@ -954,10 +1002,16 @@ async def forgot_password(
     """Request password reset email.
 
     Sends a password reset link to the user's email if the account exists.
-    Always returns success to prevent email enumeration.
+    Always returns success to prevent email enumeration. Rate limited per
+    address and per client (:mod:`serving.utils.mail_rate_limit`) before the
+    account is looked up, so a 429 does not depend on it either. A link that
+    is still good for at least half its lifetime is sent again rather than a
+    new one minted.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    await _refuse_mail_flood(request, "password_reset", body.email)
 
     user_row = await op_store.get_user_by_email(body.email)
 
@@ -968,12 +1022,18 @@ async def forgot_password(
             message="If an account exists with this email, a password reset link has been sent."
         )
 
-    # Generate reset token
-    reset_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(hours=1)
-    await op_store.create_reset_token(
-        token=reset_token, user_id=user_row["id"], expires_at=expires_at
+    # Every request let through mails a link that works, the same one while it
+    # has most of its life left: repeated requests add no rows, and someone
+    # asking for another person's reset only sends that person working links.
+    now = datetime.now(UTC)
+    reset_token = await op_store.get_live_reset_token(
+        user_row["id"], valid_until=now + _RESET_LINK_LIFETIME / 2
     )
+    if reset_token is None:
+        reset_token = secrets.token_urlsafe(32)
+        await op_store.create_reset_token(
+            token=reset_token, user_id=user_row["id"], expires_at=now + _RESET_LINK_LIFETIME
+        )
 
     # Send reset email if SMTP is configured
     if is_email_enabled():
@@ -1022,7 +1082,7 @@ async def reset_password(
         )
 
     # Update password
-    password_hash_str = password_utils.hash_password(body.new_password)
+    password_hash_str = await password_utils.hash_password_async(body.new_password)
     await op_store.update_user_fields(token_row["user_id"], password_hash=password_hash_str)
 
     # The link is spent, and so is every other one the account still holds:
@@ -1048,10 +1108,15 @@ async def resend_verification(
 ) -> ResendVerificationResponse:
     """Resend email verification link.
 
-    Sends a new verification email if the user exists and is not verified.
+    Sends a verification email if the user exists and is not verified. Rate
+    limited and enumeration-safe like ``POST /auth/forgot-password``, and
+    likewise sends a link that still has half its lifetime again rather than
+    minting another.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
+
+    await _refuse_mail_flood(request, "verification", body.email)
 
     generic_response = ResendVerificationResponse(
         message="If this email requires verification, a verification email has been sent."
@@ -1065,12 +1130,17 @@ async def resend_verification(
     if user_row["email_verified"]:
         return generic_response
 
-    # Generate new verification token
-    verification_token = secrets.token_urlsafe(32)
-    expires_at = datetime.now(UTC) + timedelta(hours=24)
-    await op_store.create_verification_token(
-        token=verification_token, user_id=user_row["id"], expires_at=expires_at
+    now = datetime.now(UTC)
+    verification_token = await op_store.get_live_verification_token(
+        user_row["id"], valid_until=now + _VERIFICATION_LINK_LIFETIME / 2
     )
+    if verification_token is None:
+        verification_token = secrets.token_urlsafe(32)
+        await op_store.create_verification_token(
+            token=verification_token,
+            user_id=user_row["id"],
+            expires_at=now + _VERIFICATION_LINK_LIFETIME,
+        )
 
     # Send email in background so the request returns even if SMTP is slow
     if is_email_enabled():

@@ -85,6 +85,8 @@ async def concurrency_app(auth_env):
     op_store = MagicMock()
     admins = {"u-alice": _admin_row("u-alice"), "u-bob": _admin_row("u-bob")}
     op_store.get_user_by_id = AsyncMock(side_effect=lambda user_id: admins.get(user_id))
+    # The tokens _bearer() mints name sessions that are still live.
+    op_store.session_is_live = AsyncMock(return_value=True)
     op_store.get_model_concurrency_exemption = AsyncMock(return_value=None)
     op_store.set_model_concurrency_exemption = AsyncMock()
     op_store.delete_model_concurrency_exemption = AsyncMock()

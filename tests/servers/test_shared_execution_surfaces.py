@@ -273,9 +273,13 @@ class _BetaRecorder(_NativeRecorder):
         super().__init__(config, served)
         self.extra_headers: list[dict[str, str] | None] = []
 
-    async def messages(self, body, *, request_id, extra_headers=None) -> dict[str, Any]:
+    async def messages(
+        self, body, *, request_id, usage_sink=None, extra_headers=None
+    ) -> dict[str, Any]:
         self.extra_headers.append(extra_headers)
-        return await super().messages(body, request_id=request_id, extra_headers=extra_headers)
+        return await super().messages(
+            body, request_id=request_id, usage_sink=usage_sink, extra_headers=extra_headers
+        )
 
 
 @pytest.mark.asyncio

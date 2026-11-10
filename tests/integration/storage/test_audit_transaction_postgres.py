@@ -9,9 +9,9 @@ import pytest
 import pytest_asyncio
 
 from serving.audit import AuditActor, AuditTarget
-from serving.storage import account_schema
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -22,7 +22,6 @@ _ADMIN = AuditActor.admin("u-transaction-admin", "192.0.2.40")
 @pytest_asyncio.fixture
 async def store(monkeypatch):
     """Keep the deliberately rejecting constraint out of every other test's tables."""
-    monkeypatch.setattr(account_schema, "_current", account_schema.COMPLETE)
     admin = await postgres.connect()
     schema = f"audit_transaction_{secrets.token_hex(4)}"
     pool = None
@@ -31,8 +30,9 @@ async def store(monkeypatch):
         pool = await postgres.create_pool(
             min_size=1, max_size=2, server_settings={"search_path": schema}
         )
+        async with pool.acquire() as conn:
+            await prepare_current_schema(conn)
         op_store = PostgresOperationalStore(pool)
-        await op_store.initialize()
         yield op_store, pool
     finally:
         if pool is not None:

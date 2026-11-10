@@ -31,9 +31,12 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
+from routing.endpoint_health import http_status_of
 from routing.routers import AllCircuitsOpenError, TargetUnavailableError
+from routing.telemetry import is_uncharged_failure
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPoolExhausted
-from serving.exceptions import scrub_error_for_user
+from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import (
     RoutingInfo,
@@ -41,7 +44,14 @@ from serving.servers.routers.routing_info import (
     merge_adapter_routing,
 )
 from serving.storage.utils import json_safe
-from serving.stream import make_role_chunk, new_completion_id, stamp_completion_id
+from serving.stream import (
+    StreamQueue,
+    StreamText,
+    make_role_chunk,
+    new_completion_id,
+    pump_stream,
+    stamp_completion_id,
+)
 from serving.utils import context as req_ctx
 from serving.utils.errors import format_exception_for_db
 from serving.utils.logging import get_logger
@@ -49,6 +59,11 @@ from serving.utils.token_utils import (
     normalize_usage,
     optional_token_count,
     sanitize_usage,
+)
+from serving.utils.tokens import (
+    INLINE_ESTIMATE_MAX_CHARS,
+    estimate_prompt_tokens_bounded,
+    estimate_texts_tokens_bounded,
 )
 
 if TYPE_CHECKING:
@@ -169,10 +184,17 @@ class ToolCallAccumulator:
     Adapters emit tool_calls as deltas; the public response (and the DB log
     payload) needs the merged form. Mirrors the prior inline merge logic
     from completions.py lines 543-570.
+
+    A call's name and arguments arrive in pieces and are kept as
+    :class:`~serving.stream.StreamText`, read by :meth:`to_list`: a long tool
+    call -- a file written by an agent -- arrives in thousands of argument
+    fragments.
     """
 
     def __init__(self) -> None:
         self._calls: dict[int, dict[str, Any]] = {}
+        # Per call index: the name and the arguments so far.
+        self._pieces: dict[int, tuple[StreamText, StreamText]] = {}
 
     def add(self, deltas: list[dict[str, Any]]) -> None:
         """Merge a list of tool_call deltas into the accumulator."""
@@ -185,6 +207,7 @@ class ToolCallAccumulator:
                     "type": tc_delta.get("type") or "function",
                     "function": {"name": "", "arguments": ""},
                 }
+                self._pieces[idx] = (StreamText(), StreamText())
             id_delta = tc_delta.get("id")
             if not self._calls[idx]["id"] and isinstance(id_delta, str) and id_delta:
                 self._calls[idx]["id"] = id_delta
@@ -193,22 +216,24 @@ class ToolCallAccumulator:
                 self._calls[idx]["type"] = type_delta
             fn_delta = tc_delta.get("function")
             if isinstance(fn_delta, dict):
+                name, arguments = self._pieces[idx]
                 name_delta = fn_delta.get("name")
                 if isinstance(name_delta, str):
-                    self._calls[idx]["function"]["name"] += name_delta
+                    name.append(name_delta)
                 arguments_delta = fn_delta.get("arguments")
                 if isinstance(arguments_delta, str):
-                    self._calls[idx]["function"]["arguments"] += arguments_delta
+                    arguments.append(arguments_delta)
 
     def __bool__(self) -> bool:
         return bool(self._calls)
 
     def to_list(self) -> list[dict[str, Any]]:
         """Return tool_calls sorted by ``index`` for the final message."""
+        for idx, call in self._calls.items():
+            name, arguments = self._pieces[idx]
+            call["function"]["name"] = name.text
+            call["function"]["arguments"] = arguments.text
         return [tc for _, tc in sorted(self._calls.items())]
-
-
-_ToolCallAccumulator = ToolCallAccumulator
 
 
 class _TTFTTracker:
@@ -360,8 +385,10 @@ class StreamSession:
         # Streaming-loop state
         self._yielded_first_chunk = False
         self._chunk_count = 0
-        self._final_text = ""
-        self._final_reasoning = ""
+        # The answer and the reasoning so far (see ``StreamText``); read
+        # through ``_final_text`` / ``_final_reasoning``.
+        self._text = StreamText()
+        self._reasoning = StreamText()
         self._finish_reason_for_db = "stop"
         self._tool_calls = ToolCallAccumulator()
         self._ttft = _TTFTTracker(start_time)
@@ -375,10 +402,19 @@ class StreamSession:
         # ends its stream with a ``_routing`` block of its own (openai_compat
         # does) would otherwise drop them from the request log.
         self._adapter_routing: dict[str, Any] | None = None
+        # Whether the attempt in flight has left the gateway, for billing a
+        # stream the client leaves: the outbound limiter marks it when it gives
+        # the request its slot (``dispatch_watch.report_sent``). The router
+        # announces an attempt before the adapter fetches remote media, waits
+        # for a slot or sends anything.
+        self._dispatch = DispatchRecord()
         self._provider_from_ctx: str | None = None
         # Upstream label resolved on the failure path, exposed for the caller
         # (see ``error_provider``). ``None`` until this stream fails.
         self._error_provider: str | None = None
+        # Whether that failure was an upstream "model queued" answer (see
+        # ``model_queued``); crosses to the caller the same way.
+        self._model_queued = False
 
     # -- public surface ------------------------------------------------------
 
@@ -404,6 +440,16 @@ class StreamSession:
         to ``req_ctx.publish_upstream_provider``, which drops them.
         """
         return self._error_provider
+
+    @property
+    def model_queued(self) -> bool:
+        """Whether this stream failed on an upstream "model queued" answer.
+
+        Read by the same callers as ``error_provider``, for the same reason: they
+        tag the request in its own context (``req_ctx.mark_model_queued``) so the
+        failed-request alert leaves the 503 out.
+        """
+        return self._model_queued
 
     @property
     def yielded_first_chunk(self) -> bool:
@@ -480,20 +526,19 @@ class StreamSession:
             # Keepalive: a background task drains adapter_chunks into a
             # queue.  The generator pulls with a short timeout; on timeout
             # it yields an SSE comment so intermediate proxies see activity
-            # and don't drop the connection during long upstream pauses.
+            # and don't drop the connection during long upstream pauses. The
+            # queue is bounded, so a client that stops reading stops the reads
+            # from the upstream too (see ``pump_stream``).
             last_client_yield = time.monotonic()
-            chunk_queue: asyncio.Queue = asyncio.Queue()
+            chunk_queue = StreamQueue()
 
-            async def _adapter_reader() -> None:
-                try:
-                    async for item in adapter_chunks:
-                        await chunk_queue.put(item)
-                except Exception as exc:
-                    await chunk_queue.put(exc)
-                finally:
-                    await chunk_queue.put(_SENTINEL)
-
-            reader_task = asyncio.create_task(_adapter_reader())
+            # The reader runs the router, and the adapter under it, in a copy of
+            # this context: the record pushed for it is the one the outbound
+            # limiter marks when the request leaves the gateway.
+            with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: self._dispatch}):
+                reader_task = asyncio.create_task(
+                    pump_stream(adapter_chunks, chunk_queue, end=_SENTINEL)
+                )
             try:
                 while True:
                     try:
@@ -704,7 +749,8 @@ class StreamSession:
             # land here — both are ``BaseException`` subclasses, so the
             # ``except Exception`` above never runs. Previously these skipped
             # finalization entirely: no ``api_logs`` row was written, so under
-            # load every timed-out request vanished. Persist the row before
+            # load every timed-out request vanished. Persist the row (and bill
+            # what the upstream already did, see ``_finalize_cancelled``) before
             # re-propagating so aborted requests stay visible — but through
             # ``_finalize_cancelled``, not ``_finalize_failure``: an abort is
             # not a provider failure, so it must not be logged as a 500 or
@@ -718,17 +764,30 @@ class StreamSession:
             # ``GeneratorExit`` is in flight is illegal.
             #
             # ``_finalize_cancelled`` must stay synchronous (no suspending
-            # ``await``): it only *schedules* the DB write, so it runs to
-            # completion here even while this task is being cancelled. The write
-            # itself is a separate task retained beyond this request by
-            # ``tracked_task``'s module-level ``_TRACKED_TASKS`` set (and the
-            # shared ``CompletionsLogger._background_tasks`` set), so it survives
-            # the cancellation. If async work is ever genuinely needed in
+            # ``await``): it only *schedules* the DB writes (the log row and the
+            # cost increment), so it runs to completion here even while this
+            # task is being cancelled. The writes themselves are separate tasks
+            # retained beyond this request by ``tracked_task``'s module-level
+            # ``_TRACKED_TASKS`` set (and the shared
+            # ``CompletionsLogger._background_tasks`` set), so they survive the
+            # cancellation. If async work is ever genuinely needed in
             # finalization, schedule it as its own background task rather than
             # awaiting it here, or a cancellation could abort it mid-flight.
             with suppress(Exception):
                 self._finalize_cancelled()
             raise
+
+    # -- internal: accumulated output ---------------------------------------
+
+    @property
+    def _final_text(self) -> str:
+        """The content streamed so far."""
+        return self._text.text
+
+    @property
+    def _final_reasoning(self) -> str:
+        """The reasoning streamed so far."""
+        return self._reasoning.text
 
     # -- internal: per-chunk handlers ---------------------------------------
 
@@ -779,7 +838,11 @@ class StreamSession:
             # which set ttft_ms here too (covered by _record_ttft_from_delta
             # above, but kept for parity with the legacy code path).
             self._ttft.maybe_record(True)
-            self._final_text += content_piece
+            if not isinstance(content_piece, str):
+                # What appending it to the answer string raised, here, at the
+                # chunk that carried it, as before: the stream fails with it.
+                raise TypeError(f"stream content delta is {type(content_piece).__name__}, not str")
+            self._text.append(content_piece)
 
         reasoning_piece = delta.get("reasoning_content")
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
@@ -787,7 +850,7 @@ class StreamSession:
         if not (isinstance(reasoning_piece, str) and reasoning_piece):
             reasoning_piece = delta.get("thinking")
         if isinstance(reasoning_piece, str) and reasoning_piece:
-            self._final_reasoning += reasoning_piece
+            self._reasoning.append(reasoning_piece)
 
         tool_calls_delta = delta.get("tool_calls")
         if tool_calls_delta:
@@ -935,6 +998,7 @@ class StreamSession:
             _usage = response_for_db.get("usage") or {}
             self._routing = await self._cost_tracker.schedule_increment(
                 user_id=self._user_id,
+                api_key_id=self._metadata.get("api_key_id"),
                 routing=self._routing,
                 prompt_tokens=int(_usage.get("prompt_tokens", 0) or 0),
                 completion_tokens=int(_usage.get("completion_tokens", 0) or 0),
@@ -993,6 +1057,11 @@ class StreamSession:
                 # model for a response the user got nothing out of.
                 success=not is_empty_completion,
                 cached_tokens=cached_tokens,
+                # Pass the full structured response the finalizer already
+                # built (text, reasoning, tool_calls, finish_reason) so the
+                # classifier sees the same evidence the DB row will, including
+                # tool-call-only completions, which are real work.
+                response_body=response_for_db,
             )
 
     async def _finalize_failure(self, exc: BaseException) -> None:
@@ -1019,6 +1088,10 @@ class StreamSession:
                     prompt_tokens=0,
                     completion_tokens=0,
                     success=False,
+                    status_code=http_status_of(exc),
+                    # Nothing sent (no outbound slot, no usable key): no
+                    # evidence about the endpoint the failure names.
+                    uncharged=is_uncharged_failure(exc),
                 )
             except Exception:
                 logger.exception(
@@ -1044,6 +1117,7 @@ class StreamSession:
         # Starlette's streaming task, or the SSE handler for the first item), so
         # a publish here would read as a fix while, on most paths, doing nothing.
         self._error_provider = provider_for_error
+        self._model_queued = isinstance(exc, UpstreamModelQueued)
         exc_status_code = _extract_exception_status_code(exc)
 
         if self._log_store and not self._suppress_synthetic_logging:
@@ -1075,8 +1149,78 @@ class StreamSession:
 
         return
 
+    def _cancelled_usage(self) -> tuple[dict[str, Any], bool]:
+        """Return ``(usage, estimated)`` for a stream cut off before its end.
+
+        Usage the upstream already reported is used as reported. Without it
+        the counts are estimated, as ``/v1/messages`` estimates them for the
+        same case (``_resolve_stream_usage``): the prompt from the request
+        (messages, plus the tool definitions sent with them), the output from
+        what the stream produced before it stopped (content, reasoning and
+        tool calls). Both use the bounded estimators, so the cost stays a few
+        milliseconds whatever the size of the conversation.
+        """
+        if self._usage_data:
+            normalized = normalize_usage(self._usage_data)
+            return (normalized if normalized is not None else dict(self._usage_data)), False
+        tool_texts: tuple[str, ...] = ()
+        tools = self._params.get("tools")
+        if isinstance(tools, list) and tools:
+            with suppress(TypeError, ValueError):
+                tool_texts = (json.dumps(tools),)
+        prompt_tokens = estimate_prompt_tokens_bounded(self._messages, extra_texts=tool_texts)
+        output_texts = [self._final_text, self._final_reasoning]
+        for tool_call in self._tool_calls.to_list():
+            function = tool_call.get("function") or {}
+            output_texts.append(function.get("name") or "")
+            output_texts.append(function.get("arguments") or "")
+        completion_tokens = estimate_texts_tokens_bounded(
+            output_texts, max_chars=INLINE_ESTIMATE_MAX_CHARS
+        )
+        return {
+            "prompt_tokens": prompt_tokens,
+            "completion_tokens": completion_tokens,
+            "total_tokens": prompt_tokens + completion_tokens,
+        }, True
+
+    def _bill_cancelled(self) -> tuple[dict[str, Any] | None, bool]:
+        """Charge a cut-off stream for what it used; return ``(usage, estimated)``.
+
+        Billed only once the router chose the endpoint and began the attempt
+        -- the same condition the success path bills on (``_adapter_routing``,
+        which carries the price) -- and only while that attempt has left the
+        gateway (``DispatchRecord.sent``). Before that the client was waiting
+        on the gateway (a remote image, an outbound slot, a local engine's
+        queue) and no upstream was asked for anything. Never raises: billing
+        must not cost the request its log row.
+        """
+        if not self._adapter_routing or not self._dispatch.sent:
+            return None, False
+        try:
+            usage, estimated = self._cancelled_usage()
+            self._routing = self._cost_tracker.charge(
+                user_id=self._user_id,
+                api_key_id=self._metadata.get("api_key_id"),
+                routing=self._routing,
+                prompt_tokens=int(usage.get("prompt_tokens", 0) or 0),
+                completion_tokens=int(usage.get("completion_tokens", 0) or 0),
+                total_tokens=(
+                    int(usage["total_tokens"]) if usage.get("total_tokens") is not None else None
+                ),
+                cache_read_tokens=usage.get("cache_read_tokens"),
+                cache_write_tokens=usage.get("cache_write_tokens"),
+                reasoning_tokens=int(usage.get("reasoning_tokens", 0) or 0),
+            )
+        except Exception:
+            logger.exception(
+                f"Billing a cancelled stream failed: model={self._model}, "
+                f"request_id={self._request_id}"
+            )
+            return None, False
+        return usage, estimated
+
     def _finalize_cancelled(self) -> None:
-        """Schedule the api_logs row for a stream aborted by cancellation.
+        """Bill and schedule the api_logs row for a stream aborted by cancellation.
 
         Covers client disconnects and TimeoutMiddleware deadline expiry.
         Unlike ``_finalize_failure`` this deliberately:
@@ -1084,10 +1228,17 @@ class StreamSession:
         - classifies the row as 499 (client closed request, nginx
           convention) or 504 (gateway timeout) instead of the generic 500 —
           an abort is not a provider error and must not inflate 5xx metrics;
-        - persists the partial response and any usage the upstream already
-          delivered instead of dropping them (billing intentionally stays
-          untouched: no pricing, no cost increment — the same product-policy
-          boundary as the ``empty_completion`` handling);
+        - bills what the upstream already did: the usage it reported, or else
+          an estimate of the prompt and of the output produced so far
+          (``metadata.usage_estimated`` marks the estimate), as the success
+          path and ``/v1/messages`` bill it. A stream the client closes early
+          is otherwise free, and its quota never moves. A gateway timeout is
+          billed the same way: ``/v1/messages`` cannot tell the two apart and
+          bills both, and in both the upstream did the work. (A mid-stream
+          upstream *failure* goes to ``_finalize_failure`` and stays
+          unbilled, as on ``/v1/messages``.);
+        - persists the partial response and that usage instead of dropping
+          them;
         - records NO routing observation: client behavior must not count as
           a ``success=False`` sample against the serving endpoint's health
           or RouteWise profiles.
@@ -1114,21 +1265,33 @@ class StreamSession:
             f"chunks={self._chunk_count}, request_id={self._request_id}"
         )
 
+        # Before the logging gate: the probe flag and a missing log store
+        # affect noise, never money (see ``_finalize_success``).
+        billed_usage, usage_estimated = self._bill_cancelled()
+
         if not self._log_store or self._suppress_synthetic_logging:
             return
 
         provider = self._provider_from_ctx or self._routing.provider or "router"
         metadata_for_log: dict[str, Any] = dict(self._metadata)
+        pricing: dict[str, str] | None = None
         if self._adapter_routing:
             metadata_for_log.update(
                 json_safe(
                     {k: v for k, v in self._adapter_routing.items() if k != "upstream_cost_usd"}
                 )
             )
+            # The price billed above, so the row's cost_usd matches the charge.
+            if billed_usage is not None:
+                pricing = self._pricing_lookup.raw_dict_for_routing(self._routing)
         metadata_for_log["terminal_state"] = terminal_state
+        if usage_estimated:
+            metadata_for_log["usage_estimated"] = True
 
         response_for_db = self._build_response_for_db()
-        usage_for_log = response_for_db.get("usage")
+        usage_for_log = billed_usage
+        if usage_for_log is None:
+            usage_for_log = response_for_db.get("usage")
         if usage_for_log is None:
             usage_for_log = self._usage_data
         self._completions_logger.schedule_log(
@@ -1146,7 +1309,8 @@ class StreamSession:
                 "params": self._params,
                 "metadata": metadata_for_log,
                 "ttft_ms": self._ttft.ttft_ms,
-                "pricing": None,
+                "pricing": pricing,
+                "upstream_cost_usd": self._routing.upstream_cost_usd,
                 "request_payload": self._request_payload,
             },
         )

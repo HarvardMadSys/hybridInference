@@ -565,6 +565,87 @@ async def test_streaming_client_disconnect_is_not_an_upstream_failure(
     assert failure_calls == []
 
 
+async def _cut_mid_stream(app, *, timed_out: bool = False) -> None:
+    """Drive one streaming request over raw ASGI and go away after the first delta.
+
+    *timed_out* stands in for the gateway's own deadline: TimeoutMiddleware
+    records its cancel scope on the request state, and the route reads whether
+    it fired to tell a gateway timeout from a client that left.
+    """
+    from types import SimpleNamespace
+
+    from serving.servers.streaming_state import REQUEST_TIMEOUT_SCOPE_STATE_KEY
+
+    payload = json.dumps(_body(stream=True)).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/messages",
+        "raw_path": b"/v1/messages",
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+            (b"x-api-key", _auth()["x-api-key"].encode()),
+        ],
+        "client": ("127.0.0.1", 45678),
+        "server": ("test", 80),
+        "state": {
+            REQUEST_TIMEOUT_SCOPE_STATE_KEY: SimpleNamespace(cancel_called=timed_out),
+        },
+    }
+    disconnected = asyncio.Event()
+    body_sent = False
+
+    async def receive():
+        nonlocal body_sent
+        if not body_sent:
+            body_sent = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await disconnected.wait()
+        return {"type": "http.disconnect"}
+
+    async def send(message):
+        if message["type"] == "http.response.body" and b"content_block_delta" in message.get(
+            "body", b""
+        ):
+            disconnected.set()
+
+    await asyncio.wait_for(app(scope, receive, send), timeout=10)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("timed_out", "status"), [(False, 499), (True, 504)])
+async def test_a_stream_cut_short_is_not_logged_as_a_200(
+    anthropic_test_app, monkeypatch, quiet_alerts, no_log_store, timed_out, status
+):
+    """A client that left is a 499 and the gateway's deadline a 504, as on chat.
+
+    Neither is the upstream's failure: the row keeps the usage it is billed
+    for, estimated from what was forwarded, and no error.
+    """
+
+    async def _iter():
+        yield _MESSAGE_START + _TEXT_DELTA
+        await asyncio.sleep(30)
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    await _cut_mid_stream(anthropic_test_app, timed_out=timed_out)
+
+    assert no_log_store["status_code"] == status
+    assert no_log_store["error"] is None
+    assert no_log_store["usage"]["input_tokens"] > 0
+    assert no_log_store["metadata"].get("usage_estimated") is True
+
+
 @pytest.mark.asyncio
 async def test_streaming_upstream_cancellation_is_not_recorded(
     anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
@@ -600,25 +681,24 @@ async def test_streaming_upstream_cancellation_is_not_recorded(
 
 
 @pytest.mark.parametrize(
-    ("event_type", "data", "expected"),
+    ("event_type", "payload", "expected"),
     [
-        ("content_block_delta", '{"delta":{"type":"text_delta","text":"hi"}}', True),
-        ("content_block_delta", '{"delta":{"type":"thinking_delta","thinking":"hm"}}', True),
-        ("content_block_delta", '{"delta":{"type":"input_json_delta","partial_json":"{"}}', True),
-        ("content_block_delta", '{"delta":{"type":"text_delta","text":""}}', False),
-        ("content_block_delta", '{"delta":{}}', False),
-        ("content_block_delta", "not json", False),
-        ("content_block_delta", "[1, 2]", False),
-        ("message_start", '{"message":{"content":[]}}', False),
-        ("ping", "{}", False),
-        ("", "", False),
+        ("content_block_delta", {"delta": {"type": "text_delta", "text": "hi"}}, True),
+        ("content_block_delta", {"delta": {"type": "thinking_delta", "thinking": "hm"}}, True),
+        ("content_block_delta", {"delta": {"type": "input_json_delta", "partial_json": "{"}}, True),
+        ("content_block_delta", {"delta": {"type": "text_delta", "text": ""}}, False),
+        ("content_block_delta", {"delta": {}}, False),
+        ("content_block_delta", [1, 2], False),
+        ("message_start", {"message": {"content": []}}, False),
+        ("ping", {}, False),
+        ("", None, False),
     ],
 )
-def test_is_non_empty_content_event(event_type, data, expected):
+def test_is_content_delta(event_type, payload, expected):
     """Only a delta that actually produced output counts as content."""
-    from serving.servers.routers.anthropic_messages import _is_non_empty_content_event
+    from serving.servers.routers.anthropic_messages import _is_content_delta
 
-    assert _is_non_empty_content_event(event_type, data) is expected
+    assert _is_content_delta(event_type, payload) is expected
 
 
 # --- the half-open probe on this surface -----------------------------------

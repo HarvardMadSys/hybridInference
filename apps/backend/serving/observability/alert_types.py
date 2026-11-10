@@ -120,6 +120,14 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="upstream_auth:<endpoint>",
     ),
     AlertType(
+        id="batch_model_queued",
+        label="Batch model waiting for capacity",
+        description="A model has answered batch requests 'waiting for a GPU' for longer "
+        "than BATCH_QUEUED_ALERT_HOURS.",
+        group="Providers",
+        key_pattern="batch_model_queued:<model>",
+    ),
+    AlertType(
         id="auth_failure_spike",
         label="Auth failure spike",
         description=(
@@ -187,6 +195,26 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         description="A provider's spend this hour exceeded the budget configured for it.",
         group="Cost",
         key_pattern="provider_spend:<provider>:<hour>",
+    ),
+    AlertType(
+        id="cost_counter_write_refused",
+        label="Cost counters refused an entry",
+        description=(
+            "The cost counters refused a cost for its own values, such as one that would "
+            "overflow its counter; it was set aside unwritten for an operator to reconcile."
+        ),
+        group="Cost",
+        key_pattern="cost_counter_write_refused",
+    ),
+    AlertType(
+        id="cost_above_request_ceiling",
+        label="Request cost above the per-request ceiling",
+        description=(
+            "A request cost more than any real request can, so its usage report or price is "
+            "wrong; it was recorded as the ceiling."
+        ),
+        group="Cost",
+        key_pattern="cost_above_request_ceiling",
     ),
 )
 

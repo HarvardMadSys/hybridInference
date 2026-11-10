@@ -41,7 +41,7 @@ from serving.observability.alerts import (
     sweep_stale_breaches,
 )
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import scrub, url_fingerprint, url_redaction
+from serving.utils.secret_urls import url_fingerprint, url_redaction
 
 
 @pytest.fixture(autouse=True)
@@ -662,7 +662,7 @@ class TestPendingResolutionRetriesOffTheSweepTimer:
 
             assert mock_post.await_count == 3
             message = mock_post.await_args.args[1]
-            assert "Recovered: Provider circuit opened" in message
+            assert message.startswith("✅ *Recovered:* Provider circuit opened\n")
             # Delivered exactly once: a later sweep must not repeat it.
             await sweep_stale_breaches()
             assert mock_post.await_count == 3
@@ -776,7 +776,7 @@ class TestPendingResolutionRetriesOffTheSweepTimer:
             await sweep_stale_breaches()
 
         message = mock_post.await_args.args[1]
-        assert "Recovered (no recent samples): failed_request_rate" in message
+        assert message.startswith("✅ *Recovered:* failed_request_rate (no recent samples)\n")
         # A successful sweep close is a confirmed close: no bound left behind.
         assert not _TRANSITIONS._firing
         assert not _TRANSITIONS._bounds
@@ -997,7 +997,7 @@ class TestAlertsNameTheTriggeringRequest:
         ):
             await alert_slack(
                 AlertSeverity.INFO,
-                "Recovered: Provider circuit opened",
+                "Provider circuit opened",
                 {"alert": "circuit_open:zhipu"},
                 status="resolved",
             )
@@ -1429,7 +1429,9 @@ class TestASilencedCloseSaysNothingButStillCloses:
                 kind="state",
             )
             assert closed is True
-            assert "Recovered: Provider circuit opened" in mock_post.await_args.args[1]
+            assert mock_post.await_args.args[1].startswith(
+                "✅ *Recovered:* Provider circuit opened\n"
+            )
 
             # And the no-samples close.
             await alert_on_transition(
@@ -1445,7 +1447,9 @@ class TestASilencedCloseSaysNothingButStillCloses:
             clock[0] += 601.0
             await sweep_stale_breaches()
 
-        assert "Recovered (no recent samples): failed_request_rate" in mock_post.await_args.args[1]
+        assert mock_post.await_args.args[1].startswith(
+            "✅ *Recovered:* failed_request_rate (no recent samples)\n"
+        )
 
     async def test_a_rule_that_stops_opting_out_is_not_held_silent(self, monkeypatch):
         """The opt-out is rewritten on every breach, in both directions.
@@ -1680,7 +1684,7 @@ class TestTheCooldownIsArmedOnTheAttempt:
             for _ in range(2):
                 await alert_slack(
                     AlertSeverity.INFO,
-                    "Recovered: Provider failed",
+                    "Provider failed",
                     {},
                     dedupe_key="K",
                     cooldown_sec=300,
@@ -2016,7 +2020,9 @@ class TestTheRedactedFormNamesTheSinkOnly:
 
     def test_a_path_only_mention_is_scrubbed_too(self):
         """Some errors name the request target without the host in front."""
-        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub(
+            "POST /services/T00000000/B00000000/nOtArEaLtOkEn failed"
+        )
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
 
@@ -2445,14 +2451,16 @@ class TestTheQueryStringIsRedacted:
         assert url_fingerprint(url) in caplog.text
 
     def test_a_target_with_the_query_is_scrubbed(self):
-        scrubbed = scrub("POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub(
+            "POST /cgi-bin/webhook/send?key=nOtArEaLtOkEn failed"
+        )
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert "key=" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
 
     def test_a_bare_query_mention_is_scrubbed(self):
-        scrubbed = scrub("key=nOtArEaLtOkEn was rejected", self.WEBHOOK)
+        scrubbed = url_redaction(self.WEBHOOK).scrub("key=nOtArEaLtOkEn was rejected")
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(self.WEBHOOK) in scrubbed
@@ -2460,7 +2468,9 @@ class TestTheQueryStringIsRedacted:
     def test_a_slack_webhook_without_a_query_is_unaffected(self):
         slack = "https://hooks.slack.test/services/T00000000/B00000000/nOtArEaLtOkEn"
 
-        scrubbed = scrub("POST /services/T00000000/B00000000/nOtArEaLtOkEn failed", slack)
+        scrubbed = url_redaction(slack).scrub(
+            "POST /services/T00000000/B00000000/nOtArEaLtOkEn failed"
+        )
 
         assert "nOtArEaLtOkEn" not in scrubbed
         assert url_fingerprint(slack) in scrubbed

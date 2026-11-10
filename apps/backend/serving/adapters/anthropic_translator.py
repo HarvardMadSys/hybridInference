@@ -15,7 +15,13 @@ import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
-from serving.utils.token_utils import extract_cache_tokens, usage_count
+from serving.storage.utils import billable_output_tokens
+from serving.utils.token_utils import (
+    extract_cache_tokens,
+    extract_reasoning_tokens,
+    optional_token_count,
+    usage_count,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -27,8 +33,18 @@ if TYPE_CHECKING:
 
 def anthropic_request_to_openai(
     body: dict[str, Any],
+    *,
+    tool_images: bool = True,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Translate an Anthropic Messages API request to OpenAI Chat Completions.
+
+    Args:
+        body: The Anthropic Messages request.
+        tool_images: Whether the destination reads images. When it does, an
+            image a ``tool_result`` returned is carried in the user message
+            after the tool messages; when it does not, it is an ``[image]``
+            placeholder, so a text-only route keeps answering a conversation
+            in which a tool once returned a screenshot.
 
     Returns:
         (openai_messages, openai_params) where openai_params holds non-message
@@ -45,7 +61,8 @@ def anthropic_request_to_openai(
 
     for msg in body.get("messages", []):
         if isinstance(msg, dict):
-            messages.extend(_translate_message(msg))
+            messages.extend(_translate_message(msg, tool_images=tool_images))
+    messages = _place_tool_images(messages)
 
     params = _translate_params(body)
     return messages, params
@@ -227,7 +244,7 @@ def _normalize_tool_input(raw: Any) -> dict[str, Any]:
     return {}
 
 
-def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
+def _translate_message(msg: dict[str, Any], *, tool_images: bool = True) -> list[dict[str, Any]]:
     """Translate a single Anthropic message.
 
     May produce multiple OpenAI messages (tool_result blocks become separate
@@ -286,19 +303,7 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
             )
 
         elif btype == "tool_result":
-            result_text = _flatten_tool_result_content(block.get("content"))
-            if block.get("is_error"):
-                # OpenAI tool messages have no error flag; prepend a marker so
-                # the model can distinguish a failed tool call from a successful
-                # one instead of treating raw stderr as a valid result.
-                result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
-            tool_results.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": block.get("tool_use_id", ""),
-                    "content": result_text,
-                }
-            )
+            tool_results.append(_translate_tool_result(block, carry_images=tool_images))
 
         # Unknown blocks ignored.
 
@@ -333,7 +338,14 @@ def _translate_message(msg: dict[str, Any]) -> list[dict[str, Any]]:
     return out
 
 
-def _image_block_to_url(source: dict[str, Any]) -> str | None:
+def _image_block_to_url(source: Any) -> str | None:
+    """The image's URL form, or ``None`` when ``source`` has none (or is malformed).
+
+    ``source`` arrives from the client unvalidated: anything but a mapping is
+    an image this surface cannot carry, not a reason to fail the request.
+    """
+    if not isinstance(source, dict):
+        return None
     src_type = source.get("type")
     if src_type == "url":
         return source.get("url")
@@ -344,15 +356,113 @@ def _image_block_to_url(source: dict[str, Any]) -> str | None:
     return None
 
 
-def _flatten_tool_result_content(content: Any) -> str:
-    """Flatten Anthropic tool_result content to a string.
+def _translate_tool_result(block: dict[str, Any], *, carry_images: bool) -> dict[str, Any]:
+    """One tool_result block as a ``role: "tool"`` message.
+
+    The images it returned are held under :data:`_TOOL_IMAGES`, as ``image_url``
+    parts introduced by a text part naming the call, until
+    :func:`_place_tool_images` moves them out. The tool message says they
+    follow, so an image-only result is never read as "the tool returned
+    nothing". Without ``carry_images`` each image stays an ``[image]``
+    placeholder in the tool message.
+    """
+    content = block.get("content")
+    tool_use_id = block.get("tool_use_id", "")
+    result_text = _flatten_tool_result_content(content, carry_images=carry_images)
+    images = _tool_result_images(content) if carry_images else []
+    if images:
+        note = _tool_image_note(len(images))
+        result_text = f"{result_text}\n{note}" if result_text else note
+    if block.get("is_error"):
+        # OpenAI tool messages have no error flag; prepend a marker so
+        # the model can distinguish a failed tool call from a successful
+        # one instead of treating raw stderr as a valid result.
+        result_text = f"[tool error]\n{result_text}" if result_text else "[tool error]"
+    message: dict[str, Any] = {"role": "tool", "tool_call_id": tool_use_id, "content": result_text}
+    if images:
+        label = {"type": "text", "text": f"Image output of tool call {tool_use_id}:"}
+        message[_TOOL_IMAGES] = [label, *images]
+    return message
+
+
+#: Where a translated tool message holds its images until they are placed.
+_TOOL_IMAGES = "_tool_images"
+
+
+def _place_tool_images(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Move each run of tool messages' images to the user message after the run.
+
+    A tool message holds text only, and the tool messages answering one
+    assistant turn must stay contiguous -- also when the client split the
+    results over adjacent user messages, which the Anthropic surface allows.
+    So the images go after the whole run: into the user message that follows
+    it, ahead of its own content (the turn's text, e.g. a
+    ``<system-reminder>``, came after the results), or else into a new user
+    message, so the conversation keeps one user message per turn.
+    """
+    if not any(_TOOL_IMAGES in message for message in messages):
+        return messages
+    out: list[dict[str, Any]] = []
+    pending: list[dict[str, Any]] = []
+    for message in messages:
+        if message.get("role") == "tool":
+            images = message.get(_TOOL_IMAGES)
+            if images is not None:
+                message = {k: v for k, v in message.items() if k != _TOOL_IMAGES}
+                pending.extend(images)
+            out.append(message)
+            continue
+        if pending:
+            if message.get("role") == "user":
+                message = {
+                    **message,
+                    "content": [*pending, *_content_parts(message.get("content"))],
+                }
+            else:
+                out.append({"role": "user", "content": pending})
+            pending = []
+        out.append(message)
+    if pending:
+        out.append({"role": "user", "content": pending})
+    return out
+
+
+def _content_parts(content: Any) -> list[dict[str, Any]]:
+    """A translated message's content as a list of chat content parts."""
+    if isinstance(content, list):
+        return content
+    if isinstance(content, str) and content:
+        return [{"type": "text", "text": content}]
+    return []
+
+
+def _tool_image_note(count: int) -> str:
+    noun = "an image" if count == 1 else f"{count} images"
+    return f"[The tool returned {noun}; attached in the next user message.]"
+
+
+def _tool_result_images(content: Any) -> list[dict[str, Any]]:
+    """The tool_result's image blocks that have a URL form, as ``image_url`` parts."""
+    if not isinstance(content, list):
+        return []
+    parts: list[dict[str, Any]] = []
+    for block in content:
+        if isinstance(block, dict) and block.get("type") == "image":
+            url = _image_block_to_url(block.get("source"))
+            if url is not None:
+                parts.append({"type": "image_url", "image_url": {"url": url}})
+    return parts
+
+
+def _flatten_tool_result_content(content: Any, *, carry_images: bool = True) -> str:
+    """Flatten Anthropic tool_result content's text to a string.
 
     Anthropic tool_result content can be a string or list of blocks; OpenAI tool
-    messages take a string. Text blocks are joined with newlines. Image (and
-    other non-text) blocks can't ride along in a string tool message, so each is
-    replaced with a ``[image]`` placeholder: this keeps the result non-empty so
-    the model doesn't read an image-only tool result as "the tool returned
-    nothing" and answer wrongly or loop retrying.
+    messages take a string. Text blocks are joined with newlines. An image block
+    is not text: ``_tool_result_images`` carries it to the next user message.
+    An image that is not carried -- the destination reads no images, or the
+    image has no URL form (an unknown ``source`` type) -- leaves an ``[image]``
+    placeholder, so the result does not read as empty.
     """
     if isinstance(content, str):
         return content
@@ -366,7 +476,9 @@ def _flatten_tool_result_content(content: Any) -> str:
                 text_val = block.get("text")
                 if isinstance(text_val, str):
                     parts.append(text_val)
-            elif btype == "image":
+            elif btype == "image" and not (
+                carry_images and _image_block_to_url(block.get("source")) is not None
+            ):
                 parts.append("[image]")
         return "\n".join(p for p in parts if p)
     return ""
@@ -476,6 +588,69 @@ def _parse_tool_arguments(raw: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+#: ``usage_sink`` key under which a translated request hands the router the
+#: upstream's own OpenAI-shaped counts. Anthropic usage has no reasoning field
+#: and no total, so these never reach the client; the router logs and bills
+#: from them instead of from the Anthropic shape.
+OPENAI_USAGE_SINK_KEY = "openai_usage"
+
+#: ``usage_sink`` key under which a translated stream declares the estimate it
+#: seeded ``message_start.usage.input_tokens`` with, before the upstream was
+#: asked. That number is the gateway's guess, not a count: the router must not
+#: bill a stream cut off after message_start for it as if the upstream had
+#: reported it. The native passthrough declares nothing, because its
+#: message_start carries the provider's own count.
+INPUT_SEED_SINK_KEY = "input_tokens_seed"
+
+
+def openai_usage_record(usage: dict[str, Any]) -> dict[str, int | None]:
+    """The upstream's OpenAI-shaped counts, kept for logging and billing.
+
+    Every count is the one the upstream reported; nothing is derived from
+    content. ``reasoning_tokens`` and ``total_tokens`` stay ``None`` when the
+    upstream did not report them: a missing reasoning count is unknown, not 0,
+    and a reported total is the evidence of whether ``completion_tokens``
+    already includes reasoning (see ``billable_output_tokens``), so none is
+    made up here. Cache counts are present only when reported.
+    """
+    record: dict[str, int | None] = {
+        "prompt_tokens": usage_count(usage.get("prompt_tokens"), field="prompt_tokens"),
+        "completion_tokens": usage_count(usage.get("completion_tokens"), field="completion_tokens"),
+        "total_tokens": optional_token_count(usage.get("total_tokens")),
+        "reasoning_tokens": optional_token_count(extract_reasoning_tokens(usage)),
+    }
+    cache_read, cache_write = extract_cache_tokens(usage)
+    if cache_read is not None:
+        record["cache_read_tokens"] = cache_read
+    if cache_write is not None:
+        record["cache_write_tokens"] = cache_write
+    return record
+
+
+def anthropic_output_tokens(record: dict[str, int | None]) -> int:
+    """Anthropic ``output_tokens`` for an OpenAI usage record.
+
+    Anthropic counts thinking inside ``output_tokens``. OpenAI-compatible
+    upstreams differ: DeepSeek and OpenAI already include reasoning in
+    ``completion_tokens``, Gemini does not. This is the number the chat surface
+    bills at the completion price for the same usage, so the client and the
+    billed output agree; the log row keeps the upstream's own
+    ``completion_tokens`` and ``reasoning_tokens`` beside it.
+
+    With no reported total there is no evidence either way, and like chat this
+    bills completion plus reasoning, even for a count nested in
+    ``completion_tokens_details`` that OpenAI semantics would already include.
+    """
+    return int(
+        billable_output_tokens(
+            prompt_tokens=record.get("prompt_tokens") or 0,
+            completion_tokens=record.get("completion_tokens") or 0,
+            reasoning_tokens=record.get("reasoning_tokens") or 0,
+            total_tokens=record.get("total_tokens"),
+        )
+    )
+
+
 def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[str, Any]:
     """Translate an OpenAI ChatCompletion response to Anthropic Messages format."""
     choice = (resp.get("choices") or [{}])[0]
@@ -532,7 +707,7 @@ def openai_response_to_anthropic(resp: dict[str, Any], *, model: str) -> dict[st
     input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
     anthropic_usage: dict[str, int] = {
         "input_tokens": input_tokens,
-        "output_tokens": int(usage_in.get("completion_tokens", 0) or 0),
+        "output_tokens": anthropic_output_tokens(openai_usage_record(usage_in)),
     }
     if cache_read is not None:
         anthropic_usage["cache_read_input_tokens"] = cache_read
@@ -766,12 +941,27 @@ class OpenAIToAnthropicStreamTranslator:
             "input_tokens": max(0, int(input_tokens_estimate)),
             "output_tokens": 0,
         }
+        # Every usage field the upstream has reported in this stream, merged in
+        # arrival order. None until a chunk carries usage, so an estimate is
+        # never mistaken for a reported count.
+        self._upstream_usage: dict[str, Any] | None = None
         self._buffer = b""
 
     @property
     def usage(self) -> dict[str, int]:
         """Return a copy of current usage counters."""
         return dict(self._usage)
+
+    @property
+    def openai_usage(self) -> dict[str, int | None] | None:
+        """The upstream's reported OpenAI-shaped counts, or None if it reported none.
+
+        Internal accounting only (see :func:`openai_usage_record`); the
+        Anthropic events this translator emits never carry it.
+        """
+        if self._upstream_usage is None:
+            return None
+        return openai_usage_record(self._upstream_usage)
 
     def feed(self, chunk: bytes) -> Iterator[bytes]:
         """Consume one OpenAI SSE chunk and yield zero or more Anthropic SSE frames.
@@ -866,7 +1056,8 @@ class OpenAIToAnthropicStreamTranslator:
 
     def _handle_chunk(self, obj: dict[str, Any]) -> Iterator[bytes]:
         usage = obj.get("usage")
-        if usage:
+        if isinstance(usage, dict) and usage:
+            self._upstream_usage = {**(self._upstream_usage or {}), **usage}
             cache_read, cache_write = extract_cache_tokens(usage)
             prompt_tokens = usage_count(usage.get("prompt_tokens"), field="prompt_tokens")
             # OpenAI prompt_tokens is cache-inclusive; Anthropic input_tokens
@@ -875,9 +1066,12 @@ class OpenAIToAnthropicStreamTranslator:
             input_tokens = max(0, prompt_tokens - (cache_read or 0) - (cache_write or 0))
             if "prompt_tokens" in usage:
                 self._usage["input_tokens"] = input_tokens
-            if usage.get("completion_tokens") is not None:
-                self._usage["output_tokens"] = usage_count(
-                    usage["completion_tokens"], field="completion_tokens"
+            if self._upstream_usage.get("completion_tokens") is not None:
+                # Includes reasoning the upstream counted outside completion
+                # (Gemini), as Anthropic output_tokens does, whichever chunk
+                # carried each count.
+                self._usage["output_tokens"] = anthropic_output_tokens(
+                    openai_usage_record(self._upstream_usage)
                 )
             if cache_read is not None:
                 self._usage["cache_read_input_tokens"] = cache_read

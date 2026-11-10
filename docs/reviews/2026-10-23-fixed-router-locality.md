@@ -3,11 +3,10 @@
 Date: 2026-10-23
 Scope: `apps/backend/routing/prefill_load.py`, `apps/backend/routing/routers.py`,
 `apps/backend/routing/policies.py`
-Status: implemented and locally qualified on this branch. The full investigation
-narrative (staging diagnosis, offload-deadline correction, controlled local
-experiment, staging plan) is the companion record
-[2026-10-22-staging-cache-locality-routing.md](2026-10-22-staging-cache-locality-routing.md),
-which lands with the offload-deadlines PR.
+Status: implemented and locally qualified on this branch. The staging
+diagnosis, offload-deadline correction and controlled local experiment behind
+this record are described under "Problem" and "How this was checked" below;
+the offload-deadline change itself lands with the offload-deadlines PR.
 
 ## Problem
 
@@ -100,7 +99,7 @@ branch: 6 857 passed, 0 failed across `tests/unit tests/api`.
 After the symmetric-gate correction on `1cb618d`, a focused run of
 `test_prefill_load.py`, `test_session_affinity.py` and
 `test_hybrid_composition.py` passed (193 passed, 1 skipped). A four-thousand
-turn simulation of 400 ten-turn conversations produced light-endpoint shares
+turn simulation of 400 ten-turn conversations produced heavy-endpoint shares
 of 53.25%/66.50%/69.83%/89.53% for configured 50/50, 65/35, 70/30 and 90/10
 ratios respectively (pre-fix: 53.25%/66.50%/95.25%/98.73%). The first two
 remain slightly above target because comparable candidates legitimately follow

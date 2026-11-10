@@ -111,7 +111,7 @@ export function FilterBar({
             Clear filters
           </button>
         )}
-        <div className="ml-auto flex items-center gap-2 text-[12px] text-gray-500">
+        <div className="ml-auto flex flex-wrap items-center gap-2 text-[12px] text-gray-500">
           <ColumnPicker hidden={hiddenColumns} onChange={onHiddenColumnsChange} />
           <span className="ml-1">Density</span>
           <div className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5">

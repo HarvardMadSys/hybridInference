@@ -248,7 +248,6 @@ openrouter_logs.db
 
 data/*
 
-alertmanager-0.28.1.linux-amd64/
 
 # ============================================
 # Node.js / Frontend (Next.js) specific
@@ -375,3 +374,8 @@ api_log*.jsonl.zst
 # the module selection. It is generated per build and carries absolute paths
 # from whichever machine produced it, so it is never committed.
 apps/frontend/.site-ui-build-env
+
+# Host-local lifecycle selection and release history.
+.ops.env
+.ops/
+*.dump

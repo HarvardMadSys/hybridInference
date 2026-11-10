@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -15,7 +16,7 @@ from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.servers.routers.completions_logging import CompletionsLogger
 from serving.servers.routers.completions_stream import (
     StreamSession,
-    _ToolCallAccumulator,
+    ToolCallAccumulator,
     _TTFTTracker,
     _unparseable_tool_call_arguments,
 )
@@ -70,6 +71,7 @@ def _make_session(
             return kwargs["routing"]
 
         cost_tracker.schedule_increment = AsyncMock(side_effect=_identity_increment)
+        cost_tracker.charge = MagicMock(side_effect=lambda **kwargs: kwargs["routing"])
     if pricing_lookup is None:
         pricing_lookup = MagicMock(spec=PricingLookup)
         pricing_lookup.raw_dict_for_routing = MagicMock(return_value=None)
@@ -147,12 +149,12 @@ def _routing_chunk(provider: str, *, fallback: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# _ToolCallAccumulator
+# ToolCallAccumulator
 # ---------------------------------------------------------------------------
 
 
 def test_tool_call_accumulator_merges_deltas_by_index():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add(
         [
             {
@@ -173,7 +175,7 @@ def test_tool_call_accumulator_merges_deltas_by_index():
 
 
 def test_tool_call_accumulator_handles_multiple_indices():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 1, "id": "b", "function": {"name": "f2", "arguments": ""}}])
     acc.add([{"index": 0, "id": "a", "function": {"name": "f1", "arguments": ""}}])
     out = acc.to_list()
@@ -182,7 +184,7 @@ def test_tool_call_accumulator_handles_multiple_indices():
 
 
 def test_tool_call_accumulator_keeps_first_nonempty_id_and_type():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 0, "id": "call_1", "type": "function", "function": {}}])
     acc.add([{"index": 0, "id": "call_repeated", "type": "other", "function": {}}])
 
@@ -192,7 +194,7 @@ def test_tool_call_accumulator_keeps_first_nonempty_id_and_type():
 
 
 def test_tool_call_accumulator_ignores_null_continuation_fields():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add(
         [
             {
@@ -227,8 +229,8 @@ def test_tool_call_accumulator_ignores_null_continuation_fields():
 
 
 def test_tool_call_accumulator_bool_when_empty():
-    assert not _ToolCallAccumulator()
-    acc = _ToolCallAccumulator()
+    assert not ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 0, "id": "x", "function": {}}])
     assert acc
 
@@ -1525,3 +1527,114 @@ async def test_arguments_json_loads_cannot_handle_still_finish_the_stream():
     assert log_data["status_code"] == 200
     message = log_data["response"]["choices"][0]["message"]
     assert message["tool_calls"][0]["function"]["arguments"] == arguments
+
+
+# ---------------------------------------------------------------------------
+# A client that stops reading
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_client_that_stops_reading_stops_the_upstream_reads_and_still_tears_down():
+    """The reader runs a bounded way ahead of the client, not to the end of the generation.
+
+    An unbounded queue let the reader drain the whole upstream into memory while
+    the client read nothing: about 260 bytes per token for up to an hour.
+    """
+    from serving.stream import STREAM_QUEUE_MAX_ITEMS, make_stream_chunk
+
+    session = _make_session()
+    produced = 0
+    closed = False
+
+    async def upstream():
+        nonlocal produced, closed
+        try:
+            for _ in range(5_000):
+                produced += 1
+                yield make_stream_chunk(model="gpt-4", content="token")
+                await asyncio.sleep(0)
+            yield "data: [DONE]\n\n"
+        finally:
+            closed = True
+
+    frames = session.stream(upstream())
+    await frames.__anext__()  # the client reads one frame, then stops reading
+    for _ in range(500):
+        await asyncio.sleep(0)
+    assert produced <= STREAM_QUEUE_MAX_ITEMS + 4
+
+    await asyncio.wait_for(frames.aclose(), timeout=2)  # then goes away
+    assert closed  # the upstream request was ended, not left to the collector
+
+
+@pytest.mark.anyio
+async def test_stream_warmup_notice_classifies_transient_through_finalizer():
+    """The streaming finalizer must hand the real text to the classifier.
+
+    Regression for the review's C1 follow-up: the handler used to pass no
+    response body at all, so a warmup notice streamed with output tokens
+    classified PROGRESS and warmed prefix memory. This drives the real
+    StreamSession._finalize_success path and asserts the observation the
+    router receives is TRANSIENT_NO_PROGRESS.
+    """
+    from routing.completion_outcome import CompletionOutcome
+    from serving.stream import StreamText
+
+    session = _make_session()
+    # What the stream accumulated; ``_final_text`` reads it.
+    session._text = StreamText(
+        "The model is starting up - this takes about 120 seconds. Please wait..."
+    )
+    session._reasoning = StreamText()
+    session._finish_reason_for_db = "stop"
+    session._usage_data = {"prompt_tokens": 10, "completion_tokens": 20}
+    session._messages = [{"role": "user", "content": "hi"}]
+    session._params = {"stream": True}
+    session._metadata = {}
+    session._request_payload = None
+    session._get_adapter_config_for_provider = lambda _p, _b: None
+    session._adapter_routing = False
+    session._log_store = None  # skip DB scheduling
+    session._suppress_synthetic_logging = True  # skip DB log
+    session._response_model = None
+
+    captured: dict[str, Any] = {}
+
+    def _record(
+        active_router,
+        model_id,
+        routing,
+        *,
+        request_id,
+        ttft_ms,
+        total_latency_ms,
+        prompt_tokens,
+        completion_tokens,
+        success,
+        cached_tokens=None,
+        response_body=None,
+    ):
+        captured.update(
+            success=success,
+            response_body=response_body,
+            completion_tokens=completion_tokens,
+        )
+
+    session._completions_logger = SimpleNamespace(
+        record_routing_observation=_record,
+        schedule_log=lambda *a, **k: None,
+        build_db_params=lambda params, provider, base_url, get_cfg: params,
+    )
+
+    await session._finalize_success()
+
+    body = captured["response_body"]
+    assert isinstance(body, dict), "finalizer must pass the structured body"
+    message = body["choices"][0]["message"]
+    assert "starting up" in (message.get("content") or "")
+
+    outcome = CompletionsLogger.classify_outcome(
+        success=captured["success"], response_body=body, usage={"completion_tokens": 20}
+    )
+    assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS

@@ -76,7 +76,7 @@ export function SourceFilesPanel({
   return (
     <section
       aria-labelledby="batch-files-heading"
-      className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200"
+      className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6"
     >
       <h2 id="batch-files-heading" className="text-base font-semibold text-gray-900">
         {t('batches.files.title', 'Uploaded files')}

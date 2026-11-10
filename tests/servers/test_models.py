@@ -267,7 +267,7 @@ async def test_example_chat_is_public_but_unpriced_external_route_stays_restrict
 
     router = FixedRouter()
     example_models = (
-        Path(__file__).resolve().parents[2] / "distributions/example/config/models.yaml"
+        Path(__file__).resolve().parents[2] / "distributions/example/config/models.json"
     )
     registry.register_from_models_yaml(router, example_models)
 
@@ -321,6 +321,35 @@ async def test_models_pricing_primary_config_behavior():
         data = resp.json()["data"]
         item = next(m for m in data if m["id"] == "price")
         assert item["pricing"] == p_primary
+
+
+@pytest.mark.asyncio
+async def test_a_catalog_priced_in_json_numbers_still_lists_every_model():
+    """``"pricing": {"prompt": 0.5}`` is natural JSON, and the catalog check accepts it.
+
+    The listing's pricing field is text, so one such model made /v1/models a
+    500 for every caller, while inference went on billing it correctly.
+    """
+    router = FixedRouter()
+    numeric = _Adapter(_cfg(id="numeric"))
+    numeric.config.pricing = {"prompt": 0.5, "completion": 1.25, "input_cache_reads": 0}
+    router.register_route("numeric", [(numeric, 1.0)])
+    router.register_route("text", [(_Adapter(_cfg(id="text")), 1.0)])
+    app = FastAPI()
+    app.state.services = AppServices(router=router, db_logger=None)  # type: ignore[attr-defined]
+    app.include_router(models.router)
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        resp = await client.get("/v1/models")
+
+    assert resp.status_code == 200
+    items = {item["id"]: item for item in resp.json()["data"]}
+    assert set(items) == {"numeric", "text"}
+    assert items["numeric"]["pricing"] == {
+        "prompt": "0.5",
+        "completion": "1.25",
+        "input_cache_reads": "0",
+    }
 
 
 @pytest.mark.asyncio
