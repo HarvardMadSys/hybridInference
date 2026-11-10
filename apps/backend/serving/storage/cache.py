@@ -11,7 +11,15 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING, Any
 
-from .base import CostIncrement, OperationalStore, ProviderDefinitionRow, ProviderKeyRow, Row
+from .base import (
+    CostIncrement,
+    HardDeleteClaim,
+    HardDeleteRecoveryMode,
+    OperationalStore,
+    ProviderDefinitionRow,
+    ProviderKeyRow,
+    Row,
+)
 from .cache_backend import (
     CacheBackend,
     InMemoryCache as InMemoryCache,
@@ -389,12 +397,17 @@ class CachedOperationalStore(OperationalStore):
         # Also purge any auth entries referencing this user's keys
         await self.invalidate_user_auth_caches(user_id)
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
         """Claim a hard-delete in the wrapped store and invalidate caches."""
-        claim_token = await self._store.begin_hard_delete_user(user_id)
+        claim = await self._store.begin_hard_delete_user(user_id, recovery_mode=recovery_mode)
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_user_auth_caches(user_id)
-        return claim_token
+        return claim
 
     async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Renew the hard-delete claim lease for a user."""
@@ -414,6 +427,7 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
@@ -423,6 +437,7 @@ class CachedOperationalStore(OperationalStore):
             admin_id=admin_id,
             reason=reason,
             email=email,
+            recover_stale_claim=recover_stale_claim,
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))

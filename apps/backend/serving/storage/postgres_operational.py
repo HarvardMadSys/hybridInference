@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from datetime import UTC
+from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import quota
@@ -19,6 +19,7 @@ from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    HardDeleteRecoveryAvailable,
     HardDeleteStateChanged,
     PreferencesTooLargeError,
     ProjectNotFoundError,
@@ -33,6 +34,9 @@ from serving.storage.base import (
     USER_PREFERENCES_MAX_BYTES,
     CostIncrement,
     CostWriteOutcomeUnknown,
+    HardDeleteClaim,
+    HardDeleteClaimProvenance,
+    HardDeleteRecoveryMode,
     OperationalStore,
     ProviderDefinitionRow,
     ProviderKeyRow,
@@ -54,6 +58,14 @@ if TYPE_CHECKING:
     from serving.audit import AuditActor
 
 logger = get_logger(__name__)
+
+# How long a hard-delete claim's lease may go unrenewed before another caller
+# may take it over. Takeover is deliberately not immediate: a worker that is
+# merely slow must not lose its claim to an ordinary retry, and the admin
+# endpoint additionally requires an explicit operator opt-in. It bounds how
+# long a worker that crashed before the erasure fence leaves the account
+# un-resumable.
+_HARD_DELETE_CLAIM_RECOVERY_GRACE = timedelta(hours=1)
 
 # Adds a batch of cost increments to the account counters and the key counters
 # in one statement, so both are written or neither, and returns the
@@ -941,12 +953,46 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
             )
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
-        """Claim a soft-deleted user before purging rows in another store."""
+    async def _hard_delete_claim_is_stale(self, conn: Any, claimed_at: Any) -> bool:
+        """Whether a claim's lease is older than the recovery grace period.
+
+        Asked of PostgreSQL so every caller shares one clock. A NULL lease is
+        not stale by this question: it is a claim written before the lease
+        columns existed, and the caller stamps it first (see
+        :meth:`begin_hard_delete_user`).
+        """
+        return bool(
+            await conn.fetchval(
+                "SELECT $1::TIMESTAMPTZ IS NOT NULL AND $1::TIMESTAMPTZ <= NOW() - $2::INTERVAL",
+                claimed_at,
+                _HARD_DELETE_CLAIM_RECOVERY_GRACE,
+            )
+        )
+
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
+        """Claim a soft-deleted user before purging rows in another store.
+
+        A pending claim belongs exclusively to the worker that made it. It is
+        refused — not silently taken over — until its lease has gone
+        unrenewed for the recovery grace period, and even then only a caller
+        that verified a durable erasure fence or an operator's attestation
+        (``recovery_mode``) may replace it. The takeover reuses none of the
+        old token, so the superseded worker's next renewal and final purge
+        both fail closed.
+        """
+        if recovery_mode is not None and recovery_mode not in set(HardDeleteRecoveryMode):
+            raise ValueError(f"Unknown hard-delete recovery mode: {recovery_mode!r}")
         claim_token = secrets.token_urlsafe(32)
         async with self._pool.acquire() as conn:
-            # NULL claimed_at is handled outside the claim transaction so the
-            # stamp commits even though this request is refused.
+            # A pending claim with a NULL lease predates these columns. Stamp
+            # it outside the claim transaction so the stamp commits even
+            # though this request is refused; every later caller then sees a
+            # live lease instead of taking the old claim over immediately.
             check = await conn.fetchrow(
                 "SELECT status, hard_delete_pending, hard_delete_claimed_at "
                 "FROM users WHERE id = $1",
@@ -963,7 +1009,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     user_id,
                 )
                 raise HardDeleteStateChanged(
-                    f"Account {user_id} has a legacy claim; retry to continue."
+                    f"Account {user_id} has a claim from before claim leases; "
+                    "its lease was stamped now, so recovery must wait for the grace period."
                 )
             async with conn.transaction():
                 row = await conn.fetchrow(
@@ -975,9 +1022,47 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     raise HardDeleteStateChanged(
                         f"Account {user_id} is no longer eligible for hard-delete."
                     )
-                # A retry takes ownership with a fresh token. This prevents an
-                # older in-flight attempt from releasing or completing the claim
-                # after a newer attempt has taken over.
+                if row["hard_delete_pending"]:
+                    # Lost a race with a claim installed since the check above.
+                    if row["hard_delete_claimed_at"] is None:
+                        await conn.execute(
+                            "UPDATE users SET hard_delete_claimed_at = NOW() "
+                            "WHERE id = $1 AND hard_delete_pending = TRUE "
+                            "AND hard_delete_claimed_at IS NULL",
+                            user_id,
+                        )
+                        raise HardDeleteStateChanged(
+                            f"Account {user_id} has a claim from before claim leases; "
+                            "its lease was stamped now, so recovery must wait for the grace period."
+                        )
+                    stale = await self._hard_delete_claim_is_stale(
+                        conn, row["hard_delete_claimed_at"]
+                    )
+                    if recovery_mode is not None and stale:
+                        # A stale claim is abandoned, not shareable: replace its
+                        # token and renew the lease in the same row-locked
+                        # transaction, so two recovery callers cannot both
+                        # proceed. The recovered provenance stops this request
+                        # from releasing a claim that may already be fenced.
+                        await conn.execute(
+                            "UPDATE users SET hard_delete_claim_token = $2, "
+                            "hard_delete_claimed_at = NOW(), "
+                            "hard_delete_claim_recovered = TRUE WHERE id = $1",
+                            user_id,
+                            claim_token,
+                        )
+                        return HardDeleteClaim(
+                            token=claim_token,
+                            provenance=HardDeleteClaimProvenance.RECOVERED,
+                        )
+                    if recovery_mode is None and stale:
+                        raise HardDeleteRecoveryAvailable(
+                            f"Account {user_id} has a stale hard-delete claim."
+                        )
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} already has a hard-delete in progress or its "
+                        "claim has not reached the recovery grace period."
+                    )
                 await conn.execute(
                     "UPDATE users SET hard_delete_pending = TRUE, "
                     "hard_delete_claim_token = $2, hard_delete_claimed_at = NOW(), "
@@ -985,7 +1070,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     user_id,
                     claim_token,
                 )
-        return claim_token
+        return HardDeleteClaim(token=claim_token, provenance=HardDeleteClaimProvenance.NEW)
 
     async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Extend the claim lease, failing closed if superseded."""
@@ -1007,7 +1092,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 )
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
-        """Release a still-unfenced hard-delete claim for a deleted user."""
+        """Release a still-unfenced hard-delete claim for a deleted user.
+
+        A recovered claim is left in place: the worker it was taken from may
+        still be unwinding after a process-level timeout, and clearing the
+        marker would let that worker (or a retry) re-enter the purge without
+        an operator deciding it is safe. It clears only after the grace
+        period, via an explicit recovery.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             # The status and claim predicates make this a guarded cleanup:
             # never clear a claim after another operation has changed the
@@ -1021,6 +1113,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 WHERE id = $1
                   AND status = 'deleted'
                   AND hard_delete_pending = TRUE
+                  AND hard_delete_claim_recovered = FALSE
                   AND hard_delete_claim_token = $2
                 """,
                 user_id,
@@ -1035,6 +1128,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Resume a soft-deleted user: set status='active' and audit it as *actor*.
@@ -1045,14 +1139,19 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Hard-delete coordination (issue #1421): the admin route checks the
         LogStore fence, while this transaction refuses a durable pending
         hard-delete claim. The row lock makes resume and the operational
-        hard-delete claim mutually exclusive.
+        hard-delete claim mutually exclusive. A claim whose lease outlived the
+        recovery grace period can be cleared only through
+        *recover_stale_claim*, an explicit operator attestation that the
+        worker holding it is gone; the lease is rechecked and the claim
+        cleared in the same transaction as the status change.
         """
         audit = audit_columns(
             admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
         )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                "SELECT status, hard_delete_pending, hard_delete_claim_token, "
+                "hard_delete_claimed_at FROM users WHERE id = $1 FOR UPDATE",
                 user_id,
             )
             if row is None or row["status"] != "deleted":
@@ -1060,8 +1159,35 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     f"Account {user_id} is no longer soft-deleted and cannot be resumed."
                 )
             if row["hard_delete_pending"]:
-                raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
-            await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
+                claim_started_at = row["hard_delete_claimed_at"]
+                stale = await self._hard_delete_claim_is_stale(conn, claim_started_at)
+                if recover_stale_claim and not stale:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} claim has not reached the recovery grace period."
+                    )
+                if not stale:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} has a hard-delete in progress."
+                    )
+                if not recover_stale_claim:
+                    raise HardDeleteRecoveryAvailable(
+                        f"Account {user_id} has a stale hard-delete claim."
+                    )
+                cleared = await conn.fetchrow(
+                    "UPDATE users SET status = 'active', hard_delete_pending = FALSE, "
+                    "hard_delete_claim_token = NULL, hard_delete_claimed_at = NULL, "
+                    "hard_delete_claim_recovered = FALSE "
+                    "WHERE id = $1 AND status = 'deleted' AND hard_delete_pending = TRUE "
+                    "AND hard_delete_claim_token = $2 RETURNING id",
+                    user_id,
+                    row["hard_delete_claim_token"],
+                )
+                if cleared is None:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} changed during stale-claim recovery."
+                    )
+            else:
+                await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
             await insert_audit_row(
                 conn,
                 columns=audit,

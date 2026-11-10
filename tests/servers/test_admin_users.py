@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import threading
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,8 +16,11 @@ from httpx import ASGITransport, AsyncClient
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.audit import AuditActor, AuditTarget
+from serving.exceptions import HardDeleteRecoveryAvailable, HardDeleteStateChanged
 from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
+from serving.servers.routers.admin import users as admin_users
+from serving.storage.base import HardDeleteClaim, HardDeleteClaimProvenance
 from serving.utils import password as password_utils
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
@@ -36,7 +40,10 @@ def mock_stores():
     op_store.reject_user = AsyncMock()
     op_store.delete_user = AsyncMock()
     op_store.resume_user = AsyncMock()
-    op_store.begin_hard_delete_user = AsyncMock(return_value="claim-token")
+    op_store.begin_hard_delete_user = AsyncMock(
+        return_value=HardDeleteClaim(token="claim-token", provenance=HardDeleteClaimProvenance.NEW)
+    )
+    op_store.renew_hard_delete_user_claim = AsyncMock()
     op_store.release_hard_delete_user_claim = AsyncMock()
     op_store.hard_delete_user = AsyncMock(return_value={})
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
@@ -1691,7 +1698,9 @@ async def test_hard_delete_aborts_when_resume_wins_race(admin_client):
 
     # Endpoint returns 409 (conflict) because state changed.
     assert response.status_code == 409
-    assert "changed" in response.json()["detail"].lower()
+    detail = response.json()["detail"]
+    assert detail["code"] == "hard_delete_recovery_not_ready"
+    assert detail["recovery_available"] is False
 
     op_store.begin_hard_delete_user.assert_awaited_once_with("u1")
     log_store.hard_delete_user_data.assert_not_awaited()
@@ -2743,3 +2752,231 @@ async def test_no_notice_is_queued_without_a_mail_provider(
 
     assert resp.status_code == 200, resp.text
     assert attempts == []
+
+
+# ========================================================================
+# Hard-delete claim lease: heartbeat wrapper and 409 mappings
+# ========================================================================
+
+
+@pytest.fixture
+def fast_heartbeat(monkeypatch):
+    """Shrink the heartbeat so a race test finishes in milliseconds."""
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS", 0.05)
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_RETRY_SECONDS", 0.01)
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_cancels_a_superseded_stage(fast_heartbeat):
+    """A superseded worker stops before its stage can finish."""
+    op_store = MagicMock()
+    op_store.renew_hard_delete_user_claim = AsyncMock(
+        side_effect=HardDeleteStateChanged("superseded")
+    )
+    started = asyncio.Event()
+    finished = False
+
+    async def _stage():
+        nonlocal finished
+        started.set()
+        try:
+            await asyncio.sleep(5)
+            finished = True
+        except asyncio.CancelledError:
+            raise
+
+    with pytest.raises(HardDeleteStateChanged):
+        await admin_users._run_hard_delete_stage_with_heartbeat(
+            _stage(), op_store=op_store, user_id="u1", claim_token="tok"
+        )
+    assert started.is_set()
+    assert finished is False
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_retries_a_transient_renewal_failure(fast_heartbeat):
+    """A failover must not abort a healthy long stage on its first renewal."""
+    op_store = MagicMock()
+    attempts = {"count": 0}
+
+    async def _renew(*_args):
+        attempts["count"] += 1
+        if attempts["count"] == 1:
+            raise RuntimeError("failover")
+
+    op_store.renew_hard_delete_user_claim = AsyncMock(side_effect=_renew)
+
+    async def _stage():
+        await asyncio.sleep(0.06)
+        return "purged"
+
+    result = await admin_users._run_hard_delete_stage_with_heartbeat(
+        _stage(), op_store=op_store, user_id="u1", claim_token="tok"
+    )
+
+    assert result == "purged"
+    assert attempts["count"] >= 2
+
+
+@pytest.mark.asyncio
+async def test_heartbeat_gives_up_within_the_lease_margin(monkeypatch):
+    """Persistent renewal failure aborts the stage instead of outliving the lease."""
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS", 0.01)
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS", 0.02)
+    monkeypatch.setattr(admin_users, "_HARD_DELETE_CLAIM_HEARTBEAT_RETRY_SECONDS", 0.01)
+    op_store = MagicMock()
+    op_store.renew_hard_delete_user_claim = AsyncMock(side_effect=RuntimeError("database gone"))
+
+    async def _stage():
+        await asyncio.sleep(5)
+        return "never"
+
+    with pytest.raises(RuntimeError, match="renewal failed"):
+        await admin_users._run_hard_delete_stage_with_heartbeat(
+            _stage(), op_store=op_store, user_id="u1", claim_token="tok"
+        )
+
+
+@pytest.mark.asyncio
+async def test_a_stage_that_finishes_first_wins_the_tie(fast_heartbeat):
+    """Stage completion is authoritative, even with a heartbeat in flight."""
+    stage_done = asyncio.Event()
+    op_store = MagicMock()
+
+    async def _renew(*_args):
+        # Fail only once the purge has committed: this is the simultaneous
+        # "heartbeat finds the row the stage just deleted" case.
+        await stage_done.wait()
+        raise HardDeleteStateChanged("the row is gone: the purge committed")
+
+    op_store.renew_hard_delete_user_claim = AsyncMock(side_effect=_renew)
+
+    async def _stage():
+        result = {"users": 1}
+        stage_done.set()
+        return result
+
+    result = await admin_users._run_hard_delete_stage_with_heartbeat(
+        _stage(), op_store=op_store, user_id="u1", claim_token="tok"
+    )
+
+    assert result == {"users": 1}
+
+
+@pytest.mark.asyncio
+async def test_approve_returns_409_when_the_claim_wins_the_race(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="pending_approval")
+    op_store.approve_user.side_effect = HardDeleteStateChanged("claimed")
+
+    resp = await client.post("/admin/users/u1/approve", json={}, headers=AUTH)
+
+    assert resp.status_code == 409
+    assert "state changed" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_reject_returns_409_when_the_claim_wins_the_race(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="pending_approval")
+    op_store.reject_user.side_effect = HardDeleteStateChanged("claimed")
+
+    resp = await client.post("/admin/users/u1/reject", json={"reason": "not a fit"}, headers=AUTH)
+
+    assert resp.status_code == 409
+    assert "state changed" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_patch_returns_409_when_the_claim_wins_the_race(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="active")
+    op_store.suspend_user.side_effect = HardDeleteStateChanged("claimed")
+
+    resp = await client.patch("/admin/users/u1", json={"status": "suspended"}, headers=AUTH)
+
+    assert resp.status_code == 409
+    assert "state changed" in resp.json()["detail"].lower()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_offers_recovery_for_a_stale_pre_fence_claim(admin_client):
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.account_has_erasure_fence.return_value = False
+    op_store.begin_hard_delete_user.side_effect = HardDeleteRecoveryAvailable("stale")
+
+    resp = await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["code"] == "hard_delete_pre_fence_recovery_available"
+    assert detail["recovery_available"] is True
+    log_store.hard_delete_user_data.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_recovery_takes_over_a_stale_pre_fence_claim(admin_client):
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.account_has_erasure_fence.return_value = False
+    recovered = HardDeleteClaim(
+        token="recovered-token", provenance=HardDeleteClaimProvenance.RECOVERED
+    )
+    op_store.begin_hard_delete_user.side_effect = [
+        HardDeleteRecoveryAvailable("stale"),
+        recovered,
+    ]
+
+    resp = await client.post(
+        "/admin/users/u1/hard-delete",
+        headers=AUTH,
+        json={"confirm": True, "recover_stale_claim": True},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert op_store.begin_hard_delete_user.await_args.kwargs["recovery_mode"] is (
+        admin_users.HardDeleteRecoveryMode.PRE_FENCE_OPERATOR
+    )
+    assert op_store.hard_delete_user.await_args.kwargs["claim_token"] == "recovered-token"
+    # A recovered claim is sticky: a pre-fence failure must not release it.
+    op_store.release_hard_delete_user_claim.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_recovers_an_abandoned_post_fence_deletion(admin_client):
+    """A fence makes a crashed post-fence worker's claim retryable after grace."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.account_has_erasure_fence.return_value = True
+    op_store.begin_hard_delete_user.side_effect = [
+        HardDeleteStateChanged("claimed"),
+        HardDeleteClaim(token="fenced-token", provenance=HardDeleteClaimProvenance.RECOVERED),
+    ]
+
+    resp = await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    assert resp.status_code == 200, resp.text
+    assert op_store.begin_hard_delete_user.await_args.kwargs["recovery_mode"] is (
+        admin_users.HardDeleteRecoveryMode.POST_FENCE
+    )
+    assert op_store.hard_delete_user.await_args.kwargs["claim_token"] == "fenced-token"
+
+
+@pytest.mark.asyncio
+async def test_hard_delete_returns_409_when_its_claim_is_lost_mid_stage(admin_client):
+    """A superseded worker's heartbeat failure is a 409, not a 500."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row(status="deleted")
+    log_store.account_has_erasure_fence.return_value = False
+    op_store.renew_hard_delete_user_claim.side_effect = HardDeleteStateChanged("superseded")
+
+    resp = await client.post("/admin/users/u1/hard-delete", headers=AUTH, json={"confirm": True})
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "hard_delete_claim_lost"
+    log_store.hard_delete_user_data.assert_not_awaited()
+    op_store.hard_delete_user.assert_not_awaited()
+    # The newly acquired, unfenced claim is released for the next attempt.
+    op_store.release_hard_delete_user_claim.assert_awaited_once_with("u1", "claim-token")
