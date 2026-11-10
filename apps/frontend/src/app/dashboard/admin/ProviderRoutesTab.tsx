@@ -17,6 +17,7 @@ import {
   Role,
   RouteWeight,
   RouteCapabilities,
+  type RouteEffortPreview,
   RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
@@ -28,6 +29,7 @@ import {
   listProviderKeys,
   listOpenRouterProviderOptions,
   listProviderRoutes,
+  previewRouteEffortPreset,
   removeProviderRoute,
   restoreProviderRoute,
   setRouteWeight,
@@ -57,6 +59,7 @@ import {
   describeCapabilities,
   emptyCapabilityDraft,
   readCapabilityDraft,
+  readEffortRows,
   sameCapabilities,
   sameCapabilityDraft,
   sameEffortMap,
@@ -733,6 +736,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   // Restore defaults was chosen: saving returns the route to its defaults even
   // where the values set in the console already equal them.
   const [capabilityRestoreChosen, setCapabilityRestoreChosen] = useState(false);
+  const [effortRestoreChosen, setEffortRestoreChosen] = useState(false);
+  const [effortPreview, setEffortPreview] = useState<{
+    key: string;
+    preview: RouteEffortPreview | null;
+  }>();
   const [addingRoute, setAddingRoute] = useState(false);
   const [creatingModel, setCreatingModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
@@ -885,6 +893,40 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       : editingRoute && form.upstreamProvider === 'openrouter'
         ? form.providerModelId.trim()
         : '';
+  const editEffortTargetChanged = Boolean(
+    editingRoute &&
+    (routePrimaryUpstreamProvider(editingRoute) !== form.upstreamProvider ||
+      (form.upstreamProvider === 'openrouter' &&
+        selectedOpenRouterProvider !==
+          resolvedOpenRouterProvider(routeOpenRouterProvider(editingRoute), '')) ||
+      canonicalEndpointUrl(editingRoute.base_url) !== canonicalEndpointUrl(form.baseUrl) ||
+      (editingRoute.provider_model_id ?? '') !== form.providerModelId.trim()),
+  );
+  const previewForm = createFormOpen ? createForm : editEffortTargetChanged ? form : null;
+  const effortProvider = previewForm?.upstreamProvider ?? '';
+  const effortModel = previewForm?.providerModelId.trim() ?? '';
+  const effortUrl = previewForm?.baseUrl.trim() ?? '';
+  const effortPin =
+    effortProvider === 'openrouter'
+      ? createFormOpen
+        ? selectedCreateOpenRouterProvider
+        : selectedOpenRouterProvider
+      : null;
+  const effortRoutePath =
+    !createFormOpen && editingRoute && editEffortTargetChanged
+      ? `${editingRoute.model_id}/${editingRoute.route_id}`
+      : null;
+  const effortPreviewKey = JSON.stringify([
+    effortProvider,
+    effortModel,
+    effortUrl,
+    effortPin,
+    effortRoutePath,
+  ]);
+  const selectedEffort = effortPreview?.key === effortPreviewKey ? effortPreview.preview : null;
+  const selectedEffortPreset = selectedEffort && 'label' in selectedEffort ? selectedEffort : null;
+  const selectedLegacyEffort =
+    selectedEffort && 'reasoning_efforts_published' in selectedEffort ? selectedEffort : null;
   const strategy = selectedRoutes[0]?.strategy ?? 'fixed';
   const isRoutewise = strategy === 'routewise';
   // RouteWise does not use offload routes, and the console refuses to switch a
@@ -1126,12 +1168,33 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   // following its defaults rather than holding a copy of them.
   const editCapabilityReading = readCapabilityDraft(editCapabilityDraft);
   const editCapabilities = editingRoute?.capabilities;
-  const editCapabilityDefaults = editingRoute?.capabilities_baseline ?? editCapabilities;
+  const liveCapabilityDefaults = editingRoute?.capabilities_baseline ?? editCapabilities;
+  const hasConfiguredEffortDefault = Boolean(
+    liveCapabilityDefaults?.reasoning_effort_map && !editingRoute?.reasoning_effort_preset_label,
+  );
+  const editCapabilityDefaults =
+    liveCapabilityDefaults && editEffortTargetChanged && !hasConfiguredEffortDefault
+      ? {
+          ...liveCapabilityDefaults,
+          reasoning_effort_map: selectedEffortPreset?.reasoning_effort_map ?? null,
+        }
+      : liveCapabilityDefaults;
+  const editEffortMap = readEffortRows(editCapabilityDraft.effortRows).map;
+  const draftFromServedCapabilities = editCapabilities
+    ? capabilityDraftFrom({
+        ...editCapabilities,
+        reasoning_effort_map:
+          editingRoute?.reasoning_effort_source === 'preset'
+            ? null
+            : editCapabilities.reasoning_effort_map,
+      })
+    : emptyCapabilityDraft;
   const editCapabilitiesOverridden = Boolean(editingRoute?.capabilities_overridden);
   const editCapabilitiesEdited =
     editCapabilities !== undefined &&
-    (!sameCapabilityDraft(editCapabilityDraft, capabilityDraftFrom(editCapabilities)) ||
-      (capabilityRestoreChosen && editCapabilitiesOverridden));
+    (!sameCapabilityDraft(editCapabilityDraft, draftFromServedCapabilities) ||
+      (capabilityRestoreChosen && editCapabilitiesOverridden) ||
+      effortRestoreChosen);
   // The defaults as Restore defaults puts them, whether or not the form accepts them.
   const editCapabilityDraftIsDefaults =
     editCapabilityDefaults !== undefined &&
@@ -1143,11 +1206,17 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
       editCapabilitiesOverridden &&
       (editCapabilityDraftIsDefaults || (draft && sameCapabilities(draft, editCapabilityDefaults)))
     ) {
-      return draft && sameCapabilities(draft, editCapabilities) && !capabilityRestoreChosen
+      return draft &&
+        sameCapabilities(draft, editCapabilities) &&
+        !capabilityRestoreChosen &&
+        !effortRestoreChosen
         ? null
         : { reset_capabilities: true };
     }
     if (!draft) return null;
+    if (effortRestoreChosen) {
+      return { capabilities: { ...draft, reasoning_effort_map: null } };
+    }
     return sameCapabilities(draft, editCapabilities)
       ? null
       : { capabilities: effortMapToSend(draft, editCapabilityDefaults, editCapabilities) };
@@ -1159,10 +1228,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     const changes = capabilityChanges(
       editCapabilities,
       'capabilities' in editCapabilitySave
-        ? editCapabilitySave.capabilities
+        ? {
+            ...editCapabilitySave.capabilities,
+            reasoning_effort_map:
+              editCapabilitySave.capabilities.reasoning_effort_map ??
+              editCapabilityDefaults.reasoning_effort_map,
+          }
         : editCapabilityDefaults,
     );
     // Values set in the console that equal the defaults: only their source changes.
+    if (!changes.length && effortRestoreChosen) {
+      return [
+        { label: 'Reasoning effort', before: 'Custom mapping', after: 'Use default settings' },
+      ];
+    }
     return changes.length > 0 || 'capabilities' in editCapabilitySave
       ? changes
       : [
@@ -1188,11 +1267,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
 
   const restoreCapabilityDefaults = () => {
     if (!editCapabilityDefaults) return;
-    setEditCapabilityDraft(capabilityDraftFrom(editCapabilityDefaults));
+    setEditCapabilityDraft(
+      capabilityDraftFrom({
+        ...editCapabilityDefaults,
+        reasoning_effort_map: editingRoute?.reasoning_effort_preset_label
+          ? null
+          : editCapabilityDefaults.reasoning_effort_map,
+      }),
+    );
+    setEffortRestoreChosen(false);
     setCapabilityRestoreChosen(true);
   };
 
   useEffect(() => {
+    setEffortRestoreChosen(false);
     if (!editingRoute) {
       setForm({
         upstreamProvider: '',
@@ -1213,7 +1301,13 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
     setEditCapabilityDraft(
       editingRoute.capabilities
-        ? capabilityDraftFrom(editingRoute.capabilities)
+        ? capabilityDraftFrom({
+            ...editingRoute.capabilities,
+            reasoning_effort_map:
+              editingRoute.reasoning_effort_source === 'preset'
+                ? null
+                : editingRoute.capabilities.reasoning_effort_map,
+          })
         : emptyCapabilityDraft,
     );
     setCapabilityRestoreChosen(false);
@@ -1387,6 +1481,30 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (!createFormOpen || !createKeyProvider) return;
     void loadCreateKeys(createKeyProvider);
   }, [createFormOpen, createKeyProvider, loadCreateKeys]);
+
+  useEffect(() => {
+    if (!effortProvider || !effortModel || !effortUrl) return undefined;
+    let cancelled = false;
+    const timeout = window.setTimeout(() => {
+      void previewRouteEffortPreset(
+        effortProvider,
+        effortModel,
+        effortUrl,
+        effortPin,
+        effortRoutePath,
+      )
+        .then((preview) => {
+          if (!cancelled) setEffortPreview({ key: effortPreviewKey, preview });
+        })
+        .catch(() => {
+          // The gateway still applies its own default at save time.
+        });
+    }, 250);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
+  }, [effortPreviewKey, effortProvider, effortModel, effortUrl, effortPin, effortRoutePath]);
 
   useEffect(() => {
     setDiscoveredOpenRouterProviderOptions([]);
@@ -2971,6 +3089,18 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       : "This route's own values, started from the model's first route. Providers can serve the same model with a smaller window or without images or tools; set what this one serves."
                   }
                   disabled={confirmation.busy}
+                  effort={{
+                    mappable: true,
+                    defaultMap: selectedEffortPreset?.reasoning_effort_map,
+                    presetLabel: selectedEffortPreset?.label,
+                    onRestore:
+                      createForm.effortRows.length > 0
+                        ? () => {
+                            setCreateForm((current) => ({ ...current, effortRows: [] }));
+                            setVerifiedCreateSignature(null);
+                          }
+                        : undefined,
+                  }}
                 />
               </div>
 
@@ -3549,15 +3679,42 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     idPrefix="route-edit"
                     draft={editCapabilityDraft}
                     reading={editCapabilityShownReading}
-                    onChange={(change) =>
-                      setEditCapabilityDraft((current) => ({ ...current, ...change }))
-                    }
+                    onChange={(change) => {
+                      if (change.effortRows) setEffortRestoreChosen(false);
+                      setEditCapabilityDraft((current) => ({ ...current, ...change }));
+                    }}
                     help="The gateway applies these to requests through this route. They do not change what the upstream model can do."
                     disabled={confirmation.busy}
                     effort={{
-                      mappable: editingRoute.reasoning_effort_mappable ?? true,
-                      published: editingRoute.reasoning_efforts_published ?? null,
-                      defaultMap: editCapabilityDefaults?.reasoning_effort_map ?? null,
+                      mappable:
+                        Boolean(selectedEffortPreset) ||
+                        (editingRoute.reasoning_effort_mappable ?? true),
+                      published: editEffortTargetChanged
+                        ? (selectedLegacyEffort?.reasoning_efforts_published ?? null)
+                        : (editingRoute.reasoning_efforts_published ?? null),
+                      defaultMap: editCapabilityDefaults.reasoning_effort_map,
+                      presetLabel:
+                        editEffortTargetChanged && !hasConfiguredEffortDefault
+                          ? selectedEffortPreset?.label
+                          : editingRoute.reasoning_effort_preset_label,
+                      source:
+                        !editEffortMap && selectedLegacyEffort
+                          ? 'configured'
+                          : sameEffortMap(editEffortMap, editCapabilities?.reasoning_effort_map)
+                            ? editingRoute.reasoning_effort_source
+                            : undefined,
+                      onRestore:
+                        !effortRestoreChosen &&
+                        (editingRoute.reasoning_effort_source === 'override' ||
+                          (editCapabilityDraft.effortRows.length > 0 &&
+                            !sameEffortMap(editEffortMap, editCapabilities.reasoning_effort_map)))
+                          ? () => {
+                              setEditCapabilityDraft((current) => ({ ...current, effortRows: [] }));
+                              setEffortRestoreChosen(
+                                editingRoute.reasoning_effort_source === 'override',
+                              );
+                            }
+                          : undefined,
                     }}
                   />
                   {!editCapabilitiesEdited && editCapabilityReading.payload === null && (

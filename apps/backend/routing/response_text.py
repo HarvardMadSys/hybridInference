@@ -1,4 +1,4 @@
-"""Shared extraction helpers for completion response text and usage.
+r"""Shared extraction helpers for completion response text and usage.
 
 Every request surface -- FixedRouter, RouteWise, hedging and ``/v1/messages`` --
 needs the same three things from a response: the generated text, the provider's
@@ -7,7 +7,7 @@ here so the surfaces cannot drift, as ``routing/AGENTS.md`` asks.
 
 The stream verdict is the delicate one. A provider answers a warmup notice one
 token at a time, so the first delta is frequently a fragment of a notice ("The",
-"\\n\\n", "Model") that a single classification would read as progress and use to
+"\n\n", "Model") that a single classification would read as progress and use to
 close a breaker the warmup failures had just opened. :class:`StreamProgressTracker`
 re-evaluates the *accumulated* prefix as each chunk arrives and stays undecided
 until that prefix can no longer become a warmup notice -- while still releasing a
