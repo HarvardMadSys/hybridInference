@@ -332,6 +332,33 @@ async def test_anthropic_endpoint_model_and_credentials(upstream, mode):
     assert request["json"].get("stream", False) is (mode == "stream")
 
 
+@pytest.mark.parametrize(("kind", "mode"), PATHS)
+async def test_only_a_completion_has_a_total_deadline(upstream, kind, mode, monkeypatch):
+    """A stream runs as long as the generation does; a completion has the configured total.
+
+    aiohttp applies a total timeout to reading the body as well. The Vertex
+    adapter gave both a fixed 120 s, so a generation still streaming at two
+    minutes was cut off with an error the circuit breaker counted, and a long
+    non-streaming one could not be given longer through
+    ``UPSTREAM_COMPLETION_TIMEOUT_S``, as on the Anthropic adapter.
+    """
+    from serving.adapters import openai_compat
+
+    monkeypatch.setattr(openai_compat, "_COMPLETION_TIMEOUT_S", 900.0)
+    totals: list[float | None] = []
+    request = aiohttp.ClientSession._request
+
+    async def recording(self, method, url, **kwargs):
+        totals.append(kwargs["timeout"].total)
+        return await request(self, method, url, **kwargs)
+
+    monkeypatch.setattr(aiohttp.ClientSession, "_request", recording)
+
+    await _send(kind, mode, upstream, USER)
+
+    assert totals == [None if mode == "stream" else 900.0]
+
+
 # --- the reply ---------------------------------------------------------------------------
 
 
