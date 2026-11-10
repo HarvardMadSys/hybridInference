@@ -31,7 +31,7 @@ from serving.surfaces.context import (
 )
 from serving.utils.request_ip import ClientIpInfo
 from serving.utils.session_identity import session_identity
-from serving.utils.synthetic_probe import is_trusted_probe, is_trusted_probe_headers
+from serving.utils.synthetic_probe import is_trusted_probe_headers
 
 _RAW = [
     (b"X-Session-ID", b"raw-mixed-case"),
@@ -171,8 +171,8 @@ def test_the_probe_marker_reads_the_same_from_origin_headers(name, value):
     trusted = {"role": "internal", "authenticated": True}
     raw = [(name.lower(), value)]  # as an ASGI server delivers it
 
-    assert is_trusted_probe_headers(origin_headers(raw), trusted) == is_trusted_probe(
-        _request(raw), trusted
+    assert is_trusted_probe_headers(origin_headers(raw), trusted) == is_trusted_probe_headers(
+        _request(raw).headers, trusted
     )
 
 
@@ -252,5 +252,9 @@ async def test_a_rejection_logged_by_source_is_the_row_logged_by_request():
     by_request, by_source = (call.kwargs for call in log_store.log_request.await_args_list)
     by_request["metadata"].pop("ledger_started_at", None)
     by_source["metadata"].pop("ledger_started_at", None)
+    # Outside a request scope neither has a request id, so each row gets a key
+    # of its own (one shared key would store only the first).
+    keys = (by_request.pop("request_id"), by_source.pop("request_id"))
+    assert all(key.startswith("rej_") for key in keys) and keys[0] != keys[1]
     assert by_source == by_request
     assert by_source["metadata"]["synthetic_probe"] is True

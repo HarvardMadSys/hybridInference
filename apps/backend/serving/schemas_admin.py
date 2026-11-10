@@ -11,10 +11,12 @@ from pydantic import (
     SecretStr,
     StrictBool,
     StrictInt,
+    field_serializer,
     field_validator,
     model_validator,
 )
 
+from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
 
@@ -40,6 +42,14 @@ class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
     )
     notes: str | None = Field(None, description="Admin notes")
     metadata: dict[str, Any] | None = Field(None, description="Custom metadata")
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed for a key for any account "
+        "other than the caller's own",
+    )
+    project_id: str | None = Field(
+        None, description="Project to bind the key to; the user's Default when omitted"
+    )
 
     @field_validator("user_id")
     @classmethod
@@ -60,6 +70,8 @@ class CreateAPIKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
     quota_monthly_cost_usd: Decimal | None
     expires_at: datetime | None
     created_at: datetime
+    project_id: str | None = None
+    project_name: str | None = None
     warning: str = Field(
         default="⚠️ Save this API key now. It cannot be retrieved later.",
         description="Security warning",
@@ -81,6 +93,8 @@ class APIKeyListItem(BaseModel):  # type: ignore[no-any-unimported]
     usage_today_usd: Decimal = Field(default=Decimal("0"), description="Cost spent today")
     usage_month_usd: Decimal = Field(default=Decimal("0"), description="Cost spent this month")
     notes: str | None
+    project_id: str | None = None
+    project_name: str | None = None
 
 
 class ListAPIKeysResponse(BaseModel):  # type: ignore[no-any-unimported]
@@ -466,6 +480,10 @@ class UpdateUserRequest(BaseModel):
     # Admin-authored message shown to the user on login while suspended.
     # Send "" or null to clear it.
     suspension_message: str | None = Field(None, max_length=2000)
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed to raise the role",
+    )
 
 
 class UpdateUserResponse(BaseModel):
@@ -593,6 +611,10 @@ class AdminRequestMetricsBucket(BaseModel):
     A client disconnect (status 499) is counted in ``client_disconnect_count``
     and never in ``error_count`` or ``success_count``; the two error/disconnect
     counts are disjoint by construction.
+
+    The counts are of the requests the response's ``source`` names. The
+    ``batch_*`` counts are the batch worker's requests in the bucket whatever
+    ``source`` is, so a chart of the interactive counts can stack them on top.
     """
 
     start_time: datetime
@@ -602,6 +624,9 @@ class AdminRequestMetricsBucket(BaseModel):
     # Defaulted so a client reading an older cached response still validates.
     client_disconnect_count: int = 0
     avg_latency_ms: float | None = None
+    batch_request_count: int = 0
+    # Of ``batch_request_count``, the failures (as ``error_count`` counts them).
+    batch_error_count: int = 0
 
 
 class AdminRequestMetricsWindow(BaseModel):
@@ -620,6 +645,8 @@ class AdminRequestMetricsWindow(BaseModel):
     error_requests: int
     client_disconnect_requests: int = 0
     avg_latency_ms: float | None = None
+    batch_requests: int = 0
+    batch_error_requests: int = 0
     buckets: list[AdminRequestMetricsBucket]
 
 
@@ -627,6 +654,8 @@ class AdminRequestMetricsResponse(BaseModel):
     """Request metrics for multiple admin dashboard lookback windows."""
 
     generated_at: datetime
+    # Whose requests the counts count: ``all``, ``interactive`` or ``batch``.
+    source: str = "all"
     windows: list[AdminRequestMetricsWindow]
 
 
@@ -921,6 +950,9 @@ class AdminRecentRequestItem(BaseModel):
     num_turns: int | None = None
     num_user_turns: int | None = None
     num_tool_calls: int | None = None
+    # The batch whose worker ran this request (``api_logs.batch_job_id``); None
+    # for every request a caller made directly.
+    batch_job_id: str | None = None
 
 
 class AdminRecentRequestsResponse(BaseModel):
@@ -1573,6 +1605,86 @@ class UpdateBatchModelLimitRequest(BaseModel):
     max_concurrency: StrictInt | None = Field(..., ge=0, le=MAX_BATCH_MODEL_CONCURRENCY)
 
 
+class ModelQueueJob(BaseModel):
+    """One scheduler job serving, or waiting to serve, a model. Times are epoch seconds."""
+
+    job_id: str | None = None
+    state: str = Field(..., description="The scheduler's state, e.g. PENDING or RUNNING.")
+    reason: str | None = Field(None, description="Why a pending job waits, as the scheduler says.")
+    partition: str | None = None
+    nodes: str | None = Field(None, description="The node(s) a running job holds.")
+    submitted_at: float | None = None
+    started_at: float | None = None
+    expected_start_at: float | None = Field(
+        None, description="The scheduler's estimate of when a pending job starts."
+    )
+    ends_at: float | None = Field(None, description="When a running job's walltime ends.")
+
+
+class ModelQueueModel(BaseModel):
+    """One model on an on-demand host, its jobs, and the batch requests waiting for it."""
+
+    model: str = Field(..., description="The name the host serves the model under.")
+    state: str = Field(..., description="serving, loading, queued or idle.")
+    job_name: str | None = None
+    last_request_at: float | None = Field(None, description="The host's last request for it.")
+    walltime_seconds: float | None = None
+    startup_estimate_seconds: float | None = None
+    partitions: str | None = None
+    constraint: str | None = None
+    avoided_nodes: list[str] = Field(
+        default_factory=list, description="Nodes its next job keeps off, after failures there."
+    )
+    jobs: list[ModelQueueJob] = Field(default_factory=list)
+    gateway_models: list[str] = Field(
+        default_factory=list,
+        description="This gateway's models with a route to it on the host, by canonical id.",
+    )
+    batch_queued: int | None = Field(
+        None, description="Batch requests of those models waiting to run; null when unknown."
+    )
+    batch_running: int | None = Field(
+        None, description="Batch requests of those models running now; null when unknown."
+    )
+
+
+class ModelQueueFailedNode(BaseModel):
+    """A node jobs keep off for a while, because a job failed there."""
+
+    node: str
+    jobs: list[str] = Field(default_factory=list, description="The jobs that failed there.")
+    last_failed_at: float | None = None
+    avoided_until: float | None = None
+    avoided_by_all: bool = Field(False, description="Every model's jobs avoid it, not only theirs.")
+
+
+class ModelQueuePolicy(BaseModel):
+    """How long the host keeps jobs nobody asks for, and avoids failed nodes, in seconds."""
+
+    pending_idle_cancel_seconds: float | None = None
+    running_idle_stop_seconds: float | None = None
+    renew_before_seconds: float | None = None
+    node_avoid_seconds: float | None = None
+
+
+class ModelQueueResponse(BaseModel):
+    """An on-demand model host's queue, as its status address reports it, for Admin -> Batches."""
+
+    configured: bool = Field(..., description="Whether MODEL_QUEUE_STATUS_URL is set.")
+    error: str | None = Field(None, description="Why the host's status could not be read.")
+    cluster: str | None = Field(None, description="The host's name for itself, e.g. a cluster.")
+    scheduler: str | None = None
+    generated_at: float | None = None
+    refreshed_at: float | None = Field(
+        None, description="When the host last read its scheduler's queue; null if never."
+    )
+    started_at: float | None = None
+    poll_interval_seconds: float | None = None
+    policy: ModelQueuePolicy | None = None
+    models: list[ModelQueueModel] = Field(default_factory=list)
+    failed_nodes: list[ModelQueueFailedNode] = Field(default_factory=list)
+
+
 class RouteWeightItem(BaseModel):
     """Current route weight state for one model endpoint."""
 
@@ -1643,12 +1755,21 @@ class ListOpenRouterProviderOptionsResponse(BaseModel):
 
 
 class RouteCapabilitiesItem(BaseModel):
-    """A route's context window, output cap, input modalities and tool support, as served."""
+    """A route's context window, output cap, input modalities, tool support and effort map."""
 
     context_length: int
     max_output_length: int
     input_modalities: list[str]
     supports_tools: bool
+    # Public level -> the value the upstream receives as ``reasoning_effort``;
+    # ``None`` when the route has no map (its legacy behavior applies).
+    reasoning_effort_map: dict[str, str] | None = None
+
+    @field_validator("reasoning_effort_map", mode="before")
+    @classmethod
+    def read_reasoning_effort_map(cls, value: Any) -> Any:
+        """Accept the stored list-of-pairs form too, keeping its order."""
+        return None if not value else validate_effort_map(value)
 
 
 class ProviderRouteItem(BaseModel):
@@ -1685,6 +1806,12 @@ class ProviderRouteItem(BaseModel):
     disabled: bool = False
     # A config route removed from this deployment; listed so it can be restored.
     removed: bool = False
+    # Whether batch work may use the route: the admin's choice
+    # (``batch_allowed_choice``) or, without one, its locality
+    # (``batch_allowed_default``: true for a server this gateway runs itself).
+    batch_allowed: bool = False
+    batch_allowed_default: bool = False
+    batch_allowed_choice: bool | None = None
     updated_at: datetime | None = None
     updated_by: str | None = None
     # What the route serves with now, and what it had from models.yaml or its
@@ -1692,6 +1819,12 @@ class ProviderRouteItem(BaseModel):
     capabilities: RouteCapabilitiesItem
     capabilities_baseline: RouteCapabilitiesItem
     capabilities_overridden: bool = False
+    # Whether this route's adapter sends ``reasoning_effort`` at all, so a
+    # ``reasoning_effort_map`` can apply to it.
+    reasoning_effort_mappable: bool = False
+    # The public levels this route delivers, as the model listings read it from
+    # the live route: a list (maybe empty), or ``None`` when it is unknown.
+    reasoning_efforts_published: list[str] | None = None
 
 
 class ListProviderRoutesResponse(BaseModel):
@@ -1745,6 +1878,27 @@ class RuntimeModelCapabilities(BaseModel):
     max_output_length: StrictInt = Field(..., ge=1, le=RUNTIME_MODEL_MAX_TOKENS)
     input_modalities: list[str] = Field(..., min_length=1)
     supports_tools: StrictBool
+    # Optional, unlike the four above: ``None`` (or absent, as in every row
+    # stored before it existed) keeps the route's own map from models.yaml or
+    # its creation; a map replaces it. Keys are the public levels clients send
+    # and the listings publish, in this order; values are what the upstream
+    # receives as ``reasoning_effort``. See ``serving.adapters.reasoning_effort``.
+    reasoning_effort_map: dict[str, str] | None = None
+
+    @field_validator("reasoning_effort_map", mode="before")
+    @classmethod
+    def validate_reasoning_effort_map(cls, value: Any) -> Any:
+        """Refuse a malformed map; keep its order (an object, or stored pairs)."""
+        return None if value is None else validate_effort_map(value)
+
+    @field_serializer("reasoning_effort_map")
+    def store_reasoning_effort_map(self, value: dict[str, str] | None) -> list[list[str]] | None:
+        """Dump the map as ordered ``[public, upstream]`` pairs: the form that is stored.
+
+        A JSONB object does not keep key order, and the order is the order the
+        levels are offered in.
+        """
+        return stored_effort_map(value)
 
     @field_validator("input_modalities")
     @classmethod
@@ -1877,6 +2031,16 @@ class UpdateProviderRouteStateRequest(BaseModel):
     """Request payload for disabling or enabling one provider route."""
 
     disabled: bool
+
+
+class UpdateProviderRouteBatchRequest(BaseModel):
+    """Request payload for allowing or forbidding batch work on one provider route.
+
+    ``null`` clears the choice: the route follows its locality again (batch work
+    on the gateway's own servers only).
+    """
+
+    batch_allowed: bool | None
 
 
 class UpdateProviderRouteRequest(RouteCapabilityEdit):

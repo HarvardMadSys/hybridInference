@@ -65,10 +65,10 @@ describe('ConfigurationBanner', () => {
     renderBanner();
 
     const banner = screen.getByRole('status');
-    expect(banner).toHaveTextContent('Required settings are missing.');
+    expect(banner).toHaveTextContent('Ask admin to configure');
     expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?missing=1',
+      '/dashboard/admin/settings?tab=models&missing=1',
     );
   });
 
@@ -83,7 +83,7 @@ describe('ConfigurationBanner', () => {
     renderBanner();
 
     expect(screen.getByRole('status')).toHaveTextContent(
-      'This service is missing required configuration, so some features may not work. Please contact your administrator.',
+      'Ask admin to configure this service. Required configuration is missing.',
     );
     expect(screen.queryByRole('link')).not.toBeInTheDocument();
   });

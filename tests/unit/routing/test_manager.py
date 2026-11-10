@@ -97,7 +97,7 @@ def test_apply_renormalizes_when_routing_yaml_covers_subset(tmp_path: Path):
         "        base_url: https://c.example/v1\n"
     )
     routing_yaml = (
-        "routing_strategy: fixed\n"
+        "default_router: fixed\n"
         "routing_parameter:\n"
         "  local_fraction: 0.0\n"
         "local_deployment: []\n"

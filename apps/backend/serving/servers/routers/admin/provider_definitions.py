@@ -7,17 +7,14 @@ import re
 import time
 from collections import defaultdict
 from dataclasses import dataclass, replace
-from pathlib import Path
 from typing import Any
 
 import aiohttp
-import yaml
 from fastapi import APIRouter, Depends, HTTPException
 
 from serving.adapters import dynamic_keys, provider_registry
 from serving.audit import AuditActor, AuditTarget
 from serving.config.app_config import config_value
-from serving.config.distribution import resolve_config_path
 from serving.config.provider_labels import BUILT_IN_DISPLAY_NAMES, humanize_provider
 from serving.schemas_admin import (
     CreateProviderDefinitionRequest,
@@ -104,22 +101,6 @@ def _display_name(provider: str) -> str:
     if provider in PROVIDER_TARGETS:
         return PROVIDER_TARGETS[provider].label
     return BUILT_IN_DISPLAY_NAMES.get(provider) or humanize_provider(provider)
-
-
-def _models_config_path() -> Path:
-    resolved = resolve_config_path("models")
-    if resolved.source != "default":
-        return resolved.path
-
-    cwd_path = resolved.path
-    if cwd_path.exists():
-        return cwd_path
-
-    for parent in Path(__file__).resolve().parents:
-        candidate = parent / "config/models.yaml"
-        if candidate.exists():
-            return candidate
-    return cwd_path
 
 
 def _expand_config_string(value: Any) -> str:
@@ -275,11 +256,9 @@ def _merge_config_provider_spec(
 
 
 def _configured_provider_specs() -> dict[str, ConfigProviderSpec]:
-    path = _models_config_path()
-    if not path.exists():
-        return {}
+    from serving.config.documents import get as get_document
 
-    data = yaml.safe_load(path.read_text()) or {}
+    data = get_document("models")
     models = data.get("models") if isinstance(data, dict) else []
     if not isinstance(models, list):
         return {}

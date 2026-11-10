@@ -13,7 +13,11 @@ from typing import TYPE_CHECKING, Any
 
 from serving.config.app_config import config_value
 from serving.utils.logging import get_logger
-from serving.utils.token_utils import extract_cache_tokens, extract_reasoning_tokens
+from serving.utils.token_utils import (
+    extract_cache_tokens,
+    extract_reasoning_tokens,
+    optional_token_count,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -286,7 +290,7 @@ def resolve_tool_choice_for_profile(profile: ProviderProfile, tool_choice: Any) 
 # that has to be switched on per deployment is a detector that is off everywhere
 # it is needed.
 #
-# Why 180s. Measured single-stream on the H200 sglang replicas (h200b, TP=2,
+# Why 180s. Measured single-stream on an H200 SGLang replica (TP=2,
 # DeepSeek-V4-Flash, `/flush_cache` before every point), inter-token latency is
 # 2.25-3.98 ms at 3.1-4.7 tokens per SSE chunk across 4K-1M input -- so a healthy
 # stream's frame-to-frame gap is single-digit milliseconds, and ~100 ms per
@@ -359,13 +363,6 @@ def extract_tool_calls_for_profile(
     return None
 
 
-def function_call_delta_to_tool_calls(
-    profile: ProviderProfile, function_call: dict[str, Any] | None
-) -> list[dict[str, Any]] | None:
-    """Convert a streaming function_call delta to tool_calls when needed."""
-    return None
-
-
 def normalize_usage_default(
     usage_data: dict[str, Any], *, null_cache_details_means_miss: bool = False
 ) -> UsageInfo:
@@ -385,15 +382,17 @@ def normalize_usage_default(
     cache_read, cache_write = extract_cache_tokens(
         usage_data, null_details_means_miss=null_cache_details_means_miss
     )
+    reasoning = optional_token_count(extract_reasoning_tokens(usage_data))
 
     return UsageInfo(
         prompt_tokens=usage_data.get("prompt_tokens", 0),
         completion_tokens=usage_data.get("completion_tokens", 0),
         total_tokens=usage_data.get("total_tokens", 0),
-        reasoning_tokens=extract_reasoning_tokens(usage_data) or 0,
+        reasoning_tokens=reasoning or 0,
         cache_read_tokens=cache_read or 0,
         cache_write_tokens=cache_write or 0,
         cache_read_reported=cache_read is not None,
+        reasoning_reported=reasoning is not None,
     )
 
 

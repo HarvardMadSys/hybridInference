@@ -14,14 +14,17 @@ from serving.storage import (
     user_usage_rollup,
 )
 from serving.storage.base import LogStore, Row
+from serving.storage.bounded_log import bound_payload_leftovers
 from serving.storage.erasure_fence import (
+    api_logs_fence_keys,
     check_erasure_fence,
     establish_erasure_fence,
     fence_account_digest,
-    protect_api_logs_insert,
+    insert_api_logs_row,
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import history_read_connection
 from serving.storage.utils import (
     agent_name_from_prompt,
     calculate_cost,
@@ -31,10 +34,11 @@ from serving.storage.utils import (
     user_message_stats,
 )
 from serving.utils.logging import get_logger
+from serving.utils.single_flight import SingleFlightCache
 from serving.utils.token_utils import normalize_usage
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Awaitable, Callable, Iterable
 
     import asyncpg
 
@@ -82,41 +86,43 @@ _GRANT_METRIC_COLUMNS = {
     "spent_usd": "cost_usd",
 }
 
-# Dashboard usage windows. ``today`` and ``month`` start at 00:00 UTC, when the
-# daily quota resets, regardless of the session time zone; ``week`` is rolling.
-_USER_USAGE_WINDOWS = {
-    "today": "timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
-    "week": "timestamp >= NOW() - INTERVAL '7 days'",
-    "month": "timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')",
-    "alltime": "TRUE",
-}
+#: How long a user's dashboard usage (``get_user_usage_detail``) is answered from
+#: memory. The figures move with every request the user makes, and the
+#: dashboard shows them as they stood a moment ago; half a minute bounds what a
+#: user refreshing it, or a script polling it, costs the database to one read
+#: per window set.
+USER_USAGE_CACHE_TTL_SEC = 30.0
+#: Users whose usage is kept at once; the least recently computed goes first.
+USER_USAGE_CACHE_ENTRIES = 4096
 
-# Summed per window. Cache tokens are a subset of ``prompt_tokens``; whether
-# ``reasoning_tokens`` is inside ``completion_tokens`` depends on the provider.
-_USER_USAGE_SUMS = (
-    "cost_usd",
-    "prompt_tokens",
-    "completion_tokens",
-    "cache_read_tokens",
-    "cache_write_tokens",
-    "reasoning_tokens",
-)
-
-# One pass over the user's rows instead of one query per window; the
-# all-time window scans every row anyway.
-_USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
-    ",\n       ".join(
-        [
-            f"COUNT(*) FILTER (WHERE {cond}) AS {window}__requests"
-            for window, cond in _USER_USAGE_WINDOWS.items()
-        ]
-        + [
-            f"COALESCE(SUM({col}) FILTER (WHERE {cond}), 0) AS {window}__{col}"
-            for window, cond in _USER_USAGE_WINDOWS.items()
-            for col in _USER_USAGE_SUMS
-        ]
-    )
-)
+# What :meth:`PostgresLogStore.log_request` writes to ``api_logs``: the columns,
+# and their values over the statement's parameters, in the same order.
+_LOG_COLUMNS = """
+    request_id, model_id, provider,
+    temperature, top_p, max_tokens, seed, stream,
+    ttft_ms, latency_ms,
+    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd,
+    prompt, response, request_payload,
+    status_code, error, user_id, session_id, metadata,
+    tools, upstream_cost_usd,
+    num_turns, num_user_turns, num_tool_calls,
+    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id, key_id, project_id
+"""
+_LOG_VALUES = """
+    $1, $2, $3,
+    $4, $5, $6, $7, $8,
+    $9, $10,
+    $11, $12, $13, $14,
+    $15, $16, $17,
+    $18, $19, $20::jsonb,
+    $21, $22, $23, $24, $25::jsonb,
+    $26::jsonb, $27,
+    $28, $29, $30,
+    $31, $32, $33,
+    $34, $35, $36, $37, $38, $39
+"""
 
 
 class PostgresLogStore(LogStore):
@@ -142,6 +148,9 @@ class PostgresLogStore(LogStore):
         self.pool = pool
         self.store_full_prompts = store_full_prompts
         self.fence_secret = fence_secret
+        self._user_usage: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
+            USER_USAGE_CACHE_TTL_SEC, max_entries=USER_USAGE_CACHE_ENTRIES
+        )
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -260,6 +269,15 @@ class PostgresLogStore(LogStore):
                 stored_messages=sanitized_prompt,
                 stored_tools=sanitized_tools,
             )
+            # What the body still repeats of the prompt column, or holds of
+            # each message besides it (fields the gateway ignored), is held to
+            # a small bound: the conversation itself is in the prompt column.
+            sanitized_request_payload, leftovers_cut = bound_payload_leftovers(
+                sanitized_request_payload,
+                prompt_stored=isinstance(sanitized_prompt, list) and bool(sanitized_prompt),
+            )
+            if leftovers_cut:
+                sanitized_metadata = {**(sanitized_metadata or {}), "payload_truncated": True}
             prompt_str = (
                 json.dumps(sanitized_prompt)
                 if isinstance(sanitized_prompt, list)
@@ -327,90 +345,64 @@ class PostgresLogStore(LogStore):
 
         _row_user_id = (sanitized_metadata or {}).get("user_id")
         _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+        # Erasure fence (issue #1421): if any account this row would identify
+        # has been hard-deleted, do not create an identifying row.
+        fence_keys = api_logs_fence_keys(
+            fence_secret=self.fence_secret,
+            user_id=_row_user_id,
+            credential_owner_id=_row_credential_owner,
+        )
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            # Erasure fence check (issue #1421): if any account this row would
-            # identify has been hard-deleted, do not create an identifying row.
-            if await protect_api_logs_insert(
+        async with self.pool.acquire() as conn:
+            fenced = await insert_api_logs_row(
                 conn,
-                fence_secret=self.fence_secret,
-                user_id=_row_user_id,
-                credential_owner_id=_row_credential_owner,
-            ):
-                logger.info(
-                    "log_request suppressed: erasure fence hit for request %s",
+                columns=_LOG_COLUMNS,
+                values=_LOG_VALUES,
+                fence_keys=fence_keys,
+                args=(
                     request_id,
-                )
-                return
-
-            await conn.execute(
-                """
-                INSERT INTO api_logs (
-                    request_id, model_id, provider,
-                    temperature, top_p, max_tokens, seed, stream,
-                    ttft_ms, latency_ms,
-                    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, request_payload,
-                    status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls,
-                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
-                )
-                VALUES (
-                    $1, $2, $3,
-                    $4, $5, $6, $7, $8,
-                    $9, $10,
-                    $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27,
-                    $28, $29, $30,
-                    $31, $32, $33,
-                    $34, $35, $36, $37
-                )
-                ON CONFLICT (request_id) DO NOTHING
-                """,
-                request_id,
-                model_id,
-                provider,
-                (params or {}).get("temperature"),
-                (params or {}).get("top_p"),
-                (params or {}).get("max_tokens"),
-                (params or {}).get("seed"),
-                (params or {}).get("stream"),
-                ttft_ms,
-                latency_ms,
-                (usage or {}).get("prompt_tokens"),
-                (usage or {}).get("completion_tokens"),
-                (usage or {}).get("reasoning_tokens"),
-                (usage or {}).get("total_tokens"),
-                (usage or {}).get("cache_read_tokens"),
-                (usage or {}).get("cache_write_tokens"),
-                cost_usd,
-                prompt_str,
-                response_str,
-                request_payload_str,
-                status_code,
-                sanitized_error,
-                (sanitized_metadata or {}).get("user_id"),
-                (sanitized_metadata or {}).get("session_id"),
-                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
-                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
-                upstream_cost_usd,
-                num_turns,
-                num_user_turns,
-                num_tool_calls,
-                last_user_msg_chars,
-                last_user_msg_entropy,
-                last_user_msg_hash,
-                served_model,
-                served_endpoint,
-                (sanitized_metadata or {}).get("agent_job_id"),
-                (sanitized_metadata or {}).get("batch_job_id"),
+                    model_id,
+                    provider,
+                    (params or {}).get("temperature"),
+                    (params or {}).get("top_p"),
+                    (params or {}).get("max_tokens"),
+                    (params or {}).get("seed"),
+                    (params or {}).get("stream"),
+                    ttft_ms,
+                    latency_ms,
+                    (usage or {}).get("prompt_tokens"),
+                    (usage or {}).get("completion_tokens"),
+                    (usage or {}).get("reasoning_tokens"),
+                    (usage or {}).get("total_tokens"),
+                    (usage or {}).get("cache_read_tokens"),
+                    (usage or {}).get("cache_write_tokens"),
+                    cost_usd,
+                    prompt_str,
+                    response_str,
+                    request_payload_str,
+                    status_code,
+                    sanitized_error,
+                    (sanitized_metadata or {}).get("user_id"),
+                    (sanitized_metadata or {}).get("session_id"),
+                    json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                    json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
+                    upstream_cost_usd,
+                    num_turns,
+                    num_user_turns,
+                    num_tool_calls,
+                    last_user_msg_chars,
+                    last_user_msg_entropy,
+                    last_user_msg_hash,
+                    served_model,
+                    served_endpoint,
+                    (sanitized_metadata or {}).get("agent_job_id"),
+                    (sanitized_metadata or {}).get("batch_job_id"),
+                    (sanitized_metadata or {}).get("api_key_id"),
+                    (sanitized_metadata or {}).get("project_id"),
+                ),
             )
+        if fenced:
+            logger.info("log_request suppressed: erasure fence hit for request %s", request_id)
 
     # -- usage / cost queries ------------------------------------------------
 
@@ -599,21 +591,35 @@ class PostgresLogStore(LogStore):
             )
         return float(row["cost_spent"]) if row else 0.0
 
-    async def get_user_usage_detail(self, user_id: str) -> dict[str, Any]:
-        """Return detailed usage stats for the user dashboard."""
-        async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(_USER_USAGE_SQL, user_id)
+    async def get_user_usage_detail(
+        self, user_id: str, windows: Iterable[str] | None = None
+    ) -> dict[str, Any]:
+        """Return detailed usage stats for the user dashboard.
 
-        def _window(window: str) -> dict[str, Any]:
-            stats: dict[str, Any] = {
-                "requests": int(row[f"{window}__requests"]) if row else 0,
-            }
-            for col in _USER_USAGE_SUMS:
-                value = row[f"{window}__{col}"] if row else 0
-                stats[col] = float(value) if col == "cost_usd" else int(value)
-            return stats
+        Read through the daily rollup (:func:`user_usage_rollup.fetch_usage_windows`):
+        the completed days it has stored plus the rest counted live, only for
+        the *windows* asked for (every one of ``today``, ``week``, ``month`` and
+        ``alltime`` when None), with the same figures summing the user's
+        ``api_logs`` rows directly gives. The answer is kept for
+        :data:`USER_USAGE_CACHE_TTL_SEC` per user and window set, and concurrent
+        calls for the same share one read.
+        """
+        asked = set(user_usage_rollup.USAGE_WINDOWS if windows is None else windows)
+        wanted = tuple(w for w in user_usage_rollup.USAGE_WINDOWS if w in asked)
+        if asked - set(wanted) or not wanted:
+            raise ValueError(f"unknown or no usage windows: {sorted(asked)}")
+        detail = await self._user_usage.get(
+            (user_id, wanted), lambda: self._read_user_usage(user_id, wanted)
+        )
+        # Callers get their own copy: the cached one answers the next caller.
+        return {window: dict(stats) for window, stats in detail.items()}
 
-        return {window: _window(window) for window in _USER_USAGE_WINDOWS}
+    async def _read_user_usage(self, user_id: str, windows: tuple[str, ...]) -> dict[str, Any]:
+        # A history read: a bounded share of the general pool and a bounded wait
+        # for it (serving.storage.pools), so it neither hangs behind slow work
+        # nor, many at once, takes the pool from the log writers.
+        async with history_read_connection(self.pool) as conn:
+            return await user_usage_rollup.fetch_usage_windows(conn, user_id, windows)
 
     async def get_batch_usage(
         self,
@@ -989,9 +995,16 @@ class PostgresLogStore(LogStore):
                     or _string_or_none(row.get("provider"))
                 )
                 failed_attempts = metadata.get("failed_attempts")
+                # The attempt's own time to first content, as RouteWise measured
+                # it (``routing.routewise.router``); the ttft_ms column runs from
+                # request entry, through a hedge's delay.
+                attempt_ttft_ms = (
+                    routewise.get("attempt_ttft_ms") if isinstance(routewise, dict) else None
+                )
             else:
                 endpoint_id = None
                 failed_attempts = None
+                attempt_ttft_ms = None
             normalized.append(
                 {
                     "timestamp": row.get("timestamp"),
@@ -999,6 +1012,7 @@ class PostgresLogStore(LogStore):
                     "provider": row.get("provider"),
                     "endpoint_id": endpoint_id,
                     "ttft_ms": row.get("ttft_ms"),
+                    "attempt_ttft_ms": attempt_ttft_ms,
                     "latency_ms": row.get("latency_ms"),
                     "status_code": row.get("status_code"),
                     "error": row.get("error"),
@@ -1044,13 +1058,16 @@ class PostgresLogStore(LogStore):
         *,
         hours: int = 1,
         on_deleted: Callable[[Any, list[dt.datetime]], Awaitable[None]] | None = None,
+        batch: bool | None = None,
     ) -> int:
         """Hard-delete error requests from ``api_logs`` in the last *hours*.
 
         The error predicate mirrors the admin Recent Requests ``outcome=errors``
         filter (``admin_list_recent_requests``) so this clears exactly the rows
         that filter surfaces — client disconnects (status 499) included, since
-        that outcome class carries them. Returns the deleted row count.
+        that outcome class carries them. *batch* narrows it as the list's
+        ``source`` filter does (see :meth:`LogStore.delete_recent_error_requests`).
+        Returns the deleted row count.
 
         The days of ``user_usage_daily`` and ``daily_activity`` the deleted rows
         were counted in are dropped in the same transaction (``invalidate_days``):
@@ -1062,26 +1079,33 @@ class PostgresLogStore(LogStore):
         import asyncpg as _asyncpg
 
         hours = max(1, hours)
+        # Constant, chosen from a bool: nothing the caller sends reaches the SQL.
+        source_sql = {
+            None: "",
+            False: "AND batch_job_id IS NULL",
+            True: "AND batch_job_id IS NOT NULL",
+        }[None if batch is None else bool(batch)]
         async with self.pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                """
+                f"""
                 WITH deleted AS (
                     DELETE FROM api_logs
                     WHERE timestamp >= NOW() - make_interval(hours => $1::int)
                       AND (error IS NOT NULL OR status_code IS NULL
                            OR status_code < 200 OR status_code >= 400)
+                      {source_sql}
                     RETURNING timestamp
                 )
                 SELECT COUNT(*) AS n,
                        COALESCE(
                            array_agg(DISTINCT (timestamp AT TIME ZONE 'UTC')::date),
-                           '{}'
+                           '{{}}'
                        ) AS days,
                        COALESCE(
                            array_agg(DISTINCT to_timestamp(
                                floor(extract(epoch FROM timestamp) / 3600) * 3600
                            )),
-                           '{}'
+                           '{{}}'
                        ) AS hours
                 FROM deleted
                 """,

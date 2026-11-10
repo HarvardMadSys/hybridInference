@@ -131,6 +131,9 @@ async def test_on_behalf_of_still_counts_the_target_identity(monkeypatch, mock_r
     store = _merged_store(cost_usd=1.0)
     store.get_user_by_id = AsyncMock(return_value=_service_target_row())
     store.get_user_cost_today = AsyncMock(return_value=2.5)
+    store.get_quota_context_for_user = AsyncMock(
+        return_value=[{"quota_daily_cost_usd": 10.0, "quota_monthly_cost_usd": None}]
+    )
 
     result = await verify_api_key(
         request=mock_request,

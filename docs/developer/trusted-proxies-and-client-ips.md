@@ -16,6 +16,7 @@ gateway:
 | Cloudflare, connecting straight to the gateway | `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1` and `TRUSTED_CLOUDFLARE_NETWORKS=<Cloudflare's published ranges>` |
 | Cloudflare, then your own proxy, then the gateway | As above, but `TRUSTED_CLOUDFLARE_NETWORKS=<your proxy's address>/32`, and only if that proxy accepts connections from Cloudflare alone and handles the header correctly |
 | Clients on a private network (such as `10.x`) connecting directly | `TRUSTED_DIRECT_CLIENT_NETWORKS=<those client ranges>` |
+| The bundled Compose file's console, and your edge in front of it | Trust the console only for the header your edge sets: see [Behind the console](#behind-the-console) |
 
 Each of these is a setting under **Network** on the admin console's
 **Configuration** tab; the `NAME=value` forms on this page are how they look
@@ -66,6 +67,40 @@ Two consequences of the server never interpreting forwarded headers:
   back to the request scheme.
 - `peer_ip` below is the genuine TCP peer again, which is what makes it usable
   as the un-forgeable anchor the rest of this page treats it as.
+
+## Behind the console
+
+In the bundled Compose file the Next.js console stands in front of the
+gateway, so every request through it reaches the gateway from the console's
+address. The console relays; it does not vouch:
+
+- It forwards `X-Forwarded-For`, `X-Real-IP`, `CF-Connecting-IP` and
+  `CF-Connecting-IPv6` exactly as it received them.
+- It does not add the address it received the request from, and it cannot
+  tell a request that came through your edge from one that did not: a Next.js
+  route handler cannot see the connection's address once the caller has sent
+  an `X-Forwarded-For`. When the caller sent none, Next fills in that address
+  on the gateway's API paths (`/v1`, `/anthropic`, `/auth`, `/user`, `/admin`
+  and the published `/internal` paths); the rewritten `/health`,
+  `/site-updates`, `/site-config` and `/public-stats` carry none at all.
+
+Naming the console in `TRUSTED_PROXIES` or `TRUSTED_CLOUDFLARE_NETWORKS`
+therefore trusts whatever reached the console, as it arrived. That is right
+only when every request reaches the console through one edge, and that edge
+sets the header the gateway reads:
+
+| In front of the console | What to trust | Why it holds |
+|---|---|---|
+| Cloudflare, as a proxy or a tunnel | `CF-Connecting-IP`: `TRUST_PROXY_HEADERS=1`, `TRUST_CLOUDFLARE_HEADERS=1`, `TRUSTED_CLOUDFLARE_NETWORKS=<the console's address>/32` | Cloudflare overwrites that header on every request |
+| A reverse proxy that writes `X-Forwarded-For` (nginx's `$proxy_add_x_forwarded_for` or `$remote_addr`) | `X-Forwarded-For`: `TRUST_PROXY_HEADERS=1`, `TRUSTED_PROXIES=<the console's address>/32` | the right-most entry, the one the gateway reads, is the one that proxy wrote |
+| Nothing: clients reach the console directly | Nothing | a client chooses every header the console relays |
+
+Keep the console's port reachable from that edge alone. The bundled Compose
+file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every
+process on the host and every container on its network able to reach it, and
+any of them can claim any address. Without such an edge, leave the console
+untrusted: every browser then resolves to `"unknown"`, with the shared sign-in
+limits described under [The "unknown" outcome](#the-unknown-outcome).
 
 ## Trust configuration
 
@@ -334,11 +369,11 @@ trustworthy forwarding provenance, `"unknown"` is more useful than
 Sign-in limits are a consumer you will notice. They count attempts per
 address — five per username from one address in 15 minutes, twenty per
 address in an hour — and every browser whose address resolves to `"unknown"`
-shares one. Behind the bundled Compose file's console proxy, without
-`TRUST_PROXY_HEADERS` and a `TRUSTED_PROXIES` entry for the console, that is
-every browser: anyone's wrong passwords then count against everyone else's
-sign-ins. Only a browser that has signed in to the account before escapes
-this, with the device cookie that gives it attempts of its own; see
+shares one. Behind the bundled Compose file's console, unless the gateway
+trusts the header your edge sets (see [Behind the console](#behind-the-console)),
+that is every browser: anyone's wrong passwords then count against everyone
+else's sign-ins. Only a browser that has signed in to the account before
+escapes this, with the device cookie that gives it attempts of its own; see
 [The first admin account](deployment.md#the-first-admin-account).
 
 Downstream consumers that key on `client_ip` (rate limits, auth-failure
@@ -419,9 +454,16 @@ provenance: `remote_ip`, `peer_ip`, `ip_source`, `x_forwarded_for`, `x_real_ip`,
 Keeping the raw headers next to the verdict is what makes a wrong address
 diagnosable: you can see which rung fired and what the alternatives said.
 
+The client chooses these values, so the line keeps a bounded copy of each: cut
+to 256 characters (the path to 512), with control characters escaped. `origin`
+and `referer` keep only the scheme, host and path: a page's address can carry a
+secret in its query, as a password-reset link does.
+
 At `DEBUG` the middleware additionally emits an `http_request_headers` line with
-every request header, truncated to 256 characters each and with `authorization`
-and `x-api-key` replaced by `***`.
+every request header, cut and escaped the same way. A credential is replaced by
+`***`: `authorization`, `proxy-authorization`, `x-api-key`, `api-key`, `cookie`,
+`x-on-behalf-of`, and any header whose name mentions a key, token, secret,
+password, session, signature, cookie or auth.
 
 ## What is persisted
 

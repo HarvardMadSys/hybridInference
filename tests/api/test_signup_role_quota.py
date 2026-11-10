@@ -63,6 +63,7 @@ def _make_op_store(*, has_active_key: bool = False) -> AsyncMock:
     store.get_key_by_account_or_user.return_value = (
         {"key_prefix": "abc123456789"} if has_active_key else None
     )
+    store.get_default_project.return_value = {"id": "proj_default", "name": "Default"}
     store.create_key = AsyncMock()
     store.revoke_key = AsyncMock()
     return store
@@ -258,4 +259,55 @@ async def test_regenerate_api_key_with_several_keys_returns_409():
         )
 
     assert exc_info.value.status_code == 409
+    op_store.create_key.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_binds_the_named_project():
+    """A named project is checked against the caller's account and bound to the key."""
+    from serving.schemas_auth import APIKeyCreateRequest
+
+    rt = _make_rt(250.0)
+    op_store = _make_op_store(has_active_key=False)
+    op_store.get_project.return_value = {"id": "proj_eval", "name": "Eval"}
+
+    with _patch_auth(), patch.object(user_routes, "get_runtime_settings_instance", return_value=rt):
+        response = await create_api_key(
+            request=_make_request(),
+            payload=APIKeyCreateRequest(name="eval-key", project_id="proj_eval"),
+            current_user=_make_current_user(role="pro"),
+            op_store=op_store,
+            db_logger=_make_db_logger(),
+        )
+
+    op_store.get_project.assert_awaited_once_with("user-123", "proj_eval")
+    op_store.get_default_project.assert_not_awaited()
+    assert op_store.create_key.call_args.kwargs["project_id"] == "proj_eval"
+    assert response.project_id == "proj_eval"
+    assert response.project_name == "Eval"
+
+
+@pytest.mark.asyncio
+async def test_create_api_key_rejects_another_accounts_project():
+    """A project the caller does not own is a 404, never a 403."""
+    from serving.schemas_auth import APIKeyCreateRequest
+
+    rt = _make_rt(250.0)
+    op_store = _make_op_store(has_active_key=False)
+    op_store.get_project.return_value = None
+
+    with (
+        _patch_auth(),
+        patch.object(user_routes, "get_runtime_settings_instance", return_value=rt),
+        pytest.raises(HTTPException) as exc_info,
+    ):
+        await create_api_key(
+            request=_make_request(),
+            payload=APIKeyCreateRequest(project_id="proj_someone_else"),
+            current_user=_make_current_user(role="pro"),
+            op_store=op_store,
+            db_logger=_make_db_logger(),
+        )
+
+    assert exc_info.value.status_code == 404
     op_store.create_key.assert_not_awaited()

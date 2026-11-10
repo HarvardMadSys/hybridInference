@@ -35,6 +35,7 @@ def test_every_settings_field_is_classified() -> None:
         for name in Settings.model_fields
         if name not in registered
         and registry.settings_env_name(name) not in registry.ENVIRONMENT_ONLY
+        and registry.settings_env_name(name) not in registry.RETIRED_SETTINGS
         and name not in RUNTIME_SETTINGS_REGISTRY
         and name not in registry.UNREGISTERED_SETTINGS_FIELDS
     ]
@@ -50,6 +51,7 @@ def test_a_field_is_classified_only_once() -> None:
         homes = [
             name in registered,
             registry.settings_env_name(name) in registry.ENVIRONMENT_ONLY,
+            registry.settings_env_name(name) in registry.RETIRED_SETTINGS,
             name in RUNTIME_SETTINGS_REGISTRY,
             name in registry.UNREGISTERED_SETTINGS_FIELDS,
         ]
@@ -284,7 +286,7 @@ def test_runtime_and_environment_only_names() -> None:
     assert registry.is_runtime_setting_name("USER_AUTH_ENABLED")
     assert registry.is_runtime_setting_name("SIGNUP_ENABLED")
     assert registry.is_environment_only("DB_HOST")
-    assert registry.is_environment_only("MODELS_CONFIG")
+    assert registry.is_retired("MODELS_CONFIG")
     assert registry.is_environment_only("REFRESH_TOKEN_COOKIE_NAME")
 
 

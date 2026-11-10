@@ -107,6 +107,8 @@ class _Upstream(BaseAdapter):
                 name=model_id,
                 provider="openai",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )
@@ -141,6 +143,8 @@ class _NativeUpstream(AnthropicAdapter):
                 name=model_id,
                 provider="anthropic",
                 base_url=f"https://{model_id}.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=_PRICING,
             )
         )
@@ -159,7 +163,7 @@ class _NativeUpstream(AnthropicAdapter):
         """Wait until the real handler has handed the upstream a call with *text*."""
         await asyncio.wait_for(self.entered.setdefault(text, asyncio.Event()).wait(), timeout=10)
 
-    async def messages(self, body, *, request_id, extra_headers=None):
+    async def messages(self, body, *, request_id, usage_sink=None, extra_headers=None):
         text = body["messages"][-1]["content"]
         self.calls.append((self._api_version(), json.loads(json.dumps(body))))
         if isinstance(text, str) and text in self.entered:
@@ -985,6 +989,55 @@ async def test_a_file_batch_is_validated_run_sealed_and_downloaded_as_its_manife
     ).status_code == 404
     again = (await client.get(f"/v1/batches/{batch_id}", headers=KEY)).json()
     assert again["output_file_id"] == final["output_file_id"]
+
+
+async def test_with_no_window_file_and_inline_batches_never_expire_and_still_run(gateway, settings):
+    settings["BATCH_COMPLETION_WINDOW_HOURS"] = "0"
+    client, model = gateway.client, gateway.model
+    uploaded = await _upload(client, _lines(model.config.id, 3))
+    from_file = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+        },
+    )
+    assert from_file.status_code == 200, from_file.text
+    assert from_file.json()["expires_at"] is None
+    assert from_file.json()["completion_window"] == "24h"
+    inline = await client.post(
+        "/v1/batches",
+        headers=KEY,
+        json={
+            "requests": [
+                {
+                    "custom_id": f"inline-{i}",
+                    "method": "POST",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": model.config.id,
+                        "messages": [{"role": "user", "content": f"q{i}"}],
+                    },
+                }
+                for i in range(2)
+            ]
+        },
+    )
+    assert inline.status_code == 200, inline.text
+    assert inline.json()["expires_at"] is None
+    assert inline.json()["completion_window"] == "none"
+
+    for batch_id, total in ((from_file.json()["id"], 3), (inline.json()["id"], 2)):
+
+        async def completed(batch_id=batch_id):
+            body = (await client.get(f"/v1/batches/{batch_id}", headers=KEY)).json()
+            return body if body["status"] == "completed" else None
+
+        final = await _until(completed, what="the batch with no window to complete")
+        assert final["request_counts"] == {"total": total, "completed": total, "failed": 0}
+        assert final["expires_at"] is None
 
 
 async def test_a_file_with_a_bad_last_line_runs_nothing(gateway):

@@ -1,5 +1,7 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
+
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
@@ -14,6 +16,7 @@ import {
   ProviderRouteOption,
   Role,
   RouteWeight,
+  RouteCapabilities,
   RuntimeModelCapabilities,
   clearRouteWeight,
   createProviderRouteModel,
@@ -30,6 +33,7 @@ import {
   setRouteWeight,
   updateProviderRoute,
   updateProviderRouteCandidate,
+  updateProviderRouteBatch,
   updateProviderRouteState,
   updateProviderRouteCapabilities,
   resetProviderRouteCapabilities,
@@ -55,7 +59,9 @@ import {
   readCapabilityDraft,
   sameCapabilities,
   sameCapabilityDraft,
+  sameEffortMap,
   type CapabilityDraft,
+  type EffortRow,
   type DeclaredChoice,
 } from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
@@ -102,6 +108,7 @@ type CreateRouteForm = {
   imageInput: DeclaredChoice;
   toolCalling: DeclaredChoice;
   otherInputModalities: string[];
+  effortRows: EffortRow[];
 };
 
 const emptyCreateForm: CreateRouteForm = {
@@ -240,6 +247,20 @@ function noProviderHelpText(routeType: ProviderRouteType) {
 
 function overrideNotApplied(route: ProviderRoute) {
   return route.source === 'override' && route.override_applied === false;
+}
+
+/** Why batch work may or may not use a route, for its badge and button. */
+function batchTitle(route: ProviderRoute): string {
+  const local = route.batch_allowed_default === true;
+  const where = local ? "one of the gateway's own servers" : "not one of the gateway's own servers";
+  if (route.batch_allowed_choice == null) {
+    return route.batch_allowed
+      ? `Batch work may use it: by default batch requests run only on the gateway's own servers, and this is ${where}.`
+      : `Batch work may not use it: by default batch requests run only on the gateway's own servers, and this is ${where}.`;
+  }
+  return route.batch_allowed
+    ? `An administrator allowed batch work on it (by default it would ${local ? '' : 'not '}take batch work: it is ${where}).`
+    : `An administrator forbade batch work on it (by default it would ${local ? '' : 'not '}take batch work: it is ${where}).`;
 }
 
 function sourceLabel(route: ProviderRoute) {
@@ -445,6 +466,31 @@ function routePrimaryUpstreamProvider(route: ProviderRoute) {
 
 // A route edit's capability change: set new values, or return to the defaults.
 type CapabilitySave = { capabilities: RuntimeModelCapabilities } | { reset_capabilities: true };
+
+// A draft with no effort rows keeps the route's default map; compare it as that.
+function withDefaultEffortMap(
+  draft: RuntimeModelCapabilities | null,
+  defaults: RouteCapabilities,
+): RuntimeModelCapabilities | null {
+  if (!draft || draft.reasoning_effort_map) return draft;
+  return { ...draft, reasoning_effort_map: defaults.reasoning_effort_map ?? null };
+}
+
+// The effort map to save with the other values. Different from the route's
+// default: the map. Equal to it: none is sent, which keeps the route's current
+// setting -- or, when a console map is in use now, null, which returns the
+// route to its default instead of keeping that map.
+function effortMapToSend(
+  draft: RuntimeModelCapabilities,
+  defaults: RouteCapabilities,
+  served: RouteCapabilities,
+): RuntimeModelCapabilities {
+  if (!sameEffortMap(draft.reasoning_effort_map, defaults.reasoning_effort_map)) return draft;
+  const { reasoning_effort_map: _default, ...rest } = draft;
+  return sameEffortMap(served.reasoning_effort_map, defaults.reasoning_effort_map)
+    ? rest
+    : { ...rest, reasoning_effort_map: null };
+}
 
 const CAPABILITY_FIELDS_INVALID = 'Fix the context length and max output to save.';
 
@@ -663,6 +709,7 @@ interface ProviderRoutesTabProps {
 const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 
 export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
+  const router = useRouter();
   const toast = useAccountToast();
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
@@ -727,6 +774,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const [resettingKey, setResettingKey] = useState<string | null>(null);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
   const [togglingKey, setTogglingKey] = useState<string | null>(null);
+  // The route whose batch choice is being saved.
+  const [batchKey, setBatchKey] = useState<string | null>(null);
   const [offloadRoutes, setOffloadRoutes] = useState<OffloadRoute[]>([]);
   const [offloadQueue, setOffloadQueue] = useState<OffloadQueueInfo | null>(null);
   const [offloadLoadError, setOffloadLoadError] = useState<string | null>(null);
@@ -1089,7 +1138,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     sameCapabilityDraft(editCapabilityDraft, capabilityDraftFrom(editCapabilityDefaults));
   const editCapabilitySave: CapabilitySave | null = (() => {
     if (!editCapabilities || !editCapabilityDefaults || !editCapabilitiesEdited) return null;
-    const draft = editCapabilityReading.payload;
+    const draft = withDefaultEffortMap(editCapabilityReading.payload, editCapabilityDefaults);
     if (
       editCapabilitiesOverridden &&
       (editCapabilityDraftIsDefaults || (draft && sameCapabilities(draft, editCapabilityDefaults)))
@@ -1099,7 +1148,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : { reset_capabilities: true };
     }
     if (!draft) return null;
-    return sameCapabilities(draft, editCapabilities) ? null : { capabilities: draft };
+    return sameCapabilities(draft, editCapabilities)
+      ? null
+      : { capabilities: effortMapToSend(draft, editCapabilityDefaults, editCapabilities) };
   })();
   const capabilityEditChanges: Change[] = (() => {
     if (!editingRoute || !editCapabilitySave || !editCapabilities || !editCapabilityDefaults) {
@@ -1127,7 +1178,12 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     editCapabilitiesEdited && !editCapabilityReading.payload && !editCapabilitySave;
   const editCapabilityShownReading = editCapabilitiesInvalid
     ? editCapabilityReading
-    : { ...editCapabilityReading, contextLengthError: null, maxOutputLengthError: null };
+    : {
+        ...editCapabilityReading,
+        contextLengthError: null,
+        maxOutputLengthError: null,
+        effortMapError: null,
+      };
   const editChangeCount = routeEditChanges.length + capabilityEditChanges.length;
 
   const restoreCapabilityDefaults = () => {
@@ -1469,8 +1525,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
         : '',
       // A starting point, not a copy: the admin confirms or changes each value
       // for this provider, and the route stores what was submitted.
+      // Never its effort map: that names the values one server accepts.
       ...(selectedRoutes[0]?.capabilities
-        ? capabilityDraftFrom(selectedRoutes[0].capabilities)
+        ? { ...capabilityDraftFrom(selectedRoutes[0].capabilities), effortRows: [] }
         : emptyCapabilityDraft),
     });
     setCreateKeyOptions([]);
@@ -1672,6 +1729,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           : await createProviderRouteCandidate(targetModel, routePayload);
         setRoutes((current) => [...current, created]);
         if (model) {
+          router.refresh();
           setSelectedModel(created.model_id);
           resetInlineDrafts();
         }
@@ -1919,6 +1977,56 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     if (failure) toast.error(`${disabled ? 'Disable' : 'Enable'} failed: ${failure}`);
   };
 
+  // Allow or forbid batch work on a route, or let it follow its locality
+  // (null). Acts on the click, as Disable does, unless it would leave the model
+  // with no route batch work may use: its queued batch requests would then fail.
+  const setRouteBatch = (route: ProviderRoute, allowed: boolean | null) => {
+    const willAllow = allowed ?? route.batch_allowed_default === true;
+    const write = async () => {
+      setBatchKey(routeKey(route));
+      try {
+        const updated = await updateProviderRouteBatch(route.model_id, route.route_id, {
+          batch_allowed: allowed,
+        });
+        updateRoute(updated);
+        toast.success(
+          allowed === null
+            ? `${route.route_id} follows its default for batch work (${
+                updated.batch_allowed ? 'allowed' : 'not allowed'
+              }).`
+            : `${allowed ? 'Allowed' : 'Stopped'} batch work on ${route.route_id}.`,
+        );
+      } catch (err) {
+        throw new Error(routeErrorMessage(err));
+      } finally {
+        setBatchKey(null);
+      }
+    };
+    const anotherBatchRoute = selectedRoutes.some(
+      (item) => routeKey(item) !== routeKey(route) && !item.removed && item.batch_allowed === true,
+    );
+    if (!willAllow && route.batch_allowed === true && !anotherBatchRoute) {
+      confirmation.request({
+        title: `Stop batch work on ${route.model_id}?`,
+        body: (
+          <p>
+            {route.route_id} is the only route of {route.model_id} batch work may use. Without it,
+            new batches for {route.model_id} are refused, and its queued batch requests fail when
+            their turn comes.
+          </p>
+        ),
+        confirmLabel: 'Stop batch work',
+        busyLabel: 'Stopping…',
+        tone: 'danger',
+        run: write,
+      });
+      return;
+    }
+    void confirmation.perform({ run: write }).then((failure) => {
+      if (failure) toast.error(`Batch change failed: ${failure}`);
+    });
+  };
+
   const restoreRoute = async (route: ProviderRoute) => {
     const failure = await confirmation.perform({
       run: async () => {
@@ -2095,7 +2203,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             className="mt-1 w-full min-w-[240px] max-w-sm"
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {loading && (
             <span className="h-4 w-4 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
           )}
@@ -2374,7 +2482,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     ) : (
                       <div className="space-y-2">
                         <div className="text-[11px] leading-4 text-gray-400">
-                          YAML {formatWeight(yamlWeight)} · Effective{' '}
+                          Catalog {formatWeight(yamlWeight)} · Effective{' '}
                           {formatWeight(effectiveWeight)}
                         </div>
                         <div>
@@ -2497,6 +2605,20 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                           Offload
                         </span>
                       )}
+                      {route.batch_allowed !== undefined &&
+                        (route.batch_allowed || route.batch_allowed_choice === false) && (
+                          <span
+                            className={
+                              route.batch_allowed
+                                ? 'inline-flex rounded bg-emerald-50 px-1.5 py-0.5 text-[11px] font-medium text-emerald-700'
+                                : 'inline-flex rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600'
+                            }
+                            title={batchTitle(route)}
+                            data-testid={`batch-badge-${route.route_id}`}
+                          >
+                            {route.batch_allowed ? 'Batch' : 'No batch'}
+                          </span>
+                        )}
                       {route.capabilities_overridden && route.capabilities_baseline && (
                         <span
                           className="inline-flex rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700"
@@ -2542,6 +2664,38 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                         >
                           Edit
                         </button>
+                        {route.batch_allowed !== undefined && (
+                          <button
+                            type="button"
+                            onClick={() => setRouteBatch(route, !route.batch_allowed)}
+                            disabled={confirmation.busy}
+                            title={batchTitle(route)}
+                            aria-label={`${route.batch_allowed ? 'Stop' : 'Allow'} batch work on ${route.route_id}`}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-900 hover:bg-gray-100 disabled:opacity-50"
+                          >
+                            {batchKey === key
+                              ? 'Saving…'
+                              : route.batch_allowed
+                                ? 'Stop batch'
+                                : 'Allow batch'}
+                          </button>
+                        )}
+                        {route.batch_allowed_choice != null && (
+                          <button
+                            type="button"
+                            onClick={() => setRouteBatch(route, null)}
+                            disabled={confirmation.busy}
+                            title={`Follow the route's locality: ${
+                              route.batch_allowed_default
+                                ? "it is one of the gateway's own servers, so batch work may use it"
+                                : "it is not one of the gateway's own servers, so batch work may not use it"
+                            }.`}
+                            aria-label={`Batch default for ${route.route_id}`}
+                            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-500 hover:bg-gray-100 disabled:opacity-50"
+                          >
+                            Batch default
+                          </button>
+                        )}
                         {canDisableRoute && (
                           <button
                             type="button"
@@ -3400,6 +3554,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                     }
                     help="The gateway applies these to requests through this route. They do not change what the upstream model can do."
                     disabled={confirmation.busy}
+                    effort={{
+                      mappable: editingRoute.reasoning_effort_mappable ?? true,
+                      published: editingRoute.reasoning_efforts_published ?? null,
+                      defaultMap: editCapabilityDefaults?.reasoning_effort_map ?? null,
+                    }}
                   />
                   {!editCapabilitiesEdited && editCapabilityReading.payload === null && (
                     <p className="mt-1 text-[11px] leading-5 text-amber-700">

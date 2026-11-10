@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import secrets
+
 import asyncpg
 import pytest
 import pytest_asyncio
 
 from serving.audit import AuditActor, AuditTarget
 from serving.storage.postgres_operational import PostgresOperationalStore
-from tests.fixtures import migrations as mig, postgres
+from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -18,19 +21,24 @@ _ADMIN = AuditActor.admin("u-transaction-admin", "192.0.2.40")
 
 @pytest_asyncio.fixture
 async def store(monkeypatch):
-    """Keep the deliberately rejecting constraint out of every other test's tables.
-
-    Use a disposable database at head schema: the frozen baseline (0001)
-    lacks the 0003 hard-delete claim-lease columns, so baseline-only schemas
-    fail on ``begin_hard_delete_user`` with UndefinedColumnError.
-    """
-    async with mig.scratch_database() as database:
-        await mig.upgrade(database)
-        pool = await postgres.create_pool(database=database, min_size=1, max_size=2)
-        try:
-            yield PostgresOperationalStore(pool), pool
-        finally:
+    """Keep the deliberately rejecting constraint out of every other test's tables."""
+    admin = await postgres.connect()
+    schema = f"audit_transaction_{secrets.token_hex(4)}"
+    pool = None
+    try:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        pool = await postgres.create_pool(
+            min_size=1, max_size=2, server_settings={"search_path": schema}
+        )
+        async with pool.acquire() as conn:
+            await prepare_current_schema(conn)
+        op_store = PostgresOperationalStore(pool)
+        yield op_store, pool
+    finally:
+        if pool is not None:
             await pool.close()
+        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.close()
 
 
 async def _reject_audit_inserts(pool) -> None:

@@ -14,11 +14,19 @@ from typing import Any
 import asyncpg
 
 from serving.storage.erasure_fence import (
-    ErasureFenceUnavailable,
-    protect_api_logs_insert,
+    api_logs_fence_keys,
+    insert_api_logs_row,
     validate_or_init_fingerprint,
 )
 from serving.storage.payload_dedup import strip_duplicated_payload_keys
+from serving.storage.pools import (
+    COMMAND_TIMEOUT_SEC,
+    GENERAL_POOL_MAX_SIZE,
+    GENERAL_POOL_MIN_SIZE,
+    REQUEST_COMMAND_TIMEOUT_SEC,
+    REQUEST_POOL_MAX_SIZE,
+    REQUEST_POOL_MIN_SIZE,
+)
 from serving.storage.utils import (
     calculate_cost,
     conversation_shape,
@@ -32,23 +40,47 @@ from serving.utils.token_utils import normalize_usage
 logger = get_logger(__name__)
 
 
+# What :meth:`DatabaseLogger.log_request` writes to ``api_logs``: the columns,
+# and their values over the statement's parameters, in the same order.
+_LOG_COLUMNS = """
+    request_id, model_id, provider,
+    temperature, top_p, max_tokens, seed, stream,
+    ttft_ms, latency_ms,
+    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
+    cache_read_tokens, cache_write_tokens, cost_usd,
+    prompt, response, request_payload,
+    status_code, error, user_id, session_id, metadata,
+    tools, upstream_cost_usd,
+    num_turns, num_user_turns, num_tool_calls,
+    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
+"""
+_LOG_VALUES = """
+    $1, $2, $3,
+    $4, $5, $6, $7, $8,
+    $9, $10,
+    $11, $12, $13, $14,
+    $15, $16, $17,
+    $18, $19, $20::jsonb,
+    $21, $22, $23, $24, $25::jsonb,
+    $26::jsonb, $27,
+    $28, $29, $30,
+    $31, $32, $33,
+    $34, $35, $36, $37
+"""
+
+
 def _string_or_none(value: object) -> str | None:
     return value if isinstance(value, str) and value else None
 
 
-def _parse_command_tag_count(command_tag: str) -> int:
-    """Extract the affected row count from an asyncpg command tag."""
-    parts = command_tag.split()
-    if not parts:
-        return 0
-    try:
-        return int(parts[-1])
-    except ValueError:
-        return 0
-
-
 class DatabaseLogger:
-    """Asynchronous PostgreSQL logger using a pooled connection."""
+    """Asynchronous PostgreSQL logger, and the owner of the gateway's two pools.
+
+    ``pool`` is the general pool everything uses; ``request_pool`` is reserved
+    for the lookups a request makes before it is served (see
+    :mod:`serving.storage.pools`).
+    """
 
     def __init__(
         self,
@@ -71,25 +103,37 @@ class DatabaseLogger:
         self.fence_secret = fence_secret
         # Use Any to avoid mypy issues when asyncpg types are unavailable.
         self.pool: Any | None = None
+        self.request_pool: Any | None = None
 
     async def initialize(self) -> None:
-        """Create the connection pool and check the erasure-fence secret.
+        """Create the connection pools and check the erasure-fence secret.
 
         The tables come from the schema migrations. With a fence secret, its
         fingerprint is checked against the pinned one (pinned on first use)
         before anything can write a log row.
         """
         self.pool = await asyncpg.create_pool(
-            **self.db_config, min_size=2, max_size=10, command_timeout=60
+            **self.db_config,
+            min_size=GENERAL_POOL_MIN_SIZE,
+            max_size=GENERAL_POOL_MAX_SIZE,
+            command_timeout=COMMAND_TIMEOUT_SEC,
         )
         try:
+            self.request_pool = await asyncpg.create_pool(
+                **self.db_config,
+                min_size=REQUEST_POOL_MIN_SIZE,
+                max_size=REQUEST_POOL_MAX_SIZE,
+                command_timeout=REQUEST_COMMAND_TIMEOUT_SEC,
+            )
             if self.fence_secret:
                 async with self.pool.acquire() as conn:
                     await validate_or_init_fingerprint(conn, secret=self.fence_secret)
-        except ErasureFenceUnavailable:
-            # A fingerprint mismatch is a durable privacy boundary, not a
-            # transient database startup error. Do not let bootstrap retry and
-            # eventually disable logging while retaining an open pool.
+        except Exception:
+            # Closed whatever went wrong. A fingerprint mismatch is a durable
+            # privacy boundary, not a transient database startup error, and
+            # bootstrap must not retry it while retaining an open pool; any
+            # other failure is retried by bootstrap with a fresh call, which
+            # would otherwise leave this one's pools open behind it.
             await self.cleanup()
             raise
 
@@ -231,103 +275,71 @@ class DatabaseLogger:
         # so both must be checked against the erasure fence (issue #1421).
         _row_user_id = (sanitized_metadata or {}).get("user_id")
         _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
+        fence_keys = api_logs_fence_keys(
+            fence_secret=self.fence_secret,
+            user_id=_row_user_id,
+            credential_owner_id=_row_credential_owner,
+        )
 
-        async with self.pool.acquire() as conn, conn.transaction():
-            # Erasure fence check (issue #1421): if any account this row would
-            # identify has been hard-deleted, do not create an identifying row.
-            _row_user_id = (sanitized_metadata or {}).get("user_id")
-            _row_credential_owner = (sanitized_metadata or {}).get("credential_owner_id")
-            if await protect_api_logs_insert(
+        async with self.pool.acquire() as conn:
+            fenced = await insert_api_logs_row(
                 conn,
-                fence_secret=self.fence_secret,
-                user_id=_row_user_id,
-                credential_owner_id=_row_credential_owner,
-            ):
-                logger.info(
-                    "log_request suppressed: erasure fence hit for request %s",
+                columns=_LOG_COLUMNS,
+                values=_LOG_VALUES,
+                fence_keys=fence_keys,
+                args=(
                     request_id,
-                )
-                return
-
-            await conn.execute(
-                """
-                INSERT INTO api_logs (
-                    request_id, model_id, provider,
-                    temperature, top_p, max_tokens, seed, stream,
-                    ttft_ms, latency_ms,
-                    prompt_tokens, completion_tokens, reasoning_tokens, total_tokens,
-                    cache_read_tokens, cache_write_tokens, cost_usd,
-                    prompt, response, request_payload,
-                    status_code, error, user_id, session_id, metadata,
-                    tools, upstream_cost_usd,
-                    num_turns, num_user_turns, num_tool_calls,
-                    last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-                    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
-                )
-                VALUES (
-                    $1, $2, $3,
-                    $4, $5, $6, $7, $8,
-                    $9, $10,
-                    $11, $12, $13, $14,
-                    $15, $16, $17,
-                    $18, $19, $20::jsonb,
-                    $21, $22, $23, $24, $25::jsonb,
-                    $26::jsonb, $27,
-                    $28, $29, $30,
-                    $31, $32, $33,
-                    $34, $35, $36, $37
-                )
-                ON CONFLICT (request_id) DO NOTHING
-                """,
-                request_id,
-                model_id,
-                provider,
-                # Request parameters
-                (params or {}).get("temperature"),
-                (params or {}).get("top_p"),
-                (params or {}).get("max_tokens"),
-                (params or {}).get("seed"),
-                (params or {}).get("stream"),
-                # Performance metrics
-                ttft_ms,
-                latency_ms,
-                # Token usage
-                (usage or {}).get("prompt_tokens"),
-                (usage or {}).get("completion_tokens"),
-                (usage or {}).get("reasoning_tokens"),
-                (usage or {}).get("total_tokens"),
-                # Cache and cost
-                (usage or {}).get("cache_read_tokens"),
-                (usage or {}).get("cache_write_tokens"),
-                cost_usd,
-                # Content
-                prompt_str,
-                response_str,
-                request_payload_str,
-                # Metadata
-                status_code,
-                sanitized_error,
-                (sanitized_metadata or {}).get("user_id"),
-                (sanitized_metadata or {}).get("session_id"),
-                json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
-                json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
-                upstream_cost_usd,
-                # Conversation shape
-                num_turns,
-                num_user_turns,
-                num_tool_calls,
-                # Newest user message fingerprint
-                last_user_msg_chars,
-                last_user_msg_entropy,
-                last_user_msg_hash,
-                # Served model/endpoint (queryable routing identity)
-                served_model,
-                served_endpoint,
-                # Cloud agent sandbox job attribution (issue #1041)
-                (sanitized_metadata or {}).get("agent_job_id"),
-                # Batch inference attribution (/v1/batches)
-                (sanitized_metadata or {}).get("batch_job_id"),
+                    model_id,
+                    provider,
+                    # Request parameters
+                    (params or {}).get("temperature"),
+                    (params or {}).get("top_p"),
+                    (params or {}).get("max_tokens"),
+                    (params or {}).get("seed"),
+                    (params or {}).get("stream"),
+                    # Performance metrics
+                    ttft_ms,
+                    latency_ms,
+                    # Token usage
+                    (usage or {}).get("prompt_tokens"),
+                    (usage or {}).get("completion_tokens"),
+                    (usage or {}).get("reasoning_tokens"),
+                    (usage or {}).get("total_tokens"),
+                    # Cache and cost
+                    (usage or {}).get("cache_read_tokens"),
+                    (usage or {}).get("cache_write_tokens"),
+                    cost_usd,
+                    # Content
+                    prompt_str,
+                    response_str,
+                    request_payload_str,
+                    # Metadata
+                    status_code,
+                    sanitized_error,
+                    (sanitized_metadata or {}).get("user_id"),
+                    (sanitized_metadata or {}).get("session_id"),
+                    json.dumps(json_safe(sanitized_metadata)) if sanitized_metadata else None,
+                    json.dumps(json_safe(sanitized_tools)) if sanitized_tools else None,
+                    upstream_cost_usd,
+                    # Conversation shape
+                    num_turns,
+                    num_user_turns,
+                    num_tool_calls,
+                    # Newest user message fingerprint
+                    last_user_msg_chars,
+                    last_user_msg_entropy,
+                    last_user_msg_hash,
+                    # Served model/endpoint (queryable routing identity)
+                    served_model,
+                    served_endpoint,
+                    # Cloud agent sandbox job attribution (issue #1041)
+                    (sanitized_metadata or {}).get("agent_job_id"),
+                    # Batch inference attribution (/v1/batches)
+                    (sanitized_metadata or {}).get("batch_job_id"),
+                ),
             )
+        if fenced:
+            logger.info("log_request suppressed: erasure fence hit for request %s", request_id)
 
     async def get_model_activity(self, window_minutes: int = 10) -> dict[str, Any]:
         """Aggregate recent real-user traffic per (model_id, provider).
@@ -432,9 +444,12 @@ class DatabaseLogger:
         return [dict(r) for r in rows]
 
     async def cleanup(self) -> None:
-        """Close the connection pool if initialized."""
-        if self.pool:
-            try:
-                await self.pool.close()  # type: ignore[attr-defined]
-            finally:
-                self.pool = None
+        """Close the connection pools that were opened."""
+        pool, request_pool = self.pool, self.request_pool
+        self.pool = self.request_pool = None
+        try:
+            if request_pool:
+                await request_pool.close()
+        finally:
+            if pool:
+                await pool.close()

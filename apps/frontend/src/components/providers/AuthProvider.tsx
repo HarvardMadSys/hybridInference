@@ -27,8 +27,12 @@ import {
 import {
   ACCOUNT_CHANGED_EVENT,
   AUTH_EXPIRED_EVENT,
+  isDocumentKeptSignedOut,
+  isSessionGone,
   markAccountChanged,
+  reloadDocument,
   setAccessToken,
+  tokenAccount,
   type AccountChangeReason,
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
@@ -202,8 +206,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           locale: me.locale ?? null,
         },
       });
-    } catch {
+    } catch (error) {
       if (revision !== accountRevision.current) return;
+      // A failure that says nothing about the session -- the gateway down or
+      // busy, a 429 -- keeps the account this tab shows, while its token still
+      // names that account (a switch has already installed the next one's).
+      const shown = userIdRef.current;
+      if (shown && shown === tokenAccount() && !isSessionGone(error)) return;
       invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
     }
@@ -262,7 +271,13 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           return;
         }
         if (message.type === 'active' && !shown && message.userId) {
-          // Signed in elsewhere while this tab had no account: take it up.
+          // Signed in elsewhere while this tab had no account: take it up --
+          // in a new document when this one runs a third-party script, which
+          // must never hold a session (see keepDocumentSignedOut).
+          if (isDocumentKeptSignedOut()) {
+            reloadDocument();
+            return;
+          }
           void refreshUser();
         }
         void refreshAccounts();
@@ -369,21 +384,20 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [agentsUrl, endAgentSessionOf, forgetPreviousAccount, refreshAccounts],
   );
 
+  // Signed out once the server has signed the account out, and not before: a
+  // refused request (the gateway restarting, a busy pool) leaves its session
+  // and cookie in place, so the tab goes on showing the account -- its pages,
+  // its Agent session, its toasts -- and the error reaches the caller, which
+  // offers to try again.
   const logout = useCallback(async () => {
     const userId = userIdRef.current;
-    try {
-      await logoutApi();
-    } finally {
-      await signedOut(userId ? [userId] : null);
-    }
+    await logoutApi();
+    await signedOut(userId ? [userId] : null);
   }, [signedOut]);
 
   const logoutAll = useCallback(async () => {
-    try {
-      await logoutAllApi();
-    } finally {
-      await signedOut(null);
-    }
+    await logoutAllApi();
+    await signedOut(null);
   }, [signedOut]);
 
   const deleteAccount = useCallback(

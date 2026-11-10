@@ -1,6 +1,7 @@
 'use client';
 
 import { Fragment, useCallback, useEffect, useRef, useState } from 'react';
+import Link from 'next/link';
 
 import {
   AdminEmptyState,
@@ -19,6 +20,7 @@ import {
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
 import { BatchRequestsPanel } from '@/components/features/admin/BatchRequestsPanel';
+import { BATCH_REQUESTS_PATH } from '@/components/features/admin/batchRoutes';
 import {
   compactNumber,
   durationText,
@@ -560,6 +562,14 @@ export function BatchesTab() {
                         >
                           {openRequests === batch.id ? 'Hide prompts' : 'Prompts'}
                         </button>
+                        <Link
+                          href={`${BATCH_REQUESTS_PATH}?batch=${encodeURIComponent(batch.id)}`}
+                          prefetch={false}
+                          className={ROW_ACTION}
+                          title="This batch's requests in the request log: each attempt with its route, latency, tokens and cost"
+                        >
+                          Requests
+                        </Link>
                         {isCancellable(batch) && (
                           <button
                             type="button"

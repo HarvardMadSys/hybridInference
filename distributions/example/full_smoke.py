@@ -603,24 +603,47 @@ def _check_current_admin(
     return user_id
 
 
-def _active_key(data: Any) -> tuple[str, str] | None:
+def _active_key(
+    base_url: str, access_token: str, password: str, data: Any
+) -> tuple[str, str] | None:
+    """The account's active key in full; the listing masks it, the password reveals it.
+
+    A release from before keys were masked lists the key in full and has no
+    ``revealable`` field. The restore drill runs this smoke against that previous
+    image, so a full key without the field is used as listed; a full key next to
+    the field means this release leaked it.
+    """
     if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
         raise SmokeError("API key listing returned an invalid response")
     active = [item for item in data["keys"] if item.get("status") == "active"]
     if not active:
         return None
-    key = active[0].get("api_key")
     prefix = active[0].get("key_prefix")
-    if not isinstance(key, str) or not key:
-        raise SmokeError("the active API key could not be decrypted")
     if not isinstance(prefix, str) or not prefix:
         raise SmokeError("the active API key has no prefix")
+    listed_key = active[0].get("api_key")
+    if listed_key is not None:
+        if "revealable" in active[0]:
+            raise SmokeError("the API key listing returned a full key")
+        if not isinstance(listed_key, str) or not listed_key:
+            raise SmokeError("the active API key could not be decrypted")
+        return listed_key, prefix
+    _, revealed = _request_json(
+        base_url,
+        f"/user/api-keys/{prefix}/reveal",
+        method="POST",
+        payload={"password": password},
+        bearer=access_token,
+    )
+    key = revealed.get("api_key") if isinstance(revealed, dict) else None
+    if not isinstance(key, str) or not key:
+        raise SmokeError("the active API key could not be revealed")
     return key, prefix
 
 
-def _get_or_create_key(base_url: str, access_token: str) -> tuple[str, str]:
+def _get_or_create_key(base_url: str, access_token: str, password: str) -> tuple[str, str]:
     _, listed = _request_json(base_url, "/user/api-keys/all", bearer=access_token)
-    existing = _active_key(listed)
+    existing = _active_key(base_url, access_token, password, listed)
     if existing is not None:
         return existing
 
@@ -774,7 +797,7 @@ def _prepare(
         access_token,
         expected_user_id=user_id,
     )
-    api_key, key_prefix = _get_or_create_key(base_url, access_token)
+    api_key, key_prefix = _get_or_create_key(base_url, access_token, password)
     _check_admin_surfaces(base_url, access_token)
     _check_non_admin_account(base_url, expect_existing=expect_existing)
     prior_request_ids = _history_request_ids(base_url, access_token)
@@ -841,7 +864,7 @@ def _verify_after_recreate(
         "/user/api-keys/all",
         bearer=state.access_token,
     )
-    persisted = _active_key(listed)
+    persisted = _active_key(base_url, state.access_token, password, listed)
     if persisted is None:
         raise SmokeError("the original API key disappeared after backend recreate")
     persisted_key, persisted_prefix = persisted
@@ -1039,6 +1062,8 @@ def _configure_upstream(base_url: str, password: str, deadline: float) -> None:
     """Store this environment's EXAMPLE_UPSTREAM_* values as the admin console does.
 
     The values take effect when the backend next starts; the caller restarts it.
+    They are security-relevant settings (they say where a key is sent), so the
+    change carries the administrator's password, as the console asks for it.
     """
     values: dict[str, str] = {}
     for name in UPSTREAM_SETTINGS:
@@ -1056,7 +1081,7 @@ def _configure_upstream(base_url: str, password: str, deadline: float) -> None:
         base_url,
         "/admin/config",
         method="PATCH",
-        payload={"values": values},
+        payload={"values": values, "password": password},
         bearer=access_token,
     )
     entries = config.get("entries") if isinstance(config, dict) else None

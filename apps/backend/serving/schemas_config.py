@@ -69,6 +69,11 @@ class ConfigEntryItem(BaseModel):
         None, description="Why the stored value could not be applied; null without one"
     )
     used_by: list[str] = Field(default_factory=list, description="Model ids that reference it")
+    security_relevant: bool = Field(
+        False,
+        description="Changing or resetting it needs the signed-in administrator's password, "
+        "and the admin token cannot; a configuration restore lists it for confirmation",
+    )
     updated_at: datetime | None = None
     updated_by: str | None = None
     group: str | None = Field(
@@ -143,6 +148,8 @@ class LiveGroupStatus(BaseModel):
     """A live configuration group across every registered process."""
 
     name: str
+    source: str | None = None
+    version: ConfigSourceVersion | None = None
     keys: list[str]
     schema_version: int
     contract: dict[str, Any] | None = Field(
@@ -194,6 +201,21 @@ class UpdateConfigRequest(BaseModel):
         "they already have a stored row (a key absent from values keeps its value); built-in "
         "settings keep their own flag. A custom key named like a credential is secret anyway",
     )
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed when values change a "
+        "security-relevant setting (security_relevant on its entry)",
+    )
+
+
+class ResetConfigRequest(BaseModel):
+    """What ``DELETE /admin/config/{key}`` may carry: the password a guarded reset needs."""
+
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed to reset a "
+        "security-relevant setting",
+    )
 
 
 class RestartResponse(BaseModel):
@@ -207,19 +229,32 @@ class RestartResponse(BaseModel):
 
 
 class ConfigBackupAppConfigRow(BaseModel):
-    """One stored ``app_config`` row in a configuration backup."""
+    """One stored ``app_config`` row in a configuration backup.
+
+    A secret's ``value`` is ``null`` unless the backup was taken with secret
+    values; restoring a row without one keeps the value this deployment has.
+    """
 
     key: str
-    value: str = ""
+    value: str | None = Field(
+        "", description="The stored value; null for a secret in a backup without secret values"
+    )
     secret: bool = False
     source: Literal["admin", "setup", "env_import", "generated", "reset"] = "admin"
+    is_set: bool | None = Field(
+        None, description="Whether a value is stored; absent from backups made before it existed"
+    )
 
 
 class ConfigBackupSiteSetting(BaseModel):
-    """One admin-editable ``site_settings`` row in a configuration backup."""
+    """One admin-editable ``site_settings`` row in a configuration backup.
+
+    The one secret among them, the usage-insights API key, has a ``null``
+    ``value`` unless the backup was taken with secret values.
+    """
 
     key: str
-    value: str
+    value: str | None
     value_type: str = "str"
 
 
@@ -234,11 +269,15 @@ class ConfigBackupProviderDefinition(BaseModel):
 
 
 class ConfigBackupProviderKey(BaseModel):
-    """One dynamic provider API key (with plaintext secret) in a configuration backup."""
+    """One dynamic provider API key in a configuration backup.
+
+    ``api_key`` is the plaintext key only in a backup taken with secret values;
+    restoring a key without one keeps the value this deployment has for its id.
+    """
 
     id: str
     provider: str
-    api_key: str
+    api_key: str | None = None
     label: str | None = None
     status: Literal["active", "disabled"] = "active"
     min_role: str = "free"
@@ -268,6 +307,18 @@ class ConfigBackupRouteState(BaseModel):
     route_id: str
     disabled: bool = False
     removed: bool = False
+
+
+class ConfigBackupRouteBatchPolicy(BaseModel):
+    """Whether batch work may use one provider route, in a configuration backup.
+
+    Only routes with an administrator's choice are listed; the others follow
+    their locality.
+    """
+
+    model_id: str
+    route_id: str
+    batch_allowed: bool
 
 
 class ConfigBackupRouteCandidate(BaseModel):
@@ -340,6 +391,12 @@ class ConfigBackupPayload(BaseModel):
 
     schema_version: int = Field(1, description="Backup schema version")
     exported_at: datetime | None = Field(None, description="UTC timestamp when the backup was made")
+    secrets_included: bool = Field(
+        True,
+        description="Whether the bundle carries secret values. False for the default backup, "
+        "where each secret has only its name and is_set; true for one taken with secret values "
+        "and for bundles made before this field existed",
+    )
     app_config: list[ConfigBackupAppConfigRow] = Field(default_factory=list)
     site_settings: list[ConfigBackupSiteSetting] = Field(default_factory=list)
     provider_definitions: list[ConfigBackupProviderDefinition] = Field(default_factory=list)
@@ -348,6 +405,7 @@ class ConfigBackupPayload(BaseModel):
     provider_env_key_min_roles: list[ConfigBackupEnvKeyMinRole] = Field(default_factory=list)
     disabled_providers: list[str] = Field(default_factory=list)
     provider_route_states: list[ConfigBackupRouteState] = Field(default_factory=list)
+    provider_route_batch_policies: list[ConfigBackupRouteBatchPolicy] = Field(default_factory=list)
     provider_route_candidates: list[ConfigBackupRouteCandidate] = Field(default_factory=list)
     provider_route_configs: list[ConfigBackupRouteConfig] = Field(default_factory=list)
     provider_route_capabilities: list[ConfigBackupRouteCapability] = Field(default_factory=list)
@@ -358,6 +416,46 @@ class ConfigBackupPayload(BaseModel):
     signup_allowed_domains: list[ConfigBackupSignupDomain] = Field(default_factory=list)
 
 
+class ConfigBackupExportRequest(BaseModel):
+    """What ``POST /admin/config/backup`` exports."""
+
+    include_secrets: bool = Field(
+        False, description="Put secret values in the bundle; needs the administrator's password"
+    )
+    password: str | None = Field(
+        None, description="The signed-in administrator's password, to include secret values"
+    )
+
+
+class ConfigRestorePreview(BaseModel):
+    """What restoring a bundle would do, before anything is written."""
+
+    security_changes: list[str] = Field(
+        default_factory=list,
+        description="Security-relevant changes the restore would make, as 'domain:name' labels. "
+        "Restoring them needs confirm_security_changes set to exactly this list, and the "
+        "administrator's password",
+    )
+    secrets_not_restored: list[str] = Field(
+        default_factory=list,
+        description="Secrets the bundle withholds that this deployment has no value for; "
+        "restoring leaves them unset",
+    )
+
+
+class ConfigRestoreRequest(ConfigBackupPayload):
+    """A bundle to restore, and the confirmation a security-relevant restore needs."""
+
+    confirm_security_changes: list[str] | None = Field(
+        None,
+        description="The security_changes the administrator confirmed, from a preview of this "
+        "bundle; refused with 409 unless it matches what the restore would change",
+    )
+    password: str | None = Field(
+        None, description="The signed-in administrator's password, for security changes"
+    )
+
+
 class ConfigRestoreResponse(BaseModel):
     """Result of restoring a configuration backup."""
 
@@ -365,4 +463,11 @@ class ConfigRestoreResponse(BaseModel):
     immutable_keys_preserved: list[str] = Field(
         default_factory=list,
         description="Immutable keys whose existing target values were kept",
+    )
+    security_changes: list[str] = Field(
+        default_factory=list, description="The security-relevant changes the restore made"
+    )
+    secrets_not_restored: list[str] = Field(
+        default_factory=list,
+        description="Secrets the bundle withheld that this deployment had no value for",
     )

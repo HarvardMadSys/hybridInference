@@ -376,6 +376,20 @@ _SGLANG_UNDECODABLE_IMAGE = (
 )
 
 
+class _BodyStream:
+    """``ClientResponse.content`` for a body already in hand."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self.read_bytes = 0
+
+    async def iter_chunked(self, n: int):
+        for start in range(0, len(self._body), n):
+            chunk = self._body[start : start + n]
+            self.read_bytes += len(chunk)
+            yield chunk
+
+
 class _ErrorResp:
     """An upstream error response as ``_upstream_status_error`` reads it."""
 
@@ -385,10 +399,9 @@ class _ErrorResp:
         self.request_info = None
         self.history = ()
         self.headers = {"Content-Type": "application/json"}
-        self._body = body
-
-    async def text(self) -> str:
-        return self._body
+        self.charset = None
+        self.content_length = len(body.encode())
+        self.content = _BodyStream(body.encode())
 
 
 @pytest.mark.unit
@@ -492,4 +505,43 @@ def test_other_errors_are_not_model_queued(status, body):
 
     assert not isinstance(
         _upstream_status_error(_ErrorResp(status, body), body), UpstreamModelQueued
+    )
+
+
+_UPSTREAM_TIMEOUT_BODY = (
+    '{"error": {"message": "the backend did not answer within the proxy\'s timeout",'
+    ' "type": "proxy_error", "code": "upstream_timeout"}}'
+)
+
+
+@pytest.mark.unit
+def test_a_proxy_upstream_timeout_504_is_raised_as_its_own_type():
+    from serving.exceptions import UpstreamRequestTimedOut
+    from serving.http import _upstream_status_error
+
+    resp = _ErrorResp(504, _UPSTREAM_TIMEOUT_BODY, reason="Gateway Timeout")
+
+    error = _upstream_status_error(resp, _UPSTREAM_TIMEOUT_BODY)
+
+    assert isinstance(error, UpstreamRequestTimedOut)
+    assert error.status == 504
+    assert error.error_body == _UPSTREAM_TIMEOUT_BODY
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [
+        # Only a 504 says the proxy timed out; the same body on another status is an error.
+        (502, _UPSTREAM_TIMEOUT_BODY),
+        (504, '{"error": {"message": "gateway timeout", "code": "gateway_timeout"}}'),
+        (504, "Gateway Timeout"),
+    ],
+)
+def test_other_errors_are_not_upstream_timeouts(status, body):
+    from serving.exceptions import UpstreamRequestTimedOut
+    from serving.http import _upstream_status_error
+
+    assert not isinstance(
+        _upstream_status_error(_ErrorResp(status, body), body), UpstreamRequestTimedOut
     )

@@ -83,7 +83,7 @@ def test_explicit_reset_timestamp_in_utc_however_spelled():
 
 def test_weekly_window_without_timestamp():
     detail = (
-        "you (1a1a11a) have reached your weekly usage limit, upgrade for higher "
+        "you (example-user) have reached your weekly usage limit, upgrade for higher "
         "limits: or add extra usage: (ref: 514ea676-b534-4bb3-92ee-6f2198bb645d)"
     )
     limit = detect_usage_limit(detail, now=NOW)

@@ -17,7 +17,7 @@ import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
  * browser; given this one, it can say so and offer to switch rather than
  * silently showing another account's work.
  */
-export function agentsEntryUrl(agentsUrl: string, userId: string | undefined): string {
+function agentsEntryUrl(agentsUrl: string, userId: string | undefined): string {
   if (!userId) return agentsUrl;
   const separator = agentsUrl.includes('?') ? '&' : '?';
   return `${agentsUrl}${separator}gateway_account=${encodeURIComponent(userId)}`;
@@ -73,6 +73,7 @@ export function ConsoleNav() {
       ? [{ href: agentsEntryUrl(agentsUrl, state.user?.id), label: 'Agents', external: true }]
       : []),
     { href: '/dashboard/keys', label: t('console.nav.keys', 'API Keys') },
+    { href: '/dashboard/projects', label: t('console.nav.projects', 'Projects') },
     { href: '/dashboard/requests', label: t('console.nav.requests', 'Requests') },
     { href: '/dashboard/models', label: t('console.nav.models', 'Models') },
     ...(showBatches
@@ -88,12 +89,14 @@ export function ConsoleNav() {
     : [];
 
   // On a phone the row is wider than the screen: bring the current page into
-  // view on first load and after every navigation.
+  // view on first load, after every navigation, and when an entry that loads
+  // later (Batches, after its capabilities arrive) moves it along the row.
+  const entries = [...pages, ...adminPages].map((item) => item.href).join(' ');
   useEffect(() => {
     const scroller = scrollerRef.current;
     const active = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
     if (scroller && active) revealHorizontally(scroller, active);
-  }, [pathname]);
+  }, [pathname, entries]);
 
   function renderItem(item: NavItem) {
     if (item.external) {

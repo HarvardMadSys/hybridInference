@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tests.fixtures.audit import ADMIN_ACTOR
@@ -527,3 +529,219 @@ def test_export_is_audited_before_any_row_is_streamed():
     assert audit_kwargs["actor"] is ADMIN_ACTOR
     assert audit_kwargs.get("target") is None
     assert audit_kwargs.get("admin_ip") is None
+
+
+def _tracking_db(rows_per_batch: list[list[dict]]):
+    """A mock db_logger whose pool records how many connections are out at a time."""
+    mock_db = MagicMock()
+    mock_db.log_admin_action = AsyncMock()
+    fetch_results = iter(rows_per_batch)
+    state = {"held": 0, "acquired": 0}
+
+    mock_conn = AsyncMock()
+    mock_conn.fetch = AsyncMock(side_effect=lambda *a, **kw: next(fetch_results, []))
+
+    class _Acquire:
+        async def __aenter__(self):
+            state["held"] += 1
+            state["acquired"] += 1
+            return mock_conn
+
+        async def __aexit__(self, *exc):
+            state["held"] -= 1
+            return False
+
+    mock_db.pool = MagicMock()
+    mock_db.pool.acquire = MagicMock(side_effect=lambda *a, **kw: _Acquire())
+    return mock_db, state
+
+
+async def _export(db):
+    from serving.servers.routers.admin import export as export_routes
+
+    return await export_routes.admin_export_requests(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC),
+        end_time=datetime(2024, 12, 31, tzinfo=UTC),
+        user_id=None,
+        session_id=None,
+        model_id=None,
+        errors_only=False,
+        outcome=None,
+        request_type=None,
+        include_content=False,
+        actor=ADMIN_ACTOR,
+        db_logger=db,
+    )
+
+
+def test_export_holds_no_connection_while_the_client_reads():
+    """A connection is taken for each page's query and given back before the page is sent.
+
+    The export used to hold one pooled connection for the whole download, so a
+    slow client kept it out of the pool for as long as it took to read.
+    """
+    import asyncio
+
+    full_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500)]
+    partial_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500, 502)]
+    db, state = _tracking_db([full_batch, partial_batch])
+
+    async def held_while_sending() -> list[int]:
+        response = await _export(db)
+        return [state["held"] async for _chunk in response.body_iterator]
+
+    assert asyncio.run(held_while_sending()) == [0, 0]
+    assert state["acquired"] == 2  # one per page
+    assert state["held"] == 0
+
+
+def test_export_sends_a_page_per_chunk_with_the_same_lines():
+    """Rows are batched per page; the bytes are what one line per row always was."""
+    import asyncio
+
+    full_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500)]
+    partial_batch = [_make_mock_row(request_id=f"req-{i}") for i in range(500, 502)]
+    db, _ = _tracking_db([full_batch, partial_batch])
+
+    async def chunks_of_export() -> list[str]:
+        response = await _export(db)
+        return [chunk async for chunk in response.body_iterator]
+
+    chunks = asyncio.run(chunks_of_export())
+
+    assert len(chunks) == 2
+    assert [chunk.count("\n") for chunk in chunks] == [500, 2]
+    lines = "".join(chunks).split("\n")
+    assert lines[-1] == ""
+    assert [json.loads(line)["request_id"] for line in lines[:-1]] == [
+        f"req-{i}" for i in range(502)
+    ]
+
+
+# --- the export never builds a page on the event loop (review M2) -----------
+
+
+def _old_line(row: dict, include_content: bool) -> str:
+    """The line the export wrote before it was written in pieces."""
+    from serving.servers.routers.admin.export import _decode_jsonish
+
+    record: dict[str, Any] = {
+        "request_id": row["request_id"],
+        "timestamp": row["timestamp"].isoformat(),
+        "user_id": row["user_id"],
+        "user_name": row["user_name"],
+        "user_email": row["user_email"],
+        "model_id": row["model_id"],
+        "provider": row["provider"],
+        "ttft_ms": row["ttft_ms"],
+        "latency_ms": row["latency_ms"],
+        "prompt_tokens": row["prompt_tokens"],
+        "completion_tokens": row["completion_tokens"],
+        "reasoning_tokens": row["reasoning_tokens"],
+        "cache_read_tokens": row["cache_read_tokens"],
+        "cache_write_tokens": row["cache_write_tokens"],
+        "total_tokens": row["total_tokens"],
+        "cost_usd": (str(row["cost_usd"]) if row["cost_usd"] is not None else None),
+        "status_code": row["status_code"],
+        "error": row["error"],
+        "batch_job_id": row.get("batch_job_id"),
+    }
+    if include_content:
+        record["prompt"] = row["prompt"]
+        record["response"] = row["response"]
+        record["tools"] = _decode_jsonish(row["tools"])
+        record["metadata"] = _decode_jsonish(row["metadata"])
+        record["request_payload"] = _decode_jsonish(row["request_payload"])
+    return json.dumps(record) + "\n"
+
+
+def test_a_line_written_in_pieces_is_the_line_written_whole():
+    from serving.servers.routers.admin import export
+
+    slice_chars = export._FIELD_SLICE_CHARS
+    # Quotes, backslashes, control characters, an astral emoji and accents,
+    # with a slice boundary falling between a surrogate pair's halves in the
+    # escaped form and inside a run of multi-byte characters.
+    tricky = 'say "hi"\\\\ \x00\x1f\t\n café \U0001f600 \ud800'
+    long_text = ("a" * (slice_chars - 1)) + "\U0001f600" + ("é" * slice_chars) + '"end"'
+    rows = [
+        _make_mock_row(),
+        _make_mock_row(
+            prompt=tricky,
+            response=long_text,
+            tools='[{"type": "function", "function": {"name": "f\\u00e9"}}]',
+            metadata={"user_agent": "x", "n": 1.5},
+            request_payload="{not json",
+            error="boom",
+            cost_usd=None,
+        ),
+        _make_mock_row(prompt=None, response=long_text * 2, tools=None),
+    ]
+    for row in rows:
+        for include_content in (False, True):
+            written = "".join(export._record_pieces(row, include_content=include_content))
+            assert written == _old_line(row, include_content)
+            assert json.loads(written) == json.loads(_old_line(row, include_content))
+
+
+class _Pool:
+    def __init__(self, pages: list[list[dict]]) -> None:
+        self.pages = pages
+        conn = MagicMock()
+        conn.fetch = AsyncMock(side_effect=lambda *a, **k: self.pages.pop(0) if self.pages else [])
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=conn)
+        ctx.__aexit__ = AsyncMock(return_value=None)
+        self.acquire = MagicMock(return_value=ctx)
+
+
+@pytest.mark.asyncio
+async def test_a_page_goes_out_in_bounded_chunks_with_the_loop_given_back(monkeypatch):
+    """A page of long prompts was one 35-126 MB string, built in one 114-375 ms step."""
+    import asyncio
+
+    from serving.servers.routers.admin import export
+
+    monkeypatch.setattr(export, "log_admin_action", AsyncMock())
+    prompt = json.dumps([{"role": "user", "content": "x" * 100_000}])
+    rows = [_make_mock_row(request_id=f"req-{i:03d}", prompt=prompt) for i in range(40)]
+    db = MagicMock()
+    db.pool = _Pool([rows])
+
+    response = await export.admin_export_requests(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC),
+        end_time=datetime(2024, 12, 31, tzinfo=UTC),
+        include_content=True,
+        actor=ADMIN_ACTOR,
+        db_logger=db,
+    )
+
+    ticks = 0
+    done = False
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while not done:
+            ticks += 1
+            await asyncio.sleep(0)
+
+    task = asyncio.create_task(ticker())
+    await asyncio.sleep(0)
+    chunks: list[str] = []
+    turns_before: list[int] = []
+    # Read as fast as possible, never awaiting anything of our own.
+    async for chunk in response.body_iterator:
+        turns_before.append(ticks)
+        chunks.append(chunk)
+    done = True
+    await task
+
+    body = "".join(chunks)
+    lines = body.splitlines()
+    assert [json.loads(line)["request_id"] for line in lines] == [f"req-{i:03d}" for i in range(40)]
+    assert body == "".join(_old_line(row, True) for row in rows)
+    assert len(chunks) >= 4
+    # No chunk is much past the target: one piece at most beyond it.
+    assert max(len(chunk) for chunk in chunks) < export._CHUNK_CHARS + export._FIELD_SLICE_CHARS * 2
+    # Between one chunk and the next, other tasks ran.
+    assert all(later > earlier for earlier, later in itertools.pairwise(turns_before))

@@ -1269,3 +1269,12 @@ msgstr "**端口已被占用**——在 `.env` 里覆盖 `BACKEND_PORT`、`FRONT
 #~ " of the proxy settings above to "
 #~ "set for your setup."
 #~ msgstr "按你的部署方式该设上面哪几项代理设置，见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)。"
+
+msgid "Fill in required deployment settings. The gateway does not install sample models or assume a provider account. Missing configuration shows **Ask admin to configure**."
+msgstr "填写必要的部署设置。网关不会安装示例模型，也不会假定供应商账户。缺少配置时显示 **Ask admin to configure**。"
+
+msgid "Finish setup, then add a provider/key and create a model in **Admin → Routing**. Verify the route before making the model available to users. For advanced metadata and aliases, edit the model catalog in **Admin → Settings → Models**. Follow **Restart required** markers when saving a catalog or credential."
+msgstr "完成首次设置，然后在 **Admin → Routing** 中添加供应商、密钥并创建模型。向用户开放前先验证路由。如需高级元数据和别名，在 **Admin → Settings → Models** 中编辑模型目录。保存目录或凭据时，遵循 **Restart required** 标记。"
+
+msgid "Application configuration lives in PostgreSQL and is edited in Admin. Model, routing, alert, site and branding documents have no runtime file fallback. See [Configuration](configuration.md) for document formats and explicit legacy imports. Deployment overlays may still provide infrastructure, assets and trusted extension code."
+msgstr "应用配置位于 PostgreSQL 中，并在 Admin 中编辑。模型、路由、告警、站点和品牌文档没有运行时文件回退。文档格式和显式旧配置导入见[配置](configuration.md)。部署 overlay 仍可提供基础设施、资源和可信扩展代码。"

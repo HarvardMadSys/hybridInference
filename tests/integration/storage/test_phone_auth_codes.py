@@ -10,7 +10,8 @@ import pytest
 import pytest_asyncio
 
 from serving.storage.postgres_operational import PostgresOperationalStore
-from tests.fixtures import migrations as mig, postgres
+from tests.fixtures import postgres
+from tests.fixtures.migrations import prepare_current_schema
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -29,19 +30,24 @@ LIMITS = {
 
 @pytest_asyncio.fixture
 async def phone_store():
-    """Use a disposable database at head schema, never another test's rows.
-
-    The frozen baseline (0001) lacks the 0003 hard-delete claim-lease columns
-    that ``begin_hard_delete_user`` selects, so a baseline-only schema fails
-    with UndefinedColumnError. Run the real migrations to head instead.
-    """
-    async with mig.scratch_database() as database:
-        await mig.upgrade(database)
-        pool = await postgres.create_pool(database=database, min_size=2, max_size=12)
-        try:
-            yield PostgresOperationalStore(pool)
-        finally:
+    """Use a disposable schema, never another test's or deployment's rows."""
+    admin = await postgres.connect(timeout=2)
+    schema = f"phone_auth_test_{uuid.uuid4().hex}"
+    pool = None
+    try:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        pool = await postgres.create_pool(
+            min_size=2, max_size=12, server_settings={"search_path": schema}
+        )
+        async with pool.acquire() as conn:
+            await prepare_current_schema(conn)
+        store = PostgresOperationalStore(pool)
+        yield store
+    finally:
+        if pool is not None:
             await pool.close()
+        await admin.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+        await admin.close()
 
 
 async def _reserve(store, *, phone=PHONE, purpose="login", user_id=None, **overrides):
@@ -173,6 +179,8 @@ async def test_phone_uniqueness_and_no_synthetic_email_under_signup_race(phone_s
     assert user["email"] is None
     assert user["password_hash"] is None
     assert user["phone_verified"] is True
+    projects = await phone_store.list_projects(user["id"])
+    assert [project["id"] for project in projects] == [f"proj_d_{user['id']}"]
 
 
 async def test_binding_preserves_uniqueness_existing_phone_and_account_status(phone_store):

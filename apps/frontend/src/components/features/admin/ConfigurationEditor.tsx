@@ -9,6 +9,7 @@ import {
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
+import { ReauthPassword } from '@/components/features/admin/confirm/ReauthPassword';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
@@ -74,10 +75,12 @@ import {
   exportConfigBackup,
   getConfig,
   patchConfig,
+  previewConfigRestore,
   resetConfigKey,
   restoreConfigBackup,
   testAlertNotification,
   type ConfigBackupPayload,
+  type ConfigRestorePreview,
   type ConfigEntry,
   type ConfigResponse,
   type ConfigScalar,
@@ -92,7 +95,8 @@ function plural(count: number, one: string, many = `${one}s`): string {
 
 function downloadBackupJson(payload: ConfigBackupPayload): void {
   const datePart = (payload.exported_at ?? new Date().toISOString()).slice(0, 10);
-  const filename = `hybrid-inference-config-backup-${datePart}.json`;
+  const kind = payload.secrets_included ? '-with-secrets' : '';
+  const filename = `hybrid-inference-config-backup${kind}-${datePart}.json`;
   const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
     type: 'application/json',
   });
@@ -109,6 +113,24 @@ function downloadBackupJson(payload: ConfigBackupPayload): void {
   }
 }
 
+/** One `domain:name` label from the backup API, as a dialog lists it. */
+function backupItem(label: string): string {
+  const at = label.indexOf(':');
+  if (at < 0) return label;
+  const domain = label.slice(0, at).replace(/_/g, ' ');
+  return `${label.slice(at + 1)} (${domain})`;
+}
+
+function BackupItemList({ items }: { items: readonly string[] }) {
+  return (
+    <ul className="list-disc space-y-0.5 pl-5 font-mono text-[12px] [overflow-wrap:anywhere]">
+      {items.map((item) => (
+        <li key={item}>{backupItem(item)}</li>
+      ))}
+    </ul>
+  );
+}
+
 /** A category's validated changes, as its save sends them. */
 interface CategorySave {
   group: ConfigGroup;
@@ -122,6 +144,19 @@ interface CategorySave {
    * starts: a read that completes while it is in flight cannot move it.
    */
   expectedVersion: ConfigSourceVersion | null;
+  /**
+   * The keys among `values` and `resets` that only the administrator's
+   * password may change, and the password given for them.
+   */
+  guarded?: readonly string[];
+  password?: string;
+}
+
+/** The keys among `keys` whose change needs the administrator's password. */
+function securityRelevantKeys(group: ConfigGroup, keys: readonly string[]): string[] {
+  return keys.filter(
+    (key) => group.entries.find((entry) => entry.key === key)?.security_relevant === true,
+  );
 }
 
 /**
@@ -209,8 +244,12 @@ export function useConfigurationEditor({
   const [testingAlert, setTestingAlert] = useState(false);
   const alertTestInFlight = useRef(false);
   const [alertTestResult, setAlertTestResult] = useState<AlertTestResult | null>(null);
-  // Restoring a backup overwrites everything, so it is confirmed; a download is not.
+  // Restoring a backup overwrites everything, so it is confirmed; so is a
+  // download with secret values, which asks for the password. A plain one is not.
   const backupConfirmation = useConfirmAction();
+  const backupPassword = useRef('');
+  // A save that changes a security-relevant setting asks for it the same way.
+  const settingsPassword = useRef('');
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -416,7 +455,7 @@ export function useConfigurationEditor({
     for (const key of resets) delete values[key];
     const secrets = groupKeys(group, pendingSecrets);
     if (Object.keys(values).length + secrets.length + resets.length === 0) return;
-    void commitSave({
+    const save: CategorySave = {
       group,
       values,
       secrets,
@@ -424,10 +463,50 @@ export function useConfigurationEditor({
       // Taken now, from the version this category's changes were made on: a read
       // that completes while the save is in flight cannot move it.
       expectedVersion: saveBase(draftVersions, group.id, config?.source_version),
+    };
+    // A secret flag alone is not one: it only hides a value.
+    const guarded = securityRelevantKeys(group, [...Object.keys(values), ...resets]);
+    if (guarded.length === 0) {
+      void commitSave(save);
+      return;
+    }
+    // A signing secret, the trusted networks, where mail and users go: a stolen
+    // session must not change them on its own, so the backend asks for the
+    // password, and the admin token cannot give one.
+    settingsPassword.current = '';
+    backupConfirmation.request({
+      title: `Save security settings in ${group.label}?`,
+      confirmLabel: 'Save changes',
+      busyLabel: 'Saving…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who can sign
+            in or administer the gateway, what it trusts, or where it sends requests, keys, mail and
+            users: <KeyList keys={guarded} />. Confirm the change with your password.
+          </p>
+          <ReauthPassword valueRef={settingsPassword} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const password = settingsPassword.current;
+        if (!password) throw new Error('Enter your password to save these settings.');
+        settingsPassword.current = '';
+        // A refusal, a wrong password included, is shown beside the save.
+        await commitSave({ ...save, guarded, password });
+      },
     });
   };
 
-  const commitSave = async ({ group, values, secrets, resets, expectedVersion }: CategorySave) => {
+  const commitSave = async ({
+    group,
+    values,
+    secrets,
+    resets,
+    expectedVersion,
+    guarded = [],
+    password,
+  }: CategorySave) => {
     if (saveInFlight.current) return;
     saveInFlight.current = true;
     const channelEntries = alertWebhookEntries(group.entries);
@@ -460,9 +539,15 @@ export function useConfigurationEditor({
       if (keys.length > 0 || secrets.length > 0) {
         attempted = [...new Set([...keys, ...secrets])];
         const next = await patchConfig(
-          secrets.length > 0
-            ? { values, secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
-            : { values },
+          {
+            values,
+            ...(secrets.length > 0
+              ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
+              : {}),
+            ...(password !== undefined && keys.some((key) => guarded.includes(key))
+              ? { password }
+              : {}),
+          },
           ...versioned(base),
         );
         const committed = committedVersion(next, base);
@@ -486,7 +571,10 @@ export function useConfigurationEditor({
       for (const key of resets) {
         attempted = [key];
         failedReset = key;
-        const next = await resetConfigKey(key, ...versioned(base));
+        const next =
+          password !== undefined && guarded.includes(key)
+            ? await resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password })
+            : await resetConfigKey(key, ...versioned(base));
         const committed = committedVersion(next, base);
         chain(base, committed);
         base = committed;
@@ -639,18 +727,50 @@ export function useConfigurationEditor({
     setPendingSecrets((prev) => (prev[key] ? withoutKeys(prev, [key]) : { ...prev, [key]: true }));
   };
 
-  // A download changes nothing, so it goes on the click. The file holds every
-  // secret in plain text: the button's title says so before, the toast after.
+  // A download changes nothing, so it goes on the click. It names each secret
+  // without its value, and restoring it keeps this deployment's.
   const downloadBackup = async () => {
     const failure = await backupConfirmation.perform({
       run: async () => {
         downloadBackupJson(await exportConfigBackup());
         toast.success(
-          'Downloaded configuration backup. It holds API keys and secrets in plain text: store it securely.',
+          "Downloaded configuration backup. Secret values are left out: restoring it keeps this deployment's.",
         );
       },
     });
     if (failure) toast.error(`The backup could not be downloaded: ${failure}`);
+  };
+
+  // Secret values leave the server only after the administrator's password:
+  // the session alone may be someone else's.
+  const downloadBackupWithSecrets = () => {
+    backupPassword.current = '';
+    backupConfirmation.request({
+      title: 'Download backup with secret values?',
+      confirmLabel: 'Download',
+      busyLabel: 'Downloading…',
+      tone: 'danger',
+      body: (
+        <div className="space-y-2">
+          <p>
+            This backup holds every secret in plain text: the signing and encryption secrets, the
+            admin token, the identity key and every provider API key. Whoever holds the file can
+            sign in as any user and use your providers. Store it as you would the secrets
+            themselves.
+          </p>
+          <ReauthPassword valueRef={backupPassword} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const password = backupPassword.current;
+        if (!password) throw new Error('Enter your password to include secret values.');
+        downloadBackupJson(await exportConfigBackup({ includeSecrets: true, password }));
+        backupPassword.current = '';
+        toast.success(
+          'Downloaded configuration backup with secret values. It holds API keys and secrets in plain text: store it securely.',
+        );
+      },
+    });
   };
 
   const restoreFromFile = async (file: File) => {
@@ -672,6 +792,30 @@ export function useConfigurationEditor({
       toast.error('The selected file is not a valid configuration backup JSON.');
       return;
     }
+
+    // What the restore would change that only a confirmation and the password
+    // allow, and the secrets it cannot restore. Asked as the busy write, so the
+    // buttons wait for it.
+    const previewed: { result?: ConfigRestorePreview } = {};
+    const failure = await backupConfirmation.perform({
+      run: async () => {
+        try {
+          previewed.result = await previewConfigRestore(parsed);
+        } catch (e) {
+          // A gateway older than the preview restores as it always has.
+          if (!(e instanceof APIError) || (e.statusCode !== 404 && e.statusCode !== 405)) throw e;
+          previewed.result = { security_changes: [], secrets_not_restored: [] };
+        }
+      },
+    });
+    if (failure) {
+      toast.error(`The backup cannot be restored: ${failure}`);
+      return;
+    }
+    if (!previewed.result) return;
+    const securityChanges = previewed.result.security_changes;
+    const notRestored = previewed.result.secrets_not_restored;
+    backupPassword.current = '';
 
     const appConfigCount = Array.isArray(parsed.app_config) ? parsed.app_config.length : 0;
     const siteSettingsCount = Array.isArray(parsed.site_settings) ? parsed.site_settings.length : 0;
@@ -707,13 +851,42 @@ export function useConfigurationEditor({
           />
           <p className="font-medium text-red-800">
             Restoring replaces the current configuration, providers, API keys, routes, and runtime
-            settings with the contents of this backup. Existing user API key encryption secrets are
-            automatically preserved when user API keys already exist.
+            settings with the contents of this backup, all of it or, if anything fails, none of it.
+            Existing user API key encryption secrets are automatically preserved when user API keys
+            already exist.
           </p>
+          {parsed.secrets_included === false ? (
+            <p>
+              This backup has no secret values: each secret keeps the value this deployment has.
+            </p>
+          ) : null}
+          {notRestored.length > 0 ? (
+            <div className="space-y-1">
+              <p>This deployment has no value for these secrets, so they stay unset:</p>
+              <BackupItemList items={notRestored} />
+            </div>
+          ) : null}
+          {securityChanges.length > 0 ? (
+            <div className="space-y-2">
+              <p className="font-medium text-red-800">
+                It also changes security settings. A backup file is not signed, so check that you
+                expect each of these, then confirm with your password:
+              </p>
+              <BackupItemList items={securityChanges} />
+              <ReauthPassword valueRef={backupPassword} label="Your password" />
+            </div>
+          ) : null}
         </div>
       ),
       run: async () => {
-        const res = await restoreConfigBackup(parsed);
+        let confirmation: { securityChanges: string[]; password: string } | undefined;
+        if (securityChanges.length > 0) {
+          const password = backupPassword.current;
+          if (!password) throw new Error('Enter your password to restore security settings.');
+          confirmation = { securityChanges, password };
+        }
+        const res = await restoreConfigBackup(parsed, confirmation);
+        backupPassword.current = '';
         setConfig(res.config);
         setDrafts({});
         setDraftVersions({});
@@ -730,6 +903,12 @@ export function useConfigurationEditor({
           );
         } else {
           toast.success('Restored configuration from backup.');
+        }
+        const unset = res.secrets_not_restored ?? [];
+        if (unset.length > 0) {
+          toast.error(
+            `The backup had no value for ${unset.map(backupItem).join(', ')}: set them again.`,
+          );
         }
       },
     });
@@ -778,13 +957,14 @@ export function useConfigurationEditor({
     reloadForAdd,
     variableAdded,
     downloadBackup,
+    downloadBackupWithSecrets,
     restoreFromFile,
     /** Render its `dialog` once, where no sub-tab can hide it. */
     backupConfirmation,
   };
 }
 
-export type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
+type ConfigurationEditor = ReturnType<typeof useConfigurationEditor>;
 
 /** How many settings the filters leave, across every category. */
 export function matchingSettingCount(editor: ConfigurationEditor): number {
@@ -906,7 +1086,7 @@ export function ConfigurationFilters({ editor }: { editor: ConfigurationEditor }
 }
 
 /** The anchor of a category's section. */
-export function configSectionId(categoryId: string): string {
+function configSectionId(categoryId: string): string {
   return `config-${categoryId.replace(/[^\w-]/g, '-')}`;
 }
 
@@ -1037,6 +1217,7 @@ export function ConfigCategorySection({
             Unsaved changes to them are kept and saved with the rest.
           </p>
         ) : null}
+        {group.id === 'application' ? <LiveConfigStatus groupName="routing.runtime" /> : null}
         {liveGroupNames(group).map((name) => (
           <LiveConfigStatus
             key={name}
@@ -1114,6 +1295,10 @@ export function AddVariableControl({ editor }: { editor: ConfigurationEditor }) 
     return (
       <AddVariableForm
         existingKeys={new Set(editor.config.entries.map((entry) => entry.key))}
+        // A backend that marks security-relevant settings asks for the password
+        // to add a variable, which a configuration file reads; an older one does
+        // not mark them, and asks for nothing.
+        askPassword={editor.config.entries.some((entry) => entry.security_relevant !== undefined)}
         expectedVersion={editor.addVariableVersion}
         onCancel={close}
         onConflict={editor.reloadForAdd}
@@ -1152,17 +1337,26 @@ export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEd
   return (
     <AdminSection
       title="Backup & Restore"
-      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. Restoring one replaces all of them. The file holds API keys and secrets in plain text: store it securely."
+      description="A backup holds the configuration, custom providers and their API keys, routes and runtime settings. It names each secret without its value, and restoring it keeps this deployment's secrets; a backup with secret values holds them in plain text and asks for your password. Restoring replaces everything else, and lists any change to security settings for you to confirm with your password."
     >
       <div className="flex flex-wrap items-center gap-2">
         <button
           type="button"
           onClick={() => void editor.downloadBackup()}
           disabled={busy}
-          title="Downloads every setting and provider key as JSON, with secrets in plain text"
+          title="Downloads every setting as JSON. Secret values are left out: each secret is named, and restoring keeps this deployment's."
           className={BUTTON_SECONDARY}
         >
           Backup
+        </button>
+        <button
+          type="button"
+          onClick={() => editor.downloadBackupWithSecrets()}
+          disabled={busy}
+          title="Downloads every setting and provider key with secret values in plain text, after your password"
+          className={BUTTON_SECONDARY}
+        >
+          Backup with secrets
         </button>
         <button
           type="button"
@@ -1192,12 +1386,15 @@ export function ConfigurationBackupSection({ editor }: { editor: ConfigurationEd
 /** A custom variable: a `${VAR}` reference in models.yaml the registry cannot see. */
 function AddVariableForm({
   existingKeys,
+  askPassword,
   expectedVersion,
   onAdded,
   onCancel,
   onConflict,
 }: {
   existingKeys: ReadonlySet<string>;
+  /** Whether the backend asks for the administrator's password to add a variable. */
+  askPassword: boolean;
   /**
    * The version the add is conditional on: the one the form opened on, moved
    * only by this page's own writes and by `onConflict`. A save elsewhere since
@@ -1220,6 +1417,9 @@ function AddVariableForm({
   // whatever the request says (a flag only ever adds secrecy). Any other name
   // is the administrator's choice.
   const [secretChoice, setSecretChoice] = useState(false);
+  // A configuration file reads the variable, so adding one is a
+  // security-relevant change: the backend asks for the password.
+  const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
   const writes = useConfirmAction();
   const saving = writes.busy;
@@ -1269,6 +1469,10 @@ function AddVariableForm({
       setError(`${key} is already listed. Edit it in its category.`);
       return;
     }
+    if (askPassword && !password) {
+      setError('Enter your password: a configuration file reads the variable you add.');
+      return;
+    }
     setError(null);
     // Taken now: the version this attempt is conditional on, whatever a read
     // brings in while it is in flight.
@@ -1281,6 +1485,7 @@ function AddVariableForm({
           {
             values: { [key]: value },
             secrets: { [key]: secret },
+            ...(askPassword ? { password } : {}),
           },
           ...versioned(base),
         ).catch((err: unknown) => {
@@ -1365,6 +1570,22 @@ function AddVariableForm({
         <p id={`${baseId}-secret-note`} className="mt-1 text-[11px] text-gray-500">
           A name like this one is always secret.
         </p>
+      ) : null}
+      {askPassword ? (
+        <div className="mt-3 max-w-sm">
+          <label htmlFor={`${baseId}-password`} className={FORM_LABEL}>
+            Your password
+          </label>
+          <input
+            id={`${baseId}-password`}
+            type="password"
+            value={password}
+            onChange={(event) => setPassword(event.target.value)}
+            disabled={saving}
+            autoComplete="current-password"
+            className={TEXT_FIELD}
+          />
+        </div>
       ) : null}
       {error ? (
         <p className="mt-2 text-[12px] text-red-600" role="alert">

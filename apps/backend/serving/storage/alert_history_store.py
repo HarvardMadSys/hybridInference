@@ -410,11 +410,6 @@ async def purge_subject(conn: Any, digest: str) -> int:
         return 0
 
 
-def subject_digest(user_id: str, fence_secret: str) -> str:
-    """The digest a record about ``user_id`` carries."""
-    return fence_account_digest(user_id, fence_secret)
-
-
 # -- reading ------------------------------------------------------------------
 
 MAX_PAGE = 200
@@ -477,15 +472,6 @@ class Scope:
     deployment_ids: tuple[str, ...] | None = None
     target_environments: tuple[str, ...] | None = None
     sources: tuple[str, ...] | None = None
-
-    @property
-    def unrestricted(self) -> bool:
-        """Whether this is the admin scope."""
-        return (
-            self.deployment_ids is None
-            and self.target_environments is None
-            and self.sources is None
-        )
 
     def allows(self, *, deployment_id: str, target_environment: str, source: str) -> bool:
         """Whether one row is inside the scope."""

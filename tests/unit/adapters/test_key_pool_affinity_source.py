@@ -183,7 +183,9 @@ async def test_unresolved_identity_stays_nonsticky_when_cancelled_while_queued()
     )
     provider = adapter._key_pool_provider_label
     base_url = adapter.config.base_url
+    # Both keys full: a request queues only when no key has a slot free.
     held = await limiter.acquire(provider, "k1", base_url=base_url)
+    held_k2 = await limiter.acquire(provider, "k2", base_url=base_url)
     acquiring = asyncio.Event()
 
     async def acquire_slot(api_key: str | None):
@@ -191,6 +193,9 @@ async def test_unresolved_identity_stays_nonsticky_when_cancelled_while_queued()
         return await limiter.acquire(provider, api_key, base_url=base_url)
 
     adapter._acquire_upstream_slot = acquire_slot
+    adapter._try_upstream_slot = lambda api_key: limiter.try_acquire(
+        provider, api_key, base_url=base_url
+    )
     context = {
         "affinity_key": None,
         "auth_key_hash": "auth-hash-must-not-fallback",
@@ -218,5 +223,6 @@ async def test_unresolved_identity_stays_nonsticky_when_cancelled_while_queued()
             assert req_ctx.get().get("affinity_key") is None
     finally:
         held.release(status_code=200)
+        held_k2.release(status_code=200)
 
     assert next(iter(limiter.snapshot().values()))["in_flight"] == 0

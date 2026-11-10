@@ -2,7 +2,7 @@ const MIN_HISTORY_DAYS = 3;
 const MIN_TODAY_FLOOR_USD = 1.0;
 const MULTIPLIER = 5.0;
 
-export interface AnomalyOptions {
+interface AnomalyOptions {
   returnMultiplier?: boolean;
 }
 

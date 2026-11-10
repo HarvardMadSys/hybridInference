@@ -62,7 +62,10 @@ async def confirm_account_owner(
                 detail="Too many attempts. Please try again later.",
                 headers={"Retry-After": "3600" if reason == "ip" else "900"},
             )
-        if not password or not password_utils.verify_password(password, user_row["password_hash"]):
+        # A signed-in session: an anonymous flood must not refuse its owner here.
+        if not password or not await password_utils.verify_password_async(
+            password, user_row["password_hash"], shed=False
+        ):
             raise HTTPException(status_code=400, detail="Current password is incorrect.")
         return
 

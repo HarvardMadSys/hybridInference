@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
+vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
+
 vi.mock('@/lib/api/admin', () => ({
   clearOffloadRoute: vi.fn(),
   clearRouteWeight: vi.fn(),
@@ -41,6 +43,7 @@ vi.mock('@/lib/api/admin', () => ({
   listRouteWeights: vi.fn(),
   removeProviderRoute: vi.fn(),
   restoreProviderRoute: vi.fn(),
+  updateProviderRouteBatch: vi.fn(),
   updateProviderRouteState: vi.fn(),
   listRoutewiseProbeSamples: vi.fn(),
   listRoutewiseSettings: vi.fn(() => Promise.resolve({ model_id: 'minimax-fast', settings: [] })),
@@ -81,6 +84,7 @@ import {
   listRoutewiseSettings,
   removeProviderRoute,
   restoreProviderRoute,
+  updateProviderRouteBatch,
   updateProviderRouteState,
   runRoutewiseProbe,
   setOffloadRoute,
@@ -1118,7 +1122,7 @@ describe('ProviderRoutesTab', () => {
     });
 
     // Reset goes back to the configured weight the row shows, at once.
-    expect(screen.getByText('YAML 1 · Effective 3')).toBeInTheDocument();
+    expect(screen.getByText('Catalog 1 · Effective 3')).toBeInTheDocument();
     fireEvent.click(
       await screen.findByRole('button', {
         name: 'Clear minimax-fast:featherless-api weight override',
@@ -4759,5 +4763,340 @@ describe('ProviderRoutesTab', () => {
       });
       expect(createProviderRouteCandidate).toHaveBeenCalledTimes(1);
     });
+
+    describe('reasoning effort levels', () => {
+      const EFFORT_MAP = { low: 'high', high: 'xhigh', max: 'max' };
+      const mappedRoute: ProviderRoute = {
+        ...route,
+        reasoning_effort_mappable: true,
+        reasoning_efforts_published: null,
+      };
+      const addRow = (dialog: HTMLElement, level: string, upstream: string) => {
+        fireEvent.click(within(dialog).getByRole('button', { name: 'Add level' }));
+        const rows = within(dialog).getAllByLabelText(/^Public level \d+$/);
+        const index = rows.length;
+        fireEvent.change(within(dialog).getByLabelText(`Public level ${index}`), {
+          target: { value: level },
+        });
+        fireEvent.change(within(dialog).getByLabelText(`Upstream value ${index}`), {
+          target: { value: upstream },
+        });
+      };
+
+      it('saves a map with the four values, which stay as served', async () => {
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue({
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_overridden: true,
+          reasoning_efforts_published: ['low', 'high', 'max'],
+        });
+        const dialog = await renderWithRoute(mappedRoute);
+        expect(within(dialog).getByText('Reasoning effort levels')).toBeInTheDocument();
+        expect(
+          within(dialog).getByText(
+            'Offered to clients now: not declared (clients are offered no levels)',
+          ),
+        ).toBeInTheDocument();
+
+        for (const [level, upstream] of Object.entries(EFFORT_MAP)) addRow(dialog, level, upstream);
+        expect(within(dialog).getByText('1 unsaved change')).toBeVisible();
+        saveRouteEdit();
+
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          );
+        });
+        expect(updateProviderRoute).not.toHaveBeenCalled();
+      });
+
+      it('refuses a half-filled or repeated row and blocks Save', async () => {
+        const dialog = await renderWithRoute(mappedRoute);
+        addRow(dialog, 'low', '');
+        expect(
+          within(dialog).getByText('Fill in both levels of each row, or remove the row.'),
+        ).toBeInTheDocument();
+        fireEvent.change(within(dialog).getByLabelText('Upstream value 1'), {
+          target: { value: 'high' },
+        });
+        addRow(dialog, 'low', 'max');
+        expect(within(dialog).getByText('Public level "low" is listed twice.')).toBeInTheDocument();
+        expect(within(dialog).getByRole('button', { name: /Save changes to/ })).toBeDisabled();
+        fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[1]);
+        expect(within(dialog).queryByText('Public level "low" is listed twice.')).toBeNull();
+      });
+
+      it('keeps a map set in the console when only the connection changes', async () => {
+        const withMap: ProviderRoute = {
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+          reasoning_efforts_published: ['low', 'high', 'max'],
+        };
+        vi.mocked(updateProviderRoute).mockResolvedValue({ ...withMap, concurrency_limit: 2 });
+        const dialog = await renderWithRoute(withMap);
+        expect(within(dialog).getByLabelText('Public level 1')).toHaveValue('low');
+        expect(within(dialog).getByLabelText('Upstream value 2')).toHaveValue('xhigh');
+        expect(
+          within(dialog).getByText('Offered to clients now: low, high, max'),
+        ).toBeInTheDocument();
+
+        fireEvent.change(within(dialog).getByLabelText('Local concurrency limit'), {
+          target: { value: '2' },
+        });
+        saveRouteEdit();
+
+        await waitFor(() => expect(updateProviderRoute).toHaveBeenCalledTimes(1));
+        const body = vi.mocked(updateProviderRoute).mock.calls[0][2];
+        expect(body).not.toHaveProperty('capabilities');
+        expect(body).not.toHaveProperty('reset_capabilities');
+      });
+
+      it('does not copy a models.yaml map into the console when other values change', async () => {
+        const yamlMapped: ProviderRoute = {
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: { high: 'high' } },
+          capabilities_baseline: { ...ROUTE_CAPABILITIES, reasoning_effort_map: { high: 'high' } },
+          reasoning_efforts_published: ['high'],
+        };
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(yamlMapped);
+        const dialog = await renderWithRoute(yamlMapped);
+        expect(
+          within(dialog).getByText(
+            /Without rows, the route keeps its default mapping \(high → high\)/,
+          ),
+        ).toBeInTheDocument();
+
+        fireEvent.change(within(dialog).getByLabelText('Max output (tokens)'), {
+          target: { value: '4096' },
+        });
+        saveRouteEdit();
+
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096 },
+          );
+        });
+      });
+
+      it('returns to the default map by clearing the console values', async () => {
+        vi.mocked(resetProviderRouteCapabilities).mockResolvedValue(mappedRoute);
+        const dialog = await renderWithRoute({
+          ...mappedRoute,
+          capabilities: { ...ROUTE_CAPABILITIES, reasoning_effort_map: EFFORT_MAP },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+          fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
+        }
+        saveRouteEdit();
+
+        await waitFor(() => expect(resetProviderRouteCapabilities).toHaveBeenCalledTimes(1));
+        expect(updateProviderRouteCapabilities).not.toHaveBeenCalled();
+      });
+
+      it('returns a console map to the default while saving other values', async () => {
+        vi.mocked(updateProviderRouteCapabilities).mockResolvedValue(mappedRoute);
+        const dialog = await renderWithRoute({
+          ...mappedRoute,
+          capabilities: {
+            ...ROUTE_CAPABILITIES,
+            max_output_length: 4096,
+            reasoning_effort_map: EFFORT_MAP,
+          },
+          capabilities_baseline: ROUTE_CAPABILITIES,
+          capabilities_overridden: true,
+        });
+
+        for (let i = 0; i < 3; i += 1) {
+          fireEvent.click(within(dialog).getAllByRole('button', { name: 'Remove' })[0]);
+        }
+        saveRouteEdit();
+
+        // The four stay set in the console; the map is cleared explicitly.
+        await waitFor(() => {
+          expect(updateProviderRouteCapabilities).toHaveBeenCalledWith(
+            'minimax-fast',
+            'minimax-fast:featherless-api',
+            { ...ROUTE_CAPABILITIES, max_output_length: 4096, reasoning_effort_map: null },
+          );
+        });
+      });
+
+      it('offers no map on a route whose adapter sends no effort', async () => {
+        const dialog = await renderWithRoute({ ...route, reasoning_effort_mappable: false });
+        expect(
+          within(dialog).getByText(
+            "This route's adapter does not send reasoning_effort, so no mapping applies to it.",
+          ),
+        ).toBeInTheDocument();
+        expect(within(dialog).queryByRole('button', { name: 'Add level' })).toBeNull();
+      });
+    });
+  });
+});
+
+describe('ProviderRoutesTab batch work', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  // A server the gateway runs itself, which batch work may use by default.
+  const localRoute = {
+    ...route,
+    route_id: 'minimax-fast:local-8010',
+    endpoint_id: 'minimax-fast:local-8010',
+    provider: 'vllm',
+    base_url: 'http://host.docker.internal:8010',
+    batch_allowed: true,
+    batch_allowed_default: true,
+    batch_allowed_choice: null,
+  };
+  // A cloud provider, which batch work may not use unless an admin allows it.
+  const cloudRoute = {
+    ...quotaRoute,
+    batch_allowed: false,
+    batch_allowed_default: false,
+    batch_allowed_choice: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listRouteWeights).mockResolvedValue([]);
+    vi.mocked(listOffloadRoutes).mockResolvedValue({
+      queue_enabled: true,
+      max_wait_seconds: 30,
+      offload_routes: [],
+    });
+    vi.mocked(listRoutewiseProbeSamples).mockResolvedValue({ samples: [] });
+  });
+
+  function showRoutes(routes: ProviderRoute[]) {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes,
+    });
+  }
+
+  it('marks the routes batch work may use and says why', async () => {
+    showRoutes([localRoute, cloudRoute]);
+    render(<ProviderRoutesTab />);
+
+    const badge = await screen.findByTestId(`batch-badge-${localRoute.route_id}`);
+    expect(badge).toHaveTextContent('Batch');
+    expect(badge.getAttribute('title')).toContain("one of the gateway's own servers");
+    // A cloud route takes no batch work by default and carries no badge.
+    expect(screen.queryByTestId(`batch-badge-${cloudRoute.route_id}`)).toBeNull();
+    expect(
+      screen.getByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: `Allow batch work on ${cloudRoute.route_id}` }),
+    ).toBeInTheDocument();
+    // No choice is stored yet, so there is nothing to reset.
+    expect(screen.queryByRole('button', { name: /^Batch default for / })).toBeNull();
+  });
+
+  it('allows batch work on a cloud route at once, and hands it back to its default', async () => {
+    showRoutes([localRoute, cloudRoute]);
+    vi.mocked(updateProviderRouteBatch)
+      .mockResolvedValueOnce({ ...cloudRoute, batch_allowed: true, batch_allowed_choice: true })
+      .mockResolvedValueOnce(cloudRoute);
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Allow batch work on ${cloudRoute.route_id}` }),
+    );
+
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenCalledWith('minimax-fast', cloudRoute.route_id, {
+        batch_allowed: true,
+      }),
+    );
+    const badge = await screen.findByTestId(`batch-badge-${cloudRoute.route_id}`);
+    expect(badge.getAttribute('title')).toContain('An administrator allowed batch work');
+    fireEvent.click(
+      screen.getByRole('button', { name: `Batch default for ${cloudRoute.route_id}` }),
+    );
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenLastCalledWith(
+        'minimax-fast',
+        cloudRoute.route_id,
+        { batch_allowed: null },
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.queryByTestId(`batch-badge-${cloudRoute.route_id}`)).toBeNull(),
+    );
+  });
+
+  it("asks first before stopping a model's last batch route", async () => {
+    showRoutes([localRoute, cloudRoute]);
+    vi.mocked(updateProviderRouteBatch).mockResolvedValue({
+      ...localRoute,
+      batch_allowed: false,
+      batch_allowed_choice: false,
+    });
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+    const dialog = screen.getByRole('dialog', { name: 'Stop batch work on minimax-fast?' });
+    expect(dialog).toHaveTextContent('queued batch requests fail');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+    expect(updateProviderRouteBatch).not.toHaveBeenCalled();
+
+    fireEvent.click(
+      screen.getByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+    confirmAction('Stop batch work');
+    await waitFor(() =>
+      expect(updateProviderRouteBatch).toHaveBeenCalledWith('minimax-fast', localRoute.route_id, {
+        batch_allowed: false,
+      }),
+    );
+    expect(await screen.findByTestId(`batch-badge-${localRoute.route_id}`)).toHaveTextContent(
+      'No batch',
+    );
+  });
+
+  it('stops batch work on a route at once while another route still takes it', async () => {
+    const secondLocal = {
+      ...localRoute,
+      route_id: 'minimax-fast:local-8011',
+      endpoint_id: 'minimax-fast:local-8011',
+    };
+    showRoutes([localRoute, secondLocal]);
+    vi.mocked(updateProviderRouteBatch).mockResolvedValue({
+      ...localRoute,
+      batch_allowed: false,
+      batch_allowed_choice: false,
+    });
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: `Stop batch work on ${localRoute.route_id}` }),
+    );
+
+    expect(screen.queryByRole('dialog')).toBeNull();
+    await waitFor(() => expect(updateProviderRouteBatch).toHaveBeenCalledTimes(1));
+  });
+
+  it('shows no batch control against a gateway that predates them', async () => {
+    showRoutes([route]);
+    render(<ProviderRoutesTab />);
+
+    await screen.findByRole('button', { name: 'Edit' });
+    expect(screen.queryByRole('button', { name: /batch work on/ })).toBeNull();
+    expect(screen.queryByTestId(`batch-badge-${route.route_id}`)).toBeNull();
   });
 });

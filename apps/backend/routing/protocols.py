@@ -54,6 +54,13 @@ class RoutingRequestOptions:
             that planned one candidate per attempt learns the candidate is
             unavailable rather than silently getting a different one.
         required_modalities: Non-text input modalities the request needs.
+        affinity: Whether this dispatch follows and updates the caller's
+            endpoint affinity: the pin that sends a conversation back to the
+            endpoint that served it last. ``False`` neither reads, moves nor
+            drops it. A batch item runs under its owner's key, and narrowed to
+            the routes batch work may use it would otherwise re-pin the owner's
+            interactive requests to those routes. Load accounting by caller is
+            unaffected.
     """
 
     pin_provider: str | None = None
@@ -63,6 +70,7 @@ class RoutingRequestOptions:
     bound_endpoint: EndpointBinding | None = None
     require_target: bool = False
     required_modalities: frozenset[str] = frozenset()
+    affinity: bool = True
 
 
 @runtime_checkable

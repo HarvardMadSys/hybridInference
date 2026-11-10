@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import importlib
 import uuid
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -68,3 +69,65 @@ async def scratch_database() -> AsyncIterator[str]:
             await admin.execute(f'DROP DATABASE IF EXISTS "{name}" WITH (FORCE)')
         finally:
             await admin.close()
+
+
+#: Revisions after the baseline that change the tables
+#: :func:`migrations.baseline.api_logs.ensure_api_logs_schema` builds, oldest
+#: first. Each exposes its statements as ``STATEMENTS``.
+API_LOGS_REVISIONS = (
+    "0004_user_usage_sums",
+    "0005_drop_request_id_index",
+    "0007_request_volume_by_source",
+    "0010_storage_indexes",
+)
+
+
+async def ensure_api_logs_tables(conn: Any) -> None:
+    """Build the ``api_logs`` tables on *conn* as the migrations leave them.
+
+    For a test that builds them in a schema of its own: the frozen baseline,
+    then the statements of every later revision that changes them.
+    """
+    from migrations.baseline.api_logs import ensure_api_logs_schema
+
+    await ensure_api_logs_schema(conn)
+    for name in API_LOGS_REVISIONS:
+        for statement in importlib.import_module(f"migrations.versions.{name}").STATEMENTS:
+            await conn.execute(statement)
+
+    for statement in importlib.import_module(
+        "migrations.versions.0015_projects"
+    ).API_LOG_STATEMENTS:
+        await conn.execute(statement)
+
+
+async def prepare_current_schema(conn: Any) -> None:
+    """Build the current schema in a fixture's private search path."""
+    from alembic.operations import Operations
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from sqlalchemy.ext.asyncio import create_async_engine
+
+    from migrations import alembic_config
+    from migrations.baseline import run
+
+    await run(conn)
+    schema = await conn.fetchval("SELECT current_schema()")
+    database = await conn.fetchval("SELECT current_database()")
+    scripts = ScriptDirectory.from_config(alembic_config(url(database)))
+    engine = create_async_engine(
+        url(database), connect_args={"server_settings": {"search_path": schema}}
+    )
+
+    def apply_revisions(connection: Any) -> None:
+        context = MigrationContext.configure(connection)
+        with context.begin_transaction(), Operations.context(context):
+            for revision in reversed(list(scripts.walk_revisions(base="0001_baseline"))):
+                if revision.revision != "0001_baseline":
+                    revision.module.upgrade()
+
+    try:
+        async with engine.connect() as connection:
+            await connection.run_sync(apply_revisions)
+    finally:
+        await engine.dispose()

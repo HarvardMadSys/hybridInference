@@ -8,11 +8,11 @@ import logging
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
-from serving.config.settings import get_settings
+from serving.config.settings import ROLE_RANK, get_settings
 from serving.exceptions import HardDeleteStateChanged
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
@@ -70,6 +70,7 @@ from serving.servers.deps import (
 )
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -576,6 +577,7 @@ async def admin_get_user_cost_history(
 async def approve_user(
     request: Request,
     user_id: str,
+    background_tasks: BackgroundTasks,
     payload: ApproveUserRequest | None = None,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
@@ -625,7 +627,10 @@ async def approve_user(
     from serving.utils.email import is_email_enabled, send_approval_email
 
     if is_email_enabled() and user_row["email"]:
-        send_approval_email(user_row["email"])
+        # The send is blocking I/O (SMTP, or a provider's HTTP API), so it runs
+        # in the threadpool once the response is out, as the other account
+        # notices do, rather than holding up the event loop for its duration.
+        background_tasks.add_task(send_approval_email, user_row["email"])
 
     return ApproveUserResponse(
         user_id=user_id,
@@ -641,6 +646,7 @@ async def reject_user(
     request: Request,
     user_id: str,
     payload: RejectUserRequest,
+    background_tasks: BackgroundTasks,
     admin_id: str = Depends(verify_admin_access),
     actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
@@ -688,7 +694,8 @@ async def reject_user(
     from serving.utils.email import is_email_enabled, send_rejection_email
 
     if is_email_enabled() and user_row["email"]:
-        send_rejection_email(user_row["email"], payload.reason)
+        # Off the event loop, as in approve_user above.
+        background_tasks.add_task(send_rejection_email, user_row["email"], payload.reason)
 
     return RejectUserResponse(
         user_id=user_id,
@@ -849,12 +856,18 @@ async def update_user(
 ) -> UpdateUserResponse:
     """Update user account status or API key settings (quota).
 
+    Raising an account's role needs the signed-in administrator's ``password``
+    (400 when it is missing or wrong, 403 for the admin token): a role grants
+    what no session should hand out on its own, and an administrator role is
+    administrator access that outlives the session that granted it.
+
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    payload_dict = payload.model_dump(exclude_unset=True)
+    # The password confirms this request; it is no field of the account.
+    payload_dict = payload.model_dump(exclude_unset=True, exclude={"password"})
     if not payload_dict:
         raise HTTPException(422, "No fields to update")
 
@@ -910,6 +923,19 @@ async def update_user(
             )
         if not await op_store.get_active_key_by_account(user_id):
             raise HTTPException(409, "User has no active API key to update")
+
+    # Last of the checks, so a request refused for another reason spends no
+    # sign-in attempt. A higher role reaches more models, reserved provider
+    # keys and, as admin, everything: an account whose password a caller knows,
+    # raised by a stolen session or the admin token, would otherwise keep it.
+    current_role = user_row.get("role") or "free"
+    if new_role is not None and ROLE_RANK.get(new_role, 0) > ROLE_RANK.get(current_role, 0):
+        await confirm_administrator(
+            request,
+            op_store,
+            payload.password,
+            action=f"Giving {_user_label(user_row)} the {new_role} role",
+        )
 
     # Collect all users-table fields for a single round-trip
     user_table_updates: dict[str, object] = {}
@@ -1300,7 +1326,12 @@ async def hard_delete_user(
             await log_store.hard_delete_user_data(user_id)
             fence_established = True
 
-        # Purge stored Responses API rows (openai_responses).
+        # Purge stored Responses API rows (openai_responses). After the fence,
+        # and the cost counters (op_store, below) after it too: a stream still
+        # running saves its turn and records its cost when it ends. Those
+        # writes check the tombstone under its lock (ResponseStore.save,
+        # increment_user_costs), so one either committed before the fence and
+        # is purged here, or starts after it and writes nothing.
         if response_store is not None:
             await _run_hard_delete_stage_with_heartbeat(
                 response_store.delete_user_responses(user_id),

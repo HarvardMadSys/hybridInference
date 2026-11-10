@@ -248,7 +248,7 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
         </p>
       )}
 
-      <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+      <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
         <h2 className="text-base font-semibold text-gray-900">
           {t('batches.detail.requests', 'Requests')}
         </h2>
@@ -297,7 +297,9 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
           </Row>
           <Row label={t('batches.row.created', 'Created')}>{formatTime(detail.created_at)}</Row>
           <Row label={t('batches.detail.window', 'Start requests by')}>
-            {formatTime(detail.expires_at)}
+            {detail.expires_at
+              ? formatTime(detail.expires_at)
+              : t('batches.detail.window_none', 'No limit')}
           </Row>
           <Row label={t('batches.detail.ended', 'Ended')}>{formatTime(detail.ended_at)}</Row>
           <Row label={t('batches.row.results_until', 'Results kept until')}>
@@ -332,7 +334,7 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
         </p>
       </section>
 
-      <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+      <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
         <h2 className="text-base font-semibold text-gray-900">
           {t('batches.detail.config', 'Configuration')}
         </h2>
@@ -392,7 +394,7 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
         </dl>
       </section>
 
-      <section className="rounded-xl bg-white p-6 shadow-sm ring-1 ring-gray-200">
+      <section className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
         <h2 className="text-base font-semibold text-gray-900">
           {t('batches.detail.downloads', 'Downloads')}
         </h2>

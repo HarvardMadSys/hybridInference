@@ -7,6 +7,7 @@ import toast, { resolveValue, useToasterStore } from 'react-hot-toast';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { buildTimeSiteConfig, withAgentsUrl } from '@/config/site-config';
 import { ACCOUNT_CHANGED_EVENT, getAccessToken, setAccessToken } from '@/lib/api/client';
+import { APIError } from '@/lib/utils/errors';
 import { AuthProvider, useAuth } from './AuthProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
 
@@ -104,13 +105,18 @@ describe('AuthProvider agent session', () => {
     expect(endAgentSession).toHaveBeenCalledWith('/agents');
   });
 
-  it('ends the agent session even when the gateway logout fails', async () => {
+  // The gateway kept the session and its cookie, so the account stays signed in
+  // here -- and its Agent session with it -- until a retry gets through.
+  it('keeps the account and its agent session when the gateway logout fails', async () => {
+    getMe.mockResolvedValue(me('first-user'));
     logoutApi.mockRejectedValueOnce(new Error('network'));
     await renderWithAgents('/agents');
+    await waitFor(() => expect(controller.state.user?.id).toBe('first-user'));
 
-    await act(() => controller.logout().catch(() => undefined));
+    await act(() => expect(controller.logout()).rejects.toThrow('network'));
 
-    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+    expect(endAgentSession).not.toHaveBeenCalled();
+    expect(controller.state.user?.id).toBe('first-user');
   });
 
   it('ends the agent session after a sign-in, so a switched user never inherits it', async () => {
@@ -169,14 +175,23 @@ describe('AuthProvider cached queries', () => {
     expect(queryClient.getQueryData(['apiKeys'])).toBeUndefined();
   });
 
-  it('drops them on logout, even when the gateway logout fails', async () => {
-    logoutApi.mockRejectedValueOnce(new Error('network'));
+  it('drops them on logout', async () => {
     await renderWithAgents('/agents');
     queryClient.setQueryData(['user', 'models'], ['previous-model']);
 
-    await act(() => controller.logout().catch(() => undefined));
+    await act(() => controller.logout());
 
     expect(queryClient.getQueryData(['user', 'models'])).toBeUndefined();
+  });
+
+  it('keeps them when the gateway logout fails, as the account stays', async () => {
+    logoutApi.mockRejectedValueOnce(new Error('network'));
+    await renderWithAgents('/agents');
+    queryClient.setQueryData(['user', 'models'], ['current-model']);
+
+    await act(() => controller.logout().catch(() => undefined));
+
+    expect(queryClient.getQueryData(['user', 'models'])).toEqual(['current-model']);
   });
 
   it('keeps them when the sign-in fails', async () => {
@@ -446,14 +461,23 @@ describe('AuthProvider and the toasts on screen', () => {
     expect(screen.getByText('Switched to other-user')).toBeInTheDocument();
   });
 
-  it('clears them on logout, even when the gateway logout fails', async () => {
+  it('clears them on logout', async () => {
+    await adminWithToast();
+
+    await act(() => controller.logout());
+
+    expect(controller.state.isAuthenticated).toBe(false);
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('keeps them, and the account, when the gateway logout fails', async () => {
     logoutApi.mockRejectedValueOnce(new Error('network'));
     await adminWithToast();
 
     await act(() => controller.logout().catch(() => undefined));
 
-    expect(controller.state.isAuthenticated).toBe(false);
-    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+    expect(controller.state.user?.id).toBe('admin-user');
+    expect(screen.getByText(ADMIN_TOAST)).toBeInTheDocument();
   });
 
   it('clears them when every account signs out', async () => {
@@ -554,5 +578,59 @@ describe('AuthProvider and the browser’s other tabs', () => {
 
     expect(screen.queryByRole('alertdialog')).toBeNull();
     expect(controller.state.user?.id).toBe('other-user');
+  });
+});
+
+describe('AuthProvider when the gateway fails', () => {
+  function token(sub: string): string {
+    const exp = Math.floor(Date.now() / 1000) + 900;
+    return `header.${btoa(JSON.stringify({ sub, exp }))}.signature`;
+  }
+
+  afterEach(() => {
+    setAccessToken(null);
+  });
+
+  async function signedInAs(id: string) {
+    getMe.mockResolvedValue(me(id));
+    await renderWithAgents('/agents');
+    await waitFor(() => expect(controller.state.user?.id).toBe(id));
+    setAccessToken(token(id));
+  }
+
+  // A profile reload -- after a settings change, say -- that meets a 503 or a
+  // 429 says nothing about the session.
+  it.each([
+    ['SERVICE_UNAVAILABLE', 503],
+    ['RATE_LIMIT_EXCEEDED', 429],
+    ['NETWORK_ERROR', undefined],
+  ])('keeps showing the account when reloading its profile fails: %s', async (code, status) => {
+    await signedInAs('first-user');
+    getMe.mockRejectedValueOnce(new APIError(code, 'failed', status));
+
+    await act(() => controller.refreshUser());
+
+    expect(controller.state.user?.id).toBe('first-user');
+    expect(controller.state.isAuthenticated).toBe(true);
+  });
+
+  it('signs out when the reload is refused', async () => {
+    await signedInAs('first-user');
+    getMe.mockRejectedValueOnce(new APIError('TOKEN_EXPIRED', 'expired', 401));
+
+    await act(() => controller.refreshUser());
+
+    expect(controller.state.isAuthenticated).toBe(false);
+  });
+
+  // A switch installs the next account's token before its profile loads.
+  it('does not keep an account whose token the tab no longer holds', async () => {
+    await signedInAs('first-user');
+    setAccessToken(token('other-user'));
+    getMe.mockRejectedValueOnce(new APIError('SERVICE_UNAVAILABLE', 'failed', 503));
+
+    await act(() => controller.refreshUser());
+
+    expect(controller.state.user).toBeNull();
   });
 });
