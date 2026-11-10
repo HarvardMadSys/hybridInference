@@ -13,10 +13,10 @@ from fastapi.responses import StreamingResponse
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import get_admin_audit_actor, get_db_logger
 from serving.servers.routers.admin._common import (
-    _escape_ilike_substring_term,
     resolve_request_outcome_filter,
     resolve_request_source_filter,
 )
+from serving.storage.utils import escape_ilike_substring_term
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -170,7 +170,7 @@ async def admin_export_requests(
     # values): a substring match across user id/name/email/login name, and a
     # substring match on model id. The SELECT below already joins users.
     if user_id:
-        params.append(_escape_ilike_substring_term(user_id))
+        params.append(escape_ilike_substring_term(user_id))
         idx = len(params)
         login_name = "u.login_name"
         where_clauses.append(
@@ -188,7 +188,7 @@ async def admin_export_requests(
         where_clauses.append(f"l.session_id = ${len(params)}")
 
     if model_id:
-        params.append(_escape_ilike_substring_term(model_id))
+        params.append(escape_ilike_substring_term(model_id))
         where_clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
 
     # Same outcome vocabulary as the list view, so exporting the rows an admin

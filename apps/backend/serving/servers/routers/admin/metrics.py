@@ -49,7 +49,6 @@ from serving.servers.routers.admin import request_volume
 from serving.servers.routers.admin._common import (
     REQUEST_OUTCOME_FILTERS,
     _build_histogram,
-    _escape_ilike_substring_term,
     _round_or_none,
     request_source_is_batch,
     resolve_request_outcome_filter,
@@ -57,7 +56,7 @@ from serving.servers.routers.admin._common import (
 )
 from serving.servers.routers.admin._refreshing_cache import RefreshingResult
 from serving.storage import admin_view_results, perf_metrics_index
-from serving.storage.utils import coerce_json_object
+from serving.storage.utils import coerce_json_object, escape_ilike_substring_term
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -899,7 +898,7 @@ def _build_recent_requests_filters(
         # can search by any of the identifiers shown in the table, not just an
         # exact user id. Matching runs server-side across the full lookback
         # window, so it isn't limited to the current page of results.
-        params.append(_escape_ilike_substring_term(user_id))
+        params.append(escape_ilike_substring_term(user_id))
         idx = len(params)
         login_name = "u.login_name"
         clauses.append(
@@ -921,7 +920,7 @@ def _build_recent_requests_filters(
         clauses.append(f"l.session_id = ${len(params)}")
 
     if model_id:
-        params.append(_escape_ilike_substring_term(model_id))
+        params.append(escape_ilike_substring_term(model_id))
         clauses.append(f"l.model_id ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
 
     if status_code is not None:

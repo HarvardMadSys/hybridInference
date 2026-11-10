@@ -151,7 +151,7 @@ async def test_its_statements_read_no_further_than_the_window(pool):
     """
     pool, users = pool
     user, _ = await _history(pool, users, HISTORY)
-    where_sql, params = recent_requests._build_user_recent_requests_filters(
+    where_sql, params = recent_requests.build_user_recent_requests_filters(
         user, "zz-no-such-model", None
     )
     async with pool.acquire() as conn, conn.transaction(readonly=True):
