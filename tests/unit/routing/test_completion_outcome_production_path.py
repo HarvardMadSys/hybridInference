@@ -335,12 +335,16 @@ def test_alternating_notice_alternatives_do_not_backtrack():
 
 
 def test_whitespace_stream_prefix_stays_bounded():
-    """2000 whitespace chunks must classify quickly without recording success."""
+    """2000 whitespace chunks must classify quickly without recording success.
+
+    The routers classify a stream through :class:`StreamProgressTracker`, which
+    folds each chunk into a bounded running prefix. This drives the tracker --
+    the path production takes -- so the bound is measured where it holds.
+    """
     import json as _json
     import time
 
-    from routing.completion_outcome import classify_stream_prefix
-    from routing.response_text import accumulate_stream_prefix
+    from routing.response_text import StreamProgressTracker
 
     ws = _json.dumps(
         {
@@ -354,8 +358,9 @@ def test_whitespace_stream_prefix_stays_bounded():
     whitespace_chunk = "data: " + ws + "\n\n"
     chunks = [whitespace_chunk for _ in range(2000)]
     start = time.perf_counter()
-    for i in range(1, 2001):
-        out = classify_stream_prefix(accumulate_stream_prefix(chunks[:i]))
+    tracker = StreamProgressTracker()
+    for chunk in chunks:
+        out = tracker.observe(chunk_text(chunk))
         assert out is None or out is CompletionOutcome.EMPTY
     elapsed = time.perf_counter() - start
     assert elapsed < 2.0, f"whitespace classification took {elapsed:.3f}s"

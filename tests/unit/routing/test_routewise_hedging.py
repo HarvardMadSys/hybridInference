@@ -1610,6 +1610,10 @@ class TestRouterHedgeMode:
             "test-model:api-a": 10.0,
             "test-model:api-b": 20.0,
         }
+        # Only a leg whose first content was real work is a latency sample: a
+        # warmup notice comes back instantly, and timing it would teach the
+        # router that the coldest endpoint is the fastest.
+        hedged.leg_first_content_progress = {"test-model:api-a", "test-model:api-b"}
 
         router._record_hedge_explorer_samples(hedged)
 
@@ -1617,6 +1621,39 @@ class TestRouterHedgeMode:
         assert router._latency_profiles["test-model:api-a"].sample_count(after) == before_primary
         assert router._latency_profiles["test-model:api-b"].sample_count(after) == before_backup + 1
         assert "test-model:api-b" in router._latency_history_priors_ms
+
+    @pytest.mark.asyncio
+    async def test_a_hedge_loser_that_only_answered_with_a_warmup_notice_is_not_sampled(self):
+        """A warmup notice is not a latency sample, however fast it came back."""
+        router, api_a, api_b = _make_router_with_two_api(
+            RouteWiseConfig(latency_hedge_mode="probability_target")
+        )
+
+        now = time.time()
+        router._latency_profiles["test-model:api-a"].record(now, 100.0)
+        router._latency_profiles["test-model:api-b"].record(now, 200.0)
+        before_backup = router._latency_profiles["test-model:api-b"].sample_count(now)
+
+        hedged = HedgedAdapter(
+            primary=api_a,
+            backup=api_b,
+            hedge_threshold_sec=0.0,
+            event_sink=router._health_registry,
+        )
+        hedged.hedge_triggered = True
+        hedged.leg_first_content_ttft_ms = {
+            "test-model:api-a": 10.0,
+            "test-model:api-b": 1.0,
+        }
+        # The backup's first content was a warmup notice: it produced no real
+        # work, so its instant TTFT must not enter the latency profile.
+        hedged.leg_first_content_progress = {"test-model:api-a"}
+
+        router._record_hedge_explorer_samples(hedged)
+
+        after = time.time()
+        assert router._latency_profiles["test-model:api-b"].sample_count(after) == before_backup
+        assert "test-model:api-b" not in router._latency_history_priors_ms
 
     @pytest.mark.asyncio
     async def test_probability_target_can_dispatch_concurrency_backup(self):

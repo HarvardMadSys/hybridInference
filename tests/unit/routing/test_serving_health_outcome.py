@@ -242,6 +242,70 @@ def test_serving_health_correction_does_not_disturb_locality_evidence():
 # ---------------------------------------------------------------------------
 
 
+def _prefill_load():
+    """A prefill loader that records the release, for the release path."""
+    from routing.prefill_load import PrefillLoadTracker
+
+    return PrefillLoadTracker()
+
+
+def _observe_chunks(router, registry, chunks, *, terminal=True):
+    """Fold SSE chunks into the router's stream verdict.
+
+    The routers classify a stream incrementally: each chunk is observed, and
+    the first chunk whose accumulated output proves real work records serving
+    success. The terminal verdict settles a stream that never proved progress.
+
+    With ``terminal=False`` the stream is still open, so a prefix that could
+    still become a warmup notice stays undecided -- that is the state the
+    routers hold mid-stream.
+    """
+    from routing.response_text import StreamProgressTracker
+
+    progress = StreamProgressTracker()
+    is_routewise = type(router).__name__ == "RouteWiseRouter"
+    if is_routewise:
+        # RouteWise resolves the endpoint from the adapter, so it needs one.
+        adapter = _adapter_for(_ENDPOINT)
+    for chunk in chunks:
+        if is_routewise:
+            router._observe_stream_progress(adapter, progress, chunk)
+        else:
+            router._observe_stream_progress(_ENDPOINT, progress, chunk, None)
+    if terminal:
+        if is_routewise:
+            router._finish_stream_progress(adapter, progress)
+        else:
+            router._finish_stream_progress(_ENDPOINT, progress, None)
+    return progress
+
+
+def _adapter_for(endpoint_id):
+    """A minimal adapter standing in for the serving endpoint."""
+    from serving.adapters.base import BaseAdapter
+
+    class _Adapter(BaseAdapter):
+        def __init__(self):
+            self.config = type(
+                "config",
+                (),
+                {
+                    "provider": "stream-provider",
+                    "base_url": "https://stream.example/v1",
+                    "endpoint_id": endpoint_id,
+                },
+            )()
+
+        async def chat_completion(self, messages, **params):
+            raise AssertionError("not used")
+
+        async def stream_chat_completion(self, messages, **params):
+            raise AssertionError("not used")
+            yield  # pragma: no cover -- an async generator needs a yield
+
+    return _Adapter()
+
+
 def _routers():
     from routing.routers import FixedRouter
     from routing.routewise.config import RouteWiseConfig
@@ -307,9 +371,10 @@ async def test_streaming_first_content_closes_open_breaker():
 
     router = FixedRouter.__new__(FixedRouter)
     router._health_registry = registry
+    router._prefill_load = _prefill_load()
 
     chunks = ['data: {"choices":[{"delta":{"content":"hello"}}]}\n\n']
-    router._on_stream_first_content(_ENDPOINT, chunks)
+    _observe_chunks(router, registry, chunks)
 
     assert registry._circuits[_ENDPOINT].consecutive_failures == 0
     assert registry.snapshot()[_ENDPOINT]["circuit_state"] == _CircuitState.CLOSED
@@ -326,6 +391,7 @@ async def test_fragmented_warmup_stream_does_not_close_breaker():
 
     router = FixedRouter.__new__(FixedRouter)
     router._health_registry = registry
+    router._prefill_load = _prefill_load()
 
     # The same warmup notice as WARMUP_NOTICE above, split across three SSE chunks.
     chunks = [
@@ -333,7 +399,7 @@ async def test_fragmented_warmup_stream_does_not_close_breaker():
         'data: {"choices":[{"delta":{"content":" is starting up - this takes"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":" about 120 seconds. Please wait..."}}]}\n\n',
     ]
-    router._on_stream_first_content(_ENDPOINT, chunks)
+    _observe_chunks(router, registry, chunks)
 
     assert registry._circuits[_ENDPOINT].consecutive_failures == 3
     assert registry.snapshot()[_ENDPOINT]["circuit_state"] == _CircuitState.OPEN
@@ -350,12 +416,13 @@ async def test_fragmented_genuine_stream_closes_breaker():
 
     router = FixedRouter.__new__(FixedRouter)
     router._health_registry = registry
+    router._prefill_load = _prefill_load()
 
     chunks = [
         'data: {"choices":[{"delta":{"content":"Applied the fix"}}]}\n\n',
         'data: {"choices":[{"delta":{"content":" and verified it."}}]}\n\n',
     ]
-    router._on_stream_first_content(_ENDPOINT, chunks)
+    _observe_chunks(router, registry, chunks)
 
     assert registry._circuits[_ENDPOINT].consecutive_failures == 0
     assert registry.snapshot()[_ENDPOINT]["circuit_state"] == _CircuitState.CLOSED
@@ -378,7 +445,7 @@ def test_fixed_and_routewise_health_recorders_accept_structured_stream_output(mo
         registry = router._health_registry
         _trip(monkeypatch, registry)
 
-        router._on_stream_first_content(_ENDPOINT, [chunk])
+        _observe_chunks(router, registry, [chunk])
 
         assert registry.snapshot()[_ENDPOINT]["circuit_state"] == _CircuitState.CLOSED
         assert registry._circuits[_ENDPOINT].consecutive_failures == 0
@@ -393,7 +460,7 @@ def test_fixed_and_routewise_health_recorders_defer_partial_warmup_prefix(monkey
         registry = router._health_registry
         _trip(monkeypatch, registry)
 
-        assert router._on_stream_first_content(_ENDPOINT, [first_chunk]) is None
+        _observe_chunks(router, registry, [first_chunk], terminal=False)
         assert registry.snapshot()[_ENDPOINT]["circuit_state"] == _CircuitState.OPEN
         assert registry._circuits[_ENDPOINT].consecutive_failures == 3
 

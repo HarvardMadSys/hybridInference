@@ -1219,7 +1219,7 @@ class EndpointHealthRegistry:
         self,
         endpoint_id: str,
         *,
-        outcome: CompletionOutcome | None = None,
+        outcome: CompletionOutcome,
     ) -> None:
         """Record a request that produced evidence of useful serving progress.
 
@@ -1240,15 +1240,12 @@ class EndpointHealthRegistry:
         fine, readiness still passes) strictly separate from model-serving
         progress (this response did inference work).
 
-        ``outcome=None`` keeps the pre-classification contract for legacy
-        callers -- it is recorded as ``PROGRESS``, exactly what this method did
-        before outcomes existed. It is not there to be used: every production
-        call site classifies its response and passes the verdict explicitly, and
-        a caller that *cannot* classify one must call :meth:`record_liveness`
-        instead, because silence is never positive evidence.
+        ``outcome`` is required: every caller classifies its response and passes
+        the verdict explicitly, and a caller that *cannot* classify one must
+        call :meth:`record_liveness` instead, because silence is never positive
+        evidence. Making the argument required is what keeps a future caller
+        from forgetting the classification.
         """
-        if outcome is None:
-            outcome = CompletionOutcome.PROGRESS
         if not isinstance(outcome, CompletionOutcome) or not outcome.admits_real_work:
             return
 

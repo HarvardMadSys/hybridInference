@@ -16,7 +16,7 @@ from serving.servers.routers.completions_cost import CostTracker, PricingLookup
 from serving.servers.routers.completions_logging import CompletionsLogger
 from serving.servers.routers.completions_stream import (
     StreamSession,
-    _ToolCallAccumulator,
+    ToolCallAccumulator,
     _TTFTTracker,
     _unparseable_tool_call_arguments,
 )
@@ -148,12 +148,12 @@ def _routing_chunk(provider: str, *, fallback: bool = False) -> str:
 
 
 # ---------------------------------------------------------------------------
-# _ToolCallAccumulator
+# ToolCallAccumulator
 # ---------------------------------------------------------------------------
 
 
 def test_tool_call_accumulator_merges_deltas_by_index():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add(
         [
             {
@@ -174,7 +174,7 @@ def test_tool_call_accumulator_merges_deltas_by_index():
 
 
 def test_tool_call_accumulator_handles_multiple_indices():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 1, "id": "b", "function": {"name": "f2", "arguments": ""}}])
     acc.add([{"index": 0, "id": "a", "function": {"name": "f1", "arguments": ""}}])
     out = acc.to_list()
@@ -183,7 +183,7 @@ def test_tool_call_accumulator_handles_multiple_indices():
 
 
 def test_tool_call_accumulator_keeps_first_nonempty_id_and_type():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 0, "id": "call_1", "type": "function", "function": {}}])
     acc.add([{"index": 0, "id": "call_repeated", "type": "other", "function": {}}])
 
@@ -193,7 +193,7 @@ def test_tool_call_accumulator_keeps_first_nonempty_id_and_type():
 
 
 def test_tool_call_accumulator_ignores_null_continuation_fields():
-    acc = _ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add(
         [
             {
@@ -228,8 +228,8 @@ def test_tool_call_accumulator_ignores_null_continuation_fields():
 
 
 def test_tool_call_accumulator_bool_when_empty():
-    assert not _ToolCallAccumulator()
-    acc = _ToolCallAccumulator()
+    assert not ToolCallAccumulator()
+    acc = ToolCallAccumulator()
     acc.add([{"index": 0, "id": "x", "function": {}}])
     assert acc
 
