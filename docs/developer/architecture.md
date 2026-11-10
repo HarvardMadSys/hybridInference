@@ -526,6 +526,7 @@ Client-facing groups, all served by the same app:
 | [Batch files](batches.md#batches-from-a-file) | `POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content` | API key; uploading a file needs `BATCH_MIN_ROLE` |
 | [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; setting up or changing a webhook needs `BATCH_MIN_ROLE` |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
+| Balance probes | `GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET /v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, `GET /v1/sub2api/billing` | API key. A spent quota still answers; these routes do not admit work |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None; upstream addresses only for an admin |
 | Public routing disclosure | `GET /routing` | None; upstream addresses only for an admin |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
@@ -549,6 +550,18 @@ those credentials and additionally includes unpublished routes.
 `/v1/models` shape-shifts by client: an Anthropic-family client calling it
 receives the Anthropic list response, while `/models` and `/openrouter/models`
 always return the OpenAI/OpenRouter shape.
+
+The balance probes answer the quota checks that new-api, one-api, sub2api and
+cc-switch run on a timer or on demand. Four of them report the money left under
+the tightest of the account's daily quota, its monthly quota when one is set,
+and the presented key's and project's budgets; `/v1/sub2api/billing` answers
+sub2api's rate-multiplier probe. A limit reads as spent once the request gate
+would refuse a request on it, so remaining is `0` exactly when a request would
+be refused, and a spent quota still answers HTTP 200. new-api disables a
+channel whose balance check reads `0` or less when the channel's automatic
+disabling is on, and enables it again only if its operator turned on automatic
+enabling. While user auth is disabled the same paths report an unlimited
+balance.
 
 ## Deployment shape
 

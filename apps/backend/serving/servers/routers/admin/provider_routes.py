@@ -1110,13 +1110,14 @@ def _edited_endpoint_id(
     new target implies, so health learned at one upstream never describes another.
     """
     canonical_url = _canonical_base_url(base_url)
-    if (
-        canonical_url is not None
-        and canonical_url == _canonical_base_url(current_adapter.config.base_url)
-        and _same_upstream_target(target, _upstream_provider(current_adapter))
-    ):
-        return endpoint_id_for_adapter(current_adapter)
-    return _make_provider_id(model_id, target.kind, base_url)
+    kind = target.kind
+    if _same_upstream_target(target, _upstream_provider(current_adapter)):
+        if canonical_url is not None and canonical_url == _canonical_base_url(
+            current_adapter.config.base_url
+        ):
+            return endpoint_id_for_adapter(current_adapter)
+        kind = getattr(current_adapter, "registered_kind", None) or kind
+    return _make_provider_id(model_id, kind, base_url)
 
 
 def _same_upstream_target(target: ProviderTarget, current_provider: str) -> bool:
@@ -2142,12 +2143,8 @@ def _preserve_route_semantics(
     route_metadata["upstream_provider"] = upstream_provider
     route_metadata["openrouter_sort"] = cfg.get("openrouter_sort")
 
-    # The caller already set cfg["provider"] to the upstream this target
-    # implies. For a route relabelled in models.yaml that would silently merge
-    # it back into the upstream's dashboard cohort and leave its own disable
-    # switch inert — and because persisted overrides are replayed through this
-    # path at every boot, the label would not come back on restart. Keep the
-    # label and re-pin the key pool to the (possibly new) upstream.
+    # A route relabelled in models.yaml keeps its dashboard label across
+    # updates and restarts. Its key pool follows the (possibly new) upstream.
     analytics_label = _relabelled_analytics_label(current_adapter)
     if analytics_label is not None:
         cfg["provider"] = analytics_label
@@ -3197,9 +3194,15 @@ async def _prepare_route_update(
         concurrency["limit"] = concurrency_limit_override
         cfg["concurrency"] = concurrency
 
-    provider_for_cfg = _model_config_provider_for_target(target)
-    cfg["provider"] = provider_for_cfg
-    _apply_target_adapter_defaults(cfg, target)
+    # The same provider keeps its registered protocol even when moving to
+    # a newly validated URL. Endpoint-specific capabilities are handled above.
+    registered_kind = getattr(current_adapter, "registered_kind", None)
+    if same_target and registered_kind:
+        adapter_kind = registered_kind
+    else:
+        adapter_kind = target.kind
+        cfg["provider"] = _model_config_provider_for_target(target)
+        _apply_target_adapter_defaults(cfg, target)
     _carry_endpoint_facts_if_unmoved(
         cfg,
         current_adapter=current_adapter,
@@ -3218,7 +3221,7 @@ async def _prepare_route_update(
         openrouter_sort=openrouter_sort,
     )
 
-    adapter = _make_adapter(target.kind, cfg)
+    adapter = _make_adapter(adapter_kind, cfg)
     _drop_unmappable_effort(adapter)
     if restoring:
         await _withhold_disabled_keys(
@@ -4726,6 +4729,7 @@ async def preview_reasoning_effort_preset(
     )
     base_url = _normalize_base_url(payload.base_url)
     provider_model_id = payload.provider_model_id.strip()
+    adapter_kind = target.kind
     if payload.model_route_path:
         _model_id, route_id, route = _split_model_route_path(services, payload.model_route_path)
         catalog_adapter = _effort_catalog_adapter(
@@ -4735,7 +4739,13 @@ async def preview_reasoning_effort_preset(
             return RouteLegacyEffortItem(
                 reasoning_efforts_published=adapter_effort_domain(catalog_adapter, legacy=True)
             )
-    preset = find_reasoning_effort_preset(target.provider, target.kind, provider_model_id, base_url)
+        entries = _raw_route_entries(route)
+        current_adapter = entries[_route_index_for_id(entries, route_id)][0]
+        if _same_upstream_target(target, _upstream_provider(current_adapter)):
+            adapter_kind = getattr(current_adapter, "registered_kind", None) or adapter_kind
+    preset = find_reasoning_effort_preset(
+        target.provider, adapter_kind, provider_model_id, base_url
+    )
     if preset is None:
         return None
     return RouteEffortPresetItem(label=preset.label, reasoning_effort_map=dict(preset.effort_map))

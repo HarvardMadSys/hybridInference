@@ -279,6 +279,8 @@ class BaseAdapter(ABC):
     # (``serving.model_effort_capabilities``); for any other the configuration
     # does not say what reaches the provider.
     forwards_reasoning_effort: bool = False
+    # Set by the factory; provider labels identify key pools and may differ.
+    registered_kind: str | None = None
 
     def __init__(self, config: ModelConfig):
         self.config = config

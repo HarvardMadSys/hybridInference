@@ -139,6 +139,26 @@ class RoutingConfig(BaseModel):  # type: ignore[no-any-unimported]
             raise ValueError("value must be non-negative")
         return v
 
+    @field_validator("default_router")
+    @classmethod
+    def _validate_default_router(cls, v: str) -> str:
+        """Refuse a name no router can be built under.
+
+        Startup builds a router with it for every model that omits ``router``
+        and stops on the first that fails, so an unknown name was saved without
+        complaint and then kept the gateway, its Admin console included, from
+        starting. Refused here, a save says why and a stored policy that names
+        one is reported instead of applied.
+        """
+        # Imported here: the strategy modules import the routers, which import
+        # this module.
+        from routing.strategies import strategy_name_problem
+
+        problem = strategy_name_problem(v)
+        if problem is not None:
+            raise ValueError(problem)
+        return v
+
     @model_validator(mode="after")
     def _warn_legacy_parameter(self) -> RoutingConfig:
         """Log a deprecation warning (once per load) for ``routing_parameter``."""

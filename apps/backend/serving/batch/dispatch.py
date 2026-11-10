@@ -50,6 +50,7 @@ import secrets
 from dataclasses import dataclass, replace
 from typing import Any
 
+import aiohttp
 import anyio
 from fastapi import HTTPException
 from pydantic import ValidationError
@@ -560,8 +561,15 @@ def _caused_by_timeout(exc: BaseException) -> bool:
     The chat surface answers an upstream timeout with the status it can find on
     the exception, 500 when there is none, and chains the timeout as the
     HTTPException's cause.
+
+    Not a connection that timed out opening (``aiohttp.ConnectionTimeoutError``,
+    a ``TimeoutError`` too): nothing was sent, so it says nothing about how long
+    a generation runs, and is retried like a refused connection.
     """
-    return isinstance(exc.__cause__, (TimeoutError, asyncio.TimeoutError))
+    cause = exc.__cause__
+    if isinstance(cause, aiohttp.ConnectionTimeoutError):
+        return False
+    return isinstance(cause, (TimeoutError, asyncio.TimeoutError))
 
 
 def _model_queued(exc: BaseException, message: str) -> DispatchResult:

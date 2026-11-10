@@ -26,7 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
-from serving.adapters.base import validate_deployment_type
+from serving.adapters.base import BaseAdapter, validate_deployment_type
 from serving.adapters.reasoning_effort import (
     EFFORT_MAP_FIELD,
     MAX_MAP_ENTRIES,
@@ -586,8 +586,10 @@ def _check_provider_label(
 
 
 def _make_adapter(kind: str, cfg: dict[str, Any]):
-    """Construct an adapter and resolve its defaults for the actual upstream."""
+    """Construct an adapter, retain its kind, and resolve its upstream defaults."""
     adapter = _build_adapter(kind, cfg)
+    if isinstance(adapter, BaseAdapter):
+        adapter.registered_kind = kind
     config = adapter.config
     config.reasoning_effort_declared = cfg.get(
         "reasoning_effort_declared",

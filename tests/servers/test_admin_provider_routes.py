@@ -1853,6 +1853,114 @@ async def test_verify_provider_route_update_does_not_apply(admin_client):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("destination", ["same", "registered", "unregistered"])
+async def test_verify_config_route_retains_registered_adapter_for_current_target(
+    admin_client, monkeypatch, destination
+):
+    from serving.config import reasoning_effort_presets as presets
+
+    client, op_store, route_executor, fake_routewise, verify_mock = admin_client
+    monkeypatch.setattr(presets, "_PRESETS", {})
+    model_id = "example-chat"
+    route_id = f"{model_id}:local-api"
+    provider = "example-hosted"
+    base_url = "http://example-internal.test:8000/v1"
+    adapter = _make_adapter(
+        "deepseek",
+        {
+            "id": model_id,
+            "name": "Example Chat",
+            "provider": "deepseek",
+            "base_url": base_url,
+            "chat_path": "/custom/chat/completions",
+            "endpoint_id": route_id,
+            "provider_model_id": "vendor/example-chat",
+            "api_key": "example-existing-fixture",
+            "route_metadata": {
+                "route_provider": provider,
+                "upstream_provider": provider,
+                "key_provider": provider,
+            },
+        },
+    )
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    route_executor.register_route(model_id, [(adapter, 1.0)])
+    op_store.get_provider_key_full.return_value = (provider, "example-candidate-fixture")
+
+    requested_url = base_url if destination == "same" else "https://replacement.example.test/v1"
+    if destination == "registered":
+        peer = _compat_adapter(
+            model_id="example-peer",
+            provider=provider,
+            endpoint_id="example-peer:remote-api",
+            base_url=requested_url,
+            provider_model_id="vendor/example-peer",
+        )
+        dynamic_keys.register_adapter_for_provider(provider, peer)
+        route_executor.register_route("example-peer", [(peer, 1.0)])
+        presets.register_reasoning_effort_preset(
+            provider=provider,
+            adapter_kind="deepseek",
+            provider_model_id="vendor/example-chat",
+            base_url=requested_url,
+            label="Replacement preset",
+            effort_map={"high": "xhigh"},
+        )
+        preview = await client.post(
+            "/admin/routing/reasoning-effort-preset",
+            json={
+                "provider": provider,
+                "base_url": requested_url,
+                "provider_model_id": "vendor/example-chat",
+                "model_route_path": f"{model_id}/{route_id}",
+            },
+            headers=AUTH,
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["reasoning_effort_map"] == {"high": "xhigh"}
+    validate_url = AsyncMock(wraps=provider_routes._validate_base_url)
+    monkeypatch.setattr(provider_routes, "_validate_base_url", validate_url)
+
+    response = await client.post(
+        f"/admin/routing/provider-route-verifications/{model_id}/{route_id}",
+        json={
+            "upstream_provider": provider,
+            "base_url": requested_url,
+            "api_key_id": "example-key-id",
+            "provider_model_id": "vendor/example-chat",
+        },
+        headers=AUTH,
+    )
+
+    if destination == "same":
+        validate_url.assert_not_awaited()
+    else:
+        validate_url.assert_awaited_once_with(requested_url)
+
+    if destination == "unregistered":
+        assert response.status_code == 422, response.text
+        assert "where no route of that provider sends them" in response.json()["detail"]
+        verify_mock.assert_not_awaited()
+    else:
+        assert response.status_code == 200, response.text
+        verify_mock.assert_awaited_once()
+        candidate = verify_mock.await_args.args[0].adapter
+        assert candidate is not adapter
+        assert candidate.config.base_url == requested_url
+        assert candidate.config.provider == "deepseek"
+        assert candidate.config.provider_profile == "deepseek"
+        assert candidate.config.chat_path == "/custom/chat/completions"
+        assert candidate._key_pool.snapshot_keys() == ["example-candidate-fixture"]
+        expected_endpoint = route_id if destination == "same" else f"{model_id}:deepseek-api"
+        assert candidate.config.endpoint_id == expected_endpoint
+        if destination == "registered":
+            assert candidate.config.reasoning_effort_preset_map == {"high": "xhigh"}
+    assert route_executor.routes[model_id].adapters[0][0] is adapter
+    op_store.upsert_provider_route_config.assert_not_awaited()
+    fake_routewise.refresh_route_table.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_put_provider_route_verify_failure_does_not_apply(admin_client):
     client, op_store, route_executor, fake_routewise, verify_mock = admin_client
     op_store.get_provider_key_full.return_value = ("openrouter", "openrouter-db-key-1234567890")

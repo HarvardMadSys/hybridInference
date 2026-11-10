@@ -22,6 +22,7 @@ from serving.admin.provider_key_probe import (
 )
 from serving.config.settings import ROLE_RANK
 from serving.servers.deps import AppServices
+from serving.servers.registry import _make_adapter
 from serving.servers.routers import admin as admin_router
 from serving.storage.base import ProviderKeyRow
 
@@ -512,6 +513,83 @@ async def test_verify_provider_key_dry_run_does_not_persist_or_seed_pool(client)
         max_tokens=1,
         temperature=0,
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("upstream_status", [200, 403])
+async def test_verify_provider_key_uses_registered_kind_for_custom_label(
+    client, monkeypatch, upstream_status
+):
+    http, store = client
+    provider = "example-cloud"
+    base_url = "https://api.example.test/proxy"
+    old_key = "example-existing-fixture"
+    candidate_key = "example-candidate-fixture"
+    adapter = _make_adapter(
+        "openai_compat",
+        {
+            "id": "example-chat",
+            "name": "Example Chat",
+            "provider": provider,
+            "base_url": base_url,
+            "chat_path": "/chat/completions",
+            "provider_model_id": "vendor/example-chat",
+            "api_keys": [old_key],
+        },
+    )
+    # A different key pool owns a route with the same display label. Even
+    # stale metadata claiming the requested provider cannot override its binding.
+    other_adapter = _make_adapter(
+        "openai_compat",
+        {
+            "id": "example-local",
+            "name": "Example Local",
+            "provider": provider,
+            "base_url": "https://different.example.test/v1",
+            "route_metadata": {"key_provider": provider},
+        },
+    )
+    dynamic_keys.register_adapter_for_provider("example-local", other_adapter)
+    dynamic_keys.register_adapter_for_provider(provider, adapter)
+    store.services.router.routes = {
+        "example-local": SimpleNamespace(adapters=[(other_adapter, 1.0)]),
+        "example-chat": SimpleNamespace(adapters=[(adapter, 1.0)]),
+    }
+
+    seen = []
+
+    async def upstream(probe_adapter, _messages, **_kwargs):
+        seen.append(probe_adapter)
+        if upstream_status == 403:
+            raise aiohttp.ClientResponseError(
+                request_info=MagicMock(), history=(), status=403, message="Forbidden"
+            )
+        return {"id": "verified"}
+
+    monkeypatch.setattr(OpenAICompatAdapter, "chat_completion", upstream)
+    response = await http.post(
+        "/admin/provider-keys/verify",
+        json={"provider": provider, "api_key": candidate_key},
+        headers=AUTH,
+    )
+
+    if upstream_status == 200:
+        assert response.status_code == 200
+        assert response.json() == {"ok": True}
+    else:
+        assert response.status_code == 400
+        assert "HTTP 403" in response.json()["detail"]
+        assert candidate_key not in response.text
+    assert len(seen) == 1
+    probe_adapter = seen[0]
+    assert probe_adapter is not adapter
+    assert probe_adapter.config.api_key == candidate_key
+    assert probe_adapter.config.api_keys is None
+    assert probe_adapter.config.base_url == base_url
+    assert probe_adapter.config.chat_path == "/chat/completions"
+    assert probe_adapter.config.provider_model_id == "vendor/example-chat"
+    assert adapter._key_pool.snapshot_keys() == [old_key]
+    assert not store.rows
 
 
 @pytest.mark.asyncio
@@ -1025,6 +1103,57 @@ async def test_revoking_a_key_a_runtime_route_pins_takes_it_out_of_every_pool_at
     assert resp.json()["pools_updated"] == 2
     assert pinned_key not in runtime_route._key_pool.snapshot_keys()
     assert configured._key_pool.snapshot_keys() == ["zai-env-key-dddddddddddd"]
+
+
+@pytest.mark.asyncio
+async def test_re_enabling_a_key_a_runtime_route_pins_restores_it_to_that_route_at_once(client):
+    """Disabling a pinned key takes it out of its route at once; enabling puts it back at once.
+
+    The route opts out of provider-wide key injection, so the re-enable skipped
+    it and the key returned to the route only at the next routing refresh. A
+    route pinned to another key must still not receive it.
+    """
+    http, _store = client
+    pinned_key = "zai-pinned-db-key-eeeeeeeeeeee"
+    other_key = "zai-other-db-key-ffffffffffff"
+    configured = _registered_provider_adapter("zai", api_key="zai-env-key-gggggggggggg")
+    dynamic_keys.register_adapter_for_provider("zai", configured)
+    key_ids = {}
+    for key in (pinned_key, other_key):
+        add = await http.post(
+            "/admin/provider-keys", json={"provider": "zai", "api_key": key}, headers=AUTH
+        )
+        key_ids[key] = add.json()["key"]["id"]
+
+    def pinned_route(key: str) -> OpenAICompatAdapter:
+        adapter = OpenAICompatAdapter(
+            ModelConfig(
+                id=f"runtime-model-{key_ids[key]}",
+                name="runtime-model",
+                provider="zai",
+                base_url="https://zai.example/v1",
+                api_keys=[key],
+                provider_model_id="Provider/Test-Model",
+            )
+        )
+        dynamic_keys.register_adapter_for_provider(
+            "zai", adapter, allow_db_key_injection=False, api_key_id=key_ids[key]
+        )
+        return adapter
+
+    route = pinned_route(pinned_key)
+    other_route = pinned_route(other_key)
+    disable = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/disable", headers=AUTH)
+    assert disable.status_code == 200, disable.text
+    assert pinned_key not in route._key_pool.snapshot_keys()
+
+    resp = await http.post(f"/admin/provider-keys/{key_ids[pinned_key]}/enable", headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["pools_updated"] == 2
+    assert route._key_pool.snapshot_keys() == [pinned_key]
+    assert pinned_key in configured._key_pool.snapshot_keys()
+    assert other_route._key_pool.snapshot_keys() == [other_key]
 
 
 @pytest.mark.asyncio

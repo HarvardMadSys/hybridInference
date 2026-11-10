@@ -91,6 +91,10 @@ any limit allows, usually a long or repetitive output with a large
 count toward pausing the model, which several failures in a row do: one
 runaway request says nothing about the model's health.
 
+A connection that times out while it is being opened is not such a timeout:
+nothing reached the provider, so the request is retried like any other request
+to a provider that cannot be reached.
+
 If a provider's response cannot be encoded as valid JSON and UTF-8, the request
 fails permanently with `upstream_error` (`502`). It is not retried, and any
 known charge remains recorded.

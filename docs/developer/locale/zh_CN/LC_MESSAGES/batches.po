@@ -260,6 +260,10 @@ msgstr ""
 "单个失控的请求并不能说明模型的健康状况。"
 
 #: ../developer/batches.md:94
+msgid "A connection that times out while it is being opened is not such a timeout: nothing reached the provider, so the request is retried like any other request to a provider that cannot be reached."
+msgstr "建立连接时超时则不属于这类超时：请求根本没有到达 provider，因此会像发往任何无法连接的 provider 的请求一样被重试。"
+
+#: ../developer/batches.md:94
 msgid "If a provider's response cannot be encoded as valid JSON and UTF-8, the request fails permanently with `upstream_error` (`502`). It is not retried, and any known charge remains recorded."
 msgstr "如果 provider 的响应无法编码为有效的 JSON 和 UTF-8，该请求会以 `upstream_error`（`502`）永久失败，不再重试；已知的费用仍会记录。"
 

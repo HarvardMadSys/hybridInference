@@ -59,11 +59,15 @@ router = APIRouter()
 
 def _catalog_pricing(config: Any) -> dict[str, str]:
     try:
-        return effective_pricing(config) or {}
+        pricing = effective_pricing(config) or {}
     except PricingUnavailableError:
         # A missing official quote is unknown, never a free rate. Keep the
         # model discoverable while inference fails before creating usage.
         return {}
+    # Listed as text, as the catalog's examples write prices. A catalog that
+    # writes them as JSON numbers is accepted and billed from (the cost reads
+    # each with float()), and one such model made the whole listing a 500.
+    return {str(key): str(value) for key, value in pricing.items()}
 
 
 # Fixed creation timestamp captured at import time to ensure
