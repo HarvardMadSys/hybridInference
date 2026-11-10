@@ -85,6 +85,24 @@ async def test_is_user_auth_enabled_tracks_the_stored_value(monkeypatch, clock) 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stored", "expected"),
+    [("on", True), ("ON", True), (" true ", True), ("Yes", True), ("off", False), ("0", False)],
+)
+async def test_a_stored_boolean_reads_as_every_spelling_a_restore_accepts(stored, expected):
+    """A configuration restore stored the word the backup held, ``on`` included.
+
+    Only ``true``, ``1`` and ``yes`` read as true, so ``user_auth_enabled``
+    restored as ``on`` turned API-key authentication off.
+    """
+    runtime = RuntimeSettings(_store([_row("user_auth_enabled", stored, "bool")]))
+
+    await runtime.refresh()
+
+    assert runtime.get_cached("user_auth_enabled") == (True, expected)
+
+
+@pytest.mark.asyncio
 async def test_an_unreadable_row_keeps_the_previous_value() -> None:
     store = _store([_row("user_concurrency_free", "5", "int")])
     runtime = RuntimeSettings(store)
