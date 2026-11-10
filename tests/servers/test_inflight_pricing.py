@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock
+from unittest.mock import ANY, AsyncMock
 
 import pytest
 from fastapi import FastAPI
@@ -126,7 +126,9 @@ async def test_inflight_request_keeps_its_price(
         await asyncio.wait_for(logged.wait(), 3)
         if tracker._background_tasks:
             await asyncio.gather(*tracker._background_tasks)
-        store.increment_user_cost.assert_awaited_once_with("test-user", pytest.approx(0.0002))
+        store.increment_user_cost.assert_awaited_once_with(
+            "test-user", pytest.approx(0.0002), day=ANY, api_key_id=None, requests=1
+        )
         log = mock_log_store.log_request.call_args.kwargs
         assert log["pricing"] == {"prompt": "2", "completion": "0"}
         assert log["upstream_cost_usd"] == pytest.approx(0.0002)

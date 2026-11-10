@@ -17,21 +17,31 @@ request to the adapter it chose is in [Routing Internals](routing-internals.md).
 The routing file's `default_router:` names the strategy for models that do not
 choose one. A model entry in the registry overrides it:
 
-```yaml
-models:
-  - id: <model-id>
-    provider: openai_compat
-    router: fixed            # strategy name; omit to use default_router
-    route:
-      - kind: openai_compat
-        weight: 0.7
-        base_url: http://localhost:8000/v1
-        provider_model_id: <served-model-name>
-      - kind: openai_compat
-        weight: 0.3
-        base_url: https://api.your-provider.example/v1
-        api_key: ${YOUR_PROVIDER_API_KEY}
-        provider_model_id: <upstream-model-id>
+```json
+{
+  "models": [
+    {
+      "id": "<model-id>",
+      "provider": "openai_compat",
+      "router": "fixed",
+      "route": [
+        {
+          "kind": "openai_compat",
+          "weight": 0.7,
+          "base_url": "http://localhost:8000/v1",
+          "provider_model_id": "<served-model-name>"
+        },
+        {
+          "kind": "openai_compat",
+          "weight": 0.3,
+          "base_url": "https://api.your-provider.example/v1",
+          "api_key": "${YOUR_PROVIDER_API_KEY}",
+          "provider_model_id": "<upstream-model-id>"
+        }
+      ]
+    }
+  ]
+}
 ```
 
 Two strategies are registered out of the box:
@@ -44,9 +54,11 @@ Two strategies are registered out of the box:
 - **`routewise`** — a cost-aware strategy that lives in a separate package; see
   [RouteWise](#routewise) below.
 
-`router_params:` holds settings for the chosen strategy. An unknown strategy
-name stops startup with a message listing the known strategies, and a key the
-strategy does not accept stops it with a message naming that key. `ENABLE_ROUTEWISE=true` is an older switch that makes
+`router_params:` holds settings for the chosen strategy. Admin refuses a
+catalog that names an unknown strategy, with a message listing the known
+strategies, or a key the strategy does not accept, with a message naming that
+key. A stored catalog with either registers no catalog model and logs the same
+message. `ENABLE_ROUTEWISE=true` is an older switch that makes
 `routewise` the default when the routing file leaves `default_router` at
 `fixed`.
 
@@ -91,7 +103,7 @@ route is not in that order: it comes next after an attempt that waited out its
 queue budget or its engine's first token, and last otherwise (see
 [Queue-wait offload](#queue-wait-offload)).
 
-Two deliberate exceptions:
+Four deliberate exceptions:
 
 - **A pinned request never falls back.** The caller asked for one endpoint, so
   a silent switch would produce a misleading result.
@@ -99,6 +111,29 @@ Two deliberate exceptions:
   Splicing a second provider into a committed SSE stream would duplicate role
   events, switch voice mid-message, and produce mismatched usage totals; the
   truncated stream is the lesser harm.
+- **A request two routes refuse as malformed stops there.** A 400 or 422 is
+  usually the answering server's own verdict, so the walk goes on after the
+  first one; after a second it stops, and the request is reported as if every
+  route had failed. Otherwise every malformed request reached every weighted
+  route, a 1% fallback or a canary included. A context-window refusal does not
+  count: fallback already passes over every route whose window is no wider and
+  keeps the wider ones. Nor does a 404 or a 413, which usually describes the
+  route that answered (a model that server does not serve, a proxy's body
+  limit), so the walk goes on to the routes that may serve it. The stop is
+  logged as `request_refusal_fallback_stopped`; the hybrid composition walks its
+  plan under the same bound.
+- **A request the endpoints fail on reaches at most two more routes.** A 5xx,
+  or a connection dropped once open, after the request left the gateway is
+  what an engine that crashed, ran out of memory or restarted on the request
+  looks like, and such a request does the same to the next engine. Once one
+  endpoint has failed on it that way, at most two more routes are tried, which
+  still covers one or two routes down with a healthy one behind them. Only the
+  first of those failures is charged to a circuit breaker: charged to every
+  route, three such requests opened every circuit of a model for a cooldown. A
+  route that refuses the connection, and a request that never left the
+  gateway, count for neither rule. The stop is logged as
+  `endpoint_fault_fallback_stopped` and a charge left off as
+  `repeat_fault_skip_breaker`.
 
 Successful responses carry a `_routing` blob (`provider`, `base_url`,
 `endpoint_id`, plus `fallback` and `failed_attempts` when a fallback ran) so
@@ -172,8 +207,8 @@ weight, the effective weight, and a `reasons` list:
 |---|---|---|
 | `weight_override` | a `provider_weight_overrides` row for that (model, endpoint) | admin console → routing weights |
 | `provider_disabled` | a `disabled_providers` row for that provider label | admin console → providers |
-| `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `routing.yaml` |
-| `configured_zero` | `weight: 0` in the model registry | the overlay's `models.yaml` |
+| `routing_yaml` | the local/remote split `RoutingManager` applies once at boot | the overlay's `ROUTING_POLICY` |
+| `configured_zero` | `weight: 0` in the model registry | the overlay's `MODEL_CATALOG` |
 
 `routing_yaml` appears only on a gateway without a database. With one, the
 routing file's local/remote split never reaches the weights; see
@@ -214,8 +249,17 @@ selection signal.
   route".
 - Un-cached size is estimated from the caller's last completed prompt on that
   endpoint, so a warm continuation is not mistaken for a cold mega-prefill.
+  Those hints are forgotten for an endpoint that fails with a 5xx or with no
+  answer at all, which is what a restart or an OOM looks like; an endpoint that
+  answered a 4xx (a 429 included), or that the request never reached, keeps
+  them.
 - A lease is released at the first token, not at end of stream: a long cheap
   decode is not prefill pressure.
+- A lease is taken when selection commits, so concurrent selections spread,
+  but it counts toward the affinity ceiling only once its request has left the
+  gateway. A request still fetching remote media or waiting for an outbound
+  slot is in no engine's queue. No lease counts for more than its route's
+  context window, the most one request can make an engine prefill.
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -223,7 +267,7 @@ selection signal.
 | `ROUTING_PREFILL_INTERVENE_TOKENS` | `50000` | Backlog at which load starts overriding the weighted draw. |
 | `ROUTING_PREFILL_ELEPHANT_TOKENS` | `200000` | Estimated un-cached tokens at which a prompt counts as an elephant. |
 | `ROUTING_PREFILL_ELEPHANT_LIMIT` | `1` | Concurrent elephants allowed per endpoint. |
-| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which an affinity pin is abandoned. |
+| `ROUTING_PREFILL_AFFINITY_CEILING` | `150000` | Backlog above which a request skips its affinity pin. |
 | `ROUTING_PREFILL_HINT_TTL_SEC` | `1200` | Lifetime of the per-(caller, endpoint) prompt-size memory. |
 
 This module never blocks, rejects, or queues a request. The worst it does is
@@ -265,9 +309,10 @@ the admin playground) publishes nothing and shares one anonymous binding.
 4. If the pinned endpoint is no longer admissible — weight `0`, or its circuit
    is open — the entry is dropped and a fresh weighted pick runs.
 5. If the pinned endpoint's prefill backlog is above
-   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is abandoned for this request and
-   selection re-runs *excluding* that endpoint, then re-pins to whatever it
-   picks. A pin is a cache-locality optimisation, not a promise to queue.
+   `ROUTING_PREFILL_AFFINITY_CEILING`, the pin is skipped for this request and
+   selection re-runs *excluding* that endpoint. The pin stays, so the next
+   request returns to the endpoint holding the caller's prefix. A pin is a
+   cache-locality optimisation, not a promise to queue.
 6. After the TTL elapses with no traffic the entry expires. Expired entries are
    swept lazily once the table exceeds `AFFINITY_SWEEP_THRESHOLD` (1000).
 7. However busy its caller, a pin lasts at most one day from when it was made
@@ -290,13 +335,17 @@ the admin playground) publishes nothing and shares one anonymous binding.
 
 The gateway limits how many requests it keeps open at once against each
 provider account — one limit per provider label and API key — and queues the
-rest. The limit adapts: it starts at `UPSTREAM_CONCURRENCY_INITIAL_LIMIT`,
-drops by one each time the provider answers `429`, and rises by one after every
-`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, up to
-`UPSTREAM_CONCURRENCY_MAX_LIMIT`. A request that cannot get a slot within
-`UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over to the model's next
-route, and is not counted against the endpoint's circuit breaker: the provider
-never saw it.
+rest. A route with several keys sends a request on another of its keys that
+has room before it queues one. The limit adapts: it starts at
+`UPSTREAM_CONCURRENCY_INITIAL_LIMIT`, drops by one each time the provider
+answers `429`, and rises by one after every
+`UPSTREAM_CONCURRENCY_PROBE_SUCCESS_INTERVAL` successful responses, or with the
+first success a minute after it last changed, up to
+`UPSTREAM_CONCURRENCY_MAX_LIMIT`. Each rise the provider answers with a `429`
+doubles that minute, up to 32 minutes, until a rise holds. A request that
+cannot get a slot within `UPSTREAM_CONCURRENCY_ACQUIRE_TIMEOUT_SEC` fails over
+to the model's next route, and is not counted against the endpoint's circuit
+breaker: the provider never saw it.
 
 Self-hosted engines bypass the provider-key limit because they schedule their
 own work. Set `deployment_type: self_hosted` on a route to an engine you operate,
@@ -378,7 +427,9 @@ that token (`apps/backend/routing/engine_wait.py`):
   held for a local engine, is bounded by the queue wait instead. Anything the
   engine sends before its first token, such as a
   role-only delta, is held back until the token arrives, so a client never sees
-  the attempt that was abandoned.
+  the attempt that was abandoned. At most 1 MB is held, the bound the RouteWise
+  hedge race applies: past it the held output goes out, which commits the
+  stream to that engine and ends the wait (`first_token_hold_cap_reached`).
 - **Back to the engine.** If the offload route fails too, the request goes back
   to the engine it left, once, after every other candidate, and this time waits
   as long as the engine needs.
@@ -563,7 +614,7 @@ message saying the package is missing.
 
 For a registry you can run unedited against two loopback providers, with every
 option annotated, see
-[`config/examples/models.routewise.yaml`](../../config/examples/models.routewise.yaml).
+[`config/examples/models.routewise.json`](../../config/examples/models.routewise.json).
 
 **RouteWise needs latency measurements.** Until it has measured an endpoint,
 it cannot tell which one is faster, so it sends everything to the cheapest —
@@ -602,18 +653,51 @@ Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
 
-RouteWise does not read prefill load: the latency estimates used by its LP and
-hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that
-withdrawn feature — `prefill_load_routing_enabled`,
-`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
-accepted so an older registry keeps starting, but they have no effect whatever
-their value, and the backend logs a warning naming them once per process.
-Remove them from `models.yaml`. FixedRouter's
-[prefill-aware selection](#prefill-aware-selection) is unchanged.
+RouteWise does not read prefill load for its LP and hedge choice: those
+estimates carry no backlog penalty. The three keys of that withdrawn feature —
+`prefill_load_routing_enabled`, `prefill_load_scale_ms_per_1k` and
+`prefill_load_max_penalty_ms` — are still accepted so an older registry keeps
+starting, but they have no effect whatever their value, and the backend logs a
+warning naming them once per process. Remove them from `MODEL_CATALOG`.
+FixedRouter's [prefill-aware selection](#prefill-aware-selection) is unchanged.
+
+RouteWise does take a prefill lease on one thing: a route that sets
+`priority_scheduling: true`. That lease carries the un-cached prefill estimate
+the upstream scheduling priority is derived from, so the priority reflects the
+work the request actually imposes. Without that flag RouteWise takes no lease
+and publishes no priority, and the backend uses its own default priority for
+those models — exactly as before.
 
 `latency_min_samples` is accepted the same way. Provider selection never read
 it, so it was removed, and a registry that still sets it starts with the same
 warning.
+
+**Hedging.** With `latency_hedge_mode: probability_target`, a request whose
+primary has not started answering by a checkpoint may be raced against a
+backup on another endpoint. The checkpoints read each endpoint's latency
+window, which describes requests of the usual size, so RouteWise also fits each
+endpoint's time to first token against prompt size and expects a longer prompt
+to start later by its extra prefill, on the backup as on the primary: a prompt
+that is merely long to prefill is not sent to a second endpoint to be
+prefilled again. A primary that refuses the request as malformed (a refusal
+FixedRouter's two-refusal bound counts) or as too long for its context window
+gets no backup, and RouteWise stops re-solving once two endpoints have refused
+a request as malformed, the bound FixedRouter applies. The stream race's
+60-second deadline is recorded as a failed attempt of each leg still open, but
+is charged to neither circuit breaker.
+
+**Route weights.** RouteWise does not split traffic by weight. It chooses each
+request's route by cost and latency, and every route with a weight above `0` is
+a full candidate that can take any share of the traffic: a route weighted for a
+small share, such as a 1% staging canary or a last-resort fallback, becomes a
+peer like any other. Set such a route's weight to `0` to keep it out of
+RouteWise. `optional: true` does not mark a canary; it only decides whether a
+route whose environment is unset is skipped at startup. Switching a model to
+`routewise` in the admin console is therefore refused while any of its routes
+has a weight above `0` but below the model's heaviest route, and the router
+logs `routewise_route_weights_ignored` when such a weighting reaches a
+`routewise` model another way: `MODEL_CATALOG`, a weight override or a new route.
+A persisted switch is still applied at startup and on a configuration restore.
 
 **Quota sources.** `quota_source:` is a selector, not a fetcher. It names
 `provider` / `usage_label` / `unit`, and `_find_usage` matches all three
@@ -630,7 +714,7 @@ The route's `kind:` chooses its inference protocol; its `provider:` identifies
 the deployment's service/account and can differ from the kind. The fetcher
 must measure the account used by the corresponding routes, whether it uses
 their inference key or a separate billing credential. The
-[local quota example](../../config/examples/models.routewise.quota.yaml) uses
+[local quota example](../../config/examples/models.routewise.quota.json) uses
 `kind: openai_compat` with `provider: example_quota` and a matching registered
 source. It runs without a real supplier account; the default two-provider
 example remains unchanged until this separate registry is selected.
@@ -659,7 +743,7 @@ host, otherwise a name taken from the hostname (`api.minimax.io` →
 an edit that changes that derived part — a new port locally, a new vendor
 hostname remotely — renames the endpoint and restarts its latency profile,
 while one that does not (moving between local hosts on the same port) keeps it.
-A `route_id:` in a static `models.yaml` never overrides it; that field belongs
+A `route_id:` in a static `MODEL_CATALOG` never overrides it; that field belongs
 to the admin provider-routes API.
 
 **Cold start.** A quota-bearing route needs a calibrated cost envelope, built
@@ -735,10 +819,10 @@ Each key in a `KeyPool` (`apps/backend/serving/adapters/key_pool.py`) carries a
   hard-fail a request another route could serve.
 
 The caller's role reaches the pool through the request context, published by
-the API-key auth dependency. Requests with no user identity — health probes,
-warmups, the admin playground — carry no role and are treated as unrestricted:
-reservation withholds capacity from lower *tiers*, not from the gateway's own
-machinery.
+the API-key auth dependency, and by the playground for the console user it
+serves. Requests with no user identity — health probes, warmups — carry no role
+and are treated as unrestricted: reservation withholds capacity from lower
+*tiers*, not from the gateway's own machinery.
 
 **Managing it.** Reservation is declared through the admin API rather than an
 env var, because pool membership comes from each route's `api_keys` list, which
@@ -786,25 +870,51 @@ served exactly as a request naming that model would be.
 Tiers are defined in an `auto:` section of the model registry, next to
 `models:`:
 
-```yaml
-auto:
-  default_profile: balance        # what a request for plain `auto` gets
-  session:
-    idle_timeout_seconds: 1800
-    max_sessions: 10000
-  profiles:
-    intelligence:
-      candidates:
-        - {model: <frontier-model>, reasoning_effort: high}
-        - {model: <mid-model>, reasoning_effort: high}
-    balance:
-      candidates:
-        - {model: <mid-model>}
-        - {model: <frontier-model>}
-    fast:
-      candidates:
-        - {model: <small-model>}
-        - {model: <mid-model>, reasoning_effort: low}
+```json
+{
+  "auto": {
+    "default_profile": "balance",
+    "session": {
+      "idle_timeout_seconds": 1800,
+      "max_sessions": 10000
+    },
+    "profiles": {
+      "intelligence": {
+        "candidates": [
+          {
+            "model": "<frontier-model>",
+            "reasoning_effort": "high"
+          },
+          {
+            "model": "<mid-model>",
+            "reasoning_effort": "high"
+          }
+        ]
+      },
+      "balance": {
+        "candidates": [
+          {
+            "model": "<mid-model>"
+          },
+          {
+            "model": "<frontier-model>"
+          }
+        ]
+      },
+      "fast": {
+        "candidates": [
+          {
+            "model": "<small-model>"
+          },
+          {
+            "model": "<mid-model>",
+            "reasoning_effort": "low"
+          }
+        ]
+      }
+    }
+  }
+}
 ```
 
 Each profile is served as `auto-<name>`. The auto models exist only while the
@@ -894,19 +1004,19 @@ The design is in
 | `POST /v1/chat/completions` | Chat completion with automatic routing. |
 | `GET /health` | Liveness plus a `routes_configured` count. |
 | `GET /health/deep` | Per-endpoint availability, circuit state, and `route_exclusions`. |
-| `GET /routing` | Current weight distribution per model, plus the probe's `endpoint_health` map. |
+| `GET /routing` | Current weight distribution per model; for an administrator, also each route's `base_url` and the probe's `endpoint_health` map. |
 
-```{warning}
-`GET /routing` requires no authentication and returns, for every published
-model, each route's `provider`, **`base_url`**, and weight. On a public host
-that discloses your upstream topology — including private LAN addresses and
-any internal hostnames in a route's base URL. Put it behind your reverse proxy,
-or do not expose it.
-
-`GET /health/deep` is unauthenticated on the same terms: its `providers` keys
-are `endpoint_id`s (`<model-id>:<location>`), and each `route_exclusions` entry
-carries that route's `base_url` too. Gate both, not just `/routing`.
-```
+`GET /routing` and `GET /health/deep` require no authentication. Anonymously,
+`/routing` returns each published route's `provider` and weight, and
+`/health/deep` keys its `providers` by `endpoint_id` (`<model-id>:<location>`)
+and lists `route_exclusions` without their upstream. Where requests go — each
+route's `base_url`, and the probe's `endpoint_health` map, keyed by endpoint
+URL — is shown only to a caller that sends an administrator's JWT or
+`ADMIN_TOKEN` as `Authorization: Bearer ...`. Any other credential, valid or
+not, gets the anonymous answer with the same status code. An `endpoint_id` can
+still carry a local port or a host's first label (`local-12003`, `10-api`);
+gate both paths at your reverse proxy if even that is too much for your
+deployment.
 
 Runtime administration lives under `/admin/...`, requires admin
 authentication, and is backed by the operational store. The routing-related
@@ -920,7 +1030,8 @@ endpoints:
 | `POST /admin/routing/provider-route-candidates/{model_id}` | Add a route to a model; `PATCH` and `DELETE` on `.../{model_id}/{route_id}` edit or remove it. |
 | `PUT /admin/routing/provider-routes/{model_id}/{route_id}` | Retarget a registry route; `DELETE` restores the YAML route. |
 | `PATCH /admin/routing/provider-route-states/{model_id}/{route_id}` | Disable or enable a route of either source; a disabled route keeps its weights but takes no request, retry, fallback or offload. |
-| `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; models.yaml is not changed. |
+| `PATCH /admin/routing/provider-route-batch/{model_id}/{route_id}` | Allow or forbid batch work on a route, or let it follow its locality (`null`): see [Which routes batch work may use](batches.md#which-routes-batch-work-may-use). |
+| `POST` / `DELETE /admin/routing/provider-route-removals/{model_id}/{route_id}` | Delete a registry route from this deployment, or restore it; the catalog baseline is not changed. |
 | `PUT` / `DELETE /admin/routing/weights/{model_id}/{endpoint_id}` | Set or clear a weight override. |
 | `PATCH /admin/routing/provider-route-strategies/{model_id}` | Switch a model's router. |
 | `GET /admin/routing/offload-routes` | Every model's offload route and whether routing applies it; `PUT` / `DELETE .../{model_id}` sets or clears one — see [Queue-wait offload](#queue-wait-offload). |
@@ -941,7 +1052,7 @@ Four pieces, all under `apps/backend/routing/`:
 | Deployment-wide weight strategy | `manager.py` + `strategies/weight.py` | Reads the routing file and rewrites each model's per-route weights from a local/remote split. Optional. |
 | Per-model router selection | `model_router_registry.py` + `strategies/__init__.py` | Maps each model id to a `RouterProtocol` implementation, chosen by that model's `router:` field. |
 | Routing | `routers.py` (`FixedRouter`), `routewise/`, `hybrid.py` (`HybridRouter`) | Chooses the endpoint for a request, admits it against capacity, walks the fallback order, and records endpoint health. |
-| Execution | `backends.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
+| Execution | `backends.py` (public re-exports), `backends_contract.py`, `backends_leaf.py`, `backends_tree.py`, `backends_domains.py`, `backends_routewise.py` + `dispatch.py` | Runs the one endpoint the router already chose, or delegates the request to a pool that chooses inside its own declared range. |
 
 How the router hands a request to the adapter it chose, and the experimental
 composition that plans across a local and a cloud pool, are described in
@@ -991,7 +1102,23 @@ execution failure may try another candidate), `bound_endpoint` (the resolved
 adapter binding), `require_target`, and `required_modalities`.
 `RoutingObservation` (`routers.py`) is how the serving layer reports a
 completed request — endpoint id, TTFT, total latency, token counts, success,
-and a `strategy_metadata` dict the strategy itself populated during selection.
+the upstream HTTP status of a failure (`status_code`, when it had one), whether
+the failure is one no endpoint is charged with (`uncharged`), and a
+`strategy_metadata` dict the strategy itself populated during selection.
+RouteWise learns only what an attempt shows about its endpoint. Its latency
+sample is the attempt's own time to first content, which the router measures
+from that attempt's dispatch (a hedge leg's from its own start) and returns in
+`strategy_metadata`. It prefers that over the observation's TTFT, which can
+include gateway work and a hedge's delay, and never reads total latency, which
+is mostly the generation a caller asked for: a non-streaming success counts
+toward an endpoint's error share but not toward its latency mean. RouteWise
+leaves a failure whose status blames the request itself (the breaker's
+client-error rule: a 4xx other than 408, 429, 401 and 407) out of its latency
+profiles, and likewise a failure of an attempt it saw complete, such as an
+empty completion, and an uncharged one. An uncharged failure means this gateway
+refused the attempt before sending it — no outbound slot, no usable key for
+the caller — so RouteWise re-solves over the other candidates instead of
+failing the request.
 A stateless strategy returns `None` from `record_observation`; an
 online-learning one updates its model there.
 
@@ -1230,18 +1357,26 @@ handled.
 
 Per model, in the model registry:
 
-```yaml
-models:
-  - id: <model-id>
-    router: round_robin
-    router_params:
-      skip_open_circuits: true
+```json
+{
+  "models": [
+    {
+      "id": "<model-id>",
+      "router": "round_robin",
+      "router_params": {
+        "skip_open_circuits": true
+      }
+    }
+  ]
+}
 ```
 
 Or deployment-wide, in the routing file:
 
-```yaml
-default_router: round_robin
+```json
+{
+  "default_router": "round_robin"
+}
 ```
 
 Note that `RoutingManager.apply()` only rewrites weights when the effective

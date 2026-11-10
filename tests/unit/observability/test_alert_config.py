@@ -269,6 +269,8 @@ def test_overlay_alerts_yaml_block_parses_exactly(tmp_path: Path):
         "window_sec": 600,
         "threshold_count": 12,
         "cooldown_sec": 3600,
+        # Not in the block: one caller's burst pages, as it always has.
+        "min_distinct_callers": 1,
     }
     assert rules.stream_failure_rate.model_dump() == {
         "enabled": True,

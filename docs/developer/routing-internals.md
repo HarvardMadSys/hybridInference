@@ -230,12 +230,15 @@ between scopes per request. After local admission is refused, a future Greedy
 router can delegate cloud selection to a `TreeBackend`, whose inner RouteWise
 router owns cloud selection, retries and hedging.
 
-What is missing is the entry point, not the pool below it. `TreeBackend` and
-`RouteWiseCloudBackend` are in `apps/backend/routing/backends.py` today, and
+What is missing is the entry point, not the pool below it. `TreeBackend` is in
+`apps/backend/routing/backends_tree.py`; the transitional
+`RouteWiseCloudBackend` compatibility wrapper is in
+`apps/backend/routing/backends_routewise.py`. Both remain publicly re-exported
+from `apps/backend/routing/backends.py`. The
 `HybridFixedRouterFactory` already accepts a `cloud_backend` builder
 (`apps/backend/serving/servers/hybrid_composition.py`), so a composition root
 can put a cloud-scoped RouteWise under a pool right now. `GreedyRouter` and
-`NimbusRouter` are not registered strategies, and no `models.yaml` field names
+`NimbusRouter` are not registered strategies, and no `MODEL_CATALOG` field names
 one, so nothing reaches this shape from configuration.
 
 This example describes two routing levels, not arbitrary recursive

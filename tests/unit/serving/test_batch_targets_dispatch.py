@@ -48,18 +48,17 @@ class _Upstream(BaseAdapter):
                 name=model,
                 provider="openai",
                 base_url="https://upstream.test",
+                # The gateway's own server, so batch work may use it.
+                deployment_type="self_hosted",
                 pricing=PRICING,
             )
         )
         self.calls: list[dict[str, Any]] = []
+        self.usage = UsageInfo(prompt_tokens=100, completion_tokens=50, total_tokens=150)
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params: Any) -> dict:
         self.calls.append({"messages": messages, "params": params})
-        return self.format_response(
-            content="answer",
-            model=self.config.id,
-            usage=UsageInfo(prompt_tokens=100, completion_tokens=50, total_tokens=150),
-        )
+        return self.format_response(content="answer", model=self.config.id, usage=self.usage)
 
     async def stream_chat_completion(self, messages, **params):  # pragma: no cover
         raise AssertionError("a batch item must never stream")
@@ -69,7 +68,12 @@ class _Upstream(BaseAdapter):
 class _Embedder:
     def __init__(self) -> None:
         self.config = ModelConfig(
-            id=EMBED, name=EMBED, provider="openai", base_url="https://emb.test", pricing=PRICING
+            id=EMBED,
+            name=EMBED,
+            provider="openai",
+            base_url="https://emb.test",
+            deployment_type="self_hosted",
+            pricing=PRICING,
         )
         self.calls: list[Any] = []
 
@@ -204,6 +208,38 @@ async def test_the_targets_answer_in_their_own_shapes():
     assert (message["type"], message["role"]) == ("message", "assistant")
     response = await run("responses")
     assert (response["object"], response["store"]) == ("response", False)
+
+
+@pytest.mark.parametrize("target", ["chat", "messages", "responses"])
+async def test_a_prompt_cache_hit_reaches_the_batch_as_cached_input(target):
+    # Each target reports the hit in its own shape; the batch reads it from any.
+    app, services, upstream, _embedder = _setup()
+    upstream.usage = UsageInfo(
+        prompt_tokens=100,
+        completion_tokens=50,
+        total_tokens=150,
+        cache_read_tokens=40,
+        cache_read_reported=True,
+    )
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="b",
+        target=target,
+    )
+    assert result.error is None, result
+    assert (result.prompt_tokens, result.cached_tokens) == (100, 40)
+
+
+async def test_usage_silent_about_caching_leaves_cached_input_unknown():
+    app, services, _upstream, _embedder = _setup()
+    result = await dispatch_item(
+        app=app, services=services, user_ctx=_owner(), body=_BODIES["chat"], batch_id="b"
+    )
+    assert result.error is None, result
+    assert result.cached_tokens is None
 
 
 # -- embeddings: the access gate holds on the batch path --------------------------

@@ -3,13 +3,14 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import toast, { type Toast } from 'react-hot-toast';
+import { APIError } from '@/lib/utils/errors';
 import { AccountMenu } from './AccountMenu';
 
 const push = vi.fn();
 const replace = vi.fn();
 const switchAccount = vi.fn();
 const logout = vi.fn();
-const logoutAll = vi.fn();
 const chooseLocale = vi.fn();
 const setTheme = vi.fn();
 let selectedTheme = 'system';
@@ -36,7 +37,9 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/settings',
 }));
 
-vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('react-hot-toast', () => ({
+  default: { success: vi.fn(), error: vi.fn(), remove: vi.fn() },
+}));
 
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({
@@ -49,7 +52,6 @@ vi.mock('@/components/providers', () => ({
     maxAccounts,
     switchAccount,
     logout,
-    logoutAll,
   }),
 }));
 
@@ -77,7 +79,6 @@ beforeEach(() => {
   chooseLocale.mockResolvedValue(undefined);
   switchAccount.mockResolvedValue(undefined);
   logout.mockResolvedValue(undefined);
-  logoutAll.mockResolvedValue(undefined);
 });
 
 afterEach(() => cleanup());
@@ -161,14 +162,28 @@ describe('AccountMenu', () => {
     await waitFor(() => expect(replace).toHaveBeenCalledWith('/'));
   });
 
-  it('logs every account out', async () => {
+  // The gateway kept the session and its cookie: the account is still signed in.
+  it('says so when logging out fails, and offers to try again', async () => {
+    logout.mockRejectedValueOnce(new APIError('SERVICE_UNAVAILABLE', 'HTTP 503', 503));
     render(<AccountMenu />);
     openMenu();
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Log out of all accounts' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Log out' }));
 
-    await waitFor(() => expect(logoutAll).toHaveBeenCalledTimes(1));
-    expect(replace).toHaveBeenCalledWith('/');
+    await waitFor(() => expect(toast.error).toHaveBeenCalledTimes(1));
+    expect(replace).not.toHaveBeenCalled();
+    const [message] = vi.mocked(toast.error).mock.calls[0];
+    const shown = { id: 'log-out-failed' } as Toast;
+    render(<>{typeof message === 'function' ? message(shown) : message}</>);
+    expect(
+      screen.getByText(/You are still signed in: signing out did not finish\./),
+    ).toHaveTextContent('Service temporarily unavailable');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(replace).toHaveBeenCalledWith('/login'));
+    expect(logout).toHaveBeenCalledTimes(2);
+    expect(toast.remove).toHaveBeenCalledWith('log-out-failed');
   });
 
   it('closes on Escape', () => {
@@ -264,7 +279,7 @@ describe('AccountMenu', () => {
   it('wraps keyboard navigation and opens at the end with ArrowUp', () => {
     render(<AccountMenu />);
     fireEvent.keyDown(screen.getByRole('button', { name: 'Ada' }), { key: 'ArrowUp' });
-    expect(screen.getByRole('menuitem', { name: 'Log out of all accounts' })).toHaveFocus();
+    expect(screen.getByRole('menuitem', { name: 'Log out' })).toHaveFocus();
     fireEvent.keyDown(document.activeElement!, { key: 'ArrowDown' });
     expect(screen.getByRole('menuitem', { name: 'My settings' })).toHaveFocus();
   });

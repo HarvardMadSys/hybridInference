@@ -40,7 +40,7 @@ from serving.observability.alert_transitions import (
 )
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
-from serving.utils.secret_urls import UrlRedaction, posting_to
+from serving.utils.secret_urls import UrlRedaction, posting_to, url_redaction
 
 log = logging.getLogger(__name__)
 
@@ -59,13 +59,14 @@ _FAILED_DELIVERIES: dict[str, int] = {}
 
 #: Keys whose open incident has had a firing delivered. Written by
 #: ``alert_slack`` and cleared when the incident closes; read only to tell an
-#: incident the channel has seen apart from one a type mute kept out of it.
+#: incident the channel has seen apart from one a mute or snooze kept out of it.
 _ANNOUNCED: set[str] = set()
 
-#: Keys whose open incident a type mute has kept entirely out of the channel: at
-#: least one firing was muted and none was delivered. Such an incident closes
-#: without a message — see ``_closes_silently``. An incident announced before
-#: its type was muted never lands here, so its close is still posted.
+#: Keys whose open incident an operator's silence has kept entirely out of the
+#: channel: at least one firing was held back by a type mute or the global
+#: snooze, and none was delivered. Such an incident closes without a message —
+#: see ``_closes_silently``. An incident announced before the silence began
+#: never lands here, so its close is still posted.
 _MUTED_UNANNOUNCED: set[str] = set()
 
 #: How long a resolution waits for an in-flight send of the same key, and how
@@ -408,6 +409,35 @@ def _format_message(
     return "\n".join(lines)
 
 
+def redact_webhook_urls(text: str) -> str:
+    """Scrub every configured alert webhook URL out of ``text``, for a log line.
+
+    A webhook URL is the credential itself, and an exception raised around a
+    post can quote it: an HTTP client's error names the request URL (an
+    aiohttp ``ClientResponseError`` does in its repr). :func:`_post_json`
+    scrubs the URL it holds from its own lines. This is for a line rendered
+    further away -- a post that raised past the sender, a shutdown flush -- and
+    scrubs each webhook the ``alerts.runtime`` group configures, in every
+    spelling :func:`serving.utils.secret_urls.url_redaction` knows, leaving the
+    host and a fingerprint.
+    """
+    try:
+        config = alert_runtime.current()
+        urls = {
+            config.slack_alerts_webhook_url.strip(),
+            config.slack_webhook_url.strip(),
+            config.wecom_alerts_webhook_url.strip(),
+        }
+    except Exception:
+        # Nothing to match against: say nothing rather than risk the secret.
+        return "[withheld: the alert channel configuration could not be read]"
+    # Longest first, so a URL that extends another is not cut by the shorter one.
+    for url in sorted(urls, key=len, reverse=True):
+        if url:
+            text = url_redaction(url).scrub(text)
+    return text
+
+
 async def _post_json(
     webhook_url: str,
     payload: dict[str, Any],
@@ -724,7 +754,7 @@ async def _wait_for_in_flight(key: str) -> bool:
 async def alert_slack(
     severity: AlertSeverity,
     title: str,
-    context: dict[str, Any],
+    context: dict[str, Any] | Callable[[], dict[str, Any]],
     *,
     dedupe_key: str | None = None,
     cooldown_sec: int = 300,
@@ -735,6 +765,10 @@ async def alert_slack(
     """Send an alert to the one configured channel.
 
     Returns True if the channel accepted the message, False otherwise.
+
+    ``context`` may be a callable that builds the detail: it is called only
+    once the send has been admitted and is about to be rendered, so a breach
+    suppressed by the cooldown or anything else costs no card.
 
     ``fence``, when given, is checked at the send's admission — synchronously,
     right before the in-flight marker is registered — and again after the mute
@@ -751,10 +785,11 @@ async def alert_slack(
     open on the key. History never changes what this function decides.
     """
     # Both suppressions below exist to stop a *breach* from repeating, and
-    # neither may swallow a resolution. Under the alert control plane a dropped
-    # resolution leaves its incident open forever, holding principal quota until
-    # it is exhausted and real outages start being suppressed; and closing an
-    # incident is not the noise an operator silences alerts to avoid.
+    # neither may swallow a resolution handed to this function: closing an
+    # incident the channel was told about is not the noise an operator silences
+    # alerts to avoid. Whether a close is *owed* at all is decided before it
+    # gets here, by ``_closes_silently``: an incident that a mute or the snooze
+    # kept out of the channel entirely closes without a card.
     resolution = status == "resolved"
 
     key = dedupe_key or f"{severity.value}:{title}"
@@ -839,6 +874,7 @@ async def alert_slack(
     sent = False
     attempted = False
     muted = False
+    snoozed = False
     try:
         # Admin-controlled global snooze: pause all alerts until a deadline.
         # Deliberately inside the try, after the in-flight registration: the
@@ -847,10 +883,13 @@ async def alert_slack(
         # safe from here — the ``finally`` releases the marker, and ``sent`` stays
         # False so a snoozed breach does not consume its cooldown either.
         #
-        # A per-type mute is the same suppression for one alert type, and is
-        # checked first for the sake of the bookkeeping in the ``finally``: a
-        # muted firing is recorded as muted even while everything is snoozed,
-        # so the incident still closes without a word once the snooze lapses.
+        # A per-type mute is the same suppression for one alert type. Both are
+        # recorded for the bookkeeping in the ``finally``: an incident whose
+        # firings were all muted or snoozed closes without a word, because a
+        # "Recovered" card for an outage nobody was told about is the only
+        # card the channel would ever see about it. Without that, a circuit
+        # flapping through a snooze posted a stream of recoveries and nothing
+        # else.
         if not resolution:
             if await _type_muted(key):
                 muted = True
@@ -860,6 +899,7 @@ async def alert_slack(
                 from serving.observability.alert_snooze import is_snoozed
 
                 if await is_snoozed():
+                    snoozed = True
                     _history.decision(key, episode_id=episode_id, reason="snoozed")
                     return False
             except Exception:
@@ -882,6 +922,12 @@ async def alert_slack(
         #
         # Copied, never mutated: ``alert_on_transition`` hands the same dict to
         # every repeat of an incident, and a rule may hold it as its own state.
+        #
+        # A callable is built only now, past the cooldown, the in-flight guard,
+        # the mute, the snooze and the fence: a breach that sends nothing --
+        # every repeat inside the cooldown -- never pays for a card.
+        if callable(context):
+            context = context()
         detail = context
         if not resolution and "request_id" not in context:
             request_id = _current_request_id()
@@ -922,7 +968,12 @@ async def alert_slack(
         sent = outcome.accepted
         return sent
     except Exception:
-        log.exception("alert_slack post raised; suppressing")
+        # Rendered and scrubbed rather than handed to ``log.exception``: an
+        # exception a sink raised can quote the webhook it was posting to.
+        log.error(
+            "alert_slack post raised; suppressing\n%s",
+            redact_webhook_urls(traceback.format_exc()),
+        )
         return False
     finally:
         async with _DEDUPE_LOCK:
@@ -937,10 +988,10 @@ async def alert_slack(
                 _FAILED_DELIVERIES[key] = _FAILED_DELIVERIES.get(key, 0) + 1
             if sent and not resolution:
                 # The channel has seen this incident now, so its close is owed
-                # to it even if the type is muted afterwards.
+                # to it even if the type is muted or alerts snoozed afterwards.
                 _ANNOUNCED.add(key)
                 _MUTED_UNANNOUNCED.discard(key)
-            elif muted and key not in _ANNOUNCED:
+            elif (muted or snoozed) and key not in _ANNOUNCED:
                 _MUTED_UNANNOUNCED.add(key)
             if sent and resolution:
                 # The breach is over, so the next one must page immediately
@@ -977,14 +1028,37 @@ async def alert_slack(
 _TRANSITIONS = ThresholdTransitionTracker()
 
 #: State alerts: a condition the process already tracks (an open circuit, a
-#: disconnected store). These report exactly one healthy edge ever, so a
-#: settling period would mean the incident never closes; and silence is not
-#: recovery, so sweeping one would announce the outage as over while it is
-#: still happening.
+#: disconnected store). These report exactly one healthy edge ever, so by
+#: default they close on it — a settling period that waited for another
+#: observation would never end; and silence is not recovery, so sweeping one
+#: would announce the outage as over while it is still happening. A producer
+#: whose condition flaps settles explicitly instead (``settle_sec``), with the
+#: close confirmed by a timer in ``_SETTLE_TIMERS``.
 _STATE_TRANSITIONS = ThresholdTransitionTracker(
     clear_after_sec=0.0,
     stale_after_sec=None,
 )
+
+
+@dataclass(frozen=True)
+class _SettleTimer:
+    """A settling state incident's pending close."""
+
+    #: The healthy edge (the tracker's ``clear_started_at``) this close confirms.
+    started_at: float
+    handle: asyncio.TimerHandle
+    #: Builds the confirmation coroutine; kept so a shutdown can run it early.
+    confirm: Callable[[], Any]
+
+
+#: The timer that will confirm each settling state incident's close, by key.
+#: One per key: a newer edge replaces an older edge's timer, and a breach
+#: cancels it.
+_SETTLE_TIMERS: dict[str, _SettleTimer] = {}
+
+#: Confirmations those timers started, held until they finish: asyncio keeps
+#: only weak references to tasks, and one collected mid-send loses its close.
+_SETTLE_TASKS: set[asyncio.Task[Any]] = set()
 
 #: How often to look for breaches nothing is evaluating any more. Well under
 #: the tracker's own staleness threshold so a stale incident closes promptly
@@ -1051,17 +1125,17 @@ def _closes_silently(key: str) -> bool:
     """Whether the incident on ``key`` must close without a message.
 
     Two reasons, one outcome. The rule opted out of announcing its closes
-    (``announce_resolution=False``), or an admin muted the alert's type and it
-    kept this whole incident out of the channel. A "Recovered" card for an
-    incident nobody was told about would be the first and only word about it,
-    for exactly the type the operator asked not to hear about. Every close path
-    asks this one question, because a card the transition edge suppresses must
-    not come back out of the sweep.
+    (``announce_resolution=False``), or an admin muted the alert's type or
+    snoozed all alerts and that kept this whole incident out of the channel. A
+    "Recovered" card for an incident nobody was told about would be the first
+    and only word about it, during exactly the silence the operator asked for.
+    Every close path asks this one question, because a card the transition
+    edge suppresses must not come back out of the sweep.
 
     Silencing is safe only because nothing was delivered: there is no open
     incident on the sink's side for a missing close to strand. An incident that
-    was announced before its type was muted is not silenced, so it still gets
-    the recovery the channel is owed.
+    was announced before the mute or snooze began is not silenced, so it still
+    gets the recovery the channel is owed.
     """
     return key in _SILENT_RESOLUTIONS or key in _MUTED_UNANNOUNCED
 
@@ -1210,8 +1284,140 @@ def restart_settling(key: str, *, healthy: bool = False) -> None:
     _TRANSITIONS.restart_settling(key)
 
 
+def _cancel_settle(key: str) -> _SettleTimer | None:
+    """Drop the settle timer pending for ``key``, if any, and return it."""
+    entry = _SETTLE_TIMERS.pop(key, None)
+    if entry is not None:
+        entry.handle.cancel()
+    return entry
+
+
+def _schedule_settle(
+    key: str,
+    *,
+    started_at: float,
+    delay: float,
+    confirm: Callable[[], Any],
+) -> None:
+    """Arrange for ``confirm()`` to close ``key`` after ``delay`` seconds.
+
+    Called on the event loop, from :func:`alert_on_transition`. A healthy edge
+    that already has its timer keeps it, so a repeat of the same observation
+    cannot push its own close further out.
+    """
+    current = _SETTLE_TIMERS.get(key)
+    if current is not None and current.started_at == started_at:
+        return
+    _cancel_settle(key)
+    handle = asyncio.get_running_loop().call_later(
+        max(delay, 0.0), _start_settle_confirm, key, started_at, confirm
+    )
+    _SETTLE_TIMERS[key] = _SettleTimer(started_at=started_at, handle=handle, confirm=confirm)
+
+
+def _start_settle_confirm(key: str, started_at: float, confirm: Callable[[], Any]) -> None:
+    """Timer callback: run the confirmation as a task the module keeps alive."""
+    current = _SETTLE_TIMERS.get(key)
+    if current is not None and current.started_at == started_at:
+        del _SETTLE_TIMERS[key]
+    task = asyncio.get_running_loop().create_task(confirm())
+    _SETTLE_TASKS.add(task)
+    task.add_done_callback(_SETTLE_TASKS.discard)
+
+
+async def flush_settling() -> None:
+    """Confirm every settling close now instead of when its timer fires.
+
+    For shutdown. The timers die with the process and a fresh one knows
+    nothing of these incidents, so a circuit that closed within its settle
+    period would otherwise never be announced as recovered — the channel's last
+    word would stay "opened". Each confirmation still asks its producer
+    (``fence``) and the tracker whether the close stands, so a circuit open
+    again is not announced. Run concurrently: one send per key.
+    """
+    entries = [entry for key in list(_SETTLE_TIMERS) if (entry := _cancel_settle(key))]
+    if entries:
+        await asyncio.gather(*(entry.confirm() for entry in entries))
+
+
+@_tracked
+async def _confirm_settled_close(
+    *,
+    key: str,
+    started_at: float,
+    title: str,
+    cooldown_sec: int,
+    fence: Callable[[], bool] | None,
+) -> bool:
+    """Close the state incident on ``key`` whose healthy edge at ``started_at`` held.
+
+    A breach since then — or a recurrence its producer reported through
+    :func:`interrupt_settle` — cancelled that clear, and the incident is left
+    open for its next healthy edge to settle afresh.
+    """
+    try:
+        if fence is not None and not fence():
+            return False
+        # Let a send still running on the key finish before the close is taken.
+        # The incident's page can outlast a short settle period, and until the
+        # tracker gives the key up a recurrence meanwhile — even one reported
+        # only through ``interrupt_settle`` — still cancels this clear, so the
+        # confirmation below sees it. Taken first, the close would leave that
+        # recurrence nothing to cancel, and a success after it would let this
+        # stale confirmation post without the new healthy edge settling.
+        await _wait_for_in_flight(key)
+        if fence is not None and not fence():
+            return False
+        if not _STATE_TRANSITIONS.confirm_clear(key, started_at=started_at):
+            return False
+        return await _announce_close(
+            key=key,
+            tracker=_STATE_TRANSITIONS,
+            kind="state",
+            title=title,
+            cooldown_sec=cooldown_sec,
+            fence=fence,
+            moment=time.time(),
+            ended_at=started_at,
+        )
+    except Exception:
+        # Nothing awaits this task, so an exception here would otherwise only
+        # surface as "Task exception was never retrieved".
+        log.exception("settled close failed for %s", key)
+        return False
+
+
+def interrupt_settle(key: str) -> None:
+    """Report that the state condition on ``key`` recurred without reaching the tracker.
+
+    For a producer that holds a recurrence back before calling
+    :func:`alert_on_transition` — the circuit breaker's own paging policy, for
+    one. The incident's pending close is cancelled and waits for a fresh healthy
+    edge; otherwise its timer would announce a recovery while the condition is
+    live again. A recovery queued for a retry after a failed send is dropped for
+    the same reason, exactly as a breach that reaches the tracker drops it; the
+    key stays firing, so its next healthy edge settles and announces afresh.
+    Synchronous, so the producer can report the recurrence at the moment it
+    observes it. A key with no open incident is left alone.
+    """
+    _cancel_settle(key)
+    _STATE_TRANSITIONS.restart_settling(key)
+    superseded = _PENDING_RESOLUTIONS.pop(key, None)
+    _STALE_RETRY_ATTEMPTS.pop(key, None)
+    if superseded is not None:
+        _history.retry_terminated(
+            key,
+            episode_id=superseded.history_episode,
+            reason="superseded_by_new_episode",
+            attempts=superseded.attempts,
+        )
+
+
 def reset_transition_state() -> None:
     """Drop all open-breach state. For tests and for a clean engine restart."""
+    for entry in _SETTLE_TIMERS.values():
+        entry.handle.cancel()
+    _SETTLE_TIMERS.clear()
     for tracker_ in (_TRANSITIONS, _STATE_TRANSITIONS):
         tracker_._firing.clear()
         tracker_._bounds.clear()
@@ -1222,6 +1428,18 @@ def reset_transition_state() -> None:
     _SILENT_RESOLUTIONS.clear()
     _ANNOUNCED.clear()
     _MUTED_UNANNOUNCED.clear()
+
+
+def _built_once(build: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
+    """Wrap a card builder so it runs at most once, for whichever reader asks first."""
+    built: list[dict[str, Any]] = []
+
+    def card() -> dict[str, Any]:
+        if not built:
+            built.append(build())
+        return built[0]
+
+    return card
 
 
 @_tracked
@@ -1239,6 +1457,8 @@ async def alert_on_transition(
     resolution_context: Callable[[], dict[str, Any]] | None = None,
     announce_resolution: bool = True,
     fence: Callable[[], bool] | None = None,
+    settle_sec: float = 0.0,
+    defer_context: bool = False,
 ) -> bool:
     """Send only when the breach state changes, so incidents open and close once.
 
@@ -1255,9 +1475,16 @@ async def alert_on_transition(
     plane. What was missing was never the repeat, only the close.
 
     ``context`` is a callable so the breach detail — counters, top-N summaries —
-    is only built when a message is actually attempted. A resolution
-    carries just the metric identity, since breach numbers describe a healthy
-    system by then and would only mislead on the recovery card.
+    is not built for a healthy evaluation. A resolution carries just the
+    metric identity, since breach numbers describe a healthy system by then and
+    would only mislead on the recovery card.
+
+    ``defer_context`` goes further, for a card that is costly to build: it is
+    then built only when the sink admits a send (past the cooldown, the
+    in-flight guard, a mute, the snooze and the fence) or when the breach opens
+    an alert-history episode, instead of on every breached evaluation. A rule
+    whose card rescans a window an attacker can fill sets it; without it the
+    card is built once per breached evaluation and handed over as a dict.
 
     ``resolution_context`` is the exception a rule may opt into: a summary of
     the incident that just closed, as opposed to a reading of the metric now.
@@ -1285,18 +1512,38 @@ async def alert_on_transition(
     state changes, and again at the send's admission (see :func:`alert_slack`).
     False at either point leaves this call without effect on the tracker it
     had not yet touched, and no message is sent.
+
+    ``settle_sec`` is for a *state* alert whose condition can flap, such as a
+    circuit that closes on one success and reopens on the next failure. Its
+    healthy edge then only starts the close: the incident stays open, and a
+    timer closes it — announcing the recovery — once the condition has held
+    healthy for that long. A breach in between cancels the pending close, so a
+    re-trip is a repeat of the same incident, its page subject to the cooldown,
+    instead of a new incident with a page and a recovery of its own. A producer
+    that holds a recurrence back before reaching this function must report it
+    with :func:`interrupt_settle`, or the timer would announce a recovery while
+    the condition is live again. ``0`` closes on the healthy edge itself.
     """
+    if settle_sec and kind != "state":
+        # A metric settles through its tracker's own ``clear_after_sec`` and the
+        # rule's next evaluations; a timer would only race them.
+        raise ValueError("settle_sec applies to state alerts only")
     if fence is not None and not fence():
         return False
     tracker = _TRANSITIONS if kind == "metric" else _STATE_TRANSITIONS
     moment = now or time.time()
+    settling = settle_sec > 0
     transition = tracker.observe(
         key,
         breached=breached,
         now=moment,
         stale_after=stale_after,
+        clear_after=settle_sec if settling else None,
     )
     if breached:
+        # Whatever close was settling is cancelled by this breach (``observe``
+        # reset it); its timer would find nothing to confirm, so drop it now.
+        _cancel_settle(key)
         # The incident is (still or again) real, so any resolution queued for a
         # retry is stale — sending it later would announce a live breach as
         # recovered.
@@ -1317,7 +1564,11 @@ async def alert_on_transition(
             _SILENT_RESOLUTIONS.discard(key)
         else:
             _SILENT_RESOLUTIONS.add(key)
-        detail = context()
+        # Built at most once. A deferred card only for a reader that uses it:
+        # history when this breach opens an episode, the sink when it admits a
+        # send; every other breached evaluation -- each repeat inside the
+        # cooldown -- builds none.
+        detail = _built_once(context)
         # History follows the observation, not the tracker: a breach after a
         # recovery whose card failed (the tracker re-armed and never left
         # "firing") is a new episode, and the old one's retry ends here.
@@ -1328,7 +1579,16 @@ async def alert_on_transition(
                 reason="superseded_by_new_episode",
                 attempts=superseded.attempts,
             )
-        _history.breach(key, severity=severity, title=title, kind=kind, context=detail, now=moment)
+        # A breach inside an open episode is not described again.
+        opens_episode = _history.active() is not None and _history.open_episode(key) is None
+        _history.breach(
+            key,
+            severity=severity,
+            title=title,
+            kind=kind,
+            context=detail() if opens_episode else None,
+            now=moment,
+        )
         # Every breached evaluation still goes to the sink, exactly as before.
         # The cooldown there decides whether it becomes a message, and under the
         # control plane each repeat is what advances the incident's occurrence
@@ -1337,20 +1597,79 @@ async def alert_on_transition(
         return await alert_slack(
             severity,
             title,
-            detail,
+            detail if defer_context else detail(),
             dedupe_key=key,
             cooldown_sec=cooldown_sec,
             fence=fence,
         )
     if transition != "resolved":
+        started_at = tracker.settling_since(key) if settling else None
+        if started_at is not None:
+            # The healthy edge only started the close. Nothing else will
+            # observe this key until it breaches again, so a timer finishes the
+            # close once the period has passed — never the stale sweep, which
+            # runs only with the rule engine while state alerts page without it.
+            _schedule_settle(
+                key,
+                started_at=started_at,
+                delay=settle_sec - (moment - started_at),
+                confirm=functools.partial(
+                    _confirm_settled_close,
+                    key=key,
+                    started_at=started_at,
+                    title=title,
+                    cooldown_sec=cooldown_sec,
+                    fence=fence,
+                ),
+            )
         if not tracker.is_firing(key) and _history.open_episode(key) is not None:
             # An episode the tracker never held — a producer held its breach
             # back before it got here — ends at this healthy observation.
             _history.condition_ended(key, basis="observed_healthy", now=moment)
         return False
-    # Ended now, before the recovery card awaits: whatever the card's fate, the
+    _cancel_settle(key)
+    return await _announce_close(
+        key=key,
+        tracker=tracker,
+        kind=kind,
+        title=title,
+        cooldown_sec=cooldown_sec,
+        fence=fence,
+        moment=moment,
+        ended_at=moment,
+    )
+
+
+async def _announce_close(
+    *,
+    key: str,
+    tracker: ThresholdTransitionTracker,
+    kind: Literal["metric", "state"],
+    title: str,
+    cooldown_sec: int,
+    fence: Callable[[], bool] | None,
+    moment: float,
+    ended_at: float,
+) -> bool:
+    """Send the recovery for the close the tracker has just taken on ``key``.
+
+    The tracker already dropped the key, on a resolved observation or a settle
+    confirmation. ``ended_at`` is when the condition was first seen healthy,
+    which a settled close reaches only after its settle period; ``moment`` is
+    now, for the retry bookkeeping of a send that fails.
+    """
+    # Ended before the recovery card awaits: whatever the card's fate, the
     # condition is over, and a breach during the send opens a new episode.
-    episode_id = _history.condition_ended(key, basis="observed_healthy", now=moment)
+    episode_id = _history.condition_ended(key, basis="observed_healthy", now=ended_at)
+    if key not in _ANNOUNCED and not _closes_silently(key):
+        # Whether this close is owed depends on how the incident's firing
+        # fared, and that firing may still be in flight — awaiting the mute or
+        # snooze lookup, say — when a quick close arrives. Decided before it
+        # lands, a firing that is then muted or snoozed would leave its close
+        # to post a recovery for an incident the channel never saw. An
+        # announced incident is owed its close whatever happens next, so it
+        # has nothing to wait for here; ``alert_slack`` still orders the send.
+        await _wait_for_in_flight(key)
     if _closes_silently(key):
         _history.decision(key, episode_id=episode_id, reason="resolution_silenced", resolution=True)
         # Close it, say nothing. There is no send to confirm and so nothing to
@@ -1369,7 +1688,9 @@ async def alert_on_transition(
     detail = {"alert": key, **_resolution_detail(key)}
     sent = await alert_slack(
         AlertSeverity.INFO,
-        f"Recovered: {title}",
+        # The breach's own title: ``status="resolved"`` is what renders the card
+        # as a recovery, so a title that said "Recovered" too was read twice.
+        title,
         detail,
         dedupe_key=key,
         cooldown_sec=cooldown_sec,
@@ -1398,6 +1719,13 @@ async def alert_on_transition(
             tracker.forget(key)
             _forget_resolution_detail(key, history_episode=episode_id)
         _PENDING_RESOLUTIONS.pop(key, None)
+    elif tracker.is_firing(key):
+        # The send failed, but a breach landed while it was in flight and
+        # opened a new incident that owns the key now. Re-arming would
+        # overwrite that incident's state, and a queued retry would announce a
+        # live breach as over — the breach already cleared the queue before
+        # this entry could be added. Its own close will be announced instead.
+        pass
     else:
         # ``observe`` already cleared the key, so without this the only
         # resolution it will ever produce is gone and the incident stays open
@@ -1484,7 +1812,7 @@ async def sweep_stale_breaches() -> None:
         try:
             sent = await alert_slack(
                 AlertSeverity.INFO,
-                f"Recovered: {pending.title}",
+                pending.title,
                 {"alert": key, **_resolution_detail(key)},
                 dedupe_key=key,
                 cooldown_sec=0,
@@ -1599,8 +1927,9 @@ async def sweep_stale_breaches() -> None:
                     # observed-clear recovery: the rule stopped seeing data (idle
                     # traffic, a drained process), so the breach can no longer be
                     # evaluated. Say so, instead of wording that reads as if the
-                    # metric was measured healthy.
-                    f"Recovered (no recent samples): {key}",
+                    # metric was measured healthy. The card's own heading already
+                    # says "Recovered", so the title only adds the qualifier.
+                    f"{key} (no recent samples)",
                     # The rule's own summary first, then this path's reason, which
                     # must win the key if a rule happens to use the same name.
                     {

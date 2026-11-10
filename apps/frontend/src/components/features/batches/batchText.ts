@@ -57,17 +57,6 @@ export function statusLabel(status: BatchStatus, t: Translate): string {
   return labels[status] ?? status;
 }
 
-export const ALL_STATUSES: BatchStatus[] = [
-  'validating',
-  'in_progress',
-  'finalizing',
-  'completed',
-  'failed',
-  'expired',
-  'cancelling',
-  'cancelled',
-];
-
 /** Done / total: completed, failed and cancelled requests are done. */
 export function progress(batch: ConsoleBatch): { done: number; total: number; failed: number } {
   const counts = batch.request_counts;
@@ -110,6 +99,42 @@ export function pauseText(batch: ConsoleBatch, t: Translate): string | null {
       t(
         'batches.paused.quota',
         'Paused: your daily quota is spent. It resumes after {until} (when the quota renews at 00:00 UTC) or once your quota is raised.',
+      ),
+      { until },
+    );
+  }
+  if (batch.paused_reason === 'monthly_quota') {
+    return fill(
+      t(
+        'batches.paused.monthly_quota',
+        'Paused: your monthly quota is spent. It is checked again after {until}; it resumes once your quota is raised, or when it renews on the 1st (UTC).',
+      ),
+      { until },
+    );
+  }
+  if (batch.paused_reason === 'key_budget') {
+    return fill(
+      t(
+        'batches.paused.key_budget',
+        "Paused: the API key this batch runs under has spent its budget. It is checked again after {until}; raise the key's budget on its page to resume sooner.",
+      ),
+      { until },
+    );
+  }
+  if (batch.paused_reason === 'project_budget') {
+    return fill(
+      t(
+        'batches.paused.project_budget',
+        "Paused: the project this batch runs under has spent its budget. It is checked again after {until}; raise the project's budget on its page to resume sooner.",
+      ),
+      { until },
+    );
+  }
+  if (batch.paused_reason === 'account_budget') {
+    return fill(
+      t(
+        'batches.paused.account_budget',
+        'Paused: the account this batch runs under has spent its quota. It is checked again after {until}; raise the account quota to resume sooner.',
       ),
       { until },
     );

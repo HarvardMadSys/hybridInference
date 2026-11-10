@@ -6,11 +6,6 @@ services:
     environment:
       DB_ENABLED: "false"
       USER_AUTH_ENABLED: "false"
-      DISTRIBUTION_CONFIG_PATH: /app/distributions/example/distribution.yaml
-      DISTRIBUTION_CONFIG_MODE: active
-      MODELS_CONFIG_PATH: ""
-      ROUTING_CONFIG_PATH: ""
-      ALERTS_CONFIG_PATH: ""
       EXAMPLE_UPSTREAM_BASE_URL: ${EXAMPLE_UPSTREAM_BASE_URL}
       EXAMPLE_UPSTREAM_API_KEY: ${EXAMPLE_UPSTREAM_API_KEY}
       EXAMPLE_UPSTREAM_MODEL: ${EXAMPLE_UPSTREAM_MODEL}

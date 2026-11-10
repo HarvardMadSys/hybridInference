@@ -1,9 +1,8 @@
-"""The per-user slot decision shared with the batch worker, and the interactive-load count.
+"""The per-user slot decision, and the interactive-load count.
 
-``user_slot_for`` is the slot ``enforce_user_concurrency`` takes for an HTTP
-request, for a caller that holds the slot itself (the batch worker); the
-dependency also counts each request it admits as interactive load on its model,
-for batch work to yield to.
+``enforce_user_concurrency`` canonicalizes a request's model and takes the slot
+``_slot_for_canonical`` chooses for it; the dependency also counts each request
+it admits as interactive load on its model, for batch work to yield to.
 """
 
 from __future__ import annotations
@@ -25,7 +24,6 @@ from serving.servers.concurrency import (
     canonical_model_id,
     enforce_user_concurrency,
     static_limits_provider,
-    user_slot_for,
 )
 from serving.servers.deps import (
     get_embedding_adapters,
@@ -85,16 +83,14 @@ ROUTER = _Router(
 
 
 async def _slot(user: dict[str, Any], model: str | None, resolver: Any = None) -> tuple[str, Any]:
-    return await user_slot_for(
-        user,
-        model,
-        router=ROUTER,
-        concurrency_resolver=resolver if resolver is not None else _Resolver({"exempt-model"}),
-        embedding_adapters={},
+    """The slot the dependency takes for *model*: canonicalized, then decided."""
+    canonical = canonical_model_id(model, router=ROUTER, embedding_adapters={})
+    return await concurrency._slot_for_canonical(
+        user, model, canonical, resolver if resolver is not None else _Resolver({"exempt-model"})
     )
 
 
-# -- user_slot_for ------------------------------------------------------------
+# -- the slot decision --------------------------------------------------------
 
 
 async def test_normal_model_takes_the_users_own_slot_and_role_default():
@@ -148,12 +144,8 @@ async def test_failing_exemption_check_falls_back_to_the_normal_budget():
 
 
 async def test_no_resolver_means_no_exemption():
-    slot = await user_slot_for(
-        {"user_id": "u1"},
-        "exempt-model",
-        router=ROUTER,
-        concurrency_resolver=None,
-        embedding_adapters=None,
+    slot = await concurrency._slot_for_canonical(
+        {"user_id": "u1"}, "exempt-model", "exempt-model", None
     )
 
     assert slot == ("u1", None)

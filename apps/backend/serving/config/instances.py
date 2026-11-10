@@ -15,6 +15,14 @@ carries a report sequence the database only lets go up, so an older report can
 never overwrite a newer acknowledgement. A failed write retries the write alone:
 the configuration it reports is already in force.
 
+The same task removes registrations not heard from within
+:data:`RETENTION_SECONDS`: every start registers a new id, so each restart
+would otherwise leave a row behind for good. A row that old has been stale for
+days, so removing it never makes an instance count as converged. A process
+prunes at most once per :data:`PRUNE_SECONDS`, first at a random point within
+that interval, so the processes a deploy starts together do not all prune at
+once.
+
 A heartbeat older than :data:`STALE_AFTER_SECONDS` makes the instance "unknown,
 possibly offline". That is not success, and it does not prove the process has
 stopped serving either. A process that runs an older build never registers, so
@@ -29,6 +37,7 @@ import json
 import os
 import random
 import socket
+import time
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -45,6 +54,8 @@ HEARTBEAT_SECONDS = 10.0
 STALE_AFTER_SECONDS = 60.0
 #: Registrations of stopped or vanished processes are removed after this long.
 RETENTION_SECONDS = 7 * 24 * 3600.0
+#: A process prunes those registrations at most this often.
+PRUNE_SECONDS = 3600.0
 #: Retry bounds for a failed report write.
 _RETRY_MIN_SECONDS = 1.0
 _RETRY_MAX_SECONDS = HEARTBEAT_SECONDS
@@ -53,19 +64,6 @@ _FINAL_REPORT_TIMEOUT_SECONDS = 3.0
 
 #: Version of this registration protocol, reported in ``capabilities``.
 PROTOCOL_VERSION = 1
-
-CREATE_INSTANCES_SQL = """
-CREATE TABLE IF NOT EXISTS config_instances (
-    instance_id   TEXT PRIMARY KEY,
-    build         TEXT NOT NULL,
-    capabilities  JSONB NOT NULL DEFAULT '{}'::jsonb,
-    started_at    TIMESTAMPTZ NOT NULL,
-    heartbeat_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    lifecycle     TEXT NOT NULL,
-    report_seq    BIGINT NOT NULL DEFAULT 0,
-    groups        JSONB NOT NULL DEFAULT '{}'::jsonb
-)
-"""
 
 DELETE_ALL_INSTANCES_SQL = "DELETE FROM config_instances"
 
@@ -122,6 +120,8 @@ class InstanceReporter:
     #: Called after every report attempt with whether it was stored; the
     #: coordinator uses it to show an acknowledgement as persisted or pending.
     on_report: Callable[[bool], None] | None = None
+    #: Monotonic seconds for the prune schedule; injectable for tests.
+    clock: Callable[[], float] = time.monotonic
 
     _groups: dict[str, dict[str, Any]] = field(default_factory=dict)
     _lifecycle: str = "starting"
@@ -213,13 +213,26 @@ class InstanceReporter:
         return True
 
     async def prune(self) -> None:
-        """Remove registrations not heard from within :data:`RETENTION_SECONDS`."""
-        with contextlib.suppress(Exception):
+        """Remove registrations not heard from within :data:`RETENTION_SECONDS`.
+
+        Never raises: the writer calls it between reports, and a failure only
+        leaves the rows for the next prune.
+        """
+        try:
             async with self.pool.acquire() as conn:
                 await conn.execute(PRUNE_SQL, RETENTION_SECONDS)
+        except Exception as exc:
+            # The class name only: a driver message can quote the statement.
+            logger.warning(
+                "Configuration instance prune failed (%s); retrying at the next prune",
+                type(exc).__name__,
+            )
 
     async def _run(self) -> None:
         delay = 0.0
+        # A random first prune spreads out the processes a deploy starts
+        # together; each later one waits a whole interval from the last.
+        prune_at = self.clock() + PRUNE_SECONDS * random.random()
         while not self._stopping:
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._wake.wait(), timeout=delay or self.heartbeat_seconds)
@@ -228,6 +241,12 @@ class InstanceReporter:
                 return
             if await self.report_once():
                 delay = 0.0
+                # Only once the database has answered: during an outage the
+                # write alone is retried, and a prune falling due waits.
+                now = self.clock()
+                if now >= prune_at:
+                    prune_at = now + PRUNE_SECONDS
+                    await self.prune()
             else:
                 # Bounded backoff with jitter; only the write is retried.
                 base = min(_RETRY_MAX_SECONDS, max(_RETRY_MIN_SECONDS, delay * 2 or 1.0))

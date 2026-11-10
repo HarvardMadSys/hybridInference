@@ -126,11 +126,6 @@ class ConfigUpdateError(Exception):
         self.detail = detail
         self.current_version = current_version
 
-    @property
-    def version_conflict(self) -> bool:
-        """Whether the write was refused because the configuration changed since it was read."""
-        return self.current_version is not None
-
 
 @dataclass(frozen=True)
 class ConfigChange:
@@ -263,9 +258,27 @@ def boot_value(key: str, default: str | None = None) -> str | None:
     entry = registry.extension_entry(key)
     fallback = default if default is not None else (entry.default if entry is not None else None)
     value = _environ_value(key, entry)
-    if entry is not None and _value_problem(entry, value):
+    # An application document from the environment that its validator refuses
+    # counts as unset, as a stored one does (:func:`_apply`): served, it would
+    # bypass the checks every write makes, inline credentials included.
+    checked = entry if entry is not None else _document_entry(key)
+    if checked is not None and _value_problem(checked, value):
         return fallback
     return value if value is not None else fallback
+
+
+def _document_entry(key: str) -> ConfigEntry | None:
+    """Return *key*'s entry when it is an application document, else ``None``.
+
+    Every other key is answered without the registry, which settings read
+    while modules are still importing must not build.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    if key not in KEY_KINDS:
+        return None
+    entry = _STATE.entries.get(key) or registry.static_entry(key)
+    return entry if entry is not None and entry.validator is not None else None
 
 
 # LOG_LEVEL and LOG_FORMAT are database-backed too. Logging cannot import this
@@ -364,6 +377,11 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if entry.choices:
             return "must be one of " + ", ".join(entry.choices)
         return None
+    if entry.validator is not None:
+        try:
+            entry.validator(raw)
+        except (ValueError, TypeError) as exc:
+            return _validator_problem(exc)
     typed = _typed(entry, raw)
     if entry.type in ("bool", "int", "float") and isinstance(typed, str):
         return {
@@ -387,6 +405,44 @@ def _value_problem(entry: ConfigEntry, raw: str | None) -> str | None:
         if not allowed:
             return "must be one of " + ", ".join(entry.choices)
     return None
+
+
+#: Said of a document whose validator gave no reason that is safe to repeat.
+_DOCUMENT_PROBLEM = (
+    "must be a valid application document; check its JSON fields and secret references"
+)
+
+#: How many of a validation error's reasons :func:`_validator_problem` names.
+_REASONS_SHOWN = 3
+
+
+def _validator_problem(exc: BaseException) -> str:
+    """Return why a validator refused a document, naming fields and types, never a value.
+
+    The reason is shown in Admin and logged, and a document can carry a
+    credential, or a reference the validator has already expanded into one.
+    A pydantic error, raised or wrapped (``raise ... from``), prints its input,
+    so its reason is rebuilt from each error's location and message; any other
+    reason that still names an input is replaced with a generic one.
+    """
+    cause: BaseException | None = exc
+    while cause is not None and not isinstance(cause, ValidationError):
+        cause = cause.__cause__
+    if isinstance(cause, ValidationError):
+        errors = cause.errors(include_url=False, include_context=False, include_input=False)
+        reasons = []
+        for error in errors[:_REASONS_SHOWN]:
+            location = "/".join(str(part) for part in error.get("loc") or ())
+            message = _error_message(error)
+            reasons.append(f"/{location} {message}" if location else message)
+        if len(errors) > _REASONS_SHOWN:
+            reasons.append(f"{len(errors) - _REASONS_SHOWN} more")
+        reason = "; ".join(reasons)
+    else:
+        reason = str(exc)
+    if not reason.strip() or "input_value" in reason:
+        return _DOCUMENT_PROBLEM
+    return reason
 
 
 def _environ_value(key: str, entry: ConfigEntry | None) -> str | None:
@@ -440,9 +496,24 @@ def _in_force_raw(key: str, entry: ConfigEntry | None) -> tuple[str | None, str]
     if row is not None and _refusal(key, entry) is None:
         return row.value, "database"
     value = _environ_value(key, entry)
-    if value is not None and key not in _STATE.environment_aside:
+    if (
+        value is not None
+        and key not in _STATE.environment_aside
+        and (entry is None or entry.validator is None or _value_problem(entry, value) is None)
+    ):
         return value, "environment"
     return (entry.default if entry is not None else None), "default"
+
+
+def validation_problem(key: str) -> str | None:
+    """Return a configured value's validation problem without exposing its value."""
+    # A document is judged before anything is loaded too: config_value counts
+    # an invalid one from the environment as unset, and a caller that must
+    # fail closed on it (the public site policy) asks here.
+    setting = entry(key) or _document_entry(key)
+    row = _STATE.rows.get(key)
+    raw = row.value if row is not None else _environ_value(key, setting)
+    return _value_problem(setting, raw) if setting is not None else None
 
 
 def configured_value(key: str, default: str | None = None) -> str | None:
@@ -932,18 +1003,25 @@ def refresh_health() -> ConfigHealth:
 # --- loading -----------------------------------------------------------------
 
 
-def _discover() -> dict[str, DiscoveredReference]:
-    """Scan the active models, routing and alerts files for ``${VAR}`` references."""
-    from serving.config.distribution import resolve_config_path
+def _discover(rows: Mapping[str, ConfigRow] | None = None) -> dict[str, DiscoveredReference]:
+    """Discover references from database documents, never configuration files."""
+    from serving.config.documents import DOCUMENT_KEYS
 
-    paths = {}
-    for kind in ("models", "routing", "alerts"):
+    available = rows if rows is not None else _STATE.rows
+
+    def text(kind: str) -> str:
+        row = available.get(DOCUMENT_KEYS[kind])
+        return row.value if row is not None else os.environ.get(DOCUMENT_KEYS[kind], "{}")
+
+    from serving.config.documents import parse
+
+    def document(kind: str) -> dict[str, Any]:
         try:
-            paths[kind] = resolve_config_path(kind).path  # type: ignore[arg-type]
-        except Exception:
-            logger.warning("Cannot locate the %s file to scan for settings", kind, exc_info=True)
-            paths[kind] = None
-    return registry.discover_references(paths["models"], paths["routing"], paths["alerts"])
+            return parse(text(kind))
+        except ValueError:
+            return {}
+
+    return registry.discover_documents(document("models"), document("routing"), document("alerts"))
 
 
 def _build_entries(
@@ -1082,6 +1160,7 @@ def _apply(
     if boot:
         state.boot_rows = dict(rows)
     state.rows = rows
+    state.discovered = _discover(rows)
     state.resets = dict(resets or {})
     state.entries = _build_entries(rows, state.resets)
     state.live_keys = frozenset(
@@ -1135,11 +1214,11 @@ async def load(
     """
     _STATE.database_enabled = database_enabled
     _STATE.discovered = _discover()
-    await store.ensure_schema()
     read_started = time.monotonic()
     if bootstrap:
         async with store.transaction() as transaction:
             rows = await transaction.fetch_all()
+            _STATE.discovered = _discover(rows)
             rows = await _import_environment(transaction, rows)
             await _generate_secrets(transaction, rows)
             await _record_secrets(transaction)
@@ -1213,7 +1292,13 @@ async def _import_environment(
         value = _environ_value(key, entry)
         if entry.origin == "custom" or key in rows or key in unusable or not (value or "").strip():
             continue
-        if registry.extension_entry(key) is not None or key in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is not None
+            or key in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            or entry.validator is not None
+        ):
+            # Outside Settings' schema. An application document is judged by
+            # its own validator: a seed every write would refuse is never stored.
             problem = _value_problem(entry, value)
             if problem is not None:
                 logger.warning("Not importing invalid %s from the environment: %s", key, problem)
@@ -1326,9 +1411,10 @@ def require_valid_environment() -> None:
     called once the stored configuration is in force, instead of failing before
     the database could be read:
 
-    - An environment value that is not valid on its own, left at its default:
-      a valid stored value for the setting applies, and the gateway starts with
-      a warning; without one it must not.
+    - An environment value that is not valid on its own, left at its default,
+      an application document its validator refuses included: a valid stored
+      value for the setting applies, and the gateway starts with a warning;
+      without one it must not.
     - The rules between settings: the configuration in force, stored values
       over the environment, must satisfy every one.
 
@@ -1362,10 +1448,15 @@ def require_valid_environment() -> None:
             )
         else:
             unresolved[key] = problem
-    # Extension fields and dynamically registered provider names are outside
-    # Settings' schema. Apply the same DB-over-env rule to their registry bounds.
+    # Extension fields, dynamically registered provider names and application
+    # documents are outside Settings' schema. Apply the same DB-over-env rule to
+    # their registry bounds and document validators.
     for key, entry in _STATE.entries.items():
-        if registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER"):
+        if (
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
+        ):
             continue
         problem = _value_problem(entry, _environ_value(key, entry))
         if problem is None:
@@ -1441,8 +1532,6 @@ async def refresh() -> None:
     store = _STATE.store
     if store is None:
         return
-    if not _STATE.loaded:
-        await store.ensure_schema()
     async with _STATE.read_lock:
         read_started = time.monotonic()
         try:
@@ -1741,11 +1830,20 @@ def _damage(
     for key in written:
         entry = entries.get(key)
         if entry is None or (
-            registry.extension_entry(key) is None and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            registry.extension_entry(key) is None
+            and key not in ("EMAIL_PROVIDER", "SMS_PROVIDER")
+            and entry.validator is None
         ):
             continue
         problem = _value_problem(entry, _resolve(after, key, entry))
         if problem and not _value_problem(entry, _resolve(rows, key, entry)):
+            if entry.validator is not None and key not in after:
+                # A reset puts the environment's document back in force, which
+                # startup refuses (require_valid_environment).
+                problem = (
+                    f"its environment value is not valid ({problem}); correct or remove the "
+                    "variable first"
+                )
             return _Damage(key, (problem,))
     if not any(
         (entry := registry.static_entry(key)) is not None and entry.field is not None
@@ -1812,8 +1910,6 @@ async def _writable_store() -> AppConfigStore:
         raise ConfigUpdateError(
             503, "Configuration storage is unavailable: the database is not connected."
         )
-    if not _STATE.loaded:
-        await store.ensure_schema()
     return store
 
 
@@ -1926,12 +2022,20 @@ async def update(
             pending.append(
                 ConfigRow(key, raw, secret=secret, source="admin", updated_by=updated_by)
             )
+            old_raw = _resolve(rows, key, entry)
+            # The audit log withholds what a backup withholds (_is_secret_row):
+            # a row marked secret, and a document its validator refuses, which
+            # can carry a credential inline (a hand-edited row, one stored
+            # before the validator existed, or the environment's in its place).
+            withheld = (
+                secret or (key in rows and rows[key].secret) or _invalid_document(entry, old_raw)
+            )
             changes.append(
                 ConfigChange(
                     key,
-                    secret,
-                    old_value=None if secret else _typed(entry, _resolve(rows, key, entry)),
-                    new_value=None if secret else _typed(entry, raw),
+                    withheld,
+                    old_value=None if withheld else _typed(entry, old_raw),
+                    new_value=None if withheld else _typed(entry, raw),
                     marked_secret=marked,
                 )
             )
@@ -1998,13 +2102,16 @@ async def delete(
 
     async def body(transaction: AppConfigStore) -> ConfigChange:
         rows, resets = await _read(transaction)
+        entries = _build_entries(rows, resets)
         if registry.is_retired(key):
             # Nothing reads it any more; only an administrator removes what an
             # earlier version stored.
             row, reset = rows.get(key), resets.get(key)
             if row is None and reset is None:
                 raise ConfigUpdateError(404, f"{key} has no stored value.")
-            secret = (row is not None and row.secret) or (reset is not None and reset.secret)
+            secret = (row is not None and _is_secret_row(key, row, entries)) or (
+                reset is not None and reset.secret
+            )
             change = ConfigChange(
                 key, secret, old_value=None if secret or row is None else row.value
             )
@@ -2025,11 +2132,16 @@ async def delete(
             damage = _damage(rows, remaining, [key])
             if damage is not None:
                 raise ConfigUpdateError(409, damage.resetting())
+            new_raw = _resolve(remaining, key, entry)
+            # As for update: neither a secret row's value nor a document its
+            # validator refuses (the stored one, or the environment's that the
+            # reset puts back) reaches the audit log.
+            withheld = _is_secret_row(key, row, entries) or _invalid_document(entry, new_raw)
             change = ConfigChange(
                 key,
-                secret,
-                old_value=None if secret else _typed(entry, row.value),
-                new_value=None if secret else _typed(entry, _resolve(remaining, key, entry)),
+                withheld,
+                old_value=None if withheld else _typed(entry, row.value),
+                new_value=None if withheld else _typed(entry, new_raw),
             )
             if entry.origin == "custom":
                 await transaction.delete(key)
@@ -2102,6 +2214,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "custom": entry.origin == "custom",
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
+                "security_relevant": _security_relevant_entry(key, entry),
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
                 "group": registry.managed_group(key),
@@ -2128,6 +2241,69 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
     }
 
 
+def entry(key: str) -> ConfigEntry | None:
+    """Return *key*'s entry as this process last read the configuration, if it has one."""
+    return _STATE.entries.get(key) or registry.numbered_key_entry(key)
+
+
+#: Categories every setting of which is security-relevant (:func:`security_relevant`).
+SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network", "phone", "privacy"})
+
+#: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
+#: who hears about new accounts and where users are told to write, the identity
+#: issuer's keys and redirects, private batch webhook targets and who may submit
+#: batches, request content storage, whether alerts are sent at all, and the
+#: request body limit.
+SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
+    {
+        "EMAIL_PROVIDER",
+        "SMTP_HOST",
+        "SMTP_PORT",
+        "SMTP_USER",
+        "SMTP_FROM_EMAIL",
+        "SIGNUP_NOTIFY_EMAILS",
+        "SITE_SUPPORT_EMAIL",
+        "IDENTITY_ISSUER",
+        "IDENTITY_ALLOWED_REDIRECTS",
+        "IDENTITY_JWT_RETIRING_PUBLIC_KEYS",
+        "BATCH_WEBHOOK_ALLOW_PRIVATE_TARGETS",
+        "BATCH_MIN_ROLE",
+        "DB_STORE_FULL_CONTENT",
+        "ALERTS_ENABLED",
+        "REQUEST_MAX_BODY_MB",
+    }
+)
+
+
+def security_relevant(key: str) -> bool:
+    """Whether changing *key* needs the signed-in administrator's confirmation and password.
+
+    What signs and encrypts, who administers and who may sign in, which networks
+    are trusted, where the gateway sends requests, credentials, mail and users,
+    what it stores and whether it reports trouble: every secret, every setting
+    of :data:`SECURITY_CATEGORIES`, every variable a configuration file
+    references or an administrator adds, every ``*_URL`` setting and the keys in
+    :data:`SECURITY_SETTING_KEYS`. A name with no entry is a variable a change
+    would add, which a configuration file reads. A configuration restore lists
+    a change to any of them for confirmation, and ``PATCH /admin/config`` and
+    ``DELETE /admin/config/{key}`` ask for the password before they store one.
+    """
+    return _security_relevant_entry(key, entry(key))
+
+
+def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
+    if setting is None:
+        return True
+    return (
+        setting.secret
+        or setting.category in SECURITY_CATEGORIES
+        or setting.origin != "static"
+        or key in SECURITY_SETTING_KEYS
+        or setting.category == "application"
+        or key.endswith("_URL")
+    )
+
+
 def source_version() -> revisions.SourceVersion | None:
     """Return the source version of the configuration this process last read."""
     return _STATE.version
@@ -2141,27 +2317,320 @@ def last_snapshot() -> revisions.SourceSnapshot | None:
 _VALID_ROW_SOURCES = frozenset({"admin", "setup", "env_import", "generated", RESET_SOURCE})
 
 
-async def export_rows() -> list[dict[str, Any]]:
-    """Return every stored ``app_config`` row (including resets and plaintext secrets)."""
+def _is_secret_row(key: str, row: ConfigRow, entries: Mapping[str, ConfigEntry]) -> bool:
+    """Whether *row*'s value is a secret: as :func:`describe` decides, or by its name."""
+    entry = entries.get(key) or registry.numbered_key_entry(key)
+    if entry is not None:
+        return entry.secret or row.secret or _invalid_document(entry, row.value)
+    # A retired setting has no entry; its row's flag and its name decide.
+    return row.secret or registry.is_secret_name(key)
+
+
+def _invalid_document(entry: ConfigEntry, raw: str | None) -> bool:
+    """Whether *raw* is a document its validator refuses, which may carry a credential inline."""
+    return entry.validator is not None and _value_problem(entry, raw) is not None
+
+
+async def export_rows(*, include_secret_values: bool = False) -> list[dict[str, Any]]:
+    """Return every stored ``app_config`` row, reset rows included.
+
+    A secret's value -- a row marked secret, or a setting its entry or its name
+    makes one -- is ``None`` unless *include_secret_values*, so a backup names
+    the secret without carrying it; ``is_set`` says whether a value is stored
+    either way. A reset row stores no value, so it has none to withhold.
+    """
     store = await _writable_store()
     fetched = await store.fetch_all(include_reset=True)
-    return [
-        {
-            "key": row.key,
-            "value": "" if row.source == RESET_SOURCE else row.value,
-            "secret": bool(row.secret),
-            "source": row.source if row.source in _VALID_ROW_SOURCES else "admin",
-        }
-        for _, row in sorted(fetched.items())
-    ]
+    rows, resets = _split(fetched)
+    entries = _build_entries(rows, resets)
+    exported: list[dict[str, Any]] = []
+    for key, row in sorted(fetched.items()):
+        reset = row.source == RESET_SOURCE
+        value = "" if reset else row.value
+        secret = _is_secret_row(key, row, entries)
+        withheld = secret and not reset and not include_secret_values
+        exported.append(
+            {
+                "key": key,
+                "value": None if withheld else value,
+                "secret": secret,
+                "source": row.source if row.source in _VALID_ROW_SOURCES else "admin",
+                "is_set": bool(value.strip()),
+            }
+        )
+    return exported
+
+
+@dataclass(frozen=True)
+class RestoreSummary:
+    """What restoring a backup's ``app_config`` rows does, key by key; never a value."""
+
+    #: Keys whose stored value the restore changes, adds, resets or removes.
+    changed: tuple[str, ...] = ()
+    #: Immutable keys whose existing value was kept over the backup's.
+    preserved_immutable: tuple[str, ...] = ()
+    #: Secrets the backup withheld that this deployment has no value for: they
+    #: stay unset, following the environment or their default.
+    not_restored: tuple[str, ...] = ()
+
+
+class RestoreNotLoaded(Exception):
+    """A restore committed, but this process could not read the configuration back.
+
+    The restored rows are stored: the next periodic refresh (within
+    :data:`REFRESH_INTERVAL_SECONDS`), or a restart, applies them here; every
+    other process applies them on its own refresh as usual.
+    """
+
+    def __init__(self, summary: RestoreSummary, cause: Exception) -> None:
+        super().__init__(f"the restore committed; reading it back failed ({type(cause).__name__})")
+        #: What the committed restore changed, kept and could not restore.
+        self.summary = summary
+        self.cause = cause
+
+
+@dataclass(frozen=True)
+class _RestorePlan:
+    target_rows: dict[str, ConfigRow]
+    target_resets: dict[str, ConfigRow]
+    to_delete: frozenset[str]
+    summary: RestoreSummary
+    #: Rows in force after the restore that it leaves exactly as they are.
+    untouched: frozenset[str] = frozenset()
+
+
+def _kept_unless_named(key: str) -> bool:
+    """Whether a restore keeps *key*'s stored row when the backup does not name it.
+
+    The application documents, and the ``CATALOG_SECRET_*`` credentials the
+    upgrade lifted out of the catalog: a backup taken before the upgrade has
+    neither, and restoring it must not delete the catalog. Removing one is an
+    administrator's explicit reset, never a side effect of a restore.
+    """
+    from serving.config.documents import KEY_KINDS
+
+    return key in KEY_KINDS or key.startswith("CATALOG_SECRET_")
+
+
+def _plan_restore(
+    items: Sequence[Mapping[str, Any]],
+    current_rows: Mapping[str, ConfigRow],
+    current_resets: Mapping[str, ConfigRow],
+    *,
+    api_keys_exist: bool,
+    updated_by: str,
+) -> _RestorePlan:
+    """Decide what restoring *items* over the stored rows writes, and check it.
+
+    An application document or a ``CATALOG_SECRET_*`` setting the backup does
+    not name is kept as it is (:func:`_kept_unless_named`).
+
+    Raises:
+        ConfigUpdateError: 400 for an invalid entry, or for a result that would
+            leave the configuration in force worse; 403 for an
+            environment-only name.
+    """
+    preserved_immutable: set[str] = set()
+    not_restored: set[str] = set()
+    seen_keys: set[str] = set()
+    target_rows: dict[str, ConfigRow] = {}
+    target_resets: dict[str, ConfigRow] = {}
+
+    for item in items:
+        key = str(item.get("key") or "").strip()
+        if not key:
+            raise ConfigUpdateError(400, "app_config entry key must not be blank.")
+        if key in seen_keys:
+            raise ConfigUpdateError(400, f"{key}: duplicate entry in backup.")
+        seen_keys.add(key)
+        if registry.is_retired(key):
+            # Nothing reads it; the deployment's own row or reset marker
+            # is left exactly as it is (see ``to_delete`` below).
+            continue
+
+        entry = _writable_entry(key, current_rows, current_resets)
+        raw_source = str(item.get("source") or "admin").strip()
+        if raw_source not in _VALID_ROW_SOURCES:
+            raise ConfigUpdateError(400, f"{key}: invalid source {raw_source!r}.")
+        raw_val = item.get("value")
+        secret_flag = bool(item.get("secret", False))
+        if raw_val is None and raw_source != RESET_SOURCE:
+            if not (secret_flag or entry.secret):
+                raise ConfigUpdateError(400, f"{key}: value must be a string.")
+            # A backup taken without secret values names the secret only:
+            # keep whatever this deployment has, never blank it.
+            if key in current_rows:
+                target_rows[key] = current_rows[key]
+            elif key in current_resets:
+                target_resets[key] = current_resets[key]
+            else:
+                not_restored.add(key)
+            continue
+        raw = "" if raw_val is None else str(raw_val)
+        prior_secret = (key in current_rows and current_rows[key].secret) or (
+            key in current_resets and current_resets[key].secret
+        )
+        effective_secret = entry.secret or secret_flag or prior_secret
+
+        if raw_source == RESET_SOURCE:
+            if entry.origin == "custom":
+                continue
+            if entry.immutable:
+                existing = current_rows.get(key)
+                if existing is not None:
+                    target_rows[key] = existing
+                    preserved_immutable.add(key)
+                continue
+            if entry.generated and not (_environ_value(key, entry) or "").strip():
+                existing = current_rows.get(key)
+                if existing is not None:
+                    target_rows[key] = existing
+                continue
+            target_resets[key] = ConfigRow(
+                key,
+                "",
+                secret=effective_secret,
+                source=RESET_SOURCE,
+                updated_by=updated_by,
+            )
+            continue
+
+        if entry.type in ("bool", "int", "float"):
+            parsed = parse_text_value(key, raw)
+            raw = _stored_form(entry, parsed)
+        else:
+            problem = _value_problem(entry, raw)
+            if problem:
+                raise ConfigUpdateError(400, f"{key}: {problem}.")
+
+        if entry.immutable:
+            current_effective = (_resolve(current_rows, key, entry) or "").strip()
+            existing_row = current_rows.get(key)
+            if current_effective and current_effective == raw.strip():
+                if existing_row is not None:
+                    target_rows[key] = existing_row
+                else:
+                    target_rows[key] = ConfigRow(
+                        key,
+                        raw,
+                        secret=True,
+                        source=raw_source,
+                        updated_by=updated_by,
+                    )
+                continue
+            if _immutable_reason(entry, current_rows) is not None:
+                can_replace_fresh_generated = (
+                    key == "API_KEY_SECRET"
+                    and existing_row is not None
+                    and existing_row.source == "generated"
+                    and not (_environ_value(key, entry) or "").strip()
+                    and not api_keys_exist
+                )
+                if not can_replace_fresh_generated:
+                    if existing_row is not None:
+                        target_rows[key] = existing_row
+                    preserved_immutable.add(key)
+                    continue
+
+        target_rows[key] = ConfigRow(
+            key,
+            raw,
+            secret=effective_secret,
+            source=raw_source,
+            updated_by=updated_by,
+        )
+
+    # Never drop an already-settled immutable row or a generated secret that
+    # has no environment fallback when the backup omitted it, nor what a backup
+    # from before the application documents could not name (_kept_unless_named).
+    all_entries = _build_entries(current_rows, current_resets)
+    untouched = frozenset(
+        key
+        for key in (*current_rows, *current_resets)
+        if key not in seen_keys and _kept_unless_named(key)
+    )
+    target_rows.update((key, current_rows[key]) for key in untouched if key in current_rows)
+    target_resets.update((key, current_resets[key]) for key in untouched if key in current_resets)
+    for key, existing_row in current_rows.items():
+        if key in target_rows or key in target_resets:
+            continue
+        entry = all_entries.get(key)
+        if entry is None:
+            continue
+        if entry.immutable and (existing_row.value or "").strip():
+            target_rows[key] = existing_row
+            preserved_immutable.add(key)
+        elif entry.generated and not (_environ_value(key, entry) or "").strip():
+            target_rows[key] = existing_row
+
+    written_keys = list(dict.fromkeys([*target_rows, *target_resets, *current_rows]))
+    if written_keys:
+        damage = _damage(current_rows, target_rows, written_keys)
+        if damage is not None:
+            raise ConfigUpdateError(400, damage.saving())
+
+    # A retired setting's row or reset marker (with its secret flag) is
+    # never touched: a rollback to the version that reads it depends on
+    # it, and a lost reset marker would let that version's boot import the
+    # environment value and freeze it.
+    to_delete = frozenset(
+        key
+        for key in (set(current_rows) | set(current_resets))
+        - (set(target_rows) | set(target_resets))
+        if not registry.is_retired(key)
+    )
+    changed = set(to_delete)
+    for key, target in target_rows.items():
+        current = current_rows.get(key)
+        if current is None:
+            changed.add(key)
+            continue
+        entry = all_entries.get(key) or registry.numbered_key_entry(key)
+        # Two spellings of one value ("0" and "false") are not a change.
+        if entry is None:
+            if current.value != target.value:
+                changed.add(key)
+        elif _comparable(entry, current.value) != _comparable(entry, target.value):
+            changed.add(key)
+    changed.update(key for key in target_resets if key not in current_resets)
+    return _RestorePlan(
+        target_rows=target_rows,
+        target_resets=target_resets,
+        to_delete=to_delete,
+        summary=RestoreSummary(
+            changed=tuple(sorted(changed)),
+            preserved_immutable=tuple(sorted(preserved_immutable)),
+            not_restored=tuple(sorted(not_restored)),
+        ),
+        untouched=untouched,
+    )
+
+
+async def preview_restore_rows(items: Sequence[Mapping[str, Any]]) -> RestoreSummary:
+    """Return what :func:`restore_rows` would do with *items* now, writing nothing.
+
+    Raises:
+        ConfigUpdateError: as :func:`restore_rows`, for the same backup.
+    """
+    store = await _writable_store()
+    current_rows, current_resets = await _read(store)
+    plan = _plan_restore(
+        items,
+        current_rows,
+        current_resets,
+        api_keys_exist=await store.api_keys_exist(),
+        updated_by="preview",
+    )
+    return plan.summary
 
 
 async def restore_rows(
     items: Sequence[Mapping[str, Any]],
     *,
     updated_by: str,
-    before_commit: Callable[[], Awaitable[None]] | None = None,
-) -> list[str]:
+    check_plan: Callable[[AppConfigStore, RestoreSummary], Awaitable[None]] | None = None,
+    before_commit: Callable[[AppConfigStore], Awaitable[None]] | None = None,
+) -> RestoreSummary:
     """Replace ``app_config`` with *items* in one transaction, then reload.
 
     Immutable settings (``API_KEY_SECRET``, ``ERASURE_FENCE_SECRET``) that are
@@ -2171,160 +2640,69 @@ async def restore_rows(
     fresh deployment whose only ``API_KEY_SECRET`` is auto-generated and has no
     issued API keys, the backup's secret replaces the generated one.
 
+    A secret whose value the backup withholds (``value`` is ``None``) keeps the
+    value this deployment has; with none here it stays unset, and the summary
+    names it in ``not_restored``. An application document or a
+    ``CATALOG_SECRET_*`` setting the backup does not name at all keeps its
+    stored row too: a backup taken before the upgrade that introduced them
+    names none of them.
+
     Args:
         items: Stored row dicts (``key``, ``value``, ``secret``, ``source``).
         updated_by: Identity of the administrator performing the restore.
+        check_plan: Optional async hook run inside the transaction, under its
+            write lock, once the restore is planned against the rows as they
+            are now and before anything is written, given the transaction's
+            store and the plan's summary: the place to refuse a restore whose
+            effect differs from what was confirmed before the transaction
+            began. If it raises, nothing is written.
         before_commit: Optional async hook run inside the ``app_config``
-            transaction after validation and table writes; if it raises, the
-            ``app_config`` transaction rolls back as well.
+            transaction after validation and table writes, given the
+            transaction's store, whose connection other stores can write on
+            to commit or roll back with it; if it raises, the ``app_config``
+            transaction rolls back as well.
 
     Returns:
-        Sorted list of immutable keys whose existing target values were preserved.
+        What the restore changed, kept and could not restore, by key.
+
+    Raises:
+        RestoreNotLoaded: The restore committed, but reading it back into this
+            process failed; it carries the summary.
     """
     store = await _writable_store()
-    preserved_immutable: set[str] = set()
     async with store.transaction() as transaction:
         current_rows, current_resets = await _read(transaction)
-        api_keys_exist = await transaction.api_keys_exist()
-
-        seen_keys: set[str] = set()
-        target_rows: dict[str, ConfigRow] = {}
-        target_resets: dict[str, ConfigRow] = {}
-
-        for item in items:
-            key = str(item.get("key") or "").strip()
-            if not key:
-                raise ConfigUpdateError(400, "app_config entry key must not be blank.")
-            if key in seen_keys:
-                raise ConfigUpdateError(400, f"{key}: duplicate entry in backup.")
-            seen_keys.add(key)
-            if registry.is_retired(key):
-                # Nothing reads it; the deployment's own row or reset marker
-                # is left exactly as it is (see ``to_delete`` below).
-                continue
-
-            entry = _writable_entry(key, current_rows, current_resets)
-            raw_source = str(item.get("source") or "admin").strip()
-            if raw_source not in _VALID_ROW_SOURCES:
-                raise ConfigUpdateError(400, f"{key}: invalid source {raw_source!r}.")
-            raw_val = item.get("value")
-            if raw_val is None:
-                raise ConfigUpdateError(400, f"{key}: value must be a string.")
-            raw = str(raw_val)
-            secret_flag = bool(item.get("secret", False))
-            prior_secret = (key in current_rows and current_rows[key].secret) or (
-                key in current_resets and current_resets[key].secret
-            )
-            effective_secret = entry.secret or secret_flag or prior_secret
-
-            if raw_source == RESET_SOURCE:
-                if entry.origin == "custom":
-                    continue
-                if entry.immutable:
-                    existing = current_rows.get(key)
-                    if existing is not None:
-                        target_rows[key] = existing
-                        preserved_immutable.add(key)
-                    continue
-                if entry.generated and not (_environ_value(key, entry) or "").strip():
-                    existing = current_rows.get(key)
-                    if existing is not None:
-                        target_rows[key] = existing
-                    continue
-                target_resets[key] = ConfigRow(
-                    key,
-                    "",
-                    secret=effective_secret,
-                    source=RESET_SOURCE,
-                    updated_by=updated_by,
-                )
-                continue
-
-            if entry.type in ("bool", "int", "float"):
-                parsed = parse_text_value(key, raw)
-                raw = _stored_form(entry, parsed)
-            else:
-                problem = _value_problem(entry, raw)
-                if problem:
-                    raise ConfigUpdateError(400, f"{key}: {problem}.")
-
-            if entry.immutable:
-                current_effective = (_resolve(current_rows, key, entry) or "").strip()
-                existing_row = current_rows.get(key)
-                if current_effective and current_effective == raw.strip():
-                    if existing_row is not None:
-                        target_rows[key] = existing_row
-                    else:
-                        target_rows[key] = ConfigRow(
-                            key,
-                            raw,
-                            secret=True,
-                            source=raw_source,
-                            updated_by=updated_by,
-                        )
-                    continue
-                if _immutable_reason(entry, current_rows) is not None:
-                    can_replace_fresh_generated = (
-                        key == "API_KEY_SECRET"
-                        and existing_row is not None
-                        and existing_row.source == "generated"
-                        and not (_environ_value(key, entry) or "").strip()
-                        and not api_keys_exist
-                    )
-                    if not can_replace_fresh_generated:
-                        if existing_row is not None:
-                            target_rows[key] = existing_row
-                        preserved_immutable.add(key)
-                        continue
-
-            target_rows[key] = ConfigRow(
-                key,
-                raw,
-                secret=effective_secret,
-                source=raw_source,
-                updated_by=updated_by,
-            )
-
-        # Never drop an already-settled immutable row or a generated secret that
-        # has no environment fallback when the backup omitted it.
-        all_entries = _build_entries(current_rows, current_resets)
-        for key, existing_row in current_rows.items():
-            if key in target_rows or key in target_resets:
-                continue
-            entry = all_entries.get(key)
-            if entry is None:
-                continue
-            if entry.immutable and (existing_row.value or "").strip():
-                target_rows[key] = existing_row
-                preserved_immutable.add(key)
-            elif entry.generated and not (_environ_value(key, entry) or "").strip():
-                target_rows[key] = existing_row
-
-        written_keys = list(dict.fromkeys([*target_rows, *target_resets, *current_rows]))
-        if written_keys:
-            damage = _damage(current_rows, target_rows, written_keys)
-            if damage is not None:
-                raise ConfigUpdateError(400, damage.saving())
-
-        # A retired setting's row or reset marker (with its secret flag) is
-        # never touched: a rollback to the version that reads it depends on
-        # it, and a lost reset marker would let that version's boot import the
-        # environment value and freeze it.
-        to_delete = {
-            key
-            for key in (set(current_rows) | set(current_resets))
-            - (set(target_rows) | set(target_resets))
-            if not registry.is_retired(key)
-        }
-        for key in sorted(to_delete):
+        plan = _plan_restore(
+            items,
+            current_rows,
+            current_resets,
+            api_keys_exist=await transaction.api_keys_exist(),
+            updated_by=updated_by,
+        )
+        if check_plan is not None:
+            await check_plan(transaction, plan.summary)
+        for key in sorted(plan.to_delete):
             await transaction.delete(key)
-        if target_rows:
-            await transaction.write(list(target_rows.values()))
-        for key, reset_row in sorted(target_resets.items()):
-            await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
+        # A row the restore keeps is not rewritten: rewriting the catalog would
+        # replace the previous release's copy of it (0014's mirror) as well.
+        written = [row for key, row in plan.target_rows.items() if key not in plan.untouched]
+        if written:
+            await transaction.write(written)
+        for key, reset_row in sorted(plan.target_resets.items()):
+            if key not in plan.untouched:
+                await transaction.reset(key, secret=reset_row.secret, updated_by=updated_by)
 
         if before_commit is not None:
-            await before_commit()
+            await before_commit(transaction)
 
-    await _reload(store)
-    return sorted(preserved_immutable)
+    # Committed: from here on nothing may report the restore as not made.
+    try:
+        await _reload(store)
+    except Exception as exc:
+        logger.error(
+            "A configuration restore committed, but reading it back failed (%s); the next "
+            "refresh applies it",
+            type(exc).__name__,
+        )
+        raise RestoreNotLoaded(plan.summary, exc) from exc
+    return plan.summary

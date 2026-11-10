@@ -19,6 +19,13 @@ The dedicated ``/anthropic/v1/models`` route always returns that shape.
 
 While auto mode is on, the auto models (``auto``, ``auto-<tier>``) are listed
 after the models, each to a caller who may use any of its tier's models.
+
+Each model also says which reasoning-effort values its routes deliver
+(``serving.model_effort_capabilities``): ``reasoning.supported_efforts`` in the
+OpenAI/OpenRouter shape, ``capabilities.effort`` in the Anthropic one. Where the
+configuration does not settle it -- and for auto models, whose selection picks
+the model per request -- nothing is claimed: ``reasoning`` is ``null`` and
+``capabilities`` is absent.
 """
 
 from __future__ import annotations
@@ -32,9 +39,14 @@ from fastapi.responses import JSONResponse
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
 from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
+from serving.model_effort_capabilities import (
+    anthropic_capabilities,
+    model_effort_domain,
+    openai_reasoning,
+)
 from serving.pricing import PricingUnavailableError, effective_pricing
 from serving.schemas import ModelItem, ModelList
-from serving.servers.auth import optional_verify_api_key
+from serving.servers.auth import optional_verify_api_key, verify_api_key_for_balance
 from serving.servers.deps import (
     get_auto_mode,
     get_embedding_adapters,
@@ -47,11 +59,15 @@ router = APIRouter()
 
 def _catalog_pricing(config: Any) -> dict[str, str]:
     try:
-        return effective_pricing(config) or {}
+        pricing = effective_pricing(config) or {}
     except PricingUnavailableError:
         # A missing official quote is unknown, never a free rate. Keep the
         # model discoverable while inference fails before creating usage.
         return {}
+    # Listed as text, as the catalog's examples write prices. A catalog that
+    # writes them as JSON numbers is accepted and billed from (the cost reads
+    # each with float()), and one such model made the whole listing a 500.
+    return {str(key): str(value) for key, value in pricing.items()}
 
 
 # Fixed creation timestamp captured at import time to ensure
@@ -188,14 +204,18 @@ async def _format_anthropic_model_list(
         if canonical_id in emitted:
             continue
         emitted.add(canonical_id)
-        data.append(
-            {
-                "type": "model",
-                "id": canonical_id,
-                "display_name": primary.name or canonical_id,
-                "created_at": _CREATED_AT_ISO,
-            }
+        entry: dict[str, Any] = {
+            "type": "model",
+            "id": canonical_id,
+            "display_name": primary.name or canonical_id,
+            "created_at": _CREATED_AT_ISO,
+        }
+        capabilities = anthropic_capabilities(
+            model_effort_domain(adapter for adapter, _ in route.adapters)
         )
+        if capabilities is not None:
+            entry["capabilities"] = capabilities
+        data.append(entry)
     for model_id, tier, _configs in await _auto_models_for(
         auto_mode, router_exec, model_visibility_resolver, user_ctx
     ):
@@ -335,6 +355,9 @@ async def _build_model_list_async(
             # Any adapter marking the model on-demand makes the whole model
             # on-demand: a probe that hits the lazy route still pins its GPU.
             on_demand=any(cfg.on_demand for cfg in configs),
+            reasoning=openai_reasoning(
+                model_effort_domain(adapter for adapter, _ in route.adapters)
+            ),
         )
         # Optional OpenRouter-specific metadata
         if model_id != canonical_id:
@@ -384,3 +407,99 @@ async def _build_model_list_async(
         )
 
     return ModelList(data=models)
+
+
+@router.get("/v1/key")
+async def describe_key(
+    user_ctx: dict[str, Any] = Depends(verify_api_key_for_balance),
+) -> dict[str, Any]:
+    """Describe the calling API key: project, models, budgets and remaining spend."""
+    from serving import quota
+
+    key_allowed = user_ctx.get("key_allowed_models")
+    project_allowed = user_ctx.get("project_allowed_models")
+    if key_allowed is None and project_allowed is None:
+        models: list[str] | None = None
+    elif key_allowed is None:
+        models = list(project_allowed or [])
+    elif project_allowed is None:
+        models = list(key_allowed or [])
+    else:
+        models = [model for model in key_allowed if model in set(project_allowed)]
+
+    account_daily = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
+    account_daily_spent = float(user_ctx.get("spent_today_usd") or 0.0)
+    account_monthly = user_ctx.get("quota_monthly_cost_usd")
+    account_month_spent = float(user_ctx.get("account_spent_month_usd") or 0.0)
+    project_daily = user_ctx.get("project_budget_daily_usd")
+    project_daily_spent = float(user_ctx.get("project_spent_today_usd") or 0.0)
+    project_monthly = user_ctx.get("project_budget_monthly_usd")
+    project_month_spent = float(user_ctx.get("project_spent_month_usd") or 0.0)
+
+    return {
+        "key_prefix": user_ctx.get("key_prefix"),
+        "project": {
+            "id": user_ctx.get("project_id"),
+            "name": user_ctx.get("project_name"),
+        },
+        "models": models,
+        "budgets": {
+            "key": {
+                window: (
+                    None
+                    if user_ctx.get(limit) is None
+                    else {
+                        "limit_usd": float(user_ctx[limit]),
+                        "spent_usd": float(user_ctx.get(spend) or 0),
+                        "remaining_usd": max(
+                            0.0, float(user_ctx[limit]) - float(user_ctx.get(spend) or 0)
+                        ),
+                    }
+                )
+                for window, limit, spend in (
+                    ("day", "budget_daily_usd", "key_spent_today_usd"),
+                    ("month", "budget_monthly_usd", "key_spent_month_usd"),
+                )
+            },
+            "account": {
+                "day": {
+                    "limit_usd": account_daily,
+                    "spent_usd": account_daily_spent,
+                    "remaining_usd": max(0.0, account_daily - account_daily_spent),
+                },
+                "month": (
+                    None
+                    if account_monthly is None
+                    else {
+                        "limit_usd": float(account_monthly),
+                        "spent_usd": account_month_spent,
+                        "remaining_usd": max(0.0, float(account_monthly) - account_month_spent),
+                    }
+                ),
+            },
+            "project": {
+                "day": (
+                    None
+                    if project_daily is None
+                    else {
+                        "limit_usd": float(project_daily),
+                        "spent_usd": project_daily_spent,
+                        "remaining_usd": max(0.0, float(project_daily) - project_daily_spent),
+                    }
+                ),
+                "month": (
+                    None
+                    if project_monthly is None
+                    else {
+                        "limit_usd": float(project_monthly),
+                        "spent_usd": project_month_spent,
+                        "remaining_usd": max(0.0, float(project_monthly) - project_month_spent),
+                    }
+                ),
+            },
+        },
+        "reset_at": {
+            "day": quota.next_utc_midnight().isoformat(),
+            "month": quota.next_utc_month_start().isoformat(),
+        },
+    }

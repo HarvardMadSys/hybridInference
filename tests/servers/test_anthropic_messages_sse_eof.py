@@ -229,7 +229,7 @@ async def test_success_is_recorded_when_the_only_delta_is_unterminated(
     """A completed stream must not give the endpoint zero success credit.
 
     The content-bearing delta is the last event and carries no trailing blank
-    line, so it used to be dropped -- ``_is_non_empty_content_event`` never saw
+    line, so it used to be dropped -- ``_is_content_delta`` never saw
     it and the surface recorded no success, leaving this endpoint's availability
     to be driven only by its failures.
     """

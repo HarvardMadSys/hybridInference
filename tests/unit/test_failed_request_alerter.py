@@ -203,7 +203,7 @@ async def test_alerter_fires_over_threshold():
 
 @pytest.mark.asyncio
 async def test_alerter_fires_includes_breakdown():
-    """Breakdown fields (status_codes, providers, models, sample_error) are included in context."""
+    """Breakdown fields (status_codes, providers, models, the sample's type) are in context."""
     pool = MagicMock()
     pool.fetchval = AsyncMock(return_value=25)
     pool.fetchrow = AsyncMock(
@@ -211,7 +211,8 @@ async def test_alerter_fires_includes_breakdown():
             "status_codes": "500, 503",
             "providers": "openai",
             "models": "gpt-4o",
-            "sample_error": "upstream timeout",
+            "sample_error": "TimeoutError: upstream timeout",
+            "sample_status": 504,
         }
     )
     alerter = _make_alerter(pool, threshold=20, window=5)
@@ -228,7 +229,9 @@ async def test_alerter_fires_includes_breakdown():
     assert context["status_codes"] == "500, 503"
     assert context["providers"] == "openai"
     assert context["models"] == "gpt-4o"
-    assert context["sample_error"] == "upstream timeout"
+    assert context["sample_error_type"] == "TimeoutError"
+    assert context["sample_status"] == 504
+    assert "sample_error" not in context
 
 
 @pytest.mark.asyncio
@@ -289,6 +292,71 @@ async def test_alerter_fires_via_httpx_payload(monkeypatch):
     body = kwargs["json"]["text"]
     assert "Failed-request rate exceeded" in body
     assert "25" in body
+
+
+@pytest.mark.parametrize(
+    ("error", "named"),
+    [
+        # format_exception_for_db: the class, then the upstream's own words.
+        (
+            "ClientResponseError: 400, message='Bad Request' | upstream_body="
+            '{"error": "invalid tool arguments: {\\"ssn\\": \\"078-05-1120\\"}"}',
+            "ClientResponseError",
+        ),
+        ("TimeoutError", "TimeoutError"),
+        # A rejection-log code stands alone.
+        ("quota_exceeded", "quota_exceeded"),
+        # A handler's own sentence names no type.
+        ("invalid embedding response: 1 validation error for input 'my secret'", "unclassified"),
+        ("Model 'x' not found", "unclassified"),
+    ],
+)
+def test_the_sample_names_the_error_type_and_never_quotes_it(error, named):
+    from serving.admin.failed_request_alerter import error_type_of
+
+    assert error_type_of(error) == named
+
+
+@pytest.mark.asyncio
+async def test_an_upstream_error_quoting_the_request_never_reaches_the_channel(monkeypatch):
+    """The card carries the failure's class and status; the text stays in api_logs."""
+    monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.test/abc")
+    from serving.observability.alerts import reset_dedupe_state
+
+    reset_dedupe_state()
+    pool = MagicMock()
+    pool.fetchval = AsyncMock(return_value=25)
+    pool.fetchrow = AsyncMock(
+        return_value={
+            "status_codes": "400",
+            "providers": "openai",
+            "models": "gpt-4o",
+            "sample_error": (
+                "ClientResponseError: 400, message='Bad Request' | upstream_body="
+                "please summarise my diagnosis: patient Jane Roe, HIV positive"
+            ),
+            "sample_status": 400,
+        }
+    )
+    alerter = _make_alerter(pool, threshold=20)
+    fake_client = AsyncMock()
+    fake_client.post = AsyncMock(return_value=MagicMock(status_code=200, text="ok"))
+
+    class _ClientCtx:
+        async def __aenter__(self_inner):
+            return fake_client
+
+        async def __aexit__(self_inner, *_a):
+            return False
+
+    with patch("serving.observability.alerts.httpx.AsyncClient", return_value=_ClientCtx()):
+        await alerter.run_check()
+
+    body = fake_client.post.await_args.kwargs["json"]["text"]
+    assert "ClientResponseError" in body
+    assert "Jane Roe" not in body
+    assert "diagnosis" not in body
+    assert "Bad Request" not in body
 
 
 @pytest.mark.asyncio
@@ -634,3 +702,21 @@ async def test_absolute_threshold_still_fires_and_is_labelled():
     kwargs = sink.await_args.kwargs
     assert kwargs["breached"] is True
     assert kwargs["context"]()["trigger"] == "count"
+
+
+def test_both_queries_exclude_model_queued_answers():
+    """An on-demand model's "model queued" 503s must never page Slack.
+
+    While the model's cluster job waits for a node every request is answered
+    that way, possibly for hours. The rows are matched by the class name
+    ``format_exception_for_db`` prefixes, so any other 503 still counts, and a
+    NULL ``error`` keeps counting (``NOT LIKE`` alone would drop it).
+    """
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+        FAILED_REQUEST_RATE_SQL,
+    )
+
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL, FAILED_REQUEST_RATE_SQL):
+        assert "(error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%')" in sql

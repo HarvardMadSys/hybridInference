@@ -132,6 +132,44 @@ msgid ""
 msgstr "同一个文件里还有一个服务 `pgadmin`（profile 为 `admin`），只有指定这个 profile 时才会启动。"
 
 #: ../developer/deployment.md:36
+msgid "pgAdmin over mutual TLS"
+msgstr "通过双向 TLS 访问 pgAdmin"
+
+#: ../developer/deployment.md:38
+msgid ""
+"The optional `/pgadmin/` console proxy checks the caller's administrator "
+"session before connecting to pgAdmin. By default it uses "
+"`http://pgadmin:80`; setting `PGADMIN_INTERNAL_URL` overrides that "
+"address. For a separately hosted pgAdmin behind a gateway that requires "
+"client certificates, configure the **frontend server's runtime "
+"environment** with:"
+msgstr "可选的 `/pgadmin/` 控制台代理在连接 pgAdmin 前会检查调用者的管理员会话。默认地址为 `http://pgadmin:80`，可通过 `PGADMIN_INTERNAL_URL` 覆盖。若 pgAdmin 单独部署在要求客户端证书的网关后面，请在**前端服务的运行时环境**中配置："
+
+#: ../developer/deployment.md:60
+msgid ""
+"The example Compose file does not forward these variables or mount these "
+"files; a deployment using Compose must explicitly add the frontend "
+"environment and secret volumes in an override. Setting only the root "
+"`.env` is not sufficient. With mTLS enabled, an HTTPS URL and all three "
+"files are required; invalid or unreadable settings make `/pgadmin/` "
+"return 502 without falling back to HTTP. Unset `PGADMIN_MTLS_ENABLED` or "
+"set it to the literal `false` to retain the existing proxy behavior. "
+"Values other than `true` or `false` fail closed."
+msgstr "示例 Compose 文件不会传入这些变量，也不会挂载这些文件；使用 Compose 时，必须在 override 中显式添加前端环境变量和 Secret 卷。只设置根目录 `.env` 不够。启用 mTLS 后必须提供 HTTPS URL 和全部三个文件；配置无效或不可读取时，`/pgadmin/` 返回 502，不会回退到 HTTP。未设置 `PGADMIN_MTLS_ENABLED` 或将其设为字面值 `false` 时保留现有代理行为。除 `true` 和 `false` 以外的值会按关闭访问处理。"
+
+#: ../developer/deployment.md:68
+msgid ""
+"The proxy rereads credentials for each new request and supports "
+"Kubernetes Secret volume projections that place all three files in the "
+"same projection directory. Ordinary files must not be modified while a "
+"request reads them; independent file updates cannot provide an atomic "
+"three-file snapshot. Certificate rotation across the frontend and gateway"
+" requires a coordinated procedure: their Secret projections do not update"
+" at the same time, and the gateway may need a reload. Existing in-flight "
+"requests can continue using the credentials they already acquired."
+msgstr "代理在每个新请求中重新读取凭据，支持将三个文件放在同一个投影目录内的 Kubernetes Secret 卷。普通文件在请求读取期间不得修改；分别更新文件无法提供三个文件的原子快照。前端与网关之间的证书轮换需要协调：两端的 Secret 投影不会同时更新，网关可能需要重新加载。已经进行中的请求可能继续使用此前获取的凭据。"
+
+#: ../developer/deployment.md:36
 msgid ""
 "`frontend` depends on `backend` with `condition: service_started`, not "
 "`service_healthy` — deliberately, so that a backend reporting unhealthy "
@@ -232,12 +270,6 @@ msgid "Request body cap on `/v1/`"
 msgstr "`/v1/` 的请求体大小上限"
 
 #: ../developer/deployment.md
-msgid ""
-"Bound completion request bodies (commonly `client_max_body_size 50m`). "
-"The gateway enforces no size limit of its own"
-msgstr "限制补全请求的请求体大小（常见配置是 `client_max_body_size 50m`）。网关自己不做任何大小限制"
-
-#: ../developer/deployment.md
 msgid "`X-Forwarded-For` rewriting"
 msgstr "`X-Forwarded-For` 重写"
 
@@ -320,14 +352,9 @@ msgstr "日常运维"
 msgid "All from the repository root:"
 msgstr "以下命令都在仓库根目录执行："
 
-#: ../developer/deployment.md:133
-msgid ""
-"`make up` and `make build` first run the `docker-volumes` target, which "
-"creates the external volume `hybridinference_postgres_data` when it is "
-"missing."
-msgstr ""
-"`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 "
-"`hybridinference_postgres_data` 不存在时由它创建。"
+#: ../developer/deployment.md
+msgid "`make up` and `make build` first run the `docker-volumes` target, which creates the external volume `hybridinference_postgres_data` when it is missing, and then apply the schema migrations with the backend image before they start the services. `make restart` starts the existing containers again and migrates nothing. On a deployment that `make deploy` pinned to published images, these commands start the pinned images, and `make build` refuses until you return to source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery)."
+msgstr "`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 `hybridinference_postgres_data` 不存在时由它创建；然后在启动服务之前，用后端镜像执行表结构迁移。`make restart` 只是把现有容器重新启动，不做任何迁移。如果 `make deploy` 已把部署固定到已发布的镜像，这些命令会启动固定的镜像，而 `make build` 会拒绝执行，直到你回到源码构建；见[诊断、部署与恢复](#diagnostics-deployment-and-recovery)。"
 
 #: ../developer/deployment.md:136
 msgid ""
@@ -379,10 +406,8 @@ msgstr ""
 "`make restart s=backend`"
 
 #: ../developer/deployment.md
-msgid ""
-"A value in `.env` that stays in the environment — the database "
-"connection, ports, config paths, console values"
-msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、配置文件路径、控制台的取值"
+msgid "A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values"
+msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、回退所需的配置选择变量、控制台的取值"
 
 #: ../developer/deployment.md
 msgid ""
@@ -1018,6 +1043,13 @@ msgid ""
 " to retire a rule for good, turn it off in your alerts file instead."
 msgstr "静音保存在数据库里，所以重启后依然有效，几秒内就会同步到所有网关进程。某类告警被静音期间，它的任何消息都不会发出；静音期间开始的事件在关闭时也不会发送恢复消息。静音之前已经发出的事件仍会收到恢复消息；静音解除时如果越限仍在持续，会在下一次评估时立即告警。静音适合那些你以后还想恢复的告警；要彻底停用某条规则，应该在告警文件里把它关掉。"
 
+#: ../developer/deployment.md:495
+msgid ""
+"A snooze treats recoveries the same way: an incident that opens while "
+"alerts are snoozed closes without a recovery message, and one that was "
+"posted before the snooze still gets its recovery."
+msgstr "暂停对恢复消息的处理方式相同：告警暂停期间开始的事件，在关闭时不会发送恢复消息；暂停之前已经发出的事件仍会收到恢复消息。"
+
 #: ../developer/deployment.md:454
 msgid "The first admin account"
 msgstr "第一个管理员账号"
@@ -1072,53 +1104,17 @@ msgstr ""
 "能读到后端日志的人，或者能读到保存设置码的数据库的人，就能创建这个账号，所以要像保护主机本身一样保护这两者。输错的设置码会按客户端地址限流，每 "
 "15 分钟十次；正确的设置码从不会被拒绝。"
 
-#: ../developer/deployment.md:478
-msgid ""
-"**Choose a username that is hard to guess.** Sign-in counts each attempt "
-"before it checks the password: five per username from one address in 15 "
-"minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
-"addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
-"the attempts the other limits let through), and twenty per address in an "
-"hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
-"to the account before, including the one you used for setup, holds a "
-"device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to "
-"`/auth`, kept on sign-out, valid for 180 days) and gets five attempts per"
-" 15 minutes of its own, so other people's guesses never lock it out. "
-"Changing `JWT_SECRET_KEY` invalidates every device cookie until that "
-"browser's next sign-in."
-msgstr ""
-"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同一个地址每 15 "
-"分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备"
-" cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有效期 180"
-" 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住它。修改 `JWT_SECRET_KEY` 会让所有设备 cookie "
-"失效，直到那个浏览器下次登录。"
-
-#: ../developer/deployment.md:490
-msgid ""
-"Other browsers share the limits with their address, and behind the "
-"bundled Compose file's console proxy every browser has the same address "
-"unless [trusted-proxy settings](trusted-proxies-and-client-ips.md) name "
-"the console; `admin` is the first username anyone tries. The counts are "
-"held in memory, so a backend restart clears them. Nothing below needs a "
-"sign-in: `ADMIN_TOKEN`, when set, still reaches the admin API, and the "
-"command-line tools work on the database directly."
-msgstr ""
-"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台代理后面，除非[可信代理设置](trusted-proxies-"
-"and-client-ips.md)指明了控制台，所有浏览器的地址都相同；`admin` "
-"又恰恰是谁都会先试的用户名。这些计数只保存在内存里，所以重启后端会把它们清空。下面这些都不需要登录：设置了 `ADMIN_TOKEN` "
-"时，它照样能访问管理 API，命令行工具则直接操作数据库。"
-
 #: ../developer/deployment.md:498
 msgid ""
 "**Without the browser.** `ops/admin/create_admin.py` writes the account "
 "directly: it creates it with `role='admin'`, `status='active'`, "
 "`email_verified=TRUE`, or promotes an existing account with the same "
-"address. Run it from the repository root once the backend has started at "
-"least once (the backend creates the schema):"
+"address. Run it from the repository root once the schema migrations "
+"have run (`make migrate`; `make up` runs them):"
 msgstr ""
 "**不用浏览器**。`ops/admin/create_admin.py` 直接往数据库写账号：新建一个 "
 "`role='admin'`、`status='active'`、`email_verified=TRUE` "
-"的账号；如果同一地址的账号已经存在，就把它提升为管理员。后端至少启动过一次之后（表结构由后端创建），在仓库根目录运行："
+"的账号；如果同一地址的账号已经存在，就把它提升为管理员。数据库迁移运行过之后（`make migrate`；`make up` 会自动运行），在仓库根目录运行："
 
 #: ../developer/deployment.md:508
 msgid ""
@@ -1143,23 +1139,24 @@ msgid ""
 "runs:"
 msgstr "**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在后端运行的地方重置它的密码："
 
-#: ../developer/deployment.md:523
+#: ../developer/deployment.md
 msgid ""
 "It reads only the `DB_*` settings, asks twice for the new password — or, "
 "with `--generate`, prints a strong one — and revokes the account's "
 "sessions, so every browser must sign in again. It takes an email address "
 "as well, for any other account. From a source checkout, run `uv run "
 "python -m serving.auth.reset_password <username>` in the repository root."
-" It also works on a database the backend's upgrade has not migrated yet —"
-" while an upgrade's users migration is still waiting for the table's "
-"lock, say — and changes no schema. Such a database has no login names "
-"yet, so name the account by its email address there."
+" It also works on a database the schema migrations have not brought up to"
+" date — while a migration waits for the users table's lock and the "
+"previous release goes on serving, say — and changes no schema. Such a "
+"database may have no login names yet, so name the account by its email "
+"address there."
 msgstr ""
 "它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` "
 "则直接生成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 "
 "`uv run python -m serving.auth.reset_password "
-"<username>`。它也能在后端的升级还没迁移过的数据库上运行（比如升级对 users "
-"表的迁移还在等待表锁时），而且不改动任何表结构。这样的数据库里还没有登录名，所以在那里要用邮箱地址指定账号。"
+"<username>`。数据库还没迁移到最新时它也能用（比如迁移正在等 users "
+"表的锁、上一版还在服务的时候），而且不改动任何表结构。这样的数据库里可能还没有登录名，所以在那里要用邮箱地址指定账号。"
 
 #: ../developer/deployment.md:533
 msgid ""
@@ -1286,6 +1283,141 @@ msgstr ""
 msgid "Schema details are in [Database](database.md)."
 msgstr "表结构细节见[数据库](database.md)。"
 
+#: ../developer/deployment.md
+msgid "Applying schema migrations"
+msgstr "执行表结构迁移"
+
+#: ../developer/deployment.md
+msgid ""
+"Every deployment method has the same step: run the migrations with the "
+"image you are about to start, while the old one still serves, and start "
+"it only when they succeed."
+msgstr "不管用哪种方式部署，都有同样的一步：趁旧版本还在服务，用即将启动的镜像执行迁移，迁移成功了再启动它。"
+
+#: ../developer/deployment.md
+msgid "Deployment"
+msgstr "部署方式"
+
+#: ../developer/deployment.md
+msgid "The step"
+msgstr "这一步怎么做"
+
+#: ../developer/deployment.md
+msgid "The bundled Compose stack"
+msgstr "自带的 Compose 栈"
+
+#: ../developer/deployment.md
+msgid "`make migrate`; `make up` and `make build` run it for you"
+msgstr "`make migrate`；`make up` 和 `make build` 会替你执行"
+
+#: ../developer/deployment.md
+msgid "Compose with a pinned image (`docker-compose.digest-backend.yml`)"
+msgstr "固定镜像的 Compose（`docker-compose.digest-backend.yml`）"
+
+#: ../developer/deployment.md
+msgid ""
+"`docker compose ... run --rm --no-deps backend python -m migrations "
+"upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as "
+"the `up` that follows"
+msgstr ""
+"PostgreSQL 起来之后执行 `docker compose ... run --rm --no-deps backend python -m "
+"migrations upgrade`，用的文件和 `BACKEND_IMAGE` 要和随后的 `up` 完全一样"
+
+#: ../developer/deployment.md
+msgid "A systemd unit (`deploy/systemd/`)"
+msgstr "systemd 服务单元（`deploy/systemd/`）"
+
+#: ../developer/deployment.md
+msgid ""
+"`.venv/bin/python -m migrations upgrade` in the unit's working directory,"
+" with its environment, before `systemctl restart`"
+msgstr ""
+"在 `systemctl restart` 之前，在单元的工作目录里、用它的环境执行 `.venv/bin/python -m "
+"migrations upgrade`"
+
+#: ../developer/deployment.md
+msgid "Rules for a deploy script that does this itself:"
+msgstr "部署脚本自己执行这一步时，要遵守这几条："
+
+#: ../developer/deployment.md
+msgid ""
+"Run the migrations with the same image, by digest, that you then start. "
+"The image carries the label "
+"`org.hybridinference.schema.migrations=alembic`; an image without it "
+"predates versioned migrations, builds its schema at startup, and has no "
+"step to run."
+msgstr ""
+"执行迁移用的镜像必须就是随后要启动的那个镜像，按摘要指定。这样的镜像带有 label "
+"`org.hybridinference.schema.migrations=alembic`；没有这个 label "
+"的镜像早于版本化迁移，启动时自己建表，也就没有这一步要执行。"
+
+#: ../developer/deployment.md
+msgid ""
+"`run --rm backend` gives the one-off container the backend service's "
+"networks, fixed addresses included. If the service pins an address "
+"(`ipv4_address`), the running backend holds it and Docker refuses the one-"
+"off with `Address already in use`. Give the migrations a service of their "
+"own instead: the same image and `DB_*` settings, only the database's "
+"network, and a Compose profile so that no `up` starts it."
+msgstr ""
+"`run --rm backend` 起的一次性容器会沿用 backend 服务的网络设置，包括固定地址。"
+"如果服务固定了地址（`ipv4_address`），这个地址正被运行中的 backend 占着，Docker "
+"会以 `Address already in use` 拒绝创建这个容器。这种情况下要给迁移单独定义一个服务："
+"镜像和 `DB_*` 设置与 backend 相同，只接入数据库所在的网络，再放进一个 Compose "
+"profile，这样任何 `up` 都不会启动它。"
+
+#: ../developer/deployment.md
+msgid ""
+"Do not let the one-off start or recreate the database. Pass `--no-deps` and "
+"check yourself that the database is up: Compose recreates a dependency "
+"whose configuration changed, before a migration that may then fail."
+msgstr ""
+"不要让这个一次性容器启动或重建数据库。加上 `--no-deps`，数据库是否已经运行由你自己检查："
+"依赖服务的配置一旦变了，Compose 会先重建它，而之后的迁移仍可能失败。"
+
+#: ../developer/deployment.md
+msgid ""
+"If the deploy script itself arrives on stdin (`ssh host bash -s`), run the "
+"one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so "
+"it reads the rest of the script, and the deploy ends with status 0 having "
+"done nothing more."
+msgstr ""
+"如果部署脚本本身是从标准输入传进来的（`ssh host bash -s`），运行一次性容器时要加 "
+"`</dev/null`。即使加了 `-T`，`compose run` 仍会接上标准输入，把脚本剩下的部分读走；"
+"部署以状态 0 结束，后面的步骤一步都没执行。"
+
+#: ../developer/deployment.md
+msgid ""
+"Do not make the migrations a step that every start runs (Compose's "
+"`depends_on: condition: service_completed_successfully`, a Kubernetes init "
+"container). Every restart would migrate first and wait on table locks "
+"before it serves. Where they are wired that way anyway, a restored earlier "
+"image finds nothing to apply on the newer schema: the command exits 0, or 1"
+" when that schema no longer supports the earlier code."
+msgstr ""
+"不要把迁移做成每次启动都要跑的步骤（比如 Compose 的 `depends_on: condition: "
+"service_completed_successfully`，或者 Kubernetes 的 init container）。那样每次重启都会先迁移，"
+"还要等表锁，之后才开始服务。如果已经这样接了，恢复上一版镜像时，它在更新的表结构上没有要执行的迁移："
+"命令以 0 退出；如果那个结构已经不再支持上一版代码，就以 1 退出。"
+
+#: ../developer/deployment.md
+msgid ""
+"If the step fails, stop: do not restart the service. Exit status 75 means"
+" a lock was not available in time (a backup holding a table, or another "
+"migration run); the same command can be run again later."
+msgstr "这一步失败就停下，不要重启服务。退出状态 75 表示没能及时拿到锁（备份占着某张表，或者另一个迁移正在执行），稍后可以原样重跑。"
+
+#: ../developer/deployment.md
+msgid ""
+"Have the deploy in place, and seen working once on an image without the "
+"label, before the first image with it arrives. The backend refuses to "
+"start on a database that has not been migrated, so a missed step shows up"
+" as a failed start and, where the deploy restores the previous image, an "
+"outage while it does."
+msgstr ""
+"在第一个带这个 label 的镜像到来之前，就把部署脚本改好，并且在一个不带 label "
+"的镜像上确认它确实生效过一次。数据库没迁移时后端会拒绝启动，所以漏掉这一步的结果是启动失败；部署会自动恢复上一版镜像的话，恢复期间服务是中断的。"
+
 #: ../developer/deployment.md:600
 msgid ""
 "The database holds every setting in plaintext: provider keys, the SMTP "
@@ -1305,30 +1437,40 @@ msgstr ""
 msgid "pgAdmin (optional)"
 msgstr "pgAdmin（可选）"
 
+#: ../developer/deployment.md:611
+msgid "Set `PGADMIN_PASSWORD` in `.env` first, then:"
+msgstr "先在 `.env` 里设置 `PGADMIN_PASSWORD`，然后："
+
 #: ../developer/deployment.md:615
 msgid ""
-"pgAdmin then listens on `127.0.0.1:5050` with `SCRIPT_NAME=/pgadmin`, so "
-"an SSH tunnel to that port is enough to reach it. The console can also "
-"proxy it at `/pgadmin/`, gated on an admin session by "
+"The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated"
+" on an admin session by "
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on "
-"every unexpected condition, including a backend it cannot reach."
+"every unexpected condition, including a backend it cannot reach. pgAdmin "
+"publishes no host port, since one would skip that gate; "
+"`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel."
 msgstr ""
-"之后 pgAdmin 会监听 `127.0.0.1:5050`，并设置了 `SCRIPT_NAME=/pgadmin`，所以开一条到这个端口的 "
-"SSH 隧道就能访问。控制台也可以在 `/pgadmin/` 下代理它，由 "
+"控制台在 `/pgadmin/`（`SCRIPT_NAME=/pgadmin`）下提供 pgAdmin，由 "
 "`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` "
-"检查是否为管理员会话；遇到任何意外情况它都会拒绝访问，包括连不上后端的时候。"
+"检查是否为管理员会话；遇到任何意外情况它都会拒绝访问，包括连不上后端的时候。pgAdmin "
+"不发布任何主机端口，因为主机端口会绕过这道关卡；`PGADMIN_PUBLISH=1` 会在 `127.0.0.1` "
+"上加一个端口，供 SSH 隧道使用。"
 
 #: ../developer/deployment.md:621
 msgid ""
-"One thing to get right: whether pgAdmin *also* asks for its own login is "
-"set by `PGADMIN_CONFIG_SERVER_MODE`, and the two defaults disagree. The "
-"Compose service falls back to `False`, which serves pgAdmin with no login"
-" at all; `.env.example` suggests `True`, which turns pgAdmin's own login "
-"on behind the console's gate. `True` is the safer of the two."
+"Behind the console's gate pgAdmin asks for its own login, "
+"`PGADMIN_EMAIL` and `PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` "
+"defaults to `True`, and `False` serves pgAdmin with no login at all. "
+"There is no fallback password: without one pgAdmin will not set up its "
+"volume. It keeps the login it first started with, so a volume first "
+"started without a password, or with server mode off, needs the steps in "
+"[Authentication](database.md#authentication)."
 msgstr ""
-"有一点要注意：pgAdmin 是否*还*要求登录它自己的账号，由 `PGADMIN_CONFIG_SERVER_MODE` "
-"决定，而两处的默认值不一致。Compose 服务在未设置时取 `False`，pgAdmin 完全不需要登录；`.env.example` "
-"建议设为 `True`，即在控制台这道关卡之后，再加一道 pgAdmin 自己的登录。`True` 更安全。"
+"在控制台这道关卡之后，pgAdmin 还会要求登录它自己的账号，即 `PGADMIN_EMAIL` 和 "
+"`PGADMIN_PASSWORD`：`PGADMIN_CONFIG_SERVER_MODE` 默认为 `True`，设为 `False` 时 "
+"pgAdmin 完全不需要登录。密码没有兜底的默认值：不设密码，pgAdmin 就不会初始化它的卷。它会一直沿用首次启动时的"
+"登录信息，所以首次启动时没有设密码、或者关着 server mode 的卷，需要按[认证](database.md#authentication)"
+"中的步骤处理。"
 
 #: ../developer/deployment.md:627
 msgid "Troubleshooting"
@@ -1363,6 +1505,18 @@ msgid ""
 "Database connection failed — check `make ps` for the `postgres` health "
 "status."
 msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
+
+#: ../developer/deployment.md
+msgid ""
+"`The database records no schema version` or `The database is at revision "
+"…, behind this code's …` — the migrations have not been applied for this "
+"image. Run `make migrate` (or your deployment's step, see [Applying "
+"schema migrations](#applying-schema-migrations)), then start the backend "
+"again."
+msgstr ""
+"`The database records no schema version` 或 `The database is at revision "
+"…, behind this code's …`：还没有为这个镜像执行迁移。执行 `make "
+"migrate`（或者你的部署方式对应的那一步，见[执行表结构迁移](#applying-schema-migrations)），再重新启动后端。"
 
 #: ../developer/deployment.md:643
 msgid ""
@@ -1770,3 +1924,165 @@ msgstr "改动代码后重新构建"
 #~ "Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。所有 webhook "
 #~ "变更都需要重启后端才能生效；在此之前，正常告警继续使用原来的渠道。**Pending restart** "
 #~ "表示变更已保存，等待重启后生效。"
+
+#: ../developer/deployment.md:52
+msgid ""
+"The URL hostname must match the gateway server certificate. The CA file "
+"verifies that server; the client certificate and key authenticate the "
+"frontend to the gateway. Supply the files through a read-only secret "
+"mount accessible to the frontend process, and restrict who may read or "
+"mount the client private key. The console runs as uid 1000, not root, so "
+"the files must be readable by that user: for example group 1000 with mode"
+" `0440`, or a Kubernetes `fsGroup: 1000` with `defaultMode: 0440`. A file"
+" only root can read makes `/pgadmin/` answer 502, and the console logs "
+"that the credentials are not readable by its user. These are file paths "
+"inside the frontend container, not certificate contents. The upstream "
+"gateway must enforce mTLS itself and restrict access to pgAdmin; the "
+"console's administrator check does not protect a separately exposed "
+"backend."
+msgstr ""
+"URL 中的主机名必须与网关服务端证书匹配。CA 文件用于验证服务端；客户端证书和私钥用于向网关认证前端。请通过前端进程可读取的只读 Secret"
+" 挂载提供文件，并限制谁能读取或挂载客户端私钥。控制台以 uid 1000 而非 root 运行，所以这些文件必须能被该用户读取：例如属组为 "
+"1000、权限为 `0440`，或者在 Kubernetes 中设置 `fsGroup: 1000` 和 `defaultMode: "
+"0440`。如果文件只有 root 能读，`/pgadmin/` 会返回 "
+"502，控制台会在日志中说明凭据无法被它的用户读取。这些是前端容器内的文件路径，不是证书内容。上游网关必须自行强制 mTLS 并限制对 "
+"pgAdmin 的访问；控制台的管理员检查无法保护单独暴露的后端。"
+
+#: ../developer/deployment.md
+msgid ""
+"Bound completion request bodies (commonly `client_max_body_size 50m`), so"
+" oversized ones never cross your network. The gateway refuses bodies over"
+" `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` "
+"bodies to it without holding them"
+msgstr ""
+"限制补全请求的请求体大小（常见配置是 `client_max_body_size "
+"50m`），让过大的请求体根本不会穿过你的网络。网关自己会拒绝超过 `REQUEST_MAX_BODY_MB`（32 MiB）的请求体，控制台则把"
+" `/v1/` 的请求体以流式转发给它，不在内存中保留"
+
+#: ../developer/deployment.md:536
+msgid ""
+"**Choose a username that is hard to guess.** Sign-in counts each attempt "
+"before it checks the password: five per username from one address in 15 "
+"minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
+"addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
+"the attempts the other limits let through), and twenty per address in an "
+"hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
+"to the account before, including the one you used for setup, holds a "
+"device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to "
+"`/auth`, kept on sign-out, valid for 180 days) and gets five attempts per"
+" 15 minutes of its own, so other people's guesses never lock it out. "
+"Together, the account's browsers that hold one get "
+"`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget "
+"only requests carrying such a cookie count against, and once it is spent "
+"they are limited like any other browser. Each password has its own "
+"budget: cookies from before a password change or reset cannot spend the "
+"one your browsers share after it. Changing `JWT_SECRET_KEY` invalidates "
+"every device cookie until that browser's next sign-in."
+msgstr ""
+"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同一个地址每 15 "
+"分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备"
+" cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有效期 180"
+" 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住它。持有这种 cookie 的该账号所有浏览器合计每 15 分钟有 "
+"`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` 次尝试，这份额度只有携带这种 cookie 的请求才会消耗；额度用完后，它们就和其他浏览器一样受限。每个密码各有一份额度：修改或重置密码之前发出的 "
+"cookie，用不掉你的浏览器在此之后共享的那一份。修改 "
+"`JWT_SECRET_KEY` 会让所有设备 cookie 失效，直到那个浏览器下次登录。"
+
+#: ../developer/deployment.md:550
+msgid ""
+"Other browsers share the limits with their address, and behind the "
+"bundled Compose file's console every browser has the same address "
+"unless the gateway trusts the header your edge sets, which is safe "
+"only while the console is reachable through that edge alone (see "
+"[Behind the "
+"console](trusted-proxies-and-client-ips.md#behind-the-console)); "
+"`admin` is the first username anyone tries. The pages that mail a "
+"link to an address anyone types, password reset and resending the "
+"verification email, are limited too: three of each kind an hour per "
+"address, whether or not an account has it, and ten an hour per client "
+"address when the backend can tell clients apart (without that, the "
+"per-address limit alone). The counts are held in memory, so a backend "
+"restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`, "
+"when set, still reaches the admin API, and the command-line tools "
+"work on the database directly."
+msgstr ""
+"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台后面，除非网关信任你的边缘层所设置的那个头，所有浏览器的地址都相同，而这样的信任只有在控制台只能经由这个边缘层访问时才安全（见[在控制台后面](trusted-proxies-and-client-ips.md#behind-the-console)）；`admin` 又恰恰是谁都会先试的用户名。那些会向任何人输入的地址发送链接的页面——重置密码和重新发送验证邮件——也有限制：每个地址每种邮件每小时三封，无论该地址是否有账号；后端能区分客户端时，每个客户端地址每小时十封（不能区分时只有按地址的限制）。这些计数只保存在内存里，所以重启后端会把它们清空。下面这些都不需要登录：设置了"
+" `ADMIN_TOKEN` 时，它照样能访问管理 API，命令行工具则直接操作数据库。"
+
+#: ../developer/deployment.md:736
+msgid ""
+"pgAdmin is on a network of its own, `pgadmin`, shared only with the "
+"console and the database. The backend and any other service on "
+"`hybridinference` cannot reach it. The first `make up` after this change "
+"recreates the `postgres` container to attach it to that network, a "
+"restart of a few seconds."
+msgstr ""
+"pgAdmin 位于它自己的网络 `pgadmin` 上，只与控制台和数据库共享。后端以及 `hybridinference` "
+"网络上的其他服务都无法访问它。这次变更之后的第一次 `make up` 会重建 `postgres` 容器，把它接入该网络，会有几秒钟的重启。"
+
+#: ../developer/deployment.md:741
+msgid ""
+"The Compose service runs an exact pgAdmin release "
+"(`dpage/pgadmin4:9.19`). Moving from the earlier `dpage/pgadmin4:8` "
+"upgrades pgAdmin's settings database in the `pgadmin_data` volume on the "
+"first start, which an 8.x image cannot read afterwards."
+msgstr ""
+"Compose 服务运行一个确切的 pgAdmin 版本（`dpage/pgadmin4:9.19`）。从之前的 "
+"`dpage/pgadmin4:8` 升级时，pgAdmin 会在首次启动时升级 `pgadmin_data` 卷中的设置数据库，之后 8.x "
+"镜像就无法再读取它。"
+
+#: ../developer/deployment.md:747
+msgid ""
+"pgAdmin and the agent web app (`/agents`) are served on the console's own"
+" origin. Any script either app serves runs with the authority of the "
+"console session open in that browser, because the session's access token "
+"and `/auth/refresh` are same-origin. The proxies keep each app's cookies "
+"under its own path and refuse any cookie named like one of the console's,"
+" which stops an app from replacing or clearing the console's session, but"
+" only a separate origin removes the shared authority. Serving each app "
+"from its own hostname behind the same admin gate needs DNS and tunnel "
+"routes per deployment and is tracked as follow-up work."
+msgstr ""
+"pgAdmin 和 agent Web "
+"应用（`/agents`）与控制台同源提供服务。这两个应用提供的任何脚本，都以该浏览器中已打开的控制台会话的权限运行，因为会话的访问令牌和 "
+"`/auth/refresh` 都是同源的。代理会把每个应用的 cookie 限定在它自己的路径下，并拒绝任何与控制台 cookie 同名的 "
+"cookie，这能阻止应用替换或清除控制台的会话，但只有独立的源才能消除这种共享权限。让每个应用在同一个管理员门禁后面使用自己的主机名提供服务，需要为每个部署配置"
+" DNS 和隧道路由，这项工作作为后续事项跟踪。"
+
+msgid "Diagnostics, deployment and recovery"
+msgstr "诊断、部署与恢复"
+
+msgid "Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the distribution's own `smoke.py` when it ships one."
+msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。如果发行版自带 `smoke.py`，`make smoke` 会运行它。"
+
+msgid "Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs to persist optional Compose profiles, cloud-agent networking and the pgAdmin host-port choice across commands; the copy alone changes nothing."
+msgstr "将 `.ops.env.example` 复制到 `.ops.env`，并取消注释本主机需要的选项，即可在各命令间保留可选 Compose profiles、云代理网络和 pgAdmin 主机端口选择；仅复制文件不会改变任何设置。"
+
+msgid "Model catalog, routing policy or alert rules in Admin Settings"
+msgstr "Admin Settings 中的模型目录、路由策略或告警规则"
+
+msgid "Follow the **Restart required** marker; no image rebuild is needed"
+msgstr "遵循 **Restart required** 标记；无需重新构建镜像"
+
+msgid "Site configuration or branding in Admin Settings"
+msgstr "Admin Settings 中的站点配置或品牌信息"
+
+msgid "Applies when settings refresh; no rebuild or restart"
+msgstr "设置刷新时应用；无需重新构建或重启"
+
+msgid "Application configuration"
+msgstr "应用配置"
+
+msgid "Models, routing, alert rules, site identity and branding are database settings, not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections have no effect on this release, which warns at startup while one is set. Keep them in the deployment's env files through the rollback window anyway: Compose passes them to the backend, where a rolled-back previous release reads its files through them and the legacy import learns what that release had in force. See [Configuration](configuration.md) for the document controls and the import an existing deployment runs during its upgrade."
+msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据库设置，不是运行时文件。已停用的 `*_CONFIG_PATH` 和 active/dark 清单选择对当前版本无效；只要设置了其中任何一项，当前版本就会在启动时发出警告。尽管如此，在回退窗口结束前仍要把它们保留在部署的 env 文件中：Compose 会把它们传给后端，回退后的上一版本通过它们读取自己的文件，旧版配置导入也通过它们得知上一版本实际生效的配置。文档管理以及现有部署在升级期间运行的导入，见[配置](configuration.md)。"
+
+msgid "Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings. Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in `apps/backend/serving/observability/`."
+msgstr "在 Admin Settings 中通过 `ALERT_RULES` JSON 文档设置规则和阈值。留空时使用内置阈值；修改会标记为 Restart required。规则类型及求值逻辑位于 `apps/backend/serving/observability/`。"
+
+msgid "A deploy records the running artifacts, pulls the pinned pair and migrates with the new backend image. With `LEGACY_MANIFEST` set it then imports the previous release's file-based configuration with that image; see [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database). Only then does it switch the services and run the acceptance smoke. Any failure after the switch, an interrupted command included, restores the previous images and runs the acceptance on them again; the command then exits with the deploy's own error and whether the restore passed. A rollback starts the recorded previous images without running their migrations."
+msgstr "部署会记录正在运行的镜像，拉取固定的一对镜像，并用新的后端镜像执行迁移。设置了 `LEGACY_MANIFEST` 时，它接着用该镜像导入上一版本基于文件的配置；见[数据库中的模型和路由文档](configuration.md#model-and-routing-documents-in-the-database)。之后才切换服务并执行冒烟验收。切换之后的任何失败（包括命令被中断）都会恢复上一组镜像，并对它们重新执行验收；命令随后以部署本身的错误退出，并说明恢复是否通过。回退会启动记录的上一组镜像，不运行它们的迁移。"
+
+msgid "Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the shell sets it): `images.env`, the images it is pinned to, and `previous.json` and `current.json`. A deploy writes them only once its release is accepted, so a failed attempt changes neither the pin nor the release a rollback returns to; a rollback pins the images it starts. While `images.env` exists, that deployment's `make up`, `make migrate` and other lifecycle commands start the pinned images instead of building the checkout, and `make build` refuses. To return to source builds, delete that `images.env` and run `make build`. No other distribution, the example included, uses the pin."
+msgstr "每个部署都把自己的记录保存在 `.ops/<distribution>/` 中（没有发行版时为 `.ops/none/`；shell 设置了 `COMPOSE_PROJECT_NAME` 时，位于以它命名的子目录中）：`images.env`（部署固定使用的镜像），以及 `previous.json` 和 `current.json`。部署只有在新版本通过验收后才写入这些文件，因此失败的尝试既不会改变固定的镜像，也不会改变回退要返回的版本；回退会固定它启动的镜像。只要 `images.env` 存在，该部署的 `make up`、`make migrate` 及其他生命周期命令都会启动固定的镜像，而不是构建检出的代码，`make build` 则会拒绝执行。要回到源码构建，删除该 `images.env` 并运行 `make build`。其他发行版（包括示例）都不会使用这个固定。"
+
+msgid "Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds every stored secret: keep it private and copy it off the host. A restore check never touches the deployment's database server. It restores the dump into a throwaway PostgreSQL container of the same image, with its own volume and internal network, migrates the copy to this release, as a deploy would migrate a backup taken before the upgrade, and removes the container, volume and network afterwards. For its duration it adds a second database server's CPU and I/O, and it needs free disk where Docker keeps volumes, normally the disk of the deployment's own database: it refuses to start unless about twice the database's size plus 1 GiB is free there."
+msgstr "未指定 `BACKUP` 时，转储写入 `.ops/<distribution>/gateway.dump`。它包含所有已保存的秘密：请妥善保管，并复制到主机之外。恢复检查绝不会触碰部署的数据库服务器。它把转储恢复到一个使用相同镜像的一次性 PostgreSQL 容器中，该容器有自己的卷和内部网络；然后把副本迁移到当前版本（就像部署会迁移升级前的备份那样），最后删除容器、卷和网络。检查期间会额外占用第二个数据库服务器的 CPU 和 I/O，并需要 Docker 存放卷的磁盘上有空闲空间（通常就是部署自身数据库所在的磁盘）：除非那里约有数据库大小两倍再加 1 GiB 的空闲空间，否则它会拒绝启动。"

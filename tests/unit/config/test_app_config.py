@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import os
 import textwrap
 
 import pytest
+import yaml
 
 from serving.config import app_config
 from serving.config.app_config_registry import static_entries
+from serving.config.route_catalog import reset_installed
 from serving.config.settings import get_settings
 from tests.fixtures.app_config_store import FakeAppConfigStore, row
 
@@ -21,17 +25,20 @@ def config_env(tmp_path, monkeypatch):
         monkeypatch.delenv(entry.key, raising=False)
     for key in ("ENVIRONMENT", "DISTRIBUTION_CONFIG_PATH"):
         monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("MODEL_CATALOG", "{}")
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
     monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
     monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
-    return tmp_path
+    reset_installed()
+    yield tmp_path
+    reset_installed()
 
 
 def _write_models(path, text: str) -> None:
-    (path / "models.yaml").write_text(textwrap.dedent(text))
+    os.environ["MODEL_CATALOG"] = json.dumps(yaml.safe_load(textwrap.dedent(text)) or {})
 
 
 async def _boot(store: FakeAppConfigStore) -> None:
@@ -227,7 +234,6 @@ async def test_boot_imports_environment_values_without_overwriting_rows(
     assert store.rows["SMTP_PASSWORD"].secret
     assert "SITE_DOCS_URL" not in store.rows
     assert store.rows["FRONTEND_URL"].value == "https://db.example"
-    assert store.schema_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1602,7 +1608,7 @@ def test_the_fence_secret_is_not_locked_while_nothing_stands_in(config_env, monk
 def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, caplog) -> None:
     """The fence pins API_KEY_SECRET on the first start; setting one later fails startup."""
     from serving.config.settings import Settings
-    from serving.storage import log_schema
+    from serving.storage import erasure_fence
 
     # Settings reads the process environment too, and CI's database job sets one.
     monkeypatch.delenv("ERASURE_FENCE_SECRET", raising=False)
@@ -1611,7 +1617,7 @@ def test_the_fence_warning_no_longer_asks_for_a_dedicated_secret(monkeypatch, ca
         lambda: Settings(api_key_secret="fallback-secret"),
     )
     with caplog.at_level("WARNING"):
-        assert log_schema.resolve_fence_secret(None) == "fallback-secret"
+        assert erasure_fence.resolve_fence_secret(None) == "fallback-secret"
 
     assert "set erasure_fence_secret" not in caplog.text.lower()
     assert "keep API_KEY_SECRET unchanged and ERASURE_FENCE_SECRET empty" in caplog.text

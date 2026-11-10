@@ -38,10 +38,27 @@ from pydantic import ValidationError
 
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX, is_auto_model_id
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.adapters.reasoning_effort import declared_public_levels
 from serving.auto_mode import auto_mode_for
 from serving.batch.profiles import AnthropicProfile, profile_violation
+from serving.config.batch_routes import (
+    BATCH_ROUTE_UNAVAILABLE,
+    any_batch_route,
+    batch_route_refusal,
+    embedding_backends,
+    route_batch_allowed,
+)
 from serving.model_access import model_access_denial, route_canonical_model_id
-from serving.responses_translator import responses_request_to_chat_params
+from serving.request_limits import (
+    chat_limit_problem,
+    messages_limit_problem,
+    responses_limit_problem,
+)
+from serving.responses_translator import (
+    merge_leading_system_messages,
+    responses_input_to_messages,
+    responses_request_to_chat_params,
+)
 from serving.schemas import ChatCompletionRequest, EmbeddingRequest
 from serving.servers.model_availability import model_not_found_detail
 from serving.storage.batch_store import (
@@ -167,10 +184,6 @@ class ItemRejected(Exception):
         self.status = status
         self.param = param
 
-    def as_error(self) -> dict[str, Any]:
-        """The stored error object (``{"code", "message", "status"}``)."""
-        return {"code": self.code, "message": self.message, "status": self.status}
-
 
 @dataclass
 class AdmissionContext:
@@ -185,6 +198,10 @@ class AdmissionContext:
     #: The router's embedding access gates (``FixedRouter.embedding_routes``).
     #: An embedding model with no gate here is refused, as /v1/embeddings does.
     embedding_routes: dict[str, Any] | None = None
+    #: The per-route batch choices (``FixedRouter.batch_route_resolver``). A
+    #: model none of whose routes batch work may use is refused; without a
+    #: resolver every route follows its locality.
+    batch_routes: Any = None
     _models: dict[tuple[str, str], str] = field(default_factory=dict)
 
 
@@ -332,10 +349,8 @@ def openai_translation_problem(body: dict[str, Any], adapter: Any = None) -> str
             return "output_config: only effort is translated; format needs a native route"
         effort = output_config.get("effort")
         if adapter is not None and effort is not None:
-            config = getattr(adapter, "config", None)
-            supported = getattr(config, "supported_params", None) or ()
-            declared = getattr(config, "reasoning_efforts", None) or ()
-            if "reasoning_effort" not in supported or effort not in declared:
+            declared = declared_public_levels(getattr(adapter, "config", None))
+            if effort not in declared:
                 return f"output_config.effort {effort!r} is not supported by this model"
     return None
 
@@ -416,7 +431,14 @@ async def _admit_route_model(
             status=404,
             param="model",
         )
-    return route_canonical_model_id(route, lookup), route
+    canonical = route_canonical_model_id(route, lookup)
+    if not any_batch_route(ctx.batch_routes, canonical, _route_adapters(route)):
+        # Refused now rather than queued to wait for a route that never comes;
+        # an item already queued fails with the same reason (scheduler).
+        raise ItemRejected(
+            BATCH_ROUTE_UNAVAILABLE, batch_route_refusal(model), status=400, param="model"
+        )
+    return canonical, route
 
 
 @dataclass(frozen=True)
@@ -427,10 +449,6 @@ class ItemProblem:
     message: str
     status: int
     param: str | None
-
-    def as_error(self) -> dict[str, Any]:
-        """The stored error object (``{"code", "message", "status"}``)."""
-        return {"code": self.code, "message": self.message, "status": self.status}
 
 
 async def check_item(
@@ -451,6 +469,13 @@ async def admit_item(target: str, body: Any, ctx: AdmissionContext) -> str:
     """
     if not isinstance(body, dict):
         raise ItemRejected("invalid_request", "body must be a JSON object")
+    check_limits = {
+        TARGET_CHAT: chat_limit_problem,
+        TARGET_MESSAGES: messages_limit_problem,
+        TARGET_RESPONSES: responses_limit_problem,
+    }.get(target)
+    if check_limits is not None and (problem := check_limits(body)) is not None:
+        raise ItemRejected("invalid_request", problem)
     if target == TARGET_CHAT:
         return await _admit_chat(body, ctx)
     if target == TARGET_EMBEDDINGS:
@@ -532,6 +557,10 @@ async def _admit_embedding_model(model: str, ctx: AdmissionContext) -> str:
             status=404,
             param="model",
         )
+    if not any_batch_route(ctx.batch_routes, model, embedding_backends(adapter)):
+        raise ItemRejected(
+            BATCH_ROUTE_UNAVAILABLE, batch_route_refusal(model), status=400, param="model"
+        )
     # The embedding adapter is looked up by the name as given, as the
     # interactive endpoint does; its configured id is what the cap keys on.
     return getattr(getattr(adapter, "config", None), "id", None) or model
@@ -574,7 +603,17 @@ async def _admit_messages(body: dict[str, Any], ctx: AdmissionContext) -> str:
     canonical, route = await _cached_route_model(
         body["model"], ctx, TARGET_MESSAGES, resolve_anthropic_alias
     )
-    problems = [adapter_problem(adapter, body) for adapter in _route_adapters(route)]
+    # Only the routes batch work may use can serve it.
+    allowed = [
+        adapter
+        for adapter in _route_adapters(route)
+        if route_batch_allowed(ctx.batch_routes, canonical, adapter)
+    ]
+    if not allowed:
+        raise ItemRejected(
+            BATCH_ROUTE_UNAVAILABLE, batch_route_refusal(body["model"]), status=400, param="model"
+        )
+    problems = [adapter_problem(adapter, body) for adapter in allowed]
     if all(problems):
         raise ItemRejected(
             "invalid_request",
@@ -722,12 +761,31 @@ async def _admit_responses(body: dict[str, Any], ctx: AdmissionContext) -> str:
     problem = _responses_tools_problem(body.get("tools"))
     if problem:
         raise ItemRejected("invalid_request", problem, param="tools")
-    _params, dropped = responses_request_to_chat_params(body)
+    params, dropped = responses_request_to_chat_params(body)
     if dropped:
         raise ItemRejected(
             "invalid_request",
             f"tools: hosted tool types {sorted(set(dropped))} are not supported in batches",
             param="tools",
         )
+    # Execution translates to Chat before validating its fields. Apply the
+    # same validation now, so a bad range or type refuses the entire batch
+    # before any of its other requests can run.
+    messages = responses_input_to_messages(body.get("input"))
+    if body.get("instructions"):
+        messages.insert(0, {"role": "system", "content": body["instructions"]})
+    chat_body = {
+        "model": body.get("model"),
+        "messages": merge_leading_system_messages(messages),
+        **params,
+    }
+    if problem := chat_limit_problem(chat_body):
+        raise ItemRejected("invalid_request", problem)
+    try:
+        ChatCompletionRequest.model_validate(chat_body)
+    except ValidationError as exc:
+        raise ItemRejected(
+            "invalid_request", f"body is not a valid Responses request: {_describe(exc)}"
+        ) from None
     canonical, _route = await _cached_route_model(body.get("model"), ctx, TARGET_RESPONSES)
     return canonical

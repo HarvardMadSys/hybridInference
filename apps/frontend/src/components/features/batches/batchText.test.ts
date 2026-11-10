@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { BatchStatus, ConsoleBatch } from '@/lib/api/batches';
 
-import { batchCategory } from './batchText';
+import { batchCategory, pauseText } from './batchText';
 
 function old(
   status: BatchStatus,
@@ -36,5 +36,34 @@ describe('the category of a batch from an older gateway', () => {
 
   it("defers to the gateway's own category when it sends one", () => {
     expect(batchCategory({ ...old('completed', OK), category: 'issues' })).toBe('issues');
+  });
+});
+
+describe('pauseText', () => {
+  const english = (_slot: string, fallback: string) => fallback;
+  const paused = (reason: string) =>
+    ({ paused_until: 1_790_000_000, paused_reason: reason }) as ConsoleBatch;
+
+  it("names the key's own budget, apart from the account's quota", () => {
+    expect(pauseText(paused('key_budget'), english)).toMatch(
+      /^Paused: the API key this batch runs under has spent its budget\./,
+    );
+    expect(pauseText(paused('quota'), english)).toMatch(/^Paused: your daily quota is spent\./);
+    expect(pauseText(paused('monthly_quota'), english)).toMatch(
+      /^Paused: your monthly quota is spent\./,
+    );
+  });
+
+  it("names a project's budget and the account's, apart from the key's", () => {
+    expect(pauseText(paused('project_budget'), english)).toMatch(
+      /^Paused: the project this batch runs under has spent its budget\./,
+    );
+    expect(pauseText(paused('account_budget'), english)).toMatch(
+      /^Paused: the account this batch runs under has spent its quota\./,
+    );
+  });
+
+  it('is nothing for a batch that is not paused', () => {
+    expect(pauseText({ paused_until: null } as ConsoleBatch, english)).toBeNull();
   });
 });

@@ -416,7 +416,8 @@ async def test_an_accepted_request_closes_the_auth_incident(monkeypatch, caplog)
 
         resolutions = _auth_resolutions(mock_alert, _LOCAL_ENDPOINT)
         assert len(resolutions) == 1
-        assert resolutions[0].args[1] == "Recovered: Upstream rejected gateway credential"
+        assert resolutions[0].args[1] == "Upstream rejected gateway credential"
+        assert resolutions[0].kwargs["status"] == "resolved"
         # Delivered, so the tracker must have let the incident go.
         assert _STATE_TRANSITIONS.is_firing(key) is False
 

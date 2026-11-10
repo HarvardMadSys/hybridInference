@@ -29,6 +29,7 @@ import aiohttp
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 
+from routing.endpoint_health import failure_may_lose_prefix_cache
 from routing.endpoints import endpoint_id_for_adapter
 from routing.prefill_load import (
     conversation_fingerprint,
@@ -36,9 +37,16 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
-from serving.adapters.anthropic_translator import normalize_inline_system
+from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
+from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
+from serving.adapters.reasoning_effort import (
+    ReasoningEffortRefused,
+    effort_contract,
+    translate_effort,
+)
 from serving.adapters.upstream_limiter import UpstreamSaturated
 from serving.auto_mode import (
     AnthropicStreamModelRenamer,
@@ -53,6 +61,7 @@ from serving.auto_mode import (
 from serving.batch.attempts import note_request_id, observe_billing
 from serving.batch.targets import AdapterRequirement
 from serving.config.app_config import config_value, on_change
+from serving.config.batch_routes import batch_endpoint_scope, batch_route_refusal
 from serving.exceptions import (
     conceal_served_model,
     generic_message_for_status,
@@ -63,14 +72,17 @@ from serving.exceptions import (
 from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
-from serving.observability.tracked_tasks import tracked_task
 from serving.pricing import effective_pricing, require_source_pricing
+from serving.request_limits import messages_limit_problem
 from serving.servers.auth import (
     _next_utc_midnight,
     verify_api_key,
     verify_api_key_for_balance,
 )
-from serving.servers.concurrency import enforce_user_concurrency
+from serving.servers.concurrency import (
+    enforce_count_tokens_concurrency,
+    enforce_user_concurrency,
+)
 from serving.servers.deps import (
     get_completions_logger,
     get_log_store,
@@ -80,7 +92,10 @@ from serving.servers.deps import (
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.spend_ledger import ledger_for
+from serving.storage.bounded_log import bound_rejected_log_payload
 from serving.storage.utils import calculate_cost
+from serving.stream import StreamQueue, StreamText, pump_stream
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
@@ -88,7 +103,11 @@ from serving.utils.request_ip import derive_affinity_key
 from serving.utils.session_identity import consume_session_fields, session_identity
 from serving.utils.synthetic_probe import probe_marker_in
 from serving.utils.token_utils import optional_token_count, usage_count
-from serving.utils.tokens import estimate_prompt_tokens, estimate_text_tokens
+from serving.utils.tokens import (
+    estimate_prompt_tokens_bounded,
+    estimate_text_tokens,
+    run_tokenization,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
@@ -544,6 +563,7 @@ def _pick_dispatch_adapter(
     size_prompt: Callable[[Any], int] | None = None,
     *,
     requirement: AdapterRequirement | None = None,
+    batch_routes_only: bool = False,
 ):
     """Return the route adapter this request may actually be dispatched to.
 
@@ -575,8 +595,15 @@ def _pick_dispatch_adapter(
     prompt over its max input may not be sent (``eligible_adapters``).
     ``requirement`` narrows the candidates of a batch item to the adapters that
     serve it as written (:class:`MessagesConstraints`); None for online traffic.
+    ``batch_routes_only`` narrows them to the routes batch work may use
+    (``serving.config.batch_routes``); a model with none refuses the item.
     """
-    eligible = router_exec.eligible_adapters(canonical, size_prompt=size_prompt)
+    scope = batch_endpoint_scope(router_exec, canonical) if batch_routes_only else None
+    if scope is not None and not scope:
+        raise HTTPException(400, batch_route_refusal(model_id))
+    eligible = router_exec.eligible_adapters(
+        canonical, size_prompt=size_prompt, endpoint_scope=scope
+    )
     if requirement is not None and eligible:
         # A batch item may only go to an adapter that serves it as written
         # (serving/batch/targets.py): never one that would drop a parameter.
@@ -584,7 +611,9 @@ def _pick_dispatch_adapter(
         if not eligible:
             route = router_exec.routes.get(canonical)
             capable = route is not None and any(
-                requirement.problem(entry[0]) is None for entry in route.adapters
+                requirement.problem(entry[0]) is None
+                for entry in route.adapters
+                if scope is None or endpoint_id_for_adapter(entry[0]) in scope
             )
             if not capable:
                 raise HTTPException(
@@ -611,6 +640,7 @@ async def _resolve(
     for_dispatch: bool = True,
     size_prompt: Callable[[Any], int] | None = None,
     requirement: AdapterRequirement | None = None,
+    batch_routes_only: bool = False,
 ):
     """Return (canonical_model_id, route, adapter).
 
@@ -621,8 +651,8 @@ async def _resolve(
     and never reaches an upstream, so a provider outage must not stop it.
     ``size_prompt`` returns the request's estimated prompt tokens as a given
     adapter would be sent them, for an offload route with a max input
-    (``_pick_dispatch_adapter``). ``requirement`` narrows the candidates of a
-    batch item (``_pick_dispatch_adapter``).
+    (``_pick_dispatch_adapter``). ``requirement`` and ``batch_routes_only``
+    narrow the candidates of a batch item (``_pick_dispatch_adapter``).
     """
     canonical = resolve_anthropic_alias(model_id)
     route = router_exec.routes.get(canonical)
@@ -649,7 +679,13 @@ async def _resolve(
         return canonical, route, adapter
     user_role = (user_ctx or {}).get("role", "free")
     adapter = _pick_dispatch_adapter(
-        model_id, canonical, router_exec, user_role, size_prompt, requirement=requirement
+        model_id,
+        canonical,
+        router_exec,
+        user_role,
+        size_prompt,
+        requirement=requirement,
+        batch_routes_only=batch_routes_only,
     )
     require_source_pricing(adapter.config)
     return (
@@ -900,6 +936,26 @@ def _extract_forwarded_headers(headers: Mapping[str, str]) -> dict[str, str]:
 # to become a 400 nobody can trace back to a CLI flag.
 
 
+def _requested_effort(body: dict[str, Any]) -> Any:
+    """The level a Messages body asks for: ``output_config.effort``, else ``reasoning_effort``."""
+    requested = body.get("output_config")
+    effort = requested.get("effort") if isinstance(requested, dict) else None
+    return body.get("reasoning_effort") if effort is None else effort
+
+
+def _undeclared_mapped_effort(body: dict[str, Any], adapter) -> ReasoningEffortRefused | None:
+    """The refusal for a level ``adapter``'s mapped route does not declare, else ``None``."""
+    contract = effort_contract(getattr(adapter, "config", None))
+    effort = _requested_effort(body)
+    if not contract.mapped or effort is None:
+        return None
+    try:
+        translate_effort(contract, effort)
+    except ReasoningEffortRefused as refused:
+        return refused
+    return None
+
+
 def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> None:
     """Translate a requested reasoning effort into the OpenAI parameter.
 
@@ -909,8 +965,10 @@ def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> N
     parameter and declares the value; otherwise removes it and logs why.
 
     Postcondition: ``body["reasoning_effort"]`` is either absent or a value this
-    model's own registry entry declared. Called after any reroute, so the check
-    runs against the model that will actually serve the request.
+    model's own registry entry declared -- except on a route with a
+    ``reasoning_effort_map``, where any requested level is kept for the adapter
+    to translate or refuse (400), never dropped. Called after any reroute, so
+    the check runs against the model that will actually serve the request.
     """
     requested = body.get("output_config")
     effort = requested.get("effort") if isinstance(requested, dict) else None
@@ -921,15 +979,21 @@ def _apply_reasoning_effort(body: dict[str, Any], adapter, request_id: str) -> N
     body.pop("reasoning_effort", None)
 
     cfg = getattr(adapter, "config", None)
-    supported = getattr(cfg, "supported_params", None) or ()
-    declared = getattr(cfg, "reasoning_efforts", None) or ()
+    contract = effort_contract(cfg)
     model_id = getattr(cfg, "id", "?")
-    if "reasoning_effort" not in supported:
+    if contract.mapped:
+        # A route with a reasoning_effort_map is strict: the adapter translates
+        # a level it declares and refuses any other with a 400, so nothing is
+        # dropped here.
+        body["reasoning_effort"] = effort
+        return
+    if not contract.forwards:
         logger.warning(
             f"[{request_id}] Dropped reasoning effort {effort!r}: "
             f"model {model_id!r} does not support reasoning_effort"
         )
         return
+    declared = contract.levels or ()
     if effort not in declared:
         logger.warning(
             f"[{request_id}] Dropped reasoning effort {effort!r}: "
@@ -995,23 +1059,25 @@ def _count_non_object_tool_inputs(body: dict[str, Any]) -> int:
 # --- DB logging (fire-and-forget) ------------------------------------------
 
 
-# Retains in-flight cost-increment tasks so the event loop's garbage collector
-# can't cancel a fire-and-forget increment before it commits.
+# Retains the cost-counter writes carrying this surface's increments, for
+# callers that wait on them (tests); the spend ledger owns the writes.
 _cost_increment_tasks: set[asyncio.Task[Any]] = set()
 
 
 def _schedule_messages_cost_increment(
     op_store: Any,
     user_id: str | None,
-    usage: dict[str, int],
+    usage: dict[str, Any],
     pricing: dict[str, str] | None,
+    *,
+    api_key_id: int | None = None,
 ) -> None:
-    """Fire-and-forget the daily quota cost increment for a billed request.
+    """Record the daily quota cost of a billed request in the spend ledger.
 
     The ``/v1/messages`` surface logs ``api_logs.cost_usd`` but that column is
     not what ``verify_api_key`` reads for quota enforcement -- the per-user
-    daily counter in ``user_daily_cost`` (bumped here via
-    ``increment_user_cost``) is. Without this, Anthropic-surface traffic
+    daily counter in ``user_daily_cost`` (written from the spend ledger via
+    ``increment_user_costs``) is. Without this, Anthropic-surface traffic
     (e.g. Claude Code) bypasses the per-user daily cost cap entirely, the same
     way the chat and embedding paths would if they omitted their own
     increments (``CostTracker.schedule_increment`` /
@@ -1027,21 +1093,10 @@ def _schedule_messages_cost_increment(
     cost = calculate_cost(usage, pricing)
     if not cost or cost <= 0:
         return
-
-    async def _increment() -> None:
-        try:
-            await op_store.increment_user_cost(user_id, cost)
-        except Exception as exc:
-            logger.warning(f"Failed to increment messages cost counter for {user_id}: {exc}")
-            raise  # let tracked_task record the failure
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        return
-    task = tracked_task(_increment(), name="messages_cost_increment")
-    _cost_increment_tasks.add(task)
-    task.add_done_callback(_cost_increment_tasks.discard)
+    task = ledger_for(op_store).record(user_id, cost, api_key_id=api_key_id)
+    if task is not None:
+        _cost_increment_tasks.add(task)
+        task.add_done_callback(_cost_increment_tasks.discard)
 
 
 def _schedule_log_store_task(
@@ -1050,7 +1105,7 @@ def _schedule_log_store_task(
     request_id: str,
     model_id: str,
     provider: str,
-    usage: dict[str, int],
+    usage: dict[str, Any],
     latency_ms: int,
     status_code: int,
     pricing: dict[str, str],
@@ -1065,6 +1120,7 @@ def _schedule_log_store_task(
     op_store: Any = None,
     user_id: str | None = None,
     completions_logger=None,
+    charge: bool | None = None,
 ) -> None:
     """Schedule a background log store task (fire-and-forget).
 
@@ -1077,10 +1133,17 @@ def _schedule_log_store_task(
     ``op_store`` / ``user_id``, when supplied, advance the per-user daily quota
     counter for successful (status 200) requests via
     :func:`_schedule_messages_cost_increment`; error rows are logged only.
+    ``charge`` overrides that rule for a row whose status does not say whether
+    it is billed: a stream the client cut short is billed for what the upstream
+    did, whatever status its row is logged with.
 
     ``usage`` is the upstream Anthropic usage shape with ``input_tokens`` /
     ``output_tokens`` (and optional ``cache_read_input_tokens`` /
-    ``cache_creation_input_tokens``). To match OpenAI semantics used by the
+    ``cache_creation_input_tokens``). A translated request also carries the
+    upstream's own OpenAI-shaped counts under ``OPENAI_USAGE_SINK_KEY``; those
+    are logged and billed as reported, exactly as the chat surface would log
+    and bill the same upstream usage, so the reasoning count and the reported
+    total reach ``api_logs``. To match OpenAI semantics used by the
     rest of the system (admin dashboard, completions logger, downstream
     metrics), ``prompt_tokens`` here is the *total* input including the
     cached subset (input_tokens + cache_read + cache_write). The cached
@@ -1109,7 +1172,7 @@ def _schedule_log_store_task(
     # counter increment below so the logged cost_usd and the billed amount agree.
     # Cache keys are omitted entirely when the provider did not report them, so
     # the columns are stored NULL (unknown) rather than 0 (measured miss).
-    usage_for_cost = {
+    usage_for_cost: dict[str, int | None] = {
         "prompt_tokens": prompt_tokens,
         "completion_tokens": output_tokens,
         "total_tokens": total_tokens,
@@ -1118,6 +1181,18 @@ def _schedule_log_store_task(
         usage_for_cost["cache_read_tokens"] = cache_read
     if cache_write is not None:
         usage_for_cost["cache_write_tokens"] = cache_write
+    openai_usage = usage.get(OPENAI_USAGE_SINK_KEY)
+    if isinstance(openai_usage, dict):
+        # The translated path: the upstream's own counts. Its total is kept as
+        # reported (None stays None) because billing reads it as the evidence of
+        # whether completion_tokens already includes reasoning; a total made up
+        # here would decide that instead. A reasoning count the upstream did not
+        # report is left out, so the column stays NULL (unknown), not 0.
+        usage_for_cost = {
+            key: value
+            for key, value in openai_usage.items()
+            if value is not None or key == "total_tokens"
+        }
 
     log_payload = {
         "request_id": request_id,
@@ -1145,7 +1220,7 @@ def _schedule_log_store_task(
         # member of app services and must not be used by request handlers.
         async def _log() -> None:
             try:
-                await log_store.log_request(**log_payload)
+                await log_store.log_request(**bound_rejected_log_payload(log_payload))
             except Exception:
                 logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
@@ -1154,8 +1229,10 @@ def _schedule_log_store_task(
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
     # billed, matching the chat/embedding paths.
-    if status_code == 200:
-        _schedule_messages_cost_increment(op_store, user_id, usage_for_cost, pricing)
+    if charge if charge is not None else status_code == 200:
+        _schedule_messages_cost_increment(
+            op_store, user_id, usage_for_cost, pricing, api_key_id=metadata.get("api_key_id")
+        )
         # What this request is charged, for a batch attempt watching it; the
         # same inputs as the increment above. Unpriced reads as unknown.
         observe_billing(
@@ -1168,24 +1245,15 @@ def _schedule_log_store_task(
 # --- Endpoint health recording ---------------------------------------------
 
 
-def _is_non_empty_content_event(event_type: str, data: str) -> bool:
-    """Return whether one Anthropic SSE event carries generated content.
+def _is_content_delta(event_type: str, payload: Any) -> bool:
+    """Return whether one Anthropic SSE event's parsed ``data`` carries generated content.
 
     The Anthropic-native equivalent of ``routing.streaming.has_non_empty_content``,
     which the chat path uses as its stream success signal: a delta that actually
     produced text, thinking, or tool-call JSON proves the upstream is generating,
     where ``message_start`` and keepalive pings prove only that it answered.
-
-    Best-effort like the accumulator beside it -- a malformed event is not
-    content, and never raises into the forwarded stream.
     """
-    if event_type != "content_block_delta":
-        return False
-    try:
-        payload = json.loads(data)
-    except (json.JSONDecodeError, ValueError):
-        return False
-    if not isinstance(payload, dict):
+    if event_type != "content_block_delta" or not isinstance(payload, dict):
         return False
     delta = payload.get("delta")
     if not isinstance(delta, dict):
@@ -1196,17 +1264,48 @@ def _is_non_empty_content_event(event_type: str, data: str) -> bool:
 # --- Anthropic SSE accumulator ---------------------------------------------
 
 
-def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | None:
-    """Update *acc* in-place given one Anthropic SSE event; return the (possibly new) accumulator.
+class _Fragments(StreamText):
+    """One streamed string field of a block, built up until the block finalizes.
 
-    Best-effort: any malformed event is swallowed so streaming logging never
-    impacts the forwarded client stream.
+    A block's ``text``, ``thinking`` and ``_partial_json`` arrive one delta at a
+    time. Rebuilding the dict item's string per delta copied all of it on every
+    token -- quadratic in the block, seconds of event loop for a long answer.
+    The field is kept here instead (see :class:`~serving.stream.StreamText`)
+    and read once, by :func:`_finalize_block`. A type of its own, so it is
+    never mistaken for a value an upstream sent.
+    """
+
+    __slots__ = ()
+
+
+def _append_fragment(block: dict, key: str, piece: Any) -> None:
+    """Append ``piece`` to the string ``block[key]`` builds, without copying it.
+
+    Raises ``TypeError`` for what adding it to the string raised before -- a
+    piece or a starting value that is not a string -- which drops the event.
+    """
+    if not isinstance(piece, str):
+        raise TypeError(f"{key} delta is {type(piece).__name__}, not str")
+    current = block.get(key, "")
+    if isinstance(current, _Fragments):
+        current.append(piece)
+    elif isinstance(current, str):
+        fragments = _Fragments(current)
+        fragments.append(piece)
+        block[key] = fragments
+    else:
+        raise TypeError(f"{key} is {type(current).__name__}, not str")
+
+
+def _apply_sse_payload(acc: dict | None, event_type: str, payload: Any) -> dict | None:
+    """Update *acc* in place with one Anthropic SSE event's parsed ``data``; return it.
+
+    Best-effort: an event of an unexpected shape is ignored, so streaming
+    logging never affects the forwarded client stream. String fields are kept in
+    :class:`_Fragments` until the block finalizes; read the accumulator through
+    :func:`_finalize_response_acc`.
     """
     if event_type in ("ping", "message_stop", "error", ""):
-        return acc
-    try:
-        payload = json.loads(data)
-    except (json.JSONDecodeError, ValueError):
         return acc
     if not isinstance(payload, dict):
         return acc
@@ -1267,13 +1366,11 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
                 block = content[idx]
                 dtype = delta.get("type")
                 if dtype == "text_delta":
-                    block["text"] = block.get("text", "") + (delta.get("text") or "")
+                    _append_fragment(block, "text", delta.get("text") or "")
                 elif dtype == "input_json_delta":
-                    block["_partial_json"] = block.get("_partial_json", "") + (
-                        delta.get("partial_json") or ""
-                    )
+                    _append_fragment(block, "_partial_json", delta.get("partial_json") or "")
                 elif dtype == "thinking_delta":
-                    block["thinking"] = block.get("thinking", "") + (delta.get("thinking") or "")
+                    _append_fragment(block, "thinking", delta.get("thinking") or "")
 
         elif event_type == "content_block_stop":
             idx = payload.get("index")
@@ -1305,7 +1402,11 @@ def _apply_sse_event(acc: dict | None, event_type: str, data: str) -> dict | Non
 
 
 def _finalize_block(block: dict) -> None:
-    """Resolve any partial-JSON buffer on a tool_use block; remove sentinel keys."""
+    """Read streamed fields, resolve a tool_use block's partial JSON, drop sentinel keys."""
+    for key in ("text", "thinking", "_partial_json"):
+        value = block.get(key)
+        if isinstance(value, _Fragments):
+            block[key] = value.text
     if block.get("type") == "tool_use" and "_partial_json" in block:
         raw = block.pop("_partial_json")
         try:
@@ -1346,6 +1447,11 @@ def _estimate_request_input_tokens(request_payload: dict[str, Any] | None) -> in
     it separate from ``messages``) and adds a coarse estimate for tool schemas,
     since coding agents send large tool definitions. Used only as a fallback
     when the upstream never reported usage (see :func:`_resolve_stream_usage`).
+
+    Runs on the event loop as the stream is torn down -- a client leaving
+    mid-prefill is an ordinary turn of a coding agent -- so it tokenizes at most
+    :data:`~serving.utils.tokens.INLINE_ESTIMATE_MAX_CHARS` characters: exact
+    for a prompt within that, sampled within a few percent beyond it.
     """
     if not isinstance(request_payload, dict):
         return 0
@@ -1356,14 +1462,14 @@ def _estimate_request_input_tokens(request_payload: dict[str, Any] | None) -> in
         # ``system`` is a string or a list of content blocks; both shapes are
         # handled by the content estimator via a synthetic system message.
         est_messages = [{"role": "system", "content": system}, *est_messages]
-    # estimate_prompt_tokens is multimodal-safe (it flat-counts image/audio
-    # blocks rather than tokenizing base64 payloads), so it is used as-is.
-    total = estimate_prompt_tokens(est_messages)
+    tool_texts: tuple[str, ...] = ()
     tools = request_payload.get("tools")
     if isinstance(tools, list) and tools:
         with contextlib.suppress(TypeError, ValueError):
-            total += _bounded_text_tokens(json.dumps(tools))
-    return total
+            tool_texts = (json.dumps(tools),)
+    # Multimodal-safe: image/audio blocks are flat-counted, never tokenized as
+    # base64 text.
+    return estimate_prompt_tokens_bounded(est_messages, extra_texts=tool_texts)
 
 
 def _accumulated_output_text(response_acc: dict | None) -> str:
@@ -1397,7 +1503,7 @@ def _resolve_stream_usage(
     request_usage: dict[str, Any],
     response_acc: dict | None,
     request_payload: dict[str, Any] | None,
-) -> tuple[dict[str, int], bool]:
+) -> tuple[dict[str, Any], bool]:
     """Resolve the usage to log for a streaming request, recovering lost counts.
 
     When the upstream stream is cut short before the adapter flushes
@@ -1414,15 +1520,18 @@ def _resolve_stream_usage(
     Recovery, applied only when ``request_usage`` is empty:
       1. Real partial input/cache usage observed on the forwarded stream
          (``response_acc``'s ``message_start`` -- the native passthrough
-         captures these even mid-stream).
-      2. Estimate input tokens from the request payload (messages + system).
+         captures these even mid-stream). Not the estimate a translated
+         stream seeded message_start with, which the adapter declares under
+         ``INPUT_SEED_SINK_KEY``: that is a guess, not a count.
+      2. Estimate input tokens from the request payload (messages, system and
+         tool definitions).
       3. Output: the larger of any observed count and an estimate from the
          accumulated assistant content.
 
     Returns ``(usage, estimated)`` where ``usage`` is the Anthropic-shaped dict
     and ``estimated`` is True when any field was filled by estimation.
     """
-    base: dict[str, int] = {
+    base: dict[str, Any] = {
         "input_tokens": int(request_usage.get("input_tokens", 0) or 0),
         "output_tokens": int(request_usage.get("output_tokens", 0) or 0),
     }
@@ -1430,6 +1539,11 @@ def _resolve_stream_usage(
         value = optional_token_count(request_usage.get(key))
         if value is not None:
             base[key] = value
+    openai_usage = request_usage.get(OPENAI_USAGE_SINK_KEY)
+    if isinstance(openai_usage, dict):
+        # Reported by the upstream, so the adapter flushed it: never estimated.
+        base[OPENAI_USAGE_SINK_KEY] = dict(openai_usage)
+        return base, False
     # Adapter flushed real usage (normal completion) -> trust it as-is.
     if base["input_tokens"] or base["output_tokens"]:
         return base, False
@@ -1439,12 +1553,24 @@ def _resolve_stream_usage(
     # 1. Real partial input/cache usage captured from the forwarded SSE. The
     #    native passthrough fills message_start.input_tokens (and cache counts)
     #    mid-stream; its output_tokens is only a placeholder, handled in step 3.
+    #    A translated stream's message_start carries the adapter's seed
+    #    instead, unless the upstream reported usage before it: an estimate
+    #    made before the upstream was asked. It goes to step 2, which bills the
+    #    tool definitions too, as a stream cut before message_start is billed.
+    from serving.adapters.anthropic_translator import INPUT_SEED_SINK_KEY
+
+    seed = request_usage.get(INPUT_SEED_SINK_KEY)
     acc_usage = response_acc.get("usage") if isinstance(response_acc, dict) else None
     if isinstance(acc_usage, dict):
         for key in ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
             value = acc_usage.get(key)
             if key == "input_tokens":
-                if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+                if (
+                    isinstance(value, int)
+                    and not isinstance(value, bool)
+                    and value > 0
+                    and value != seed
+                ):
                     base[key] = value
             else:
                 cache_count = optional_token_count(value)
@@ -1515,6 +1641,89 @@ def _log_failure(
         )
 
 
+def _finalize_cancelled_message(
+    *,
+    sent: bool,
+    timed_out: bool,
+    adapter,
+    canonical: str,
+    request_id: str,
+    request_payload: dict[str, Any] | None,
+    messages_for_log,
+    metadata: dict[str, Any],
+    params_for_log: dict[str, Any],
+    start: float,
+    log_store,
+    op_store: Any,
+    user_id: str | None,
+    completions_logger=None,
+) -> None:
+    """Bill and log a non-streaming request a cancellation cut off before it answered.
+
+    The gateway's own deadline (504) or the client leaving (499). The upstream
+    goes on with what it was sent, so once the request left the gateway
+    (*sent*, ``DispatchRecord``) it is billed as an interrupted stream is: its
+    input estimated from the request -- messages, system prompt and tool
+    definitions (:func:`_estimate_request_input_tokens`) -- and no output, with
+    ``metadata.usage_estimated``. Before that the upstream never saw it, and it
+    is logged unbilled. Billed whether or not there is a log store: that is
+    noise, not money.
+
+    Must not suspend, and never raises: it runs while the request task is being
+    cancelled.
+    """
+    if timed_out:
+        status_code, terminal_state = 504, "request_timeout"
+        error_text = "Request cancelled: gateway request timeout exceeded"
+    else:
+        status_code, terminal_state = 499, "client_disconnect"
+        error_text = "Client disconnected before the response was ready"
+    usage: dict[str, Any] = {}
+    log_metadata: dict[str, Any] = {**metadata, "terminal_state": terminal_state}
+    pricing: dict[str, str] = {}
+    try:
+        pricing = effective_pricing(adapter.config) or {}
+        if sent:
+            input_tokens = _estimate_request_input_tokens(request_payload)
+            usage = {"input_tokens": input_tokens, "output_tokens": 0}
+            log_metadata["usage_estimated"] = True
+            _schedule_messages_cost_increment(
+                op_store,
+                user_id,
+                {
+                    "prompt_tokens": input_tokens,
+                    "completion_tokens": 0,
+                    "total_tokens": input_tokens,
+                },
+                pricing,
+                api_key_id=metadata.get("api_key_id"),
+            )
+    except Exception:
+        logger.exception(f"[{request_id}] Billing a cancelled request failed")
+    if not log_store:
+        return
+    try:
+        _schedule_log_store_task(
+            log_store,
+            request_id=request_id,
+            model_id=canonical,
+            provider=adapter.config.provider,
+            usage=usage,
+            latency_ms=int((time.time() - start) * 1000),
+            status_code=status_code,
+            pricing=pricing,
+            metadata=log_metadata,
+            params=params_for_log,
+            prompt=messages_for_log,
+            response=None,
+            error=error_text,
+            request_payload=request_payload,
+            completions_logger=completions_logger,
+        )
+    except Exception:
+        logger.exception(f"[{request_id}] Logging a cancelled request failed")
+
+
 _SSE_LEFTOVER_CAP = 65536
 
 
@@ -1569,6 +1778,13 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     Anything else raised ``AttributeError`` there: a 500 for the client's
     mistake, and on a half-open endpoint a probe claim held until it timed out.
     Checked with the required fields instead, so it is a 400 before any claim.
+
+    The adapter clamps ``max_tokens``, ``temperature`` and ``top_p`` with
+    ``min()``/``max()`` and reads each entry of a non-empty ``tools`` as an
+    object, also after the claim. A value of another JSON type raised there,
+    and that failure was counted by the endpoint's circuit breaker: three such
+    requests from one caller opened it for every user of the model. Only what
+    raised is refused; an empty ``tools`` was skipped, and still is.
     """
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -1579,7 +1795,36 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     metadata = body.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
         return "Invalid field: metadata must be an object"
+    for name in ("max_tokens", "temperature", "top_p"):
+        value = body.get(name)
+        if value is not None and not isinstance(value, (int, float)):
+            return f"Invalid field: {name} must be a number"
+    tools = body.get("tools")
+    if tools:
+        if not isinstance(tools, list):
+            return "Invalid field: tools must be an array"
+        for index, tool in enumerate(tools):
+            if not isinstance(tool, dict):
+                return f"Invalid field: tools[{index}] must be an object"
     return None
+
+
+#: The answer to a body nested too deeply to copy (:func:`_copy_of`).
+_NESTED_TOO_DEEPLY = "Request body is nested too deeply"
+
+
+def _copy_of(body: dict[str, Any]) -> dict[str, Any] | None:
+    """Return a deep copy of *body*, or None when it is nested too deeply to copy.
+
+    ``copy.deepcopy`` recurses for every level of nesting, and past about 500
+    levels it reaches the interpreter's recursion limit: a client's own
+    nesting raised ``RecursionError``, answered 500, which the 5xx-rate alert
+    counts against the gateway. The caller answers None with a 400.
+    """
+    try:
+        return copy.deepcopy(body)
+    except RecursionError:
+        return None
 
 
 # --- Protocol execution, shared with the batch worker (issue #1690) ----------
@@ -1594,9 +1839,10 @@ MALFORMED_BODY: Any = object()
 class MessagesConstraints:
     """What a caller's own arrangement narrows a Messages request to.
 
-    ``adapter_requirement`` and ``pin_model`` only ever narrow: a batch item
-    may go only to an adapter that serves it as written, and is never rerouted
-    to another model. ``anthropic_version`` is not a narrowing but a frozen
+    ``adapter_requirement``, ``pin_model`` and ``batch_routes_only`` only ever
+    narrow: a batch item may go only to an adapter that serves it as written, on
+    a route batch work may use, and is never rerouted to another model.
+    ``anthropic_version`` is not a narrowing but a frozen
     protocol option: the ``anthropic-version`` a Messages batch was created
     under, validated and stored then, sent to a native upstream so the item
     keeps that version's semantics. Built by :meth:`online` or
@@ -1607,6 +1853,7 @@ class MessagesConstraints:
     adapter_requirement: AdapterRequirement | None
     pin_model: bool
     anthropic_version: str | None
+    batch_routes_only: bool = False
 
     @classmethod
     def online(cls) -> MessagesConstraints:
@@ -1617,11 +1864,12 @@ class MessagesConstraints:
     def for_batch_item(
         cls, body: dict[str, Any], protocol_profile: str | None
     ) -> MessagesConstraints:
-        """A batch item: served as written, on its model, under its stored version."""
+        """A batch item: served as written, on its model and its batch routes, under its version."""
         return cls(
             adapter_requirement=AdapterRequirement(body=body),
             pin_model=True,
             anthropic_version=protocol_profile or None,
+            batch_routes_only=True,
         )
 
 
@@ -1862,6 +2110,10 @@ async def execute_messages(
         return _messages_error(400, "Missing required field: messages")
     if body.get("max_tokens") is None:
         return _messages_error(400, "Missing required field: max_tokens")
+    # Element counts before anything walks the messages (serving/request_limits.py).
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _messages_error(400, limit_problem)
     shape_error = _shape_error(body)
     if shape_error is not None:
         return _messages_error(400, shape_error)
@@ -1926,7 +2178,9 @@ async def execute_messages(
                 req_ctx.mark_model_not_found()
                 return _messages_error(404, model_not_found_detail(model_id, user_ctx=user_ctx))
             return _messages_error(exc.status_code, exc.detail or "")
-        client_request = copy.deepcopy(body)
+        client_request = _copy_of(body)
+        if client_request is None:
+            return _messages_error(400, _NESTED_TOO_DEEPLY)
         apply_to_anthropic_body(auto_selection, body)
         hide_served_model(auto_selection)
         model_id = auto_selection.model_id
@@ -1942,6 +2196,7 @@ async def execute_messages(
             # route has a max input to hold it to.
             size_prompt=lambda adapter: _prompt_tokens(body, adapter),
             requirement=constraints.adapter_requirement,
+            batch_routes_only=constraints.batch_routes_only,
         )
     except HTTPException as exc:
         asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
@@ -1974,7 +2229,12 @@ async def execute_messages(
         # keeps the raw detail server-side either way.
         return _messages_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
-    request_payload_for_log = client_request if client_request is not None else copy.deepcopy(body)
+    # The request's one snapshot, what the client sent: logged as the body, and
+    # the source of the logged messages further down. An auto request took it
+    # before selection rewrote the body.
+    request_payload_for_log = client_request if client_request is not None else _copy_of(body)
+    if request_payload_for_log is None:
+        return _messages_error(400, _NESTED_TOO_DEEPLY)
 
     # Which session this request belongs to. This is the surface Claude Code
     # uses, and it sends no ``X-Session-ID``: it packs the run into
@@ -2050,6 +2310,12 @@ async def execute_messages(
     # sent to -- exactly the claim-without-dispatch that starves the recovery it
     # is supposed to orchestrate. Released in the ``finally`` that brackets the
     # dispatch below, on both the streaming and non-streaming paths.
+    # A route with a reasoning_effort_map refuses a level it does not declare.
+    # The adapter would too, but a stream is committed by then and could only
+    # say so in-band; here, before the endpoint is claimed, it is a plain 400
+    # on both paths, and nothing is sent.
+    if adapter.native_format == "openai" and (refused := _undeclared_mapped_effort(body, adapter)):
+        return _messages_error(400, refused.message)
     dispatch_claim = health_registry.begin_dispatch(dispatch_endpoint_id)
     if dispatch_claim is None:
         # Another request is already probing this endpoint. ``eligible_adapters``
@@ -2058,9 +2324,13 @@ async def execute_messages(
         # above gives, which this surface renders as overloaded_error.
         return _messages_error(503, f"No provider is currently available for model '{model_id}'")
 
-    # Snapshot messages before _sanitize_for_openai_backend mutates them in-place
-    # (strips cache_control blocks). The log must preserve the original client payload.
-    messages_for_log = copy.deepcopy(body.get("messages"))
+    # The messages the client sent, for the log. Dispatch rewrites the body's in
+    # place from here on (_sanitize_for_openai_backend strips cache_control
+    # blocks, strip_foreign_thinking drops thinking), so the log reads them from
+    # the one snapshot taken above: nothing between it and here touches
+    # ``messages``, and a second deep copy of the conversation cost as much as
+    # the first. Both are read-only from here on.
+    messages_for_log = request_payload_for_log.get("messages")
 
     # After the log snapshot, which keeps what the client sent, and after the
     # reroute, so it is the serving adapter's format that decides.
@@ -2106,22 +2376,29 @@ async def execute_messages(
     prefill_messages, prefill_tools = _prefill_inputs(body)
     prefill_tokens = estimate_prefill_tokens(prefill_messages, tools=prefill_tools)
     prefill_fingerprint = conversation_fingerprint(prefill_messages, tools=prefill_tools)
-    prefill_anchor = prompt_anchor(prefill_messages)
+    # The priority, and the anchor whose only reader is a later turn's priority,
+    # reach the upstream only on a route that runs priority scheduling; anywhere
+    # else they are a pass over the whole prompt for nothing (as in FixedRouter).
+    schedules_by_priority = bool(getattr(adapter.config, "priority_scheduling", False))
+    prefill_anchor = prompt_anchor(prefill_messages) if schedules_by_priority else None
     prefill_load = router_exec.prefill_load
     prefill_affinity = affinity_key
 
     def _record_dispatch_failure(endpoint_id: str, **kwargs: Any) -> None:
-        """Record an endpoint failure and drop its warm-prefix hints.
+        """Record an endpoint failure and drop its warm-prefix hints when it may have lost them.
 
-        The mirror of ``FixedRouter._on_failure``: a failing endpoint has most
-        likely lost its radix cache (restart, OOM, a container replaced under
-        the same id), so hints describing that cache stop being evidence. This
-        surface records its own outcomes rather than going through the router,
-        so without this the chat path would forget a restarted backend's hints
-        while Claude Code traffic kept discounting against them -- and a cold
-        continuation stamped interactive is one that preempts.
+        The mirror of ``FixedRouter._on_failure``: an endpoint failing with a 5xx
+        or with no answer at all may have lost its radix cache (restart, OOM, a
+        container replaced under the same id), so hints describing that cache
+        stop being evidence. This surface records its own outcomes rather than
+        going through the router, so without this the chat path would forget a
+        restarted backend's hints while Claude Code traffic kept discounting
+        against them -- and a cold continuation stamped interactive is one that
+        preempts. A 4xx, or a failure that never reached the endpoint, leaves
+        them, as it does there.
         """
-        prefill_load.forget_endpoint(endpoint_id)
+        if failure_may_lose_prefix_cache(kwargs.get("exc")):
+            prefill_load.forget_endpoint(endpoint_id)
         health_registry.record_failure(endpoint_id, **kwargs)
 
     def _begin_prefill():
@@ -2136,19 +2413,20 @@ async def execute_messages(
         until the process restarts. Selection would then steer traffic away
         from a replica that is idle, which is worse than not accounting at all.
         """
-        req_ctx.update(
-            {
-                req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
-                    prefill_load.uncached_estimate(
-                        dispatch_endpoint_id,
-                        prefill_tokens,
-                        prefill_affinity,
-                        fingerprint=prefill_fingerprint,
-                        messages=prefill_messages,
+        if schedules_by_priority:
+            req_ctx.update(
+                {
+                    req_ctx.UPSTREAM_PRIORITY: priority_for_prefill(
+                        prefill_load.uncached_estimate(
+                            dispatch_endpoint_id,
+                            prefill_tokens,
+                            prefill_affinity,
+                            fingerprint=prefill_fingerprint,
+                            messages=prefill_messages,
+                        )
                     )
-                )
-            }
-        )
+                }
+            )
         return prefill_load.acquire(
             dispatch_endpoint_id,
             prefill_tokens,
@@ -2197,6 +2475,11 @@ async def execute_messages(
     # spend unattributed — and the per-job budget reads this same ledger.
     if user_ctx.get("agent_job_id"):
         metadata["agent_job_id"] = user_ctx["agent_job_id"]
+    # The key the usage is attributed to, for its owner's per-key views.
+    if user_ctx.get("api_key_id") is not None:
+        metadata["api_key_id"] = user_ctx["api_key_id"]
+    if user_ctx.get("project_id"):
+        metadata["project_id"] = user_ctx["project_id"]
     # Batch attribution (serving/batch/dispatch.py); nothing for other traffic.
     metadata.update(ctx.batch_log_metadata())
     # The usage window query needs the grant itself and the real start time;
@@ -2228,10 +2511,13 @@ async def execute_messages(
             gen_started = True
             # Bound to this generator's execution: see _begin_prefill.
             prefill_lease = _begin_prefill()
-            request_usage = {
+            request_usage: dict[str, Any] = {
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
+            # Marked by the outbound limiter when the request leaves the gateway
+            # (``dispatch_watch.report_sent``); see the usage resolution below.
+            upstream_dispatch = DispatchRecord()
             stream_failed = False
             stream_status_code: int = 200
             stream_error_message: str | None = None
@@ -2259,21 +2545,14 @@ async def execute_messages(
                 # Consume the upstream via a queue + background reader so idle
                 # gaps can be filled with keepalive heartbeats without cancelling
                 # the upstream read (see _KEEPALIVE_INTERVAL / _MAX_STREAM_IDLE).
-                # The queue MUST stay unbounded: a bounded queue can wedge teardown
-                # -- if a fast upstream fills it while the client is gone, the
-                # reader parks on put(), and on cancel its finally sentinel-put
-                # blocks forever on the full queue, leaking the upstream connection.
-                chunk_queue: asyncio.Queue = asyncio.Queue()
-
-                async def _reader() -> None:
-                    try:
-                        async for c in upstream:
-                            await chunk_queue.put(c)
-                    except Exception as exc:
-                        # Forward upstream errors to the main loop to re-raise.
-                        await chunk_queue.put(exc)
-                    finally:
-                        await chunk_queue.put(_STREAM_SENTINEL)
+                # The queue is bounded, so a client that stops reading stops the
+                # reads from the upstream too instead of the gateway buffering
+                # the rest of the generation. Teardown cannot wedge on it:
+                # ``pump_stream``, cancelled by the ``finally`` below, puts
+                # nothing more on its way out -- not even the sentinel, which a
+                # full queue nobody drains would never take -- and closes the
+                # upstream, connection included, wherever it was waiting.
+                chunk_queue = StreamQueue()
 
                 def _account_sse(raw: bytes) -> bool:
                     """Parse ``raw`` into events and apply them to this request's state.
@@ -2285,9 +2564,9 @@ async def execute_messages(
                     Returns whether every event it extracted was well-formed,
                     which is what tells the drain apart from a truncation: a
                     complete event that merely lost its delimiter parses, and an
-                    upstream that stopped mid-event does not. Both
-                    ``_apply_sse_event`` and ``_is_non_empty_content_event``
-                    already swallow a malformed event, so a truncation accounts
+                    upstream that stopped mid-event does not. A malformed event
+                    is skipped before ``_apply_sse_payload`` and
+                    ``_is_content_delta`` see it, so a truncation accounts
                     nothing either way; the return exists so the wire and the
                     accounting cannot disagree about what was delivered.
                     """
@@ -2295,14 +2574,17 @@ async def execute_messages(
                     events, sse_buffer = _parse_sse_chunk(sse_buffer, raw)
                     well_formed = bool(events)
                     for event_type, data in events:
+                        # Parsed once, here, for all three uses: the
+                        # well-formedness verdict, the accumulator and the
+                        # content check. A malformed event is none of them --
+                        # each skipped it on its own before.
                         try:
-                            json.loads(data)
+                            payload = json.loads(data)
                         except (json.JSONDecodeError, ValueError):
                             well_formed = False
-                        response_acc = _apply_sse_event(response_acc, event_type, data)
-                        if not health_success_recorded and _is_non_empty_content_event(
-                            event_type, data
-                        ):
+                            continue
+                        response_acc = _apply_sse_payload(response_acc, event_type, payload)
+                        if not health_success_recorded and _is_content_delta(event_type, payload):
                             # Same success signal as
                             # FixedRouter.stream_chat_completion: the first
                             # delta that carries content, not the mere fact
@@ -2315,7 +2597,11 @@ async def execute_messages(
                             prefill_load.release(prefill_lease, prefill_confirmed=True)
                     return well_formed
 
-                reader_task = asyncio.create_task(_reader())
+                # The adapter runs in the reader's copy of this context.
+                with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch}):
+                    reader_task = asyncio.create_task(
+                        pump_stream(upstream, chunk_queue, end=_STREAM_SENTINEL)
+                    )
                 idle_seconds = 0.0
                 saw_upstream_frame = False
                 try:
@@ -2546,6 +2832,18 @@ async def execute_messages(
                     },
                 }
                 yield f"event: error\ndata: {json.dumps(err)}\n\n".encode()
+            except (asyncio.CancelledError, GeneratorExit):
+                # The client went away (its task is cancelled, or this
+                # generator closed), or the gateway's own deadline cancelled
+                # the response. Neither is the upstream's failure, so the stream
+                # is not marked failed and is billed as before; but its row is
+                # not a 200 either. 499 or 504, as the chat surface logs them.
+                timed_out = False
+                if ctx.timeout_probe is not None:
+                    with contextlib.suppress(Exception):
+                        timed_out = bool(ctx.timeout_probe())
+                stream_status_code = 504 if timed_out else 499
+                raise
             finally:
                 # Idempotent: a stream that reached first content already
                 # returned this above. Everything else -- an upstream error, a
@@ -2567,7 +2865,10 @@ async def execute_messages(
                     # than logging a 0-token row. Failed streams keep their
                     # zeros: don't attribute usage/cost to an errored request.
                     try:
-                        if stream_failed:
+                        if stream_failed or not upstream_dispatch.sent:
+                            # Failed, or cut off before the request left the
+                            # gateway (waiting for a remote image or an outbound
+                            # slot), when no upstream had been asked for anything.
                             resolved_usage, usage_estimated = request_usage, False
                         else:
                             resolved_usage, usage_estimated = _resolve_stream_usage(
@@ -2609,6 +2910,9 @@ async def execute_messages(
                         op_store=op_store,
                         user_id=user_ctx.get("user_id"),
                         completions_logger=completions_logger,
+                        # Billed unless the upstream failed it, whatever status
+                        # a stream the client cut short is logged with.
+                        charge=not stream_failed,
                     )
 
         return MessagesStream(
@@ -2619,8 +2923,19 @@ async def execute_messages(
         )
 
     prefill_lease = _begin_prefill()
+    # This request's own sink: the adapter's OpenAI-shaped counts for the log,
+    # kept out of the response the client receives.
+    request_usage: dict[str, Any] = {}
+    # Marked when the request leaves the gateway, for billing a cancellation.
+    dispatch = dispatch_watch.DispatchRecord()
     try:
-        resp = await adapter.messages(body, request_id=request_id, extra_headers=forwarded_headers)
+        with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch}):
+            resp = await adapter.messages(
+                body,
+                request_id=request_id,
+                usage_sink=request_usage,
+                extra_headers=forwarded_headers,
+            )
         prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
@@ -2808,6 +3123,33 @@ async def execute_messages(
             completions_logger=completions_logger,
         )
         return _messages_error(502, error_message)
+    except asyncio.CancelledError:
+        # The gateway's deadline or the client gone: not the upstream's failure,
+        # so nothing is recorded against the endpoint. The upstream goes on with
+        # the request, so it is billed and logged, without awaiting anything; a
+        # batch attempt cut off at its deadline is settled by the batch worker.
+        if ctx.batch is None:
+            timed_out = False
+            if ctx.timeout_probe is not None:
+                with contextlib.suppress(Exception):
+                    timed_out = bool(ctx.timeout_probe())
+            _finalize_cancelled_message(
+                sent=dispatch.sent,
+                timed_out=timed_out,
+                adapter=adapter,
+                canonical=canonical,
+                request_id=request_id,
+                request_payload=request_payload_for_log,
+                messages_for_log=messages_for_log,
+                metadata=metadata,
+                params_for_log=params_for_log,
+                start=start,
+                log_store=log_store,
+                op_store=op_store,
+                user_id=user_ctx.get("user_id"),
+                completions_logger=completions_logger,
+            )
+        raise
 
     finally:
         # Every except arm above returns its own error response, so this is the
@@ -2840,6 +3182,8 @@ async def execute_messages(
         cache_count = optional_token_count(usage.get(key))
         if cache_count is not None:
             usage_for_log[key] = cache_count
+    if isinstance(request_usage.get(OPENAI_USAGE_SINK_KEY), dict):
+        usage_for_log[OPENAI_USAGE_SINK_KEY] = request_usage[OPENAI_USAGE_SINK_KEY]
     latency_ms = int((time.time() - start) * 1000)
     provider = adapter.config.provider
     if log_store:
@@ -2871,6 +3215,7 @@ async def anthropic_count_tokens(
     user_ctx: dict = Depends(verify_api_key),
     router_exec=Depends(get_router),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
+    _slot: None = Depends(enforce_count_tokens_concurrency),
 ):
     """Handle Anthropic ``POST /v1/messages/count_tokens`` requests.
 
@@ -2879,9 +3224,13 @@ async def anthropic_count_tokens(
     OpenAI-compatible backends, so the count is estimated locally from the
     translated request (a useful estimate beats the 404 the client got before,
     which left its context tracking blind). Returns ``{"input_tokens": N}``.
-    """
-    from serving.adapters.anthropic_translator import anthropic_request_to_openai
 
+    Counting is not billed, so it is bounded instead: the body by the request
+    size limit, the caller by a per-user slot of its own
+    (:func:`enforce_count_tokens_concurrency`), and the work by running the
+    translation and the encode in the tokenizer pool, off the event loop,
+    tokenizing at most :data:`COUNT_TOKENS_MAX_CHARS` characters.
+    """
     try:
         body = await request.json()
     except Exception:
@@ -2894,6 +3243,9 @@ async def anthropic_count_tokens(
         return _anthropic_error(400, "Missing required field: model")
     if "messages" not in body:
         return _anthropic_error(400, "Missing required field: messages")
+    limit_problem = messages_limit_problem(body)
+    if limit_problem is not None:
+        return _anthropic_error(400, limit_problem)
 
     # Enforce the same model visibility as /v1/messages: an unknown, admin-only,
     # or per-user-disabled model must 404 here too, so token counting can't be
@@ -2920,17 +3272,37 @@ async def anthropic_count_tokens(
         return _anthropic_error(exc.status_code, safe_detail_text(exc.detail, exc.status_code))
 
     try:
-        oai_messages, oai_params = anthropic_request_to_openai(body)
-        input_tokens = estimate_prompt_tokens(oai_messages)
-        # Tool schemas are billed as input; approximate their serialized size.
-        tools = oai_params.get("tools")
-        if tools:
-            input_tokens += estimate_text_tokens(json.dumps(tools))
+        input_tokens = await run_tokenization(_count_request_tokens, body)
     except Exception:
         logger.exception("count_tokens estimation failed")
         return _anthropic_error(500, "Failed to count tokens")
 
     return JSONResponse(content={"input_tokens": int(input_tokens)})
+
+
+#: Most text one count_tokens request tokenizes: about two million characters,
+#: well past any model's context window and some 150 ms of the tokenizer pool.
+#: A request within it is counted exactly as before; a larger one is sampled
+#: (:func:`serving.utils.tokens.estimate_texts_tokens_bounded`).
+COUNT_TOKENS_MAX_CHARS = 2_000_000
+
+
+def _count_request_tokens(body: dict[str, Any]) -> int:
+    """The ``input_tokens`` count_tokens reports for an Anthropic request body.
+
+    The messages as translated for an OpenAI-backed upstream, plus the tool
+    schemas, which are billed as input, approximated by their serialized size.
+    Runs in the tokenizer pool, on a body no other code is using.
+    """
+    from serving.adapters.anthropic_translator import anthropic_request_to_openai
+
+    oai_messages, oai_params = anthropic_request_to_openai(body)
+    tools = oai_params.get("tools")
+    return estimate_prompt_tokens_bounded(
+        oai_messages,
+        max_chars=COUNT_TOKENS_MAX_CHARS,
+        extra_texts=(json.dumps(tools),) if tools else (),
+    )
 
 
 @router.get("/anthropic/user/balance")

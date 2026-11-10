@@ -41,7 +41,6 @@ pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 @pytest_asyncio.fixture
 async def pool():
     pool = await postgres.create_pool(min_size=2, max_size=10)
-    await BatchStore(pool).initialize()
     try:
         yield pool
     finally:
@@ -135,6 +134,32 @@ async def test_removing_a_webhook_waits_for_an_event_being_written_and_takes_it(
         await _enqueue_event(conn, other, "batch-b", terminal_event("batch-b", "completed"))
     (claimed,) = await hooks.claim_due_events(worker_id="w", limit=1, lease_seconds=60)
     assert claimed["user_id"] == other
+
+
+async def test_a_claim_leaves_out_the_users_it_is_told_to(pool, users):
+    """A worker already sending a user's event, or holding their receiver back, skips them."""
+    hooks = BatchWebhookStore(pool)
+    busy, free = users(), users()
+    for user in (busy, free):
+        await hooks.set_webhook(
+            user_id=user, url="https://hooks.example.com/h", secret_encrypted="s", enabled=True
+        )
+    async with pool.acquire() as conn:
+        await _enqueue_event(conn, busy, "batch-x", terminal_event("batch-x", "completed"))
+        await _enqueue_event(conn, free, "batch-y", terminal_event("batch-y", "completed"))
+
+    claimed = await hooks.claim_due_events(
+        worker_id="w", limit=50, lease_seconds=60, exclude_users=[busy]
+    )
+    owners = {row["user_id"] for row in claimed}
+    assert free in owners
+    assert busy not in owners
+    (later,) = [
+        row
+        for row in await hooks.claim_due_events(worker_id="w", limit=50, lease_seconds=60)
+        if row["user_id"] in (busy, free)
+    ]
+    assert later["user_id"] == busy
 
 
 async def test_an_event_is_not_written_once_the_webhook_is_gone(pool, users):

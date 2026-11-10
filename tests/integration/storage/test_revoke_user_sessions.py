@@ -8,6 +8,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from migrations.baseline import operational_store
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 
@@ -25,8 +26,9 @@ async def store():
         pool = await postgres.create_pool(
             min_size=1, max_size=3, server_settings={"search_path": schema}
         )
+        async with pool.acquire() as conn:
+            await operational_store.create_tables(conn)  # the baseline's, in this schema
         operational = PostgresOperationalStore(pool)
-        await operational.initialize()
         yield operational
     finally:
         if pool is not None:
@@ -73,3 +75,19 @@ async def test_without_a_current_session_every_session_is_revoked(store):
         await session(store, "owner", sid)
     assert await store.revoke_user_sessions("owner") == 2
     assert set((await revoked(store)).values()) == {True}
+
+
+async def test_signing_out_revokes_the_one_session_a_token_names(store):
+    """Logout ends the token's own session wherever it is held, and nothing else."""
+    for sid in ("here", "laptop"):
+        await session(store, "owner", sid)
+    await session(store, "someone-else", "here")
+
+    assert await store.revoke_session_by_sid("owner", "here") is True
+    assert await revoked(store) == {
+        "owner-here": True,
+        "owner-laptop": False,
+        "someone-else-here": False,
+    }
+    assert await store.revoke_session_by_sid("owner", "here") is False
+    assert await store.revoke_session_by_sid("owner", "no-such-sid") is False

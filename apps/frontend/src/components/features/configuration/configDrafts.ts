@@ -130,10 +130,6 @@ export function buildPatch(entries: readonly ConfigEntry[], drafts: ConfigDrafts
   return { values, errors };
 }
 
-export function countDirty(entries: readonly ConfigEntry[], drafts: ConfigDrafts): number {
-  return entries.filter((entry) => isDirty(entry, drafts[entry.key])).length;
-}
-
 /** Drafts without the given keys: what remains after those keys were saved. */
 export function withoutKeys<T>(
   record: Record<string, T>,

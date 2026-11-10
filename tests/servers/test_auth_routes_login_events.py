@@ -306,6 +306,26 @@ async def test_login_records_rate_limited(app, fake_op_store, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_a_source_that_keeps_trying_is_recorded_once_a_minute(
+    app, fake_op_store, monkeypatch
+):
+    """Every refusal used to be a database write: one row now stands for a minute's."""
+
+    async def _deny(email, ip, *, device=None):
+        return False, "ip"
+
+    monkeypatch.setattr(
+        "serving.servers.routers.auth_routes.check_and_record_login",
+        _deny,
+    )
+    for n in range(30):
+        assert (await _post_login(app, email=f"x{n}@y.com")).status_code == 429
+
+    fake_op_store.record_login_event.assert_awaited_once()
+    fake_op_store.get_user_by_email.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     ("reason", "retry_after"),
     [("ip", "3600"), ("email", "900"), ("account", "900"), ("device", "900")],
@@ -412,3 +432,66 @@ async def test_login_succeeds_when_audit_write_fails(app, fake_op_store, monkeyp
     fake_op_store.get_user_by_email.return_value = None
     resp = await _post_login(app, email="ghost@example.com")
     assert resp.status_code == 401  # not 500
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account",
+    [
+        pytest.param(None, id="no-such-account"),
+        pytest.param(
+            {
+                "id": "u-phone",
+                "email": None,
+                "phone": "+12025550123",
+                "phone_verified": True,
+                "user_name": "P",
+                "password_hash": None,
+                "role": "free",
+                "status": "active",
+                "email_verified": False,
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "last_login_at": None,
+            },
+            id="account-without-password",
+        ),
+        pytest.param(
+            {
+                "id": "u1",
+                "email": "a@b.com",
+                "user_name": "A",
+                "password_hash": "$argon2id$stored",
+                "role": "free",
+                "status": "active",
+                "email_verified": True,
+                "created_at": datetime(2025, 1, 1, tzinfo=UTC),
+                "last_login_at": None,
+            },
+            id="wrong-password",
+        ),
+    ],
+)
+async def test_every_refused_password_costs_one_verification(
+    app, fake_op_store, monkeypatch, account
+):
+    """An unknown name is answered after the same Argon2id work as a wrong password.
+
+    Returning before the hash ran, as an unknown name did, made the response
+    faster exactly when no account existed: a timing oracle for who has one.
+    """
+    verified: list[tuple[str, str]] = []
+
+    def spy(plain: str, hashed: str) -> bool:
+        verified.append((plain, hashed))
+        return False
+
+    monkeypatch.setattr("serving.utils.password.verify_password", spy)
+    fake_op_store.get_user_by_email.return_value = account
+
+    resp = await _post_login(app, email="a@b.com", password="guess")
+
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "Invalid email or password"
+    assert len(verified) == 1
+    assert verified[0][0] == "guess"
+    assert verified[0][1].startswith("$argon2id$")

@@ -1874,7 +1874,11 @@ class TestRouterHedgeMode:
         self,
         monkeypatch,
     ):
-        """A hedged primary 400 reaches the registry unchanged and stays exempt."""
+        """A hedged primary 400 reaches the registry unchanged and stays exempt.
+
+        It also ends the request: a refusal that describes the request is not
+        sent on to a backup, which would only refuse it again.
+        """
         config = RouteWiseConfig(
             budget_alpha=0.0,
             latency_slo_sec=0.04,
@@ -1911,18 +1915,18 @@ class TestRouterHedgeMode:
         api_a.stream_chat_completion = _failed_primary_stream
         api_b.stream_chat_completion = _successful_backup_stream
 
-        chunks = [
-            chunk
+        chunks = []
+        with pytest.raises(_StatusError) as raised:
             async for chunk in router.stream_chat_completion(
                 "test-model",
                 [{"role": "user", "content": "hi"}],
                 request_id="req-stream-primary-400",
-            )
-        ]
+            ):
+                chunks.append(chunk)
 
-        assert "backup" in "".join(chunks)
-        assert record_success.call_count == 1
-        assert record_success.call_args.args == ("test-model:api-b",)
+        assert raised.value is primary_error
+        assert "backup" not in "".join(chunks)
+        assert record_success.call_count == 0
         assert record_failure.call_count == 1
         assert record_failure.call_args.args == (primary_endpoint,)
         assert record_failure.call_args.kwargs["reason"] == "_StatusError"
@@ -2443,7 +2447,12 @@ class TestToolCallsWinnerDetection:
         finally:
             await stream.aclose()
 
-        assert ("test:hidden-think-primary", "HedgeStreamRaceTimeout") in sink.failures
+        # The leg's failed attempt is recorded, but the deadline is the
+        # gateway's own and is not charged to the endpoint's breaker.
+        assert [attempt["endpoint_id"] for attempt in hedged.failed_attempts] == [
+            "test:hidden-think-primary"
+        ]
+        assert sink.failures == []
 
 
 # ===========================================================================

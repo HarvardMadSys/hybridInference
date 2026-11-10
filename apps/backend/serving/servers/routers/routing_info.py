@@ -171,6 +171,10 @@ def merge_adapter_routing(
     Unknown keys are stashed under :attr:`RoutingInfo.extra` to preserve
     the existing behavior of merging the dict into request metadata.
     Legacy ``routewise`` dicts are stored as ``strategy_metadata["routewise"]``.
+
+    The result is also published into the request context
+    (:func:`publish_served_route`): this is where the serving layer learns who
+    served the request.
     """
     if not adapter_routing:
         return base
@@ -222,7 +226,36 @@ def merge_adapter_routing(
         replacements["strategy_metadata"] = strategy_metadata
     if extra != base.extra:
         replacements["extra"] = extra
-    return _dc.replace(base, **replacements) if replacements else base
+    merged = _dc.replace(base, **replacements) if replacements else base
+    publish_served_route(merged)
+    return merged
+
+
+def publish_served_route(routing: RoutingInfo) -> None:
+    """Record the model and the upstream serving this request in the request context.
+
+    ``RequestLogMiddleware`` reads ``model`` and ``provider`` from the request
+    context once the response is over, and the alert rules read them off its
+    line: ``p95_latency_per_provider`` keys on ``provider``. The routers set
+    both only around each attempt (``req_ctx.push``), which has unwound by
+    then, and only the error paths published ``provider`` durably
+    (``publish_upstream_provider``). So a successful request's line carried
+    neither, and the p95 rule judged failures alone: a provider answering
+    slowly but successfully never paged.
+
+    Written durably here, where the adapter's ``_routing`` block names the
+    upstream, on success as on failure. In the request's own context, so for a
+    stream only what is merged while it is primed counts; that includes its
+    routing block, which comes first. The ``"router"`` sentinel is never
+    published, for the reason ``publish_upstream_provider`` gives.
+    """
+    values: dict[str, Any] = {}
+    if routing.model:
+        values["model"] = routing.model
+    if routing.provider and routing.provider != req_ctx.ROUTER_PROVIDER_SENTINEL:
+        values[req_ctx.PROVIDER] = routing.provider
+    if values:
+        req_ctx.update(values)
 
 
 def _status_code_from_exception(exc: BaseException) -> int:

@@ -43,17 +43,6 @@ if TYPE_CHECKING:
 CONNECT_TIMEOUT_SECONDS = 10.0
 COMMAND_TIMEOUT_SECONDS = 30.0
 
-CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS app_config (
-    key         TEXT PRIMARY KEY,
-    value       TEXT NOT NULL,
-    secret      BOOLEAN NOT NULL DEFAULT FALSE,
-    source      TEXT NOT NULL DEFAULT 'admin',
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_by  TEXT
-)
-"""
-
 #: The ``source`` of a row that marks a reset instead of storing a value.
 RESET_SOURCE = "reset"
 
@@ -168,14 +157,6 @@ class AppConfigStore:
     def connection(self) -> contextlib.AbstractAsyncContextManager[Any]:
         """Use the store's connection: the one a transaction holds, or one from the pool."""
         return self._connection()
-
-    async def ensure_schema(self) -> None:
-        """Create the table, its version row and trigger, and the instance table.
-
-        Idempotent. The version starts at revision 0 with no active group.
-        """
-        async with self._connection() as conn:
-            await revisions.ensure_schema(conn, create_source_table=CREATE_TABLE_SQL)
 
     @contextlib.asynccontextmanager
     async def transaction(

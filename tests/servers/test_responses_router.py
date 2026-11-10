@@ -17,6 +17,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
+from serving.request_limits import MAX_MESSAGES
 from serving.servers.auth import verify_api_key
 from serving.servers.concurrency import enforce_user_concurrency
 from serving.servers.deps import AppServices
@@ -163,6 +164,19 @@ class _FakeResponseStore:
 
     async def get(self, response_id: str) -> dict[str, Any] | None:
         return self.data.get(response_id)
+
+    async def get_response(self, response_id: str, *, user_id: str) -> bytes | None:
+        row = self.data.get(response_id)
+        if not row or row["user_id"] != user_id:
+            return None
+        return json.dumps(row["response"]).encode()
+
+    async def get_conversation(self, response_id: str, *, user_id: str) -> tuple[Any, int] | None:
+        row = self.data.get(response_id)
+        if not row or row["user_id"] != user_id:
+            return None
+        text = json.dumps(row["messages"])
+        return text, row.get("messages_bytes", len(text.encode()))
 
     async def delete(self, response_id: str, *, user_id: str | None = None) -> bool:
         row = self.data.get(response_id)
@@ -412,6 +426,54 @@ async def test_unknown_model_returns_404_error_envelope(responses_client):
 async def test_missing_model_returns_400(responses_client):
     r = await responses_client.post("/v1/responses", json={"input": "hi"}, headers=_auth())
     assert r.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_input_over_an_element_limit_returns_400_before_translation(responses_client):
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": [{"role": "user", "content": "hi"}] * (MAX_MESSAGES + 1),
+        },
+        headers=_auth(),
+    )
+    assert r.status_code == 400
+    assert r.json()["error"]["message"] == (
+        f"Too many input items: {MAX_MESSAGES + 1}, at most {MAX_MESSAGES}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("tools", [[{"type": ["x"]}], [{"type": 1}, {"type": "web_search"}]])
+async def test_a_hosted_tool_of_an_odd_type_is_dropped_not_a_500(responses_client, tools):
+    """Dropped tool types were logged sorted: a list or a mix of types raised TypeError."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "tools": tools},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    assert r.json()["output"][0]["content"][0]["type"] == "output_text"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", ["false", "0"])
+async def test_a_stream_flag_the_chat_schema_reads_as_false_gets_the_answer(
+    responses_client, responses_store, stream
+):
+    """``bool("false")`` is True: the route streamed an empty response and stored an empty
+    turn, while the chat request it was translated to ran, and was billed, unstreamed."""
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "hello", "stream": stream},
+        headers=_auth(),
+    )
+    assert r.status_code == 200
+    out = r.json()
+    assert out["output"][0]["content"][0]["type"] == "output_text"
+    stored = responses_store.data[out["id"]]["messages"]
+    assert stored[-1]["role"] == "assistant" and stored[-1]["content"]
 
 
 @pytest.mark.asyncio
@@ -681,6 +743,43 @@ async def test_another_user_cannot_read_a_stored_response(responses_client):
 
 
 @pytest.mark.asyncio
+async def test_a_stored_response_is_served_as_stored_without_its_conversation(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+
+    async def whole_row(response_id: str) -> None:
+        raise AssertionError("GET read the whole row, conversation and all")
+
+    monkeypatch.setattr(responses_store, "get", whole_row)
+    g = await responses_client.get(f"/v1/responses/{resp_id}", headers=_auth())
+
+    assert g.status_code == 200
+    assert g.headers["content-type"] == "application/json"
+    assert g.json() == responses_store.data[resp_id]["response"]
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_conversation_is_refused_before_it_is_decoded(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+    responses_store.data[resp_id]["messages_bytes"] = 64 * 1024 * 1024
+
+    def decode(value: Any) -> list[dict[str, Any]]:
+        raise AssertionError("decoded a conversation it was about to refuse")
+
+    monkeypatch.setattr(responses, "decode_conversation", decode)
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "and then?", "previous_response_id": resp_id},
+        headers=_auth(),
+    )
+
+    assert r.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_another_user_cannot_delete_a_stored_response(responses_client, responses_store):
     resp_id = await _stored_by_test_user(responses_client)
 
@@ -918,3 +1017,104 @@ async def test_a_failed_stream_ends_with_response_failed_and_keeps_nothing(
     assert '"code": "overloaded"' in text or '"code":"overloaded"' in text
     assert "response.completed" not in text
     assert responses_store.data == {}
+
+
+# --- how large a stored conversation may grow --------------------------------
+
+
+def _stored_size(store: _FakeResponseStore, resp_id: str) -> int:
+    return len(json.dumps(store.data[resp_id]["messages"]).encode())
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stream", [False, True])
+async def test_storing_another_turn_of_an_oversized_conversation_is_refused_before_the_model(
+    responses_client, responses_store, monkeypatch, stream
+):
+    resp_id = await _stored_by_test_user(responses_client)
+    size = _stored_size(responses_store, resp_id)
+    monkeypatch.setattr(responses, "configured_max_body_bytes", lambda: size - 1)
+    TextAdapter.last_messages = []
+    stored_before = set(responses_store.data)
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": "and then?",
+            "previous_response_id": resp_id,
+            "stream": stream,
+        },
+        headers=_auth(),
+    )
+
+    assert r.status_code == 400
+    message = r.json()["error"]["message"]
+    assert f"is {size} bytes, more than the {size - 1} bytes" in message
+    assert "Start a new conversation, or continue this one with 'store' set to false" in message
+    assert TextAdapter.last_messages == []  # nothing reached a provider
+    assert set(responses_store.data) == stored_before
+
+
+@pytest.mark.asyncio
+async def test_an_oversized_conversation_continues_when_nothing_is_stored(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+    monkeypatch.setattr(
+        responses, "configured_max_body_bytes", lambda: _stored_size(responses_store, resp_id) - 1
+    )
+    stored_before = set(responses_store.data)
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={
+            "model": TEXT_MODEL,
+            "input": "and then?",
+            "previous_response_id": resp_id,
+            "store": False,
+        },
+        headers=_auth(),
+    )
+
+    assert r.status_code == 200
+    assert ("user", "my secret") in _rc(TextAdapter.last_messages)
+    assert set(responses_store.data) == stored_before
+
+
+@pytest.mark.asyncio
+async def test_a_conversation_at_the_limit_is_continued_and_stored(
+    responses_client, responses_store, monkeypatch
+):
+    resp_id = await _stored_by_test_user(responses_client)
+    monkeypatch.setattr(
+        responses, "configured_max_body_bytes", lambda: _stored_size(responses_store, resp_id)
+    )
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "and then?", "previous_response_id": resp_id},
+        headers=_auth(),
+    )
+
+    assert r.status_code == 200
+    assert r.json()["id"] in responses_store.data
+
+
+@pytest.mark.asyncio
+async def test_the_size_the_store_reports_is_the_one_checked(responses_client, responses_store):
+    """The stored text's size, read with the row, rather than serializing the conversation again."""
+    resp_id = await _stored_by_test_user(responses_client)
+    responses_store.data[resp_id]["messages_bytes"] = 64 * 1024 * 1024
+
+    r = await responses_client.post(
+        "/v1/responses",
+        json={"model": TEXT_MODEL, "input": "and then?", "previous_response_id": resp_id},
+        headers=_auth(),
+    )
+
+    assert r.status_code == 400
+    assert (
+        f"is {64 * 1024 * 1024} bytes, more than the {32 * 1024 * 1024} bytes"
+        in (r.json()["error"]["message"])
+    )

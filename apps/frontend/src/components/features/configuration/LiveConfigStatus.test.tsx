@@ -89,7 +89,7 @@ describe('LiveConfigStatus', () => {
     ).toBeInTheDocument();
     expect(screen.getByText(/Coverage is not verified/)).toBeInTheDocument();
     expect(screen.getAllByText('Applied')).toHaveLength(2);
-    expect(screen.getByText(/does not mean a message was delivered/)).toBeInTheDocument();
+    expect(screen.getByText(/Use Send test to check delivery/)).toBeInTheDocument();
   });
 
   it('never counts a lost heartbeat as applied', () => {

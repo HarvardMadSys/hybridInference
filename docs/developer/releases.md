@@ -103,23 +103,48 @@ commit summaries alone do not explain how an operator should upgrade.
    See [Database backup](database.md#backup) for the standard Postgres commands;
    use the storage provider's backup procedure for other deployments.
 4. Rehearse on an isolated local or staging deployment, using separate storage
-   and suitable test data. The application creates and updates schema on
-   startup, so merely starting a new backend against a database can change it.
-   Check startup logs and `/health/ready`, then login, an existing API key, a
-   routed request and streaming if your clients use it.
-5. Deploy the selected revision using your existing deployment method. For the
-   standard stack built from source, `make build` rebuilds and recreates
-   services from the current checkout; `make restart` keeps existing images.
-   See [Deployment](deployment.md#what-a-change-actually-requires) for the
-   distinction between rebuilding code and reloading configuration. Check the
-   running artifact identities and repeat the rehearsal checks before sending
-   normal traffic to it.
+   and suitable test data. Apply the schema migrations with the new image
+   first ([How the schema is created](database.md#how-the-schema-is-created)),
+   then start it. Check startup logs and `/health/ready`, then login, an
+   existing API key, a routed request and streaming if your clients use it.
+   Then start the previous image against the migrated database and run the
+   same checks: that is what a failed deploy falls back to.
+5. Deploy the selected revision using your existing deployment method: apply
+   the migrations with the new image while the old one still serves, and
+   restart only once they succeeded. For the standard stack built from source,
+   `make build` rebuilds the images, migrates, and recreates the services from
+   the current checkout; `make restart` keeps existing images and migrates
+   nothing. See [Deployment](deployment.md#what-a-change-actually-requires) for
+   the distinction between rebuilding code and reloading configuration. Check
+   the running artifact identities and repeat the rehearsal checks before
+   sending normal traffic to it.
 
-Returning to a previous image does not undo database changes. If the previous
-version is compatible with the upgraded schema and data, restore its matching
-application artifacts and configuration. Otherwise, stop application writers
-and restore the matching pre-upgrade database backup before restarting the
-previous version. This discards writes made since the backup, so account for
-those writes in the recovery plan. There is no general automatic schema
-downgrade command; `make down` preserves data and deleting a volume is a reset,
-not a rollback.
+   `make deploy` deploys published images by digest, restores the previous
+   ones if they fail acceptance, and pins the deployment to them, after which
+   `make build` refuses until you return to source builds; see
+   [Diagnostics, deployment and recovery](deployment.md#diagnostics-deployment-and-recovery).
+
+   Upgrading from a release that read its site identity, branding and alert
+   rules from files, import them between the migrations and the restart, with
+   the new image: add `LEGACY_MANIFEST=<manifest>` to `make deploy` or
+   `make build`, or run the import command yourself at that point. Until it
+   runs, the new release serves neutral site settings and the built-in alert
+   thresholds. See
+   [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database).
+
+Returning to a previous image does not undo database changes, and does not
+need to: a migration leaves the previous release working on the new schema, so
+restoring its artifacts and configuration is the rollback. Do not run the
+previous image's migrations for it. A release whose migration removes something
+older code uses says so in its notes, and the older backend then refuses to
+start on that database rather than misread it; going back past such a release
+means restoring the matching pre-upgrade database backup, which discards writes
+made since the backup. There is no schema downgrade command; `make down`
+preserves data and deleting a volume is a reset, not a rollback.
+
+`make rollback` returns to the images the last accepted `make deploy` replaced.
+A release from before the database-backed configuration reads its manifest,
+alert rules and other files through `DISTRIBUTION_CONFIG_PATH`,
+`DISTRIBUTION_CONFIG_MODE` and the `*_CONFIG_PATH` variables, which Compose still
+passes to the backend. Keep them in the deployment's env files, and keep the
+files they name, until a rollback to such a release is no longer an option.

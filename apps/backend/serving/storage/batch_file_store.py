@@ -36,6 +36,8 @@ stored.
 from __future__ import annotations
 
 import secrets
+import time
+from collections import deque
 from typing import Any
 
 from serving.storage.batch_store import _CLAIM_LOCK_SQL, _USER_ADMISSION_LOCK_CLASS, _rowcount
@@ -64,6 +66,11 @@ _GC_LIMIT = 200
 #: An upload not finished in this long is abandoned and collected.
 _STALE_UPLOAD_SECONDS = 3600
 
+#: The window of the hourly upload limit, in seconds.
+_UPLOAD_RATE_WINDOW = 3600.0
+#: Past this many users with attempts on record, every expired one is dropped.
+_ATTEMPTS_TRACKED = 1024
+
 _FILE_COLUMNS = (
     "id, user_id, purpose, kind, filename, status, bytes, sha256, line_count, batch_id, "
     "generation, renderer_version, created_at, ready_at, deleted_at, expires_at, "
@@ -82,6 +89,28 @@ class BatchFileStore:
     def __init__(self, pool: Any) -> None:
         """Wrap the asyncpg pool the batch store uses."""
         self._pool = pool
+        # The uploads each user opened here in the last hour, by monotonic
+        # time. An upload that fails is deleted, so the rows alone count only
+        # the uploads that survived; the hourly limit counts every attempt.
+        self._attempts: dict[str, deque[float]] = {}
+
+    def _recent_attempts(self, user_id: str, now: float) -> int:
+        """How many uploads *user_id* opened in this process within the last hour."""
+        if len(self._attempts) > _ATTEMPTS_TRACKED:
+            for other in list(self._attempts):
+                self._forget_old_attempts(other, now)
+        return self._forget_old_attempts(user_id, now)
+
+    def _forget_old_attempts(self, user_id: str, now: float) -> int:
+        times = self._attempts.get(user_id)
+        if times is None:
+            return 0
+        while times and times[0] <= now - _UPLOAD_RATE_WINDOW:
+            times.popleft()
+        if not times:
+            del self._attempts[user_id]
+            return 0
+        return len(times)
 
     async def create_upload(
         self,
@@ -93,6 +122,10 @@ class BatchFileStore:
         max_uploads_per_hour: int,
     ) -> str:
         """Open an upload; its bytes follow with :meth:`append_chunk`.
+
+        The hourly limit counts every upload opened, finished or not: those
+        stored (from the rows, across every process) or, if more, those this
+        process opened (one that failed leaves no row behind).
 
         Raises:
             BatchFileQuotaExceeded: The user already stores ``max_total_bytes``
@@ -111,9 +144,11 @@ class BatchFileStore:
                 """,
                 user_id,
             )
-            if max_uploads_per_hour > 0 and usage["recent"] >= max_uploads_per_hour:
+            now = time.monotonic()
+            recent = max(int(usage["recent"]), self._recent_attempts(user_id, now))
+            if max_uploads_per_hour > 0 and recent >= max_uploads_per_hour:
                 raise BatchFileQuotaExceeded(
-                    "uploads_per_hour", limit=max_uploads_per_hour, current=usage["recent"]
+                    "uploads_per_hour", limit=max_uploads_per_hour, current=recent
                 )
             if usage["stored"] >= max_total_bytes:
                 raise BatchFileQuotaExceeded(
@@ -129,6 +164,7 @@ class BatchFileStore:
                 purpose,
                 filename,
             )
+            self._attempts.setdefault(user_id, deque()).append(now)
         return file_id
 
     async def create_derived(
@@ -314,7 +350,8 @@ class BatchFileStore:
         """What counts against a user's caps now: ``{"stored_bytes", "uploads_last_hour"}``.
 
         Stored bytes are every upload's, derived copies and deleted-but-not-yet
-        collected ones included, as the cap counts them.
+        collected ones included, as the cap counts them; uploads in the last
+        hour count every one opened, failed ones too, as the limit counts them.
         """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
@@ -327,7 +364,8 @@ class BatchFileStore:
                 """,
                 user_id,
             )
-        return {"stored_bytes": int(row["stored"]), "uploads_last_hour": int(row["recent"])}
+        recent = max(int(row["recent"]), self._recent_attempts(user_id, time.monotonic()))
+        return {"stored_bytes": int(row["stored"]), "uploads_last_hour": recent}
 
     async def delete_file(self, file_id: str, *, user_id: str | None) -> bool:
         """Hide a file for good; its bytes are collected later. True when it was visible.
