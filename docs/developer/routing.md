@@ -653,14 +653,20 @@ Resource limits used to live in `router_params:`. Those keys are now rejected
 at boot with a message naming their route-level replacement, so a stale
 registry fails loudly rather than silently using defaults.
 
-RouteWise does not read prefill load: the latency estimates used by its LP and
-hedge choice have no backlog penalty, and it takes no prefill lease. The three keys of that
-withdrawn feature — `prefill_load_routing_enabled`,
-`prefill_load_scale_ms_per_1k` and `prefill_load_max_penalty_ms` — are still
-accepted so an older registry keeps starting, but they have no effect whatever
-their value, and the backend logs a warning naming them once per process.
-Remove them from `MODEL_CATALOG`. FixedRouter's
-[prefill-aware selection](#prefill-aware-selection) is unchanged.
+RouteWise does not read prefill load for its LP and hedge choice: those
+estimates carry no backlog penalty. The three keys of that withdrawn feature —
+`prefill_load_routing_enabled`, `prefill_load_scale_ms_per_1k` and
+`prefill_load_max_penalty_ms` — are still accepted so an older registry keeps
+starting, but they have no effect whatever their value, and the backend logs a
+warning naming them once per process. Remove them from `MODEL_CATALOG`.
+FixedRouter's [prefill-aware selection](#prefill-aware-selection) is unchanged.
+
+RouteWise does take a prefill lease on one thing: a route that sets
+`priority_scheduling: true`. That lease carries the un-cached prefill estimate
+the upstream scheduling priority is derived from, so the priority reflects the
+work the request actually imposes. Without that flag RouteWise takes no lease
+and publishes no priority, and the backend uses its own default priority for
+those models — exactly as before.
 
 `latency_min_samples` is accepted the same way. Provider selection never read
 it, so it was removed, and a registry that still sets it starts with the same
