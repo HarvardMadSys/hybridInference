@@ -19,6 +19,7 @@ from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
 from .middleware.security_headers import NoSniffMiddleware
 from .middleware.timeout import TimeoutMiddleware
+from .middleware.trailing_slash import TrailingSlashRedirectMiddleware
 from .routers import (
     admin,
     agent_grants,
@@ -123,6 +124,11 @@ def create_app() -> FastAPI:
     # middlewares like any other response. It never buffers a body or touches a
     # response it did not write, so streams are unaffected.
     app.add_middleware(RequestBodyLimitMiddleware)
+
+    # A trailing slash on /v1 and /anthropic gets the console's bare-path 308
+    # instead of Starlette's absolute 307: outside the body limit, as the
+    # console redirects before reading a body, and inside CORS.
+    app.add_middleware(TrailingSlashRedirectMiddleware)
 
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
