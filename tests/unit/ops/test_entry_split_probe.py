@@ -81,7 +81,13 @@ def test_a_whole_numbered_chat_stream_passes() -> None:
     assert report.ok, report.errors
     assert report.terminal and report.sequence_checked
     assert report.frames == 3
-    assert report.gaps_ms == {"min": 100.0, "median": 100.0, "max": 100.0, "expected": 100.0}
+    assert report.gaps_ms == {
+        "first": 100.0,
+        "min": 100.0,
+        "median": 100.0,
+        "max": 100.0,
+        "expected": 100.0,
+    }
 
 
 def test_a_stream_without_its_end_marker_is_truncated() -> None:
@@ -153,15 +159,30 @@ def test_a_frame_number_split_over_two_deltas_counts_once() -> None:
 
 def test_frames_that_arrive_in_a_burst_fail_the_timing_check() -> None:
     """What a buffering entry looks like: nothing for a while, then everything."""
-    check = _check(expected_frames=4, interval_ms=100.0, tolerance_ms=50.0)
-    frames = _whole_chat_stream([0, 1, 2, 3])
-    for frame, at in zip(frames, [0.0, 0.0, 0.0, 0.0, 0.3, 0.3, 0.3, 0.3], strict=True):
+    check = _check(expected_frames=6, interval_ms=100.0, tolerance_ms=50.0)
+    frames = _whole_chat_stream(list(range(6)))
+    times = [0.0, 0.0, 0.1, 0.1, 0.1, 0.4, 0.4, 0.4, 0.4, 0.4]
+    for frame, at in zip(frames, times, strict=True):
         check.feed(frame, at)
 
     report = check.finish()
 
-    assert "3 of 3 frame gaps off 100.0 ms by more than 50.0 ms" in report.errors
-    assert report.off_gaps == [[1, 0.0], [2, 0.0], [3, 300.0]]
+    assert "4 of 4 frame gaps off 100.0 ms by more than 50.0 ms" in report.errors
+    assert report.off_gaps == [[2, 0.0], [3, 0.0], [4, 300.0], [5, 0.0]]
+
+
+def test_a_late_first_frame_is_time_to_first_token_not_jitter() -> None:
+    """Frame 0 waits for the gateway's first-token work; the next gap shrinks by as much."""
+    check = _check(expected_frames=4, interval_ms=100.0, tolerance_ms=50.0)
+    frames = _whole_chat_stream(list(range(4)))
+    times = [0.0, 0.08, 0.1, 0.2, 0.3, 0.3, 0.3, 0.3]
+    for frame, at in zip(frames, times, strict=True):
+        check.feed(frame, at)
+
+    report = check.finish()
+
+    assert report.ok, report.errors
+    assert report.gaps_ms["first"] == 20.0
 
 
 def test_a_stream_without_usage_fails() -> None:

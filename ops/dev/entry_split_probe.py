@@ -17,7 +17,8 @@ What one run does:
   ``message_stop``) and the usage report, and, against the example's fake
   provider started with ``--stream-frames N --frame-interval-ms T``, checks
   that frames ``[000000]`` .. ``N-1`` all arrived once, in order, ``T`` apart
-  within ``--interval-tolerance-ms``.
+  within ``--interval-tolerance-ms`` (from frame 1 on: frame 0's arrival is
+  the time to first token, reported on its own).
 * **Short requests at a fixed rate**, streaming and not, on
   ``/v1/chat/completions``, ``/v1/responses`` and ``/anthropic/v1/messages``,
   for as long as the long streams run (or ``--duration``).
@@ -322,24 +323,28 @@ class StreamCheck:
         if self.expected_frames is not None:
             report.sequence_checked = True
             report.errors.extend(check_sequence(self.sequence, self.expected_frames))
-        if self.interval_ms is not None and len(self.arrivals) > 1:
+        if self.interval_ms is not None and len(self.arrivals) > 2:
             gaps = [(later - earlier) * 1000.0 for earlier, later in pairwise(self.arrivals)]
             report.gaps_ms = {
-                "min": round(min(gaps), 1),
-                "median": round(statistics.median(gaps), 1),
-                "max": round(max(gaps), 1),
+                "first": round(gaps[0], 1),
+                "min": round(min(gaps[1:]), 1),
+                "median": round(statistics.median(gaps[1:]), 1),
+                "max": round(max(gaps[1:]), 1),
                 "expected": self.interval_ms,
             }
-            off = [g for g in gaps if abs(g - self.interval_ms) > self.tolerance_ms]
-            # Which gaps, by the frame that closed them: [frame, ms], the first ten.
-            report.off_gaps = [
-                [self.sequence[i + 1] if i + 1 < len(self.sequence) else i + 1, round(g, 1)]
-                for i, g in enumerate(gaps)
-                if abs(g - self.interval_ms) > self.tolerance_ms
-            ][:10]
+            # The first gap is not judged: frame 0 carries the gateway's work on
+            # the first token, which first_text_s reports. Every later gap is
+            # the path's alone, and a buffering hop shows up in them as bursts.
+            # Each off gap is named by the frame that closed it: [frame, ms].
+            off = [
+                [self.sequence[i + 1], round(gap, 1)]
+                for i, gap in enumerate(gaps)
+                if i > 0 and abs(gap - self.interval_ms) > self.tolerance_ms
+            ]
+            report.off_gaps = off[:10]
             if off:
                 report.errors.append(
-                    f"{len(off)} of {len(gaps)} frame gaps off {self.interval_ms} ms "
+                    f"{len(off)} of {len(gaps) - 1} frame gaps off {self.interval_ms} ms "
                     f"by more than {self.tolerance_ms} ms"
                 )
         return report
@@ -781,6 +786,16 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
     tick = 0
     workers: list[threading.Thread] = []
 
+    def sample_health(at_s: float) -> None:
+        t0 = time.monotonic()
+        try:
+            status, _, _ = simple_request(target, "GET", "/health", timeout=10.0)
+            sample = {"at_s": at_s, "status": status, "ms": round((time.monotonic() - t0) * 1000)}
+        except (OSError, http.client.HTTPException) as exc:
+            sample = {"at_s": at_s, "error": type(exc).__name__}
+        with lock:
+            health.append(sample)
+
     def short(protocol: str, stream: bool) -> None:
         try:
             tally.add(run_short(target, api_key, protocol, args.short_model or args.model, stream))
@@ -796,18 +811,12 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
             break
         if now >= next_health:
             next_health += args.health_every
-            try:
-                t0 = time.monotonic()
-                status, _, _ = simple_request(target, "GET", "/health", timeout=10.0)
-                health.append(
-                    {
-                        "at_s": round(now - started, 1),
-                        "status": status,
-                        "ms": round((time.monotonic() - t0) * 1000),
-                    }
-                )
-            except (OSError, http.client.HTTPException) as exc:
-                health.append({"at_s": round(now - started, 1), "error": type(exc).__name__})
+            # On its own thread, so a slow /health never delays the schedule.
+            sampler = threading.Thread(
+                target=sample_health, args=(round(now - started, 1),), daemon=True
+            )
+            sampler.start()
+            workers.append(sampler)
         if args.short_rate > 0 and (deadline is None or now < deadline):
             due = started + tick / args.short_rate
             if now >= due:
@@ -831,7 +840,10 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
         {**asdict(r), "ok": r.ok} for r in sorted(long_reports, key=lambda r: r.started_at)
     ]
     report["short_requests"] = tally.summary()
-    report["health"] = {"note": "auxiliary only; not counted", "samples": health}
+    report["health"] = {
+        "note": "auxiliary only; not counted",
+        "samples": sorted(health, key=lambda sample: sample["at_s"]),
+    }
     failures = sum(1 for r in long_reports if not r.ok) + (args.long_streams - len(long_reports))
     failures += report["short_requests"]["failed"] + report["short_requests"]["not_sent"]
     failures += sum(1 for row in report.get("boundary", []) if not row["ok"])
