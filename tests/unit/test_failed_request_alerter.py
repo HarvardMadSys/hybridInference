@@ -720,3 +720,22 @@ def test_both_queries_exclude_model_queued_answers():
 
     for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL, FAILED_REQUEST_RATE_SQL):
         assert "(error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%')" in sql
+
+
+def test_every_query_reads_direct_requests_only():
+    """A batch item's attempts must never page, nor count toward the total.
+
+    The batch worker retries a failed attempt and reports the item's outcome in
+    the batch; one batch on a slow on-demand model otherwise sets the window's
+    failure rate on a quiet gateway. The total excludes them too, so a batch's
+    successes cannot dilute a real failure rate among direct requests.
+    """
+    from serving.admin.failed_request_alerter import (
+        FAILED_REQUEST_BREAKDOWN_SQL,
+        FAILED_REQUEST_COUNT_SQL,
+        FAILED_REQUEST_RATE_SQL,
+    )
+
+    for sql in (FAILED_REQUEST_COUNT_SQL, FAILED_REQUEST_BREAKDOWN_SQL, FAILED_REQUEST_RATE_SQL):
+        where = sql[sql.index("WHERE timestamp") :]
+        assert "batch_job_id IS NULL" in where
