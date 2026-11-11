@@ -17,6 +17,7 @@ from .middleware.exception_handler import install_exception_handlers
 from .middleware.proxy_trust import KubernetesProxyTrustMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
+from .middleware.security_headers import NoSniffMiddleware
 from .middleware.timeout import TimeoutMiddleware
 from .routers import (
     admin,
@@ -133,6 +134,10 @@ def create_app() -> FastAPI:
     app.add_middleware(KubernetesProxyTrustMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
+
+    # Outermost, so every response gets it, error answers included. It only
+    # adds a header to the response start; bodies, streams too, pass untouched.
+    app.add_middleware(NoSniffMiddleware)
 
     # Error handlers
     install_error_handlers(app)
