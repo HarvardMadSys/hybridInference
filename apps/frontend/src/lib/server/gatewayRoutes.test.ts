@@ -14,6 +14,11 @@ import { join, sep } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
+import { PUBLIC_PATHS, topSegment } from '@/test-utils/publicPaths';
+
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- the real, executed config.
+const nextConfig = require('../../../next.config.js');
+
 const METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] as const;
 
 type RouteModule = Record<(typeof METHODS)[number], (request: Request) => Promise<Response>> & {
@@ -68,6 +73,22 @@ const ROUTES: Array<[file: string, mount: string, load: () => Promise<unknown>]>
 /** The gateway's prefixes, under which every route file must be listed above. */
 const GATEWAY_PREFIXES = ['v1', 'anthropic', 'auth', 'user', 'admin', 'internal'];
 
+/** The gateway paths of deploy/public-paths.json that are not a rewrite in next.config.js. */
+async function manifestRoutes(): Promise<string[]> {
+  const { afterFiles } = await nextConfig.rewrites();
+  const rewritten = new Set((afterFiles as Array<{ source: string }>).map((rule) => rule.source));
+  return PUBLIC_PATHS.filter((entry) => entry.owner === 'gateway' && !rewritten.has(entry.path))
+    .map((entry) => `${entry.match} ${entry.path}`)
+    .sort();
+}
+
+/** The manifest entry a route file serves: `v1/[[...path]]` is the prefix `/v1`. */
+function manifestEntryOf(file: string): string {
+  const prefix = `/${file}`.replace(/\/\[\[\.\.\.[^\]]+\]\]$/, '');
+  const path = prefix.replace(/\[([^\]]+)\]/g, ':$1');
+  return `${prefix === `/${file}` ? 'exact' : 'prefix'} ${path}`;
+}
+
 function routeFilesUnder(dir: string): string[] {
   const app = join(__dirname, '../../app');
   return readdirSync(join(app, dir), { withFileTypes: true }).flatMap((entry) => {
@@ -100,6 +121,16 @@ afterAll(async () => {
 it('lists every route file under the gateway’s prefixes', () => {
   expect(GATEWAY_PREFIXES.flatMap(routeFilesUnder).sort()).toEqual(
     ROUTES.map(([file]) => file).sort(),
+  );
+});
+
+// deploy/public-paths.json is the list of public paths; these files are how
+// the console implements the part of its gateway paths that are not rewrites.
+it('lists exactly the gateway paths the public path manifest gives a route handler', async () => {
+  const expected = await manifestRoutes();
+  expect(ROUTES.map(([file]) => manifestEntryOf(file)).sort()).toEqual(expected);
+  expect([...GATEWAY_PREFIXES].sort()).toEqual(
+    [...new Set(expected.map((entry) => topSegment(entry.split(' ')[1])))].sort(),
   );
 });
 
