@@ -1,7 +1,8 @@
 """Periodic alerter for spikes in service-side request failures.
 
 Counts rows in ``api_logs`` where ``status_code >= 500`` or ``error IS NOT NULL``
-over a sliding window and raises an alert when the count exceeds a configured
+among the requests callers made directly (not the batch worker's) over a
+sliding window and raises an alert when the count exceeds a configured
 threshold. A cooldown prevents duplicate alerts during sustained incidents.
 With both ``SLACK_WEBHOOK_URL`` and ``WECOM_ALERTS_WEBHOOK_URL`` empty, the
 detector is paused: it queries nothing, changes no incident and sends nothing,
@@ -120,12 +121,25 @@ FAILURE_PREDICATE_SQL = (
     "AND (error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%'))"
 )
 
+# The rows the detector reads: requests callers made directly. A batch item's
+# attempt is not a caller's failure -- the batch worker retries it, holds it
+# while its model waits for capacity (with its own alert for a wait that runs
+# too long), and reports the item's outcome in the batch. One batch on a slow
+# model times out a few attempts every minute for hours, and on a quiet
+# gateway that alone sets the window's failure rate: it paged a dozen times in
+# one night (2026-11-11) for a batch on an on-demand 70B model, every failure
+# a retried batch attempt. Excluded from the total too, so a batch's successes do not
+# dilute a real failure rate among direct requests. The metrics detector in
+# observability/alert_rules.py reads the HTTP request log, which batch work
+# never enters, so this makes the two agree.
+SOURCE_SQL = "batch_job_id IS NULL"
+
 # Module-level SQL so tests can introspect the predicate text.
 # Parameterized: $1 = window_minutes (int). Avoids string interpolation, allows plan caching.
 FAILED_REQUEST_COUNT_SQL = (
     "SELECT COUNT(*) FROM api_logs "
     "WHERE timestamp > NOW() - make_interval(mins => $1) "
-    f"AND {FAILURE_PREDICATE_SQL}"
+    f"AND {SOURCE_SQL} AND {FAILURE_PREDICATE_SQL}"
 )
 
 # Failures *and* the window's total, so a sustained low-rate defect is visible.
@@ -136,7 +150,8 @@ FAILED_REQUEST_COUNT_SQL = (
 FAILED_REQUEST_RATE_SQL = (
     "SELECT COUNT(*) FILTER (WHERE " + FAILURE_PREDICATE_SQL + ") AS failures, "
     "COUNT(*) AS total FROM api_logs "
-    "WHERE timestamp > NOW() - make_interval(mins => $1)"
+    "WHERE timestamp > NOW() - make_interval(mins => $1) "
+    f"AND {SOURCE_SQL}"
 )
 
 # Returns top status codes, providers, models, and the newest failure's error and
@@ -154,6 +169,7 @@ SELECT
     (array_agg(status_code ORDER BY timestamp DESC, id DESC) FILTER (WHERE error IS NOT NULL))[1] AS sample_status
 FROM api_logs
 WHERE timestamp > NOW() - make_interval(mins => $1)
+AND {SOURCE_SQL}
 AND {FAILURE_PREDICATE_SQL}
 """
 
