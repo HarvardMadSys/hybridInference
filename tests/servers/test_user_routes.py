@@ -242,10 +242,10 @@ class TestAPIKeyManagement:
         assert "*" in data["keys"][0]["key_masked"]
 
     @pytest.mark.asyncio
-    async def test_a_saved_key_is_masked_in_the_listing_and_revealed_by_the_password(
+    async def test_a_saved_key_is_masked_in_the_listing_and_revealed_on_request(
         self, auth_app_client: AsyncClient, test_user, auth_headers
     ):
-        """The listing never carries the full key; the password reveals it.
+        """The listing never carries the full key; the reveal route shows it.
 
         The plaintext round-trips through the stored ciphertext
         (``encrypt`` at create time -> DB -> ``decrypt`` at reveal time).
@@ -263,16 +263,8 @@ class TestAPIKeyManagement:
         assert keys[0]["revealable"] is True
         assert created["api_key"] not in response.text
 
-        refused = await auth_app_client.post(
-            f"/user/api-keys/{created['key_prefix']}/reveal",
-            headers=auth_headers,
-            json={"password": "Not-The-Password-1"},
-        )
-        assert refused.status_code == 400
         revealed = await auth_app_client.post(
-            f"/user/api-keys/{created['key_prefix']}/reveal",
-            headers=auth_headers,
-            json={"password": test_user["password"]},
+            f"/user/api-keys/{created['key_prefix']}/reveal", headers=auth_headers
         )
         assert revealed.status_code == 200
         assert revealed.json() == {
@@ -284,7 +276,7 @@ class TestAPIKeyManagement:
     async def test_list_api_keys_reveals_revoked_key_without_restoring_auth(
         self, auth_app_client: AsyncClient, test_user, auth_headers, auth_backend
     ):
-        """An owner can recover a revoked key's value with the password, not authenticate with it."""
+        """An owner can recover a revoked key's value, not authenticate with it."""
         from serving.servers.auth import hash_api_key
         from tests.fixtures.auth_helpers import login_and_get_auth_headers, seed_test_user
 
@@ -310,9 +302,7 @@ class TestAPIKeyManagement:
         assert keys[0]["revealable"] is True
         assert "*" in keys[0]["key_masked"]
         revealed = await auth_app_client.post(
-            f"/user/api-keys/{created['key_prefix']}/reveal",
-            headers=auth_headers,
-            json={"password": test_user["password"]},
+            f"/user/api-keys/{created['key_prefix']}/reveal", headers=auth_headers
         )
         assert revealed.json()["api_key"] == created["api_key"]
         assert await store.get_auth_context_by_key_hash(key_hash) is None
@@ -320,6 +310,8 @@ class TestAPIKeyManagement:
         # Listing is session-authenticated and scoped to the owner, including
         # when the saved secret belongs to a key that has been revoked.
         assert (await auth_app_client.get("/user/api-keys/all")).status_code == 401
+        reveal_path = f"/user/api-keys/{created['key_prefix']}/reveal"
+        assert (await auth_app_client.post(reveal_path)).status_code == 401
         other = await seed_test_user(store, id="other-key-owner", email="other-owner@example.com")
         other_headers = await login_and_get_auth_headers(
             auth_app_client, email=other["email"], password=other["password"]
@@ -328,9 +320,7 @@ class TestAPIKeyManagement:
         assert other_list.status_code == 200
         assert other_list.json()["keys"] == []
         other_reveal = await auth_app_client.post(
-            f"/user/api-keys/{created['key_prefix']}/reveal",
-            headers=other_headers,
-            json={"password": other["password"]},
+            f"/user/api-keys/{created['key_prefix']}/reveal", headers=other_headers
         )
         assert other_reveal.status_code == 404
 

@@ -1,9 +1,9 @@
-"""A saved API key is shown in full only to its owner's password, never in the listing.
+"""A saved API key is shown in full one at a time, on request, never in the listing.
 
 ``GET /user/api-keys/all`` used to decrypt every key for any console bearer
-token: a token lifted from a browser, good for minutes, handed out keys good
-until revoked. The listing is masked now; ``POST /user/api-keys/{prefix}/reveal``
-shows one key after the password, counted against the sign-in limits.
+token. The listing is masked now; ``POST /user/api-keys/{prefix}/reveal`` shows
+one key to its signed-in owner and audits it. It asks for no password: the same
+session can create or regenerate a key without one.
 """
 
 from __future__ import annotations
@@ -16,14 +16,12 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
-from serving.config.settings import get_settings, settings
+from serving.config.settings import get_settings
 from serving.servers.auth import encrypt_api_key
 from serving.servers.deps import get_current_user, get_db_logger, get_operational_store
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers import user_routes
-from serving.utils import password as password_utils
 
-PASSWORD = "Str0ngPassword"
 FULL_KEY = "hyi-testkey01-FULL-SECRET-VALUE"
 PREFIX = FULL_KEY[:12]
 
@@ -48,24 +46,11 @@ def _key(prefix: str, status: str = "active", *, saved: str | None = FULL_KEY) -
 @pytest.fixture(autouse=True)
 def _secrets(monkeypatch):
     monkeypatch.setattr(get_settings(), "api_key_secret", "unit-test-api-key-secret")
-    for name, value in (
-        ("login_rate_limit_per_15min", 5),
-        ("login_account_rate_limit_per_15min", 50),
-        ("login_rate_limit_per_hour_per_ip", 20),
-    ):
-        monkeypatch.setattr(settings, name, value)
-    monkeypatch.setattr(password_utils, "verify_password", lambda plain, _hash: plain == PASSWORD)
 
 
 @pytest.fixture
-def account() -> dict[str, Any]:
-    return {"id": "u-owner", "email": "owner@example.com", "password_hash": "stored"}
-
-
-@pytest.fixture
-def op_store(account) -> MagicMock:
+def op_store() -> MagicMock:
     store = MagicMock()
-    store.get_user_by_id = AsyncMock(side_effect=lambda user_id: account)
     store.list_account_keys = AsyncMock(
         return_value=[
             _key(PREFIX),
@@ -104,9 +89,8 @@ async def _call(app: FastAPI, method: str, path: str, **kwargs: Any):
         return await client.request(method, path, **kwargs)
 
 
-async def _reveal(app: FastAPI, prefix: str = PREFIX, password: str | None = PASSWORD):
-    body = {} if password is None else {"password": password}
-    return await _call(app, "POST", f"/user/api-keys/{prefix}/reveal", json=body)
+async def _reveal(app: FastAPI, prefix: str = PREFIX):
+    return await _call(app, "POST", f"/user/api-keys/{prefix}/reveal")
 
 
 async def test_the_listing_never_carries_a_full_key(app, monkeypatch):
@@ -129,7 +113,7 @@ async def test_the_listing_never_carries_a_full_key(app, monkeypatch):
     assert keys[PREFIX]["key_masked"].startswith(PREFIX)
 
 
-async def test_the_password_reveals_one_saved_key(app, audit):
+async def test_the_owner_reveals_one_saved_key(app, audit):
     resp = await _reveal(app)
 
     assert resp.status_code == 200, resp.text
@@ -147,74 +131,21 @@ async def test_a_revoked_key_can_still_be_shown(app):
     assert resp.json()["api_key"] == FULL_KEY
 
 
-@pytest.mark.parametrize("password", [None, "", "Wrong-Password-1"])
-async def test_no_key_without_the_password(app, audit, password):
-    resp = await _reveal(app, password=password)
+async def test_a_password_sent_by_an_older_client_is_ignored(app):
+    resp = await _call(
+        app, "POST", f"/user/api-keys/{PREFIX}/reveal", json={"password": "anything"}
+    )
 
-    assert resp.status_code == 400
-    assert FULL_KEY not in resp.text
-    # Refused, and audited as refused: a session trying passwords is what a
-    # stolen console token looks like.
-    audit.assert_awaited_once()
-    assert audit.await_args.kwargs["action"] == "reveal_key"
-    assert audit.await_args.kwargs["success"] is False
-    assert audit.await_args.kwargs["details"] == {
-        "actor": "user",
-        "key_prefix": PREFIX,
-        "refused": "wrong_password",
-    }
-
-
-async def test_refusals_past_the_sign_in_limit_are_audited_once_a_minute(app, audit):
-    for _ in range(5):
-        assert (await _reveal(app, password="Wrong-Password-1")).status_code == 400
-    for _ in range(20):
-        assert (await _reveal(app, password="Wrong-Password-1")).status_code == 429
-
-    refused = [call.kwargs["details"]["refused"] for call in audit.await_args_list]
-    assert refused == ["wrong_password"] * 5 + ["rate_limited"]
-
-
-async def test_a_failed_audit_write_does_not_hide_the_refusal(app, audit):
-    audit.side_effect = RuntimeError("audit table unavailable")
-
-    resp = await _reveal(app, password="Wrong-Password-1")
-
-    assert resp.status_code == 400
-
-
-async def test_guessing_the_password_here_counts_against_the_sign_in_limits(app):
-    for _ in range(5):
-        assert (await _reveal(app, password="Wrong-Password-1")).status_code == 400
-
-    limited = await _reveal(app)
-
-    assert limited.status_code == 429
-    assert FULL_KEY not in limited.text
+    assert resp.status_code == 200
+    assert resp.json()["api_key"] == FULL_KEY
 
 
 @pytest.mark.parametrize("prefix", ["hyi-legacy0001", "hyi-unknown01"])
-async def test_a_key_without_a_saved_value_is_not_found(app, prefix, monkeypatch):
-    confirm = AsyncMock()
-    monkeypatch.setattr(user_routes, "confirm_account_owner", confirm)
-
+async def test_a_key_without_a_saved_value_is_not_found(app, prefix, audit):
     resp = await _reveal(app, prefix)
 
     assert resp.status_code == 404
-    # Nothing to show, so no password attempt is spent.
-    confirm.assert_not_awaited()
-
-
-async def test_an_account_without_a_password_is_told_how_to_get_a_key(app, account, monkeypatch):
-    account["password_hash"] = None
-    confirm = AsyncMock()
-    monkeypatch.setattr(user_routes, "confirm_account_owner", confirm)
-
-    resp = await _reveal(app)
-
-    assert resp.status_code == 400
-    assert "regenerate" in resp.json()["detail"]
-    confirm.assert_not_awaited()
+    audit.assert_not_awaited()
 
 
 async def test_a_saved_value_that_cannot_be_read_is_a_conflict(app, op_store):

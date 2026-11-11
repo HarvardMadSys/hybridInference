@@ -21,8 +21,7 @@ export function useApiKeys() {
 /** Show one saved key in full; the answer is dropped as soon as nothing observes it. */
 export function useRevealApiKey() {
   return useMutation({
-    mutationFn: ({ keyPrefix, password }: { keyPrefix: string; password: string }) =>
-      revealApiKey(keyPrefix, password),
+    mutationFn: (keyPrefix: string) => revealApiKey(keyPrefix),
     gcTime: 0,
   });
 }

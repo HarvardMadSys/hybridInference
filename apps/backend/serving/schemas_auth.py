@@ -476,12 +476,6 @@ class APIKeyListResponse(BaseModel):
     keys: list[APIKeyListItem]
 
 
-class APIKeyRevealRequest(BaseModel):
-    """Show one saved API key in full; the owner confirms with the account's password."""
-
-    password: str | None = Field(default=None, max_length=1024)
-
-
 class APIKeyRevealResponse(BaseModel):
     """One of the current user's API keys, in full."""
 

@@ -1411,7 +1411,8 @@ def test_full_smoke_reuses_the_exact_key_after_backend_recreate(
         if path == "/auth/setup/status":
             return 200, {"setup_required": False}
         if path == f"/user/api-keys/{state.key_prefix}/reveal":
-            # The listing masks the key; the account's password reveals it.
+            # The listing masks the key; the reveal route shows it. The password
+            # is still sent, for a previous release that asks for it.
             reveals.append((kwargs.get("bearer"), kwargs.get("payload")))
             return 200, {"key_prefix": state.key_prefix, "api_key": state.api_key}
         return 200, {

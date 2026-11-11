@@ -34,25 +34,23 @@ afterEach(() => {
 });
 
 describe('revealApiKey', () => {
-  it('posts the password to the key’s own reveal endpoint', async () => {
+  it('posts to the key’s own reveal endpoint, with no password', async () => {
     fetchMock.mockResolvedValueOnce(json({ key_prefix: 'hyi-abc/123', api_key: 'hyi-full' }));
 
-    await expect(revealApiKey('hyi-abc/123', 'my-password')).resolves.toEqual({
+    await expect(revealApiKey('hyi-abc/123')).resolves.toEqual({
       key_prefix: 'hyi-abc/123',
       api_key: 'hyi-full',
     });
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toMatch(/\/user\/api-keys\/hyi-abc%2F123\/reveal$/);
     expect(init.method).toBe('POST');
-    expect(JSON.parse(init.body)).toEqual({ password: 'my-password' });
+    expect(init.body).toBeUndefined();
     expect(new Headers(init.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
   });
 
-  it('rejects with the gateway’s reason for a wrong password', async () => {
-    fetchMock.mockResolvedValueOnce(json({ detail: 'Current password is incorrect.' }, 400));
+  it('rejects with the gateway’s reason', async () => {
+    fetchMock.mockResolvedValueOnce(json({ detail: 'API key not found' }, 404));
 
-    await expect(revealApiKey('hyi-abc', 'wrong')).rejects.toThrow(
-      'Current password is incorrect.',
-    );
+    await expect(revealApiKey('hyi-abc')).rejects.toThrow('API key not found');
   });
 });
