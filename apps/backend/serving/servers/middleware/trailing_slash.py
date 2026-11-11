@@ -13,8 +13,9 @@ HTTPS, or is sent to an address that resolves nowhere.
 
 So on those prefixes this middleware answers as the console does: ``308``,
 keeping the method and body as ``307`` does, to the same path without its
-trailing slashes and with the query string, as a bare path the client resolves
-against the URL it asked for. It decides before routing, like the console,
+last slash and with the query string, as a bare path the client resolves
+against the URL it asked for. One slash per redirect, as the console: it sends
+``/v1/models//`` to ``/v1/models/``, which redirects again. It decides before routing, like the console,
 so a path that ends in a slash is redirected whether or not a route serves the
 path without it.
 
@@ -50,7 +51,7 @@ def slashless_location(scope: Scope) -> bytes | None:
     path: str = scope["path"]
     if len(path) < 2 or not path.endswith("/") or path[1] in "/\\":
         return None
-    bare = path.rstrip("/")
+    bare = path[:-1]
     if not _under_split_prefix(bare):
         return None
     if any(segment in {".", ".."} for segment in bare.split("/")):
@@ -58,7 +59,7 @@ def slashless_location(scope: Scope) -> bytes | None:
     raw: bytes = scope.get("raw_path") or path.encode("utf-8")
     if not raw.endswith(b"/"):
         return None
-    location = raw.rstrip(b"/")
+    location = raw[:-1]
     if location[:1] != b"/" or location[1:2] in (b"/", b"\\"):
         return None
     query: bytes = scope.get("query_string") or b""

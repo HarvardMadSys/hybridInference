@@ -73,7 +73,9 @@ def test_the_prefixes_are_the_manifests_entry_split_paths() -> None:
         ("/v1/models/", b"", b"/v1/models"),
         ("/v1/models/", b"a=1&b=2", b"/v1/models?a=1&b=2"),
         ("/v1/chat/completions/", b"", b"/v1/chat/completions"),
-        ("/v1/models//", b"", b"/v1/models"),
+        # One slash per redirect, as the console does.
+        ("/v1/models//", b"", b"/v1/models/"),
+        ("/v1//", b"", b"/v1/"),
         ("/v1/", b"", b"/v1"),
         ("/anthropic/", b"", b"/anthropic"),
         ("/anthropic/v1/messages/", b"", b"/anthropic/v1/messages"),
