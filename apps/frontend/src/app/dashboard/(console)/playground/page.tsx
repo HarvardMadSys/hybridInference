@@ -59,6 +59,7 @@ interface PlaygroundSession {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  reasoningEffort: string | null;
   api: PlaygroundApi;
   messages: Message[];
   input: string;
@@ -87,6 +88,7 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     systemPrompt: '',
     temperature: 0.7,
     maxTokens: 4096,
+    reasoningEffort: null,
     api: 'chat',
     messages: [],
     input: '',
@@ -256,6 +258,8 @@ export default function PlaygroundPage() {
   const sysPrompt = session?.systemPrompt || '';
   const temp = session?.temperature ?? 0.7;
   const maxTok = session?.maxTokens ?? 4096;
+  const reasoningEffort = session?.reasoningEffort ?? null;
+  const reasoningEfforts = models.find((model) => model.id === modelId)?.reasoning_efforts ?? [];
   const msgs = session?.messages ?? NO_MESSAGES;
   const input = session?.input || '';
   const model = models.find((m) => m.id === modelId) ?? null;
@@ -592,6 +596,7 @@ export default function PlaygroundPage() {
               systemPrompt: sysPrompt,
               temperature: temp,
               maxTokens: maxTok,
+              reasoningEffort,
               provider: selectedProvider,
             }),
           ),
@@ -722,6 +727,7 @@ export default function PlaygroundPage() {
       sysPrompt,
       temp,
       maxTok,
+      reasoningEffort,
       session,
       selectedProvider,
       patchSession,
@@ -833,6 +839,7 @@ export default function PlaygroundPage() {
     systemPrompt: sysPrompt,
     temperature: temp,
     maxTokens: maxTok,
+    reasoningEffort,
     provider: selectedProvider,
   });
   const copyCode = async () => {
@@ -1059,10 +1066,16 @@ export default function PlaygroundPage() {
                     models={models}
                     value={modelId}
                     onChange={(newId) => {
+                      const next = models.find((model) => model.id === newId);
                       patch((s) => ({
                         ...s,
                         selectedModelId: newId,
                         selectedProvider: null,
+                        reasoningEffort:
+                          s.reasoningEffort &&
+                          (next?.reasoning_efforts ?? []).includes(s.reasoningEffort)
+                            ? s.reasoningEffort
+                            : null,
                       }));
                     }}
                     disabled={activeStreaming}
@@ -1178,6 +1191,28 @@ export default function PlaygroundPage() {
                     className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
                   />
                 </div>
+
+                {reasoningEfforts.length > 0 && (
+                  <div className="mt-4">
+                    <label htmlFor="playground-reasoning-effort" className={fieldLabel}>
+                      Reasoning effort
+                    </label>
+                    <Select
+                      id="playground-reasoning-effort"
+                      size="lg"
+                      className="mt-2 w-full"
+                      value={reasoningEffort ?? ''}
+                      onValueChange={(value) =>
+                        patch((s) => ({ ...s, reasoningEffort: value || null }))
+                      }
+                      disabled={activeStreaming}
+                      options={[
+                        { value: '', label: 'Default' },
+                        ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                      ]}
+                    />
+                  </div>
+                )}
               </section>
 
               <section className="px-4 py-4">

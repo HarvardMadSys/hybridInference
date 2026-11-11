@@ -1062,6 +1062,43 @@ describe('PlaygroundPage', () => {
     ).toBe(true);
   });
 
+  it("offers the model's reasoning efforts and sends the chosen level", async () => {
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) =>
+      path === '/internal/playground/models'
+        ? {
+            ok: true,
+            json: async () => ({
+              models: [
+                {
+                  id: 'glm-4.6',
+                  name: 'GLM 4.6',
+                  provider: 'zai',
+                  providers: [],
+                  reasoning_efforts: ['low', 'high'],
+                },
+              ],
+            }),
+          }
+        : sseResponse([routeFrame(), contentFrame('effort reply')]),
+    );
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('Reasoning effort', 'high');
+    await sendPrompt('think hard');
+    await screen.findByText('effort reply');
+
+    const call = fetchWithAuth.mock.calls.find(([, path]) => path === '/internal/playground/chat');
+    const body = JSON.parse((call?.[2] as { body: string }).body);
+    expect(body.reasoning_effort).toBe('high');
+  });
+
+  it('hides the reasoning effort control when the model publishes none', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    expect(screen.queryByRole('combobox', { name: 'Reasoning effort' })).toBeNull();
+  });
+
   it('shows Python first, then the cURL form of the selected API', async () => {
     mockStream([]);
     render(<PlaygroundPage />);

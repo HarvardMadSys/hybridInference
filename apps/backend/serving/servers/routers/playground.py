@@ -17,6 +17,7 @@ from routing.protocols import RoutingRequestOptions
 from serving.config.settings import has_role
 from serving.exceptions import scrub_error_for_user
 from serving.model_access import model_access_denial
+from serving.model_effort_capabilities import model_effort_domain
 from serving.pricing import require_route_pricing
 from serving.servers.auth import publish_caller_role
 from serving.servers.deps import (
@@ -126,6 +127,7 @@ class PlaygroundModelItem(BaseModel):
     name: str
     provider: str
     providers: list[PlaygroundProviderItem] = []
+    reasoning_efforts: list[str] = []
 
 
 # Human-friendly display names for provider kinds.
@@ -262,6 +264,7 @@ async def list_models(
             name=primary_cfg.name,
             provider=primary_cfg.provider,
             providers=providers,
+            reasoning_efforts=model_effort_domain(adapter for adapter, _ in route.adapters) or [],
         )
 
     models = sorted(
@@ -279,6 +282,7 @@ class PlaygroundChatRequest(BaseModel):
     messages: list[dict[str, str]]
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
+    reasoning_effort: str | None = None
     provider: str | None = None
 
 
@@ -456,6 +460,8 @@ async def playground_chat(
             "temperature": body.temperature,
             "max_tokens": body.max_tokens,
         }
+        if body.reasoning_effort is not None:
+            kwargs["reasoning_effort"] = body.reasoning_effort
         # A reader task drains the router into a queue, so a heartbeat can go
         # out while it waits without cancelling the upstream read. Bounded: a
         # client that stops reading stops the reads from the upstream too.

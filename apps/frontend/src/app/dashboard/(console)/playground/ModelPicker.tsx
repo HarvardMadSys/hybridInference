@@ -19,6 +19,7 @@ export interface PlaygroundModel {
   name: string;
   provider: string;
   providers: { id: string; name: string }[];
+  reasoning_efforts?: string[];
 }
 
 interface ModelPickerProps {

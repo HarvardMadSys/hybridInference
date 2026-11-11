@@ -51,6 +51,7 @@ class _Adapter(BaseAdapter):
             )
         )
         self.roles: list[Any] = []
+        self.params: list[dict[str, Any]] = []
         self.gate: asyncio.Event | None = None
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
@@ -60,10 +61,36 @@ class _Adapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         self.roles.append(req_ctx.get().get(req_ctx.USER_ROLE))
+        self.params.append(dict(params))
         if self.gate is not None:
             await self.gate.wait()
         yield self.format_stream_chunk(model=self.config.id, content="ok")
         yield done_sentinel()
+
+
+class _ReasoningAdapter(_Adapter):
+    """A route that forwards reasoning effort and declares its public levels."""
+
+    forwards_reasoning_effort = True
+
+    def __init__(self) -> None:
+        super().__init__("reasoning-model", "openai_compat", "https://reasoning.example/v1")
+        self.config.supported_params = [
+            *self.config.supported_params,
+            "reasoning_effort",
+        ]
+        self.config.reasoning_efforts = ["low", "high"]
+
+
+class _ReasoningDeployment:
+    def __init__(self) -> None:
+        self.adapter = _ReasoningAdapter()
+        self.router = FixedRouter()
+        self.router.register_route("reasoning-model", [(self.adapter, 1.0)])
+        self.router._select_adapter = self._first  # type: ignore[assignment]
+
+    def _first(self, model_id: str, **_: Any) -> Any:
+        return self.router.routes[model_id].adapters[0][0]
 
 
 class _Deployment:
@@ -259,3 +286,26 @@ async def test_the_new_formats_apply_the_same_model_access_rules() -> None:
     assert responses.status_code == 404
     assert messages.status_code == 404
     assert deployment.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_models_publish_reasoning_efforts_and_chat_forwards_the_choice() -> None:
+    deployment = _ReasoningDeployment()
+    async with _client(deployment, INTERNAL) as client:
+        listing = await client.get("/internal/playground/models")
+        chat = await _chat(client, "reasoning-model", reasoning_effort="high")
+
+    models = {model["id"]: model for model in listing.json()["models"]}
+    assert models["reasoning-model"]["reasoning_efforts"] == ["low", "high"]
+    assert chat.status_code == 200
+    assert deployment.adapter.params[-1]["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
+async def test_models_without_a_reasoning_domain_publish_an_empty_list() -> None:
+    deployment = _Deployment()
+    async with _client(deployment, INTERNAL) as client:
+        listing = await client.get("/internal/playground/models")
+
+    models = {model["id"]: model for model in listing.json()["models"]}
+    assert models["open-model"]["reasoning_efforts"] == []

@@ -33,12 +33,14 @@ export interface RequestOptions {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  reasoningEffort: string | null;
   provider: string | null;
 }
 
 /** The body each API format expects, from the same session state. */
 export function buildRequest(api: PlaygroundApi, options: RequestOptions): Record<string, unknown> {
-  const { model, history, systemPrompt, temperature, maxTokens, provider } = options;
+  const { model, history, systemPrompt, temperature, maxTokens, reasoningEffort, provider } =
+    options;
   if (api === 'responses') {
     return {
       model,
@@ -46,6 +48,7 @@ export function buildRequest(api: PlaygroundApi, options: RequestOptions): Recor
       input: history,
       temperature,
       max_output_tokens: maxTokens,
+      ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
       stream: true,
     };
   }
@@ -56,6 +59,7 @@ export function buildRequest(api: PlaygroundApi, options: RequestOptions): Recor
       messages: history,
       temperature,
       max_tokens: maxTokens,
+      ...(reasoningEffort ? { output_config: { effort: reasoningEffort } } : {}),
       stream: true,
     };
   }
@@ -65,6 +69,7 @@ export function buildRequest(api: PlaygroundApi, options: RequestOptions): Recor
     messages: history,
     temperature,
     max_tokens: maxTokens,
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     ...(provider ? { provider } : {}),
   };
 }
@@ -224,6 +229,9 @@ export function buildPythonCode(
       `    model=${JSON.stringify(options.model)},`,
       `    max_tokens=${options.maxTokens},`,
       `    temperature=${options.temperature},`,
+      ...(options.reasoningEffort
+        ? [`    output_config={"effort": ${JSON.stringify(options.reasoningEffort)}},`]
+        : []),
       ...system,
       ...pyMessages(options.history, ''),
       '    stream=True,',
@@ -251,6 +259,9 @@ export function buildPythonCode(
           '    ],',
           `    temperature=${options.temperature},`,
           `    max_output_tokens=${options.maxTokens},`,
+          ...(options.reasoningEffort
+            ? [`    reasoning={"effort": ${JSON.stringify(options.reasoningEffort)}},`]
+            : []),
           '    stream=True,',
           ')',
           '',
@@ -264,6 +275,9 @@ export function buildPythonCode(
           ...pyMessages(options.history, options.systemPrompt),
           `    temperature=${options.temperature},`,
           `    max_tokens=${options.maxTokens},`,
+          ...(options.reasoningEffort
+            ? [`    reasoning_effort=${JSON.stringify(options.reasoningEffort)},`]
+            : []),
           '    stream=True,',
           ')',
           '',

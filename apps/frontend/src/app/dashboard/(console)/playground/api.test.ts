@@ -18,6 +18,7 @@ const OPTIONS: RequestOptions = {
   systemPrompt: 'Be terse.',
   temperature: 0.5,
   maxTokens: 512,
+  reasoningEffort: null,
   provider: 'glm-4.6:zai-api',
 };
 
@@ -61,6 +62,23 @@ describe('buildRequest', () => {
       max_tokens: 512,
       stream: true,
     });
+  });
+
+  it('sends the reasoning effort in each format shape', () => {
+    const options = { ...OPTIONS, reasoningEffort: 'high' };
+    expect(buildRequest('chat', options)).toMatchObject({ reasoning_effort: 'high' });
+    expect(buildRequest('responses', options)).toMatchObject({
+      reasoning: { effort: 'high' },
+    });
+    expect(buildRequest('messages', options)).toMatchObject({
+      output_config: { effort: 'high' },
+    });
+  });
+
+  it('omits the reasoning effort when none is chosen', () => {
+    expect(buildRequest('chat', OPTIONS)).not.toHaveProperty('reasoning_effort');
+    expect(buildRequest('responses', OPTIONS)).not.toHaveProperty('reasoning');
+    expect(buildRequest('messages', OPTIONS)).not.toHaveProperty('output_config');
   });
 
   it('omits an empty system prompt instead of sending an empty one', () => {
@@ -208,6 +226,12 @@ describe('buildCode', () => {
     expect(code).toContain('max_tokens=512');
     expect(code).toContain('stream=True');
     expect(code).not.toContain('provider');
+
+    const withEffort = buildCode('python', 'chat', 'https://gw.example', {
+      ...OPTIONS,
+      reasoningEffort: 'high',
+    });
+    expect(withEffort).toContain('reasoning_effort="high"');
   });
 
   it('writes a Python Responses call with instructions and input', () => {
@@ -216,6 +240,12 @@ describe('buildCode', () => {
     expect(code).toContain('instructions="Be terse."');
     expect(code).toContain('input=[');
     expect(code).toContain('max_output_tokens=512');
+
+    const withEffort = buildCode('python', 'responses', 'https://gw.example', {
+      ...OPTIONS,
+      reasoningEffort: 'low',
+    });
+    expect(withEffort).toContain('reasoning={"effort": "low"}');
   });
 
   it('writes a Python Anthropic call with its own SDK and base URL', () => {
@@ -225,6 +255,12 @@ describe('buildCode', () => {
     expect(code).toContain('client.messages.create(');
     expect(code).toContain('system="Be terse."');
     expect(code).toContain('max_tokens=512');
+
+    const withEffort = buildCode('python', 'messages', 'https://gw.example', {
+      ...OPTIONS,
+      reasoningEffort: 'medium',
+    });
+    expect(withEffort).toContain('output_config={"effort": "medium"}');
   });
 
   it('omits an empty system prompt from Python', () => {
