@@ -102,6 +102,12 @@ any of them can claim any address. Without such an edge, leave the console
 untrusted: every browser then resolves to `"unknown"`, with the shared sign-in
 limits described under [The "unknown" outcome](#the-unknown-outcome).
 
+An entry that sends `/v1` and `/anthropic` straight to the gateway is a second
+peer beside the console, and its requests have to resolve without the console
+running. Trust it by its exact address alongside the console's, never by a
+wider range; see
+[Splitting inference traffic at the entry](deployment.md#splitting-inference-traffic-at-the-entry).
+
 ## Trust configuration
 
 Forwarding headers (`X-Forwarded-For`, `CF-Connecting-IP`, etc.) are
@@ -174,6 +180,12 @@ RBAC, and enforce network isolation and trusted ingress header handling.
 Metadata and exact IPs do not authenticate each connection or eliminate IP
 reuse during the cache window. Keep auth-failure blocking disabled during
 acceptance; discovery does not change its setting.
+
+This mode does not support an entry that sends `/v1` and `/anthropic` straight
+to the gateway. An entry outside the discovered Service resolves to `unknown`,
+and with the frontend stopped the set is empty and readiness fails, so
+stopping the console would take the gateway out of rotation; see
+[Splitting inference traffic at the entry](deployment.md#splitting-inference-traffic-at-the-entry).
 
 Download the deployment guide {download}`README.md <../../deploy/kubernetes/proxy-discovery/README.md>`
 and namespace-scoped RBAC example {download}`rbac.example.yaml <../../deploy/kubernetes/proxy-discovery/rbac.example.yaml>`
