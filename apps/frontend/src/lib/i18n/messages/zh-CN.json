@@ -2715,22 +2715,6 @@
     "source": "API key renamed.",
     "text": "API key 已重命名。"
   },
-  "dashboard.keys.reveal_needs_password": {
-    "source": "Showing a saved key needs your password. Set one in Settings, or regenerate the key to see a new one.",
-    "text": "显示已保存的 key 需要你的密码。请先在设置中设置密码，或者重新生成这个 key 来查看新的 key。"
-  },
-  "dashboard.keys.reveal_password": {
-    "source": "Password",
-    "text": "密码"
-  },
-  "dashboard.keys.reveal_prompt": {
-    "source": "Enter your password to see this key in full.",
-    "text": "输入密码，查看完整的 key。"
-  },
-  "dashboard.keys.reveal_title": {
-    "source": "Confirm it's you",
-    "text": "确认是你本人"
-  },
   "dashboard.keys.revoke": {
     "source": "Revoke",
     "text": "吊销"
