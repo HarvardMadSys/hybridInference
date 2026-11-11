@@ -1,7 +1,8 @@
 # 推理 API 入口分流与后端平滑发布
 
 - 日期：2026-11-11
-- 状态：草案第 2 版，待评审。方向已认可；本文只是设计，不含任何实现或部署变更。§12 记录第一轮评审的结论
+- 状态：草案第 2 版，待评审。方向已认可。§10 的步骤 1 已随本文在同一个 PR 实现（§12 记录实现时的实测结果）；
+  步骤 1b、步骤 2 之后和阶段二都没有实现，也没有任何部署变更。§12 同时记录第一轮评审的结论
 - 范围：`/v1` 和 `/anthropic` 两个公开前缀的请求路径；公开路径清单的归属；网关进程的排空与停止；
   发行版入口需要满足的约定；staging 验收和 latency 对照实验。其他浏览器接口、控制台页面、
   cloud agent 和 pgAdmin 的路径不变
@@ -42,9 +43,9 @@
 | F1 | `/v1`、`/anthropic` 由控制台的 route handler 转发，控制台不做鉴权，API key 在网关校验 | `apps/frontend/src/app/v1/[[...path]]/route.ts`、`src/lib/server/gatewayProxy.ts` |
 | F2 | 内置转发逐字节转发、不缓冲；调用方挂断时立刻取消网关请求；不设总时长，只在连接双向静默 1 小时后关闭；连不上网关回 JSON 502，静默超时回 JSON 504；失败不重试 | `gatewayProxy.ts`（`UPSTREAM_IDLE_TIMEOUT_MS`、`onAbort`、`gatewayUnreachable`、`gatewaySilent`） |
 | F3 | 这段转发是自己写的反向代理。从 10 月中到 11 月 10 日为它修过：静默 30 秒被切、网关断开不上报（#1568、#1573）、请求体被整份拷进内存（#1569、#1756）、请求体边界错位（#1756）、连接不释放（#1776）、`%2e%2e` 越过前缀（`isUnder`） | `gatewayProxy.ts` 文件头、`next.config.js` 注释 |
-| F4 | 公开路径目前分散写在四处：route 文件、`rewrites()`、`middleware.ts` 的 matcher、`redirects()` 的正则；由两个测试和一份文档把它们对齐 | `gatewayRoutes.test.ts`、`next.config.routes.test.ts`、`docs/developer/public-path-table.md` |
+| F4 | 公开路径目前分散写在四处：route 文件、`rewrites()`、`middleware.ts` 的 matcher、`redirects()` 的正则；由四个测试和一份文档把它们对齐 | `gatewayRoutes.test.ts`、`next.config.routes.test.ts`、`middleware.test.ts`、`next.config.redirects.test.ts`、`docs/developer/public-path-table.md` |
 | F5 | 网关自己还提供没有公开的路径：FastAPI 默认的 `/docs`、`/redoc`、`/openapi.json`（`create_app` 没有关闭），`/health/deep`、`/health/ready`、`/health/model-activity`，以及未逐个公开的 `/internal/*`。它们今天靠"控制台没有对应的转发"挡在外面 | `apps/backend/serving/servers/app.py:112`、`routers/health.py`、`public-path-table.md` 的 `/internal` 说明 |
-| F6 | 控制台给转发的响应加 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`；网关自己不设这三个头。网关前缀的尾斜杠由 `redirects()` 改写，注释说明交给网关会重定向到内部地址 | `next.config.js` 的 `headers()`、`redirects()` |
+| F6 | 控制台给转发的响应加 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy`；网关自己不设这三个头。网关前缀的尾斜杠由 `redirects()` 回 308 重定向到去掉斜杠的路径（这个 308 响应本身不带 `nosniff`），注释说明交给网关会重定向到内部地址 | `next.config.js` 的 `headers()`、`redirects()` |
 | F7 | example 发行版让浏览器走同源、由控制台转发（`NEXT_PUBLIC_API_BASE: ""`），前面没有入口 | `distributions/example/deploy/docker-compose.demo.yml` |
 
 客户端身份与就绪：
@@ -106,7 +107,7 @@
 | H5 | 前端发布、重启或完全停止时，入口不会动它到网关的已有连接 | 分流达不到目标一，需要换入口机制 |
 | H6 | 增加或撤掉分流规则不会打断已建立的连接 | 回滚只能在安排好的窗口做，并写进回滚步骤 |
 | H7 | 绕过控制台对 latency 的影响：低并发下差别很小；网页服务有负载时，经控制台的尾部延迟更差 | 只影响目标二的结论，不影响分流本身 |
-| H8 | 网关在入口后面给出的尾斜杠重定向地址是对的 | 网关侧修正后才能上线 |
+| H8 | 网关在入口后面给出的尾斜杠重定向地址是对的 | 网关侧修正后才能上线。**已实测为不成立并已修正**，见 §12 |
 
 ### 1.5 预期收益
 
@@ -258,7 +259,7 @@
 | 请求体大小 | 网关拒绝超限的请求体；控制台流式转发、不留存 | 入口 E4 | 略低于上限的请求体成功；超限时返回 413 |
 | 错误响应 | 网关的错误体原样返回。网关连不上时，控制台回 OpenAI 格式的 JSON 502 / 504（F2） | 网关的错误体不变。网关连不上时由入口回 502 / 503 / 504，**响应体是入口自己的**，不保证是 JSON | 状态码必须正确。响应体的差异是已知变化，写进发布说明；发行版可以在入口上配置 JSON 错误体 |
 | 客户端 IP 与就绪 | 取决于对控制台的信任配置（F8） | 见 §5.2 | 见 §5.2 |
-| 尾斜杠 | `redirects()` 把 `/v1/models/` 改写到 `/v1/models`（F6） | 网关侧保证（H8）：实现前先测网关直接给出的重定向，不对就在网关修 | `/v1/models/` 的结果与原路径相同，`Location` 不含内部地址，协议正确 |
+| 尾斜杠 | `redirects()` 把 `/v1/models/` 用 308 重定向到 `/v1/models`（F6） | 网关侧保证（H8）：实现前先测网关直接给出的重定向，不对就在网关修 | `/v1/models/` 的结果与原路径相同，`Location` 不含内部地址，协议正确 |
 | 安全响应头 | 控制台加三个头（F6） | 网关自己给响应加 `X-Content-Type-Options: nosniff`。另外两个头只对网页有意义，分流路径上不再出现 | 分流路径的响应带 `nosniff`。少两个头是已知变化 |
 | 同源、cookie、CORS | 浏览器看到同一个域名 | 不变，域名和路径都没变 | 控制台的聊天页面在分流开启后照常工作 |
 
@@ -689,3 +690,16 @@ A/A 的噪声底是测量出来的量，它的计算方法在这里先定下，�
 | Compose 并存本期不做，本期只获得入口分流收益 | §2、§10 |
 | 修正用提交占比推断停机贡献 | §1.3。第 1 版事实表里的提交占比一条已删除，§1.5 相应改写 |
 | S0 等故障注入会影响 staging，单独安排执行窗口 | §8.2、§9.5、§10 |
+
+步骤 1 实现时的实测结果（2026-11-11，本地：真实网关进程、生产模式构建的控制台、一个本地的替身入口）：
+
+- **H8 不成立，已修正。** 直接请求 `dev` 上的网关，`/v1/models/` 等路径返回 307，`Location` 是按收到的
+  `Host` 拼出的绝对地址，协议固定为 `http`（uvicorn 以 `--no-proxy-headers` 运行）。在终止 TLS 的入口后面
+  协议是错的；入口转发时带内部主机名的话，还会把内部地址给到客户端。网关现在在两个分流前缀上给出与控制台
+  相同的结果：308、只含路径、保留查询串、每次去掉一个斜杠。其他前缀保持原样。
+- **F4、F6 的表述已按代码更正**（对齐测试是四个；尾斜杠是 308 重定向而不是改写）。
+- **公开路径表漏了 `/site-assets`。** matcher 和重定向规则本来就覆盖它，文档没有列。清单里已补上，归控制台。
+- **探针能测出失败。** 直连路径上强制结束网关、原路径上强制结束控制台，探针都报告流被截断并以非零退出。
+  经替身入口分流时强制结束控制台，长流全部完整、新请求全部成功。替身入口没有关闭响应缓冲时，
+  探针的帧间隔检查全部失败。这些是本地结果，不能代替 §8 在 staging 上的验收。
+- **探针尚未覆盖的 §5.1 检查**：被停用的 key、超时、请求体大小、客户端取消。步骤 2 之前补上或改为手工检查。
