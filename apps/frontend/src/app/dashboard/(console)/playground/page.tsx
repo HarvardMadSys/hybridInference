@@ -20,12 +20,15 @@ import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
 import {
   API_OPTIONS,
+  CODE_LANGUAGES,
   buildCode,
   buildRequest,
   endpointFor,
   parseStreamEvent,
+  type CodeLanguage,
   type PlaygroundApi,
 } from './api';
+import { CodeBlock } from './CodeBlock';
 import {
   decodeRate,
   finishNote,
@@ -176,6 +179,7 @@ export default function PlaygroundPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [codeOpen, setCodeOpen] = useState(false);
   const [codeCopied, setCodeCopied] = useState(false);
+  const [codeLang, setCodeLang] = useState<CodeLanguage>('python');
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
   const codeButtonRef = useRef<HTMLButtonElement>(null);
@@ -823,7 +827,7 @@ export default function PlaygroundPage() {
   const codeHistory = input.trim()
     ? [...requestHistory(msgs), { role: 'user' as const, content: input.trim() }]
     : requestHistory(msgs);
-  const codeText = buildCode(sessionApi, apiBase, {
+  const codeText = buildCode(codeLang, sessionApi, apiBase, {
     model: modelId || 'your-model-id',
     history: codeHistory,
     systemPrompt: sysPrompt,
@@ -1649,10 +1653,49 @@ export default function PlaygroundPage() {
                   </svg>
                 </button>
               </div>
-              <div className="min-h-0 flex-1 overflow-auto bg-gray-50 p-4">
-                <pre className="whitespace-pre font-mono text-[12px] leading-5 text-gray-800">
-                  {codeText}
-                </pre>
+              <div
+                role="tablist"
+                aria-label="Code language"
+                className="flex shrink-0 gap-1 border-b border-gray-100 px-5 py-2"
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                  event.preventDefault();
+                  const index = CODE_LANGUAGES.findIndex((option) => option.value === codeLang);
+                  const step = event.key === 'ArrowRight' ? 1 : -1;
+                  const next =
+                    CODE_LANGUAGES[(index + step + CODE_LANGUAGES.length) % CODE_LANGUAGES.length];
+                  setCodeLang(next.value);
+                  document.getElementById(`code-language-${next.value}`)?.focus();
+                }}
+              >
+                {CODE_LANGUAGES.map((option) => {
+                  const selected = option.value === codeLang;
+                  return (
+                    <button
+                      key={option.value}
+                      id={`code-language-${option.value}`}
+                      role="tab"
+                      type="button"
+                      aria-selected={selected}
+                      tabIndex={selected ? 0 : -1}
+                      onClick={() => setCodeLang(option.value)}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                        selected
+                          ? 'bg-gray-100 text-gray-900'
+                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                role="tabpanel"
+                aria-labelledby={`code-language-${codeLang}`}
+                className="min-h-0 flex-1 overflow-auto bg-gray-50 p-4"
+              >
+                <CodeBlock code={codeText} language={codeLang} />
               </div>
               <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-5 py-3">
                 <span className="min-w-0 text-[11px] leading-4 text-gray-500">

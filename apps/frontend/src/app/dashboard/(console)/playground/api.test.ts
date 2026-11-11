@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildCode, buildRequest, endpointFor, parseStreamEvent, type RequestOptions } from './api';
+import {
+  CODE_LANGUAGES,
+  buildCode,
+  buildRequest,
+  endpointFor,
+  parseStreamEvent,
+  type RequestOptions,
+} from './api';
 
 const OPTIONS: RequestOptions = {
   model: 'glm-4.6',
@@ -157,32 +164,72 @@ describe('parseStreamEvent', () => {
 });
 
 describe('buildCode', () => {
+  it('offers Python before cURL', () => {
+    expect(CODE_LANGUAGES.map((option) => option.label)).toEqual(['Python', 'cURL']);
+  });
+
   it('shows a chat completion call with a bearer key', () => {
-    const code = buildCode('chat', 'https://gw.example/', OPTIONS);
+    const code = buildCode('curl', 'chat', 'https://gw.example/', OPTIONS);
     expect(code).toContain('curl https://gw.example/v1/chat/completions \\');
     expect(code).toContain('Authorization: Bearer $HYBRID_API_KEY');
     expect(code).toContain('"model": "glm-4.6"');
   });
 
   it('shows a Responses call with stream and max_output_tokens', () => {
-    const code = buildCode('responses', 'https://gw.example', OPTIONS);
+    const code = buildCode('curl', 'responses', 'https://gw.example', OPTIONS);
     expect(code).toContain('/v1/responses');
     expect(code).toContain('"max_output_tokens": 512');
     expect(code).toContain('"stream": true');
   });
 
   it('shows an Anthropic Messages call with its headers', () => {
-    const code = buildCode('messages', 'https://gw.example', OPTIONS);
+    const code = buildCode('curl', 'messages', 'https://gw.example', OPTIONS);
     expect(code).toContain('/v1/messages');
     expect(code).toContain('x-api-key: $HYBRID_API_KEY');
     expect(code).toContain('anthropic-version: 2023-06-01');
   });
 
   it('escapes a quote in the prompt so the shell command stays valid', () => {
-    const code = buildCode('chat', 'https://gw.example', {
+    const code = buildCode('curl', 'chat', 'https://gw.example', {
       ...OPTIONS,
       history: [{ role: 'user', content: "it's fine" }],
     });
     expect(code).toContain("it'\\''s fine");
+  });
+
+  it('writes a runnable Python chat call against the gateway', () => {
+    const code = buildCode('python', 'chat', 'https://gw.example/', { ...OPTIONS, provider: null });
+    expect(code).toContain('from openai import OpenAI');
+    expect(code).toContain('base_url="https://gw.example/v1"');
+    expect(code).toContain('client.chat.completions.create(');
+    expect(code).toContain('model="glm-4.6"');
+    expect(code).toContain('{"role": "system", "content": "Be terse."},');
+    expect(code).toContain('{"role": "user", "content": "hi"},');
+    expect(code).toContain('max_tokens=512');
+    expect(code).toContain('stream=True');
+    expect(code).not.toContain('provider');
+  });
+
+  it('writes a Python Responses call with instructions and input', () => {
+    const code = buildCode('python', 'responses', 'https://gw.example', OPTIONS);
+    expect(code).toContain('client.responses.create(');
+    expect(code).toContain('instructions="Be terse."');
+    expect(code).toContain('input=[');
+    expect(code).toContain('max_output_tokens=512');
+  });
+
+  it('writes a Python Anthropic call with its own SDK and base URL', () => {
+    const code = buildCode('python', 'messages', 'https://gw.example', OPTIONS);
+    expect(code).toContain('from anthropic import Anthropic');
+    expect(code).toContain('base_url="https://gw.example"');
+    expect(code).toContain('client.messages.create(');
+    expect(code).toContain('system="Be terse."');
+    expect(code).toContain('max_tokens=512');
+  });
+
+  it('omits an empty system prompt from Python', () => {
+    const options = { ...OPTIONS, systemPrompt: '  ' };
+    expect(buildCode('python', 'chat', 'https://gw.example', options)).not.toContain('"system"');
+    expect(buildCode('python', 'messages', 'https://gw.example', options)).not.toContain('system=');
   });
 });

@@ -1062,7 +1062,7 @@ describe('PlaygroundPage', () => {
     ).toBe(true);
   });
 
-  it('shows code for the selected API format', async () => {
+  it('shows Python first, then the cURL form of the selected API', async () => {
     mockStream([]);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
@@ -1070,6 +1070,15 @@ describe('PlaygroundPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'View code' }));
 
     const dialog = await screen.findByRole('dialog', { name: 'API request code' });
+    const python = within(dialog).getByRole('tab', { name: 'Python' });
+    const curl = within(dialog).getByRole('tab', { name: 'cURL' });
+    expect(python).toHaveAttribute('aria-selected', 'true');
+    expect(curl).toHaveAttribute('aria-selected', 'false');
+    expect(dialog).toHaveTextContent('from anthropic import Anthropic');
+    expect(dialog).toHaveTextContent('client.messages.create(');
+
+    fireEvent.click(curl);
+    expect(curl).toHaveAttribute('aria-selected', 'true');
     expect(dialog).toHaveTextContent('/v1/messages');
     expect(dialog).toHaveTextContent('x-api-key: $HYBRID_API_KEY');
     expect(dialog).toHaveTextContent('anthropic-version: 2023-06-01');
@@ -1079,5 +1088,25 @@ describe('PlaygroundPage', () => {
     await waitFor(() =>
       expect(screen.queryByRole('dialog', { name: 'API request code' })).not.toBeInTheDocument(),
     );
+  });
+
+  it('highlights the generated code and switches tabs with arrow keys', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'API request code' });
+    expect(dialog.querySelector('.token.keyword')).not.toBeNull();
+    expect(dialog.querySelector('.token.string')).not.toBeNull();
+
+    const python = within(dialog).getByRole('tab', { name: 'Python' });
+    python.focus();
+    fireEvent.keyDown(within(dialog).getByRole('tablist'), { key: 'ArrowRight' });
+    expect(within(dialog).getByRole('tab', { name: 'cURL' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(within(dialog).getByRole('tab', { name: 'cURL' })).toHaveFocus();
   });
 });

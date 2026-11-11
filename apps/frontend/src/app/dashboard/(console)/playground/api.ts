@@ -10,6 +10,13 @@ export const API_OPTIONS: { value: PlaygroundApi; label: string }[] = [
   { value: 'messages', label: 'Anthropic Messages' },
 ];
 
+export type CodeLanguage = 'python' | 'curl';
+
+export const CODE_LANGUAGES: { value: CodeLanguage; label: string }[] = [
+  { value: 'python', label: 'Python' },
+  { value: 'curl', label: 'cURL' },
+];
+
 const ENDPOINTS: Record<PlaygroundApi, string> = {
   chat: '/internal/playground/chat',
   responses: '/internal/playground/responses',
@@ -180,8 +187,111 @@ function singleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-/** The equivalent public-API call, for the API format the session selected. */
-export function buildCode(api: PlaygroundApi, baseUrl: string, options: RequestOptions): string {
+function pyMessages(history: RequestOptions['history'], systemPrompt: string): string[] {
+  const lines = history.map(
+    (message) =>
+      `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
+  );
+  if (systemPrompt.trim()) {
+    lines.unshift(`        {"role": "system", "content": ${JSON.stringify(systemPrompt.trim())}},`);
+  }
+  if (lines.length === 0) return ['    messages=[],'];
+  return ['    messages=[', ...lines, '    ],'];
+}
+
+/** A runnable Python call with the official SDK, for the selected API format. */
+export function buildPythonCode(
+  api: PlaygroundApi,
+  baseUrl: string,
+  options: RequestOptions,
+): string {
+  const base = baseUrl.replace(/\/+$/, '');
+  if (api === 'messages') {
+    const system = options.systemPrompt.trim()
+      ? [`    system=${JSON.stringify(options.systemPrompt.trim())},`]
+      : [];
+    return [
+      'import os',
+      '',
+      'from anthropic import Anthropic',
+      '',
+      'client = Anthropic(',
+      '    api_key=os.environ["HYBRID_API_KEY"],',
+      `    base_url=${JSON.stringify(base)},`,
+      ')',
+      '',
+      'stream = client.messages.create(',
+      `    model=${JSON.stringify(options.model)},`,
+      `    max_tokens=${options.maxTokens},`,
+      `    temperature=${options.temperature},`,
+      ...system,
+      ...pyMessages(options.history, ''),
+      '    stream=True,',
+      ')',
+      '',
+      'for event in stream:',
+      '    if event.type == "content_block_delta" and event.delta.type == "text_delta":',
+      '        print(event.delta.text, end="")',
+    ].join('\n');
+  }
+
+  const call =
+    api === 'responses'
+      ? [
+          'stream = client.responses.create(',
+          `    model=${JSON.stringify(options.model)},`,
+          ...(options.systemPrompt.trim()
+            ? [`    instructions=${JSON.stringify(options.systemPrompt.trim())},`]
+            : []),
+          '    input=[',
+          ...options.history.map(
+            (message) =>
+              `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
+          ),
+          '    ],',
+          `    temperature=${options.temperature},`,
+          `    max_output_tokens=${options.maxTokens},`,
+          '    stream=True,',
+          ')',
+          '',
+          'for event in stream:',
+          '    if event.type == "response.output_text.delta":',
+          '        print(event.delta, end="")',
+        ]
+      : [
+          'stream = client.chat.completions.create(',
+          `    model=${JSON.stringify(options.model)},`,
+          ...pyMessages(options.history, options.systemPrompt),
+          `    temperature=${options.temperature},`,
+          `    max_tokens=${options.maxTokens},`,
+          '    stream=True,',
+          ')',
+          '',
+          'for chunk in stream:',
+          '    print(chunk.choices[0].delta.content or "", end="")',
+        ];
+  return [
+    'import os',
+    '',
+    'from openai import OpenAI',
+    '',
+    'client = OpenAI(',
+    '    api_key=os.environ["HYBRID_API_KEY"],',
+    `    base_url=${JSON.stringify(`${base}/v1`)},`,
+    ')',
+    '',
+    ...call,
+  ].join('\n');
+}
+
+/** The equivalent public-API call in the selected code language. */
+export function buildCode(
+  language: CodeLanguage,
+  api: PlaygroundApi,
+  baseUrl: string,
+  options: RequestOptions,
+): string {
+  if (language === 'python') return buildPythonCode(api, baseUrl, options);
   const base = baseUrl.replace(/\/+$/, '');
   const body = buildRequest(api, { ...options, provider: null });
   const json = JSON.stringify(body, null, 2);
