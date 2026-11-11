@@ -328,6 +328,96 @@ describe('the pooled connection to the gateway', () => {
     expect(seen.at(-1)?.url).toBe('/v1/models');
   });
 
+  /** A gateway that, like the real one refusing a key, answers on the headers alone. */
+  function refusingGateway(onConnection: (socket: http.IncomingMessage['socket']) => void) {
+    handler = (req, res) => {
+      onConnection(req.socket);
+      res.writeHead(429, {
+        'content-type': 'text/plain',
+        'x-connection': String(connectionOf(req)),
+      });
+      res.end('blocked');
+    };
+  }
+
+  it('closes the connection of a request answered before its body was sent', async () => {
+    // The gateway keeps such a connection for as long as the proxy does; Node's
+    // server, standing in for it here, would otherwise close it after 5s.
+    server.keepAliveTimeout = 0;
+    const closed = new Promise<string>((resolve) => {
+      refusingGateway((socket) => socket.once('close', () => resolve('closed')));
+    });
+    // A caller that left on reading the answer: Next reports neither an end
+    // nor an error on its body, and does not abort `request.signal`.
+    const unfinished = new ReadableStream<Uint8Array>({
+      start: (controller) => controller.enqueue(new Uint8Array(1024)),
+    });
+
+    const response = await proxyToGateway(
+      callerRequest('/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'content-length': String(1024 * 1024) },
+        body: unfinished,
+        // A stream body requires it; the DOM types do not have it yet.
+        duplex: 'half',
+      } as RequestInit),
+      '/v1',
+    );
+    expect(await answer(response)).toBe('429 blocked');
+
+    const stillOpen = new Promise<string>((resolve) => setTimeout(resolve, 1000, 'still open'));
+    expect(await Promise.race([closed, stillOpen])).toBe('closed');
+  });
+
+  it('closes it too when the caller sends on, and reads no more of that body', async () => {
+    server.keepAliveTimeout = 0;
+    const closed = new Promise<string>((resolve) => {
+      refusingGateway((socket) => socket.once('close', () => resolve('closed')));
+    });
+    // Once the response is complete Node no longer says when the connection
+    // will take more, so a body that had to wait for the gateway would wait
+    // for good.
+    const cancel = vi.fn();
+    const endless = new ReadableStream<Uint8Array>({
+      pull: (controller) => controller.enqueue(new Uint8Array(64 * 1024)),
+      cancel,
+    });
+
+    const response = await proxyToGateway(
+      callerRequest('/v1/chat/completions', {
+        method: 'POST',
+        body: endless,
+        duplex: 'half',
+      } as RequestInit),
+      '/v1',
+    );
+    expect(await answer(response)).toBe('429 blocked');
+
+    const stillOpen = new Promise<string>((resolve) => setTimeout(resolve, 1000, 'still open'));
+    expect(await Promise.race([closed, stillOpen])).toBe('closed');
+    await vi.waitFor(() => expect(cancel).toHaveBeenCalled());
+  });
+
+  it('reuses the connection of a request answered early whose body was sent whole', async () => {
+    refusingGateway(() => {});
+    const refused = () =>
+      proxyToGateway(
+        callerRequest('/v1/chat/completions', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': '13' },
+          body: '{"model":"m"}',
+        }),
+        '/v1',
+      );
+
+    const first = await refused();
+    expect(await answer(first)).toBe('429 blocked');
+    const second = await refused();
+    expect(await answer(second)).toBe('429 blocked');
+
+    expect(second.headers.get('x-connection')).toBe(first.headers.get('x-connection'));
+  });
+
   it('sends a large body whole, at the pace the gateway reads it', async () => {
     const size = 8 * 1024 * 1024;
     handler = (req, res) => {

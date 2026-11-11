@@ -71,6 +71,17 @@ def test_the_console_has_a_memory_ceiling() -> None:
     assert frontend["restart"] == "unless-stopped"
 
 
+def test_the_gateway_may_open_more_files_than_the_daemon_default() -> None:
+    """Every request in flight holds sockets, and at the limit none is accepted.
+
+    A container otherwise gets its daemon's soft limit, 1024 under systemd's
+    defaults.
+    """
+    backend = _services()["backend"]
+
+    assert backend["ulimits"]["nofile"] == {"soft": 65536, "hard": 65536}
+
+
 def test_pgadmin_is_pinned_to_an_exact_supported_release() -> None:
     """A moving tag changes the database console under a running stack.
 

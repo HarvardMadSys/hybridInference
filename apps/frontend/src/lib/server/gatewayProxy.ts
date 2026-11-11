@@ -21,6 +21,17 @@
  * and streams send a keepalive every 15s -- only on silence: a connection that
  * carries nothing either way for UPSTREAM_IDLE_TIMEOUT_MS is closed.
  *
+ * A request does not outlive its response. The gateway may answer before the
+ * body has arrived -- it refuses a key on the headers alone -- and nothing then
+ * finishes the request. A caller that leaves on that answer is not reported
+ * gone: `request.signal` fires only for one who leaves before the response is
+ * finished. For a caller that sends on, Node no longer says when the gateway's
+ * connection will take more, so a body that has to wait once waits for good.
+ * Nor does the idle limit apply: Node stops timing a request whose response
+ * has ended. So when the gateway's response is over, a request still being
+ * sent is dropped with its connection, which would otherwise stay open for
+ * good, here and in the gateway.
+ *
  * Connections to the gateway are kept open and reused, so each request's body
  * is framed by the bytes this proxy writes, never by what the caller declared:
  * the gateway reads a body up to where its framing says it ends, and whatever
@@ -284,6 +295,12 @@ export function proxyToGateway(
 
     upstream.on('response', (res) => {
       answered = true;
+      // Nothing will read the rest of a body the gateway answered without, and
+      // the caller may never send it: see "A request does not outlive its
+      // response" above.
+      res.once('close', () => {
+        if (!upstream.writableFinished) upstream.destroy();
+      });
       const headers = new Headers();
       const scoped = connectionScoped(
         Array.isArray(res.headers.connection)
