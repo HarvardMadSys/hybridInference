@@ -211,6 +211,7 @@ export function buildPythonCode(
   options: RequestOptions,
 ): string {
   const base = baseUrl.replace(/\/+$/, '');
+  const pin = routePin(api, options);
   if (api === 'messages') {
     const system = options.systemPrompt.trim()
       ? [`    system=${JSON.stringify(options.systemPrompt.trim())},`]
@@ -278,6 +279,7 @@ export function buildPythonCode(
           ...(options.reasoningEffort
             ? [`    reasoning_effort=${JSON.stringify(options.reasoningEffort)},`]
             : []),
+          ...(pin ? [`    extra_headers={"X-Route-Pin": ${JSON.stringify(pin)}},`] : []),
           '    stream=True,',
           ')',
           '',
@@ -298,6 +300,33 @@ export function buildPythonCode(
   ].join('\n');
 }
 
+/**
+ * The body of the public `/v1/chat/completions` call the playground's Chat turn
+ * stands for. The internal route takes `system_prompt` and always streams; the
+ * public schema ignores unknown fields and defaults to a non-streaming reply,
+ * so the system prompt moves into `messages` and `stream` is set explicitly.
+ */
+export function publicChatBody(options: RequestOptions): Record<string, unknown> {
+  const system = options.systemPrompt.trim();
+  return {
+    model: options.model,
+    messages: [...(system ? [{ role: 'system', content: system }] : []), ...options.history],
+    temperature: options.temperature,
+    max_tokens: options.maxTokens,
+    ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
+    stream: true,
+  };
+}
+
+/**
+ * The provider pin the public API reads from `X-Route-Pin`. Only Chat
+ * Completions takes a pin, so a provider left on the session from an earlier
+ * Chat turn does not leak into the other formats' code.
+ */
+function routePin(api: PlaygroundApi, options: RequestOptions): string | null {
+  return api === 'chat' && options.provider ? options.provider : null;
+}
+
 /** The equivalent public-API call in the selected code language. */
 export function buildCode(
   language: CodeLanguage,
@@ -307,8 +336,9 @@ export function buildCode(
 ): string {
   if (language === 'python') return buildPythonCode(api, baseUrl, options);
   const base = baseUrl.replace(/\/+$/, '');
-  const body = buildRequest(api, { ...options, provider: null });
+  const body = api === 'chat' ? publicChatBody(options) : buildRequest(api, options);
   const json = JSON.stringify(body, null, 2);
+  const pin = routePin(api, options);
   if (api === 'messages') {
     return [
       `curl ${base}/v1/messages \\`,
@@ -323,6 +353,7 @@ export function buildCode(
     `curl ${base}${path} \\`,
     `  -H "Authorization: Bearer $HYBRID_API_KEY" \\`,
     `  -H "Content-Type: application/json" \\`,
+    ...(pin ? [`  -H ${singleQuote(`X-Route-Pin: ${pin}`)} \\`] : []),
     `  -d ${singleQuote(json)}`,
   ].join('\n');
 }

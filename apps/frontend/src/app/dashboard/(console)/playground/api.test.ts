@@ -193,6 +193,36 @@ describe('buildCode', () => {
     expect(code).toContain('"model": "glm-4.6"');
   });
 
+  it('sends the public Chat shape: system prompt in messages, streaming on', () => {
+    const code = buildCode('curl', 'chat', 'https://gw.example', OPTIONS);
+    const json = code.slice(code.indexOf("-d '") + 4, code.lastIndexOf("'"));
+    const body = JSON.parse(json);
+    expect(body).toEqual({
+      model: 'glm-4.6',
+      messages: [{ role: 'system', content: 'Be terse.' }, ...OPTIONS.history],
+      temperature: 0.5,
+      max_tokens: 512,
+      stream: true,
+    });
+    expect(body).not.toHaveProperty('system_prompt');
+    expect(body).not.toHaveProperty('provider');
+  });
+
+  it('keeps the chosen provider as an X-Route-Pin header on Chat only', () => {
+    expect(buildCode('curl', 'chat', 'https://gw.example', OPTIONS)).toContain(
+      "-H 'X-Route-Pin: glm-4.6:zai-api'",
+    );
+    expect(buildCode('python', 'chat', 'https://gw.example', OPTIONS)).toContain(
+      'extra_headers={"X-Route-Pin": "glm-4.6:zai-api"}',
+    );
+    for (const api of ['responses', 'messages'] as const) {
+      expect(buildCode('curl', api, 'https://gw.example', OPTIONS)).not.toContain('X-Route-Pin');
+      expect(buildCode('python', api, 'https://gw.example', OPTIONS)).not.toContain('X-Route-Pin');
+    }
+    const unpinned = { ...OPTIONS, provider: null };
+    expect(buildCode('curl', 'chat', 'https://gw.example', unpinned)).not.toContain('X-Route-Pin');
+  });
+
   it('shows a Responses call with stream and max_output_tokens', () => {
     const code = buildCode('curl', 'responses', 'https://gw.example', OPTIONS);
     expect(code).toContain('/v1/responses');
