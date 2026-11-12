@@ -93,20 +93,26 @@ other inference surfaces reuse its parts.
 
 ### 1. Middleware
 
-`create_app()` in `apps/backend/serving/servers/app.py` registers seven
+`create_app()` in `apps/backend/serving/servers/app.py` registers nine
 middlewares. Starlette runs the last-registered outermost, so the effective
 order from the outside in is:
 
-1. `RequestIdMiddleware` — mints or adopts a request id used by every log line.
-2. `FallbackErrorMiddleware` — last-resort error shaping.
-3. `KubernetesProxyTrustMiddleware` — discovers which proxies may report the
+1. `NoSniffMiddleware` — adds `X-Content-Type-Options: nosniff` to every
+   response that lacks it, touching only the response start.
+2. `RequestIdMiddleware` — mints or adopts a request id used by every log line.
+3. `FallbackErrorMiddleware` — last-resort error shaping.
+4. `KubernetesProxyTrustMiddleware` — discovers which proxies may report the
    client address, when Kubernetes proxy discovery is configured.
-4. `RequestLogMiddleware` — one structured log record per HTTP request.
-5. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
+5. `RequestLogMiddleware` — one structured log record per HTTP request.
+6. `TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for ordinary
    requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600s, `<=0` disables the
    cap) once a response has been marked as streaming.
-6. `CORSMiddleware`.
-7. `RequestBodyLimitMiddleware` — answers `413` to a request body larger than
+7. `CORSMiddleware`.
+8. `TrailingSlashRedirectMiddleware` — answers a path under `/v1` or
+   `/anthropic` that ends in a slash with a `308` to the bare path without it,
+   as the console does; see
+   [The public path table](public-path-table.md#the-trailing-slash-interaction).
+9. `RequestBodyLimitMiddleware` — answers `413` to a request body larger than
    `REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when
    `Content-Length` declares more, otherwise as soon as the bytes received pass
    the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`.

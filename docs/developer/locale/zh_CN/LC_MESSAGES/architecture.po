@@ -159,12 +159,20 @@ msgstr "1\\. 中间件"
 
 #: ../developer/architecture.md:96
 msgid ""
-"`create_app()` in `apps/backend/serving/servers/app.py` registers seven "
+"`create_app()` in `apps/backend/serving/servers/app.py` registers nine "
 "middlewares. Starlette runs the last-registered outermost, so the "
 "effective order from the outside in is:"
 msgstr ""
-"`apps/backend/serving/servers/app.py` 中的 `create_app()` "
-"注册了七个中间件。Starlette 把最后注册的跑在最外层，因此从外到内的实际顺序是："
+"`apps/backend/serving/servers/app.py` 里的 `create_app()` "
+"注册了九个中间件。Starlette 让最后注册的在最外层运行，所以从外到内的实际顺序是："
+
+#: ../developer/architecture.md:100
+msgid ""
+"`NoSniffMiddleware` — adds `X-Content-Type-Options: nosniff` to every "
+"response that lacks it, touching only the response start."
+msgstr ""
+"`NoSniffMiddleware`——给每个缺少 `X-Content-Type-Options: nosniff` "
+"的响应加上它，只改动响应的开始部分。"
 
 #: ../developer/architecture.md:100
 msgid ""
@@ -201,6 +209,17 @@ msgstr ""
 #: ../developer/architecture.md:108
 msgid "`CORSMiddleware`."
 msgstr ""
+
+#: ../developer/architecture.md:111
+msgid ""
+"`TrailingSlashRedirectMiddleware` — answers a path under `/v1` or "
+"`/anthropic` that ends in a slash with a `308` to the bare path without "
+"it, as the console does; see [The public path table](public-path-table.md"
+"#the-trailing-slash-interaction)."
+msgstr ""
+"`TrailingSlashRedirectMiddleware`——对 `/v1` 或 `/anthropic` "
+"下以斜杠结尾的路径，像控制台一样回答 `308`，指向去掉斜杠的裸路径；见[公开路径表](public-path-table.md#the-"
+"trailing-slash-interaction)。"
 
 #: ../developer/architecture.md:119
 msgid ""
