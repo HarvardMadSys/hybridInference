@@ -1868,6 +1868,101 @@ def test_fake_provider_stream_response_ignores_client_disconnects(
     assert handler.close_connection is True
 
 
+def _frame_event(frame: bytes) -> dict:
+    return json.loads(frame.removeprefix(b"data: ").removesuffix(b"\n\n"))
+
+
+def test_fake_provider_numbers_its_frames_and_paces_them_when_asked() -> None:
+    fake = _load_module("_runnable_example_fake_numbered", FAKE_PROVIDER / "server.py")
+    payload = {"model": "example-upstream", "stream": True}
+
+    plan = fake.build_numbered_stream(payload, 4, 250.0)
+
+    delays = [delay for delay, _ in plan]
+    frames = [frame for _, frame in plan]
+    # Role, four numbered frames, finish, [DONE]; only the gaps between
+    # numbered frames wait.
+    assert delays == [0.0, 0.0, 0.25, 0.25, 0.25, 0.0, 0.0]
+    assert frames[-1] == b"data: [DONE]\n\n"
+    events = [_frame_event(frame) for frame in frames[:-1]]
+    assert events[0]["choices"][0]["delta"] == {"role": "assistant", "content": ""}
+    assert [event["choices"][0]["delta"]["content"] for event in events[1:5]] == [
+        "[000000]",
+        "[000001]",
+        "[000002]",
+        "[000003]",
+    ]
+    assert events[5]["choices"] == [{"index": 0, "delta": {}, "finish_reason": "stop"}]
+    assert all("usage" not in event for event in events)
+
+
+def test_fake_provider_reports_usage_on_a_numbered_stream_that_asks_for_it() -> None:
+    fake = _load_module("_runnable_example_fake_numbered_usage", FAKE_PROVIDER / "server.py")
+    payload = {"model": "m", "stream": True, "stream_options": {"include_usage": True}}
+
+    frames = [frame for _, frame in fake.build_numbered_stream(payload, 3)]
+
+    usage = _frame_event(frames[-2])
+    assert usage["choices"] == []
+    assert usage["usage"] == {"prompt_tokens": 4, "completion_tokens": 3, "total_tokens": 7}
+    assert frames[-1] == b"data: [DONE]\n\n"
+
+
+def test_fake_provider_stream_waits_the_interval_between_numbered_frames(monkeypatch) -> None:
+    fake = _load_module("_runnable_example_fake_paced", FAKE_PROVIDER / "server.py")
+    sleeps: list[float] = []
+    monkeypatch.setattr(fake.time, "sleep", sleeps.append)
+
+    class Writer:
+        def __init__(self) -> None:
+            self.body = bytearray()
+
+        def write(self, data: bytes) -> int:
+            self.body.extend(data)
+            return len(data)
+
+        def flush(self) -> None:
+            pass
+
+    handler = object.__new__(fake.FakeHandler)
+    handler.stream_frames = 3
+    handler.frame_interval_ms = 40.0
+    handler.wfile = Writer()
+    handler.send_response = lambda status: None
+    handler.send_header = lambda name, value: None
+    handler.end_headers = lambda: None
+
+    handler._send_stream({"model": "example-upstream", "stream": True})
+
+    assert sleeps == [0.04, 0.04]
+    assert b"[000000]" in handler.wfile.body and b"[000002]" in handler.wfile.body
+    assert handler.wfile.body.endswith(b"data: [DONE]\n\n")
+
+
+def test_fake_provider_defaults_keep_the_three_fixed_frames() -> None:
+    fake = _load_module("_runnable_example_fake_defaults", FAKE_PROVIDER / "server.py")
+    assert fake.FakeHandler.stream_frames is None
+    assert fake.FakeHandler.frame_interval_ms == 0.0
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--frame-interval-ms", "10"],
+        ["--stream-frames", "0"],
+        ["--stream-frames", "3", "--frame-interval-ms", "-1"],
+    ],
+)
+def test_fake_provider_refuses_inconsistent_frame_options(argv: list[str]) -> None:
+    result = subprocess.run(
+        [sys.executable, str(FAKE_PROVIDER / "server.py"), "--port", "0", *argv],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert result.returncode == 2, result.stderr
+
+
 def test_active_ci_runs_the_documented_example_contract() -> None:
     """The one repository CI executes the same contract the tutorial teaches."""
     workflow = ACTIVE_CI.read_text()

@@ -219,15 +219,15 @@ msgstr ""
 "在默认改为回环地址之前，旧版本会把控制台绑定到 `0.0.0.0`。如果你的部署依赖这个行为，升级前要显式设置 "
 "`FRONTEND_HOST`；见[发布与升级](releases.md)。"
 
-#: ../developer/deployment.md:60
+#: ../developer/deployment.md:105
 msgid ""
 "Which public paths the console serves itself and which it forwards to the"
-" backend is a separate question, and the answer is in the console's own "
-"`next.config.js` rather than in any proxy config. See [The public path "
-"table](public-path-table.md)."
+" backend is a separate question, and the answer is in `deploy/public-"
+"paths.json` and the console's own `next.config.js` rather than in any "
+"proxy config. See [The public path table](public-path-table.md)."
 msgstr ""
-"至于哪些公开路径由控制台自己处理、哪些转发给后端，那是另一个问题，由控制台自己的 `next.config.js` "
-"决定，和代理配置无关。见[公开路径表](public-path-table.md)。"
+"控制台自己提供哪些公开路径、把哪些转发给后端，是另一个问题，答案在 `deploy/public-paths.json` 和控制台自己的 "
+"`next.config.js` 里，而不在任何代理配置里。见[公开路径表](public-path-table.md)。"
 
 #: ../developer/deployment.md:65
 msgid "What your proxy still has to do"
@@ -290,6 +290,344 @@ msgstr ""
 "网关只信任你授权过的代理发来的转发头（见[可信代理与客户端 IP](trusted-proxies-and-client-"
 "ips.md)），但从不改写这些头。如果前面没有负责改写的代理，`X-Forwarded-For` "
 "最左边的那一项就是调用方随便填的值——所以前面有 Cloudflare 时，优先用 `CF-Connecting-IP`。"
+
+#: ../developer/deployment.md:129
+msgid "Splitting inference traffic at the entry"
+msgstr "在入口分流推理流量"
+
+#: ../developer/deployment.md:131
+msgid ""
+"By default every request reaches the console, which forwards the "
+"gateway's paths to it. A long stream then passes through two processes "
+"that are each released and restarted, and a console release or restart "
+"interrupts it as surely as a gateway one does. An entry that can route by"
+" path — an Ingress path rule, a tunnel's path routing, a load balancer — "
+"may instead send the paths the public path manifest marks `entry_split`, "
+"`/v1` and `/anthropic`, straight to the gateway, and everything else to "
+"the console as before."
+msgstr ""
+"默认情况下，每个请求都先到控制台，由控制台把网关的路径转发给网关。于是一条长流要经过两个各自会被发布和重启的进程，控制台的发布或重启和网关的一样会打断它。能按路径路由的入口——Ingress"
+" 的路径规则、隧道的路径路由、负载均衡——可以改为把公开路径清单里标记了 `entry_split` 的路径（`/v1` 和 "
+"`/anthropic`）直接交给网关，其余路径照旧交给控制台。"
+
+#: ../developer/deployment.md:140
+msgid ""
+"This is optional and is the deployment's to set up: this repository ships"
+" no entry configuration, and the example and local stacks keep the built-"
+"in forwarding. The console's image is the same either way and still "
+"forwards both prefixes, so removing the entry's two rules is the rollback"
+" and needs no image change, provided the gateway still trusts the console"
+" as before and the console's stop grace period has not been shortened. "
+"The split does not change what a gateway release does to a stream (open "
+"requests still get 5 seconds after the stop signal), and the console's "
+"model playground, `/internal/playground`, still goes through the console."
+msgstr ""
+"这是可选的，由部署自己配置：本仓库不提供任何入口配置，example "
+"和本地环境继续使用内置转发。两种方式下控制台的镜像相同，并且仍然转发这两个前缀，所以撤掉入口上的两条规则就是回滚，不需要换镜像，前提是网关仍像以前一样信任控制台，并且控制台的停止宽限时间没有缩短。分流不改变网关发布对流的影响（收到停止信号后，进行中的请求仍然只有"
+" 5 秒），控制台的模型 playground（`/internal/playground`）也仍然经过控制台。"
+
+#: ../developer/deployment.md:150
+msgid "On the split paths the entry has to meet these conditions:"
+msgstr "在分流路径上，入口必须满足下面的条件："
+
+#: ../developer/deployment.md
+msgid "#"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "Condition"
+msgstr "条件"
+
+#: ../developer/deployment.md
+msgid "E1"
+msgstr ""
+
+#: ../developer/deployment.md
+#, python-format
+msgid ""
+"It sends to the gateway only the manifest's `entry_split` prefixes: a "
+"path equal to `/v1` or `/anthropic`, or beginning `/v1/` or "
+"`/anthropic/`. It matches after resolving `.` and `..` segments and "
+"percent-encoding, so `/v1/%2e%2e/openapi.json` is not under `/v1`"
+msgstr ""
+"只把清单里的 `entry_split` 前缀交给网关：路径等于 `/v1` 或 `/anthropic`，或以 `/v1/` 或 "
+"`/anthropic/` 开头。匹配在解析完 `.`、`..` 段和百分号编码之后进行，所以 `/v1/%2e%2e/openapi.json`"
+" 不在 `/v1` 之下"
+
+#: ../developer/deployment.md
+msgid "E2"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"It does not buffer responses, and does not read a whole request body "
+"before forwarding it"
+msgstr "不缓冲响应，也不把请求体整份读完再转发"
+
+#: ../developer/deployment.md
+msgid "E3"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"Its idle timeout is longer than the gateway's `REQUEST_TIMEOUT_SECONDS`, "
+"and it sets no limit on a request's total duration shorter than "
+"`STREAM_REQUEST_TIMEOUT_SECONDS`. Streams send a keepalive every 15 "
+"seconds"
+msgstr ""
+"空闲超时大于网关的 `REQUEST_TIMEOUT_SECONDS`，并且不设短于 "
+"`STREAM_REQUEST_TIMEOUT_SECONDS` 的请求总时长上限。流每 15 秒发一次保活"
+
+#: ../developer/deployment.md
+msgid "E4"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"Its request body limit is no lower than the gateway's own, file uploads "
+"under `/v1` included"
+msgstr "请求体上限不低于网关自己的上限，包括 `/v1` 下的文件上传"
+
+#: ../developer/deployment.md
+msgid "E5"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "When the client disconnects, it closes the request to the gateway"
+msgstr "客户端断开时，关闭到网关的请求"
+
+#: ../developer/deployment.md
+msgid "E6"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"It overwrites the forwarding header the client sent (`X-Forwarded-For` or"
+" `CF-Connecting-IP`)"
+msgstr "覆盖客户端送来的转发头（`X-Forwarded-For` 或 `CF-Connecting-IP`）"
+
+#: ../developer/deployment.md
+msgid "E7"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "The gateway's port is reachable from the entry and the console only"
+msgstr "网关的端口只有入口和控制台能连到"
+
+#: ../developer/deployment.md
+msgid "E8"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"It does not resend a `POST` once the request has been sent to the "
+"gateway. Retrying on another instance when the connection could not be "
+"established is fine"
+msgstr "请求已经发给网关之后，不重发 `POST`。连接没建立成功时换一个实例重试是可以的"
+
+#: ../developer/deployment.md
+msgid "E9"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"When an instance is taken out of rotation, it stops giving it new "
+"requests but does not close the connections already open to it. Not "
+"needed yet; the coexisting backend releases the design defers depend on "
+"it"
+msgstr "实例被摘除时，停止给它分配新请求，但不关闭它上面已经建立的连接。现在还不需要；设计中推迟的新旧后端并存发布依赖这一条"
+
+#: ../developer/deployment.md:164
+msgid ""
+"What clients see on the split paths is the gateway's own answer, the same"
+" as through the console, with these differences:"
+msgstr "客户端在分流路径上看到的是网关自己的回答，和经过控制台时一样，区别如下："
+
+#: ../developer/deployment.md:167
+msgid ""
+"`X-Content-Type-Options: nosniff` comes from the gateway, which adds it "
+"to every response. The console's other two headers, `X-Frame-Options` and"
+" `Referrer-Policy`, only mean something for a page and are not sent on "
+"these paths."
+msgstr ""
+"`X-Content-Type-Options: nosniff` 由网关添加，网关给每个响应都加上它。控制台的另外两个头，`X-Frame-"
+"Options` 和 `Referrer-Policy`，只对网页有意义，在这些路径上不再出现。"
+
+#: ../developer/deployment.md:171
+msgid ""
+"A path that ends in a slash, `/v1/models/`, gets the same `308` to the "
+"bare path `/v1/models` from the gateway as from the console."
+msgstr "以斜杠结尾的路径（`/v1/models/`）从网关得到的，与从控制台得到的一样，是到裸路径 `/v1/models` 的 `308`。"
+
+#: ../developer/deployment.md:173
+msgid ""
+"When the gateway cannot be reached, the error comes from the entry: a "
+"`502`, `503` or `504`, but with the entry's own body rather than the "
+"console's OpenAI-shaped JSON. SDKs act on the status; a client that "
+"parses error bodies will see different content. An entry that can be "
+"given a JSON error body may be configured to send one."
+msgstr ""
+"网关连不上时，错误由入口返回：`502`、`503` 或 `504`，但响应体是入口自己的，而不是控制台的 OpenAI 格式 JSON。SDK "
+"按状态码处理；自己解析错误体的客户端会看到不同的内容。能配置 JSON 错误体的入口，可以配置成返回 JSON。"
+
+#: ../developer/deployment.md:179
+msgid ""
+"Which way a request went is shown by the gateway's request log, whose "
+"`peer_ip` names the process that connected to it, read together with the "
+"entry's own access log. A response header is not proof: anything in "
+"between can rewrite one."
+msgstr ""
+"一个请求走了哪条路径，看网关的请求日志：其中的 `peer_ip` "
+"是连到网关的那个进程，再对照入口自己的访问日志。响应头不能作为证明：中间的任何一层都可以改写它。"
+
+#: ../developer/deployment.md:184
+msgid "Client addresses with the entry in front"
+msgstr "入口在前面时的客户端地址"
+
+#: ../developer/deployment.md:186
+msgid ""
+"With the split, two peers forward requests to the gateway on clients' "
+"behalf: the console, for everything that is not split, and the entry. "
+"Requests through the entry must resolve to the same client address as "
+"before, and must do so with the console stopped. Do not get there by "
+"trusting more: keep `TRUST_PROXY_HEADERS` on, add no network that holds "
+"other workloads to a trust list, and do not treat an `unknown` address as"
+" a normal result."
+msgstr ""
+"分流之后，有两个对端代表客户端把请求转给网关：控制台（负责没有分流的一切）和入口。经入口的请求必须解析出和以前相同的客户端地址，并且在控制台停止时也要做到。不要靠扩大信任来做到这一点：保持"
+" `TRUST_PROXY_HEADERS` 开启，不把包含其他工作负载的网段加入信任列表，也不把 `unknown` 地址当作正常结果。"
+
+#: ../developer/deployment.md:193
+msgid ""
+"**Static trust** (Kubernetes proxy discovery not enabled). Readiness does"
+" not depend on any proxy, so stopping the console leaves `/health/ready` "
+"as it was. For the address, add the entry's exact peer address, as the "
+"gateway sees it, to the setting for the header the entry writes: "
+"`TRUSTED_PROXIES` for an entry that writes `X-Forwarded-For`, "
+"`TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare. Keep the console's own "
+"entry. Add nothing wider than the entry itself: if the gateway cannot "
+"tell the entry's connections from other processes' — behind a loopback "
+"port mapping, every process on the host reaches the gateway from the same"
+" address — solve that first, rather than trusting the shared address. See"
+" [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md)."
+msgstr ""
+"**静态信任**（未启用 Kubernetes 代理发现）。就绪不依赖任何代理，所以停止控制台不会改变 "
+"`/health/ready`。地址方面，把入口在网关眼中的精确对端地址，加到入口所写的那个头对应的设置里：写 `X-Forwarded-For`"
+" 的入口加到 `TRUSTED_PROXIES`，Cloudflare 加到 "
+"`TRUSTED_CLOUDFLARE_NETWORKS`。控制台原有的那一项保留。不要加比入口本身更宽的范围：如果网关分不清入口的连接和其他进程的连接——在回环端口映射后面，主机上的每个进程都从同一个地址连到网关——先解决这一点，而不是去信任这个共用的地址。见[可信代理与客户端"
+" IP](trusted-proxies-and-client-ips.md)。"
+
+#: ../developer/deployment.md:204
+msgid ""
+"**Kubernetes proxy discovery.** The split does not meet its goal in this "
+"mode today, so a deployment that uses it stays on the console's "
+"forwarding:"
+msgstr "**Kubernetes 代理发现**。按今天的实现，分流在这种模式下达不到目标，所以使用它的部署继续使用控制台的转发："
+
+#: ../developer/deployment.md:207
+msgid ""
+"The discovered proxies are one Service's pods. An entry outside that "
+"Service is not one of them, so every request it sends resolves to "
+"`unknown`."
+msgstr "被发现的代理是一个 Service 的 Pod。Service 之外的入口不在其中，所以它送来的每个请求都解析为 `unknown`。"
+
+#: ../developer/deployment.md:209
+msgid ""
+"With the frontend stopped the discovered set is empty, `/health/ready` "
+"answers `503 proxy_discovery_unavailable`, and the entry takes the "
+"gateway out of rotation: stopping the console would interrupt inference, "
+"the very coupling the split removes."
+msgstr ""
+"前端停止时，被发现的集合为空，`/health/ready` 返回 `503 "
+"proxy_discovery_unavailable`，入口随即把网关摘掉：停止控制台就会打断推理，而这正是分流要消除的耦合。"
+
+#: ../developer/deployment.md:213
+msgid ""
+"The pinned identity is the frontend pods' direct controller. A frontend "
+"run as a Deployment gets a new ReplicaSet on every release, which "
+"requires updating that identity and restarting the gateway."
+msgstr ""
+"被固定的身份是前端 Pod 的直接控制器。以 Deployment 运行的前端每次发布都会换一个新的 "
+"ReplicaSet，于是需要更新这个身份并重启网关。"
+
+#: ../developer/deployment.md:217
+msgid "Checking an entry split with the probe"
+msgstr "用探针检查入口分流"
+
+#: ../developer/deployment.md:219
+msgid ""
+"`ops/dev/entry_split_probe.py` checks a deployment's inference path from "
+"outside, through the address clients use, on either topology. It uses a "
+"raw HTTP client and never retries, so every failed request counts:"
+msgstr ""
+"`ops/dev/entry_split_probe.py` 从外部、通过客户端使用的地址检查部署的推理路径，两种拓扑都适用。它用原始 HTTP "
+"客户端，从不重试，所以每一次失败的请求都会被计入："
+
+#: ../developer/deployment.md:223
+msgid ""
+"long streams on `/v1/chat/completions`, `/v1/responses` and "
+"`/anthropic/v1/messages`, with each frame's arrival time, the end marker "
+"(`[DONE]`, `response.completed`, `message_stop`) and the usage report "
+"checked;"
+msgstr ""
+"`/v1/chat/completions`、`/v1/responses` 和 `/anthropic/v1/messages` "
+"上的长流，检查每一帧的到达时间、结束标记（`[DONE]`、`response.completed`、`message_stop`）和 "
+"usage；"
+
+#: ../developer/deployment.md:227
+msgid ""
+"short streaming and non-streaming requests on the same three paths, at a "
+"fixed rate, for as long as the long streams run;"
+msgstr "同样这三条路径上的短的流式和非流式请求，按固定速率发出，持续到长流结束；"
+
+#: ../developer/deployment.md:229
+#, python-format
+msgid ""
+"the boundary, from `deploy/public-paths.json`: each split prefix reaches "
+"the gateway and carries `nosniff`, a trailing slash redirects to the same"
+" origin, the gateway's unpublished paths (`/docs`, `/openapi.json`, "
+"`/health/deep`, escapes such as `/v1/%2e%2e/openapi.json` and `//v1`) do "
+"not answer, and a missing or wrong API key gets `401`;"
+msgstr ""
+"边界，依据 `deploy/public-paths.json`：每个分流前缀都到达网关并带有 "
+"`nosniff`，尾斜杠重定向到同一个源，网关未公开的路径（`/docs`、`/openapi.json`、`/health/deep`，以及 "
+"`/v1/%2e%2e/openapi.json`、`//v1` 这样的越界写法）不响应，缺少或错误的 API key 得到 `401`；"
+
+#: ../developer/deployment.md:234
+msgid "`/health`, every few seconds, recorded but never counted."
+msgstr "`/health`，每隔几秒一次，只记录，从不计入。"
+
+#: ../developer/deployment.md:236
+msgid ""
+"Give the long streams a synthetic upstream with a known shape: the "
+"example's fake provider (`distributions/example/fixtures/fake-openai-"
+"provider/server.py`) started with `--stream-frames 600 --frame-interval-"
+"ms 100` streams 600 numbered frames 100 ms apart, and the probe then "
+"checks that every frame arrived once, in order, at that interval. An "
+"entry that buffers shows up here as frames arriving in bursts. Route one "
+"model to it for the long streams and, optionally, a second to a default "
+"instance for the short requests:"
+msgstr ""
+"给长流一个形状已知的合成上游：example 的假模型服务（`distributions/example/fixtures/fake-"
+"openai-provider/server.py`）用 `--stream-frames 600 --frame-interval-ms "
+"100` 启动后，会以 100 毫秒的间隔发出 600 "
+"个带序号的帧，探针随后检查每一帧都按顺序到达且只到达一次，间隔符合设定。缓冲响应的入口在这里表现为帧成批到达。把一个模型路由到它，用于长流；也可以把第二个模型路由到一个默认实例，用于短请求："
+
+#: ../developer/deployment.md:250
+msgid ""
+"The key is read from the environment variable `--api-key-env` names and "
+"is never printed. The report is JSON; the exit status is `0` only when "
+"nothing failed. Run it before and while you release, restart or stop the "
+"console: with the split in place, no long stream may break and no short "
+"request may fail. Run it once on the console's own path while stopping "
+"the console as well, to see that it does report the broken streams. Run "
+"against the gateway's port directly, it reports `/docs` and the other "
+"unpublished paths as reachable: that port is not an entry, which is why "
+"E7 keeps it private."
+msgstr ""
+"key 从 `--api-key-env` 指定的环境变量读取，从不打印。报告是 JSON；只有没有任何失败时退出码才是 "
+"`0`。在发布、重启或停止控制台之前和期间运行它：分流就位时，不能有长流中断，也不能有短请求失败。另外在控制台自己的路径上、一边停止控制台一边运行一次，确认它确实报告了中断的流。直接对着网关的端口运行时，它会报告"
+" `/docs` 和其他未公开的路径可以访问：那个端口不是入口，这正是 E7 要求它不对外开放的原因。"
 
 #: ../developer/deployment.md:84
 msgid "Keeping it private: an SSH tunnel"

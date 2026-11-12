@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "description": "Every public path that is not one of the console's own pages, and what serves it. A path not listed here belongs to the console. See docs/developer/public-path-table.md for the field meanings and the tests that hold the console to this list.",
+  "paths": [
+    { "path": "/v1", "match": "prefix", "owner": "gateway", "entry_split": true },
+    { "path": "/anthropic", "match": "prefix", "owner": "gateway", "entry_split": true },
+    { "path": "/auth", "match": "prefix", "owner": "gateway", "entry_split": false },
+    { "path": "/user", "match": "prefix", "owner": "gateway", "entry_split": false },
+    { "path": "/admin", "match": "prefix", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/playground", "match": "prefix", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/verify-admin", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/model-catalog", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/users/:userId/status", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/users/:userId/agent-access", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/agent-grants", "match": "prefix", "owner": "gateway", "entry_split": false },
+    { "path": "/internal/alert-history/events", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/health", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/site-updates", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/site-config", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/public-stats", "match": "exact", "owner": "gateway", "entry_split": false },
+    { "path": "/agents", "match": "prefix", "owner": "cloud-agent", "entry_split": false },
+    { "path": "/pgadmin", "match": "prefix", "owner": "pgadmin", "entry_split": false },
+    { "path": "/site-assets", "match": "prefix", "owner": "console", "entry_split": false },
+    { "path": "/healthz", "match": "exact", "owner": "console", "entry_split": false }
+  ]
+}
