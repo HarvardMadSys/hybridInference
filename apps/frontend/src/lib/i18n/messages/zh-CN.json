@@ -2343,10 +2343,6 @@
     "source": "Stats",
     "text": "统计"
   },
-  "chrome.header.status": {
-    "source": "Status",
-    "text": "服务状态"
-  },
   "chrome.language.label": {
     "source": "Interface language",
     "text": "界面语言"
