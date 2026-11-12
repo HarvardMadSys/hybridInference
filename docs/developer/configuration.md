@@ -42,6 +42,44 @@ A stored site document that no longer validates is passed over: the explicit
 reported off, and the console reports the configuration as incomplete until an
 administrator corrects the document.
 
+### Alert notification policy
+
+`ALERT_RULES` can include a `notification_policy` object. The policy is off by
+default. When enabled, `channel` sends firings, `digest` currently falls back
+to `channel`, and `record` keeps firings out of the channel while recording the
+decision in alert history. If history cannot accept a `record` decision, the
+alert fails open to the channel. Recovery notifications are never held.
+
+An alert key posts once for an ongoing problem. A recurrence before a delivered
+recovery continues that problem; after a delivered recovery, a later recurrence
+starts a new problem, even within the 24-hour re-notification window. The
+`min_open_sec` setting can hold an alert until its problem has been open for a
+configured total duration.
+
+At startup the gateway makes a bounded, best-effort history read to restore
+active incidents whose firing reached the channel. If the database read fails,
+the process starts with empty in-memory lifecycle state; recovery delivery is
+not guaranteed if the incident clears before history becomes available again.
+
+For example, this JSON can be part of the `ALERT_RULES` document:
+
+```json
+{
+  "notification_policy": {
+    "enabled": true,
+    "destinations": {
+      "p95_latency": "record",
+      "tracked_task_failure": "digest"
+    },
+    "min_open_sec": {
+      "circuit_open": 7200
+    },
+    "renotify_after_sec": 86400,
+    "renotify_on_recurrence": ["failed_request_rate_db", "db_disconnect:*"]
+  }
+}
+```
+
 ## How a gateway finds its config
 
 Database settings win over environment seeds, then registered defaults. Stored

@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 from serving.config.app_config import config_value
-from serving.observability import alert_runtime
+from serving.observability import alert_policy as _policy, alert_runtime
 from serving.observability.alert_history import hooks as _history
 from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_transitions import (
@@ -63,8 +63,8 @@ _FAILED_DELIVERIES: dict[str, int] = {}
 _ANNOUNCED: set[str] = set()
 
 #: Keys whose open incident an operator's silence has kept entirely out of the
-#: channel: at least one firing was held back by a type mute or the global
-#: snooze, and none was delivered. Such an incident closes without a message —
+#: channel: at least one firing was held back by a type mute, the notification
+#: policy or the global snooze, and none was delivered. Such an incident closes without a message —
 #: see ``_closes_silently``. An incident announced before the silence began
 #: never lands here, so its close is still posted.
 _MUTED_UNANNOUNCED: set[str] = set()
@@ -895,6 +895,14 @@ async def alert_slack(
                 muted = True
                 _history.decision(key, episode_id=episode_id, reason="type_muted")
                 return False
+            # The notification policy holds a firing back the way a mute does,
+            # for the same bookkeeping: no cooldown spent, and an incident it
+            # kept out of the channel entirely closes without a card.
+            held = _policy.hold_reason(key)
+            if held is not None:
+                muted = True
+                _history.decision(key, episode_id=episode_id, reason=held)
+                return False
             try:
                 from serving.observability.alert_snooze import is_snoozed
 
@@ -991,6 +999,7 @@ async def alert_slack(
                 # to it even if the type is muted or alerts snoozed afterwards.
                 _ANNOUNCED.add(key)
                 _MUTED_UNANNOUNCED.discard(key)
+                _policy.note_delivered(key)
             elif (muted or snoozed) and key not in _ANNOUNCED:
                 _MUTED_UNANNOUNCED.add(key)
             if sent and resolution:
@@ -1118,6 +1127,7 @@ def _forget_resolution_detail(key: str, *, history_episode: str | None = None) -
     _SILENT_RESOLUTIONS.discard(key)
     _ANNOUNCED.discard(key)
     _MUTED_UNANNOUNCED.discard(key)
+    _policy.note_closed(key)
     _history.forget(key, episode_id=history_episode)
 
 

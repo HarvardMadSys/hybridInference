@@ -1388,12 +1388,21 @@ async def initialize() -> AppServices:
         apply_state_change_policy(_rules_in_force.state_changes)
     except Exception:
         logger.debug("state-change alert policy unavailable; keeping defaults", exc_info=True)
+    # The notification policy gates every alert_slack firing, so like the
+    # state-change policy it applies whether or not the rule engine runs.
+    from serving.observability import alert_policy as _alert_policy
+
+    _alert_policy.apply_notification_policy(_rules_in_force.notification_policy)
     # Alert history stamps every record with the hash of the rules in force
     # (thresholds and switches only; the file holds no credentials).
     _history_runtime = alert_history_runtime.get_runtime()
     if _history_runtime is not None:
         with contextlib.suppress(Exception):
             _history_runtime.set_rules(_rules_in_force.model_dump(mode="json"))
+    # Problems this deployment already announced stay announced across a restart.
+    _seeded = await _alert_policy.preload_from_history(_history_runtime)
+    if _seeded:
+        logger.info("notification policy: %d recently announced alert keys restored", _seeded)
 
     # In-process alerting framework. Defaults to disabled. Operators flip the
     # ALERTS_ENABLED env var (or set SLACK_ALERTS_WEBHOOK_URL) to turn it on.
