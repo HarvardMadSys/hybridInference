@@ -111,7 +111,8 @@ There are caveats:
 
 The channel gets a card only when users are failing now, or when a problem will
 become serious if left alone. Everything else is still recorded in alert
-history, exactly as today, and counted in the digest.
+history, exactly as today, and counted in the digest. Record-only decisions
+fall back to the channel if the history queue cannot accept them.
 
 Proposed mapping of the current alert types:
 

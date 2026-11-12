@@ -482,39 +482,43 @@ class BackendCapture:
         reason: str,
         resolution: bool = False,
         now: float | None = None,
-    ) -> None:
-        """Record a decision not to send, first individually then in buckets."""
+    ) -> bool:
+        """Record a decision; report whether its first record entered the history queue."""
         moment = self._clock() if now is None else now
         if resolution:
-            self._emit_decision(key, episode_id, reason, moment, resolution=True)
-            return
+            return self._emit_decision(key, episode_id, reason, moment, resolution=True)
         if episode_id is not None:
             episode = self._open.get(key)
             if episode is not None and episode.episode_id == episode_id:
-                if reason not in episode.first_reasons:
+                if reason in episode.first_reasons:
+                    self._count(key, episode_id, reason, moment)
+                    return True
+                accepted = self._emit_decision(key, episode_id, reason, moment, resolution=False)
+                if accepted:
                     episode.first_reasons.add(reason)
-                    self._emit_decision(key, episode_id, reason, moment, resolution=False)
-                    return
+                return accepted
             else:
                 # A decision for an ended episode is rare (a late repeat);
                 # record it on its own rather than bucket it.
-                self._emit_decision(key, episode_id, reason, moment, resolution=False)
-                return
+                return self._emit_decision(key, episode_id, reason, moment, resolution=False)
         else:
             marker = (key, reason)
             if marker not in self._first_unattached:
+                accepted = self._emit_decision(key, None, reason, moment, resolution=False)
+                if not accepted:
+                    return False
                 self._first_unattached[marker] = None
                 while len(self._first_unattached) > self._max_buckets:
                     self._first_unattached.popitem(last=False)
-                self._emit_decision(key, None, reason, moment, resolution=False)
-                return
+                return True
         self._count(key, episode_id, reason, moment)
+        return True
 
     def _emit_decision(
         self, key: str, episode_id: str | None, reason: str, moment: float, *, resolution: bool
-    ) -> None:
+    ) -> bool:
         alert, _ = self._alert_fields(key)
-        self._emit(
+        return self._emit(
             "notification_decision",
             moment,
             episode_id=episode_id,

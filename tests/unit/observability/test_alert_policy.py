@@ -9,6 +9,7 @@ cooldown, and an incident the policy kept out of the channel closes silently.
 from __future__ import annotations
 
 import contextlib
+import datetime as dt
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -18,6 +19,7 @@ from serving.observability import alert_policy
 from serving.observability.alert_config import AlertConfig, NotificationPolicy, load_alert_config
 from serving.observability.alerts import (
     AlertSeverity,
+    _forget_resolution_detail,
     alert_on_transition,
     alert_slack,
     reset_dedupe_state,
@@ -31,6 +33,10 @@ DAY = 24 * HOUR
 @pytest.fixture(autouse=True)
 def reset_state(monkeypatch):
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/x")
+    monkeypatch.setattr(alert_policy, "_history_capture", lambda: object())
+    monkeypatch.setattr(
+        "serving.observability.alerts._history.decision", lambda *_args, **_kwargs: True
+    )
     reset_dedupe_state()
     reset_transition_state()
     alert_policy.reset_notification_policy()
@@ -70,6 +76,7 @@ def _decisions():
 
     def record(key, *, episode_id, reason, resolution=False):
         reasons.append(reason)
+        return True
 
     with patch("serving.observability.alerts._history.decision", side_effect=record):
         yield reasons
@@ -124,18 +131,52 @@ async def test_the_policy_is_off_by_default_and_changes_nothing(clock):
 # -- destinations -------------------------------------------------------------
 
 
-async def test_record_and_digest_types_stay_out_of_the_channel(clock):
+async def test_record_stays_out_but_digest_falls_back_to_the_channel(clock, monkeypatch):
     _enable()
+    monkeypatch.setattr(alert_policy, "_history_capture", lambda: object())
     with _slack() as mock_post, _decisions() as reasons:
         assert not await alert_slack(AlertSeverity.WARN, "p95", {}, dedupe_key="p95_latency:x")
-        assert not await alert_slack(
-            AlertSeverity.WARN, "Tracked task", {}, dedupe_key="tracked_task_failure:request_log"
-        )
+        for alert_type in (
+            "key_pool_exhaustion_burst",
+            "request_log_queue_saturation",
+            "tracked_task_failure",
+            "prefix_cache_pending_leak",
+            "client_error_burst",
+        ):
+            assert await alert_slack(
+                AlertSeverity.WARN, alert_type, {}, dedupe_key=f"{alert_type}:test"
+            )
         assert await alert_slack(
             AlertSeverity.ERROR, "Database disconnected", {}, dedupe_key="db_disconnect:postgres"
         )
-    assert _posted_titles(mock_post) == ["❌ *Database disconnected*"]
-    assert reasons == ["record_only", "digest_only"]
+    assert len(mock_post.await_args_list) == 6
+    assert reasons == ["record_only"]
+
+
+async def test_admin_digest_destination_fails_open_to_the_channel(clock):
+    _enable(destinations={"p95_latency": "digest"})
+    with _slack() as mock_post:
+        assert await alert_slack(AlertSeverity.WARN, "p95", {}, dedupe_key="p95_latency:x")
+    mock_post.assert_awaited_once()
+
+
+async def test_record_only_fails_open_when_history_is_unavailable(clock, monkeypatch):
+    _enable(destinations={"p95_latency": "record"})
+    monkeypatch.setattr(alert_policy, "_history_capture", lambda: None)
+    with _slack() as mock_post:
+        assert await alert_slack(AlertSeverity.WARN, "p95", {}, dedupe_key="p95_latency:x")
+    mock_post.assert_awaited_once()
+
+
+async def test_record_only_fails_open_when_history_refuses_the_record(clock, monkeypatch):
+    _enable(destinations={"p95_latency": "record"})
+    monkeypatch.setattr(alert_policy, "_history_capture", lambda: object())
+    with (
+        patch("serving.observability.alerts._history.decision", return_value=False),
+        _slack() as mock_post,
+    ):
+        assert await alert_slack(AlertSeverity.WARN, "p95", {}, dedupe_key="p95_latency:x")
+    mock_post.assert_awaited_once()
 
 
 async def test_a_type_the_policy_does_not_list_goes_to_the_channel(clock):
@@ -194,9 +235,12 @@ async def test_a_recurrence_inside_the_window_is_the_same_problem(clock):
         await _metric_incident(clock)
         clock[0] += 6 * HOUR
         await _metric_incident(clock)
-    firing, recovery = _posted_titles(mock_post)
+    firing, recovery, recurrence, recovered_again = _posted_titles(mock_post)
     assert firing.startswith("❌")
     assert recovery.startswith("✅ *Recovered:*")
+    assert recurrence.startswith("❌")
+    assert recovered_again.startswith("✅ *Recovered:*")
+    assert len(mock_post.await_args_list) == 4
 
 
 async def test_a_recurrence_after_the_window_is_a_new_problem(clock):
@@ -208,14 +252,14 @@ async def test_a_recurrence_after_the_window_is_a_new_problem(clock):
     assert len(mock_post.await_args_list) == 4
 
 
-async def test_a_flapping_key_keeps_the_problem_open_past_the_window(clock):
-    """The window counts from the last close, not the first firing."""
+async def test_a_delivered_recovery_makes_a_flapping_key_a_new_problem(clock):
+    """A delivered recovery is followed by a new firing even inside the window."""
     _enable(renotify_on_recurrence=[])
     with _slack() as mock_post:
         for _ in range(6):
             await _metric_incident(clock)
             clock[0] += 8 * HOUR
-    assert len(mock_post.await_args_list) == 2
+    assert len(mock_post.await_args_list) == 12
 
 
 async def test_listed_keys_post_every_recurrence(clock):
@@ -268,34 +312,117 @@ async def test_open_time_adds_up_across_flaps(clock):
     mock_post.assert_awaited_once()
 
 
+async def test_minimum_open_time_excludes_the_settlement_window(clock):
+    _enable(min_open_sec={"circuit_open": 1200})
+    key = "circuit_open:zai-api"
+    assert alert_policy.hold_reason(key, now=clock[0]) == alert_policy.BELOW_MIN_DURATION
+    clock[0] += 900
+    alert_policy.hold_reason(key, now=clock[0])
+    ended_at = clock[0]
+    clock[0] += 120  # healthy settlement is not open time
+    _forget_resolution_detail(key, closed_at=ended_at)
+    clock[0] += 200
+    assert alert_policy.hold_reason(key, now=clock[0]) == alert_policy.BELOW_MIN_DURATION
+
+
 # -- restarts -------------------------------------------------------------------
 
 
-async def test_a_problem_announced_before_a_restart_is_not_announced_again(clock):
+async def test_a_problem_announced_before_a_restart_gets_one_recovery(clock):
+    from serving.observability.alert_history import hooks
+    from serving.observability.alert_history.capture import BackendCapture, BackendIdentity
+
     _enable()
-    alert_policy.seed_delivered("upstream_auth:zai-api", clock[0] - HOUR)
+    records = []
+    capture = BackendCapture(
+        BackendIdentity(
+            "default", "prod", "production", "new-instance", "new-process", dt.datetime.now(dt.UTC)
+        ),
+        lambda record: records.append(record) or True,
+        fence_secret=None,
+    )
+    hooks.install(capture)
+    try:
+        key = "upstream_auth:zai-api"
+        episode_id = "ep_before_restart"
+        conn = _Conn(
+            rows=[
+                {
+                    "alert_key": key,
+                    "episode_id": episode_id,
+                    "opened_at": clock[0] - 2 * HOUR,
+                    "posted_at": clock[0] - HOUR,
+                    "tracker_kind": "state",
+                }
+            ]
+        )
+        runtime = _Runtime(conn, capture=capture)
+        assert await alert_policy.preload_from_history(runtime) == 1
+        with _slack() as mock_post:
+            assert await alert_on_transition(
+                key=key,
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Upstream rejected credential",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+                now=clock[0] + 10,
+            )
+            assert not await alert_on_transition(
+                key=key,
+                breached=False,
+                severity=AlertSeverity.ERROR,
+                title="Upstream rejected credential",
+                context=dict,
+                cooldown_sec=0,
+                kind="state",
+                now=clock[0] + 11,
+            )
+        assert _posted_titles(mock_post) == ["✅ *Recovered:* Upstream rejected credential"]
+        ended = [record for record in records if record.kind == "condition_ended"]
+        assert len(ended) == 1 and ended[0].episode_id == episode_id
+    finally:
+        hooks.install(None)
+
+
+async def test_recurrence_after_delivered_recovery_is_a_new_problem(clock):
+    _enable(renotify_on_recurrence=[])
     with _slack() as mock_post:
-        assert not await _metric(True, clock[0], key="upstream_auth:zai-api")
-    mock_post.assert_not_awaited()
+        await _metric_incident(clock)
+        clock[0] += HOUR
+        await _metric_incident(clock)
+    assert len(mock_post.await_args_list) == 4
 
 
-async def test_a_listed_key_still_posts_after_a_restart(clock):
-    """History cannot say whether it recovered in between, and a lost page costs more."""
+async def test_fire_only_cost_alerts_keep_their_cooldown_driven_repeats(clock):
     _enable()
-    alert_policy.seed_delivered("failed_request_rate_db", clock[0] - HOUR)
-    with _slack() as mock_post:
-        assert await _metric(True, clock[0])
-    mock_post.assert_awaited_once()
-
-
-async def test_a_seeded_problem_expires_with_the_window(clock):
-    _enable()
-    alert_policy.seed_delivered("db_disconnect:postgres", clock[0] - DAY - 1)
     with _slack() as mock_post:
         assert await alert_slack(
-            AlertSeverity.ERROR, "Database disconnected", {}, dedupe_key="db_disconnect:postgres"
+            AlertSeverity.ERROR,
+            "Cost write refused",
+            {},
+            dedupe_key="cost_counter_write_refused",
+            cooldown_sec=0,
         )
-    mock_post.assert_awaited_once()
+        assert await alert_slack(
+            AlertSeverity.ERROR,
+            "Cost write refused",
+            {},
+            dedupe_key="cost_counter_write_refused",
+            cooldown_sec=0,
+        )
+    assert len(mock_post.await_args_list) == 2
+
+
+async def test_delivery_failure_does_not_mark_a_problem_announced(clock):
+    _enable()
+    with _slack(return_value=False) as failed:
+        assert not await _metric(True, clock[0])
+    with _slack(return_value=True) as recovered:
+        assert await _metric(True, clock[0] + 1)
+    failed.assert_awaited_once()
+    recovered.assert_awaited_once()
 
 
 class _Conn:
@@ -312,11 +439,11 @@ class _Conn:
 
 
 class _Runtime:
-    def __init__(self, conn: _Conn) -> None:
+    def __init__(self, conn: _Conn, *, capture=None) -> None:
         from types import SimpleNamespace
 
         self.conn = conn
-        self.capture = SimpleNamespace(
+        self.capture = capture or SimpleNamespace(
             identity=SimpleNamespace(
                 source_namespace="default", deployment_id="prod", target_environment="production"
             )
@@ -329,10 +456,21 @@ class _Runtime:
 
 async def test_preload_seeds_the_keys_history_says_were_announced(clock):
     _enable()
-    conn = _Conn(rows=[{"alert_key": "circuit_open:zai-api", "posted_at": clock[0] - 60}])
+    conn = _Conn(
+        rows=[
+            {
+                "alert_key": "circuit_open:zai-api",
+                "episode_id": "ep1",
+                "opened_at": clock[0] - 120,
+                "posted_at": clock[0] - 60,
+                "tracker_kind": "state",
+            }
+        ]
+    )
     assert await alert_policy.preload_from_history(_Runtime(conn)) == 1
     assert conn.args[:4] == ("backend", "default", "prod", "production")
     assert alert_policy.hold_reason("circuit_open:zai-api") == "already_notified"
+    assert "condition_ended" in alert_policy._PRELOAD_SQL
 
 
 async def test_preload_is_best_effort(clock):

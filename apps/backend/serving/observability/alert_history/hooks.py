@@ -91,18 +91,20 @@ def closed_episode(key: str) -> str | None:
     return _safe("closed_episode", capture.closed_episode, key)
 
 
-def decision(key: str, *, episode_id: str | None, reason: str, resolution: bool = False) -> None:
-    """A notification was not attempted, for ``reason``."""
+def decision(key: str, *, episode_id: str | None, reason: str, resolution: bool = False) -> bool:
+    """Record a held notification; return whether its event entered the history queue."""
     capture = _CAPTURE
     if capture is None:
-        return
-    _safe(
-        "decision",
-        capture.decision,
-        key,
-        episode_id=episode_id,
-        reason=reason,
-        resolution=resolution,
+        return False
+    return bool(
+        _safe(
+            "decision",
+            capture.decision,
+            key,
+            episode_id=episode_id,
+            reason=reason,
+            resolution=resolution,
+        )
     )
 
 

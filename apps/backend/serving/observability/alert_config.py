@@ -452,15 +452,18 @@ class NotificationPolicy(BaseModel):
 
     Off by default, so a deployment that does not opt in keeps every alert as
     it was. On, it sits beside the per-type mute in ``alert_slack``: a firing
-    it holds back is recorded in alert history and costs no cooldown, and an
-    incident it kept out of the channel entirely closes without a "Recovered"
-    card, exactly as a muted one does. Resolutions are never held.
+    it holds back is recorded in alert history and costs no cooldown. A
+    record-only destination fails open to the channel if history cannot accept
+    its decision. An incident it kept out of the channel entirely closes
+    without a "Recovered" card, exactly as a muted one does. Resolutions are
+    never held.
 
     A *problem* is one alert key from its first firing until it has stayed
     closed for ``renotify_after_sec``. A recurrence inside that window is the
     same problem, so a key that flaps all day posts once. Problem state is kept
-    per process; at startup each process reads from alert history which keys
-    already posted inside the window, so a restart does not announce them again.
+    per process; at startup each process restores open incidents with an
+    accepted firing from alert history, even when they outlive the re-notify
+    window, so a restart does not announce them again and can still send recovery.
 
     - ``destinations`` maps an alert type to ``channel``, ``digest`` or
       ``record``. A type not listed goes to the channel, so a newly added alert

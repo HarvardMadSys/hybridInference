@@ -1,11 +1,12 @@
 """Notification policy: which firings reach the channel, and how often one problem may.
 
-``alerts.yaml``'s ``notification_policy`` block lands here at startup (see
-:class:`~serving.observability.alert_config.NotificationPolicy` for what each
-setting means). ``alert_slack`` asks :func:`hold_reason` about every firing,
-next to the per-type mute, and reports back through :func:`note_delivered` and
-:func:`note_closed`. The policy never sees a resolution: whether a close is
-announced is decided by whether its firing was, as for a mute.
+The ``ALERT_RULES`` document's ``notification_policy`` block lands here at
+startup (see :class:`~serving.observability.alert_config.NotificationPolicy`
+for what each setting means). ``alert_slack`` asks :func:`hold_reason` about
+every firing, next to the per-type mute, and reports back through
+:func:`note_delivered` and :func:`note_closed`. The policy never sees a
+resolution: whether a close is announced is decided by whether its firing was,
+as for a mute.
 
 Every function here is synchronous and never raises into the alert path: a
 policy that cannot decide lets the alert through, because the cost of that is
@@ -13,10 +14,11 @@ one message someone wanted held and the cost of the reverse is an outage
 nobody hears about.
 
 Problem state is per process and in memory, like the rest of the alert path's
-dedupe state. :func:`preload_from_history` seeds it at startup with the keys
-that already posted inside the re-notify window, so a restart or a second
-worker does not announce a known problem again. Workers do not see each
-other's posts after that; each can post a new problem once.
+dedupe state. :func:`preload_from_history` restores every currently open
+incident that delivered a firing, even when it has been open longer than the
+re-notify window, so a restart can suppress the duplicate firing and still
+deliver the eventual recovery. Workers do not see each other's later posts;
+each can post a new problem once.
 """
 
 from __future__ import annotations
@@ -46,6 +48,11 @@ _PRUNE_INTERVAL_SEC = 300.0
 #: Upper bound on the history read at startup, so a slow database delays the
 #: gateway's start by at most this much.
 _PRELOAD_TIMEOUT_SEC = 3.0
+
+#: These notifications are discrete events, not incidents with recovery edges.
+#: Keep their existing alert_slack cooldown instead of suppressing every later
+#: event forever because no producer can call :func:`note_closed`.
+_EVENT_ALERT_TYPES = frozenset({"cost_counter_write_refused", "cost_above_request_ceiling"})
 
 
 @dataclass
@@ -89,8 +96,9 @@ def reset_notification_policy() -> None:
 
 
 def destination(key: str) -> str:
-    """Where the policy sends firings for ``key``: ``channel``, ``digest`` or ``record``."""
-    return _POLICY.destinations.get(alert_type_of(key), "channel")
+    """Where the policy sends firings; unavailable digest delivery fails open to channel."""
+    configured = _POLICY.destinations.get(alert_type_of(key), "channel")
+    return "channel" if configured == "digest" else configured
 
 
 def _renotifies_on_recurrence(key: str) -> bool:
@@ -147,13 +155,14 @@ def hold_reason(key: str, now: float | None = None) -> str | None:
         problem = _observe_firing(key, moment)
         where = destination(key)
         if where == "record":
-            return RECORD_ONLY
-        if where == "digest":
-            return DIGEST_ONLY
+            return RECORD_ONLY if _history_capture() is not None else None
+        if alert_type_of(key) in _EVENT_ALERT_TYPES:
+            return None
         if problem.posted_at is not None:
             return ALREADY_NOTIFIED
         need = _POLICY.min_open_sec.get(alert_type_of(key), 0.0)
-        open_for = problem.open_total + (moment - (problem.open_since or moment))
+        open_since = problem.open_since
+        open_for = problem.open_total + (moment - open_since if open_since is not None else 0.0)
         if open_for < need:
             return BELOW_MIN_DURATION
         return None
@@ -184,42 +193,95 @@ def note_closed(key: str, now: float | None = None) -> None:
     problem.last_closed = moment
 
 
-def seed_delivered(key: str, posted_at: float) -> None:
-    """Record that ``key`` posted at ``posted_at`` before this process started.
+def note_recovered(key: str) -> None:
+    """Forget a delivered recovery so any later recurrence is a new problem."""
+    _PROBLEMS.pop(key, None)
 
-    The problem is taken as closed then: its next firing inside the window
-    reopens it as already announced, and one outside the window is new.
-    """
-    if key in _PROBLEMS:
-        return
+
+def seed_open_incident(
+    key: str,
+    *,
+    opened_at: float,
+    posted_at: float,
+    episode_id: str,
+    restored_at: float,
+    capture: Any = None,
+) -> None:
+    """Restore an open, announced incident from durable alert history."""
     _PROBLEMS[key] = _Problem(
-        open_since=None, last_closed=posted_at, posted_at=posted_at, last_seen=posted_at
+        open_since=opened_at,
+        posted_at=posted_at,
+        # An open history episode is live until a durable end event says
+        # otherwise. Reset the in-memory silence clock at restoration so an
+        # old but still-open incident is not immediately treated as expired.
+        last_seen=max(opened_at, posted_at, restored_at),
     )
+    history = capture or _history_capture()
+    if history is not None:
+        seed = getattr(history, "seed_open_episode", None)
+        if seed is not None:
+            seed(key, episode_id=episode_id, opened_at=opened_at)
+
+
+def _history_capture() -> Any | None:
+    """Return the enabled capture without making alert policy depend on runtime wiring."""
+    try:
+        from serving.observability.alert_history import hooks
+
+        return hooks.active()
+    except Exception:
+        return None
 
 
 _PRELOAD_SQL = """
-SELECT alert_key, EXTRACT(EPOCH FROM MAX(occurred_at))::float8 AS posted_at
-FROM alert_history_events
-WHERE source = $1
-  AND source_namespace = $2
-  AND deployment_id = $3
-  AND target_environment = $4
-  AND occurred_at > NOW() - make_interval(secs => $5)
-  AND kind = 'delivery_result'
-  AND outcome = 'accepted'
-  AND origin = 'live'
-  AND alert_key IS NOT NULL
-  AND facts->>'notification' = 'firing'
-GROUP BY alert_key
+WITH latest_condition AS (
+    SELECT DISTINCT ON (alert_key)
+           alert_key, episode_id, kind, occurred_at, facts
+    FROM alert_history_events
+    WHERE source = $1
+      AND source_namespace = $2
+      AND deployment_id = $3
+      AND target_environment = $4
+      AND origin = 'live'
+      AND kind IN ('condition_triggered', 'condition_ended')
+      AND alert_key IS NOT NULL
+      AND episode_id IS NOT NULL
+    ORDER BY alert_key, occurred_at DESC, recorded_at DESC, record_id DESC
+), delivered AS (
+    SELECT alert_key, episode_id, MAX(occurred_at) AS posted_at
+    FROM alert_history_events
+    WHERE source = $1
+      AND source_namespace = $2
+      AND deployment_id = $3
+      AND target_environment = $4
+      AND kind = 'delivery_result'
+      AND outcome = 'accepted'
+      AND origin = 'live'
+      AND facts->>'notification' = 'firing'
+      AND alert_key IS NOT NULL
+      AND episode_id IS NOT NULL
+    GROUP BY alert_key, episode_id
+)
+SELECT current.alert_key,
+       current.episode_id,
+       EXTRACT(EPOCH FROM current.occurred_at)::float8 AS opened_at,
+       EXTRACT(EPOCH FROM delivered.posted_at)::float8 AS posted_at,
+       current.facts->>'tracker_kind' AS tracker_kind
+FROM latest_condition AS current
+JOIN delivered USING (alert_key, episode_id)
+WHERE current.kind = 'condition_triggered'
+  AND delivered.posted_at >= current.occurred_at
 """
 
 
 async def preload_from_history(runtime: Any) -> int:
-    """Seed problem state with the keys this deployment posted inside the window.
+    """Seed problem state for incidents still open after this deployment restarts.
 
     Best effort and bounded: with the policy off, no history runtime, no
     database or a read that fails or is slow, nothing is seeded and the
-    gateway starts as it would have. Returns how many keys were seeded.
+    gateway starts as it would have. The read includes older open incidents;
+    the re-notify window does not close an incident that has no durable end.
+    Returns how many keys were seeded.
     """
     if not _POLICY.enabled or runtime is None or runtime.capture is None:
         return 0
@@ -234,15 +296,40 @@ async def preload_from_history(runtime: Any) -> int:
                     ident.source_namespace,
                     ident.deployment_id,
                     ident.target_environment,
-                    float(_POLICY.renotify_after_sec),
                 )
             )
 
     try:
         rows = await asyncio.wait_for(_read(), _PRELOAD_TIMEOUT_SEC)
     except Exception:
-        log.warning("notification policy could not read recent alerts; starting empty")
+        log.warning(
+            "notification policy could not read recent alerts; starting empty", exc_info=True
+        )
         return 0
+    seeded = 0
+    restored_at = time.time()
     for row in rows:
-        seed_delivered(row["alert_key"], float(row["posted_at"]))
-    return len(rows)
+        try:
+            from serving.observability.alerts import restore_announced_incident
+
+            restore_announced_incident(
+                row["alert_key"],
+                tracker_kind=row["tracker_kind"],
+                opened_at=float(row["opened_at"]),
+                restored_at=restored_at,
+            )
+        except Exception:
+            log.warning(
+                "notification policy could not restore alert lifecycle for %s", row["alert_key"]
+            )
+            continue
+        seed_open_incident(
+            row["alert_key"],
+            opened_at=float(row["opened_at"]),
+            posted_at=float(row["posted_at"]),
+            episode_id=row["episode_id"],
+            restored_at=restored_at,
+            capture=runtime.capture,
+        )
+        seeded += 1
+    return seeded

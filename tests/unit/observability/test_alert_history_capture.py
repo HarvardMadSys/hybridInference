@@ -246,6 +246,14 @@ async def test_cooldown_repeats_are_recorded_once_then_counted_exactly(history):
     assert len(posts.messages) == 1
 
 
+def test_decision_reports_whether_history_queue_accepted_the_record():
+    accepted = BackendCapture(_identity(), lambda _record: True, fence_secret=FENCE)
+    refused = BackendCapture(_identity(), lambda _record: False, fence_secret=FENCE)
+
+    assert accepted.decision("p95_latency:x", episode_id=None, reason="record_only")
+    assert not refused.decision("p95_latency:x", episode_id=None, reason="record_only")
+
+
 async def test_buckets_do_not_overlap(history):
     capture, records, _posts = history
     capture.on_breach("k", severity="error", title="t", kind="metric", context={})
