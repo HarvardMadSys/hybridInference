@@ -49,6 +49,7 @@ def breach(
     title: str,
     kind: str,
     context: Mapping[str, Any] | None,
+    stale_after_sec: float | None = None,
     now: float | None = None,
 ) -> str | None:
     """A breached evaluation; returns the episode it belongs to."""
@@ -63,6 +64,7 @@ def breach(
         title=title,
         kind=kind,
         context=context,
+        stale_after_sec=stale_after_sec,
         now=now,
     )
 

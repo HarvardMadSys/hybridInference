@@ -266,7 +266,8 @@ SELECT current.alert_key,
        current.episode_id,
        EXTRACT(EPOCH FROM current.occurred_at)::float8 AS opened_at,
        EXTRACT(EPOCH FROM delivered.posted_at)::float8 AS posted_at,
-       current.facts->>'tracker_kind' AS tracker_kind
+       current.facts->>'tracker_kind' AS tracker_kind,
+       NULLIF(current.facts->>'stale_after_sec', '')::float8 AS stale_after_sec
 FROM latest_condition AS current
 JOIN delivered USING (alert_key, episode_id)
 WHERE current.kind = 'condition_triggered'
@@ -317,6 +318,11 @@ async def preload_from_history(runtime: Any) -> int:
                 tracker_kind=row["tracker_kind"],
                 opened_at=float(row["opened_at"]),
                 restored_at=restored_at,
+                stale_after_sec=(
+                    float(row.get("stale_after_sec"))
+                    if row.get("stale_after_sec") is not None
+                    else None
+                ),
             )
         except Exception:
             log.warning(

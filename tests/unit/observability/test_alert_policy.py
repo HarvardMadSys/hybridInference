@@ -15,7 +15,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import yaml
 
-from serving.observability import alert_policy
+from serving.observability import alert_policy, alerts as alerts_module
 from serving.observability.alert_config import AlertConfig, NotificationPolicy, load_alert_config
 from serving.observability.alerts import (
     AlertSeverity,
@@ -471,6 +471,31 @@ async def test_preload_seeds_the_keys_history_says_were_announced(clock):
     assert conn.args[:4] == ("backend", "default", "prod", "production")
     assert alert_policy.hold_reason("circuit_open:zai-api") == "already_notified"
     assert "condition_ended" in alert_policy._PRELOAD_SQL
+
+
+@pytest.mark.parametrize(
+    ("key", "stale_after_sec"),
+    [("failed_request_rate_db", 1200.0), ("fivexx_rate", 3600.0)],
+)
+async def test_preload_restores_each_metric_stale_timeout(clock, key, stale_after_sec):
+    _enable()
+    conn = _Conn(
+        rows=[
+            {
+                "alert_key": key,
+                "episode_id": f"episode-{key}",
+                "opened_at": clock[0] - 10,
+                "posted_at": clock[0] - 9,
+                "tracker_kind": "metric",
+                "stale_after_sec": stale_after_sec,
+            }
+        ]
+    )
+
+    assert await alert_policy.preload_from_history(_Runtime(conn)) == 1
+    tracker = alerts_module._TRANSITIONS
+    assert tracker.sweep(now=clock[0] + stale_after_sec - 1) == []
+    assert tracker.sweep(now=clock[0] + stale_after_sec) == [key]
 
 
 async def test_preload_is_best_effort(clock):

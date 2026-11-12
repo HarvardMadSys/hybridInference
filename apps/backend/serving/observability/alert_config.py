@@ -459,8 +459,9 @@ class NotificationPolicy(BaseModel):
     never held.
 
     A *problem* is one alert key from its first firing until it has stayed
-    closed for ``renotify_after_sec``. A recurrence inside that window is the
-    same problem, so a key that flaps all day posts once. Problem state is kept
+    closed for ``renotify_after_sec``. A recurrence before a delivered recovery
+    continues the same problem; after a delivered recovery, a later recurrence
+    starts a new problem even inside that window. Problem state is kept
     per process; at startup each process restores open incidents with an
     accepted firing from alert history, even when they outlive the re-notify
     window, so a restart does not announce them again and can still send recovery.

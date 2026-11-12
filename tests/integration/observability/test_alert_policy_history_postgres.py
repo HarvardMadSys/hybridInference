@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 import pytest_asyncio
 
-from serving.observability import alert_policy
+from serving.observability import alert_policy, alerts as alerts_module
 from serving.observability.alert_config import NotificationPolicy
 from serving.observability.alert_history import hooks
 from serving.observability.alert_history.capture import BackendIdentity
@@ -50,10 +50,13 @@ def _record(
     outcome: str | None = None,
     notification: str | None = None,
     tracker_kind: str | None = None,
+    stale_after_sec: float | None = None,
 ):
     facts = {"notification": notification} if notification else {}
     if tracker_kind:
         facts["tracker_kind"] = tracker_kind
+    if stale_after_sec is not None:
+        facts["stale_after_sec"] = stale_after_sec
     return finalize(
         HistoryRecord(
             source="backend",
@@ -84,7 +87,28 @@ async def test_preload_restores_open_delivered_incidents_and_their_recovery(pool
         "circuit_open:old-open",
         "circuit_open:closed",
     )
+    metric_key = "failed_request_rate_db"
     records = [
+        _record(
+            namespace,
+            key=metric_key,
+            kind="condition_triggered",
+            event_id="metric:start",
+            when=now - dt.timedelta(minutes=20),
+            episode_id="episode-metric",
+            tracker_kind="metric",
+            stale_after_sec=1200.0,
+        ),
+        _record(
+            namespace,
+            key=metric_key,
+            kind="delivery_result",
+            event_id="metric:delivery",
+            when=now - dt.timedelta(minutes=19),
+            episode_id="episode-metric",
+            outcome="accepted",
+            notification="firing",
+        ),
         _record(
             namespace,
             key=open_key,
@@ -172,13 +196,15 @@ async def test_preload_restores_open_delivered_incidents_and_their_recovery(pool
     monkeypatch.setattr(alert_policy.time, "time", lambda: now.timestamp())
     monkeypatch.setenv("SLACK_ALERTS_WEBHOOK_URL", "https://hooks.slack.com/test")
     try:
-        assert await alert_policy.preload_from_history(runtime) == 2
+        assert await alert_policy.preload_from_history(runtime) == 3
         assert alert_policy.hold_reason(open_key) == alert_policy.ALREADY_NOTIFIED
         assert alert_policy.hold_reason(old_open_key) == alert_policy.ALREADY_NOTIFIED
         assert alert_policy.hold_reason(closed_key) == alert_policy.BELOW_MIN_DURATION
         assert runtime.capture.open_episode(open_key) == "episode-open"
         assert runtime.capture.open_episode(old_open_key) == "episode-old-open"
         assert runtime.capture.open_episode(closed_key) is None
+        assert alerts_module._TRANSITIONS.sweep(now=now.timestamp() + 1199) == []
+        assert alerts_module._TRANSITIONS.sweep(now=now.timestamp() + 1200) == [metric_key]
         with patch(
             "serving.observability.alerts._post_to_slack",
             new=AsyncMock(return_value=True),

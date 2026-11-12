@@ -95,7 +95,9 @@ def kinds(records, **match):
     return [r for r in records if all(getattr(r, name) == value for name, value in match.items())]
 
 
-async def _breach(key="fivexx_rate", *, now, kind="metric", context=None, cooldown=300):
+async def _breach(
+    key="fivexx_rate", *, now, kind="metric", context=None, cooldown=300, stale_after=None
+):
     return await alert_on_transition(
         key=key,
         breached=True,
@@ -104,6 +106,7 @@ async def _breach(key="fivexx_rate", *, now, kind="metric", context=None, cooldo
         context=lambda: dict(context or {"rate": "9.0% (9 of 100 requests, last 300s)"}),
         cooldown_sec=cooldown,
         kind=kind,
+        stale_after=stale_after,
         now=now,
     )
 
@@ -210,12 +213,13 @@ async def test_connect_failure_is_not_sent_and_read_timeout_is_unknown(monkeypat
 async def test_firing_then_observed_recovery(history):
     _capture, records, _posts = history
     t0 = 1_800_000_000.0
-    assert await _breach(now=t0) is True
+    assert await _breach(now=t0, stale_after=1200.0) is True
     (trigger,) = kinds(records, kind="condition_triggered")
     episode = trigger.episode_id
     assert trigger.facts["rate"].startswith("9.0%")
     assert trigger.facts["title"] == "5xx rate exceeded"
     assert trigger.alert_type == "fivexx_rate"
+    assert trigger.facts["stale_after_sec"] == 1200.0
     await _healthy(now=t0 + 10)
     await _healthy(now=t0 + 200)  # past the settling period
     (ended,) = kinds(records, kind="condition_ended")

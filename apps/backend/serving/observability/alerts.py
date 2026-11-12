@@ -1459,11 +1459,21 @@ def reset_transition_state() -> None:
 
 
 def restore_announced_incident(
-    key: str, *, tracker_kind: str | None, opened_at: float, restored_at: float | None = None
+    key: str,
+    *,
+    tracker_kind: str | None,
+    opened_at: float,
+    restored_at: float | None = None,
+    stale_after_sec: float | None = None,
 ) -> None:
     """Restore the open state for an incident whose firing reached the channel."""
     tracker = _STATE_TRANSITIONS if tracker_kind == "state" else _TRANSITIONS
-    tracker.restore_firing(key, opened_at=opened_at, restored_at=restored_at)
+    tracker.restore_firing(
+        key,
+        opened_at=opened_at,
+        restored_at=restored_at,
+        stale_after=stale_after_sec if tracker_kind != "state" else None,
+    )
     _ANNOUNCED.add(key)
     _MUTED_UNANNOUNCED.discard(key)
 
@@ -1625,6 +1635,7 @@ async def alert_on_transition(
             title=title,
             kind=kind,
             context=detail() if opens_episode else None,
+            stale_after_sec=stale_after if kind == "metric" else None,
             now=moment,
         )
         # Every breached evaluation still goes to the sink, exactly as before.

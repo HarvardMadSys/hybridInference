@@ -396,6 +396,12 @@ class BackendCapture:
         episode = self._open.get(key)
         return episode.episode_id if episode is not None else None
 
+    def seed_open_episode(self, key: str, *, episode_id: str, opened_at: float) -> None:
+        """Restore an active incident from durable history after a process restart."""
+        if key not in self._open:
+            self._open[key] = _Episode(episode_id=episode_id, key=key, opened_at=opened_at)
+            self._closed.pop(key, None)
+
     def closed_episode(self, key: str) -> str | None:
         """The most recently ended episode on ``key``, for its recovery retries."""
         return self._closed.get(key)
@@ -408,6 +414,7 @@ class BackendCapture:
         title: str,
         kind: str,
         context: Mapping[str, Any] | None,
+        stale_after_sec: float | None = None,
         now: float | None = None,
     ) -> str:
         """Note a breached evaluation; open an episode when none is open."""
@@ -425,6 +432,8 @@ class BackendCapture:
         facts, fact_limits = self._facts(context, redact)
         facts["title"] = redact(title)[:MAX_TITLE]
         facts["tracker_kind"] = kind
+        if kind == "metric" and stale_after_sec is not None:
+            facts["stale_after_sec"] = stale_after_sec
         refs, ref_digests, ref_limits = self._request_ref()
         self._emit(
             "condition_triggered",
