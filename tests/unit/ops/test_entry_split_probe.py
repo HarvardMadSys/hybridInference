@@ -293,6 +293,52 @@ def test_a_complete_answer_passes_and_a_broken_one_does_not(protocol: str, answe
     assert probe.check_completion(protocol, 200, b"<html>")[0].startswith("unparseable body")
 
 
+@pytest.mark.parametrize(
+    ("body", "problem"),
+    [
+        (b"[]", "unexpected body"),
+        (b"null", "unexpected body"),
+        (b'"ok"', "unexpected body"),
+        (b"\xff\xfe{}", "unparseable body"),
+        (b'{"choices": [null]}', None),
+        (b'{"choices": "ok"}', None),
+        (b'{"choices": [{"message": 7}]}', None),
+        (b'{"choices": [{"message": {"content": 7}}]}', None),
+        (b'{"output": [null], "status": "completed"}', None),
+        (b'{"output": [{"content": [7]}], "status": "completed"}', None),
+        (b'{"content": [7]}', None),
+        (b'{"content": 7}', None),
+    ],
+)
+def test_an_answer_of_another_shape_is_a_failure_not_an_exception(
+    body: bytes, problem: str | None
+) -> None:
+    # Whatever the protocol, the answer is refused; none of these may raise.
+    for protocol in probe.PROTOCOLS:
+        problems = probe.check_completion(protocol, 200, body)
+        assert problems, (protocol, body)
+        if problem:
+            assert problems[0].startswith(problem), (protocol, problems)
+    assert probe.check_completion("chat", 200, b'{"choices": [null]}')[0].startswith(
+        "malformed answer"
+    )
+
+
+@pytest.mark.parametrize(
+    ("protocol", "data"),
+    [
+        ("chat", '{"choices": [null]}'),
+        ("chat", '{"choices": [{"delta": 7}]}'),
+        ("chat", '{"choices": 7}'),
+        ("responses", '{"type": "response.completed", "response": 7}'),
+        ("messages", '{"type": "content_block_delta", "delta": 7}'),
+    ],
+)
+def test_an_event_of_another_shape_fails_the_stream(protocol: str, data: str) -> None:
+    reading = probe.read_event(protocol, probe.SSEEvent(event=None, data=data))
+    assert reading.error is not None and reading.error.startswith("malformed event")
+
+
 # --- the boundary ------------------------------------------------------------------
 
 
@@ -366,6 +412,8 @@ def test_an_answer_leaks_only_when_it_shows_the_gateway_served_the_path(
 
 def test_the_tally_counts_every_failure() -> None:
     tally = probe.Tally()
+    for protocol, stream in (("chat", True), ("chat", True), ("messages", False)):
+        tally.start(protocol, stream)
     tally.add({"protocol": "chat", "stream": True, "errors": []})
     tally.add({"protocol": "chat", "stream": True, "errors": ["truncated: x"]})
     tally.add({"protocol": "messages", "stream": False, "errors": ["status 502"]})
@@ -374,13 +422,120 @@ def test_the_tally_counts_every_failure() -> None:
     summary = tally.summary()
 
     assert summary["sent"] == 3
+    assert summary["completed"] == 3
     assert summary["failed"] == 2
+    assert summary["unfinished"] == 0
     assert summary["not_sent"] == 1
     assert summary["by_kind"] == {
-        "chat:stream": {"sent": 2, "failed": 1},
-        "messages:json": {"sent": 1, "failed": 1},
+        "chat:stream": {"sent": 2, "completed": 2, "failed": 1},
+        "messages:json": {"sent": 1, "completed": 1, "failed": 1},
     }
     assert [row["errors"] for row in summary["failures"]] == [["truncated: x"], ["status 502"]]
+
+
+def test_a_request_that_started_and_never_reported_is_unfinished() -> None:
+    tally = probe.Tally()
+    tally.start("chat", False)
+    tally.start("chat", False)
+    tally.add({"protocol": "chat", "stream": False, "errors": []})
+
+    summary = tally.summary()
+
+    assert (summary["sent"], summary["completed"], summary["unfinished"]) == (2, 1, 1)
+
+
+def _run_args(port: int = 9, *extra: str):
+    return probe.parse_args(
+        [
+            "--base-url",
+            f"http://127.0.0.1:{port}",
+            "--model",
+            "m",
+            "--long-streams",
+            "0",
+            "--skip-boundary",
+            "--short-rate",
+            "50",
+            "--duration",
+            "0.1",
+            "--health-every",
+            "3600",
+            *extra,
+        ]
+    )
+
+
+def test_a_worker_that_raises_is_a_failed_request_not_a_missing_one(monkeypatch) -> None:
+    calls = []
+
+    def run_short(target, api_key, protocol, model, stream, **kwargs):
+        calls.append(protocol)
+        if len(calls) % 2:
+            raise RuntimeError("could not judge this answer")
+        return {"protocol": protocol, "stream": stream, "status": 200, "errors": []}
+
+    monkeypatch.setattr(probe, "run_short", run_short)
+    monkeypatch.setattr(probe, "simple_request", lambda *a, **k: (200, {}, b""))
+
+    report = probe.run(_run_args(), "test-key")
+    shorts = report["short_requests"]
+
+    assert len(calls) >= 2
+    assert shorts["sent"] == shorts["completed"] == len(calls)
+    assert shorts["failed"] == (len(calls) + 1) // 2
+    assert shorts["unfinished"] == 0
+    assert all(
+        row["errors"] == ["probe error: RuntimeError: could not judge this answer"]
+        for row in shorts["failures"]
+    )
+    assert report["failures"] == shorts["failed"]
+    assert report["ok"] is False
+
+
+def test_a_request_still_open_when_the_report_is_written_fails_the_run(monkeypatch) -> None:
+    release = threading.Event()
+    entered = []
+
+    def run_short(target, api_key, protocol, model, stream, **kwargs):
+        entered.append(protocol)
+        release.wait(30)
+        return {"protocol": protocol, "stream": stream, "status": 200, "errors": []}
+
+    monkeypatch.setattr(probe, "run_short", run_short)
+    monkeypatch.setattr(probe, "simple_request", lambda *a, **k: (200, {}, b""))
+    monkeypatch.setattr(probe, "_FINISH_MARGIN_S", 0.1)
+
+    try:
+        report = probe.run(_run_args(9, "--read-timeout", "0.1"), "test-key")
+    finally:
+        release.set()
+    shorts = report["short_requests"]
+
+    assert shorts["sent"] == len(entered) >= 1
+    assert shorts["completed"] == 0
+    assert shorts["failed"] == 0
+    assert shorts["unfinished"] == shorts["sent"]
+    assert report["failures"] == shorts["sent"]
+    assert report["ok"] is False
+
+
+def test_an_unfinished_long_stream_fails_the_run(monkeypatch) -> None:
+    def run_stream(*args, **kwargs):
+        raise RuntimeError("could not follow this stream")
+
+    monkeypatch.setattr(probe, "run_stream", run_stream)
+    monkeypatch.setattr(probe, "simple_request", lambda *a, **k: (200, {}, b""))
+    args = _run_args()
+    args.long_streams, args.short_rate, args.duration = 2, 0.0, 0.0
+
+    report = probe.run(args, "test-key")
+
+    assert report["long_streams_unfinished"] == 0
+    assert [row["errors"] for row in report["long_streams"]] == [
+        ["probe error: RuntimeError: could not follow this stream"]
+    ] * 2
+    assert report["failures"] == 2
+    assert report["ok"] is False
 
 
 def test_the_base_url_is_read_whole() -> None:
@@ -454,3 +609,63 @@ def test_a_served_stream_is_judged_by_how_it_ended(stream_server, frames, ok) ->
     if not ok:
         assert report.errors[0].startswith("truncated: IncompleteRead")
         assert "missing frames: 2" in report.errors
+
+
+class _AnswerServer(ThreadingHTTPServer):
+    daemon_threads = True
+    received = 0
+    lock = threading.Lock()
+
+
+_GOOD = json.dumps({"choices": [{"message": {"content": "ok"}}], "usage": _CHAT_USAGE}).encode()
+_BAD = [b"[]", b'{"choices": [null]}', b"\xff\xfe{}"]
+
+
+class _AnswerHandler(BaseHTTPRequestHandler):
+    protocol_version = "HTTP/1.1"
+
+    def log_message(self, *args) -> None:
+        pass
+
+    def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        with self.server.lock:
+            number = self.server.received
+            self.server.received += 1
+        body = _BAD[(number // 2) % len(_BAD)] if number % 2 else _GOOD
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+        self.close_connection = True
+
+
+def test_every_request_the_server_got_is_in_the_report(monkeypatch) -> None:
+    server = _AnswerServer(("127.0.0.1", 0), _AnswerHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    # One kind of request, so the server needs one shape of answer.
+    monkeypatch.setattr(probe, "PROTOCOLS", ("chat",))
+    run_short = probe.run_short
+    monkeypatch.setattr(
+        probe,
+        "run_short",
+        lambda target, key, protocol, model, stream, **kw: run_short(
+            target, key, protocol, model, False, **kw
+        ),
+    )
+    try:
+        report = probe.run(
+            _run_args(server.server_port, "--duration", "0.3", "--short-rate", "20"), "test-key"
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    shorts = report["short_requests"]
+
+    assert server.received >= 4
+    assert shorts["sent"] == shorts["completed"] == server.received
+    assert shorts["unfinished"] == 0
+    assert shorts["failed"] == server.received // 2
+    assert report["failures"] == shorts["failed"]
+    assert report["ok"] is False

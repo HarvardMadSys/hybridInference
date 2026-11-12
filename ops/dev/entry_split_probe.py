@@ -32,7 +32,11 @@ What one run does:
   says nothing about whether requests got through.
 
 Raw ``http.client``, one connection per request, and **no retries**: every
-failed request is a failure in the report. The API key is read from the
+failed request is a failure in the report. So is an answer the probe could not
+read (a body of another shape than the protocol's), and so is a request that
+was still open when the report was written: each short request is counted as
+``sent`` when it starts and ``completed`` when it ends, the difference is
+``unfinished``, and a run with anything unfinished has failed. The API key is read from the
 environment variable ``--api-key-env`` names (``PROBE_API_KEY`` by default)
 and is never printed or written to the report.
 
@@ -170,6 +174,18 @@ def read_event(protocol: str, event: SSEEvent) -> Reading:
     kind = body.get("type") or event.event
     if "error" in body or kind in {"error", "response.failed", "response.incomplete"}:
         return Reading(error=f"error event: {event.data[:_SNIPPET]}")
+    try:
+        return _read_body(protocol, kind, body)
+    except _SHAPE_ERRORS:
+        return Reading(error=f"malformed event: {event.data[:_SNIPPET]!r}")
+
+
+#: What reading a field of an answer raises when the answer has another shape
+#: than the protocol's: a list where an object belongs, ``null`` for a member.
+_SHAPE_ERRORS = (AttributeError, TypeError, IndexError, KeyError)
+
+
+def _read_body(protocol: str, kind: Any, body: dict[str, Any]) -> Reading:
     if protocol == "chat":
         choices = body.get("choices") or []
         delta = choices[0].get("delta", {}) if choices else {}
@@ -350,27 +366,35 @@ class StreamCheck:
         return report
 
 
+def _answer_text(protocol: str, answer: dict[str, Any]) -> Any:
+    if protocol == "chat":
+        return ((answer.get("choices") or [{}])[0].get("message") or {}).get("content")
+    if protocol == "responses":
+        parts = [p for item in answer.get("output") or [] for p in item.get("content") or []]
+        return "".join(p.get("text", "") for p in parts if p.get("type") == "output_text")
+    return "".join(
+        b.get("text", "") for b in answer.get("content") or [] if b.get("type") == "text"
+    )
+
+
 def check_completion(protocol: str, status: int, body: bytes) -> list[str]:
     """What is wrong with a non-streaming *protocol* answer."""
     if status != 200:
         return [f"status {status}: {body[:_SNIPPET].decode('utf-8', 'replace')}"]
     try:
+        # ValueError: not JSON, or not UTF-8 (UnicodeDecodeError is one too).
         answer = json.loads(body)
-    except json.JSONDecodeError:
+    except ValueError:
         return [f"unparseable body: {body[:_SNIPPET]!r}"]
-    text: Any = None
-    if protocol == "chat":
-        text = ((answer.get("choices") or [{}])[0].get("message") or {}).get("content")
-    elif protocol == "responses":
-        if answer.get("status") != "completed":
-            return [f"response status {answer.get('status')!r}"]
-        parts = [p for item in answer.get("output") or [] for p in item.get("content") or []]
-        text = "".join(p.get("text", "") for p in parts if p.get("type") == "output_text")
-    else:
-        text = "".join(
-            b.get("text", "") for b in answer.get("content") or [] if b.get("type") == "text"
-        )
-    problems = [] if text else ["no text in the answer"]
+    if not isinstance(answer, dict):
+        return [f"unexpected body: {body[:_SNIPPET]!r}"]
+    try:
+        text = _answer_text(protocol, answer)
+    except _SHAPE_ERRORS:
+        return [f"malformed answer: {body[:_SNIPPET]!r}"]
+    if protocol == "responses" and answer.get("status") != "completed":
+        return [f"response status {answer.get('status')!r}"]
+    problems = [] if text and isinstance(text, str) else ["no text in the answer"]
     if not usage_complete(protocol, answer.get("usage")):
         problems.append("usage missing or incomplete")
     return problems
@@ -583,10 +607,18 @@ def run_stream(
     return check.finish(error)
 
 
-def run_short(target: Target, api_key: str, protocol: str, model: str, stream: bool) -> dict:
+def run_short(
+    target: Target,
+    api_key: str,
+    protocol: str,
+    model: str,
+    stream: bool,
+    *,
+    read_timeout: float = 120.0,
+) -> dict:
     """One short request; the outcome as a report row."""
     if stream:
-        report = run_stream(target, api_key, protocol, model)
+        report = run_stream(target, api_key, protocol, model, read_timeout=read_timeout)
         return {
             "protocol": protocol,
             "stream": True,
@@ -599,7 +631,7 @@ def run_short(target: Target, api_key: str, protocol: str, model: str, stream: b
     status: int | None = None
     try:
         body = json.dumps(request_body(protocol, model, False)).encode()
-        connection = target.connect(120.0)
+        connection = target.connect(read_timeout)
         try:
             connection.request(
                 "POST",
@@ -693,9 +725,18 @@ def check_boundary(target: Target, api_key: str, entries: list[dict[str, Any]]) 
 
 # --- the run -------------------------------------------------------------------
 
+#: Seconds past the read timeout the run still waits for open requests.
+_FINISH_MARGIN_S = 5.0
+
 
 class Tally:
-    """Short-request outcomes, from many threads."""
+    """Short-request outcomes, from many threads.
+
+    A request is counted twice: as sent when it is handed to a worker, and as
+    completed when the worker reports how it ended. Whatever was sent and has
+    not completed when the report is written is unfinished, and unfinished is
+    a failure: a request nobody saw the end of proves nothing.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
@@ -703,12 +744,20 @@ class Tally:
         self.failures: list[dict] = []
         self.not_sent = 0
 
-    def add(self, row: dict) -> None:
-        """Count one finished request."""
-        key = f"{row['protocol']}:{'stream' if row['stream'] else 'json'}"
+    def _count(self, protocol: str, stream: bool) -> dict[str, int]:
+        key = f"{protocol}:{'stream' if stream else 'json'}"
+        return self.counts.setdefault(key, {"sent": 0, "completed": 0, "failed": 0})
+
+    def start(self, protocol: str, stream: bool) -> None:
+        """Count one request as sent, before its worker starts."""
         with self._lock:
-            count = self.counts.setdefault(key, {"sent": 0, "failed": 0})
-            count["sent"] += 1
+            self._count(protocol, stream)["sent"] += 1
+
+    def add(self, row: dict) -> None:
+        """Count one started request as completed, with how it ended."""
+        with self._lock:
+            count = self._count(row["protocol"], row["stream"])
+            count["completed"] += 1
             if row["errors"]:
                 count["failed"] += 1
                 self.failures.append(row)
@@ -722,12 +771,15 @@ class Tally:
         """Totals and every failure."""
         with self._lock:
             sent = sum(c["sent"] for c in self.counts.values())
+            completed = sum(c["completed"] for c in self.counts.values())
             failed = sum(c["failed"] for c in self.counts.values())
             return {
                 "sent": sent,
+                "completed": completed,
                 "failed": failed,
+                "unfinished": sent - completed,
                 "not_sent": self.not_sent,
-                "by_kind": dict(self.counts),
+                "by_kind": {kind: dict(count) for kind, count in self.counts.items()},
                 "failures": list(self.failures),
             }
 
@@ -756,16 +808,20 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
     lock = threading.Lock()
 
     def long_stream(protocol: str) -> None:
-        result = run_stream(
-            target,
-            api_key,
-            protocol,
-            args.model,
-            expected_frames=args.expect_frames,
-            interval_ms=args.frame_interval_ms,
-            tolerance_ms=args.interval_tolerance_ms,
-            read_timeout=args.read_timeout,
-        )
+        try:
+            result = run_stream(
+                target,
+                api_key,
+                protocol,
+                args.model,
+                expected_frames=args.expect_frames,
+                interval_ms=args.frame_interval_ms,
+                tolerance_ms=args.interval_tolerance_ms,
+                read_timeout=args.read_timeout,
+            )
+        except Exception as exc:  # whatever it is, it is a failed stream
+            result = StreamReport(protocol=protocol, path=ENDPOINTS[protocol])
+            result.errors.append(f"probe error: {type(exc).__name__}: {exc}")
         with lock:
             long_reports.append(result)
 
@@ -785,6 +841,7 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
     next_health = started
     tick = 0
     workers: list[threading.Thread] = []
+    samplers: list[threading.Thread] = []
 
     def sample_health(at_s: float) -> None:
         t0 = time.monotonic()
@@ -798,7 +855,24 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
 
     def short(protocol: str, stream: bool) -> None:
         try:
-            tally.add(run_short(target, api_key, protocol, args.short_model or args.model, stream))
+            row = run_short(
+                target,
+                api_key,
+                protocol,
+                args.short_model or args.model,
+                stream,
+                read_timeout=args.read_timeout,
+            )
+        except Exception as exc:  # an answer the probe could not judge has failed
+            row = {
+                "protocol": protocol,
+                "stream": stream,
+                "status": None,
+                "duration_s": None,
+                "errors": [f"probe error: {type(exc).__name__}: {exc}"],
+            }
+        try:
+            tally.add(row)
         finally:
             in_flight.release()
 
@@ -816,13 +890,14 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
                 target=sample_health, args=(round(now - started, 1),), daemon=True
             )
             sampler.start()
-            workers.append(sampler)
+            samplers.append(sampler)
         if args.short_rate > 0 and (deadline is None or now < deadline):
             due = started + tick / args.short_rate
             if now >= due:
                 protocol, stream = kinds[tick % len(kinds)]
                 tick += 1
                 if in_flight.acquire(blocking=False):
+                    tally.start(protocol, stream)
                     worker = threading.Thread(target=short, args=(protocol, stream), daemon=True)
                     worker.start()
                     workers.append(worker)
@@ -831,21 +906,29 @@ def run(args: argparse.Namespace, api_key: str) -> dict:
                 continue
         time.sleep(0.01)
 
-    for worker in workers:
-        worker.join(timeout=args.read_timeout)
-    for thread in threads:
-        thread.join(timeout=args.read_timeout)
+    # One wait for everything still open, not one per thread: a request ends
+    # within the read timeout of its last byte, or it is not going to. What is
+    # still running after that is reported as unfinished and counted as failed.
+    wait_until = time.monotonic() + args.read_timeout + _FINISH_MARGIN_S
+    for thread in (*workers, *threads, *samplers):
+        thread.join(timeout=max(0.0, wait_until - time.monotonic()))
 
+    with lock:
+        # A snapshot: a stream that ends after this line stays unfinished.
+        long_done = list(long_reports)
     report["long_streams"] = [
-        {**asdict(r), "ok": r.ok} for r in sorted(long_reports, key=lambda r: r.started_at)
+        {**asdict(r), "ok": r.ok} for r in sorted(long_done, key=lambda r: r.started_at)
     ]
+    long_unfinished = args.long_streams - len(long_done)
+    report["long_streams_unfinished"] = long_unfinished
     report["short_requests"] = tally.summary()
     report["health"] = {
         "note": "auxiliary only; not counted",
         "samples": sorted(health, key=lambda sample: sample["at_s"]),
     }
-    failures = sum(1 for r in long_reports if not r.ok) + (args.long_streams - len(long_reports))
-    failures += report["short_requests"]["failed"] + report["short_requests"]["not_sent"]
+    shorts = report["short_requests"]
+    failures = sum(1 for r in long_done if not r.ok) + long_unfinished
+    failures += shorts["failed"] + shorts["unfinished"] + shorts["not_sent"]
     failures += sum(1 for row in report.get("boundary", []) if not row["ok"])
     report["failures"] = failures
     report["ok"] = failures == 0
@@ -902,7 +985,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--read-timeout",
         type=float,
         default=120.0,
-        help="seconds of silence before a request fails",
+        help="seconds of silence before a request fails; requests still open this long "
+        "after the last one was sent are reported unfinished",
     )
     parser.add_argument("--skip-boundary", action="store_true", help="skip the boundary checks")
     parser.add_argument("--output", type=Path, help="write the JSON report here instead of stdout")
