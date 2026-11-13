@@ -190,6 +190,34 @@ describe('PlaygroundPage', () => {
     expect(picker).toHaveFocus();
   });
 
+  it('shows Auto and hides the pinned provider when the format is not Chat', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('Provider', 'Chutes');
+    expect(screen.getByText('glm-4.6:chutes-api')).toBeInTheDocument();
+
+    chooseOption('API', 'Responses');
+
+    expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Auto');
+    expect(screen.queryByText('glm-4.6:chutes-api')).toBeNull();
+  });
+
   it('resets the provider when changing models while preserving each session draft and settings', async () => {
     fetchWithAuth.mockResolvedValue({
       ok: true,
@@ -774,49 +802,6 @@ describe('PlaygroundPage', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('opens the sessions and settings from the header on a phone', async () => {
-    mockStream([]);
-    render(<PlaygroundPage />);
-    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-
-    const toggle = screen.getByRole('button', { name: 'Chat settings' });
-    const drawer = screen.getByRole('complementary', { name: 'Chat settings' });
-    expect(toggle).toHaveAttribute('aria-controls', drawer.id);
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(toggle);
-
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('button', { name: 'Close chat settings' })).toHaveFocus();
-
-    fireEvent.keyDown(document, { key: 'Escape' });
-
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveFocus();
-
-    // The empty conversation offers the same drawer, and closing returns focus.
-    fireEvent.click(screen.getByRole('button', { name: 'Open chat settings' }));
-    expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Close chat settings' }));
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(toggle).toHaveFocus();
-  });
-
-  it('shows the conversation once a session is started or chosen from the drawer', async () => {
-    mockStream([]);
-    render(<PlaygroundPage />);
-    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    const toggle = screen.getByRole('button', { name: 'Chat settings' });
-
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
-
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getAllByRole('button', { name: /^New session/ })[0]);
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('opens the sessions and settings from the header on a phone', async () => {

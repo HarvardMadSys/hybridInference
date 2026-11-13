@@ -2,24 +2,27 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
-from contextlib import suppress
+import time
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
-from routing.protocols import RoutingRequestOptions
+from serving.config.runtime_settings import get_runtime_settings
 from serving.config.settings import has_role
-from serving.exceptions import scrub_error_for_user
 from serving.model_access import model_access_denial
 from serving.model_effort_capabilities import model_effort_domain
-from serving.pricing import require_route_pricing
-from serving.servers.auth import publish_caller_role
+from serving.servers.auth import (
+    _account_quotas,
+    _daily_quota_usd,
+    _quota_exceeded,
+    _spend_check,
+    publish_caller_role,
+)
 from serving.servers.deps import (
     get_completions_logger,
     get_cost_tracker,
@@ -34,7 +37,6 @@ from serving.servers.deps import (
     get_user_concurrency_limiter,
     require_role,
 )
-from serving.servers.model_availability import model_not_found_detail
 from serving.servers.request_body import json_body_after, json_body_schema
 from serving.servers.routers.anthropic_messages import (
     MALFORMED_BODY,
@@ -46,62 +48,40 @@ from serving.servers.routers.anthropic_messages import (
     render_messages_http,
 )
 from serving.servers.routers.completions import (
+    ChatOptions,
     ChatServices,
     ChatStream,
+    execute_chat,
     release_unstarted_chat_streams,
+    render_chat_http,
 )
-from serving.servers.routers.completions_stream import _extract_exception_status_code
 from serving.servers.routers.responses import (
     ResponsesServices,
     ResponsesStream,
     execute_responses,
 )
 from serving.servers.surface_http import client_origin, timeout_probe
-from serving.stream import (
-    StreamQueue,
-    make_role_chunk,
-    new_completion_id,
-    pump_stream,
-    stamp_completion_id,
-)
 from serving.surfaces.context import (
     ExecutionContext,
     admission_from,
     read_only,
 )
-from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
+
+    from serving.spend_ledger import Reservation
 
 logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal/playground", tags=["Playground"])
 
-# How the stream stays answerable, as on the public surfaces
-# (``completions_stream``, ``anthropic_messages``). The console reaches this
-# route through the Next.js rewrite proxy, which drops an upstream that sends no
-# byte for 30s (its default ``proxyTimeout``) and, once a response has started,
-# never passes an upstream disconnect on to the browser. A quiet prefill, or any
-# failure -- the router raises once a stream has started, including "all
-# providers failed" after the role chunk -- therefore left the page
-# "generating" until the user pressed Stop. So: a comment line every
-# ``_KEEPALIVE_INTERVAL`` keeps the proxy reading, a failure ends the stream
-# with an in-band error frame instead of a dropped connection, and
-# ``_MAX_IDLE_S`` bounds how long a silent upstream is waited on -- the
-# heartbeat would otherwise keep a stalled request "generating" until the
-# hour-long stream cap. 300s is the first-frame ceiling of the Anthropic surface,
-# whose comment explains why a long prefill needs that much.
-_KEEPALIVE_INTERVAL = 15
-_MAX_IDLE_S = 300
-_STREAM_END: Any = object()
-
 # The router's internal `_routing` blob never reaches the client verbatim: it
 # carries the raw upstream base_url, which on this deployment can be a LAN
 # address or a URL with embedded credentials. But *which* endpoint actually
 # served a request is the one thing a routing gateway's playground most needs
-# to show, so `_sanitize_chunk` republishes an allow-listed, host-only summary
+# to show, so `_route_frame` republishes an allow-listed, host-only summary
 # under `_PLAYGROUND_ROUTE_KEY` instead of dropping the field outright.
 #
 # Internal-only by construction: this republish lives here, not in the shared
@@ -109,7 +89,6 @@ _STREAM_END: Any = object()
 # host:port in it is shown to administrators only. The name deliberately avoids
 # containing `_routing` as a substring so that "the internal blob never appears
 # on the wire" stays checkable with a plain substring assertion.
-_ROUTING_KEY = "_routing"
 _PLAYGROUND_ROUTE_KEY = "_playground_route"
 
 
@@ -173,39 +152,98 @@ def _is_admin(user: dict[str, Any]) -> bool:
     return has_role(str(user.get("role") or "free"), "admin")
 
 
+def _authenticated_caller(user: dict[str, Any]) -> dict[str, Any]:
+    """The console session's caller, marked authenticated for logs and billing.
+
+    ``get_current_user`` verifies the session but its context is built for the
+    dashboard, not for inference: without this flag every playground row would
+    log ``authenticated: false`` and cost the caller like an anonymous request.
+    """
+    return {**user, "authenticated": True}
+
+
+async def _reserve_playground_spend(
+    request: Request,
+    user: dict[str, Any],
+    role: str,
+    op_store: Any,
+) -> Reservation | None:
+    """Check the session user's account budget and reserve this request's estimate.
+
+    The playground runs on the console session, not an API key, so it cannot
+    reuse ``verify_api_key``'s gate. This is the ``X-On-Behalf-Of`` path: the
+    user's account quotas, with no key attributed, and the same 429 the API
+    surfaces return when over a limit. A reserved estimate is released by
+    ``_playground_slot`` once the response, stream included, has been sent.
+    """
+    if op_store is None:
+        return None
+    user_id = str(user["user_id"])
+    read_at = time.monotonic()
+    daily, monthly = await _account_quotas(op_store, {"id": user_id, "role": role})
+    identity = {
+        "user_id": user_id,
+        "role": role,
+        "quota_daily_cost_usd": daily,
+        "quota_monthly_cost_usd": monthly,
+    }
+    check = await _spend_check(
+        identity,
+        api_key_id=None,
+        op_store=op_store,
+        quota_daily_cost_usd=_daily_quota_usd(identity),
+        spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
+        read_at=read_at,
+    )
+    reservation, refusal = check.admit()
+    if refusal is not None:
+        raise _quota_exceeded(request, user_id=user_id, role=role, refusal=refusal)
+    return reservation
+
+
 async def _playground_slot(
+    request: Request,
     user: dict[str, Any] = Depends(get_current_user),
     limiter: Any = Depends(get_user_concurrency_limiter),
+    op_store: Any = Depends(get_operational_store),
 ) -> AsyncGenerator[None, None]:
-    """Hold one of the caller's concurrency slots for the request, or refuse with 429.
+    """Hold a concurrency slot and the request's spend reservation until it ends.
 
     The playground runs on the console session, not an API key, so the API
     surfaces' admission (``servers.concurrency.enforce_user_concurrency``) never
     reaches it. It takes a slot from the same per-user budget instead, and
-    FastAPI tears this dependency down once the response has been sent, the
-    whole stream included, so the slot is held exactly as long as the upstream
-    work it admits.
+    refuses an over-quota caller before any upstream call
+    (:func:`_reserve_playground_spend`). FastAPI tears this dependency down once
+    the response has been sent, the whole stream included, so both are held
+    exactly as long as the upstream work they admit.
     """
-    if limiter is None:
-        yield
-        return
     user_id = str(user["user_id"])
-    granted, limit, _role_label = await limiter.try_acquire(
-        user_id,
-        str(user.get("role") or "free"),
-        bool(user.get("is_admin", False)),
-        user.get("max_concurrent_requests"),
-    )
-    if not granted:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Too many concurrent requests (limit: {limit}).",
-            headers={"Retry-After": "1"},
+    # Concurrency is independent of the quota: a limiter that is not configured
+    # still leaves the cost gate in force (and the reverse).
+    if limiter is not None:
+        granted, limit, _role_label = await limiter.try_acquire(
+            user_id,
+            str(user.get("role") or "free"),
+            bool(user.get("is_admin", False)),
+            user.get("max_concurrent_requests"),
         )
+        if not granted:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Too many concurrent requests (limit: {limit}).",
+                headers={"Retry-After": "1"},
+            )
+    reservation: Reservation | None = None
     try:
+        reservation = await _reserve_playground_spend(
+            request, user, str(user.get("role") or "free"), op_store
+        )
         yield
     finally:
-        limiter.release(user_id)
+        if reservation is not None:
+            reservation.release()
+        if limiter is not None:
+            limiter.release(user_id)
 
 
 @router.get("/models")
@@ -322,16 +360,12 @@ def _redact_routing(routing: Any, *, show_host: bool = False) -> dict[str, Any] 
     # the provider label is its canonical fallback.
     endpoint_id = str(routing.get("endpoint_id") or provider)
     if not endpoint_id:
-        # Unreachable on the router the playground actually uses: `get_router`
-        # hands back the FixedRouter, and `routing_chunk()` always stamps a
-        # provider. RouteWise is the exception — its final decision frame is
-        # enrichment-only (fallback + failed_attempts, no provider/endpoint,
-        # see routewise/router.py `_attach_decision_info`) and would be dropped
-        # here. It cannot reach this path because the playground never consults
-        # `model_router_registry`. Whoever wires the playground to per-model
-        # routers must make this branch merge into the running summary instead
-        # of discarding it, and teach the UI merge- rather than replace-
-        # semantics — otherwise RouteWise fallbacks show up as clean successes.
+        # The chat route consults `model_router_registry`, so RouteWise can
+        # serve it. Its final decision frame is enrichment-only (fallback +
+        # failed_attempts, no provider/endpoint, see routewise/router.py
+        # `_attach_decision_info`); the merged stream state keeps whatever an
+        # earlier attempt announced, so that frame does not erase the badge.
+        # A turn with no announced endpoint at all still has none to show.
         return None
 
     summary: dict[str, Any] = {"provider": provider, "endpoint_id": endpoint_id}
@@ -358,56 +392,74 @@ def _redact_routing(routing: Any, *, show_host: bool = False) -> dict[str, Any] 
     return summary
 
 
-def _sanitize_chunk(chunk: str, completion_id: str, *, show_host: bool = False) -> str:
-    """Swap internal routing metadata for a summary safe for the caller.
+def _is_done_frame(frame: Any) -> bool:
+    """Whether *frame* is the SSE terminator of a chat stream."""
+    if isinstance(frame, bytes):
+        return frame.startswith(b"data: [DONE]")
+    return isinstance(frame, str) and frame.startswith("data: [DONE]")
 
-    Also relabels the frame with this response's ``completion_id``, since
-    adapters mint one id per chunk and clients group by it.
 
-    Only the router's own synthetic routing frame — ``routing_chunk()``, the
-    one with an empty ``choices`` list — is republished. Every other carrier of
-    ``_routing`` is stripped outright: ``make_final_usage_chunk`` attaches a
-    provider/base_url pair for cost accounting with no endpoint identity in it,
-    and since it is the *last* frame of the stream, republishing it would
-    overwrite a precise ``glm-4.6:zai-api`` badge with a bare ``zai``.
-
-    Total by contract: this must never raise. `_routing` is popped before the
-    summary is built, so a redaction failure costs the badge, never the
-    redaction — the caller yields whatever comes back. ``show_host`` is passed
-    to :func:`_redact_routing`.
-    """
-    if not chunk.startswith("data: ") or chunk.startswith("data: [DONE]"):
-        return chunk
+def _route_frame(stream: ChatStream, *, show_host: bool) -> str | None:
+    """The frame carrying the redacted upstream identity, or None without one."""
     try:
-        obj = json.loads(chunk[6:])
+        summary = _redact_routing(stream.session.served_route, show_host=show_host)
     except Exception:
-        return chunk
-    if not isinstance(obj, dict):
-        return chunk
-
-    stamp_completion_id(obj, completion_id)
-
-    if _ROUTING_KEY in obj:
-        routing = obj.pop(_ROUTING_KEY)
-        if not obj.get("choices"):
-            try:
-                summary = _redact_routing(routing, show_host=show_host)
-            except Exception:
-                summary = None
-            if summary:
-                obj[_PLAYGROUND_ROUTE_KEY] = summary
-    return f"data: {json.dumps(obj)}\n\n"
+        summary = None
+    if not summary:
+        return None
+    return f"data: {json.dumps({_PLAYGROUND_ROUTE_KEY: summary})}\n\n"
 
 
-def _error_frame(message: str, code: int) -> str:
-    """Return the in-band error frame that ends a failed stream."""
-    error = {"message": message, "type": "server_error", "code": code}
-    return f"data: {json.dumps({'error': error})}\n\n"
+def _with_route_frame(
+    response: StreamingResponse, stream: ChatStream, *, show_host: bool
+) -> StreamingResponse:
+    """Append the routing badge to a chat stream, ahead of its ``[DONE]``.
+
+    The badge reports the attempt that actually served the turn, so it is built
+    once the stream has run, not when it starts. A response that never reaches
+    ``[DONE]`` still gets one, after its last frame.
+    """
+
+    inner = response.body_iterator
+
+    async def frames() -> AsyncIterator[Any]:
+        sent = False
+        async for frame in inner:
+            if not sent and _is_done_frame(frame):
+                badge = _route_frame(stream, show_host=show_host)
+                if badge is not None:
+                    yield badge
+                sent = True
+            yield frame
+        if not sent:
+            badge = _route_frame(stream, show_host=show_host)
+            if badge is not None:
+                yield badge
+
+    response.body_iterator = frames()
+    return response
 
 
-#: The playground's caller check, shared by the route and the body read below.
+#: The playground's caller check, shared by the routes and the body read below.
 _require_internal = require_role("internal")
 _chat_body = json_body_after(_require_internal, PlaygroundChatRequest)
+
+
+def _public_chat_request(body: PlaygroundChatRequest) -> dict[str, Any]:
+    """The public Chat Completions body this playground turn stands for."""
+    system = body.system_prompt.strip()
+    payload: dict[str, Any] = {
+        "model": body.model,
+        "messages": (
+            [{"role": "system", "content": system}, *body.messages] if system else body.messages
+        ),
+        "temperature": body.temperature,
+        "max_tokens": body.max_tokens,
+        "stream": True,
+    }
+    if body.reasoning_effort is not None:
+        payload["reasoning_effort"] = body.reasoning_effort
+    return payload
 
 
 # A pasted document can make a long prompt, so this route keeps the general
@@ -415,120 +467,68 @@ _chat_body = json_body_after(_require_internal, PlaygroundChatRequest)
 # (RequestBodyLimitMiddleware). Its body is therefore not declared, which
 # FastAPI would read and decode before any dependency, the role check
 # included: a dependency reads it once the caller is known.
-@router.post("/chat", openapi_extra=json_body_schema(PlaygroundChatRequest))
+@router.post("/chat", response_model=None, openapi_extra=json_body_schema(PlaygroundChatRequest))
 async def playground_chat(
+    request: Request,
+    http_response: Response,
     body: PlaygroundChatRequest = Depends(_chat_body),
-    _admin: dict[str, Any] = Depends(_require_internal),
-    router_exec=Depends(get_router),
-    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    caller: dict[str, Any] = Depends(_require_internal),
     _slot: None = Depends(_playground_slot),
-) -> StreamingResponse:
-    """Stream a chat completion for admin testing."""
-    # The access check every inference surface applies, answered the same way
-    # for every reason: the model does not exist. Internal users reach the
-    # playground, and an admin-only model must stay out of their reach here too.
-    route = router_exec.routes.get(body.model)
-    if (
-        route is None
-        or await model_access_denial(
-            route, body.model, _admin, visibility_resolver=model_visibility_resolver
-        )
-        is not None
-    ):
-        req_ctx.mark_model_not_found()
-        raise HTTPException(404, model_not_found_detail(body.model, user_ctx=_admin))
-    is_admin = _is_admin(_admin)
+    router_exec=Depends(get_router),
+    model_router_registry=Depends(get_model_router_registry),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+    runtime_settings=Depends(get_runtime_settings),
+    log_store=Depends(get_log_store),
+    completions_logger=Depends(get_completions_logger),
+    pricing_lookup=Depends(get_pricing_lookup),
+    cost_tracker=Depends(get_cost_tracker),
+    _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
+) -> Any:
+    """Stream a chat completion through the public surface's own execution.
+
+    Model access, pricing, routing, logging, billing and the admin provider pin
+    are the public route's. This supplies the console session's identity and
+    appends the playground's routing badge.
+    """
+    is_admin = _is_admin(caller)
     if body.provider and not is_admin:
         # A pin skips circuit admission and reaches routes no weighted draw
         # would choose, a staging route included.
         raise HTTPException(403, "Choosing the route a request takes requires the admin role.")
-    require_route_pricing(route)
+    caller = _authenticated_caller(caller)
     # The key pool reads it to keep upstream keys reserved for a higher tier
     # away from this caller, as on the API surfaces.
-    publish_caller_role(_admin)
-    effective_messages = body.messages
-    if body.system_prompt.strip():
-        effective_messages = [
-            {"role": "system", "content": body.system_prompt.strip()},
-            *body.messages,
-        ]
-
-    async def _generate():
-        completion_id = new_completion_id()
-        yield make_role_chunk(model=body.model, completion_id=completion_id)
-        kwargs: dict[str, Any] = {
-            "temperature": body.temperature,
-            "max_tokens": body.max_tokens,
-        }
-        if body.reasoning_effort is not None:
-            kwargs["reasoning_effort"] = body.reasoning_effort
-        # A reader task drains the router into a queue, so a heartbeat can go
-        # out while it waits without cancelling the upstream read. Bounded: a
-        # client that stops reading stops the reads from the upstream too.
-        chunks = StreamQueue()
-        # Nothing runs until the reader's first read, selection included.
-        router_chunks = router_exec.stream_chat_completion(
-            body.model,
-            effective_messages,
-            routing_options=RoutingRequestOptions(pin_provider=body.provider),
-            **kwargs,
-        )
-        reader = asyncio.create_task(pump_stream(router_chunks, chunks, end=_STREAM_END))
-        idle_s = 0
-        try:
-            while True:
-                try:
-                    item = await asyncio.wait_for(chunks.get(), timeout=_KEEPALIVE_INTERVAL)
-                except TimeoutError:
-                    idle_s += _KEEPALIVE_INTERVAL
-                    if idle_s >= _MAX_IDLE_S:
-                        logger.warning(
-                            f"Playground stream idle for {idle_s}s, giving up: model={body.model}"
-                        )
-                        yield _error_frame(
-                            f"The model sent nothing for {_MAX_IDLE_S}s, so the request "
-                            "was stopped.",
-                            504,
-                        )
-                        return
-                    yield ": keepalive\n\n"
-                    continue
-                if item is _STREAM_END:
-                    return
-                if isinstance(item, Exception):
-                    # exc_info: the frame carries only the scrubbed message.
-                    logger.error(
-                        f"Playground stream failed: model={body.model}",
-                        exc_info=item,
-                        extra={"event": "playground_stream_failed", "model": body.model},
-                    )
-                    code = _extract_exception_status_code(item)
-                    request_id = req_ctx.get().get("request_id")
-                    yield _error_frame(scrub_error_for_user(item, request_id, code), code)
-                    return
-                idle_s = 0
-                # Deliberately unguarded: `suppress` here would fail *open* —
-                # a raise inside the redactor would leave `chunk` at its original
-                # value and hand the raw `_routing` blob, base_url and all, to the
-                # browser. `_sanitize_chunk` is total instead.
-                yield _sanitize_chunk(item, completion_id, show_host=is_admin)
-        finally:
-            # Also the client-disconnect path: cancelling the reader closes the
-            # router's generator, which releases its lease and probe claims.
-            reader.cancel()
-            with suppress(asyncio.CancelledError):
-                await reader
-
-    return StreamingResponse(
-        _generate(),
-        media_type="text/event-stream",
-        headers={
-            # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from
-            # buffering the stream to compress it, which collapses TTFT.
-            "Cache-Control": "no-cache, no-transform",
-            "X-Accel-Buffering": "no",
-        },
+    publish_caller_role(caller)
+    origin = client_origin(request)
+    if body.provider:
+        origin = origin.with_header("X-Route-Pin", body.provider)
+    outcome = await execute_chat(
+        _public_chat_request(body),
+        ExecutionContext(
+            user_ctx=read_only(caller),
+            origin=origin,
+            admission=admission_from(_slot),
+            batch=None,
+            timeout_probe=timeout_probe(request),
+        ),
+        ChatServices(
+            router=router_exec,
+            model_router_registry=model_router_registry,
+            visibility=model_visibility_resolver,
+            log_store=log_store,
+            completions_logger=completions_logger,
+            pricing_lookup=pricing_lookup,
+            cost_tracker=cost_tracker,
+            app_services=getattr(request.app.state, "services", None),
+        ),
+        ChatOptions.online(runtime_settings),
     )
+    if isinstance(outcome, ChatStream):
+        _streams.append(outcome)
+    response = await render_chat_http(outcome, request, http_response)
+    if isinstance(outcome, ChatStream) and isinstance(response, StreamingResponse):
+        return _with_route_frame(response, outcome, show_host=is_admin)
+    return response
 
 
 _RESPONSES_SSE_HEADERS = {
@@ -562,6 +562,7 @@ async def playground_responses(
         body = await request.json()
     except Exception as exc:
         raise HTTPException(400, "Invalid JSON in request body") from exc
+    caller = _authenticated_caller(caller)
     publish_caller_role(caller)
     result = await execute_responses(
         body,
@@ -618,6 +619,7 @@ async def playground_messages(
         body: Any = await request.json()
     except Exception:
         body = MALFORMED_BODY
+    caller = _authenticated_caller(caller)
     publish_caller_role(caller)
     outcome = await execute_messages(
         body,

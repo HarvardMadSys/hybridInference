@@ -49,6 +49,7 @@ export function buildRequest(api: PlaygroundApi, options: RequestOptions): Recor
       temperature,
       max_output_tokens: maxTokens,
       ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      store: false,
       stream: true,
     };
   }
@@ -263,6 +264,7 @@ export function buildPythonCode(
           ...(options.reasoningEffort
             ? [`    reasoning={"effort": ${JSON.stringify(options.reasoningEffort)}},`]
             : []),
+          '    store=False,',
           '    stream=True,',
           ')',
           '',

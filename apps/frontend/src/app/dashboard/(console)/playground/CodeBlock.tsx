@@ -7,6 +7,10 @@ import { useMemo } from 'react';
 
 import type { CodeLanguage } from './api';
 
+// Prism highlights the whole document on import unless told not to. Nothing on
+// this page wants that: only the generated snippet is highlighted.
+Prism.manual = true;
+
 const GRAMMARS: Record<CodeLanguage, Prism.Grammar> = {
   python: Prism.languages.python,
   curl: Prism.languages.bash,

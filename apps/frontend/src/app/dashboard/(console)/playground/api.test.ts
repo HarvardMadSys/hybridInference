@@ -49,6 +49,7 @@ describe('buildRequest', () => {
       input: OPTIONS.history,
       temperature: 0.5,
       max_output_tokens: 512,
+      store: false,
       stream: true,
     });
   });
@@ -270,6 +271,7 @@ describe('buildCode', () => {
     expect(code).toContain('instructions="Be terse."');
     expect(code).toContain('input=[');
     expect(code).toContain('max_output_tokens=512');
+    expect(code).toContain('store=False');
 
     const withEffort = buildCode('python', 'responses', 'https://gw.example', {
       ...OPTIONS,

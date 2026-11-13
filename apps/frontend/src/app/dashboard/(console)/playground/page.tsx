@@ -13,6 +13,7 @@ import {
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { Markdown } from '@/components/ui/Markdown';
 import { Select } from '@/components/ui/Select';
 import { config } from '@/config/env';
@@ -50,6 +51,10 @@ const UNDO_MS = 8000;
  */
 const STREAM_IDLE_MS = 45_000;
 const NO_MESSAGES: Message[] = [];
+
+function isAbsoluteUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
 
 interface PlaygroundSession {
   id: string;
@@ -159,6 +164,7 @@ const REVEAL_ON_HOVER =
 
 export default function PlaygroundPage() {
   const { state } = useAuth();
+  const branding = useBranding();
   const [models, setModels] = useState<PlaygroundModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
@@ -828,12 +834,14 @@ export default function PlaygroundPage() {
     'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50';
   const sliderLabelRow = 'mb-2 flex items-center justify-between';
 
-  const apiBase =
-    config.apiBase || (typeof window !== 'undefined' ? window.location.origin : 'https://gateway');
+  const pageOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const codeBase =
+    branding.exampleApiBase || (isAbsoluteUrl(config.apiBase) ? config.apiBase : pageOrigin);
+  const showCode = !branding.exampleHidden;
   const codeHistory = input.trim()
     ? [...requestHistory(msgs), { role: 'user' as const, content: input.trim() }]
     : requestHistory(msgs);
-  const codeText = buildCode(codeLang, sessionApi, apiBase, {
+  const codeText = buildCode(codeLang, sessionApi, codeBase, {
     model: modelId || 'your-model-id',
     history: codeHistory,
     systemPrompt: sysPrompt,
@@ -882,29 +890,31 @@ export default function PlaygroundPage() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button
-              ref={codeButtonRef}
-              type="button"
-              onClick={() => {
-                setCodeCopied(false);
-                setCodeOpen(true);
-              }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
-            >
-              <svg
-                aria-hidden="true"
-                className="h-3.5 w-3.5"
-                fill="none"
-                viewBox="0 0 24 24"
-                stroke="currentColor"
-                strokeWidth={2}
-                strokeLinecap="round"
-                strokeLinejoin="round"
+            {showCode && (
+              <button
+                ref={codeButtonRef}
+                type="button"
+                onClick={() => {
+                  setCodeCopied(false);
+                  setCodeOpen(true);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
               >
-                <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
-              </svg>
-              View code
-            </button>
+                <svg
+                  aria-hidden="true"
+                  className="h-3.5 w-3.5"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                >
+                  <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
+                </svg>
+                View code
+              </button>
+            )}
             <span className="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 sm:inline-flex">
               <span
                 className={`h-1.5 w-1.5 rounded-full ${
@@ -1125,7 +1135,7 @@ export default function PlaygroundPage() {
                       id="playground-provider"
                       size="lg"
                       className="mt-2 w-full"
-                      value={selectedProvider ?? ''}
+                      value={sessionApi === 'chat' ? (selectedProvider ?? '') : ''}
                       onValueChange={(value) =>
                         patch((s) => ({
                           ...s,
@@ -1579,7 +1589,7 @@ export default function PlaygroundPage() {
                       <span className="max-w-[10rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
                         {model ? model.name : modelsLoading ? 'Loading...' : 'No model'}
                       </span>
-                      {selectedProvider && (
+                      {selectedProvider && sessionApi === 'chat' && (
                         <span className="hidden max-w-[8rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 sm:inline">
                           {selectedProvider}
                         </span>

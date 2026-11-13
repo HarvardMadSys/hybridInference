@@ -27,6 +27,7 @@ from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import AppServices, get_current_user
 from serving.servers.routers import playground
+from serving.spend_ledger import ledger_for
 from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 
@@ -53,6 +54,7 @@ class _Adapter(BaseAdapter):
         self.roles: list[Any] = []
         self.params: list[dict[str, Any]] = []
         self.gate: asyncio.Event | None = None
+        self.usage: dict[str, Any] | None = None
 
     async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
         return self.format_response(content="ok", model=self.config.id)
@@ -65,6 +67,8 @@ class _Adapter(BaseAdapter):
         if self.gate is not None:
             await self.gate.wait()
         yield self.format_stream_chunk(model=self.config.id, content="ok")
+        if self.usage is not None:
+            yield f"data: {json.dumps({'choices': [], 'usage': self.usage})}\n\n"
         yield done_sentinel()
 
 
@@ -115,13 +119,45 @@ class _Deployment:
         return len(self.lan.roles) + len(self.staging.roles) + len(self.private.roles)
 
 
-def _client(deployment: _Deployment, user: dict[str, Any], limit: int = 8) -> AsyncClient:
+class _Store:
+    """The store surface the playground's quota gate and spend ledger use."""
+
+    def __init__(self, *, daily_quota: float = 100.0, spent_today: float = 0.0) -> None:
+        self.daily_quota = daily_quota
+        self.spent_today = spent_today
+        self.increments: list[dict[str, Any]] = []
+
+    async def get_quota_context_for_user(self, user_id: str) -> list[dict[str, Any]]:
+        return [{"quota_daily_cost_usd": self.daily_quota, "quota_monthly_cost_usd": None}]
+
+    async def get_user_cost_today(self, user_id: str) -> float:
+        return self.spent_today
+
+    async def increment_user_cost(
+        self,
+        user_id: str,
+        cost: float,
+        *,
+        day: str,
+        api_key_id: int | None = None,
+        requests: int = 1,
+        **_: Any,
+    ) -> None:
+        self.increments.append(
+            {"user_id": user_id, "cost": cost, "api_key_id": api_key_id, "day": day}
+        )
+
+
+def _client(
+    deployment: _Deployment, user: dict[str, Any], limit: int = 8, store: Any = None
+) -> AsyncClient:
     app = FastAPI()
     app.include_router(playground.router)
     limits = {"free": limit, "pro": limit, "internal": limit, "admin": limit}
     app.state.services = AppServices(
         router=deployment.router,
         user_concurrency_limiter=UserConcurrencyLimiter(static_limits_provider(limits)),
+        operational_store=store,
     )
     app.dependency_overrides[get_current_user] = lambda: user
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
@@ -309,3 +345,53 @@ async def test_models_without_a_reasoning_domain_publish_an_empty_list() -> None
 
     models = {model["id"]: model for model in listing.json()["models"]}
     assert models["open-model"]["reasoning_efforts"] == []
+
+
+@pytest.mark.asyncio
+async def test_an_over_quota_user_is_refused_in_every_format() -> None:
+    """The console session's budget gates the playground as an API key gates `/v1`."""
+    deployment = _Deployment()
+    store = _Store(daily_quota=1.0, spent_today=2.0)
+    async with _client(deployment, INTERNAL, store=store) as client:
+        chat = await _chat(client, "open-model")
+        responses = await _responses(client, "open-model", stream=True)
+        messages = await _messages(client, "open-model", stream=True)
+
+    assert (chat.status_code, responses.status_code, messages.status_code) == (429, 429, 429)
+    assert deployment.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_the_playground_bills_the_session_user() -> None:
+    """A chat turn's cost is recorded against the signed-in user, with no API key."""
+    deployment = _Deployment()
+    deployment.lan.config.pricing = {"prompt": "1", "completion": "1"}
+    deployment.lan.usage = {"prompt_tokens": 1000, "completion_tokens": 1000}
+    store = _Store()
+    async with _client(deployment, INTERNAL, store=store) as client:
+        response = await _chat(client, "open-model")
+
+    assert response.status_code == 200
+    await ledger_for(store).flush()
+    assert [increment["user_id"] for increment in store.increments] == ["u-internal"]
+    assert store.increments[0]["api_key_id"] is None
+    assert store.increments[0]["cost"] > 0
+
+
+@pytest.mark.asyncio
+async def test_the_new_formats_forward_reasoning_effort() -> None:
+    deployment = _ReasoningDeployment()
+    async with _client(deployment, INTERNAL) as client:
+        responses = await _responses(
+            client, "reasoning-model", stream=True, reasoning={"effort": "high"}
+        )
+        responses_params = deployment.adapter.params[-1]
+        messages = await _messages(
+            client, "reasoning-model", stream=True, output_config={"effort": "low"}
+        )
+        messages_params = deployment.adapter.params[-1]
+
+    assert responses.status_code == 200
+    assert responses_params["reasoning_effort"] == "high"
+    assert messages.status_code == 200
+    assert messages_params["reasoning_effort"] == "low"
