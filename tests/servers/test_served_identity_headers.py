@@ -24,6 +24,8 @@ from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
 from serving.stream import done_sentinel, make_final_usage_chunk
 
+pytest_plugins = ["tests.servers.conftest_auth"]
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -311,6 +313,123 @@ async def test_chat_completions_response_carries_served_identity_headers(chat_cl
     assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
     assert r.headers["x-fi-served-provider"] == "zai"
     assert r.headers["x-fi-served-endpoint"].count("http") == 0
+
+
+@pytest.mark.dbtest
+@pytest.mark.asyncio
+async def test_postgres_key_entitlement_controls_real_chat_response_headers(
+    chat_app, auth_backend, test_user, monkeypatch
+):
+    """Exercise key metadata decoding through PostgreSQL, auth, and inference."""
+    from decimal import Decimal
+
+    from serving.config.settings import get_settings
+    from serving.servers.auth import generate_api_key, hash_api_key
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    get_settings.cache_clear()
+    store, log_store, db_logger, _backend = auth_backend
+    chat_app.state.services.operational_store = store
+    chat_app.state.services.log_store = log_store
+    chat_app.state.services.db_logger = db_logger
+    adapter = chat_app.state.services.router.routes[CHAT_MODEL].adapters[0][0]
+    client = AsyncClient(transport=ASGITransport(app=chat_app), base_url="http://test")
+
+    async def insert_key(metadata):
+        plaintext = generate_api_key()
+        key_hash = hash_api_key(plaintext)
+        await store.create_key(
+            key_hash=key_hash,
+            key_prefix=plaintext[:12],
+            user_id=test_user["id"],
+            account_id=test_user["id"],
+            quota_daily_cost_usd=Decimal("100.00"),
+            metadata=metadata,
+        )
+        return plaintext
+
+    entitled = await insert_key({"diagnostic_entitlements": ["served_identity"]})
+    ordinary = await insert_key(None)
+    malformed = await insert_key({"diagnostic_entitlements": {"served_identity": True}})
+    opt_in = {"x-fi-served-identity": "include"}
+    request = {
+        "model": CHAT_MODEL,
+        "messages": [{"role": "user", "content": "Hi"}],
+    }
+
+    try:
+        authorized = await client.post(
+            "/v1/chat/completions",
+            json=request,
+            headers={**opt_in, "authorization": f"Bearer {entitled}"},
+        )
+        assert authorized.status_code == 200, authorized.text
+        assert authorized.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
+
+        for plaintext in (ordinary, malformed):
+            denied = await client.post(
+                "/v1/chat/completions",
+                json=request,
+                headers={**opt_in, "authorization": f"Bearer {plaintext}"},
+            )
+            assert denied.status_code == 200, denied.text
+            assert not any(name.lower().startswith("x-fi-") for name in denied.headers)
+
+        streamed = await client.post(
+            "/v1/chat/completions",
+            json={**request, "stream": True},
+            headers={**opt_in, "authorization": f"Bearer {entitled}"},
+        )
+        assert streamed.status_code == 200
+        assert streamed.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
+
+        adapter.config.endpoint_id = f"{_PRIVATE_MODEL_LABEL}:{_PRIVATE_ROUTE_LABEL}"
+        adapter.config.endpoint_identity_publishable = False
+        private = await client.post(
+            "/v1/chat/completions",
+            json=request,
+            headers={**opt_in, "authorization": f"Bearer {entitled}"},
+        )
+        assert private.status_code == 200, private.text
+        assert "x-fi-served-endpoint" not in private.headers
+        assert _PRIVATE_MODEL_LABEL not in private.headers.get("x-fi-served-model", "")
+
+        class FailingAdapter(BaseAdapter):
+            async def chat_completion(self, messages, **params):
+                raise RuntimeError("primary adapter failed")
+
+            async def stream_chat_completion(self, messages, **params):
+                raise RuntimeError("primary stream failed")
+                if False:  # pragma: no cover
+                    yield ""
+
+        primary_cfg = _chat_cfg(CHAT_MODEL)
+        fallback_cfg = _chat_cfg(CHAT_MODEL)
+        fallback_cfg.provider = "sglang"
+        fallback_cfg.endpoint_id = f"{CHAT_MODEL}:{_PRIVATE_ROUTE_LABEL}"
+        fallback_cfg.endpoint_identity_publishable = False
+        chat_app.state.services.router.register_route(
+            CHAT_MODEL,
+            [(FailingAdapter(primary_cfg), 1.0), (DummyAdapter(fallback_cfg), 1.0)],
+        )
+        fallback = await client.post(
+            "/v1/chat/completions",
+            json=request,
+            headers={**opt_in, "authorization": f"Bearer {entitled}"},
+        )
+        assert fallback.status_code == 200, fallback.text
+        assert fallback.headers["x-fi-served-provider"] == "sglang"
+        assert "x-fi-served-endpoint" not in fallback.headers
+
+        await store.revoke_key(test_user["id"])
+        revoked = await client.post(
+            "/v1/chat/completions",
+            json=request,
+            headers={**opt_in, "authorization": f"Bearer {entitled}"},
+        )
+        assert revoked.status_code in (401, 403), revoked.text
+    finally:
+        await client.aclose()
 
 
 @pytest.mark.asyncio
