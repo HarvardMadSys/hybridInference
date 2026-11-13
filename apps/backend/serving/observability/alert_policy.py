@@ -31,14 +31,15 @@ from typing import Any
 
 from serving.observability.alert_config import NotificationPolicy
 from serving.observability.alert_history.capture import BACKEND_SOURCE
+from serving.observability.alert_history.vocabulary import DecisionReason
 from serving.observability.alert_types import alert_type_of
 
 log = logging.getLogger(__name__)
 
 #: Reasons :func:`hold_reason` returns, recorded as alert-history decisions.
-RECORD_ONLY = "record_only"
-ALREADY_NOTIFIED = "already_notified"
-BELOW_MIN_DURATION = "below_min_duration"
+RECORD_ONLY = DecisionReason.RECORD_ONLY.value
+ALREADY_NOTIFIED = DecisionReason.ALREADY_NOTIFIED.value
+BELOW_MIN_DURATION = DecisionReason.BELOW_MIN_DURATION.value
 
 #: How often finished problems are dropped. Dynamic keys (per user, per day)
 #: would otherwise grow the table for the life of the process.

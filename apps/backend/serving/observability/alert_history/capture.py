@@ -50,6 +50,7 @@ from serving.observability.alert_history.records import (
     finalize,
 )
 from serving.observability.alert_history.redaction import looks_sensitive, redact_text
+from serving.observability.alert_history.vocabulary import decision_reason
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
 
@@ -493,6 +494,7 @@ class BackendCapture:
         now: float | None = None,
     ) -> bool:
         """Record a decision; report whether its first record entered the history queue."""
+        reason = decision_reason(reason).value
         moment = self._clock() if now is None else now
         if resolution:
             return self._emit_decision(key, episode_id, reason, moment, resolution=True)
