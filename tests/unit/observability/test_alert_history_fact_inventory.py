@@ -44,6 +44,22 @@ OUTBOX_STATES = [
 ]
 OMISSION = ["missing", "unsafe", "too_long"]
 
+
+@pytest.mark.parametrize("reason", ["record_only", "already_notified", "below_min_duration"])
+def test_notification_policy_decisions_are_accepted_by_the_ingest_wire(reason):
+    event = EventIn.model_validate(
+        {
+            "origin_record_id": "policy:test",
+            "kind": "notification_decision",
+            "occurred_at": "2026-11-13T12:00:00Z",
+            "target_environment": "test",
+            "decision_reason": reason,
+        }
+    )
+
+    assert event.decision_reason == reason
+
+
 #: Section 1 of the inventory: every string-valued fact key, every value.
 STRING_FACTS: dict[str, list[str]] = {
     "action_status": ["failed", "manual_reconciliation_required"],

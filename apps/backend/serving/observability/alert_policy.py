@@ -37,7 +37,6 @@ log = logging.getLogger(__name__)
 
 #: Reasons :func:`hold_reason` returns, recorded as alert-history decisions.
 RECORD_ONLY = "record_only"
-DIGEST_ONLY = "digest_only"
 ALREADY_NOTIFIED = "already_notified"
 BELOW_MIN_DURATION = "below_min_duration"
 

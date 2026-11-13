@@ -422,8 +422,8 @@ class CostSection(BaseModel):
 
 
 #: Where an alert type's firings go under the notification policy. ``digest``
-#: and ``record`` both keep it out of the channel; they differ only in how the
-#: daily digest will present it (an open problem, or a count).
+#: currently falls back to ``channel`` until digest delivery exists; ``record``
+#: keeps it out of the channel when durable history is available.
 Destination = Literal["channel", "digest", "record"]
 
 
