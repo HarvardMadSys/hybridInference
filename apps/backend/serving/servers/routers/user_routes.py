@@ -20,6 +20,7 @@ from serving.audit import AuditTarget
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    HardDeleteStateChanged,
     PreferencesTooLargeError,
     ProjectNotFoundError,
     UserNotFoundError,
@@ -88,6 +89,21 @@ router = APIRouter(prefix="/user", tags=["User Dashboard"])
 logger = get_logger(__name__)
 LLM_PROBER_LAYOUT_KEY = "llm_prober_layout"
 LOCALE_PREFERENCE_KEY = "locale"
+
+
+def _account_being_deleted() -> HTTPException:
+    """The 409 for a write refused because the account is being erased.
+
+    A pending hard-delete claim refuses every write to the account, so a
+    request that was authenticated before the erasure started finds the claim
+    in force when it writes. Nothing was written; the account is being
+    permanently deleted and cannot be changed.
+    """
+    return HTTPException(
+        status_code=409,
+        detail="This account is being permanently deleted and cannot be changed.",
+    )
+
 
 #: A safety ceiling on an account's active API keys, not a product limit: the
 #: console does not show it and ordinary use never reaches it. Every key spends
@@ -478,6 +494,8 @@ async def update_llm_prober_layout(
             body.model_dump(),
             max_total_bytes=USER_PREFERENCES_MAX_BYTES,
         )
+    except HardDeleteStateChanged:
+        raise _account_being_deleted() from None
     except PreferencesTooLargeError:
         raise HTTPException(
             status_code=413,
@@ -502,7 +520,13 @@ async def reset_llm_prober_layout(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
-    if not await op_store.delete_user_preference(current_user["user_id"], LLM_PROBER_LAYOUT_KEY):
+    try:
+        deleted = await op_store.delete_user_preference(
+            current_user["user_id"], LLM_PROBER_LAYOUT_KEY
+        )
+    except HardDeleteStateChanged:
+        raise _account_being_deleted() from None
+    if not deleted:
         raise UserNotFoundError(current_user["user_id"])
 
     logger.info("llm_prober_layout_reset user_id=%s", current_user["user_id"])
@@ -534,18 +558,21 @@ async def update_locale_preference(
     choice = LocalePreference(value=body.locale, chosen_at=chosen_at)
     value = {"value": choice.value, "chosen_at": _iso_utc(chosen_at)}
 
-    stored = await op_store.set_user_preference_if_newer(
-        user_id, LOCALE_PREFERENCE_KEY, value, chosen_at
-    )
-    if stored is None:
-        raise UserNotFoundError(user_id)
+    try:
+        stored = await op_store.set_user_preference_if_newer(
+            user_id, LOCALE_PREFERENCE_KEY, value, chosen_at
+        )
+        if stored is None:
+            raise UserNotFoundError(user_id)
 
-    kept = _extract_locale_preference({LOCALE_PREFERENCE_KEY: stored})
-    if kept is None:
-        # A newer entry this build cannot read (written outside the API) is
-        # "no choice" everywhere else; replace it rather than report it.
-        await op_store.set_user_preference(user_id, LOCALE_PREFERENCE_KEY, value)
-        kept = choice
+        kept = _extract_locale_preference({LOCALE_PREFERENCE_KEY: stored})
+        if kept is None:
+            # A newer entry this build cannot read (written outside the API) is
+            # "no choice" everywhere else; replace it rather than report it.
+            await op_store.set_user_preference(user_id, LOCALE_PREFERENCE_KEY, value)
+            kept = choice
+    except HardDeleteStateChanged:
+        raise _account_being_deleted() from None
 
     logger.info(
         "locale_preference_updated user_id=%s locale=%s kept=%s", user_id, body.locale, kept.value
@@ -1359,12 +1386,26 @@ async def update_profile(
         raise HTTPException(status_code=400, detail="No fields provided for update")
 
     if "user_name" in update_data:
-        await op_store.update_user_fields(
-            current_user["user_id"], user_name=update_data["user_name"]
-        )
+        try:
+            await op_store.update_user_fields(
+                current_user["user_id"], user_name=update_data["user_name"]
+            )
+        except HardDeleteStateChanged:
+            # A hard-delete claim took the account between the session check
+            # and this write. Nothing was written; the account is being
+            # erased, so the profile cannot be changed.
+            raise _account_being_deleted() from None
 
     if "avatar_url" in update_data:
-        await op_store.set_user_avatar(current_user["user_id"], update_data["avatar_url"] or None)
+        try:
+            await op_store.set_user_avatar(
+                current_user["user_id"], update_data["avatar_url"] or None
+            )
+        except HardDeleteStateChanged:
+            # A hard-delete claim took the account between the session check
+            # and this write. Nothing was written; the account is being
+            # erased, so its portrait cannot be changed either.
+            raise _account_being_deleted() from None
 
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
@@ -1436,7 +1477,12 @@ async def change_password(
 
     # A signed-in owner, confirmed just above: not refused for a busy queue.
     new_password_hash = await password_utils.hash_password_async(body.new_password, shed=False)
-    await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
+    try:
+        await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
+    except HardDeleteStateChanged:
+        # A hard-delete claim took the account between the session check and
+        # this write. The password was not changed.
+        raise _account_being_deleted() from None
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.
     revoked = await op_store.revoke_user_sessions(

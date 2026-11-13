@@ -31,6 +31,7 @@ import string
 import sys
 from typing import TYPE_CHECKING, Any
 
+from serving.exceptions import HardDeleteStateChanged
 from serving.utils import password as password_utils
 
 if TYPE_CHECKING:
@@ -249,6 +250,22 @@ async def _reset_with_database(identifier: str, new_password: str) -> dict[str, 
         ) from exc
     try:
         return await reset_password(AccountStore(pool), identifier, new_password)
+    except HardDeleteStateChanged as exc:
+        # The account is being permanently deleted, so its password is not
+        # changed. Say so, and point at the procedure that can act on it: an
+        # ordinary Resume does not work here — it refuses a live claim, and a
+        # durable erasure fence may make the account unrecoverable outright.
+        raise ResetPasswordError(
+            "That account is being permanently deleted, so its password was not "
+            "changed. A password reset cannot be used on an account under a "
+            "hard-delete claim. If the deletion must be stopped, an "
+            "administrator has to follow the hard-delete recovery procedure: "
+            "wait for the claim's recovery grace period to pass, confirm that "
+            "every deletion worker for the account has stopped, and only then "
+            "resume it through the Admin console with the stale-claim "
+            "confirmation. An account whose erasure fence is already "
+            "established cannot be resumed at all."
+        ) from exc
     except asyncpg.PostgresError as exc:
         raise ResetPasswordError(
             f"The database {where} reported an error: {exc}. The reset may be "

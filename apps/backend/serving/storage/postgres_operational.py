@@ -390,6 +390,42 @@ _COLUMN_CASTS = {
 _ALL_ACCOUNT_KEYS_LOCK = "hashtextextended('hybridinference:api-keys', 0)"
 
 
+async def _refuse_claimed_account(conn: asyncpg.Connection, user_id: str) -> None:
+    """Refuse a write to an account under a hard-delete claim.
+
+    Raises ``HardDeleteStateChanged`` for a claimed account; returns
+    otherwise, and the caller's own statement still decides whether the
+    account existed.
+
+    The account row is read under the row lock, so the answer is taken with
+    the lock the write would take anyway: a claim installed after this read
+    cannot race the write, because the claim itself takes the same lock. A
+    missing row is not a claim, and a claim cannot be installed on a row that
+    is not there.
+
+    The account-mutating writers that do not read the account row themselves
+    use this, so that a pending erasure claim refuses the write whatever
+    column it names — the account is being erased, so nothing about it may
+    change. This matches every other store, which refuses any work for an
+    account marked ``hard_delete_pending`` (see ``batch_store._lock_owner``).
+
+    Not every write to the ``users`` table goes through here. The state
+    machine's own writes (``update_user_fields``, ``suspend_user``,
+    ``delete_user``, ``resume_user``, approve, reject) carry their own
+    claim guard, the startup role seeding carries an equivalent predicate in
+    its own statement, and the phone and email binding statements carry
+    ``status = 'active'``. ``update_user_last_login`` is the one account
+    write with no claim guard: the login route requires an ``active``
+    account, so a claimed account cannot reach it, and it writes a timestamp
+    rather than an identity field.
+    """
+    row = await conn.fetchrow(
+        "SELECT hard_delete_pending FROM users WHERE id = $1 FOR UPDATE", user_id
+    )
+    if row is not None and row["hard_delete_pending"]:
+        raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
+
+
 async def _lock_account_keys(conn: asyncpg.Connection, account_id: str) -> None:
     """Hold off other writes to *account_id*'s keys until this transaction ends.
 
@@ -583,6 +619,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         it runs at every start: an address added to the setting promotes its
         account the next time the gateway starts, as long as the account still
         has the default role. An account without an email never matches.
+
+        Only an active account is promoted. A soft-deleted one is not a
+        candidate for the admin role whatever its claim state, and a
+        hard-delete claim is in progress means the account is being erased:
+        promoting it would change an identity field during the erasure, which
+        the claim exists to prevent. A backend restart therefore leaves such
+        an account exactly as it found it.
         """
         admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
         if not admin_emails:
@@ -591,7 +634,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
-                "AND role IN ('free')",
+                "AND role IN ('free') "
+                "AND status = 'active' "
+                "AND hard_delete_pending IS NOT TRUE",
                 admin_emails,
             )
         seeded = _parse_command_tag_count(tag)
@@ -790,8 +835,18 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         When ``expected_status`` is given, the update is a compare-and-swap:
         it runs under the user row lock and raises
         ``HardDeleteStateChanged`` (writing nothing) if the status has moved
-        since the caller read it. A pending hard-delete claim always fails
-        closed, so a status write can never strand a claim on a live account.
+        since the caller read it.
+
+        A pending hard-delete claim always fails closed, whichever columns the
+        write names: the account is being erased, so no write may change what
+        is erased — not its address, not its role, not its preferences. This
+        matches every other store, which refuses any work for an account
+        marked ``hard_delete_pending`` (see ``batch_store._lock_owner``).
+
+        A claimed account is always soft-deleted, so the self-service writers
+        never reach this guard: they require an ``active`` account. The one
+        caller that can reach it is the password-reset CLI, which reports the
+        conflict itself.
         """
         if not fields:
             return
@@ -3141,7 +3196,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def mark_user_email_verified(self, user_id: str) -> None:
         """Set ``email_verified = TRUE`` on the user."""
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute("UPDATE users SET email_verified = TRUE WHERE id = $1", user_id)
 
     async def delete_user_verification_tokens(self, user_id: str) -> None:
@@ -3498,7 +3554,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         included.
         """
         updated = f"jsonb_set({_PREFERENCES_OBJECT}, ARRAY[$2::text], $3::jsonb, true)"
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             if max_total_bytes is None:
                 status = await conn.execute(
                     f"UPDATE users SET preferences = {updated} WHERE id = $1",
@@ -3524,7 +3581,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
         """Remove one preference key in place, leaving every other key as it is."""
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             status = await conn.execute(
                 f"UPDATE users SET preferences = {_PREFERENCES_OBJECT} - $2::text WHERE id = $1",
                 user_id,
@@ -3547,7 +3605,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         ``chosen_at`` that is not an ISO 8601 timestamp counts as no choice
         (the CASE keeps the cast from running on it).
         """
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             updated = await conn.fetchval(
                 f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
                 "ARRAY[$2::text], $3::jsonb, true) "
@@ -3579,8 +3638,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
 
     async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
-        """Replace the user's portrait; None removes it."""
-        async with self._pool.acquire() as conn:
+        """Replace the user's portrait; None removes it.
+
+        The account row is locked before the write, and a pending hard-delete
+        claim refuses it: the account is being erased, so nothing about it may
+        change — the portrait included. The portrait is not written through
+        :meth:`update_user_fields`, so the guard is stated here rather than
+        inherited.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute(
                 "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
             )

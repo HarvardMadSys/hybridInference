@@ -31,7 +31,7 @@ from serving.auth.signup_policy import (
     is_public_signup_enabled,
 )
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
-from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
+from serving.exceptions import AccountSuspendedError, HardDeleteStateChanged, SelfDeleteRefused
 from serving.schemas_auth import (
     AccountsResponse,
     BindEmailRequest,
@@ -950,7 +950,15 @@ async def verify_email(
                     detail="Verification token has expired. Please request a new one.",
                 )
 
-            await op_store.mark_user_email_verified(token_row["user_id"])
+            try:
+                await op_store.mark_user_email_verified(token_row["user_id"])
+            except HardDeleteStateChanged:
+                # A hard-delete claim took the account between the token
+                # lookup and this write. Nothing was written.
+                raise HTTPException(
+                    status_code=409,
+                    detail=("This account is being permanently deleted and cannot be changed."),
+                ) from None
             logger.warning(
                 "Repaired email_verified for user %s from already-used verification token",
                 token_row["user_id"],
@@ -981,7 +989,15 @@ async def verify_email(
         if previous_email and previous_email.lower() != pending_email.lower():
             background_tasks.add_task(send_email_changed_email, previous_email, pending_email)
     else:
-        await op_store.mark_user_email_verified(token_row["user_id"])
+        try:
+            await op_store.mark_user_email_verified(token_row["user_id"])
+        except HardDeleteStateChanged:
+            # A hard-delete claim took the account between the token lookup
+            # and this write. Nothing was written.
+            raise HTTPException(
+                status_code=409,
+                detail="This account is being permanently deleted and cannot be changed.",
+            ) from None
     await op_store.mark_verification_used(token)
 
     logger.info(f"Email verified for user: {token_row['user_id']}")
