@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react
 import { ssoStartFailure } from '@/components/auth/ssoMessages';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
-import { useT } from '@/components/providers/useT';
+import { useT, type Translate } from '@/components/providers/useT';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import {
@@ -74,6 +74,14 @@ type OwnerProof = { kind: 'password' } | { kind: 'sso'; reauth: SsoReauth } | { 
 
 const CONFIRM_BOX = 'mt-3 space-y-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3';
 
+/** Why the account's only way in stays: said before it is tried, and when it is refused. */
+function lastMethod(t: Translate): string {
+  return t(
+    'settings.sso.last_method',
+    'This is the only way to sign in to this account. Set a password before disconnecting it.',
+  );
+}
+
 /**
  * The body of the settings page's "Single sign-on" section: the identities
  * that can sign in to this account, removing one, and linking another. The
@@ -97,6 +105,10 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
   const unlinkProof = proofFor(unlinkReauth);
   const linkProof = proofFor(linkReauth);
   const canChange = unlinkProof.kind !== 'none';
+  // An account confirms at its provider because it has no password and no
+  // phone, so its one identity is the only way in and the gateway keeps it.
+  // Said here, it spares a round trip to the provider that could only be refused.
+  const onlyWayIn = unlinkProof.kind === 'sso' && identities.length === 1;
 
   // Removing an identity can change how the account confirms the next action.
   const changed = async () => {
@@ -141,7 +153,7 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
                     })}
                   </p>
                 </div>
-                {canChange && unlinking !== identity.id && (
+                {canChange && !onlyWayIn && unlinking !== identity.id && (
                   <Button
                     type="button"
                     variant="secondary"
@@ -154,7 +166,7 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
                   </Button>
                 )}
               </div>
-              {unlinkProof.kind !== 'none' && unlinking === identity.id && (
+              {unlinkProof.kind !== 'none' && !onlyWayIn && unlinking === identity.id && (
                 <DisconnectConfirm
                   identity={identity}
                   proof={unlinkProof}
@@ -166,6 +178,8 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
           ))}
         </ul>
       )}
+
+      {onlyWayIn && <p className="text-sm text-gray-600">{lastMethod(t)}</p>}
 
       {!canChange ? (
         <p className="text-sm text-gray-600">
@@ -242,10 +256,7 @@ function DisconnectConfirm({
       reauth?.settle(err);
       setError(
         err instanceof APIError && err.statusCode === 409
-          ? t(
-              'settings.sso.last_method',
-              'This is the only way to sign in to this account. Set a password before disconnecting it.',
-            )
+          ? lastMethod(t)
           : (ssoRefusalMessage(err) ?? getErrorMessage(err)),
       );
       setBusy(false);

@@ -809,6 +809,26 @@ describe('the single sign-on section', () => {
       expect(sso.unlinkSsoIdentity).not.toHaveBeenCalled();
     });
 
+    it('does not offer to disconnect the only way in, and sends nobody to the provider for it', async () => {
+      // No password, no phone, one identity: the gateway would refuse it.
+      sso.listSsoIdentities.mockResolvedValue([identity()]);
+      renderSettings(false, true);
+
+      expect(await screen.findByText('Example University')).toBeInTheDocument();
+      const section = ssoSection();
+      expect(
+        within(section).getByText(
+          'This is the only way to sign in to this account. Set a password before disconnecting it.',
+        ),
+      ).toBeInTheDocument();
+      expect(within(section).queryByRole('button', { name: /^Disconnect/ })).toBeNull();
+      // Another identity can still be connected.
+      expect(
+        within(section).getByRole('button', { name: 'Connect an SSO account' }),
+      ).toBeInTheDocument();
+      expect(sso.startSsoReauth).not.toHaveBeenCalled();
+    });
+
     it('comes back to the same identity, confirmed, and disconnects it without a password', async () => {
       window.sessionStorage.setItem(
         'sso-reauth-draft',
