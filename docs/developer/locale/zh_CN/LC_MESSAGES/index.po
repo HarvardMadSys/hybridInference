@@ -271,3 +271,9 @@ msgstr ""
 "仓库的组织方式也体现了这一点：每个部署把自己的站点信息、配置文件位置和功能开关放在 ``distributions/`` 下的\\ *发行版 "
 "overlay*\\ 里，而不是写进代码。所以新克隆下来的仓库不带任何别人的部署信息，跑起来就是你自己的网关。怎么配置和扩展 overlay，见 "
 ":doc:`distribution-customization`。"
+
+msgid "Let an organization's members sign in with its own accounts"
+msgstr "让某个机构的成员用机构自己的账号登录"
+
+msgid ":doc:`sso`"
+msgstr ":doc:`sso`"

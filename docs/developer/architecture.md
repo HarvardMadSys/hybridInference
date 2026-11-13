@@ -457,8 +457,8 @@ capped with a fabricated `[DONE]`.
 ## Configuration
 
 Application documents are validated JSON settings in `app_config`:
-`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION` and
-`SITE_BRANDING`. Application YAML files and their path/mode selectors are not
+`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`,
+`SITE_BRANDING` and `SSO_PROVIDERS`. Application YAML files and their path/mode selectors are not
 runtime inputs. A fresh gateway serves an empty model list and a neutral console
 that asks an administrator to configure it.
 

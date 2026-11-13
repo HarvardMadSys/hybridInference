@@ -1,0 +1,347 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-10-27 05:51-0400\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+msgid "Single Sign-On"
+msgstr "单点登录（SSO）"
+
+msgid "This page is for an operator who wants the members of an organization, such as a university or a company, to sign in to the console with the organization's own accounts. After reading it you can connect an identity provider, decide what a member's first sign-in does, and know what the gateway does not do when someone leaves the organization."
+msgstr "本页面向这样的运营方：希望某个机构（例如大学或公司）的成员用机构自己的账号登录控制台。读完后，你可以对接一个身份提供方，决定成员第一次登录时发生什么，并了解成员离开机构时网关不会做什么。"
+
+msgid "The gateway supports identity providers that speak OpenID Connect. SAML and CAS are not supported yet."
+msgstr "网关支持使用 OpenID Connect 的身份提供方。暂不支持 SAML 和 CAS。"
+
+msgid "Connect a provider"
+msgstr "对接一个身份提供方"
+
+msgid "**Register the gateway at the identity provider** as a confidential client that uses the authorization code flow. Set its redirect URI to `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you will give the provider below. Note the client id and the client secret."
+msgstr "**在身份提供方那边登记网关**，登记为使用授权码流程的机密客户端。把重定向 URI 设为 `<FRONTEND_URL>/auth/sso/<id>/callback`，其中 `<id>` 是你下面要给这个身份提供方起的短名。记下 client id 和 client secret。"
+
+msgid "**Store the client secret** in **Admin > Configuration** as a secret setting, for example `SSO_EXAMPLE_UNIV_CLIENT_SECRET`."
+msgstr "**保存 client secret**：在 **Admin > Configuration** 中把它存为一个密钥设置，例如 `SSO_EXAMPLE_UNIV_CLIENT_SECRET`。"
+
+msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, on the same tab:"
+msgstr "**描述这个身份提供方**：在同一个标签页的 `SSO_PROVIDERS` 设置中填写："
+
+msgid "**Check `FRONTEND_URL`.** It must be the address users open the console at. The redirect URI is built from it, and users must reach the console through that address for a sign-in to complete."
+msgstr "**检查 `FRONTEND_URL`**。它必须是用户打开控制台时使用的地址。重定向 URI 由它生成，用户也必须通过这个地址访问控制台，登录才能完成。"
+
+msgid "The change applies without a restart. The sign-in page now shows **Log in with SSO**. A user selects it, enters their work or school email, and is sent to the provider whose `domains` cover that email. The page does not list which organizations are connected."
+msgstr "修改后不需要重启即可生效。登录页会出现 **Log in with SSO**。用户点击后输入工作或学校邮箱，就会被送到 `domains` 覆盖该邮箱的身份提供方。登录页不会列出对接了哪些机构。"
+
+msgid "Saving the setting asks for the administrator's password, as other changes to who may sign in do."
+msgstr "保存这个设置时会要求输入管理员密码，和其他涉及谁可以登录的修改一样。"
+
+msgid "Provider fields"
+msgstr "身份提供方的字段"
+
+msgid "Field"
+msgstr "字段"
+
+msgid "Default"
+msgstr "默认值"
+
+msgid "Meaning"
+msgstr "含义"
+
+msgid "`id`"
+msgstr "`id`"
+
+msgid "required"
+msgstr "必填"
+
+msgid "Short name: lower-case letters, digits and hyphens. It is part of the redirect URI, so changing it means changing the redirect URI at the provider too"
+msgstr "短名：小写字母、数字和连字符。它是重定向 URI 的一部分，改名后也要修改身份提供方那边登记的重定向 URI"
+
+msgid "`type`"
+msgstr "`type`"
+
+msgid "The protocol. Only `oidc` is accepted"
+msgstr "协议类型。只接受 `oidc`"
+
+msgid "`display_name`"
+msgstr "`display_name`"
+
+msgid "The name users see when they link or confirm with this provider"
+msgstr "用户在关联账号或确认身份时看到的名称"
+
+msgid "`enabled`"
+msgstr "`enabled`"
+
+msgid "`true`"
+msgstr "`true`"
+
+msgid "Set `false` to stop offering the provider. Existing links are kept"
+msgstr "设为 `false` 后不再提供这个身份提供方。已有的关联会保留"
+
+msgid "`issuer`"
+msgstr "`issuer`"
+
+msgid "The provider's issuer URL, exactly as its discovery document states it. It must use `https`; `http` is accepted for `localhost` only"
+msgstr "身份提供方的 issuer URL，必须和它的 discovery 文档中写的完全一致。必须使用 `https`；只有 `localhost` 可以用 `http`"
+
+msgid "`client_id`, `client_secret`"
+msgstr "`client_id`, `client_secret`"
+
+msgid "`client_secret` is always a `${NAME}` reference to a secret setting, never the secret itself"
+msgstr "`client_secret` 永远是指向某个密钥设置的 `${NAME}` 引用，不能直接写密钥"
+
+msgid "`client_auth_method`"
+msgstr "`client_auth_method`"
+
+msgid "`client_secret_basic`"
+msgstr "`client_secret_basic`"
+
+msgid "How the gateway authenticates to the token endpoint. The other value is `client_secret_post`"
+msgstr "网关向 token 接口证明自己身份的方式。另一个取值是 `client_secret_post`"
+
+msgid "`scopes`"
+msgstr "`scopes`"
+
+msgid "`[\"openid\", \"email\", \"profile\"]`"
+msgstr "`[\"openid\", \"email\", \"profile\"]`"
+
+msgid "Must include `openid`"
+msgstr "必须包含 `openid`"
+
+msgid "`domains`"
+msgstr "`domains`"
+
+msgid "The email domains this provider answers for. `example.edu` matches that domain; `*.example.edu` matches its subdomains and not `example.edu` itself. Two providers cannot claim the same domain"
+msgstr "这个身份提供方负责的邮箱域名。`example.edu` 只匹配该域名本身；`*.example.edu` 匹配它的子域名，不匹配 `example.edu` 本身。两个身份提供方不能声明同一个域名"
+
+msgid "`assume_email_verified`"
+msgstr "`assume_email_verified`"
+
+msgid "`false`"
+msgstr "`false`"
+
+msgid "Treat the provider's email as verified although the provider does not say so"
+msgstr "即使身份提供方没有说明邮箱已验证，也把它的邮箱视为已验证"
+
+msgid "`auto_create`"
+msgstr "`auto_create`"
+
+msgid "Create an account at a member's first sign-in"
+msgstr "成员第一次登录时创建账号"
+
+msgid "`require_approval`"
+msgstr "`require_approval`"
+
+msgid "Put an account created that way in the approval queue"
+msgstr "这样创建的账号先进入审批队列"
+
+msgid "`auto_link`"
+msgstr "`auto_link`"
+
+msgid "Link an existing account that has the same email without asking its owner"
+msgstr "已有同邮箱的账号时，不询问账号主人就直接关联"
+
+msgid "`default_role`"
+msgstr "`default_role`"
+
+msgid "`free`"
+msgstr "`free`"
+
+msgid "Role of an account created at first sign-in: `free`, `pro` or `internal`"
+msgstr "第一次登录时创建的账号的角色：`free`、`pro` 或 `internal`"
+
+msgid "What a sign-in does"
+msgstr "一次登录会发生什么"
+
+msgid "The gateway identifies a member by the provider's own identifier for them, not by their email. Once that identifier is linked to an account, the member signs in to that account, whatever email the provider reports later."
+msgstr "网关用身份提供方给成员的标识来识别成员，而不是用邮箱。这个标识一旦关联到某个账号，成员以后就登录到该账号，不管身份提供方之后报告的邮箱是什么。"
+
+msgid "For an identifier that is not linked yet, the gateway uses the email, and only when both of these hold:"
+msgstr "对于还没有关联的标识，网关会使用邮箱，但必须同时满足下面两条："
+
+msgid "the email is in one of the provider's `domains`;"
+msgstr "邮箱属于这个身份提供方的某个 `domains`；"
+
+msgid "the provider reports the email as verified, or `assume_email_verified` is on."
+msgstr "身份提供方报告邮箱已验证，或者打开了 `assume_email_verified`。"
+
+msgid "Otherwise the sign-in is refused. A provider vouches only for its own domains."
+msgstr "否则拒绝登录。身份提供方只能为它自己的域名作证。"
+
+msgid "With a trusted email, the result depends on whether an account already has it:"
+msgstr "邮箱可信时，结果取决于是否已有账号使用这个邮箱："
+
+msgid "Account with that email"
+msgstr "使用该邮箱的账号"
+
+msgid "Result"
+msgstr "结果"
+
+msgid "None, and `auto_create` is off"
+msgstr "没有，且 `auto_create` 关闭"
+
+msgid "The sign-in is refused"
+msgstr "拒绝登录"
+
+msgid "None, and `auto_create` is on"
+msgstr "没有，且 `auto_create` 打开"
+
+msgid "An account is created with `default_role`. With `require_approval` it waits in **Admin > Users** like any registration"
+msgstr "用 `default_role` 创建账号。打开 `require_approval` 时，它和普通注册一样在 **Admin > Users** 中等待审批"
+
+msgid "Exists and is active"
+msgstr "存在且处于活动状态"
+
+msgid "The member is asked to sign in to it once, the way they usually do, and then to accept the link"
+msgstr "要求成员先用平时的方式登录该账号一次，然后确认关联"
+
+msgid "Exists and is not active"
+msgstr "存在但不处于活动状态"
+
+msgid "The sign-in is refused. This includes a deleted account: its email stays taken, as it does for signup"
+msgstr "拒绝登录。已删除的账号也算在内：它的邮箱仍被占用，注册时也是如此"
+
+msgid "Creating accounts this way does not depend on the public signup switch or the signup allowlist. An address on `ADMIN_EMAILS` is never created this way."
+msgstr "这种方式创建账号不受公开注册开关和注册白名单的影响。`ADMIN_EMAILS` 中的地址永远不会以这种方式创建账号。"
+
+msgid "Let members in without approval"
+msgstr "让成员免审批直接使用"
+
+msgid "To give every member an account that works at their first sign-in:"
+msgstr "要让每个成员在第一次登录时就得到一个可用的账号："
+
+msgid "Link existing accounts without asking"
+msgstr "不询问就关联已有账号"
+
+msgid "With `auto_link` on, an active account that has the same email is linked at once, when the deployment requires email verification, the account's email is verified and the account is not an administrator. Leave it off in two cases:"
+msgstr "打开 `auto_link` 后，在部署要求邮箱验证、账号邮箱已验证且账号不是管理员的情况下，同邮箱的活动账号会被立即关联。以下两种情况不要打开："
+
+msgid "**The deployment has ever run without email verification.** Accounts registered during that time are marked verified without proof, so someone could have registered a member's address."
+msgstr "**部署曾经在不要求邮箱验证的情况下运行过**。那段时间注册的账号未经证明就被标为已验证，所以可能有人注册了某个成员的地址。"
+
+msgid "**The organization reassigns email addresses.** A new member who receives an old address would be linked to the previous holder's account."
+msgstr "**机构会重新分配邮箱地址**。拿到旧地址的新成员会被关联到前一位持有者的账号。"
+
+msgid "Providers that do not report a verified email"
+msgstr "不报告邮箱已验证的身份提供方"
+
+msgid "Some providers never send `email_verified`. Microsoft Entra ID is one. If the organization manages its own email addresses, set `assume_email_verified` to `true` for that provider. Without it, no member of such a provider can complete a first sign-in."
+msgstr "有些身份提供方从不发送 `email_verified`，Microsoft Entra ID 就是其中之一。如果邮箱地址由机构自己管理，可以把该身份提供方的 `assume_email_verified` 设为 `true`。不设置的话，这类身份提供方的成员都无法完成第一次登录。"
+
+msgid "Linking and unlinking"
+msgstr "关联与解除关联"
+
+msgid "A user manages their own links under **Settings > Single sign-on**: they can connect an organization account, including one whose email differs from the account's, and disconnect one. Both ask the user to confirm, and the only way to sign in to an account cannot be disconnected."
+msgstr "用户在 **Settings > Single sign-on** 下管理自己的关联：可以关联一个机构账号（邮箱可以和当前账号不同），也可以解除关联。两种操作都要求用户确认身份，而且账号唯一的登录方式不能解除。"
+
+msgid "An administrator sees a user's links in the user's detail panel under **Admin > Users** and can unlink one. Unlinking removes the link only: it does not end the account's sessions or revoke its API keys. Administrators cannot create a link for a user."
+msgstr "管理员可以在 **Admin > Users** 的用户详情面板中看到用户的关联，并解除其中一个。解除关联只删除关联本身：不会结束账号的会话，也不会吊销它的 API key。管理员不能替用户建立关联。"
+
+msgid "If a sign-in is refused because the account is already connected to a different identity from the same organization, the provider has recreated the member or given the address to someone else. Confirm which, then unlink the old identity."
+msgstr "如果登录被拒绝的原因是账号已经关联了同一机构的另一个身份，说明身份提供方重建了这个成员，或者把地址给了别人。先确认是哪种情况，再解除旧的关联。"
+
+msgid "Confirming sensitive actions"
+msgstr "确认敏感操作"
+
+msgid "An account created by single sign-on has no password. When its owner deletes the account, sets a password or changes the sign-in email, the console sends them to the provider to sign in again instead of asking for a password."
+msgstr "通过单点登录创建的账号没有密码。当账号主人删除账号、设置密码或修改登录邮箱时，控制台会让他回到身份提供方重新登录一次，而不是要求输入密码。"
+
+msgid "An administrator's own confirmations always ask for a password. An account that signs in only through a provider and is made an administrator sets a password first, under **Settings**."
+msgstr "管理员自己的确认始终要求输入密码。只通过身份提供方登录的账号被设为管理员后，要先在 **Settings** 下设置密码。"
+
+msgid "When a member leaves the organization"
+msgstr "成员离开机构时"
+
+msgid "The gateway is not told when a provider disables an account. The member can no longer sign in through the provider, but sessions that are already open and API keys keep working. Suspend the account in **Admin > Users** to end both."
+msgstr "身份提供方停用某个账号时，网关不会得到通知。该成员无法再通过身份提供方登录，但已经打开的会话和 API key 仍然有效。在 **Admin > Users** 中停用该账号可以同时结束两者。"
+
+msgid "Stop offering a provider"
+msgstr "停止提供某个身份提供方"
+
+msgid "Set `enabled` to `false`. Accounts that sign in only through that provider can then use **Forgot password** to set a password, which needs outgoing email to be configured. Without outgoing email, set passwords for those accounts before you disable the provider."
+msgstr "把 `enabled` 设为 `false`。只通过该身份提供方登录的账号之后可以用 **Forgot password** 设置密码，这需要已配置发信。没有配置发信时，请在停用该身份提供方之前先为这些账号设置密码。"
+
+msgid "Changing a provider's `issuer` breaks every existing link to it, because links are recorded against the issuer."
+msgstr "修改身份提供方的 `issuer` 会让已有的关联全部失效，因为关联是按 issuer 记录的。"
+
+msgid "Try it with a local provider"
+msgstr "用本地的身份提供方试一试"
+
+msgid "You can test against [Keycloak](https://www.keycloak.org/) on your own machine. Run the gateway from a [development checkout](installation.md#development-checkout-no-docker) rather than in a container, so that `localhost` names the same machine for your browser and for the gateway."
+msgstr "可以在自己的机器上用 [Keycloak](https://www.keycloak.org/) 测试。请用[开发检出](installation.md#development-checkout-no-docker)的方式运行网关，而不是在容器里运行，这样 `localhost` 对浏览器和网关来说是同一台机器。"
+
+msgid "Start Keycloak on a port the gateway does not use:"
+msgstr "在网关没有占用的端口上启动 Keycloak："
+
+msgid "In the Keycloak admin console at `http://localhost:8081`, create a realm, a user with an email and a password, and an OpenID Connect client with client authentication on and the redirect URI `<FRONTEND_URL>/auth/sso/keycloak/callback`."
+msgstr "在 `http://localhost:8081` 的 Keycloak 管理控制台中，创建一个 realm、一个带邮箱和密码的用户，以及一个 OpenID Connect 客户端：打开客户端认证，重定向 URI 设为 `<FRONTEND_URL>/auth/sso/keycloak/callback`。"
+
+msgid "In the gateway, store the client's secret as a secret setting and add a provider whose `issuer` is `http://localhost:8081/realms/<realm>`, whose `id` is `keycloak` and whose `domains` include the domain of the user's email."
+msgstr "在网关中，把该客户端的 secret 存为密钥设置，并添加一个身份提供方：`issuer` 为 `http://localhost:8081/realms/<realm>`，`id` 为 `keycloak`，`domains` 包含该用户邮箱的域名。"
+
+msgid "Open the console's sign-in page, select **Log in with SSO** and enter the user's email."
+msgstr "打开控制台的登录页，选择 **Log in with SSO**，输入该用户的邮箱。"
+
+msgid "Mark the user's email as verified in Keycloak, or the sign-in is refused."
+msgstr "在 Keycloak 中把该用户的邮箱标为已验证，否则登录会被拒绝。"
+
+msgid "When a sign-in is refused"
+msgstr "登录被拒绝时"
+
+msgid "The sign-in page shows a short message. The gateway's log names the provider and the reason, and never contains a token or a secret."
+msgstr "登录页会显示一条简短的提示。网关日志会写明是哪个身份提供方以及原因，日志里不会出现 token 或密钥。"
+
+msgid "Message says"
+msgstr "提示内容"
+
+msgid "Usual cause"
+msgstr "常见原因"
+
+msgid "Single sign-on is unavailable"
+msgstr "SSO 登录暂时不可用"
+
+msgid "The provider cannot be reached, the client secret setting is empty, or `FRONTEND_URL` is not an absolute URL"
+msgstr "连不上身份提供方，client secret 设置为空，或者 `FRONTEND_URL` 不是绝对地址"
+
+msgid "The sign-in took too long"
+msgstr "登录已超时"
+
+msgid "The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL`"
+msgstr "用户用了超过十分钟，在另一个浏览器里打开了回调地址，或者通过 `FRONTEND_URL` 以外的地址访问控制台"
+
+msgid "The email could not be confirmed"
+msgstr "无法确认邮箱"
+
+msgid "The email is outside the provider's `domains`, or the provider does not report it as verified"
+msgstr "邮箱不在该身份提供方的 `domains` 内，或者身份提供方没有报告它已验证"
+
+msgid "No account here yet"
+msgstr "还没有对应的平台账号"
+
+msgid "`auto_create` is off, or the address is on `ADMIN_EMAILS`"
+msgstr "`auto_create` 关闭，或者该地址在 `ADMIN_EMAILS` 中"
+
+msgid "Pending approval"
+msgstr "等待审批"
+
+msgid "The account was created and waits in **Admin > Users**"
+msgstr "账号已创建，正在 **Admin > Users** 中等待审批"
+
+msgid "Already connected to a different identity"
+msgstr "已经关联了另一个身份"
+
+msgid "See [Linking and unlinking](#linking-and-unlinking)"
+msgstr "参见[关联与解除关联](#linking-and-unlinking)"
