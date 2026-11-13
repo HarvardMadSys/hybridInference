@@ -998,6 +998,9 @@ describe('RequestsTab volume by source', () => {
     expect(bar).toHaveStyle({ height: '100%' });
     const batch = bar.querySelector('[data-segment="batch"]') as HTMLElement;
     expect(batch.style.height).toBe(`${(300 / 340) * 100}%`);
+    // Neutral ink, marked so dark mode can lighten it against the well.
+    const ink = bar.querySelector('[data-segment="interactive"]') as HTMLElement;
+    expect(ink).toHaveClass('bg-gray-900', 'request-volume-ink');
     expect(bar).toHaveAttribute('title', expect.stringContaining('300 batch (7 failed)'));
     // A bar with no batch requests has no batch segment.
     const quiet = screen.getAllByRole('button', { name: /^List the requests of / })[0];
@@ -1034,6 +1037,38 @@ describe('RequestsTab volume by source', () => {
     await waitFor(() => expect(windowOfLastList()).toEqual(BAR));
     fireEvent.click(screen.getByRole('button', { name }));
     await waitFor(() => expect(windowOfLastList()).toBeNull());
+  });
+
+  it('keeps an error-heavy bar red instead of the neutral ink', async () => {
+    const base = metrics('interactive');
+    vi.mocked(getRequestMetrics).mockResolvedValue({
+      ...base,
+      windows: [
+        {
+          ...base.windows[0],
+          buckets: [
+            {
+              start_time: BAR.start,
+              request_count: 10,
+              success_count: 2,
+              error_count: 8,
+              client_disconnect_count: 0,
+              avg_latency_ms: 900,
+              batch_request_count: 0,
+              batch_error_count: 0,
+            },
+          ],
+        },
+      ],
+    });
+    render(<RequestsTab />);
+
+    const bar = await screen.findByRole('button', {
+      name: `List the requests of ${formatRequestWindow(BAR)}`,
+    });
+    const segment = bar.querySelector('[data-segment="interactive"]') as HTMLElement;
+    expect(segment).toHaveClass('bg-red-400');
+    expect(segment).not.toHaveClass('request-volume-ink');
   });
 
   it("keeps an older gateway's bars plain: it counts every request and ignores a stretch", async () => {
