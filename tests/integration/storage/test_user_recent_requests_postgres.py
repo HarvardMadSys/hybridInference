@@ -18,7 +18,7 @@ import pytest
 import pytest_asyncio
 from fastapi import HTTPException
 
-from serving.servers.routers import user_routes
+from serving.servers.routers import recent_requests, user_routes
 from tests.fixtures import postgres
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
@@ -29,8 +29,8 @@ HISTORY = 250
 
 @pytest_asyncio.fixture
 async def pool(monkeypatch):
-    monkeypatch.setattr(user_routes, "RECENT_REQUESTS_WINDOW", WINDOW)
-    user_routes._RECENT_REQUESTS_COUNT_CACHE.clear()
+    monkeypatch.setattr(recent_requests, "RECENT_REQUESTS_WINDOW", WINDOW)
+    recent_requests.RECENT_REQUESTS_COUNT_CACHE.clear()
     pool = await postgres.create_pool(min_size=1, max_size=4)
     users: list[str] = []
     try:
@@ -39,7 +39,7 @@ async def pool(monkeypatch):
         async with pool.acquire() as conn:
             await conn.execute("DELETE FROM api_logs WHERE user_id = ANY($1::text[])", users)
         await pool.close()
-        user_routes._RECENT_REQUESTS_COUNT_CACHE.clear()
+        recent_requests.RECENT_REQUESTS_COUNT_CACHE.clear()
 
 
 async def _history(pool, users: list[str], rows: int) -> tuple[str, list[dict]]:
@@ -151,15 +151,15 @@ async def test_its_statements_read_no_further_than_the_window(pool):
     """
     pool, users = pool
     user, _ = await _history(pool, users, HISTORY)
-    where_sql, params = user_routes._build_user_recent_requests_filters(
+    where_sql, params = recent_requests.build_user_recent_requests_filters(
         user, "zz-no-such-model", None
     )
     async with pool.acquire() as conn, conn.transaction(readonly=True):
-        await conn.execute(user_routes._RECENT_REQUESTS_READ_SETTINGS)
+        await conn.execute(recent_requests._RECENT_REQUESTS_READ_SETTINGS)
         plan = await conn.fetchval(
             "EXPLAIN (ANALYZE, FORMAT JSON) SELECT request_id FROM "
-            f"{user_routes._recent_rows_sql(user_routes._RECENT_ROW_COLUMNS)} "
-            f"WHERE {where_sql} ORDER BY {user_routes._RECENT_ORDER_SQL} LIMIT 50",
+            f"{recent_requests._recent_rows_sql(recent_requests._RECENT_ROW_COLUMNS)} "
+            f"WHERE {where_sql} ORDER BY {recent_requests._RECENT_ORDER_SQL} LIMIT 50",
             *params,
         )
 

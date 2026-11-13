@@ -1,8 +1,6 @@
 """User dashboard routes for API key management and usage statistics."""
 
 import json
-import time
-from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -10,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 from serving.config.runtime_settings import get_runtime_settings_instance
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
+from serving.servers.routers import recent_requests
 
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
@@ -23,8 +22,6 @@ from serving.exceptions import (
     PreferencesTooLargeError,
     ProjectNotFoundError,
     UserNotFoundError,
-    generic_message_for_status,
-    user_safe_error_for_log,
 )
 from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
 from serving.quota import DEFAULT_DAILY_QUOTA_USD
@@ -47,7 +44,6 @@ from serving.schemas_auth import (
     LocalePreference,
     LocalePreferenceUpdate,
     QuotaInfo,
-    RecentRequestItem,
     RecentRequestsResponse,
     UsageResponse,
     UsageStats,
@@ -74,7 +70,6 @@ from serving.servers.deps import (
 from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.base import USER_PREFERENCES_MAX_BYTES
-from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
@@ -109,150 +104,6 @@ def _clean_key_name(name: str | None) -> str | None:
 def _quota_contact() -> str:
     """Support address surfaced with quota info; empty when unconfigured."""
     return get_site_identity().support_email
-
-
-#: How far back ``/user/recent-requests`` reaches: the account's newest this
-#: many requests. A page lies within them, the total counts no further, and a
-#: filter matches among them only, so whatever a caller asks for reads at most
-#: this many of its rows. The console shows 20 a page: 500 pages.
-RECENT_REQUESTS_WINDOW = 10_000
-
-#: How long one of its statements may run, in seconds. Reading the window takes
-#: a fraction of that; a statement still running then is stopped and the caller
-#: told to retry, rather than holding a general-pool connection for a minute.
-RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC = 5.0
-
-# Set for its reads, in their read-only transaction: the statement timeout, and
-# the one plan that keeps a read inside the window. The window is the newest
-# rows by (timestamp, cost_usd), the order of ``idx_api_logs_user_cost`` read
-# backwards within the account; with sorts and bitmap scans off, nothing else
-# can produce it. Left to its estimates, the planner walks ``idx_api_logs_timestamp``
-# instead for a heavy account -- across every account's rows back to its last
-# request, half the table for one that stopped a month ago -- and reads all of
-# a light account's rows to sort them.
-_RECENT_REQUESTS_READ_SETTINGS = (
-    f"SET LOCAL statement_timeout = '{int(RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC * 1000)}ms'; "
-    "SET LOCAL enable_sort = off; "
-    "SET LOCAL enable_incremental_sort = off; "
-    "SET LOCAL enable_bitmapscan = off"
-)
-
-#: The window's order, newest first.
-_RECENT_ORDER_SQL = "timestamp DESC, cost_usd DESC"
-
-# Bounded in-process TTL cache for the per-user ``api_logs`` row count
-# powering ``/user/recent-requests``. The dashboard polls every 60s, so caching
-# it per (user, key) keeps the hot path to just the paginated SELECT. A count
-# filtered by model is not cached: the model is whatever the caller typed, and
-# entries for every string anyone sends would evict everyone else's.
-#
-# OrderedDict gives us LRU eviction once ``_MAX_ENTRIES`` is reached, which
-# bounds memory regardless of how many distinct users hit the endpoint. No
-# lock: cache misses for the same key may run a duplicate COUNT under
-# concurrent load, which is preferable to serializing all unrelated callers.
-_RECENT_REQUESTS_COUNT_TTL_SECONDS: float = 60.0
-_RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES: int = 4096
-_RECENT_REQUESTS_COUNT_CACHE: OrderedDict[
-    tuple[str, int | None], tuple[float, tuple[int, bool]]
-] = OrderedDict()
-
-
-def _escape_ilike_substring_term(term: str) -> str:
-    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
-    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
-
-
-#: The model a request's row shows its user: the auto model it asked for, when
-#: an auto model served it (serving/auto_mode.py), and the logged model
-#: otherwise. A user is never shown which model served an auto request, so the
-#: row's provider, routing detail and error text are withheld with it.
-_SHOWN_MODEL_SQL = "COALESCE(metadata->'auto'->>'requested', model_id)"
-
-#: The columns a page shows and filters on, read from the window.
-_RECENT_ROW_COLUMNS = (
-    "request_id, user_id, model_id, provider, timestamp, status_code, latency_ms, "
-    "ttft_ms, stream, prompt_tokens, completion_tokens, reasoning_tokens, "
-    "cache_read_tokens, cache_write_tokens, total_tokens, cost_usd, error, metadata"
-)
-
-
-def _recent_rows_sql(columns: str) -> str:
-    """*columns* of the account's (``$1``) newest :data:`RECENT_REQUESTS_WINDOW` rows, as ``recent``.
-
-    One range of ``idx_api_logs_user_cost`` (``user_id``, ``timestamp``,
-    ``cost_usd``), read newest first and never past the window, under
-    :data:`_RECENT_REQUESTS_READ_SETTINGS`.
-    """
-    return (
-        f"(SELECT {columns} FROM api_logs WHERE user_id = $1 "
-        f"ORDER BY {_RECENT_ORDER_SQL} LIMIT {RECENT_REQUESTS_WINDOW}) AS recent"
-    )
-
-
-def _build_user_recent_requests_filters(
-    user_id: str, model_id: str | None, api_key_id: int | None = None
-) -> tuple[str, list[Any]]:
-    """Build the shared WHERE clause + bind params for /user/recent-requests.
-
-    Used by both the COUNT cache helper and the paginated SELECT so the two
-    queries cannot drift if a future filter is added. ``$1`` is the account;
-    the clause filters its window (:func:`_recent_rows_sql`).
-
-    The model filter is a case-insensitive substring of the model the row
-    shows, and the key filter reads ``metadata->>'api_key_id'``: the key is not
-    a column of its own, so that a log write never depends on a migration of
-    ``api_logs``. Neither can use an index, and neither needs one: both read the
-    window's rows only, so no filter can make a read reach past it.
-    """
-    where_clauses = ["user_id = $1"]
-    params: list[Any] = [user_id]
-    if model_id:
-        params.append(_escape_ilike_substring_term(model_id))
-        where_clauses.append(f"{_SHOWN_MODEL_SQL} ILIKE '%' || ${len(params)} || '%' ESCAPE '\\'")
-    if api_key_id is not None:
-        params.append(str(api_key_id))
-        where_clauses.append(f"metadata->>'api_key_id' = ${len(params)}")
-    return " AND ".join(where_clauses), params
-
-
-async def _get_cached_user_request_count(
-    conn: Any, user_id: str, model_id: str | None, api_key_id: int | None = None
-) -> tuple[int, bool]:
-    """Return how many of *user_id*'s window match the filters, and whether there is more.
-
-    The second value is True when the account has requests older than the
-    window (:data:`RECENT_REQUESTS_WINDOW`), so the count is a lower bound.
-    Both read at most the window: run on *conn* inside the transaction that
-    set :data:`_RECENT_REQUESTS_READ_SETTINGS`. Cached for
-    ``_RECENT_REQUESTS_COUNT_TTL_SECONDS``, except a count by model.
-    """
-    key = (user_id, api_key_id)
-    cacheable = not model_id
-    now = time.monotonic()
-    cached = _RECENT_REQUESTS_COUNT_CACHE.get(key) if cacheable else None
-    if cached is not None and (now - cached[0]) < _RECENT_REQUESTS_COUNT_TTL_SECONDS:
-        _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
-        return cached[1]
-
-    where_sql, params = _build_user_recent_requests_filters(user_id, model_id, api_key_id)
-    # Without a filter on the row's contents, the index alone answers.
-    columns = "user_id, model_id, metadata" if len(params) > 1 else "user_id"
-    count_row = await conn.fetchrow(
-        f"""
-        SELECT (SELECT COUNT(*) FROM {_recent_rows_sql(columns)} WHERE {where_sql}) AS total,
-               EXISTS (SELECT 1 FROM api_logs WHERE user_id = $1
-                       ORDER BY {_RECENT_ORDER_SQL} OFFSET {RECENT_REQUESTS_WINDOW}) AS capped
-        """,
-        *params,
-    )
-    total = int(count_row["total"] or 0) if count_row else 0
-    counted = (total, bool(count_row and count_row.get("capped")))
-    if cacheable:
-        _RECENT_REQUESTS_COUNT_CACHE[key] = (time.monotonic(), counted)
-        _RECENT_REQUESTS_COUNT_CACHE.move_to_end(key)
-        while len(_RECENT_REQUESTS_COUNT_CACHE) > _RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES:
-            _RECENT_REQUESTS_COUNT_CACHE.popitem(last=False)
-    return counted
 
 
 def _get_daily_quota_reset_at() -> datetime:
@@ -1428,15 +1279,15 @@ async def get_recent_requests(
     # Clamp limit to prevent excessive queries
     limit = max(1, min(limit, 200))
     offset = max(0, offset)
-    if offset >= RECENT_REQUESTS_WINDOW:
+    if offset >= recent_requests.RECENT_REQUESTS_WINDOW:
         raise HTTPException(
             status_code=400,
             detail=(
-                f"Recent requests reach back over your newest {RECENT_REQUESTS_WINDOW} "
-                f"requests: offset must be less than {RECENT_REQUESTS_WINDOW}."
+                f"Recent requests reach back over your newest {recent_requests.RECENT_REQUESTS_WINDOW} "
+                f"requests: offset must be less than {recent_requests.RECENT_REQUESTS_WINDOW}."
             ),
         )
-    limit = min(limit, RECENT_REQUESTS_WINDOW - offset)
+    limit = min(limit, recent_requests.RECENT_REQUESTS_WINDOW - offset)
 
     # The account's keys, to resolve the filter and to name each row's key.
     prefixes: dict[str, str] = {}
@@ -1454,44 +1305,21 @@ async def get_recent_requests(
 
     async with history_read_connection(db_logger.pool) as conn:
         try:
-            where_sql, params = _build_user_recent_requests_filters(
-                current_user["user_id"], model_id, api_key_id
-            )
-            limit_idx = len(params) + 1
-            offset_idx = len(params) + 2
-            page_params = [*params, limit, offset]
-
             async with conn.transaction(readonly=True):
-                await conn.execute(_RECENT_REQUESTS_READ_SETTINGS)
-                # Cached COUNT(*) — see ``_get_cached_user_request_count``.
-                total, total_capped = await _get_cached_user_request_count(
-                    conn, current_user["user_id"], model_id, api_key_id
-                )
-
-                # Get paginated recent requests
-                rows = await conn.fetch(
-                    f"""
-                    SELECT
-                        request_id, {_SHOWN_MODEL_SQL} AS model_id, provider, timestamp,
-                        status_code, latency_ms, ttft_ms, stream,
-                        prompt_tokens, completion_tokens, reasoning_tokens,
-                        cache_read_tokens, cache_write_tokens,
-                        total_tokens, cost_usd, error,
-                        metadata->'routewise' AS routewise,
-                        metadata->>'request_type' AS request_type,
-                        metadata->'auto'->>'requested' IS NOT NULL AS is_auto,
-                        metadata->>'api_key_id' AS api_key_id
-                    FROM {_recent_rows_sql(_RECENT_ROW_COLUMNS)}
-                    WHERE {where_sql}
-                    ORDER BY {_RECENT_ORDER_SQL}
-                    LIMIT ${limit_idx} OFFSET ${offset_idx}
-                    """,
-                    *page_params,
+                await conn.execute(recent_requests._RECENT_REQUESTS_READ_SETTINGS)
+                # Cached COUNT(*) — see ``get_cached_user_request_count``.
+                rows, total, total_capped = await recent_requests.query_recent_requests(
+                    conn,
+                    user_id=current_user["user_id"],
+                    model_id=model_id,
+                    api_key_id=api_key_id,
+                    limit=limit,
+                    offset=offset,
                 )
         except asyncpg.QueryCanceledError as exc:
             # Stopped at its statement timeout: the database is too slow just now.
             raise DatabaseBusyError(
-                f"recent requests read ran past {RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC:g}s"
+                f"recent requests read ran past {recent_requests.RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC:g}s"
             ) from exc
         except Exception as exc:
             logger.warning(
@@ -1501,34 +1329,9 @@ async def get_recent_requests(
             )
             return RecentRequestsResponse(requests=[], total=0, limit=limit, offset=offset)
 
-    requests = [
-        RecentRequestItem(
-            request_id=row["request_id"],
-            model_id=row["model_id"],
-            provider="auto" if row["is_auto"] else row["provider"],
-            timestamp=row["timestamp"],
-            status_code=row["status_code"],
-            latency_ms=row["latency_ms"],
-            ttft_ms=row["ttft_ms"],
-            stream=row["stream"],
-            prompt_tokens=row["prompt_tokens"],
-            completion_tokens=row["completion_tokens"],
-            reasoning_tokens=row["reasoning_tokens"],
-            cache_read_tokens=row["cache_read_tokens"],
-            cache_write_tokens=row["cache_write_tokens"],
-            total_tokens=row["total_tokens"],
-            cost_usd=float(row["cost_usd"]) if row["cost_usd"] is not None else None,
-            error=(
-                generic_message_for_status(row["status_code"])
-                if row["is_auto"] and row["error"] and row["status_code"] is not None
-                else user_safe_error_for_log(row["error"], row["status_code"])
-            ),
-            routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
-            request_type=row["request_type"],
-            key_prefix=prefixes.get(row["api_key_id"]) if row["api_key_id"] else None,
-        )
-        for row in rows
-    ]
+    # Presentation stays outside the query's error boundary: a malformed row is
+    # a code defect, not an unavailable database, and surfaces as a 500.
+    requests = recent_requests.present_recent_requests(rows, prefixes)
 
     return RecentRequestsResponse(
         requests=requests, total=total, total_capped=total_capped, limit=limit, offset=offset

@@ -1,6 +1,7 @@
 """Unit tests for ``/user/recent-requests``: its count cache and its bounds.
 
-Exercises ``_get_cached_user_request_count`` and ``get_recent_requests`` in
+Exercises ``get_cached_user_request_count`` in
+``serving.servers.routers.recent_requests`` and ``get_recent_requests`` in
 ``serving.servers.routers.user_routes`` against a mocked asyncpg-style
 connection. We verify:
 
@@ -22,14 +23,13 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from serving.servers.routers import user_routes
-from serving.servers.routers.user_routes import (
-    _RECENT_REQUESTS_COUNT_CACHE,
-    _RECENT_REQUESTS_COUNT_TTL_SECONDS,
+from serving.servers.routers import recent_requests, user_routes
+from serving.servers.routers.recent_requests import (
     _SHOWN_MODEL_SQL,
+    RECENT_REQUESTS_COUNT_TTL_SECONDS,
     RECENT_REQUESTS_STATEMENT_TIMEOUT_SEC,
     RECENT_REQUESTS_WINDOW,
-    _get_cached_user_request_count,
+    get_cached_user_request_count,
 )
 from serving.storage.pools import DatabaseBusyError
 
@@ -37,9 +37,9 @@ from serving.storage.pools import DatabaseBusyError
 @pytest.fixture(autouse=True)
 def _reset_recent_requests_count_cache():
     """Clear the module-level cache between tests."""
-    _RECENT_REQUESTS_COUNT_CACHE.clear()
+    recent_requests.RECENT_REQUESTS_COUNT_CACHE.clear()
     yield
-    _RECENT_REQUESTS_COUNT_CACHE.clear()
+    recent_requests.RECENT_REQUESTS_COUNT_CACHE.clear()
 
 
 def _make_conn(total: int = 7, capped: bool = False) -> AsyncMock:
@@ -54,7 +54,7 @@ async def test_cache_miss_executes_count_once():
     """First call against an empty cache runs the COUNT and returns its value."""
     conn = _make_conn(total=42)
 
-    total = await _get_cached_user_request_count(conn, "user-1", None)
+    total = await get_cached_user_request_count(conn, "user-1", None)
 
     assert total == (42, False)
     assert conn.fetchrow.await_count == 1
@@ -65,8 +65,8 @@ async def test_cache_hit_skips_count_query():
     """Second call inside the TTL window must not re-issue the COUNT."""
     conn = _make_conn(total=42)
 
-    first = await _get_cached_user_request_count(conn, "user-1", None)
-    second = await _get_cached_user_request_count(conn, "user-1", None)
+    first = await get_cached_user_request_count(conn, "user-1", None)
+    second = await get_cached_user_request_count(conn, "user-1", None)
 
     assert first == (42, False)
     assert second == (42, False)
@@ -78,18 +78,18 @@ async def test_count_reruns_after_ttl_expiry():
     """Once the cached timestamp ages past the TTL, the COUNT runs again."""
     conn = _make_conn(total=42)
 
-    await _get_cached_user_request_count(conn, "user-1", None)
+    await get_cached_user_request_count(conn, "user-1", None)
     assert conn.fetchrow.await_count == 1
 
     # Age the cached entry past the TTL without sleeping.
-    cached_ts, cached_total = _RECENT_REQUESTS_COUNT_CACHE[("user-1", None)]
-    _RECENT_REQUESTS_COUNT_CACHE[("user-1", None)] = (
-        cached_ts - _RECENT_REQUESTS_COUNT_TTL_SECONDS - 1.0,
+    cached_ts, cached_total = recent_requests.RECENT_REQUESTS_COUNT_CACHE[("user-1", None)]
+    recent_requests.RECENT_REQUESTS_COUNT_CACHE[("user-1", None)] = (
+        cached_ts - RECENT_REQUESTS_COUNT_TTL_SECONDS - 1.0,
         cached_total,
     )
     conn.fetchrow.return_value = {"total": 99, "capped": True}
 
-    refreshed = await _get_cached_user_request_count(conn, "user-1", None)
+    refreshed = await get_cached_user_request_count(conn, "user-1", None)
 
     assert refreshed == (99, True)
     assert conn.fetchrow.await_count == 2
@@ -101,23 +101,27 @@ async def test_distinct_keys_cache_independently():
     conn = _make_conn()
     conn.fetchrow.side_effect = [{"total": n, "capped": False} for n in (10, 20, 30, 40, 21)]
 
-    a = await _get_cached_user_request_count(conn, "user-1", None)
-    b = await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
-    c = await _get_cached_user_request_count(conn, "user-2", None)
-    d = await _get_cached_user_request_count(conn, "user-1", None, 7)
+    a = await get_cached_user_request_count(conn, "user-1", None)
+    b = await get_cached_user_request_count(conn, "user-1", "gpt-4o")
+    c = await get_cached_user_request_count(conn, "user-2", None)
+    d = await get_cached_user_request_count(conn, "user-1", None, 7)
 
     assert [n for n, _ in (a, b, c, d)] == [10, 20, 30, 40]
     assert conn.fetchrow.await_count == 4
 
     # Subsequent hits served from cache, but the model's count runs again.
-    a2 = await _get_cached_user_request_count(conn, "user-1", None)
-    b2 = await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
-    c2 = await _get_cached_user_request_count(conn, "user-2", None)
-    d2 = await _get_cached_user_request_count(conn, "user-1", None, 7)
+    a2 = await get_cached_user_request_count(conn, "user-1", None)
+    b2 = await get_cached_user_request_count(conn, "user-1", "gpt-4o")
+    c2 = await get_cached_user_request_count(conn, "user-2", None)
+    d2 = await get_cached_user_request_count(conn, "user-1", None, 7)
 
     assert [n for n, _ in (a2, b2, c2, d2)] == [10, 21, 30, 40]
     assert conn.fetchrow.await_count == 5
-    assert set(_RECENT_REQUESTS_COUNT_CACHE) == {("user-1", None), ("user-2", None), ("user-1", 7)}
+    assert set(recent_requests.RECENT_REQUESTS_COUNT_CACHE) == {
+        ("user-1", None),
+        ("user-2", None),
+        ("user-1", 7),
+    }
 
 
 @pytest.mark.asyncio
@@ -125,7 +129,7 @@ async def test_count_query_filters_on_model_id_when_provided():
     """When ``model_id`` is supplied the helper uses case-insensitive partial matching."""
     conn = _make_conn(total=5)
 
-    await _get_cached_user_request_count(conn, "user-1", "gpt-4o")
+    await get_cached_user_request_count(conn, "user-1", "gpt-4o")
 
     assert conn.fetchrow.await_count == 1
     args, _kwargs = conn.fetchrow.call_args
@@ -141,7 +145,7 @@ async def test_count_query_escapes_ilike_wildcards_in_model_id():
     """Literal ``%`` and ``_`` in ``model_id`` are escaped before ILIKE matching."""
     conn = _make_conn(total=5)
 
-    await _get_cached_user_request_count(conn, "user-1", r"gpt%_4\\o")
+    await get_cached_user_request_count(conn, "user-1", r"gpt%_4\\o")
 
     assert conn.fetchrow.await_count == 1
     args, _kwargs = conn.fetchrow.call_args
@@ -157,7 +161,7 @@ async def test_the_count_reaches_back_over_the_window_only():
     """However much history the account has, the count reads its newest rows only."""
     conn = _make_conn(total=RECENT_REQUESTS_WINDOW, capped=True)
 
-    counted = await _get_cached_user_request_count(conn, "user-1", "gpt-4o", 7)
+    counted = await get_cached_user_request_count(conn, "user-1", "gpt-4o", 7)
 
     assert counted == (RECENT_REQUESTS_WINDOW, True)
     sql = " ".join(conn.fetchrow.call_args.args[0].split())
@@ -173,7 +177,7 @@ async def test_count_query_omits_model_id_when_none():
     """Without ``model_id`` only the user bind param is passed."""
     conn = _make_conn(total=5)
 
-    await _get_cached_user_request_count(conn, "user-1", None)
+    await get_cached_user_request_count(conn, "user-1", None)
 
     args, _kwargs = conn.fetchrow.call_args
     sql = args[0]
@@ -186,28 +190,28 @@ async def test_count_query_omits_model_id_when_none():
 @pytest.mark.asyncio
 async def test_cache_evicts_oldest_entries_at_capacity(monkeypatch):
     """Once the cache hits its size cap, the LRU entry is evicted."""
-    monkeypatch.setattr(user_routes, "_RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES", 2)
+    monkeypatch.setattr(recent_requests, "RECENT_REQUESTS_COUNT_CACHE_MAX_ENTRIES", 2)
     conn = _make_conn()
     conn.fetchrow.side_effect = [{"total": i, "capped": False} for i in range(10)]
 
-    await _get_cached_user_request_count(conn, "user-1", None)
-    await _get_cached_user_request_count(conn, "user-2", None)
-    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+    await get_cached_user_request_count(conn, "user-1", None)
+    await get_cached_user_request_count(conn, "user-2", None)
+    assert set(recent_requests.RECENT_REQUESTS_COUNT_CACHE.keys()) == {
         ("user-1", None),
         ("user-2", None),
     }
 
     # Inserting a third distinct key evicts the least-recently-used entry.
-    await _get_cached_user_request_count(conn, "user-3", None)
-    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+    await get_cached_user_request_count(conn, "user-3", None)
+    assert set(recent_requests.RECENT_REQUESTS_COUNT_CACHE.keys()) == {
         ("user-2", None),
         ("user-3", None),
     }
 
     # Reading user-2 promotes it; user-3 is now LRU.
-    await _get_cached_user_request_count(conn, "user-2", None)
-    await _get_cached_user_request_count(conn, "user-4", None)
-    assert set(_RECENT_REQUESTS_COUNT_CACHE.keys()) == {
+    await get_cached_user_request_count(conn, "user-2", None)
+    await get_cached_user_request_count(conn, "user-4", None)
+    assert set(recent_requests.RECENT_REQUESTS_COUNT_CACHE.keys()) == {
         ("user-2", None),
         ("user-4", None),
     }

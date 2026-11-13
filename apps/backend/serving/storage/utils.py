@@ -599,6 +599,11 @@ def coerce_json_object(value: Any) -> dict[str, Any] | None:
     return None
 
 
+def escape_ilike_substring_term(term: str) -> str:
+    """Escape LIKE wildcards so ``ILIKE`` performs literal substring matching."""
+    return term.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+
+
 def billable_output_tokens(
     *,
     prompt_tokens: float,
