@@ -18,6 +18,8 @@ import {
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
   updateUser,
+  unlinkUserSsoIdentity,
+  getUserDetail,
   listModelVisibility,
   listOffloadRoutes,
   previewRoleQuotaApply,
@@ -364,6 +366,61 @@ describe('admin user client', () => {
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect(JSON.parse(init.body as string)).toEqual({
       disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
+    });
+  });
+
+  it('getUserDetail carries the account’s single sign-on identities', async () => {
+    const identity = {
+      id: 'idn_1',
+      provider_id: 'example-univ',
+      provider_name: 'Example University',
+      email: 'carol@example.edu',
+      linked_at: '2026-11-01T12:00:00Z',
+      last_login_at: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'user-1', sso_identities: [identity] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await getUserDetail('user-1');
+
+    expect(out.sso_identities).toEqual([identity]);
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/admin\/users\/user-1\/detail$/);
+  });
+
+  it('unlinkUserSsoIdentity POSTs the administrator’s password for one identity', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'Single sign-on identity unlinked.' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await unlinkUserSsoIdentity('user/1', 'idn 1', 'Admin-pw-1');
+
+    expect(out).toEqual({ message: 'Single sign-on identity unlinked.' });
+    const [url, init] = fetchMock.mock.calls[0];
+    // Each id is one path segment, whatever it contains.
+    expect(String(url)).toMatch(/\/admin\/users\/user%2F1\/sso-identities\/idn%201\/unlink$/);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({ password: 'Admin-pw-1' });
+  });
+
+  it('unlinkUserSsoIdentity keeps the gateway’s reason for a refusal', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: { message: 'Current password is incorrect.', code: 400 } }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(unlinkUserSsoIdentity('user-1', 'idn_1', 'wrong')).rejects.toMatchObject({
+      message: 'Current password is incorrect.',
+      statusCode: 400,
     });
   });
 });

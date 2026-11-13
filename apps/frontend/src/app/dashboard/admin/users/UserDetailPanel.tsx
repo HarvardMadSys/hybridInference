@@ -12,6 +12,7 @@ import type {
   AdminUser,
   UpdateUserData,
   UserDetail,
+  UserSsoIdentity,
 } from '@/lib/api/admin';
 import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserProjects } from './UserProjects';
@@ -568,6 +569,94 @@ function TextSetting({
   );
 }
 
+/**
+ * The identities that can sign in to the account through an identity provider,
+ * each with the one thing an administrator can do to it: unlink it. That is
+ * how a wrong link is undone, and how an account whose identity at the same
+ * provider changed is freed to link the new one. Linking is the owner's alone:
+ * it takes a sign-in at the provider.
+ */
+function SingleSignOn({
+  detail,
+  confirmation,
+  onUnlink,
+}: {
+  detail: UserDetail;
+  confirmation: ConfirmAction;
+  onUnlink: (identityId: string, password: string) => Promise<void>;
+}) {
+  // Unlinking is confirmed with the administrator's password, like a higher role.
+  const password = useRef('');
+  const identities = detail.sso_identities ?? [];
+  if (identities.length === 0) return null;
+  const account = detail.email || detail.login_name || detail.phone || detail.id;
+
+  const requestUnlink = (identity: UserSsoIdentity) => {
+    password.current = '';
+    confirmation.request({
+      key: 'single sign-on',
+      title: `Unlink ${identity.provider_name} from ${account}?`,
+      confirmLabel: 'Unlink',
+      busyLabel: 'Unlinking…',
+      tone: 'danger',
+      body: (
+        <div className="space-y-2">
+          <p>
+            {identity.email ?? 'This identity'} will no longer sign in to this account through{' '}
+            {identity.provider_name}. Sessions and API keys stay as they are: suspend the account to
+            cut off access.
+          </p>
+          <p>
+            An account with no password will have no way to sign in until it resets its password.
+          </p>
+          <p>Confirm with your password.</p>
+          <ReauthPassword valueRef={password} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const given = password.current;
+        if (!given) throw new Error('Enter your password to unlink this identity.');
+        await onUnlink(identity.id, given);
+        password.current = '';
+      },
+    });
+  };
+
+  return (
+    <section aria-label="Single sign-on" className={`${SECTION} space-y-3`}>
+      <div className={FIELD_LABEL}>Single sign-on</div>
+      <ul className="divide-y divide-gray-100">
+        {identities.map((identity) => (
+          <li
+            key={identity.id}
+            className="flex flex-wrap items-center justify-between gap-3 py-2.5 first:pt-0 last:pb-0"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-medium text-gray-900">
+                {identity.provider_name}
+              </div>
+              <div className="truncate text-[12px] text-gray-600">{identity.email ?? '—'}</div>
+              <div className="text-[11px] text-gray-400">
+                Connected {shortDate(identity.linked_at)} · Last sign-in{' '}
+                {relTime(identity.last_login_at)}
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => requestUnlink(identity)}
+              disabled={confirmation.busy}
+              aria-label={`Unlink ${identity.provider_name}`}
+              className={`${BUTTON_DANGER} shrink-0`}
+            >
+              Unlink
+            </button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 interface UserDetailPanelProps {
   user: AdminUser;
   detail: UserDetail;
@@ -576,6 +665,8 @@ interface UserDetailPanelProps {
   confirmation: ConfirmAction;
   /** Write a change to this user, then show the saved values. Throws on failure. */
   onUpdate: (patch: UpdateUserData) => Promise<void>;
+  /** Unlink one single sign-on identity, then show what is left. Throws on failure. */
+  onUnlinkSsoIdentity: (identityId: string, password: string) => Promise<void>;
   // Lifecycle actions: Suspend and the deletes ask first; Reactivate and Resume act at once.
   onSuspend: (user: AdminUser) => void;
   onReactivate: (user: AdminUser) => void;
@@ -591,6 +682,7 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     availableModels,
     confirmation,
     onUpdate,
+    onUnlinkSsoIdentity,
     onSuspend,
     onReactivate,
     onResume,
@@ -705,6 +797,13 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               className="space-y-2 rounded-lg border border-red-200 bg-red-50/60 p-4"
             />
           )}
+
+          {/* How the account signs in through an identity provider, whatever its status. */}
+          <SingleSignOn
+            detail={detail}
+            confirmation={confirmation}
+            onUnlink={onUnlinkSsoIdentity}
+          />
 
           {/* Account lifecycle actions, kept apart from the everyday settings. */}
           {u.status === 'active' && (

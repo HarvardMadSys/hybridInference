@@ -12,7 +12,7 @@ import type {
   UserDetail,
   UserTurnAverages,
 } from '@/lib/api/admin';
-import { getUserDetail, listModelVisibility } from '@/lib/api/admin';
+import { getUserDetail, listModelVisibility, unlinkUserSsoIdentity } from '@/lib/api/admin';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
@@ -295,6 +295,32 @@ export function UserTable(props: UserTableProps) {
           : prev,
       );
     }
+  };
+
+  // Unlinking a single sign-on identity from the open row. It changes nothing
+  // the list shows, so only the detail is read again.
+  const unlinkSsoIdentity = async (identityId: string, password: string) => {
+    if (!expandedId || !detail) return;
+    const userId = expandedId;
+    ensureListed(userId, userAccountLabel(detail) || userId);
+    await unlinkUserSsoIdentity(userId, identityId, password);
+    try {
+      const refreshed = await getUserDetail(userId);
+      setDetail((prev) => (prev && prev.id === userId ? refreshed : prev));
+    } catch {
+      // Unlinked, but the refetch failed: show the identities that are left.
+      setDetail((prev) =>
+        prev && prev.id === userId
+          ? {
+              ...prev,
+              sso_identities: (prev.sso_identities ?? []).filter(
+                (identity) => identity.id !== identityId,
+              ),
+            }
+          : prev,
+      );
+    }
+    toast.success('Single sign-on identity unlinked.');
   };
 
   // Approve, Reactivate and Resume act on the click. A failure is toasted, as
@@ -712,6 +738,7 @@ export function UserTable(props: UserTableProps) {
                               availableModels={availableModels}
                               confirmation={confirmation}
                               onUpdate={updateDetail}
+                              onUnlinkSsoIdentity={unlinkSsoIdentity}
                               onSuspend={requestSuspend}
                               onReactivate={reactivate}
                               onResume={resume}

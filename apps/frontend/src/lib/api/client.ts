@@ -276,6 +276,36 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
   return entry.promise;
 }
 
+/**
+ * Take up the session a redirect left in the browser's cookie.
+ *
+ * A sign-in that ends at an identity provider comes back by navigation: the
+ * gateway sets the session cookie on a redirect, and no response ever hands
+ * this tab a token. This asks for one the way a refresh does, but as the
+ * sign-in it is: whatever token the tab still holds -- the account it showed
+ * before it left for the provider -- is dropped first, so the answer is
+ * installed for the account the cookie now names instead of being refused as
+ * another tab's account change. A refresh already under way for the session
+ * this replaces installs nothing, and one that starts meanwhile shares this
+ * request.
+ *
+ * Resolves to the account the new token names, or to `null` when the browser
+ * holds no session to take up. Throws when the gateway could not answer.
+ */
+export async function resumeBrowserSession(apiBase: string): Promise<string | null> {
+  if (keptSignedOut) {
+    // As for a sign-in answered here: its session starts in a new document.
+    reloadDocument();
+    return null;
+  }
+  sessionGeneration += 1;
+  accountChanged = false;
+  accessToken = null;
+  sessionStorage.removeItem('access_token');
+  if (!(await refreshAccessToken(apiBase))) return null;
+  return tokenSubject(getAccessToken());
+}
+
 function accountChangedError(): APIError {
   return new APIError('ACCOUNT_CHANGED', ERROR_MESSAGES.ACCOUNT_CHANGED);
 }
