@@ -740,3 +740,36 @@ class ProjectUpdateRequest(BaseModel):
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+
+# Single sign-on schemas
+class SsoDiscoverRequest(BaseModel):
+    """Find the identity provider for an email and start a sign-in there."""
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoStartResponse(BaseModel):
+    """Where to send the browser to sign in at an identity provider.
+
+    ``available`` is False, with no URL, when no provider answers for the
+    email. It says nothing about whether an account exists.
+    """
+
+    available: bool = True
+    authorization_url: str | None = None
+
+
+class SsoPendingLinkResponse(BaseModel):
+    """An identity waiting for the owner of the account it matched to accept it."""
+
+    provider_id: str
+    provider_name: str
+    email: str
+
+
+class SsoMessageResponse(BaseModel):
+    """Result of a single sign-on account operation."""
+
+    message: str

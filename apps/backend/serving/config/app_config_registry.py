@@ -319,6 +319,15 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
             ),
         )
     ),
+    ConfigEntry(
+        "SSO_PROVIDERS",
+        "application",
+        "Single sign-on identity providers as JSON. Omit to offer no single sign-on. "
+        "Each client secret references a separate secret setting as ${NAME}.",
+        type="text",
+        one_time=True,
+        validator=_document_validator("SSO_PROVIDERS"),
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -2141,13 +2150,21 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
         _note(found, key, "alerts")
 
 
-def discover_documents(models: Any, routing: Any, alerts: Any) -> dict[str, DiscoveredReference]:
+def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
+    for key in _references(data):
+        _note(found, key, "security")
+
+
+def discover_documents(
+    models: Any, routing: Any, alerts: Any, sso: Any = None
+) -> dict[str, DiscoveredReference]:
     """Discover settings referenced by parsed database application documents."""
     found: dict[str, DiscoveredReference] = {}
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
-    for data in (models, routing, alerts):
+    _discover_sso(sso, found)
+    for data in (models, routing, alerts, sso):
         for key in _credential_references(data):
             if key in found:
                 found[key].credential = True
