@@ -33,6 +33,7 @@ def test_a_malformed_entitlement_grants_nothing() -> None:
         {"diagnostic_entitlements": "served_identity"},
         {"diagnostic_entitlements": 7},
         {"diagnostic_entitlements": [1, 2, 3]},
+        {"diagnostic_entitlements": ["future_unknown_entitlement"]},
         {"diagnostic_entitlements": None},
     ):
         assert _key_diagnostic_entitlements({"key_metadata": raw}) == frozenset()

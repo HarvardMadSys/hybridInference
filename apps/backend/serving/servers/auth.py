@@ -54,6 +54,8 @@ from serving.utils.request_ip import get_client_ip_info
 
 logger = get_logger(__name__)
 
+_KEY_DIAGNOSTIC_ENTITLEMENTS = frozenset({"served_identity"})
+
 # Quota of a key whose ``quota_daily_cost_usd`` is NULL (rows from before the
 # column existed).
 _DEFAULT_DAILY_QUOTA_USD = 1000.0
@@ -597,7 +599,9 @@ def _key_diagnostic_entitlements(identity: dict[str, Any]) -> frozenset[str]:
     granted = raw.get("diagnostic_entitlements")
     if not isinstance(granted, (list, tuple, set, frozenset)):
         return frozenset()
-    return frozenset(str(name) for name in granted if isinstance(name, str))
+    return frozenset(
+        name for name in granted if isinstance(name, str) and name in _KEY_DIAGNOSTIC_ENTITLEMENTS
+    )
 
 
 def _user_context(

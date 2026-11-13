@@ -9606,6 +9606,32 @@ def test_apply_target_adapter_defaults_sets_publishability_from_kind():
     assert cfg2["endpoint_identity_publishable"] is False
 
 
+def test_same_target_finalization_preserves_adapter_specific_configuration():
+    from serving.servers.routers.admin.provider_routes import (
+        _finalize_admin_endpoint_publishability,
+    )
+
+    target = provider_routes.ProviderTarget(
+        provider="openrouter[parasail]",
+        label="Parasail via OpenRouter",
+        kind="openrouter[parasail]",
+        key_provider="openrouter",
+        default_base_url="https://openrouter.ai/api/v1",
+        chat_path="/chat/completions",
+    )
+    cfg = {"openrouter_pinned_provider": "parasail", "provider_profile": "deepseek"}
+    _finalize_admin_endpoint_publishability(
+        cfg,
+        model_id="deepseek-chat",
+        target=target,
+        base_url=target.default_base_url,
+        endpoint_id="deepseek-chat:openrouter-api",
+    )
+
+    assert cfg["openrouter_pinned_provider"] == "parasail"
+    assert cfg["provider_profile"] == "deepseek"
+
+
 # ---------------------------------------------------------------------------
 # Batch work: which routes it may use
 # ---------------------------------------------------------------------------

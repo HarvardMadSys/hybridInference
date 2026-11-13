@@ -1166,6 +1166,10 @@ def _model_config_provider_for_target(target: ProviderTarget) -> str:
 
 def _apply_target_adapter_defaults(cfg: dict[str, Any], target: ProviderTarget) -> None:
     cfg["chat_path"] = target.chat_path
+    # Adapter-specific controls belong to the old target and must not survive
+    # a target change. Same-target edits preserve them.
+    cfg["openrouter_pinned_provider"] = None
+    cfg["provider_profile"] = None
     # Route-origin publishability is a property of the new target's kind, never
     # inherited from the template route's config. Inheriting True from a
     # dedicated-kind template onto a generic-kind route (e.g. a self-serve
@@ -1192,13 +1196,10 @@ def _finalize_admin_endpoint_publishability(
     route_id reused as endpoint_id is free text and must never be published,
     even on a dedicated kind.
 
-    The two kind-change resets below run before the early return: they are
-    derived from the adapter kind, and ``cfg`` is a copy of another route's
-    config, whose values would otherwise outlive a change of kind. An
-    OpenRouter pin on a Chutes route lists, keys and probes it as OpenRouter.
+    Adapter-specific values are reset when a target changes, in
+    :func:`_apply_target_adapter_defaults`. This function only finalizes
+    endpoint identity disclosure.
     """
-    cfg["openrouter_pinned_provider"] = None
-    cfg["provider_profile"] = None
     # The disclosure decision is derived here, not merely narrowed: it is a
     # property of the route's *effective* adapter kind and of the endpoint
     # identity itself. Deriving it in one place means no later step can widen

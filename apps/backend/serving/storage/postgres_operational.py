@@ -470,11 +470,11 @@ ACCOUNT_QUOTA_SOURCE_SQL = (
 
 
 def _coerce_user_row(row: Any) -> Row | None:
-    """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
+    """Convert an asyncpg Row to a dict, decoding JSONB auth-context fields.
 
     asyncpg returns JSONB columns as raw JSON strings when no type codec is
-    registered. Callers that inspect ``preferences`` (e.g. disabled-model
-    checks) need a Python dict, not a string.
+    registered. Callers that inspect these fields need Python objects, not
+    strings.
     """
     if row is None:
         return None
@@ -488,6 +488,15 @@ def _coerce_user_row(row: Any) -> Row | None:
             d["preferences"] = {}
     elif not isinstance(val, dict):
         d["preferences"] = {}
+    metadata = d.get("key_metadata")
+    if isinstance(metadata, str):
+        try:
+            parsed_metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            parsed_metadata = None
+        d["key_metadata"] = parsed_metadata if isinstance(parsed_metadata, dict) else None
+    elif not isinstance(metadata, dict):
+        d["key_metadata"] = None
     for field in ("allowed_models", "project_allowed_models"):
         models = d.get(field)
         if isinstance(models, str):
