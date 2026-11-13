@@ -46,8 +46,9 @@ if TYPE_CHECKING:
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
-# The per-card query /admin/request-metrics ran before the rollup, verbatim.
-# $1 window minutes, $2 bucket minutes, $3 499, $4 'client_disconnect'.
+# The per-card query /admin/request-metrics ran before the rollup, plus the
+# model-queued exclusion the rollup applies to every count. $1 window minutes,
+# $2 bucket minutes, $3 499, $4 'client_disconnect'.
 _PER_CARD_SQL = """
 WITH config AS (
     SELECT ($2::int * 60) AS bucket_seconds
@@ -101,6 +102,7 @@ bucketed_logs AS (
     FROM api_logs, bounds
     WHERE timestamp >= bounds.start_time
       AND timestamp <= bounds.end_time
+      AND (error IS NULL OR error NOT LIKE 'UpstreamModelQueued:%')
     GROUP BY 1
 )
 SELECT
@@ -127,6 +129,11 @@ _OUTCOMES: list[tuple[int | None, str | None, dict[str, Any]]] = [
     (None, "no response", {}),
     # A 2xx that also recorded an error counts as a success and an error.
     (200, "partial", {}),
+    # A 503 that is not a capacity wait still counts, as does a row that only
+    # mentions the marker later. A model-queued wait counts nowhere.
+    (503, "upstream 503", {}),
+    (500, "note mentions UpstreamModelQueued: later", {}),
+    (503, "UpstreamModelQueued: 503, message='Service Unavailable'", {}),
 ]
 
 
@@ -347,6 +354,102 @@ async def test_cards_match_the_per_card_queries(client: AsyncClient, pool: async
 
 
 @pytest.mark.asyncio
+async def test_a_model_queued_wait_is_left_out_of_the_live_and_stored_counts(
+    client: AsyncClient, pool: asyncpg.Pool
+):
+    """A capacity wait adds nothing, including to an hour read back from the rollup.
+
+    The absolute numbers are the point: the comparison with the per-card oracle
+    would still pass if both sides counted the wait.
+    """
+    now_minute = await _db_minute(pool)
+    live_at = now_minute
+    stored_at = now_minute - timedelta(hours=3)
+    rows = []
+    for at, tag in ((live_at, "live"), (stored_at, "stored")):
+        rows.extend(
+            [
+                (f"{tag}-ok", 200, None, 100 if tag == "live" else 10, at, "batch_1"),
+                (f"{tag}-err", 503, "upstream 503", 40 if tag == "live" else 30, at, "batch_1"),
+                (
+                    f"{tag}-queued",
+                    503,
+                    "UpstreamModelQueued: 503, message='Service Unavailable'",
+                    9999,
+                    at,
+                    "batch_1",
+                ),
+                (
+                    f"{tag}-interactive-queued",
+                    503,
+                    "UpstreamModelQueued: waiting",
+                    8888,
+                    at,
+                    None,
+                ),
+            ]
+        )
+    # Mentioning the marker later is not a capacity wait.
+    rows.append(
+        ("live-mention", 500, "note mentions UpstreamModelQueued: later", 20, live_at, "batch_1")
+    )
+    async with pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO api_logs (
+                request_id, model_id, provider, status_code, error, metadata,
+                latency_ms, timestamp, batch_job_id
+            ) VALUES ($1, 'glm-4.6', 'zai', $2, $3, '{}'::jsonb, $4, $5, $6)
+            """,
+            rows,
+        )
+
+    resp = await client.get("/admin/request-metrics")
+    assert resp.status_code == 200, resp.text
+    windows = {window["key"]: window for window in resp.json()["windows"]}
+    # Live only: the success, the real 503, and the mention. Both waits are gone,
+    # and their latency does not move the average (160 / 3 = 53.3).
+    hour = windows["1h"]
+    assert (hour["total_requests"], hour["success_requests"], hour["error_requests"]) == (3, 1, 2)
+    assert (hour["batch_requests"], hour["batch_error_requests"]) == (3, 2)
+    assert hour["avg_latency_ms"] == 53.3
+    # The hour three hours back is stored, then read. Same two real calls.
+    day = windows["1d"]
+    assert (day["total_requests"], day["success_requests"], day["error_requests"]) == (5, 2, 3)
+    assert (day["batch_requests"], day["batch_error_requests"]) == (5, 3)
+    assert day["avg_latency_ms"] == 40.0
+
+    hour_bucket = stored_at.replace(minute=0, second=0, microsecond=0)
+    async with pool.acquire() as conn:
+        stored = await conn.fetchrow(
+            """
+            SELECT request_count, success_count, error_count, batch_request_count,
+                   batch_error_count, latency_count, latency_sum_ms, definition
+            FROM request_volume_hourly
+            WHERE hour_bucket = $1
+            """,
+            hour_bucket,
+        )
+    assert stored is not None
+    assert (
+        stored["request_count"],
+        stored["success_count"],
+        stored["error_count"],
+        stored["batch_request_count"],
+        stored["batch_error_count"],
+        stored["latency_count"],
+        stored["latency_sum_ms"],
+    ) == (2, 1, 1, 2, 1, 2, 40)
+    assert stored["definition"] == request_volume.DEFINITION
+
+    interactive = await client.get("/admin/request-metrics", params={"source": "interactive"})
+    assert interactive.status_code == 200, interactive.text
+    interactive_hour = next(w for w in interactive.json()["windows"] if w["key"] == "1h")
+    assert interactive_hour["total_requests"] == 0
+    assert interactive_hour["batch_requests"] == 3
+
+
+@pytest.mark.asyncio
 async def test_an_hour_stored_under_another_definition_is_counted_again(
     client: AsyncClient, pool: asyncpg.Pool
 ):
@@ -506,12 +609,14 @@ async def test_backfill_stores_every_completed_hour_once(pool: asyncpg.Pool):
                 SELECT count(*) FROM api_logs l
                 WHERE l.timestamp >= v.hour_bucket
                   AND l.timestamp < v.hour_bucket + interval '1 hour'
+                  AND (l.error IS NULL OR l.error NOT LIKE 'UpstreamModelQueued:%')
             )
             OR v.batch_request_count <> (
                 SELECT count(*) FROM api_logs l
                 WHERE l.timestamp >= v.hour_bucket
                   AND l.timestamp < v.hour_bucket + interval '1 hour'
                   AND l.batch_job_id IS NOT NULL
+                  AND (l.error IS NULL OR l.error NOT LIKE 'UpstreamModelQueued:%')
             )
             OR v.definition <> $1
             """,
@@ -547,7 +652,19 @@ async def test_a_bar_lists_the_requests_it_counted(client: AsyncClient, pool: as
 
     assert resp.status_code == 200, resp.text
     listed = resp.json()
-    assert listed["total"] == bar["request_count"]
+    async with pool.acquire() as conn:
+        # A capacity wait is still a row in the list. The bar leaves it out.
+        waits = await conn.fetchval(
+            """
+            SELECT count(*) FROM api_logs
+            WHERE batch_job_id IS NULL
+              AND timestamp >= $1 AND timestamp < $2
+              AND error LIKE 'UpstreamModelQueued:%'
+            """,
+            start,
+            start + timedelta(minutes=month["bucket_minutes"]),
+        )
+    assert listed["total"] == bar["request_count"] + waits
     assert listed["total_exact"] is True
     assert all(
         start
