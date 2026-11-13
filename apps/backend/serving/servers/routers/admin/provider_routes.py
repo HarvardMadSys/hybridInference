@@ -77,7 +77,12 @@ from serving.servers.deps import (
     model_router_transition_lock,
     verify_admin_access,
 )
-from serving.servers.registry import _make_adapter, _make_provider_id, parse_openrouter_kind
+from serving.servers.registry import (
+    _endpoint_identity_publishable,
+    _make_adapter,
+    _make_provider_id,
+    parse_openrouter_kind,
+)
 from serving.servers.routewise_compat import (
     EnvelopeNotCalibratedError,
     RouteWiseRouter,
@@ -1161,12 +1166,41 @@ def _model_config_provider_for_target(target: ProviderTarget) -> str:
 
 def _apply_target_adapter_defaults(cfg: dict[str, Any], target: ProviderTarget) -> None:
     cfg["chat_path"] = target.chat_path
-    # Derived from the adapter kind, and set by ``_make_adapter`` only for the
-    # kinds that have them. ``cfg`` is a copy of another route's config, whose
-    # values would otherwise outlive a change of kind: an OpenRouter pin on a
-    # Chutes route lists, keys and probes it as OpenRouter.
+    # Route-origin publishability is a property of the new target's kind, never
+    # inherited from the template route's config. Inheriting True from a
+    # dedicated-kind template onto a generic-kind route (e.g. a self-serve
+    # openai_compat route at a private host) would publish its minted
+    # *-api endpoint id. An admin-supplied route_id is never publishable;
+    # the registry sets publishability from kind only for YAML routes.
+    cfg["endpoint_identity_publishable"] = _endpoint_identity_publishable(target.kind)
+
+
+def _finalize_admin_endpoint_publishability(
+    cfg: dict[str, Any],
+    *,
+    model_id: str,
+    target: ProviderTarget,
+    base_url: str,
+    endpoint_id: str | None,
+) -> None:
+    """Force non-publishable when the endpoint id is admin-supplied.
+
+    The registry mints ids as ``_make_provider_id(model_id, kind, base_url)``;
+    kind decides publishability only for those minted ids. An admin-supplied
+    route_id reused as endpoint_id is free text and must never be published,
+    even on a dedicated kind.
+
+    The two kind-change resets below run before the early return: they are
+    derived from the adapter kind, and ``cfg`` is a copy of another route's
+    config, whose values would otherwise outlive a change of kind. An
+    OpenRouter pin on a Chutes route lists, keys and probes it as OpenRouter.
+    """
     cfg["openrouter_pinned_provider"] = None
     cfg["provider_profile"] = None
+    if endpoint_id is None:
+        return
+    if endpoint_id != _make_provider_id(model_id, target.kind, base_url):
+        cfg["endpoint_identity_publishable"] = False
 
 
 def _target_provider_from_request(
@@ -1797,7 +1831,7 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
 # begin recording fabricated measured misses. Dropped here so the default is
 # "unlicensed"; the update path re-applies it only when the route still points
 # at the same endpoint.
-_UNCLONEABLE_ENDPOINT_FACTS = ("null_cache_details_means_miss",)
+_UNCLONEABLE_ENDPOINT_FACTS = ("null_cache_details_means_miss", "endpoint_identity_publishable")
 
 
 def _config_to_dict(config: Any, *, strip_route_capabilities: bool = False) -> dict[str, Any]:
@@ -2845,6 +2879,13 @@ async def _prepare_route_candidate(
             )
         )
     _apply_target_adapter_defaults(cfg, target)
+    _finalize_admin_endpoint_publishability(
+        cfg,
+        model_id=model_id,
+        target=target,
+        base_url=cleaned_base_url,
+        endpoint_id=cfg.get("endpoint_id"),
+    )
     await _apply_openrouter_endpoint_pricing(
         cfg,
         provider_model_id=provider_model_id,
@@ -3001,6 +3042,13 @@ async def _prepare_model_route_candidate(
         cfg.update(_capability_config_fields(declared_capabilities))
         cfg["route_metadata"][_DECLARED_CAPABILITIES] = True
     _apply_target_adapter_defaults(cfg, target)
+    _finalize_admin_endpoint_publishability(
+        cfg,
+        model_id=model_id,
+        target=target,
+        base_url=cleaned_base_url,
+        endpoint_id=cfg.get("endpoint_id"),
+    )
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
         cfg["quota_pool"] = quota_pool
@@ -3203,6 +3251,13 @@ async def _prepare_route_update(
         adapter_kind = target.kind
         cfg["provider"] = _model_config_provider_for_target(target)
         _apply_target_adapter_defaults(cfg, target)
+    _finalize_admin_endpoint_publishability(
+        cfg,
+        model_id=model_id,
+        target=target,
+        base_url=cleaned_base_url,
+        endpoint_id=cfg.get("endpoint_id"),
+    )
     _carry_endpoint_facts_if_unmoved(
         cfg,
         current_adapter=current_adapter,

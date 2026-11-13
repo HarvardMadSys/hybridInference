@@ -580,6 +580,26 @@ def reads_every_owner(user_ctx: dict[str, Any]) -> bool:
     return bool(user_ctx.get("authenticated")) and has_role(user_ctx.get("role") or "free", "admin")
 
 
+def _key_diagnostic_entitlements(identity: dict[str, Any]) -> frozenset[str]:
+    """Return the diagnostic entitlements the presented key holds.
+
+    An ordinary key carries none, so the served-identity headers stay off by
+    default. The entitlement rides in the key's admin-set ``metadata`` bag
+    (issue #1504), which is per key and needs no schema change: an operator
+    grants it on the key they want it for.
+
+    Only a known entitlement name is kept, so a key's metadata cannot inject
+    an arbitrary capability string into the request context.
+    """
+    raw = identity.get("key_metadata")
+    if not isinstance(raw, dict):
+        return frozenset()
+    granted = raw.get("diagnostic_entitlements")
+    if not isinstance(granted, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(str(name) for name in granted if isinstance(name, str))
+
+
 def _user_context(
     identity: dict[str, Any],
     *,
@@ -636,6 +656,11 @@ def _user_context(
         "quota_monthly_cost_usd": identity.get("quota_monthly_cost_usd"),
         "account_spent_month_usd": identity.get("account_spent_month_usd"),
     }
+    # Diagnostic entitlements the presented key holds (issue #1504). Empty for
+    # an ordinary key, so the served-identity headers stay off by default.
+    entitlements = _key_diagnostic_entitlements(identity)
+    if entitlements:
+        context["diagnostic_entitlements"] = entitlements
     allowed = identity.get("allowed_models")
     if api_key_id is not None and allowed is not None:
         context[KEY_ALLOWED_MODELS_KEY] = list(allowed)
@@ -1539,6 +1564,13 @@ async def optional_verify_api_key(
         **(
             {KEY_ALLOWED_MODELS_KEY: list(row["allowed_models"])}
             if row.get("allowed_models") is not None
+            else {}
+        ),
+        # Diagnostic entitlements the key holds (issue #1504). Empty for an
+        # ordinary key, so the served-identity headers stay off by default.
+        **(
+            {"diagnostic_entitlements": entitlements}
+            if (entitlements := _key_diagnostic_entitlements(row))
             else {}
         ),
     }

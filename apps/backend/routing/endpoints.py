@@ -35,6 +35,19 @@ def endpoint_id_for_adapter(adapter: BaseAdapter) -> str:
     return getattr(adapter.config, "endpoint_id", None) or adapter.config.provider
 
 
+def endpoint_publishable_for_adapter(adapter: BaseAdapter) -> bool:
+    """Return whether the adapter's endpoint identity may be published.
+
+    The registry decides this from the route's kind when the route is
+    registered: a dedicated kind (zai, deepseek, ...) publishes its minted
+    endpoint id, a generic kind (openai_compat, vllm, sglang, ...) never does,
+    because its id is built from the first DNS label of the base URL and would
+    leak a private hostname. An adapter that carries no flag publishes
+    nothing.
+    """
+    return bool(getattr(adapter.config, "endpoint_identity_publishable", False))
+
+
 def route_id_for_adapter(adapter: BaseAdapter) -> str:
     """Return the admin-facing route id: the one identity that survives a retarget.
 
