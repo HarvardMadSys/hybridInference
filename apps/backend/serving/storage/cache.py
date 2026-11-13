@@ -1042,6 +1042,64 @@ class CachedOperationalStore(OperationalStore):
         """Record phone login outcomes without fabricating an email."""
         await self._store.record_phone_login_event(**fields)
 
+    # -- single sign-on (never cached) ----------------------------------------
+
+    async def get_user_identity(self, issuer: str, subject: str) -> Row | None:
+        """Fetch the identity an identity provider vouches for, if it is linked."""
+        return await self._store.get_user_identity(issuer, subject)
+
+    async def list_user_identities(self, user_id: str) -> list[Row]:
+        """List an account's linked identities, oldest first."""
+        return await self._store.list_user_identities(user_id)
+
+    async def link_user_identity(self, **fields: Any) -> str:
+        """Link an identity to an active account; say why not when it cannot be."""
+        return await self._store.link_user_identity(**fields)
+
+    async def touch_user_identity(self, identity_id: str) -> None:
+        """Record that an identity just signed in."""
+        return await self._store.touch_user_identity(identity_id)
+
+    async def unlink_user_identity(self, **fields: Any) -> str:
+        """Remove one of an account's identities, optionally keeping its last way in."""
+        return await self._store.unlink_user_identity(**fields)
+
+    async def create_sso_user(self, **fields: Any) -> bool:
+        """Create an account for a first single sign-on and link the identity to it."""
+        return await self._store.create_sso_user(**fields)
+
+    async def create_sso_flow(self, **fields: Any) -> None:
+        """Record one redirect to an identity provider."""
+        return await self._store.create_sso_flow(**fields)
+
+    async def consume_sso_flow(self, state_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired flow."""
+        return await self._store.consume_sso_flow(state_hash)
+
+    async def mark_sso_reauth_verified(self, state_hash: str) -> None:
+        """Record that a claimed re-authentication flow ended in a fresh sign-in."""
+        return await self._store.mark_sso_reauth_verified(state_hash)
+
+    async def consume_sso_reauth_proof(self, **fields: Any) -> bool:
+        """Spend a recent re-authentication for one account, session and purpose."""
+        return await self._store.consume_sso_reauth_proof(**fields)
+
+    async def create_sso_pending_link(self, **fields: Any) -> None:
+        """Hold an identity until the owner of the account it matched accepts it."""
+        return await self._store.create_sso_pending_link(**fields)
+
+    async def get_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Read a pending link that is still waiting, without claiming it."""
+        return await self._store.get_sso_pending_link(token_hash)
+
+    async def consume_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Atomically claim a pending link."""
+        return await self._store.consume_sso_pending_link(token_hash)
+
+    async def delete_sso_pending_link(self, token_hash: str) -> None:
+        """Drop a pending link its browser declined."""
+        return await self._store.delete_sso_pending_link(token_hash)
+
     # -- login events (pass-through) -----------------------------------------
 
     async def record_login_event(
