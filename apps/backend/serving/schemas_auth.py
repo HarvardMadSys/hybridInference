@@ -157,6 +157,17 @@ class LoginResponse(BaseModel):
     user: "UserInfo"
 
 
+class AgentInviteRedeemResponse(LoginResponse):
+    """Redemption of an agent invitation: the login response, plus the key.
+
+    The agent-scoped API key is carried once, in this response only, for the
+    redemption page to show its holder; it is never readable again.
+    """
+
+    api_key: str
+    account_created: bool
+
+
 class RefreshResponse(BaseModel):
     """Token refresh response."""
 
@@ -474,12 +485,6 @@ class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
 
     keys: list[APIKeyListItem]
-
-
-class APIKeyRevealRequest(BaseModel):
-    """Show one saved API key in full; the owner confirms with the account's password."""
-
-    password: str | None = Field(default=None, max_length=1024)
 
 
 class APIKeyRevealResponse(BaseModel):

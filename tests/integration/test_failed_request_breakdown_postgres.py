@@ -12,7 +12,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
-from serving.admin.failed_request_alerter import fetch_failure_breakdown
+from serving.admin.failed_request_alerter import (
+    count_recent_failures,
+    count_recent_failures_and_total,
+    fetch_failure_breakdown,
+)
 from serving.storage.database import DatabaseLogger
 from tests.fixtures import postgres
 
@@ -39,17 +43,27 @@ async def pool(pg_dsn: str):
         await logger.cleanup()
 
 
-async def _insert(pool, request_id: str, *, at: datetime, status: int, error: str | None) -> None:
+async def _insert(
+    pool,
+    request_id: str,
+    *,
+    at: datetime,
+    status: int,
+    error: str | None,
+    batch_job_id: str | None = None,
+) -> None:
     async with pool.acquire() as connection:
         await connection.execute(
             """
-            INSERT INTO api_logs (request_id, model_id, provider, timestamp, status_code, error)
-            VALUES ($1, 'gpt-4o', 'openai', $2, $3, $4)
+            INSERT INTO api_logs
+                (request_id, model_id, provider, timestamp, status_code, error, batch_job_id)
+            VALUES ($1, 'gpt-4o', 'openai', $2, $3, $4, $5)
             """,
             request_id,
             at,
             status,
             error,
+            batch_job_id,
         )
 
 
@@ -84,3 +98,25 @@ async def test_the_sample_is_the_newest_failures_type_and_status_without_its_tex
     assert breakdown["sample_status"] == 400
     assert "sample_error" not in breakdown
     assert "Jane Roe" not in repr(breakdown)
+
+
+async def test_batch_attempts_count_neither_as_failures_nor_in_the_total(pool):
+    now = datetime.now(UTC)
+    for i in range(5):
+        await _insert(
+            pool,
+            f"batch-{i}",
+            at=now - timedelta(seconds=10 + i),
+            status=504,
+            error="UpstreamRequestTimedOut: no answer in 570 s",
+            batch_job_id="batch_abc",
+        )
+    await _insert(pool, "batch-ok", at=now, status=200, error=None, batch_job_id="batch_abc")
+    await _insert(pool, "direct-fail", at=now, status=500, error="KeyError: 'x'")
+    await _insert(pool, "direct-ok", at=now, status=200, error=None)
+
+    assert await count_recent_failures(pool, 5) == 1
+    assert await count_recent_failures_and_total(pool, 5) == (1, 2)
+    breakdown = await fetch_failure_breakdown(pool, 5)
+    assert breakdown["status_codes"] == "500"
+    assert breakdown["sample_error_type"] == "KeyError"

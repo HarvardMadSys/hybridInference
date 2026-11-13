@@ -17,6 +17,7 @@ from serving import quota
 from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
+    AgentInviteSubjectUnavailableError,
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     HardDeleteStateChanged,
@@ -274,13 +275,16 @@ def _decode_grant(row: Any) -> Row:
 _KEY_INSERT_COLUMNS = (
     "key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, "
     "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, "
-    "api_key_encrypted, name, org_id, project_id"
+    "api_key_encrypted, name, org_id, project_id, credential_scope"
 )
-_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14"
+_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14, $15"
 
 #: A key's own limits (P2a), on top of its account's quota. NULL means no limit
-#: at the key.
-_KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models"
+#: at the key. The credential scope rides with them: every auth lookup that
+#: reports what a key may reach must also say which scope it carries.
+_KEY_LIMIT_COLUMNS = (
+    "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models, k.credential_scope"
+)
 
 #: What the auth lookups add about the presented key itself: its limits, and
 #: how a refusal names it.
@@ -1688,7 +1692,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
-                "u.max_concurrent_requests, k.allowed_models, "
+                "u.max_concurrent_requests, k.allowed_models, k.credential_scope, "
                 "p.allowed_models AS project_allowed_models, o.status AS org_status "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1782,6 +1786,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         name: str | None = None,
         max_active_keys: int | None = None,
         project_id: str | None = None,
+        credential_scope: str = "",
     ) -> Row:
         """Insert a new API key. Returns the inserted row.
 
@@ -1865,6 +1870,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 name,
                 org,
                 target_project,
+                credential_scope or None,
             )
             await _sync_account_quota(
                 conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
@@ -3045,6 +3051,230 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 code_hash,
             )
         return dict(row) if row else None
+
+    # -- agent invitations ----------------------------------------------------
+
+    async def create_agent_invite_token(
+        self,
+        *,
+        token_hash: str,
+        agent_account_id: str,
+        email: str,
+        expires_at: datetime,
+    ) -> None:
+        """Store a hashed invitation token, superseding earlier live ones."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.execute(
+                "UPDATE agent_invite_tokens SET superseded_at = NOW() "
+                "WHERE agent_account_id = $1 AND consumed_at IS NULL "
+                "AND superseded_at IS NULL",
+                agent_account_id,
+            )
+            await conn.execute(
+                "INSERT INTO agent_invite_tokens "
+                "(token_hash, agent_account_id, email, expires_at) VALUES ($1, $2, $3, $4)",
+                token_hash,
+                agent_account_id,
+                email.lower(),
+                expires_at,
+            )
+            # Same bounded-table reasoning as the identity codes above.
+            await conn.execute(
+                "DELETE FROM agent_invite_tokens WHERE expires_at < NOW() - INTERVAL '30 days'"
+            )
+
+    async def redeem_agent_invite(
+        self,
+        *,
+        token_hash: str,
+        user_id: str,
+        user_name: str | None,
+        password_hash: str,
+        api_key_hash: str,
+        api_key_prefix: str,
+        credential_scope: str,
+        quota_daily_cost_usd: Decimal | float,
+        max_active_keys: int,
+    ) -> Row | None:
+        """Claim an invite and settle the account behind it, in one transaction.
+
+        The claim is one conditional UPDATE, so two concurrent redemptions
+        of the same link cannot both pass it. Everything after it either
+        commits with it or not at all: a refusal (key ceiling, an account
+        that may not sign in) leaves the token unconsumed and writes
+        nothing — in particular no permanent API key exists for a
+        redemption that did not complete.
+        """
+        from serving.storage.project_backfill import (
+            default_project_id,
+            ensure_personal_org,
+            personal_org_id,
+        )
+
+        async with self._pool.acquire() as conn, conn.transaction():
+            claim = await conn.fetchrow(
+                "UPDATE agent_invite_tokens SET consumed_at = NOW() "
+                "WHERE token_hash = $1 AND consumed_at IS NULL "
+                "AND superseded_at IS NULL AND expires_at > NOW() "
+                "RETURNING agent_account_id, email",
+                token_hash,
+            )
+            if claim is None:
+                return None
+            agent_account_id = claim["agent_account_id"]
+            email = claim["email"].lower()
+
+            existing = await conn.fetchrow(
+                "SELECT id, status, hard_delete_pending FROM users WHERE email = $1 FOR UPDATE",
+                email,
+            )
+            created = existing is None
+            if created:
+                inserted = await conn.fetchrow(
+                    "INSERT INTO users (id, email, password_hash, user_name, "
+                    "email_verified, status, signup_reason) "
+                    "VALUES ($1, $2, $3, $4, TRUE, 'active', 'agent-invitation') "
+                    "ON CONFLICT (email) DO NOTHING RETURNING id",
+                    user_id,
+                    email,
+                    password_hash,
+                    user_name,
+                )
+                if inserted is None:
+                    # A concurrent signup won the email between the read
+                    # and the insert; settle that account instead.
+                    created = False
+                    existing = await conn.fetchrow(
+                        "SELECT id, status, hard_delete_pending FROM users "
+                        "WHERE email = $1 FOR UPDATE",
+                        email,
+                    )
+            if not created:
+                # An invitation never lifts a sanction: suspended, rejected,
+                # deleted, or being hard-deleted refuses here, and the
+                # rollback leaves the link usable if an admin restores it.
+                if existing["hard_delete_pending"] or existing["status"] in (
+                    "suspended",
+                    "rejected",
+                    "deleted",
+                ):
+                    raise AgentInviteSubjectUnavailableError(
+                        "This account may not sign in; the invitation was not used."
+                    )
+                user_id = existing["id"]
+                await conn.execute(
+                    "UPDATE users SET password_hash = $2, email_verified = TRUE, "
+                    "status = 'active' WHERE id = $1",
+                    user_id,
+                    password_hash,
+                )
+                # A new password ends the old one's sessions, as a reset does.
+                await conn.execute(
+                    "UPDATE auth_sessions SET revoked = TRUE "
+                    "WHERE user_id = $1 AND revoked IS NOT TRUE",
+                    user_id,
+                )
+            await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
+
+            await _lock_account_keys(conn, user_id)
+            # Exactly one live scoped key per account: a re-invitation
+            # replaces the earlier one instead of accumulating credentials.
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() "
+                "WHERE user_id = $1 AND credential_scope = $2 AND status = 'active'",
+                user_id,
+                credential_scope,
+            )
+            active = await conn.fetchval(
+                "SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
+                user_id,
+            )
+            if active >= max_active_keys:
+                raise APIKeyLimitReachedError(max_active_keys)
+            daily: Decimal | float = quota_daily_cost_usd
+            monthly: Decimal | float | None = None
+            current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
+            if current is not None:
+                daily = current["quota_daily_cost_usd"]
+                monthly = current["quota_monthly_cost_usd"]
+            org = personal_org_id(user_id)
+            row = await conn.fetchrow(
+                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
+                "RETURNING id, created_at",
+                api_key_hash,
+                api_key_prefix,
+                user_id,
+                user_name,
+                daily,
+                monthly,
+                None,
+                "agent-invitation",
+                None,
+                user_id,
+                None,
+                "Cloud Agent",
+                org,
+                default_project_id(user_id),
+                credential_scope or None,
+            )
+            await _sync_account_quota(
+                conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
+            )
+            await conn.execute(
+                "INSERT INTO agent_provisioned_accounts (agent_account_id, user_id, api_key_id) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (agent_account_id) DO UPDATE "
+                "SET user_id = EXCLUDED.user_id, api_key_id = EXCLUDED.api_key_id, "
+                "revoked_at = NULL",
+                agent_account_id,
+                user_id,
+                row["id"],
+            )
+        return {
+            "user_id": user_id,
+            "api_key_id": row["id"],
+            "created": created,
+            "agent_account_id": agent_account_id,
+            "email": email,
+        }
+
+    async def get_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
+        """Return the provisioning link for an agent account id, or None."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT agent_account_id, user_id, api_key_id, created_at, revoked_at "
+                "FROM agent_provisioned_accounts WHERE agent_account_id = $1",
+                agent_account_id,
+            )
+        return dict(row) if row else None
+
+    async def revoke_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
+        """Revoke a provisioned account's scoped key and mark the link revoked."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            link = await conn.fetchrow(
+                "SELECT agent_account_id, user_id, api_key_id, revoked_at "
+                "FROM agent_provisioned_accounts WHERE agent_account_id = $1 FOR UPDATE",
+                agent_account_id,
+            )
+            if link is None:
+                return None
+            if link["revoked_at"] is None:
+                if link["api_key_id"] is not None:
+                    await conn.execute(
+                        "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() "
+                        "WHERE id = $1 AND status = 'active'",
+                        link["api_key_id"],
+                    )
+                await conn.execute(
+                    "UPDATE agent_provisioned_accounts SET revoked_at = NOW() "
+                    "WHERE agent_account_id = $1",
+                    agent_account_id,
+                )
+        return {
+            "agent_account_id": link["agent_account_id"],
+            "user_id": link["user_id"],
+            "api_key_id": link["api_key_id"],
+        }
 
     # -- inference grants ----------------------------------------------------
 

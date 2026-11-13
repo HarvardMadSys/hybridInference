@@ -13,6 +13,19 @@ from typing import Any
 
 RESPONSE_TEXT = "RUNNABLE_EXAMPLE_OK"
 
+#: The most numbered frames one stream may be asked for.
+MAX_STREAM_FRAMES = 1_000_000
+
+
+def numbered_frame_text(index: int) -> str:
+    """The content of numbered frame *index*: ``[000000]``, ``[000001]``, ...
+
+    A client reading the stream through the gateway -- as Chat Completions,
+    Responses or Messages deltas -- can find every number in the text it
+    received and tell a missing, repeated or reordered frame from a whole one.
+    """
+    return f"[{index:06d}]"
+
 
 def _utc_now() -> datetime:
     return datetime.now(UTC)
@@ -113,6 +126,52 @@ def build_stream_frames(
     return (*frames, b"data: [DONE]\n\n")
 
 
+def _sse(event: dict[str, Any]) -> bytes:
+    return b"data: " + json.dumps(event, separators=(",", ":")).encode("utf-8") + b"\n\n"
+
+
+def build_numbered_stream(
+    payload: dict[str, Any], frame_count: int, interval_ms: float = 0.0
+) -> tuple[tuple[float, bytes], ...]:
+    """Build a stream of *frame_count* numbered content frames, with the delay before each.
+
+    Each item is ``(seconds to wait before writing, frame)``. The role frame
+    and frame 0 go out at once; each later numbered frame waits *interval_ms*,
+    so a client can compare the gaps it sees with the gaps that were sent. The
+    finish frame, a usage chunk when the request asked for one
+    (``stream_options.include_usage``), and ``[DONE]`` follow the last frame.
+    """
+    model = str(payload.get("model") or "example-upstream")
+    interval = max(interval_ms, 0.0) / 1000.0
+
+    def chunk(delta: dict[str, Any], finish_reason: str | None) -> dict[str, Any]:
+        return {
+            "id": "chatcmpl-runnable-example",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": model,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }
+
+    plan: list[tuple[float, bytes]] = [
+        (0.0, _sse(chunk({"role": "assistant", "content": ""}, None)))
+    ]
+    for index in range(frame_count):
+        delay = interval if index else 0.0
+        plan.append((delay, _sse(chunk({"content": numbered_frame_text(index)}, None))))
+    plan.append((0.0, _sse(chunk({}, "stop"))))
+    options = payload.get("stream_options")
+    if isinstance(options, dict) and options.get("include_usage"):
+        usage = {
+            "prompt_tokens": 4,
+            "completion_tokens": frame_count,
+            "total_tokens": 4 + frame_count,
+        }
+        plan.append((0.0, _sse({**chunk({}, None), "choices": [], "usage": usage})))
+    plan.append((0.0, b"data: [DONE]\n\n"))
+    return tuple(plan)
+
+
 class FakeHandler(BaseHTTPRequestHandler):
     """Serve the minimal health, models, and chat-completions surface."""
 
@@ -121,6 +180,9 @@ class FakeHandler(BaseHTTPRequestHandler):
     expected_model: str | None = None
     expected_api_key: str | None = None
     ttft_delay_ms: float = 0.0
+    #: None: the three fixed frames. A number: that many numbered frames.
+    stream_frames: int | None = None
+    frame_interval_ms: float = 0.0
 
     def log_message(self, fmt: str, *args: Any) -> None:
         """Keep example output quiet; the gateway logs the routed request."""
@@ -206,15 +268,21 @@ class FakeHandler(BaseHTTPRequestHandler):
         self.close_connection = True
 
     def _send_stream(self, payload: dict[str, Any]) -> None:
-        """Send deterministic SSE frames without timing-dependent delays."""
+        """Send deterministic SSE frames, numbered and paced when configured."""
         self.close_connection = True
+        if self.stream_frames is None:
+            plan = tuple((0.0, frame) for frame in build_stream_frames(payload, self.response_text))
+        else:
+            plan = build_numbered_stream(payload, self.stream_frames, self.frame_interval_ms)
         try:
             self.send_response(200)
             self.send_header("Content-Type", "text/event-stream; charset=utf-8")
             self.send_header("Cache-Control", "no-cache")
             self.send_header("Connection", "close")
             self.end_headers()
-            for frame in build_stream_frames(payload, self.response_text):
+            for delay, frame in plan:
+                if delay > 0:
+                    time.sleep(delay)
                 self.wfile.write(frame)
                 self.wfile.flush()
         except (BrokenPipeError, ConnectionResetError):
@@ -245,9 +313,29 @@ def main() -> None:
         default=0.0,
         help="Deterministic delay before the first response byte, in milliseconds.",
     )
+    parser.add_argument(
+        "--stream-frames",
+        type=int,
+        help=(
+            "Stream this many numbered content frames ([000000], [000001], ...) "
+            "instead of the fixed three. Non-streaming answers are unchanged."
+        ),
+    )
+    parser.add_argument(
+        "--frame-interval-ms",
+        type=float,
+        default=0.0,
+        help="Delay between consecutive numbered frames, in milliseconds; requires --stream-frames.",
+    )
     args = parser.parse_args()
     if args.quota_used is not None and args.quota_limit is None:
         parser.error("--quota-used requires --quota-limit")
+    if args.stream_frames is not None and not 1 <= args.stream_frames <= MAX_STREAM_FRAMES:
+        parser.error(f"--stream-frames must be between 1 and {MAX_STREAM_FRAMES}")
+    if args.frame_interval_ms < 0:
+        parser.error("--frame-interval-ms must not be negative")
+    if args.frame_interval_ms and args.stream_frames is None:
+        parser.error("--frame-interval-ms requires --stream-frames")
     quota_state = None
     if args.quota_limit is not None:
         try:
@@ -258,6 +346,8 @@ def main() -> None:
     FakeHandler.expected_model = args.expected_model
     FakeHandler.expected_api_key = args.expected_api_key
     FakeHandler.ttft_delay_ms = args.ttft_delay_ms
+    FakeHandler.stream_frames = args.stream_frames
+    FakeHandler.frame_interval_ms = args.frame_interval_ms
     server = ThreadingHTTPServer((args.host, args.port), FakeHandler)
     server.quota_state = quota_state
     server.daemon_threads = True

@@ -172,6 +172,10 @@ class RouteConfig:
     admin_only: bool = False
     required_role: str = "free"
     published: bool = True
+    # Credential scope a caller must present to use this model ("" = any
+    # ordinary credential). Set from the catalog's ``credential_scope``; the
+    # access check in ``serving.model_access`` enforces it.
+    credential_scope: str = ""
 
 
 @dataclass(kw_only=True)
@@ -1907,6 +1911,7 @@ class FixedRouter:
         admin_only: bool = False,
         required_role: str = "free",
         published: bool = True,
+        credential_scope: str = "",
     ) -> None:
         """Register a weighted route for a model.
 
@@ -1923,6 +1928,10 @@ class FixedRouter:
             published: Whether request selection may use this route. Runtime
                 model creation stages an unpublished route until its durable
                 strategy transition commits.
+            credential_scope: When non-empty, only a caller whose credential
+                carries this scope may use the model (enforced by
+                ``serving.model_access``); ordinary credentials are refused
+                whatever their role.
         """
         total_weight = sum(weight for _, weight in adapters_with_weights)
         if total_weight <= 0:
@@ -1943,6 +1952,7 @@ class FixedRouter:
             admin_only=admin_only,
             required_role=effective_role,
             published=published,
+            credential_scope=credential_scope,
         )
         with self._lock:
             self.routes[model_id] = route_cfg
@@ -1957,6 +1967,7 @@ class FixedRouter:
         aliases: list[str] | None = None,
         admin_only: bool = False,
         required_role: str = "free",
+        credential_scope: str = "",
     ) -> None:
         """Record the access gate for an embedding model.
 
@@ -1980,6 +1991,8 @@ class FixedRouter:
             admin_only: Deprecated: use required_role="admin" instead.
             required_role: Minimum role required to call the model
                 (free/pro/internal/admin).
+            credential_scope: When non-empty, only a caller whose credential
+                carries this scope may use the model.
         """
         # Backward compat: admin_only=True implies required_role="admin"
         # Recorded unconditionally — unlike register_route there is no weight
@@ -1993,6 +2006,7 @@ class FixedRouter:
             canonical_model_id=model_id,
             admin_only=admin_only,
             required_role=effective_role,
+            credential_scope=credential_scope,
         )
         with self._lock:
             self.embedding_routes[model_id] = route_cfg
