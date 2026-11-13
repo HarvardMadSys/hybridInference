@@ -214,6 +214,119 @@ def _warm_envelope(
 
 
 @pytest.mark.unit
+class TestHedgedAdapterBackupPrefillConfirmation:
+    """A backup that served the request must have its prefill confirmed.
+
+    A prefill lease is released two ways: ``prefill_confirmed=True`` -- the
+    upstream really did prefill the prompt, so the endpoint's warm-prefix hint
+    is written -- and a plain release, which only returns the load charge and
+    writes no hint. A hedge backup that won the race prefilled the prompt, so
+    its hint must be written; otherwise the next turn on that endpoint is
+    charged as cold work it did not do.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_a_streaming_backup_winner_confirms_its_prefill(self):
+        """The stream path must confirm the backup's prefill, like chat does."""
+        confirmed: list[str] = []
+        released: list[str] = []
+
+        primary = _make_fake_adapter(
+            provider="slow-primary",
+            stream_delay=0.5,
+            stream_chunks=[
+                'data: {"choices":[{"delta":{"content":"primary"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            stream_delay=0.0,
+            stream_chunks=[
+                'data: {"choices":[{"delta":{"content":"backup"}}]}\n\n',
+                "data: [DONE]\n\n",
+            ],
+        )
+
+        def _selector(
+            elapsed_sec: float,
+            checkpoint_ts: float,
+        ) -> CheckpointBackupDispatch[Any]:
+            return CheckpointBackupDispatch(
+                backup=backup,
+                elapsed_sec=elapsed_sec,
+                release=lambda: released.append("release"),
+                metadata={
+                    "prefill_confirm": lambda: confirmed.append("confirm"),
+                    "prefill_release": lambda: released.append("prefill_release"),
+                },
+            )
+
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=_FakeEventSink(),
+            checkpoint_backup_selector=_selector,
+            hedge_checkpoints_sec=(0.0,),
+        )
+
+        chunks = [
+            chunk
+            async for chunk in hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        ]
+
+        assert chunks, "the stream produced no chunks"
+        assert confirmed == ["confirm"], "the winning backup's prefill was not confirmed"
+        # The confirmation is the release: it returns the load charge *and*
+        # writes the warm-prefix hint, so no second release follows it.
+        assert "prefill_release" not in released
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_a_chat_backup_winner_confirms_its_prefill(self):
+        """The chat path confirms the backup's prefill (the control)."""
+        confirmed: list[str] = []
+        released: list[str] = []
+
+        primary = _make_fake_adapter(
+            provider="slow-primary",
+            chat_delay=0.5,
+            chat_result={"source": "primary"},
+        )
+        backup = _make_fake_adapter(
+            provider="fast-backup",
+            chat_delay=0.0,
+            chat_result={"source": "backup"},
+        )
+
+        def _selector(
+            elapsed_sec: float,
+            checkpoint_ts: float,
+        ) -> CheckpointBackupDispatch[Any]:
+            return CheckpointBackupDispatch(
+                backup=backup,
+                elapsed_sec=elapsed_sec,
+                release=lambda: released.append("release"),
+                metadata={
+                    "prefill_confirm": lambda: confirmed.append("confirm"),
+                    "prefill_release": lambda: released.append("prefill_release"),
+                },
+            )
+
+        hedged = HedgedAdapter(
+            primary=primary,
+            event_sink=_FakeEventSink(),
+            checkpoint_backup_selector=_selector,
+            hedge_checkpoints_sec=(0.0,),
+        )
+
+        result = await hedged.chat_completion([{"role": "user", "content": "hi"}])
+
+        assert result["source"] == "backup"
+        assert confirmed == ["confirm"], "the winning backup's prefill was not confirmed"
+
+
+@pytest.mark.unit
 class TestHedgedAdapterNonStreaming:
     @pytest.mark.asyncio
     async def test_primary_fast_no_hedge_triggered(self):

@@ -224,10 +224,15 @@ class HedgedAdapter(BaseAdapter):
         self.failed_attempts.append(failed_attempt(adapter, exc))
         self.leg_failures.append((endpoint_id, exc))
 
-    def _invalidate_endpoint(self, endpoint_id: str) -> None:
-        """Invalidate an endpoint's cached state after a genuine failure."""
+    def _invalidate_endpoint(self, endpoint_id: str, exc: BaseException) -> None:
+        """Invalidate an endpoint's cached state after a genuine failure.
+
+        The failure is passed on so the owner can classify it: an endpoint that
+        answered with a 4xx is up and holds the cache its hints describe, so
+        only a failure that can mean a lost cache may drop them.
+        """
         if self.endpoint_failure_hook is not None:
-            self.endpoint_failure_hook(endpoint_id)
+            self.endpoint_failure_hook(endpoint_id, exc)
 
     def _backs_up_failure(self, exc: BaseException) -> bool:
         """Return whether a primary failure sends the request to a backup now."""
@@ -498,7 +503,7 @@ class HedgedAdapter(BaseAdapter):
                                 reason=exc.__class__.__name__,
                                 exc=exc,
                             )
-                            self._invalidate_endpoint(primary_endpoint)
+                            self._invalidate_endpoint(primary_endpoint, exc)
                             self._record_leg_failure(self.primary, primary_endpoint, exc)
                             primary_error = exc
                             # The primary's call is over; a backup may still be
@@ -526,7 +531,7 @@ class HedgedAdapter(BaseAdapter):
                                     reason=exc.__class__.__name__,
                                     exc=exc,
                                 )
-                                self._invalidate_endpoint(backup_endpoint)
+                                self._invalidate_endpoint(backup_endpoint, exc)
                                 self._record_leg_failure(self.backup, backup_endpoint, exc)
                     else:
                         # Winner found -- cancel the loser.
@@ -835,7 +840,7 @@ class HedgedAdapter(BaseAdapter):
                         self.event_sink.record_failure(
                             primary_endpoint, reason=e.__class__.__name__, exc=e
                         )
-                        self._invalidate_endpoint(primary_endpoint)
+                        self._invalidate_endpoint(primary_endpoint, e)
                         self._record_leg_failure(self.primary, primary_endpoint, e)
                         # The primary's stream raised, so it has stopped; a
                         # backup may carry the request on its own capacity.
@@ -889,7 +894,7 @@ class HedgedAdapter(BaseAdapter):
                             self.event_sink.record_failure(
                                 endpoint, reason=e.__class__.__name__, exc=e
                             )
-                            self._invalidate_endpoint(endpoint)
+                            self._invalidate_endpoint(endpoint, e)
                             self._record_leg_failure(self.backup, endpoint, e)
                         backup_next_task = None
 
@@ -924,6 +929,13 @@ class HedgedAdapter(BaseAdapter):
                     self.config = self.backup.config
                     self.backup_won = True
                     self._winner_started_at = backup_start
+                    # The backup produced output, so it really did prefill the
+                    # prompt: its warm-prefix hint must be written, exactly as
+                    # the chat path writes it. Releasing the lease without
+                    # that confirmation returns the load charge but leaves the
+                    # endpoint looking cold, so the next turn on it is charged
+                    # for prefill work it already did.
+                    self._confirm_backup_prefill(self._stream_backup_dispatch)
                     # The primary lost: close it and free its capacity now,
                     # rather than holding a slot for the backup's whole stream.
                     self._schedule_stream_primary_cleanup(primary_gen, primary_next_task)

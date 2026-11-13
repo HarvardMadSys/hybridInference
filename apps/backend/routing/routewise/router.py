@@ -78,6 +78,7 @@ from routing.routers import (
     ROUTE_REFUSAL_NO_CAPACITY,
     AllCircuitsOpenError,
     TargetUnavailableError,
+    _configured_context_window,
     _counts_as_request_refusal,
     adapter_supports_modalities,
     describe_route_refusals,
@@ -756,6 +757,31 @@ class RouteWiseRouter:
 
     def _on_success(self, endpoint_id: str) -> None:
         self._health_registry.record_success(endpoint_id)
+
+    def _forget_endpoint_prefix_hints(
+        self,
+        endpoint_id: str,
+        exc: BaseException | None = None,
+    ) -> None:
+        """Drop one endpoint's warm-prefix hints after a genuine failure.
+
+        The hedge legs report their own outcomes, so the router's
+        ``_on_failure`` path never runs for a hedged dispatch. This is the
+        hook those legs use instead: an endpoint that failed in a way that can
+        mean it lost its cache (a restart, an OOM, a container replaced under
+        the same id) must stop claiming a warm prefix.
+
+        It matters because the dispatch priority is derived from that hint: a
+        stale hint downgrades a cold mega-prefill from the elephant tier to the
+        interactive tier, and the interactive tier preempts the traffic the
+        cold work was supposed to yield to.
+
+        The failure is classified the same way ``_on_failure`` classifies it,
+        so a 4xx -- an endpoint that answered, and therefore still holds what
+        it held -- keeps its hints.
+        """
+        if failure_may_lose_prefix_cache(exc):
+            self._prefill_load.forget_endpoint(endpoint_id)
 
     def _on_failure(
         self,
@@ -2623,6 +2649,7 @@ class RouteWiseRouter:
                 backup.endpoint_id,
                 context.get("messages") if isinstance(context, dict) else None,
                 request_params if isinstance(request_params, dict) else None,
+                context_window=_configured_context_window(backup.adapter),
             )
 
         def _confirm_backup_prefill() -> None:
@@ -3052,6 +3079,7 @@ class RouteWiseRouter:
                             selected.endpoint_id,
                             context.get("messages"),
                             params if isinstance(params, dict) else None,
+                            context_window=_configured_context_window(selected.adapter),
                         )
                     hedge_plan = self._select_hedge_plan(
                         selected=selected,
@@ -3109,6 +3137,15 @@ class RouteWiseRouter:
                         decision.adapter = HedgedAdapter(
                             primary=leaf,
                             event_sink=self._health_registry,
+                            # A hedged dispatch reports every leg outcome
+                            # itself, so the router's own failure path is
+                            # skipped for it. The hook is how a failed leg
+                            # still drops that endpoint's warm-prefix hints:
+                            # an endpoint that restarted lost the cache the
+                            # hints describe, and a hint that survives it
+                            # stamps a cold mega-prefill interactive, so it
+                            # preempts the traffic it was meant to yield to.
+                            endpoint_failure_hook=self._forget_endpoint_prefix_hints,
                             hedge_checkpoints_sec=hedge_plan.checkpoints_sec,
                             checkpoint_backup_selector=_select_checkpoint_backup_for_request,
                             # The decision owns the primary's capacity until the
@@ -3168,6 +3205,7 @@ class RouteWiseRouter:
         params: Mapping[str, Any] | None,
         *,
         tracked_tokens: int | None = None,
+        context_window: int | None = None,
     ) -> Any:
         """Reserve one endpoint's prefill work with cache-locality evidence.
 
@@ -3175,6 +3213,11 @@ class RouteWiseRouter:
         anchor are used for primary, fallback, and hedge-backup leases. The
         lease is attached to the returned decision or hedge dispatch, so the
         attempt owns its release even if dispatch fails before execution.
+
+        ``context_window`` is the endpoint's configured window, when known. An
+        engine refuses a prompt longer than its window rather than prefilling
+        it, so a charge above the window describes work no engine will do;
+        the shared tracker caps the charge at the window for that reason.
         """
         if tracked_tokens is None:
             tracked_tokens = self._tracked_prefill_tokens(messages, params)
@@ -3192,6 +3235,7 @@ class RouteWiseRouter:
             fingerprint=fingerprint,
             anchor=anchor,
             messages=messages,
+            context_window=context_window,
         )
 
     def _dispatch_priority(
@@ -3576,6 +3620,7 @@ class RouteWiseRouter:
                         messages,
                         params,
                         tracked_tokens=tracked_tokens,
+                        context_window=_configured_context_window(adapter),
                     )
             dispatch_context: dict[str, Any] = {
                 "model": model_id,
@@ -3655,6 +3700,7 @@ class RouteWiseRouter:
                         messages,
                         params,
                         tracked_tokens=tracked_tokens,
+                        context_window=_configured_context_window(adapter),
                     )
             dispatch_context: dict[str, Any] = {
                 "model": model_id,

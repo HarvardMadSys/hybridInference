@@ -4398,6 +4398,232 @@ class TestUpstreamPriority:
 
 
 @pytest.mark.unit
+class TestEndpointFailureInvalidatesPrefixHints:
+    """A failed endpoint must stop claiming a warm prefix it may have lost.
+
+    The priority a dispatch carries is derived from the endpoint's warm-prefix
+    evidence: a hint that says "this conversation's prefix is already cached"
+    downgrades a cold mega-prefill from the elephant tier to the interactive
+    tier, and the interactive tier preempts. An endpoint that restarted, was
+    OOM-killed or was replaced under the same id lost its radix cache, so the
+    hint describing it stopped being evidence.
+
+    RouteWise's own failure path already forgets those hints
+    (``RouteWiseRouter._on_failure``). The hedge legs did not: a hedged
+    dispatch reports every leg outcome through ``HedgedAdapter``, so the
+    router's own path is skipped for it, and the adapter's invalidation hook
+    reached no one.
+    """
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("operation", ("chat", "stream"))
+    async def test_a_failed_hedge_leg_forgets_the_endpoints_prefix_hints(
+        self,
+        operation,
+    ):
+        """A hedge leg that fails must drop that endpoint's warm-prefix hints."""
+        endpoint_id = "test-model:local-8003"
+        adapter = _make_adapter(provider="sglang", endpoint_id=endpoint_id)
+        adapter.config.priority_scheduling = True
+        adapter.reports_leg_outcomes = False
+
+        async def _chat(messages, **params):
+            raise ConnectionError("the engine restarted under the same endpoint id")
+
+        async def _stream(messages, **params):
+            raise ConnectionError("the engine restarted under the same endpoint id")
+            yield ""  # pragma: no cover - never reached
+
+        adapter.chat_completion = _chat
+        adapter.stream_chat_completion = _stream
+
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(
+                db_bootstrap_enabled=False,
+                # Hedging is what makes the dispatch a hedged one: the router
+                # builds the HedgedAdapter, and the router's own failure path
+                # is skipped for it.
+                latency_hedge_mode="probability_target",
+                latency_slo_sec=3.0,
+            ),
+        )
+        tracker = router._prefill_load
+
+        # A completed prefill on this endpoint leaves a warm-prefix hint.
+        with req_ctx.push(affinity_key="caller"):
+            lease = router._acquire_prefill_lease(
+                endpoint_id,
+                [{"role": "user", "content": "warm"}],
+                {},
+            )
+            tracker.release(lease, prefill_confirmed=True)
+            assert tracker.backlog(endpoint_id) == 0
+            assert ("caller", endpoint_id) in tracker._prefix_hints
+
+        messages = [{"role": "user", "content": "cold"}]
+        with req_ctx.push(affinity_key="caller"):
+            if operation == "chat":
+                with pytest.raises(ConnectionError):
+                    await router.chat_completion("test-model", messages)
+            else:
+                with pytest.raises(ConnectionError):
+                    async for _chunk in router.stream_chat_completion("test-model", messages):
+                        pass
+
+        # The failed endpoint's warm-prefix evidence is gone, so a later cold
+        # turn cannot be stamped interactive off a cache that no longer exists.
+        assert ("caller", endpoint_id) not in tracker._prefix_hints
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_a_client_error_keeps_the_endpoints_prefix_hints(self):
+        """An endpoint that answered a 4xx is up, so its hints stay.
+
+        The negative control for the failure above: forgetting on a refusal
+        would let one caller's malformed request wipe every other caller's
+        warm-prefix hints for that endpoint.
+        """
+        endpoint_id = "test-model:local-8003"
+        adapter = _make_adapter(provider="sglang", endpoint_id=endpoint_id)
+        adapter.config.priority_scheduling = True
+        adapter.reports_leg_outcomes = False
+
+        async def _chat(messages, **params):
+            raise _StatusError(400, "the client sent a malformed request")
+
+        adapter.chat_completion = _chat
+
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(
+                db_bootstrap_enabled=False,
+                latency_hedge_mode="probability_target",
+                latency_slo_sec=3.0,
+            ),
+        )
+        tracker = router._prefill_load
+
+        with req_ctx.push(affinity_key="caller"):
+            lease = router._acquire_prefill_lease(
+                endpoint_id,
+                [{"role": "user", "content": "warm"}],
+                {},
+            )
+            tracker.release(lease, prefill_confirmed=True)
+            assert ("caller", endpoint_id) in tracker._prefix_hints
+
+            with pytest.raises(_StatusError):
+                await router.chat_completion(
+                    "test-model",
+                    [{"role": "user", "content": "cold"}],
+                )
+
+        # The endpoint answered, so it still holds the prefix its hint
+        # describes and the hint survives.
+        assert ("caller", endpoint_id) in tracker._prefix_hints
+
+
+@pytest.mark.unit
+class TestRouteWisePrefillLeaseContextWindow:
+    """A RouteWise prefill charge never exceeds the endpoint's context window.
+
+    The shared tracker caps a charge at the route's context window: an engine
+    refuses a prompt longer than its window rather than prefilling it, so a
+    charge above the window describes work no engine will do. FixedRouter
+    passes the window to ``acquire``; a RouteWise lease must do the same, or
+    a RouteWise dispatch over-charges an endpoint that will refuse the prompt.
+    """
+
+    @pytest.mark.unit
+    def test_a_routewise_lease_is_capped_by_the_context_window(self):
+        router = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
+        endpoint_id = "test-model:local-8003"
+        window = 131_072
+
+        with (
+            patch.object(routewise_router_module, "estimate_prefill_tokens", return_value=500_000),
+            req_ctx.push(affinity_key="caller"),
+        ):
+            lease = router._acquire_prefill_lease(
+                endpoint_id,
+                [{"role": "user", "content": "long"}],
+                {},
+                context_window=window,
+            )
+            try:
+                assert lease.tokens == window
+            finally:
+                router._prefill_load.release(lease)
+
+    @pytest.mark.unit
+    @pytest.mark.asyncio
+    async def test_a_dispatch_charges_no_more_than_the_route_window(self):
+        """A real dispatch caps its charge at the route's context window.
+
+        The end-to-end shape of the test above: the window comes from the
+        route's own configuration, so the charge the dispatch reserves is the
+        capped one.
+        """
+        endpoint_id = "test-model:local-8003"
+        adapter = _make_adapter(provider="sglang", endpoint_id=endpoint_id)
+        adapter.config.priority_scheduling = True
+        adapter.config.context_length = 131_072
+        adapter.reports_leg_outcomes = False
+
+        charged: list[int] = []
+
+        async def _chat(messages, **params):
+            # The charge is live while the request is on the wire.
+            charged.append(router._prefill_load.backlog(endpoint_id))
+            return {"choices": [{"message": {"content": "ok"}}]}
+
+        adapter.chat_completion = _chat
+        route_table = _FakeRouteTable()
+        route_table.add("test-model", [(adapter, 1.0)])
+        router = RouteWiseRouter(
+            route_table=route_table,
+            config=RouteWiseConfig(db_bootstrap_enabled=False),
+        )
+
+        with (
+            patch.object(routewise_router_module, "estimate_prefill_tokens", return_value=500_000),
+            req_ctx.push(affinity_key="caller"),
+        ):
+            await router.chat_completion("test-model", [{"role": "user", "content": "long"}])
+
+        # The charge never exceeds the window: an engine refuses a longer
+        # prompt rather than prefilling it.
+        assert charged == [131_072]
+        assert router._prefill_load.backlog(endpoint_id) == 0
+
+    @pytest.mark.unit
+    def test_a_routewise_lease_without_a_window_is_uncharged(self):
+        """No configured window leaves the charge alone."""
+        router = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
+        endpoint_id = "test-model:local-8003"
+
+        with (
+            patch.object(routewise_router_module, "estimate_prefill_tokens", return_value=500_000),
+            req_ctx.push(affinity_key="caller"),
+        ):
+            lease = router._acquire_prefill_lease(
+                endpoint_id,
+                [{"role": "user", "content": "long"}],
+                {},
+            )
+            try:
+                assert lease.tokens == 500_000
+            finally:
+                router._prefill_load.release(lease)
+
+
+@pytest.mark.unit
 class TestPrefixCacheEnabledDispatch:
     """A dispatch with the prefix cache enabled must not crash.
 
