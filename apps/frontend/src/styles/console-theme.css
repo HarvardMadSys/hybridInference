@@ -149,6 +149,13 @@
   background-color: #d6dfeb;
 }
 
+/* Request-volume bars are the same near-black ink, but they carry no label.
+   Dark mode paints their gray-50 well as the canvas, so the ink has to flip
+   or the bar disappears. Leave labeled bg-gray-900 buttons on the rule above. */
+:root[data-console-theme='dark'] .console-theme .request-volume-ink {
+  background-color: var(--console-text);
+}
+
 :root[data-console-theme='dark'] .console-theme :is(.bg-amber-50, .bg-amber-100, .bg-yellow-50) {
   background-color: #332a1b;
 }
