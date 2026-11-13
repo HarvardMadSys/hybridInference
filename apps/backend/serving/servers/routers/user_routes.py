@@ -38,7 +38,6 @@ from serving.schemas_auth import (
     APIKeyListResponse,
     APIKeyRegenerateResponse,
     APIKeyResponse,
-    APIKeyRevealRequest,
     APIKeyRevealResponse,
     APIKeyUpdateRequest,
     APIKeyUpdateResponse,
@@ -80,9 +79,7 @@ from serving.storage.utils import coerce_json_object
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
-from serving.utils.login_rate_limit import refusal_worth_recording
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip
 from serving.utils.token_utils import optional_token_count
 
 router = APIRouter(prefix="/user", tags=["User Dashboard"])
@@ -726,10 +723,8 @@ async def list_api_keys(
 ) -> APIKeyListResponse:
     """List all API keys owned by the current user, live ones first.
 
-    Every key is masked. A bearer token is all this takes, and one lifted from
-    a browser is good for minutes while an API key lasts until revoked, so the
-    full value of a saved key comes only from
-    ``POST /user/api-keys/{key_prefix}/reveal``, which asks for the password;
+    Every key is masked. The full value of a saved key comes only from
+    ``POST /user/api-keys/{key_prefix}/reveal``, one key at a time and audited;
     ``revealable`` says which keys have one saved.
     """
     if not op_store:
@@ -764,43 +759,24 @@ async def reveal_api_key(
     request: Request,
     response: Response,
     key_prefix: str,
-    body: APIKeyRevealRequest,
     current_user=Depends(get_current_user),
     op_store=Depends(get_operational_store),
     db_logger=Depends(get_db_logger),
 ) -> APIKeyRevealResponse:
-    """Show one of the current user's saved keys in full, once its owner gives the password.
+    """Show one of the current user's saved keys in full.
 
-    The session alone is not enough: its token proves a browser, not a
-    person, and the key it would hand out outlives it. The password is checked
-    as :func:`confirm_account_owner` checks it for every sensitive change,
-    each attempt counting against the sign-in limits. An account without a
-    password (one made by phone) is refused: it can set one, or regenerate the
-    key, which shows the new value once. Every reveal is audited, and so is
-    every one refused for a wrong password -- what a stolen session trying
-    its luck looks like; refusals past the sign-in limit, which come as fast
-    as they are sent, once a minute per address.
+    The session is enough. Asking for the password here protected little: the
+    same session can create or regenerate a key without one. Every reveal is
+    audited.
 
     Raises:
-        HTTPException: 400 without the right password, or for an account
-            without one; 404 when the account has no such key with a saved
-            value; 409 when the saved value cannot be read; 429 when
-            rate-limited.
+        HTTPException: 404 when the account has no such key with a saved
+            value; 409 when the saved value cannot be read.
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
 
     user_id = current_user["user_id"]
-    user_row = await op_store.get_user_by_id(user_id)
-    if not user_row:
-        raise HTTPException(status_code=404, detail="User not found")
-    if not user_row.get("password_hash"):
-        raise HTTPException(
-            status_code=400,
-            detail="Showing a saved key needs your password, and this account has none. "
-            "Set one in Settings, or regenerate the key to see a new one.",
-        )
-
     row = next(
         (
             key
@@ -811,27 +787,6 @@ async def reveal_api_key(
     )
     if row is None or row["status"] not in _REVEALABLE_STATUSES or not row["api_key_encrypted"]:
         raise HTTPException(status_code=404, detail="API key not found")
-
-    try:
-        await confirm_account_owner(
-            request,
-            op_store,
-            user_row,
-            password=body.password,
-            phone_code=None,
-            purpose="reveal_api_key",
-        )
-    except HTTPException as exc:
-        limited = exc.status_code == 429
-        if not limited or refusal_worth_recording(get_client_ip(request), "reveal_key"):
-            await _audit_refused_reveal(
-                request,
-                current_user,
-                db_logger,
-                key_prefix,
-                "rate_limited" if limited else "wrong_password",
-            )
-        raise
 
     try:
         api_key = decrypt_api_key(row["api_key_encrypted"])
@@ -851,27 +806,6 @@ async def reveal_api_key(
     )
     response.headers["Cache-Control"] = "no-store"
     return APIKeyRevealResponse(key_prefix=key_prefix, api_key=api_key)
-
-
-async def _audit_refused_reveal(
-    request: Request,
-    current_user: dict[str, Any],
-    db_logger: Any,
-    key_prefix: str,
-    reason: str,
-) -> None:
-    """Audit a reveal refused at the owner check; a failed write never hides the refusal."""
-    try:
-        await log_admin_action(
-            db_logger,
-            action="reveal_key",
-            details={"actor": "user", "key_prefix": key_prefix, "refused": reason},
-            success=False,
-            actor=user_audit_actor(request, current_user),
-            target=AuditTarget.user(current_user["user_id"]),
-        )
-    except Exception:
-        logger.exception("reveal_key_refusal_audit_failed key_prefix=%s", key_prefix)
 
 
 def _key_limits(row: dict[str, Any]) -> dict[str, Any]:

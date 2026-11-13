@@ -225,23 +225,12 @@ export async function listApiKeys(): Promise<ApiKeyListResponse> {
   return jsonOrThrow<ApiKeyListResponse>(resp);
 }
 
-/**
- * Show one saved key in full. The account's password confirms that its owner,
- * not just a signed-in browser, is asking; each attempt counts against the
- * sign-in limits.
- */
-export async function revealApiKey(
-  keyPrefix: string,
-  password: string,
-): Promise<ApiKeyRevealResponse> {
+/** Show one saved key in full; each reveal is audited. */
+export async function revealApiKey(keyPrefix: string): Promise<ApiKeyRevealResponse> {
   const resp = await fetchWithAuth(
     API_BASE,
     `/user/api-keys/${encodeURIComponent(keyPrefix)}/reveal`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    },
+    { method: 'POST' },
   );
   return jsonOrThrow<ApiKeyRevealResponse>(resp);
 }

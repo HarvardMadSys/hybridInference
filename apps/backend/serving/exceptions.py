@@ -150,6 +150,17 @@ class APIKeyNotFoundError(UserFacingError):
     pass
 
 
+class AgentInviteSubjectUnavailableError(UserFacingError):
+    """The invited email belongs to an account that may not sign in.
+
+    Raised before anything is written: an invitation must never lift a
+    suspension, a rejection or a pending deletion, and the link stays
+    usable if an administrator restores the account.
+    """
+
+    pass
+
+
 class PreferencesTooLargeError(UserFacingError):
     """A preference write would leave the account's preferences over their size bound."""
 

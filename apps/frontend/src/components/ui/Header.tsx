@@ -60,15 +60,8 @@ export function Header() {
     return () => document.removeEventListener('keydown', onKey);
   }, [menuOpen]);
 
+  // The status page is linked from the footer only.
   const links: HeaderLink[] = [];
-  if (branding.statusUrl) {
-    links.push({
-      key: 'status',
-      href: branding.statusUrl,
-      label: t('chrome.header.status', 'Status'),
-      external: true,
-    });
-  }
   if (features.publicStats) {
     links.push({
       key: 'stats',

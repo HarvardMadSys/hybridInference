@@ -47,6 +47,17 @@ services:
     # A container keeps the grace period it was created with, so the first
     # `make up` after this still stops the old backend at 10 s.
     stop_grace_period: 30s
+    # Open files, which for the gateway are sockets: one for each request in
+    # flight, another to the model server it is relayed to, and the database
+    # pool. Unless told otherwise Docker passes a container its daemon's
+    # limits, under systemd's defaults a soft one of 1024, and a gateway that
+    # has reached it accepts no connection, a health check included. 65536 is
+    # what deploy/systemd/*.service give the same process. The console needs
+    # no line: Node raises its soft limit to the hard one when it starts.
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     # Source-revision stamp on the running container. A digest deploy sets
     # BUILD_SHA to the image's revision label. The digest path's last-known-good
     # restore reads this label back from the container it is about to replace

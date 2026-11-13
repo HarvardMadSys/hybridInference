@@ -4,22 +4,39 @@ HybridInference ships two long-running HTTP services: the FastAPI gateway
 (`apps/backend`) and a Next.js console (`apps/frontend`). Only one of them needs
 to be reachable from the internet.
 
-**The console owns the public path table.** It is the process that terminates
-public traffic. It forwards the gateway's paths through App Router route
+**`deploy/public-paths.json` is the public path table.** It lists every public
+path that is not one of the console's own pages, and what serves it. The
+console is its default implementation: it is the process that terminates
+public traffic, and it forwards the gateway's paths through App Router route
 handlers, apart from a few that only answer `GET`, which are static rewrites
 in the `rewrites()` configuration in `apps/frontend/next.config.js`; the cloud
 agent and pgAdmin have route handlers of their own. Anything not named by
 either mechanism is served by the console's own pages.
 
-So exposing the console's port exposes every gateway path in the table below,
-and publishing a new path means editing `next.config.js` or adding a route
-handler — not changing the reverse proxy or tunnel in front. A path missing
-from both gets the console's HTML 404 page, which an API client will read as
-"the gateway is down" rather than "this path is not forwarded".
+A deployment's entry — its CDN, tunnel or load balancer — may instead send the
+paths the manifest marks `entry_split`, today `/v1` and `/anthropic`, straight
+to the gateway, so that a console release or restart no longer interrupts
+inference requests. That is the deployment's choice and is made in its own
+entry; this repository ships no entry configuration. The console keeps
+forwarding those prefixes either way, and removing the entry's rules sends
+the traffic back through it. The conditions such an entry has to meet are in
+[Splitting inference traffic at the entry](deployment.md#splitting-inference-traffic-at-the-entry).
+
+So exposing the console's port exposes every gateway path in the table below.
+Outside the split prefixes, publishing a new path means adding it to the
+manifest and editing `next.config.js` or adding a route handler — not changing
+the reverse proxy or tunnel in front. Under a split prefix, every gateway
+route is already public on both topologies, since the console relays the
+whole prefix too: a new route there needs no entry change either. Only adding
+or moving a split prefix changes an entry, and the
+[probe](deployment.md#checking-an-entry-split-with-the-probe) has to be run
+again when it does. A path missing from both the handlers and the rewrites gets
+the console's HTML 404 page, which an API client will read as "the gateway is
+down" rather than "this path is not forwarded".
 
 ```text
 client ──▶ (your edge: CDN / tunnel / reverse proxy)
-              │
+              │   └── optional: /v1, /anthropic ──────────▶ FastAPI gateway
               ▼
         Next.js console ──┬──▶ FastAPI gateway   (route handlers; rewrites for a few GETs)
                           ├──▶ cloud agent       (runtime route handler)
@@ -27,11 +44,52 @@ client ──▶ (your edge: CDN / tunnel / reverse proxy)
                           └──▶ its own pages     (everything else)
 ```
 
+## The manifest
+
+Each entry of `deploy/public-paths.json` has four fields:
+
+| Field | Meaning |
+|---|---|
+| `path` | The public path. A segment written `:name` stands for any one segment: `/internal/users/:userId/status` |
+| `match` | `prefix`: the path itself or anything below it, so `/v1` covers `/v1` and `/v1/...` but not `/v10`. `exact`: the path alone. Either is judged after dot segments are resolved, as the console's `isUnder()` judges it |
+| `owner` | What serves it: `gateway`, `console` (a route handler of the console's own, such as `/healthz` and `/site-assets`), `cloud-agent` or `pgadmin` |
+| `entry_split` | `true` when a deployment's entry may send the path straight to the gateway. Only `/v1` and `/anthropic` are |
+
+A gateway path that is not in the manifest must not be reachable from the
+internet — FastAPI's `/docs`, `/redoc` and `/openapi.json`, `/health/deep`,
+`/health/ready`, `/health/model-activity` and every `/internal` route not
+listed. On the console's topology nothing forwards them. An entry that splits
+off a prefix has to hold the same line (rules E1 and E7 in the deployment
+guide).
+
+The console's routing cannot read the manifest: route handlers are files,
+`rewrites()` and `redirects()` are compiled at build time, and the
+middleware's `matcher` must be a literal string, because Next reads it without
+running the module. Tests hold each of them to the manifest instead, and fail
+when one changes without the others:
+
+- `apps/frontend/next.config.public-paths.test.ts` checks that every gateway
+  entry is served by exactly one route handler or one rewrite, that the
+  middleware's `matcher` leaves out exactly the manifest's first segments, and
+  that the trailing-slash rule in `redirects()` covers exactly the segments it
+  should. `/healthz` is the one manifest path the middleware still sees.
+- `apps/frontend/src/lib/server/gatewayRoutes.test.ts` checks its own list of
+  gateway route files against the manifest.
+- `tests/unit/middleware/test_trailing_slash.py` checks that the gateway's own
+  trailing-slash redirect covers exactly the `entry_split` prefixes.
+
+The rewrites, the redirect rule and the matcher work per first segment
+(`internal`, not `/internal/verify-admin`); which `/internal` paths are
+published is decided by the route files, one per path.
+
 ## The path table
 
-One path is the console's own and reaches nothing behind it: `/healthz`, the
-container health check (`src/app/healthz/route.ts`), which answers `200 ok`
-without asking the gateway. `/health` is the gateway's check, forwarded.
+Two of the manifest's paths are the console's own and reach nothing behind
+it: `/healthz`, the container health check (`src/app/healthz/route.ts`), which
+answers `200 ok` without asking the gateway, and `/site-assets`, the Site UI
+module's images, served from files packaged into the console image
+(`src/app/site-assets/[[...path]]/route.ts`). `/health` is the gateway's
+check, forwarded.
 
 The table below combines the static rewrites with the filesystem route
 handlers. `apps/frontend/next.config.js` is the source of truth for rewrites;
@@ -244,20 +302,34 @@ built from `new URL(request.url)` rather than `nextUrl.clone()` (a cloned
 `NextURL` remembers the incoming trailing slash and re-serializes it,
 redirecting the request to exactly where it already is).
 
+The gateway's paths do not pass through the middleware (it would copy their
+bodies), so a gateway path that ends in a slash gets its redirect from
+`redirects()` in `next.config.js`: a `308` to the same path without its last
+slash, as a bare path. Under the `entry_split` prefixes the gateway gives the
+same answer itself, because there a request may reach it without passing the
+console. Left to Starlette it would answer `307` with an absolute `Location`
+built from the `Host` it received and the scheme it saw, which behind a
+TLS-terminating entry is `http`.
+
 ## Adding a public path
 
-1. Choose the routing mechanism. A gateway path that takes a request body is a
+1. Add the path to `deploy/public-paths.json`. Mark it `entry_split` only
+   when the deployments that split their entry are to send it to the gateway
+   directly; that is a new split prefix, and each of them reruns the probe.
+2. Choose the routing mechanism. A gateway path that takes a request body is a
    route handler: a `route.ts` that exports `gatewayRoute('<its prefix>')`, from
    `src/lib/server/gatewayProxy.ts`, for every method. A gateway path that only
    answers `GET` may instead be a static rule in `rewrites()` in
    `apps/frontend/next.config.js`. Write a handler of its own when the target
    must remain configurable after build or the request needs application logic.
-2. Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless
+3. Name it specifically. Prefer `/prefix/thing` over `/prefix/:path*` unless
    every current and future route under that prefix is authorized by
    construction.
-3. If the path needs a check the destination cannot make for itself, it is a
+4. If the path needs a check the destination cannot make for itself, it is a
    route handler, not a rewrite.
-4. Rebuild the console for a source or rewrite-table change. After that image
+5. Rebuild the console for a source or rewrite-table change. After that image
    is deployed, a runtime handler's target can be changed by recreating its
    container; a static rewrite target still requires another image build.
-5. Add the path to the table above.
+6. Add the path to the table above. The tests named under
+   [The manifest](#the-manifest) fail until the manifest, the route files,
+   `next.config.js` and the middleware's `matcher` agree.
