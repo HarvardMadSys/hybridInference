@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import secrets
-from datetime import UTC
+from datetime import UTC, timedelta
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import quota
@@ -20,6 +20,8 @@ from serving.exceptions import (
     AgentInviteSubjectUnavailableError,
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    HardDeleteAccountIneligible,
+    HardDeleteRecoveryAvailable,
     HardDeleteStateChanged,
     PreferencesTooLargeError,
     ProjectNotFoundError,
@@ -34,6 +36,9 @@ from serving.storage.base import (
     USER_PREFERENCES_MAX_BYTES,
     CostIncrement,
     CostWriteOutcomeUnknown,
+    HardDeleteClaim,
+    HardDeleteClaimProvenance,
+    HardDeleteRecoveryMode,
     OperationalStore,
     ProviderDefinitionRow,
     ProviderKeyRow,
@@ -56,6 +61,14 @@ if TYPE_CHECKING:
     from serving.audit import AuditActor
 
 logger = get_logger(__name__)
+
+# How long a hard-delete claim's lease may go unrenewed before another caller
+# may take it over. Takeover is deliberately not immediate: a worker that is
+# merely slow must not lose its claim to an ordinary retry, and the admin
+# endpoint additionally requires an explicit operator opt-in. It bounds how
+# long a worker that crashed before the erasure fence leaves the account
+# un-resumable.
+_HARD_DELETE_CLAIM_RECOVERY_GRACE = timedelta(hours=1)
 
 # Adds a batch of cost increments to the account counters and the key counters
 # in one statement, so both are written or neither, and returns the
@@ -382,6 +395,42 @@ _COLUMN_CASTS = {
 _ALL_ACCOUNT_KEYS_LOCK = "hashtextextended('hybridinference:api-keys', 0)"
 
 
+async def _refuse_claimed_account(conn: asyncpg.Connection, user_id: str) -> None:
+    """Refuse a write to an account under a hard-delete claim.
+
+    Raises ``HardDeleteStateChanged`` for a claimed account; returns
+    otherwise, and the caller's own statement still decides whether the
+    account existed.
+
+    The account row is read under the row lock, so the answer is taken with
+    the lock the write would take anyway: a claim installed after this read
+    cannot race the write, because the claim itself takes the same lock. A
+    missing row is not a claim, and a claim cannot be installed on a row that
+    is not there.
+
+    The account-mutating writers that do not read the account row themselves
+    use this, so that a pending erasure claim refuses the write whatever
+    column it names — the account is being erased, so nothing about it may
+    change. This matches every other store, which refuses any work for an
+    account marked ``hard_delete_pending`` (see ``batch_store._lock_owner``).
+
+    Not every write to the ``users`` table goes through here. The state
+    machine's own writes (``update_user_fields``, ``suspend_user``,
+    ``delete_user``, ``resume_user``, approve, reject) carry their own
+    claim guard, the startup role seeding carries an equivalent predicate in
+    its own statement, and the phone and email binding statements carry
+    ``status = 'active'``. ``update_user_last_login`` is the one account
+    write with no claim guard: the login route requires an ``active``
+    account, so a claimed account cannot reach it, and it writes a timestamp
+    rather than an identity field.
+    """
+    row = await conn.fetchrow(
+        "SELECT hard_delete_pending FROM users WHERE id = $1 FOR UPDATE", user_id
+    )
+    if row is not None and row["hard_delete_pending"]:
+        raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
+
+
 async def _lock_account_keys(conn: asyncpg.Connection, account_id: str) -> None:
     """Hold off other writes to *account_id*'s keys until this transaction ends.
 
@@ -575,6 +624,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         it runs at every start: an address added to the setting promotes its
         account the next time the gateway starts, as long as the account still
         has the default role. An account without an email never matches.
+
+        Only an active account is promoted. A soft-deleted one is not a
+        candidate for the admin role whatever its claim state, and a
+        hard-delete claim is in progress means the account is being erased:
+        promoting it would change an identity field during the erasure, which
+        the claim exists to prevent. A backend restart therefore leaves such
+        an account exactly as it found it.
         """
         admin_emails = _parse_admin_emails(get_settings().admin_emails or "")
         if not admin_emails:
@@ -583,7 +639,9 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             tag = await conn.execute(
                 "UPDATE users SET role = 'admin' "
                 "WHERE lower(trim(email)) = ANY($1::text[]) "
-                "AND role IN ('free')",
+                "AND role IN ('free') "
+                "AND status = 'active' "
+                "AND hard_delete_pending IS NOT TRUE",
                 admin_emails,
             )
         seeded = _parse_command_tag_count(tag)
@@ -774,8 +832,27 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             )
         return True
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
-        """Update one or more columns on the users table for *user_id*."""
+    async def update_user_fields(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
+        """Update one or more columns on the users table for *user_id*.
+
+        When ``expected_status`` is given, the update is a compare-and-swap:
+        it runs under the user row lock and raises
+        ``HardDeleteStateChanged`` (writing nothing) if the status has moved
+        since the caller read it.
+
+        A pending hard-delete claim always fails closed, whichever columns the
+        write names: the account is being erased, so no write may change what
+        is erased — not its address, not its role, not its preferences. This
+        matches every other store, which refuses any work for an account
+        marked ``hard_delete_pending`` (see ``batch_store._lock_owner``).
+
+        A claimed account is always soft-deleted, so the self-service writers
+        never reach this guard: they require an ``active`` account. The one
+        caller that can reach it is the password-reset CLI, which reports the
+        conflict itself.
+        """
         if not fields:
             return
         from .base import USERS_MUTABLE_COLUMNS
@@ -790,11 +867,32 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             set_parts.append(f"{col} = ${idx}")
             params.append(val)
         sql = f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1"
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None:
+                if expected_status is not None:
+                    raise HardDeleteStateChanged(f"Account {user_id} no longer exists.")
+                return
+            if row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(sql, *params)
 
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
-        """Suspend *user_id* and revoke its keys and sessions atomically."""
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
+        """Suspend *user_id* and revoke its keys and sessions atomically.
+
+        ``expected_status`` is the compare-and-swap guard described on
+        :meth:`update_user_fields`; a pending hard-delete claim fails closed.
+        """
         from .base import USERS_MUTABLE_COLUMNS
 
         fields = {**fields, "status": "suspended"}
@@ -808,6 +906,20 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             params.append(val)
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is not None:
+                if row["hard_delete_pending"]:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} has a hard-delete in progress."
+                    )
+                if expected_status is not None and row["status"] != expected_status:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} status changed from {expected_status!r} "
+                        f"to {row['status']!r}."
+                    )
             await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
             await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
             await conn.execute(
@@ -902,31 +1014,153 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
             )
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
-        """Claim a soft-deleted user before purging rows in another store."""
+    async def _hard_delete_claim_is_stale(self, conn: Any, claimed_at: Any) -> bool:
+        """Whether a claim's lease is older than the recovery grace period.
+
+        Asked of PostgreSQL so every caller shares one clock. A NULL lease is
+        not stale by this question: it is a claim written before the lease
+        columns existed, and the caller stamps it first (see
+        :meth:`begin_hard_delete_user`).
+        """
+        return bool(
+            await conn.fetchval(
+                "SELECT $1::TIMESTAMPTZ IS NOT NULL AND $1::TIMESTAMPTZ <= NOW() - $2::INTERVAL",
+                claimed_at,
+                _HARD_DELETE_CLAIM_RECOVERY_GRACE,
+            )
+        )
+
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
+        """Claim a soft-deleted user before purging rows in another store.
+
+        A pending claim belongs exclusively to the worker that made it. It is
+        refused — not silently taken over — until its lease has gone
+        unrenewed for the recovery grace period, and even then only a caller
+        that verified a durable erasure fence or an operator's attestation
+        (``recovery_mode``) may replace it. The takeover reuses none of the
+        old token, so the superseded worker's next renewal and final purge
+        both fail closed.
+        """
+        if recovery_mode is not None and recovery_mode not in set(HardDeleteRecoveryMode):
+            raise ValueError(f"Unknown hard-delete recovery mode: {recovery_mode!r}")
         claim_token = secrets.token_urlsafe(32)
-        async with self._pool.acquire() as conn, conn.transaction():
-            row = await conn.fetchrow(
-                "SELECT status FROM users WHERE id = $1 FOR UPDATE",
+        async with self._pool.acquire() as conn:
+            # A pending claim with a NULL lease predates these columns. Stamp
+            # it outside the claim transaction so the stamp commits even
+            # though this request is refused; every later caller then sees a
+            # live lease instead of taking the old claim over immediately.
+            check = await conn.fetchrow(
+                "SELECT status, hard_delete_pending, hard_delete_claimed_at "
+                "FROM users WHERE id = $1",
                 user_id,
             )
-            if row is None or row["status"] != "deleted":
-                raise HardDeleteStateChanged(
-                    f"Account {user_id} is no longer eligible for hard-delete."
+            if (
+                check is not None
+                and check["hard_delete_pending"]
+                and check["hard_delete_claimed_at"] is None
+            ):
+                await conn.execute(
+                    "UPDATE users SET hard_delete_claimed_at = NOW() "
+                    "WHERE id = $1 AND hard_delete_pending = TRUE AND hard_delete_claimed_at IS NULL",
+                    user_id,
                 )
-            # A retry takes ownership with a fresh token. This prevents an
-            # older in-flight attempt from releasing or completing the claim
-            # after a newer attempt has taken over.
-            await conn.execute(
-                "UPDATE users SET hard_delete_pending = TRUE, "
-                "hard_delete_claim_token = $2 WHERE id = $1",
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} has a claim from before claim leases; "
+                    "its lease was stamped now, so recovery must wait for the grace period."
+                )
+            async with conn.transaction():
+                row = await conn.fetchrow(
+                    "SELECT status, hard_delete_pending, hard_delete_claim_token, "
+                    "hard_delete_claimed_at FROM users WHERE id = $1 FOR UPDATE",
+                    user_id,
+                )
+                if row is None or row["status"] != "deleted":
+                    raise HardDeleteAccountIneligible(
+                        f"Account {user_id} is no longer eligible for hard-delete."
+                    )
+                if row["hard_delete_pending"]:
+                    # Lost a race with a claim installed since the check above.
+                    if row["hard_delete_claimed_at"] is None:
+                        await conn.execute(
+                            "UPDATE users SET hard_delete_claimed_at = NOW() "
+                            "WHERE id = $1 AND hard_delete_pending = TRUE "
+                            "AND hard_delete_claimed_at IS NULL",
+                            user_id,
+                        )
+                        raise HardDeleteStateChanged(
+                            f"Account {user_id} has a claim from before claim leases; "
+                            "its lease was stamped now, so recovery must wait for the grace period."
+                        )
+                    stale = await self._hard_delete_claim_is_stale(
+                        conn, row["hard_delete_claimed_at"]
+                    )
+                    if recovery_mode is not None and stale:
+                        # A stale claim is abandoned, not shareable: replace its
+                        # token and renew the lease in the same row-locked
+                        # transaction, so two recovery callers cannot both
+                        # proceed. The recovered provenance stops this request
+                        # from releasing a claim that may already be fenced.
+                        await conn.execute(
+                            "UPDATE users SET hard_delete_claim_token = $2, "
+                            "hard_delete_claimed_at = NOW(), "
+                            "hard_delete_claim_recovered = TRUE WHERE id = $1",
+                            user_id,
+                            claim_token,
+                        )
+                        return HardDeleteClaim(
+                            token=claim_token,
+                            provenance=HardDeleteClaimProvenance.RECOVERED,
+                        )
+                    if recovery_mode is None and stale:
+                        raise HardDeleteRecoveryAvailable(
+                            f"Account {user_id} has a stale hard-delete claim."
+                        )
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} already has a hard-delete in progress or its "
+                        "claim has not reached the recovery grace period."
+                    )
+                await conn.execute(
+                    "UPDATE users SET hard_delete_pending = TRUE, "
+                    "hard_delete_claim_token = $2, hard_delete_claimed_at = NOW(), "
+                    "hard_delete_claim_recovered = FALSE WHERE id = $1",
+                    user_id,
+                    claim_token,
+                )
+        return HardDeleteClaim(token=claim_token, provenance=HardDeleteClaimProvenance.NEW)
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Extend the claim lease, failing closed if superseded."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                """
+                UPDATE users SET hard_delete_claimed_at = NOW()
+                WHERE id = $1 AND status = 'deleted'
+                  AND hard_delete_pending = TRUE
+                  AND hard_delete_claim_token = $2
+                RETURNING id
+                """,
                 user_id,
                 claim_token,
             )
-        return claim_token
+            if row is None:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} no longer belongs to hard-delete claim {claim_token}."
+                )
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
-        """Release a still-unfenced hard-delete claim for a deleted user."""
+        """Release a still-unfenced hard-delete claim for a deleted user.
+
+        A recovered claim is left in place: the worker it was taken from may
+        still be unwinding after a process-level timeout, and clearing the
+        marker would let that worker (or a retry) re-enter the purge without
+        an operator deciding it is safe. It clears only after the grace
+        period, via an explicit recovery.
+        """
         async with self._pool.acquire() as conn, conn.transaction():
             # The status and claim predicates make this a guarded cleanup:
             # never clear a claim after another operation has changed the
@@ -935,10 +1169,12 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             await conn.execute(
                 """
                 UPDATE users
-                SET hard_delete_pending = FALSE, hard_delete_claim_token = NULL
+                SET hard_delete_pending = FALSE, hard_delete_claim_token = NULL,
+                    hard_delete_claimed_at = NULL, hard_delete_claim_recovered = FALSE
                 WHERE id = $1
                   AND status = 'deleted'
                   AND hard_delete_pending = TRUE
+                  AND hard_delete_claim_recovered = FALSE
                   AND hard_delete_claim_token = $2
                 """,
                 user_id,
@@ -953,6 +1189,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Resume a soft-deleted user: set status='active' and audit it as *actor*.
@@ -963,19 +1200,55 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         Hard-delete coordination (issue #1421): the admin route checks the
         LogStore fence, while this transaction refuses a durable pending
         hard-delete claim. The row lock makes resume and the operational
-        hard-delete claim mutually exclusive.
+        hard-delete claim mutually exclusive. A claim whose lease outlived the
+        recovery grace period can be cleared only through
+        *recover_stale_claim*, an explicit operator attestation that the
+        worker holding it is gone; the lease is rechecked and the claim
+        cleared in the same transaction as the status change.
         """
         audit = audit_columns(
             admin_ip=admin_ip, target_user_id=None, actor=actor, target=AuditTarget.user(user_id)
         )
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
-                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                "SELECT status, hard_delete_pending, hard_delete_claim_token, "
+                "hard_delete_claimed_at FROM users WHERE id = $1 FOR UPDATE",
                 user_id,
             )
-            if row is not None and row["hard_delete_pending"]:
-                raise HardDeleteStateChanged(f"Account {user_id} has a hard-delete in progress.")
-            await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
+            if row is None or row["status"] != "deleted":
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} is no longer soft-deleted and cannot be resumed."
+                )
+            if row["hard_delete_pending"]:
+                claim_started_at = row["hard_delete_claimed_at"]
+                stale = await self._hard_delete_claim_is_stale(conn, claim_started_at)
+                if recover_stale_claim and not stale:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} claim has not reached the recovery grace period."
+                    )
+                if not stale:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} has a hard-delete in progress."
+                    )
+                if not recover_stale_claim:
+                    raise HardDeleteRecoveryAvailable(
+                        f"Account {user_id} has a stale hard-delete claim."
+                    )
+                cleared = await conn.fetchrow(
+                    "UPDATE users SET status = 'active', hard_delete_pending = FALSE, "
+                    "hard_delete_claim_token = NULL, hard_delete_claimed_at = NULL, "
+                    "hard_delete_claim_recovered = FALSE "
+                    "WHERE id = $1 AND status = 'deleted' AND hard_delete_pending = TRUE "
+                    "AND hard_delete_claim_token = $2 RETURNING id",
+                    user_id,
+                    row["hard_delete_claim_token"],
+                )
+                if cleared is None:
+                    raise HardDeleteStateChanged(
+                        f"Account {user_id} changed during stale-claim recovery."
+                    )
+            else:
+                await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
             await insert_audit_row(
                 conn,
                 columns=audit,
@@ -1546,9 +1819,26 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         admin_id: str,
         note: str | None = None,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='active', record reviewer and note."""
-        async with self._pool.acquire() as conn:
+        """Set status='active', record reviewer and note.
+
+        Compare-and-swap: under the row lock the account must still be in
+        ``expected_status`` (default ``pending_approval``) with no pending
+        hard-delete claim, otherwise ``HardDeleteStateChanged`` and no write.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} changed during approval.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(
                 "UPDATE users SET status = 'active', approval_note = $1, "
                 "reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3",
@@ -1563,9 +1853,25 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         *,
         admin_id: str,
         reason: str,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='rejected', record reviewer and reason."""
-        async with self._pool.acquire() as conn:
+        """Set status='rejected', record reviewer and reason.
+
+        Compare-and-swap on ``expected_status`` (default ``pending_approval``)
+        under the row lock; a pending hard-delete claim fails closed.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            row = await conn.fetchrow(
+                "SELECT status, hard_delete_pending FROM users WHERE id = $1 FOR UPDATE",
+                user_id,
+            )
+            if row is None or row["hard_delete_pending"]:
+                raise HardDeleteStateChanged(f"Account {user_id} changed during rejection.")
+            if expected_status is not None and row["status"] != expected_status:
+                raise HardDeleteStateChanged(
+                    f"Account {user_id} status changed from {expected_status!r} "
+                    f"to {row['status']!r}."
+                )
             await conn.execute(
                 "UPDATE users SET status = 'rejected', approval_note = $1, "
                 "reviewed_at = NOW(), reviewed_by = $2 WHERE id = $3",
@@ -2395,6 +2701,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute(sql, *params)
             from serving.storage.project_backfill import personal_org_id
 
@@ -2408,6 +2715,60 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                         personal_org_id(user_id),
                         fields[key],
                     )
+
+    async def update_key_and_user_preference(
+        self,
+        user_id: str,
+        *,
+        key_fields: dict[str, Any],
+        preference_key: str,
+        preference_value: Any,
+    ) -> None:
+        """Atomically update account key fields and one account preference.
+
+        The user-row lock serializes both writes with hard-delete claim
+        acquisition. A claimed account is rejected before either table is
+        changed, and a later SQL failure rolls both writes back.
+        """
+        from .base import API_KEYS_MUTABLE_COLUMNS
+
+        invalid = set(key_fields) - API_KEYS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
+        set_parts = []
+        params: list[Any] = [user_id]
+        for idx, (key, val) in enumerate(key_fields.items(), start=2):
+            col = API_KEYS_MUTABLE_COLUMNS[key]
+            if key == "metadata" and isinstance(val, dict):
+                val = json.dumps(val)
+            set_parts.append(f"{col} = ${idx}")
+            params.append(val)
+        sql = (
+            f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1 AND status <> 'revoked'"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
+            await _refuse_claimed_account(conn, user_id)
+            await conn.execute(sql, *params)
+            from serving.storage.project_backfill import personal_org_id
+
+            for key, column in (
+                ("quota_daily_cost_usd", "budget_daily_usd"),
+                ("quota_monthly_cost_usd", "budget_monthly_usd"),
+            ):
+                if key in key_fields:
+                    await conn.execute(
+                        f"UPDATE organizations SET {column} = $2 WHERE id = $1",
+                        personal_org_id(user_id),
+                        key_fields[key],
+                    )
+            await conn.execute(
+                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
+                "ARRAY[$2::text], $3::jsonb, true) WHERE id = $1",
+                user_id,
+                preference_key,
+                json.dumps(preference_value),
+            )
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""
@@ -2897,7 +3258,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def mark_user_email_verified(self, user_id: str) -> None:
         """Set ``email_verified = TRUE`` on the user."""
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute("UPDATE users SET email_verified = TRUE WHERE id = $1", user_id)
 
     async def delete_user_verification_tokens(self, user_id: str) -> None:
@@ -3478,7 +3840,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         included.
         """
         updated = f"jsonb_set({_PREFERENCES_OBJECT}, ARRAY[$2::text], $3::jsonb, true)"
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             if max_total_bytes is None:
                 status = await conn.execute(
                     f"UPDATE users SET preferences = {updated} WHERE id = $1",
@@ -3504,7 +3867,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
     async def delete_user_preference(self, user_id: str, key: str) -> bool:
         """Remove one preference key in place, leaving every other key as it is."""
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             status = await conn.execute(
                 f"UPDATE users SET preferences = {_PREFERENCES_OBJECT} - $2::text WHERE id = $1",
                 user_id,
@@ -3527,7 +3891,8 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         ``chosen_at`` that is not an ISO 8601 timestamp counts as no choice
         (the CASE keeps the cast from running on it).
         """
-        async with self._pool.acquire() as conn:
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             updated = await conn.fetchval(
                 f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
                 "ARRAY[$2::text], $3::jsonb, true) "
@@ -3559,8 +3924,16 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             return await conn.fetchval("SELECT avatar_data_url FROM users WHERE id = $1", user_id)
 
     async def set_user_avatar(self, user_id: str, avatar_data_url: str | None) -> None:
-        """Replace the user's portrait; None removes it."""
-        async with self._pool.acquire() as conn:
+        """Replace the user's portrait; None removes it.
+
+        The account row is locked before the write, and a pending hard-delete
+        claim refuses it: the account is being erased, so nothing about it may
+        change — the portrait included. The portrait is not written through
+        :meth:`update_user_fields`, so the guard is stated here rather than
+        inherited.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute(
                 "UPDATE users SET avatar_data_url = $1 WHERE id = $2", avatar_data_url, user_id
             )

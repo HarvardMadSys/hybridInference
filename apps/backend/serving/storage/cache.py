@@ -13,6 +13,8 @@ from typing import TYPE_CHECKING, Any
 
 from .base import (
     CostIncrement,
+    HardDeleteClaim,
+    HardDeleteRecoveryMode,
     OperationalStore,
     ProviderDefinitionRow,
     ProviderKeyRow,
@@ -347,16 +349,20 @@ class CachedOperationalStore(OperationalStore):
 
     # -- user writes (invalidate user cache) ---------------------------------
 
-    async def update_user_fields(self, user_id: str, **fields: Any) -> None:
+    async def update_user_fields(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Delegate then invalidate user cache (and auth caches if role/status changed)."""
-        await self._store.update_user_fields(user_id, **fields)
+        await self._store.update_user_fields(user_id, expected_status=expected_status, **fields)
         await self._cache.delete(self._user_key(user_id))
         if fields.keys() & {"role", "status"}:
             await self.invalidate_user_auth_caches(user_id)
 
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Delegate then invalidate the user, its sessions and its keys' auth entries."""
-        await self._store.suspend_user(user_id, **fields)
+        await self._store.suspend_user(user_id, expected_status=expected_status, **fields)
         await self._cache.delete(self._user_key(user_id))
         await self._forget_sessions(user_id)
         await self.invalidate_user_auth_caches(user_id)
@@ -392,12 +398,21 @@ class CachedOperationalStore(OperationalStore):
         # Also purge any auth entries referencing this user's keys
         await self.invalidate_user_auth_caches(user_id)
 
-    async def begin_hard_delete_user(self, user_id: str) -> str:
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
         """Claim a hard-delete in the wrapped store and invalidate caches."""
-        claim_token = await self._store.begin_hard_delete_user(user_id)
+        claim = await self._store.begin_hard_delete_user(user_id, recovery_mode=recovery_mode)
         await self._cache.delete(self._user_key(user_id))
         await self.invalidate_user_auth_caches(user_id)
-        return claim_token
+        return claim
+
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Renew the hard-delete claim lease for a user."""
+        await self._store.renew_hard_delete_user_claim(user_id, claim_token)
 
     async def release_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
         """Release a failed pre-fence claim and invalidate user caches."""
@@ -413,6 +428,7 @@ class CachedOperationalStore(OperationalStore):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Delegate then invalidate user + auth caches."""
@@ -422,6 +438,7 @@ class CachedOperationalStore(OperationalStore):
             admin_id=admin_id,
             reason=reason,
             email=email,
+            recover_stale_claim=recover_stale_claim,
             actor=actor,
         )
         await self._cache.delete(self._user_key(user_id))
@@ -453,9 +470,18 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_user_auth_caches(user_id)
         return counts
 
-    async def approve_user(self, user_id: str, *, admin_id: str, note: str | None = None) -> None:
+    async def approve_user(
+        self,
+        user_id: str,
+        *,
+        admin_id: str,
+        note: str | None = None,
+        expected_status: str | None = "pending_approval",
+    ) -> None:
         """Delegate then invalidate user + auth caches."""
-        await self._store.approve_user(user_id, admin_id=admin_id, note=note)
+        await self._store.approve_user(
+            user_id, admin_id=admin_id, note=note, expected_status=expected_status
+        )
         await self._cache.delete(self._user_key(user_id))
         # These two move ``users.status``, so they invalidate the auth
         # namespace like every other status write. It used to be enough to drop
@@ -466,9 +492,18 @@ class CachedOperationalStore(OperationalStore):
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
         await self.invalidate_user_auth_caches(user_id)
 
-    async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
+    async def reject_user(
+        self,
+        user_id: str,
+        *,
+        admin_id: str,
+        reason: str,
+        expected_status: str | None = "pending_approval",
+    ) -> None:
         """Delegate then invalidate user + auth caches."""
-        await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
+        await self._store.reject_user(
+            user_id, admin_id=admin_id, reason=reason, expected_status=expected_status
+        )
         await self._cache.delete(self._user_key(user_id))
         # Same reason as approve_user above.
         await self.invalidate_user_auth_caches(user_id)
@@ -498,6 +533,23 @@ class CachedOperationalStore(OperationalStore):
         await self._store.update_key(user_id, **fields)
         # Every cached auth entry of this user's keys carries the user's tag.
         await self.invalidate_user_auth_caches(user_id)
+
+    async def update_key_and_user_preference(
+        self,
+        user_id: str,
+        *,
+        key_fields: dict[str, Any],
+        preference_key: str,
+        preference_value: Any,
+    ) -> None:
+        """Delegate the atomic account update, then evict auth context."""
+        await self._store.update_key_and_user_preference(
+            user_id,
+            key_fields=key_fields,
+            preference_key=preference_key,
+            preference_value=preference_value,
+        )
+        await self._invalidate_preferences(user_id)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Delegate then invalidate auth caches."""

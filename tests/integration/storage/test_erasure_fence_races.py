@@ -743,13 +743,17 @@ async def test_failed_hard_delete_claim_can_be_released(fence_store):
     _store, pool = fence_store
     op_store = PostgresOperationalStore(pool)
 
-    first_token = await op_store.begin_hard_delete_user(_OWNER)
-    second_token = await op_store.begin_hard_delete_user(_OWNER)
-    assert first_token != second_token
+    claim = await op_store.begin_hard_delete_user(_OWNER)
 
-    # The first attempt is stale after the retry takes ownership, so it must
-    # not clear the second attempt's claim.
-    await op_store.release_hard_delete_user_claim(_OWNER, first_token)
+    # A live claim is exclusive: an ordinary retry is refused rather than
+    # handed a token the active worker is still using.
+    from serving.exceptions import HardDeleteStateChanged
+
+    with pytest.raises(HardDeleteStateChanged):
+        await op_store.begin_hard_delete_user(_OWNER)
+
+    # A caller that does not own the claim must not clear the second owner's.
+    await op_store.release_hard_delete_user_claim(_OWNER, "another-attempt")
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -758,21 +762,23 @@ async def test_failed_hard_delete_claim_can_be_released(fence_store):
         )
     assert row["status"] == "deleted"
     assert row["hard_delete_pending"] is True
-    assert row["hard_delete_claim_token"] == second_token
+    assert row["hard_delete_claim_token"] == claim.token
 
-    from serving.exceptions import HardDeleteStateChanged
-
+    # The final operational purge is token-scoped, so a non-owner writes
+    # nothing even though the account is still soft-deleted and claimed.
     with pytest.raises(HardDeleteStateChanged):
         await op_store.hard_delete_user(
             _OWNER,
-            claim_token=first_token,
+            claim_token="another-attempt",
             admin_ip="127.0.0.1",
             admin_id="admin",
             reason="stale attempt",
             email="a@b.com",
         )
 
-    await op_store.release_hard_delete_user_claim(_OWNER, second_token)
+    # The owner releases its own unfenced claim; the account stays
+    # soft-deleted, so a later attempt can claim it again.
+    await op_store.release_hard_delete_user_claim(_OWNER, claim.token)
 
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
@@ -783,16 +789,19 @@ async def test_failed_hard_delete_claim_can_be_released(fence_store):
     assert row["hard_delete_pending"] is False
     assert row["hard_delete_claim_token"] is None
 
+    second_claim = await op_store.begin_hard_delete_user(_OWNER)
+    assert second_claim.token != claim.token
+
     # The guarded release must not clear a claim after the account changes
     # state. This keeps an active account out of the hard-delete state machine.
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET status = 'active', hard_delete_pending = TRUE, "
-            "hard_delete_claim_token = $2 WHERE id = $1",
+            "hard_delete_claim_token = $2, hard_delete_claimed_at = NOW() WHERE id = $1",
             _OWNER,
-            second_token,
+            second_claim.token,
         )
-    await op_store.release_hard_delete_user_claim(_OWNER, second_token)
+    await op_store.release_hard_delete_user_claim(_OWNER, second_claim.token)
 
     async with pool.acquire() as conn:
         pending = await conn.fetchval(
@@ -804,7 +813,7 @@ async def test_failed_hard_delete_claim_can_be_released(fence_store):
     async with pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET status = 'deleted', hard_delete_pending = FALSE, "
-            "hard_delete_claim_token = NULL WHERE id = $1",
+            "hard_delete_claim_token = NULL, hard_delete_claimed_at = NULL WHERE id = $1",
             _OWNER,
         )
 

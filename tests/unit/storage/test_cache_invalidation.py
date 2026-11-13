@@ -32,6 +32,7 @@ def inner() -> MagicMock:
     store.revoke_key = AsyncMock()
     store.regenerate_key = AsyncMock(return_value="old-pfx")
     store.update_key = AsyncMock()
+    store.update_key_and_user_preference = AsyncMock()
     store.delete_user = AsyncMock()
     store.update_user_fields = AsyncMock()
     store.approve_user = AsyncMock()
@@ -273,6 +274,25 @@ class TestUserPreferencesInvalidation:
 
         assert inner.get_auth_context_by_key_hash.await_count == 2
         assert inner.get_auth_context_lightweight.await_count == 2
+
+    async def test_atomic_key_preference_update_clears_user_and_auth_caches(self, cached, inner):
+        key_hash = "key-for-atomic-account-update"
+        inner.get_user_by_id.return_value = {"user_id": "u5"}
+        inner.get_auth_context_by_key_hash.return_value = {"user_id": "u5", "preferences": {}}
+        await cached.get_user_by_id("u5")
+        await cached.get_auth_context_by_key_hash(key_hash)
+
+        await cached.update_key_and_user_preference(
+            "u5",
+            key_fields={"quota_daily_cost_usd": 9},
+            preference_key="disabled_models",
+            preference_value=["model-x"],
+        )
+
+        await cached.get_user_by_id("u5")
+        await cached.get_auth_context_by_key_hash(key_hash)
+        assert inner.get_user_by_id.await_count == 2
+        assert inner.get_auth_context_by_key_hash.await_count == 2
 
 
 class TestAccountChangesInvalidation:
