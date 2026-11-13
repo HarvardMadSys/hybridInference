@@ -569,6 +569,9 @@ async def update_locale_preference(
         if kept is None:
             # A newer entry this build cannot read (written outside the API) is
             # "no choice" everywhere else; replace it rather than report it.
+            # The conditional write returned this existing entry without
+            # changing it, so a claim racing this fallback cannot leave our
+            # choice partially committed.
             await op_store.set_user_preference(user_id, LOCALE_PREFERENCE_KEY, value)
             kept = choice
     except HardDeleteStateChanged:

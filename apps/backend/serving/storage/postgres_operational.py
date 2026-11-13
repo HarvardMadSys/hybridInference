@@ -19,6 +19,7 @@ from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
+    HardDeleteAccountIneligible,
     HardDeleteRecoveryAvailable,
     HardDeleteStateChanged,
     PreferencesTooLargeError,
@@ -1075,7 +1076,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     user_id,
                 )
                 if row is None or row["status"] != "deleted":
-                    raise HardDeleteStateChanged(
+                    raise HardDeleteAccountIneligible(
                         f"Account {user_id} is no longer eligible for hard-delete."
                     )
                 if row["hard_delete_pending"]:
@@ -2694,6 +2695,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         )
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
+            await _refuse_claimed_account(conn, user_id)
             await conn.execute(sql, *params)
             from serving.storage.project_backfill import personal_org_id
 
@@ -2707,6 +2709,60 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                         personal_org_id(user_id),
                         fields[key],
                     )
+
+    async def update_key_and_user_preference(
+        self,
+        user_id: str,
+        *,
+        key_fields: dict[str, Any],
+        preference_key: str,
+        preference_value: Any,
+    ) -> None:
+        """Atomically update account key fields and one account preference.
+
+        The user-row lock serializes both writes with hard-delete claim
+        acquisition. A claimed account is rejected before either table is
+        changed, and a later SQL failure rolls both writes back.
+        """
+        from .base import API_KEYS_MUTABLE_COLUMNS
+
+        invalid = set(key_fields) - API_KEYS_MUTABLE_COLUMNS.keys()
+        if invalid:
+            raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
+        set_parts = []
+        params: list[Any] = [user_id]
+        for idx, (key, val) in enumerate(key_fields.items(), start=2):
+            col = API_KEYS_MUTABLE_COLUMNS[key]
+            if key == "metadata" and isinstance(val, dict):
+                val = json.dumps(val)
+            set_parts.append(f"{col} = ${idx}")
+            params.append(val)
+        sql = (
+            f"UPDATE api_keys SET {', '.join(set_parts)} WHERE user_id = $1 AND status <> 'revoked'"
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            await _lock_account_keys(conn, user_id)
+            await _refuse_claimed_account(conn, user_id)
+            await conn.execute(sql, *params)
+            from serving.storage.project_backfill import personal_org_id
+
+            for key, column in (
+                ("quota_daily_cost_usd", "budget_daily_usd"),
+                ("quota_monthly_cost_usd", "budget_monthly_usd"),
+            ):
+                if key in key_fields:
+                    await conn.execute(
+                        f"UPDATE organizations SET {column} = $2 WHERE id = $1",
+                        personal_org_id(user_id),
+                        key_fields[key],
+                    )
+            await conn.execute(
+                f"UPDATE users SET preferences = jsonb_set({_PREFERENCES_OBJECT}, "
+                "ARRAY[$2::text], $3::jsonb, true) WHERE id = $1",
+                user_id,
+                preference_key,
+                json.dumps(preference_value),
+            )
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""

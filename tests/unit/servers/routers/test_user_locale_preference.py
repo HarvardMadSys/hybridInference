@@ -9,9 +9,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 from pydantic import ValidationError
 
-from serving.exceptions import UserNotFoundError
+from serving.exceptions import HardDeleteStateChanged, UserNotFoundError
 from serving.schemas_auth import LocalePreferenceUpdate
 from serving.servers.routers import user_routes
 
@@ -116,6 +117,31 @@ async def test_a_newer_entry_this_build_cannot_read_is_replaced():
 
     assert result.value == "zh-CN"
     assert store.preferences["locale"]["value"] == "zh-CN"
+
+
+@pytest.mark.asyncio
+async def test_invalid_newer_entry_refused_by_claim_does_not_partially_write():
+    stored = {"value": "fr", "chosen_at": "2099-01-01T00:00:00.000000Z"}
+
+    class ClaimBetweenReadsStore(_PreferencesStore):
+        async def set_user_preference_if_newer(self, user_id, key, value, chosen_at):
+            current = await super().set_user_preference_if_newer(user_id, key, value, chosen_at)
+            self.claimed = True
+            return current
+
+        async def set_user_preference(self, user_id, key, value):
+            if getattr(self, "claimed", False):
+                raise HardDeleteStateChanged("hard-delete in progress")
+            return await super().set_user_preference(user_id, key, value)
+
+    store = ClaimBetweenReadsStore({"locale": stored})
+
+    with pytest.raises(HTTPException) as raised:
+        await _choose(store, locale="zh-CN")
+
+    assert raised.value.status_code == 409
+    assert store.preferences["locale"] == stored
+    assert store.writes == []
 
 
 @pytest.mark.asyncio

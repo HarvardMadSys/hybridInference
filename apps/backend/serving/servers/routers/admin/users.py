@@ -14,6 +14,7 @@ from serving.audit import AuditActor, AuditTarget
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
 from serving.exceptions import (
+    HardDeleteAccountIneligible,
     HardDeleteRecoveryAvailable,
     HardDeleteStateChanged,
 )
@@ -82,12 +83,11 @@ logger = logging.getLogger(__name__)
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
-# The claim lease has no wall-clock expiry in the DB; recovery grace is an
-# operator decision. Heartbeat every 300s so a long purge cannot look
-# abandoned to a concurrent recovery caller.
+# The database clock makes a claim recoverable after one hour without renewal.
+# After the 300s heartbeat, retries may continue for 45 minutes; this stays
+# below the 60-minute grace and leaves a 10-minute takeover margin.
 _HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS = 300.0
-# Retry transient renewal failures until 45min into the grace window so a
-# failover does not strand the claim for a full operator wait.
+# Retry transient renewal failures for up to 45 minutes after each heartbeat.
 _HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS = 60.0 * 45.0
 _HARD_DELETE_CLAIM_HEARTBEAT_RETRY_SECONDS = 1.0
 
@@ -1058,11 +1058,6 @@ async def update_user(
                 "Account state changed before the update. Refresh and retry.",
             ) from None
 
-    # Update key-level fields
-    if key_fields:
-        await op_store.update_key(user_id, **key_fields)
-        updated.extend(key_fields)
-
     if "disabled_models" in payload_dict:
         # Embedding models are gated by the same denylist (the embeddings
         # surface reads it through model_access_denial) and listed by the
@@ -1081,9 +1076,36 @@ async def update_user(
         ]
         # One key, written in the database: the user's own preferences (their
         # language, their prober layout) may change while this request runs.
-        await op_store.set_user_preference(user_id, DISABLED_MODELS_PREFERENCE_KEY, disabled_models)
+        try:
+            if key_fields:
+                await op_store.update_key_and_user_preference(
+                    user_id,
+                    key_fields=key_fields,
+                    preference_key=DISABLED_MODELS_PREFERENCE_KEY,
+                    preference_value=disabled_models,
+                )
+                updated.extend(key_fields)
+            else:
+                await op_store.set_user_preference(
+                    user_id, DISABLED_MODELS_PREFERENCE_KEY, disabled_models
+                )
+        except HardDeleteStateChanged:
+            raise HTTPException(
+                409,
+                "Account state changed before the update. Refresh and retry.",
+            ) from None
         payload_dict["disabled_models"] = disabled_models
         updated.append("disabled_models")
+
+    elif key_fields:
+        try:
+            await op_store.update_key(user_id, **key_fields)
+        except HardDeleteStateChanged:
+            raise HTTPException(
+                409,
+                "Account state changed before the update. Refresh and retry.",
+            ) from None
+        updated.extend(key_fields)
 
     await log_admin_action(
         op_store,
@@ -1383,6 +1405,12 @@ async def hard_delete_user(
     claim: HardDeleteClaim | None = None
     try:
         claim = await op_store.begin_hard_delete_user(user_id)
+    except HardDeleteAccountIneligible:
+        raise _hard_delete_conflict(
+            code="hard_delete_state_changed",
+            recovery_available=False,
+            message="Account state changed before hard-delete could begin. Refresh and retry.",
+        ) from None
     except HardDeleteStateChanged as claim_error:
         # A pending claim belongs to the worker that made it. It may be taken
         # over only when its lease outlived the recovery grace period, and only

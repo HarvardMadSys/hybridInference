@@ -534,6 +534,23 @@ class CachedOperationalStore(OperationalStore):
         # Every cached auth entry of this user's keys carries the user's tag.
         await self.invalidate_user_auth_caches(user_id)
 
+    async def update_key_and_user_preference(
+        self,
+        user_id: str,
+        *,
+        key_fields: dict[str, Any],
+        preference_key: str,
+        preference_value: Any,
+    ) -> None:
+        """Delegate the atomic account update, then evict auth context."""
+        await self._store.update_key_and_user_preference(
+            user_id,
+            key_fields=key_fields,
+            preference_key=preference_key,
+            preference_value=preference_value,
+        )
+        await self._invalidate_preferences(user_id)
+
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Delegate then invalidate auth caches."""
         await self._store.revoke_key(user_id, hard_delete=hard_delete)

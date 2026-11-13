@@ -43,6 +43,10 @@ class HardDeleteStateChanged(Exception):
     pass
 
 
+class HardDeleteAccountIneligible(HardDeleteStateChanged):
+    """The account ceased to be eligible before a hard-delete claim began."""
+
+
 class HardDeleteRecoveryAvailable(HardDeleteStateChanged):
     """A pending hard-delete claim passed its grace and recovery is possible.
 

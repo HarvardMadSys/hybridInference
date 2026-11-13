@@ -924,6 +924,17 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def update_key_and_user_preference(
+        self,
+        user_id: str,
+        *,
+        key_fields: dict[str, Any],
+        preference_key: str,
+        preference_value: Any,
+    ) -> None:
+        """Atomically update API-key fields and one user preference."""
+
+    @abstractmethod
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Soft-revoke (status='revoked') or hard-delete the key."""
 

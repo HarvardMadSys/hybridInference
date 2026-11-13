@@ -13,8 +13,10 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from contextlib import suppress
 from typing import Any
 
+import asyncpg
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
@@ -22,6 +24,7 @@ from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.config.settings import get_settings
+from serving.exceptions import HardDeleteStateChanged
 from serving.servers.deps import AppServices
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers import admin as admin_router
@@ -144,6 +147,177 @@ async def test_inv8_patch_conflict_is_409(gateway, test_user, monkeypatch):
     async with pool.acquire() as conn:
         status = await conn.fetchval("SELECT status FROM users WHERE id = $1", uid)
     assert status == "deleted"
+
+
+async def test_disabled_models_patch_on_a_claimed_account_is_409(gateway, test_user):
+    client, store, pool = gateway
+    uid = test_user["id"]
+    await _soft_delete(store, uid)
+    await store.begin_hard_delete_user(uid)
+
+    response = await client.patch(
+        f"/admin/users/{uid}", headers=ADMIN, json={"disabled_models": ["model-x"]}
+    )
+
+    assert response.status_code == 409, response.text
+    assert await store.get_user_preferences(uid) == {}
+    async with pool.acquire() as conn:
+        assert await conn.fetchval("SELECT hard_delete_pending FROM users WHERE id = $1", uid)
+
+
+async def test_claimed_key_and_preference_write_is_atomic(gateway, test_user_with_key):
+    _client, store, _pool = gateway
+    uid = test_user_with_key["id"]
+    await _soft_delete(store, uid)
+    await store.begin_hard_delete_user(uid)
+    before = await store.get_key_detail(uid)
+
+    with pytest.raises(HardDeleteStateChanged):
+        await store.update_key_and_user_preference(
+            uid,
+            key_fields={"quota_daily_cost_usd": 9},
+            preference_key="disabled_models",
+            preference_value=["model-x"],
+        )
+
+    after = await store.get_key_detail(uid)
+    assert after["quota_daily_cost_usd"] == before["quota_daily_cost_usd"]
+    assert await store.get_user_preferences(uid) == {}
+
+
+async def test_key_and_preference_write_roll_back_together_on_postgres_error(
+    gateway, test_user_with_key
+):
+    _client, store, _pool = gateway
+    uid = test_user_with_key["id"]
+    before = await store.get_key_detail(uid)
+
+    with pytest.raises(asyncpg.InvalidTextRepresentationError):
+        await store.update_key_and_user_preference(
+            uid,
+            key_fields={"quota_daily_cost_usd": 9},
+            preference_key="disabled_models",
+            preference_value=[float("nan")],
+        )
+
+    after = await store.get_key_detail(uid)
+    assert after["quota_daily_cost_usd"] == before["quota_daily_cost_usd"]
+    assert await store.get_user_preferences(uid) == {}
+
+
+async def test_key_and_preference_write_succeed_together(gateway, test_user_with_key):
+    _client, store, _pool = gateway
+    uid = test_user_with_key["id"]
+
+    await store.update_key_and_user_preference(
+        uid,
+        key_fields={"quota_daily_cost_usd": 9},
+        preference_key="disabled_models",
+        preference_value=["model-x"],
+    )
+
+    key = await store.get_key_detail(uid)
+    assert float(key["quota_daily_cost_usd"]) == 9
+    assert await store.get_user_preferences(uid) == {"disabled_models": ["model-x"]}
+
+
+async def test_key_preference_write_serializes_with_concurrent_claim(gateway, test_user_with_key):
+    _client, store, pool = gateway
+    uid = test_user_with_key["id"]
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE users SET status = 'deleted' WHERE id = $1", uid)
+        original = await conn.fetchval(
+            "SELECT quota_daily_cost_usd FROM api_keys WHERE user_id = $1", uid
+        )
+
+    async with pool.acquire() as locker, locker.transaction():
+        await locker.fetchrow("SELECT id FROM users WHERE id = $1 FOR UPDATE", uid)
+        write = asyncio.create_task(
+            store.update_key_and_user_preference(
+                uid,
+                key_fields={"quota_daily_cost_usd": 9},
+                preference_key="disabled_models",
+                preference_value=["model-x"],
+            )
+        )
+        for _ in range(100):
+            waiting = await pool.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                "AND query LIKE '%FOR UPDATE%'"
+            )
+            if waiting >= 1:
+                break
+            await asyncio.sleep(0.01)
+        assert waiting, "the mutation did not reach its row-lock boundary"
+        claim = asyncio.create_task(store.begin_hard_delete_user(uid))
+        for _ in range(100):
+            waiting = await pool.fetchval(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+                "AND query LIKE '%FOR UPDATE%'"
+            )
+            if waiting >= 2:
+                break
+            await asyncio.sleep(0.01)
+        assert waiting >= 2, "the claim did not contend on the same account row"
+
+    await claim
+    with suppress(HardDeleteStateChanged):
+        await write
+
+    async with pool.acquire() as conn:
+        quota = await conn.fetchval(
+            "SELECT quota_daily_cost_usd FROM api_keys WHERE user_id = $1", uid
+        )
+        claimed = await conn.fetchval("SELECT hard_delete_pending FROM users WHERE id = $1", uid)
+    prefs = await store.get_user_preferences(uid)
+    assert claimed is True
+    if float(quota) == 9:
+        assert prefs["disabled_models"] == ["model-x"]
+    else:
+        assert quota == original
+        assert "disabled_models" not in prefs
+
+
+async def test_two_separate_writes_reproduce_the_old_partial_update(gateway, test_user_with_key):
+    """Negative control: the former two-call route could commit its key first."""
+    _client, store, _pool = gateway
+    uid = test_user_with_key["id"]
+    before = await store.get_key_detail(uid)
+    await store.update_key(uid, quota_daily_cost_usd=9)
+    await _soft_delete(store, uid)
+    await store.begin_hard_delete_user(uid)
+
+    with pytest.raises(HardDeleteStateChanged):
+        await store.set_user_preference(uid, "disabled_models", ["model-x"])
+
+    after = await store.get_key_detail(uid)
+    assert after["quota_daily_cost_usd"] != before["quota_daily_cost_usd"]
+    assert await store.get_user_preferences(uid) == {}
+
+
+async def test_hard_delete_losing_eligibility_keeps_a_distinct_conflict(
+    gateway, test_user, monkeypatch
+):
+    client, store, pool = gateway
+    uid = test_user["id"]
+    await _soft_delete(store, uid)
+    begin = store.begin_hard_delete_user
+
+    async def _resume_before_claim(user_id, **kwargs):
+        async with pool.acquire() as conn:
+            await conn.execute("UPDATE users SET status = 'active' WHERE id = $1", user_id)
+        return await begin(user_id, **kwargs)
+
+    monkeypatch.setattr(store, "begin_hard_delete_user", _resume_before_claim)
+    response = await client.post(
+        f"/admin/users/{uid}/hard-delete", headers=ADMIN, json={"confirm": True}
+    )
+
+    assert response.status_code == 409, response.text
+    assert response.json()["detail"]["code"] == "hard_delete_state_changed"
+    assert await store.get_user_by_id(uid)
 
 
 async def test_inv8_hard_delete_live_claim_is_409_with_recovery_not_ready(gateway, test_user):

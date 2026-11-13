@@ -21,12 +21,21 @@ from serving.servers.deps import AppServices, verify_admin_access
 from serving.servers.routers import admin as admin_router
 from serving.servers.routers.admin import users as admin_users
 from serving.storage.base import HardDeleteClaim, HardDeleteClaimProvenance
+from serving.storage.postgres_operational import _HARD_DELETE_CLAIM_RECOVERY_GRACE
 from serving.utils import password as password_utils
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 
 # ---------------------------------------------------------------------------
 # Helpers / Fixtures
 # ---------------------------------------------------------------------------
+
+
+def test_hard_delete_heartbeat_retry_fits_inside_recovery_grace():
+    assert (
+        _HARD_DELETE_CLAIM_RECOVERY_GRACE.total_seconds()
+        > admin_users._HARD_DELETE_CLAIM_HEARTBEAT_INTERVAL_SECONDS
+        + admin_users._HARD_DELETE_CLAIM_RENEW_UNTIL_SECONDS
+    )
 
 
 @pytest.fixture
@@ -49,6 +58,7 @@ def mock_stores():
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
+    op_store.update_key_and_user_preference = AsyncMock()
     op_store.set_user_preference = AsyncMock(return_value=True)
     op_store.revoke_key = AsyncMock()
     op_store.revoke_user_sessions = AsyncMock(return_value=0)
@@ -1009,6 +1019,25 @@ async def test_patch_user_updates_disabled_models(admin_client):
     assert response.json()["updated_fields"] == ["disabled_models"]
     audit_payload = mock_log.await_args.kwargs["details"]
     assert audit_payload["values"]["disabled_models"] == ["a-model", "z-model"]
+
+
+@pytest.mark.asyncio
+async def test_patch_user_combines_key_and_disabled_models_with_conflict_mapping(admin_client):
+    client, op_store, _log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    op_store.get_active_key_by_account.return_value = {"user_id": "u1"}
+    op_store.update_key_and_user_preference.side_effect = HardDeleteStateChanged("claimed")
+
+    response = await client.patch(
+        "/admin/users/u1",
+        headers=AUTH,
+        json={"quota_daily_cost_usd": 9, "disabled_models": ["model-x"]},
+    )
+
+    assert response.status_code == 409
+    op_store.update_key_and_user_preference.assert_awaited_once()
+    op_store.update_key.assert_not_called()
+    op_store.set_user_preference.assert_not_awaited()
 
 
 @pytest.mark.asyncio
