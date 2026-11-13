@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
@@ -121,7 +122,7 @@ def test_default_fixed_and_routewise_registries_are_isolated() -> None:
     fixed = FixedRouter()
     routewise = RouteWiseRouter(config=RouteWiseConfig(db_bootstrap_enabled=False))
 
-    fixed._health_registry.record_success(_PRIMARY_ENDPOINT)
+    fixed._health_registry.record_success(_PRIMARY_ENDPOINT, outcome=CompletionOutcome.PROGRESS)
 
     assert fixed._health_registry is not routewise._health_registry
     assert _PRIMARY_ENDPOINT in fixed.get_provider_status()
