@@ -32,7 +32,7 @@ if TYPE_CHECKING:
 
 
 from serving.config.app_config import config_value
-from serving.observability import alert_runtime
+from serving.observability import alert_policy as _policy, alert_runtime
 from serving.observability.alert_history import hooks as _history
 from serving.observability.alert_history.capture import DeliveryOutcome
 from serving.observability.alert_transitions import (
@@ -63,8 +63,8 @@ _FAILED_DELIVERIES: dict[str, int] = {}
 _ANNOUNCED: set[str] = set()
 
 #: Keys whose open incident an operator's silence has kept entirely out of the
-#: channel: at least one firing was held back by a type mute or the global
-#: snooze, and none was delivered. Such an incident closes without a message —
+#: channel: at least one firing was held back by a type mute, the notification
+#: policy or the global snooze, and none was delivered. Such an incident closes without a message —
 #: see ``_closes_silently``. An incident announced before the silence began
 #: never lands here, so its close is still posted.
 _MUTED_UNANNOUNCED: set[str] = set()
@@ -240,12 +240,13 @@ def active_alert_tasks() -> set[asyncio.Task[Any]]:
 
 
 def reset_dedupe_state() -> None:
-    """Test helper — clears the in-memory dedupe state."""
+    """Test helper — clears the in-memory alert-delivery and policy state."""
     _LAST_FIRED.clear()
     _IN_FLIGHT.clear()
     _FAILED_DELIVERIES.clear()
     _ANNOUNCED.clear()
     _MUTED_UNANNOUNCED.clear()
+    _policy.reset_notification_policy()
 
 
 class AlertSeverity(str, enum.Enum):  # noqa: UP042 -- StrEnum changes str()/format(); convert after review
@@ -895,6 +896,28 @@ async def alert_slack(
                 muted = True
                 _history.decision(key, episode_id=episode_id, reason="type_muted")
                 return False
+            # The notification policy holds a firing back the way a mute does,
+            # for the same bookkeeping: no cooldown spent, and an incident it
+            # kept out of the channel entirely closes without a card.
+            held = _policy.hold_reason(key)
+            if held == _policy.RECORD_ONLY and not _history.decision(
+                key, episode_id=episode_id, reason=held
+            ):
+                # Record-only is a destination only while its history queue
+                # accepts the event. If the recorder is absent,
+                # closed or full, fail open to the configured channel.
+                held = None
+            if held is not None:
+                if held == _policy.ALREADY_NOTIFIED:
+                    # This may be restored from history on startup. It is still
+                    # an incident the channel has already seen, so its eventual
+                    # close must not be classified as an unannounced mute.
+                    _ANNOUNCED.add(key)
+                    _MUTED_UNANNOUNCED.discard(key)
+                muted = True
+                if held != _policy.RECORD_ONLY:
+                    _history.decision(key, episode_id=episode_id, reason=held)
+                return False
             try:
                 from serving.observability.alert_snooze import is_snoozed
 
@@ -991,6 +1014,7 @@ async def alert_slack(
                 # to it even if the type is muted or alerts snoozed afterwards.
                 _ANNOUNCED.add(key)
                 _MUTED_UNANNOUNCED.discard(key)
+                _policy.note_delivered(key)
             elif (muted or snoozed) and key not in _ANNOUNCED:
                 _MUTED_UNANNOUNCED.add(key)
             if sent and resolution:
@@ -998,6 +1022,7 @@ async def alert_slack(
                 # rather than serve out the cooldown this incident started.
                 _LAST_FIRED.pop(key, None)
                 _ANNOUNCED.discard(key)
+                _policy.note_recovered(key)
             elif attempted and not resolution:
                 # Armed on the attempt, not on delivery. Arming only on success
                 # meant a sink that never succeeds never armed anything: the
@@ -1100,7 +1125,9 @@ _RESOLUTION_DETAIL: dict[str, dict[str, Any]] = {}
 _SILENT_RESOLUTIONS: set[str] = set()
 
 
-def _forget_resolution_detail(key: str, *, history_episode: str | None = None) -> None:
+def _forget_resolution_detail(
+    key: str, *, history_episode: str | None = None, closed_at: float | None = None
+) -> None:
     """Drop an incident's summary, its builder and its silence. For a close.
 
     The ``_SILENT_RESOLUTIONS`` entry goes with them: every breached evaluation
@@ -1118,6 +1145,7 @@ def _forget_resolution_detail(key: str, *, history_episode: str | None = None) -
     _SILENT_RESOLUTIONS.discard(key)
     _ANNOUNCED.discard(key)
     _MUTED_UNANNOUNCED.discard(key)
+    _policy.note_closed(key, closed_at)
     _history.forget(key, episode_id=history_episode)
 
 
@@ -1430,6 +1458,26 @@ def reset_transition_state() -> None:
     _MUTED_UNANNOUNCED.clear()
 
 
+def restore_announced_incident(
+    key: str,
+    *,
+    tracker_kind: str | None,
+    opened_at: float,
+    restored_at: float | None = None,
+    stale_after_sec: float | None = None,
+) -> None:
+    """Restore the open state for an incident whose firing reached the channel."""
+    tracker = _STATE_TRANSITIONS if tracker_kind == "state" else _TRANSITIONS
+    tracker.restore_firing(
+        key,
+        opened_at=opened_at,
+        restored_at=restored_at,
+        stale_after=stale_after_sec if tracker_kind != "state" else None,
+    )
+    _ANNOUNCED.add(key)
+    _MUTED_UNANNOUNCED.discard(key)
+
+
 def _built_once(build: Callable[[], dict[str, Any]]) -> Callable[[], dict[str, Any]]:
     """Wrap a card builder so it runs at most once, for whichever reader asks first."""
     built: list[dict[str, Any]] = []
@@ -1587,6 +1635,7 @@ async def alert_on_transition(
             title=title,
             kind=kind,
             context=detail() if opens_episode else None,
+            stale_after_sec=stale_after if kind == "metric" else None,
             now=moment,
         )
         # Every breached evaluation still goes to the sink, exactly as before.
@@ -1682,7 +1731,7 @@ async def _announce_close(
         # dropped here too, so the sweep cannot post on this key's behalf.
         if not tracker.is_firing(key):
             tracker.forget(key)
-            _forget_resolution_detail(key, history_episode=episode_id)
+            _forget_resolution_detail(key, history_episode=episode_id, closed_at=ended_at)
         _PENDING_RESOLUTIONS.pop(key, None)
         return False
     detail = {"alert": key, **_resolution_detail(key)}
@@ -1717,7 +1766,7 @@ async def _announce_close(
         # budgets) would otherwise leak one entry each.
         if not tracker.is_firing(key):
             tracker.forget(key)
-            _forget_resolution_detail(key, history_episode=episode_id)
+            _forget_resolution_detail(key, history_episode=episode_id, closed_at=ended_at)
         _PENDING_RESOLUTIONS.pop(key, None)
     elif tracker.is_firing(key):
         # The send failed, but a breach landed while it was in flight and

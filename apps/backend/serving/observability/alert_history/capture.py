@@ -50,6 +50,7 @@ from serving.observability.alert_history.records import (
     finalize,
 )
 from serving.observability.alert_history.redaction import looks_sensitive, redact_text
+from serving.observability.alert_history.vocabulary import decision_reason
 from serving.observability.alert_types import alert_type_of
 from serving.utils import context as req_ctx
 
@@ -396,6 +397,12 @@ class BackendCapture:
         episode = self._open.get(key)
         return episode.episode_id if episode is not None else None
 
+    def seed_open_episode(self, key: str, *, episode_id: str, opened_at: float) -> None:
+        """Restore an active incident from durable history after a process restart."""
+        if key not in self._open:
+            self._open[key] = _Episode(episode_id=episode_id, key=key, opened_at=opened_at)
+            self._closed.pop(key, None)
+
     def closed_episode(self, key: str) -> str | None:
         """The most recently ended episode on ``key``, for its recovery retries."""
         return self._closed.get(key)
@@ -408,6 +415,7 @@ class BackendCapture:
         title: str,
         kind: str,
         context: Mapping[str, Any] | None,
+        stale_after_sec: float | None = None,
         now: float | None = None,
     ) -> str:
         """Note a breached evaluation; open an episode when none is open."""
@@ -425,6 +433,8 @@ class BackendCapture:
         facts, fact_limits = self._facts(context, redact)
         facts["title"] = redact(title)[:MAX_TITLE]
         facts["tracker_kind"] = kind
+        if kind == "metric" and stale_after_sec is not None:
+            facts["stale_after_sec"] = stale_after_sec
         refs, ref_digests, ref_limits = self._request_ref()
         self._emit(
             "condition_triggered",
@@ -482,39 +492,44 @@ class BackendCapture:
         reason: str,
         resolution: bool = False,
         now: float | None = None,
-    ) -> None:
-        """Record a decision not to send, first individually then in buckets."""
+    ) -> bool:
+        """Record a decision; report whether its first record entered the history queue."""
+        reason = decision_reason(reason).value
         moment = self._clock() if now is None else now
         if resolution:
-            self._emit_decision(key, episode_id, reason, moment, resolution=True)
-            return
+            return self._emit_decision(key, episode_id, reason, moment, resolution=True)
         if episode_id is not None:
             episode = self._open.get(key)
             if episode is not None and episode.episode_id == episode_id:
-                if reason not in episode.first_reasons:
+                if reason in episode.first_reasons:
+                    self._count(key, episode_id, reason, moment)
+                    return True
+                accepted = self._emit_decision(key, episode_id, reason, moment, resolution=False)
+                if accepted:
                     episode.first_reasons.add(reason)
-                    self._emit_decision(key, episode_id, reason, moment, resolution=False)
-                    return
+                return accepted
             else:
                 # A decision for an ended episode is rare (a late repeat);
                 # record it on its own rather than bucket it.
-                self._emit_decision(key, episode_id, reason, moment, resolution=False)
-                return
+                return self._emit_decision(key, episode_id, reason, moment, resolution=False)
         else:
             marker = (key, reason)
             if marker not in self._first_unattached:
+                accepted = self._emit_decision(key, None, reason, moment, resolution=False)
+                if not accepted:
+                    return False
                 self._first_unattached[marker] = None
                 while len(self._first_unattached) > self._max_buckets:
                     self._first_unattached.popitem(last=False)
-                self._emit_decision(key, None, reason, moment, resolution=False)
-                return
+                return True
         self._count(key, episode_id, reason, moment)
+        return True
 
     def _emit_decision(
         self, key: str, episode_id: str | None, reason: str, moment: float, *, resolution: bool
-    ) -> None:
+    ) -> bool:
         alert, _ = self._alert_fields(key)
-        self._emit(
+        return self._emit(
             "notification_decision",
             moment,
             episode_id=episode_id,

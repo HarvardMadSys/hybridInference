@@ -2798,6 +2798,43 @@ msgstr "部署设置了 `DISTRIBUTION_CONFIG_PATH`、`DISTRIBUTION_CONFIG_MODE`�
 msgid "A stored site document that no longer validates is passed over: the explicit `SITE_*` settings and then the neutral defaults apply, public signup and RAG are reported off, and the console reports the configuration as incomplete until an administrator corrects the document."
 msgstr "已保存但不再通过验证的站点文档会被跳过：先应用显式的 `SITE_*` 设置，再应用中性默认值；公开注册和 RAG 报告为关闭，控制台会报告配置不完整，直到管理员修正该文档。"
 
+#: ../developer/configuration.md:45
+msgid "Alert notification policy"
+msgstr "告警通知策略"
+
+#: ../developer/configuration.md:47
+msgid ""
+"`ALERT_RULES` can include a `notification_policy` object. The policy is "
+"off by default. When enabled, `channel` sends firings, `digest` currently "
+"falls back to `channel`, and `record` keeps firings out of the channel "
+"while recording the decision in alert history. If history cannot accept a "
+"`record` decision, the alert fails open to the channel. Recovery "
+"notifications are never held."
+msgstr "`ALERT_RULES` 可以包含 `notification_policy` 对象。该策略默认关闭。启用后，`channel` 会发送告警；在摘要发送功能实现之前，`digest` 会回退到 `channel`；`record` 会将告警保留在通知渠道之外，同时把决策记录到告警历史中。如果历史记录队列无法接收 `record` 决策，告警会放行到通知渠道。恢复通知不会被拦截。"
+
+#: ../developer/configuration.md:53
+msgid ""
+"An alert key posts once for an ongoing problem. A recurrence before a "
+"delivered recovery continues that problem; after a delivered recovery, a "
+"later recurrence starts a new problem, even within the 24-hour re-"
+"notification window. The `min_open_sec` setting can hold an alert until "
+"its problem has been open for a configured total duration."
+msgstr "同一问题持续期间，每个告警键只发送一次。恢复通知送达前再次出现会继续沿用该问题；恢复通知送达后再次出现则会开启新问题，即使距离该恢复还不到 24 小时。`min_open_sec` 可按配置的累计持续时间暂缓发送告警。"
+
+#: ../developer/configuration.md:59
+msgid ""
+"At startup the gateway makes a bounded, best-effort history read to "
+"restore active incidents whose firing reached the channel. If the "
+"database read fails, the process starts with empty in-memory lifecycle "
+"state; recovery delivery is not guaranteed if the incident clears before "
+"history becomes available again."
+msgstr "启动时，网关会在限定时间内尽力读取历史记录，以恢复曾成功发送告警的活动事件。如果数据库读取失败，进程会以空的内存生命周期状态启动；若事件在历史记录再次可用前已结束，则无法保证发送恢复通知。"
+
+#: ../developer/configuration.md:64
+msgid "For example, this JSON can be part of the `ALERT_RULES` document:"
+msgstr "例如，以下 JSON 可以作为 `ALERT_RULES` 文档的一部分："
+
+
 msgid "Catalog and routing changes saved in this release are copied back to those rows, as canonical JSON, so a rollback runs the latest catalog the previous release can run. A catalog holding a credential reference where the previous release would not expand one is not copied, nor are a reset and a removal: the rows keep the last copy."
 msgstr "在当前版本中保存的目录和路由修改会以规范 JSON 的形式回写到这些旧行，因此回退会运行上一版本能够运行的最新目录。如果目录在上一版本不会展开凭据引用的位置含有凭据引用，则不会回写；重置和删除也不会回写：旧行保留最后一次回写的副本。"
 

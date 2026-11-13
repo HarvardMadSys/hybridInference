@@ -37,6 +37,7 @@ from serving.observability.alert_history.redaction import (
     redact_text,
     sanitize_facts,
 )
+from serving.observability.alert_history.vocabulary import DecisionReason  # noqa: TC001
 
 MAX_EVENTS = 50
 #: ``source_status.rules_snapshot`` bounds, the same on both sides of the wire.
@@ -173,22 +174,7 @@ class EventIn(_Strict):
     end_basis: (
         Literal["observed_healthy", "no_samples", "source_closed", "superseded", "unknown"] | None
     ) = None
-    decision_reason: (
-        Literal[
-            "cooldown",
-            "type_muted",
-            "snoozed",
-            "in_flight",
-            "no_channel",
-            "channel_config_invalid",
-            "policy_disabled",
-            "rate_limited",
-            "resolution_silenced",
-            "source_suppressed",
-            "other",
-        ]
-        | None
-    ) = None
+    decision_reason: DecisionReason | None = None
     count: int | None = Field(default=None, ge=1, le=10**9)
     bucket_start: Rfc3339 | None = None
     bucket_end: Rfc3339 | None = None

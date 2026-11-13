@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import AliasChoices, BaseModel, Field
@@ -421,12 +421,79 @@ class CostSection(BaseModel):
     provider_hourly_spend: ProviderHourlySpend = Field(default_factory=ProviderHourlySpend)
 
 
+#: Where an alert type's firings go under the notification policy. ``digest``
+#: currently falls back to ``channel`` until digest delivery exists; ``record``
+#: keeps it out of the channel when durable history is available.
+Destination = Literal["channel", "digest", "record"]
+
+
+def _default_destinations() -> dict[str, Destination]:
+    return {
+        # Replaced by the per-model final-outcome detector; still recorded.
+        "failed_request_rate": "record",
+        "fivexx_rate": "record",
+        "stream_failure_rate": "record",
+        # Needs a person eventually, but not this hour.
+        "key_pool_exhaustion_burst": "digest",
+        "request_log_queue_saturation": "digest",
+        "tracked_task_failure": "digest",
+        "prefix_cache_pending_leak": "digest",
+        "client_error_burst": "digest",
+        # Nothing to act on: a latency bump, scanners, one user's own quota.
+        "p95_latency": "record",
+        "auth_failure_spike": "record",
+        "auth_ip_blocked": "record",
+        "cost_overrun": "record",
+    }
+
+
+class NotificationPolicy(BaseModel):
+    """Which firings reach the channel at all, and how often one problem may.
+
+    Off by default, so a deployment that does not opt in keeps every alert as
+    it was. On, it sits beside the per-type mute in ``alert_slack``: a firing
+    it holds back is recorded in alert history and costs no cooldown. A
+    record-only destination fails open to the channel if history cannot accept
+    its decision. An incident it kept out of the channel entirely closes
+    without a "Recovered" card, exactly as a muted one does. Resolutions are
+    never held.
+
+    A *problem* is one alert key from its first firing until it has stayed
+    closed for ``renotify_after_sec``. A recurrence before a delivered recovery
+    continues the same problem; after a delivered recovery, a later recurrence
+    starts a new problem even inside that window. Problem state is kept
+    per process; at startup each process restores open incidents with an
+    accepted firing from alert history, even when they outlive the re-notify
+    window, so a restart does not announce them again and can still send recovery.
+
+    - ``destinations`` maps an alert type to ``channel``, ``digest`` or
+      ``record``. A type not listed goes to the channel, so a newly added alert
+      is never silently dropped.
+    - ``min_open_sec`` holds a type back until its problem has been open that
+      long in total. The time adds up across flaps inside the window, and is
+      checked when the producer next reports the problem, so a circuit nobody
+      sends traffic to never posts.
+    - ``renotify_on_recurrence`` lists alert keys whose recurrence after a close
+      is always a new problem. An entry ending in ``*`` matches every key that
+      starts with the rest of it.
+    """
+
+    enabled: bool = False
+    destinations: dict[str, Destination] = Field(default_factory=_default_destinations)
+    min_open_sec: dict[str, float] = Field(default_factory=lambda: {"circuit_open": 7200.0})
+    renotify_after_sec: float = Field(default=86400.0, ge=0)
+    renotify_on_recurrence: list[str] = Field(
+        default_factory=lambda: ["failed_request_rate_db", "db_disconnect:*"]
+    )
+
+
 class AlertConfig(BaseModel):
     """Top-level alert config."""
 
     rules: Rules = Field(default_factory=Rules)
     state_changes: StateChanges = Field(default_factory=StateChanges)
     cost: CostSection = Field(default_factory=CostSection)
+    notification_policy: NotificationPolicy = Field(default_factory=NotificationPolicy)
 
 
 def alert_config_from_data(raw: dict[str, Any]) -> AlertConfig:
