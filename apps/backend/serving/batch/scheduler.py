@@ -314,6 +314,9 @@ class BatchScheduler:
         self._queued_since: dict[str, float] = {}
         self._queued_last: dict[str, float] = {}
         self._queued_alerted: set[str] = set()
+        # Models whose latest answer here was "queued": one item probes whether
+        # the model serves yet before the rest of its cap is claimed.
+        self._queued_probing: set[str] = set()
         self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
         self._next_webhooks = 0.0
@@ -670,6 +673,8 @@ class BatchScheduler:
             else:
                 cap -= self._load.in_flight(canonical)
             cap -= cfg.interactive_reserve
+        if model_id in self._queued_probing:
+            cap = min(cap, 1)
         room = cap - self._running[model_id]
         if room <= 0:
             return
@@ -1276,6 +1281,9 @@ class BatchScheduler:
     async def _settle(
         self, entry: _InFlight, result: DispatchResult, attempts: int, cfg: BatchConfig
     ) -> None:
+        if result.requeue_after is None:
+            # Answered: the model is no longer waiting for capacity.
+            self._queued_probing.discard(entry.model_id)
         if result.error is None:
             self._model_succeeded(entry.model_id)
             await self._complete(
@@ -1298,10 +1306,16 @@ class BatchScheduler:
             # The model is queued for capacity on its upstream: not a failure of
             # the model or of the item. The item goes back without spending its
             # attempt, and the model gets no new claims until it may be ready,
-            # rather than every slot of its cap asking again at once. As with a
-            # retry, once the next try would start after the window closes the
-            # item fails now with this answer instead.
+            # rather than every slot of its cap asking again at once. Nor when the
+            # hold ends: one item asks, and the rest of the cap is claimed once
+            # the model answers. Each "queued" answer is an api_logs row and a
+            # batch_attempts row, and a model waiting all night for a GPU job
+            # otherwise wrote its whole cap of both every couple of minutes
+            # (2026-11-12: 720k of each in a day, against 15k items served).
+            # As with a retry, once the next try would start after the window
+            # closes the item fails now with this answer instead.
             self._hold_model(entry.model_id, requeue)
+            self._queued_probing.add(entry.model_id)
             self._note_queued(entry.model_id, cfg.queued_alert_hours)
             retry_at = datetime.now(UTC) + timedelta(seconds=requeue)
             if entry.expires_at is None or retry_at < entry.expires_at:

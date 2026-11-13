@@ -1477,6 +1477,38 @@ async def test_a_model_queued_answer_holds_the_model(worker, dispatch):
     assert store.count("queued") == 2
 
 
+async def test_a_waiting_model_is_probed_with_one_item_until_it_answers(worker, dispatch):
+    # Once the model answers "queued", each hold that ends sends one item, not
+    # the whole cap: every "queued" answer costs an api_logs row and an attempt
+    # row. The cap is claimed again once the model serves.
+    dispatch.results["m1"] = _queued(0.01)
+    store = FakeStore()
+    store.add(8)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 8}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 8)
+    first_burst = len(dispatch.calls)
+    dispatch.peak.clear()
+    await until(lambda: len(dispatch.calls) >= first_burst + 5)
+
+    assert dispatch.peak["m1"] == 1
+    gate = dispatch.hold("m1")
+    dispatch.results["m1"] = OK
+    await until(lambda: dispatch.running["m1"] == 1)
+    gate.set()
+    del dispatch.gates["m1"]
+    await until(lambda: store.count("completed") == 8)
+    assert store.calls["retry_item"] == 0
+
+
 async def test_a_week_long_queued_hint_holds_the_model_only_briefly(worker, dispatch, monkeypatch):
     # The answered item waits out its hint, capped at a week; the model's other
     # items must not wait with it. The hold has a short cap of its own.
