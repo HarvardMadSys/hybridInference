@@ -388,12 +388,15 @@ async def test_the_playground_reserves_the_request_estimate() -> None:
     store = _Store()
     async with _client(deployment, INTERNAL, store=store) as client:
         turn = asyncio.create_task(_chat(client, "open-model", max_tokens=32768))
-        for _ in range(200):
-            if deployment.lan.roles:
-                break
-            await asyncio.sleep(0)
-        reserved = ledger_for(store)._reserved_users["u-internal"][0]
-        deployment.lan.gate.set()
+        ledger = ledger_for(store)
+        try:
+            for _ in range(500):
+                if ledger._reserved_users.get("u-internal"):
+                    break
+                await asyncio.sleep(0.01)
+            reserved = ledger._reserved_users["u-internal"][0]
+        finally:
+            deployment.lan.gate.set()
         response = await turn
 
     assert response.status_code == 200
