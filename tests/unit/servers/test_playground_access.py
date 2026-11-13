@@ -27,7 +27,7 @@ from serving import quota
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.concurrency import (
     UserConcurrencyLimiter,
-    _intake_slot_key,
+    intake_slot_key,
     static_limits_provider,
 )
 from serving.servers.deps import AppServices, get_current_user
@@ -368,7 +368,7 @@ async def test_the_body_is_read_while_the_intake_slot_is_held(
         )
 
     assert response.status_code == 200
-    assert held == [{_intake_slot_key("u-internal")}]
+    assert held == [{intake_slot_key("u-internal")}]
 
 
 @pytest.mark.asyncio
