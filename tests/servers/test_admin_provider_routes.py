@@ -9540,6 +9540,98 @@ async def test_a_route_marked_deleted_but_still_listed_cannot_be_toggled(admin_c
     assert (stored["disabled"], stored["removed"]) == (True, True)
 
 
+def test_config_to_dict_does_not_clone_endpoint_identity_publishability():
+    """Cloning a dedicated-kind config must not carry publishability to an admin route."""
+    from serving.adapters.base import ModelConfig
+
+    config = ModelConfig(
+        id="glm-4.7",
+        name="glm-4.7",
+        provider="zai",
+        base_url="https://example-zai.test",
+        chat_path="/chat/completions",
+        endpoint_id="glm-4.7:zai-api",
+        endpoint_identity_publishable=True,
+        context_length=8192,
+    )
+    cloned_values = provider_routes._config_to_dict(config)
+    assert "endpoint_identity_publishable" not in cloned_values
+
+
+def test_apply_target_adapter_defaults_sets_publishability_from_kind():
+    """Admin routes derive publishability from the new target kind, not the template."""
+    from serving.servers.registry import _make_provider_id
+    from serving.servers.routers.admin.provider_routes import (
+        _apply_target_adapter_defaults,
+        _finalize_admin_endpoint_publishability,
+    )
+
+    generic_target = provider_routes.ProviderTarget(
+        provider="openai_compat",
+        label="OpenAI-compatible",
+        kind="openai_compat",
+        key_provider="openai_compat",
+        default_base_url="https://example.test/v1",
+        chat_path="/chat/completions",
+    )
+    cfg = {"endpoint_identity_publishable": True, "endpoint_id": "glm-4.7:example-api"}
+    _apply_target_adapter_defaults(cfg, generic_target)
+    assert cfg["endpoint_identity_publishable"] is False
+
+    dedicated_target = provider_routes.ProviderTarget(
+        provider="zai",
+        label="ZAI",
+        kind="zai",
+        key_provider="zai",
+        default_base_url="https://example-zai.test",
+        chat_path="/chat/completions",
+    )
+    cfg2 = {"endpoint_identity_publishable": False}
+    _apply_target_adapter_defaults(cfg2, dedicated_target)
+    assert cfg2["endpoint_identity_publishable"] is True
+    # Minted id keeps kind decision; admin-supplied route_id forces False.
+    base_url = "https://example-zai.test"
+    minted = _make_provider_id("glm-4.7", "zai", base_url)
+    _finalize_admin_endpoint_publishability(
+        cfg2, model_id="glm-4.7", target=dedicated_target, base_url=base_url, endpoint_id=minted
+    )
+    assert cfg2["endpoint_identity_publishable"] is True
+    _finalize_admin_endpoint_publishability(
+        cfg2,
+        model_id="glm-4.7",
+        target=dedicated_target,
+        base_url=base_url,
+        endpoint_id="custom-route-id",
+    )
+    assert cfg2["endpoint_identity_publishable"] is False
+
+
+def test_same_target_finalization_preserves_adapter_specific_configuration():
+    from serving.servers.routers.admin.provider_routes import (
+        _finalize_admin_endpoint_publishability,
+    )
+
+    target = provider_routes.ProviderTarget(
+        provider="openrouter[parasail]",
+        label="Parasail via OpenRouter",
+        kind="openrouter[parasail]",
+        key_provider="openrouter",
+        default_base_url="https://openrouter.ai/api/v1",
+        chat_path="/chat/completions",
+    )
+    cfg = {"openrouter_pinned_provider": "parasail", "provider_profile": "deepseek"}
+    _finalize_admin_endpoint_publishability(
+        cfg,
+        model_id="deepseek-chat",
+        target=target,
+        base_url=target.default_base_url,
+        endpoint_id="deepseek-chat:openrouter-api",
+    )
+
+    assert cfg["openrouter_pinned_provider"] == "parasail"
+    assert cfg["provider_profile"] == "deepseek"
+
+
 # ---------------------------------------------------------------------------
 # Batch work: which routes it may use
 # ---------------------------------------------------------------------------

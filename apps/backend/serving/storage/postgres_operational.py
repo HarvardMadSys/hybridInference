@@ -288,7 +288,12 @@ _KEY_LIMIT_COLUMNS = (
 
 #: What the auth lookups add about the presented key itself: its limits, and
 #: how a refusal names it.
-_AUTH_KEY_COLUMNS = f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}"
+#: ``k.metadata`` carries the key's admin-set settings bag. The served-identity
+#: diagnostic entitlement rides in it, so a key can hold it without a new
+#: column or migration.
+_AUTH_KEY_COLUMNS = (
+    f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}, k.metadata AS key_metadata"
+)
 
 #: The settings an account's owner may change on one of its keys.
 KEY_SETTINGS_COLUMNS = ("name", "budget_daily_usd", "budget_monthly_usd", "allowed_models")
@@ -469,11 +474,11 @@ ACCOUNT_QUOTA_SOURCE_SQL = (
 
 
 def _coerce_user_row(row: Any) -> Row | None:
-    """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
+    """Convert an asyncpg Row to a dict, decoding JSONB auth-context fields.
 
     asyncpg returns JSONB columns as raw JSON strings when no type codec is
-    registered. Callers that inspect ``preferences`` (e.g. disabled-model
-    checks) need a Python dict, not a string.
+    registered. Callers that inspect these fields need Python objects, not
+    strings.
     """
     if row is None:
         return None
@@ -487,6 +492,15 @@ def _coerce_user_row(row: Any) -> Row | None:
             d["preferences"] = {}
     elif not isinstance(val, dict):
         d["preferences"] = {}
+    metadata = d.get("key_metadata")
+    if isinstance(metadata, str):
+        try:
+            parsed_metadata = json.loads(metadata)
+        except (json.JSONDecodeError, TypeError):
+            parsed_metadata = None
+        d["key_metadata"] = parsed_metadata if isinstance(parsed_metadata, dict) else None
+    elif not isinstance(metadata, dict):
+        d["key_metadata"] = None
     for field in ("allowed_models", "project_allowed_models"):
         models = d.get(field)
         if isinstance(models, str):

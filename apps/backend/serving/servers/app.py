@@ -52,6 +52,7 @@ from .routers import (
     site_updates,
     user_routes,
 )
+from .routers.served_identity import SERVED_IDENTITY_HEADER_NAMES
 
 if TYPE_CHECKING:
     from .deps import AppServices
@@ -106,7 +107,10 @@ CORS_OPTIONS: dict[str, Any] = {
     "allow_credentials": True,
     "allow_methods": ["*"],
     "allow_headers": ["*"],
-    "expose_headers": ["ETag"],
+    # A browser hides every response header CORS does not expose, so the
+    # served-identity headers are listed here: without it a browser caller
+    # can never read the identity it asked for.
+    "expose_headers": ["ETag", *sorted(SERVED_IDENTITY_HEADER_NAMES)],
 }
 
 
