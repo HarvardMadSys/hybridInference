@@ -23,6 +23,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
+from serving import quota
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
 from serving.servers.deps import AppServices, get_current_user
@@ -376,6 +377,27 @@ async def test_the_playground_bills_the_session_user() -> None:
     assert [increment["user_id"] for increment in store.increments] == ["u-internal"]
     assert store.increments[0]["api_key_id"] is None
     assert store.increments[0]["cost"] > 0
+
+
+@pytest.mark.asyncio
+async def test_the_playground_reserves_the_request_estimate() -> None:
+    """The API reserves what a request may cost, not just the flat minimum."""
+    deployment = _Deployment()
+    deployment.lan.config.pricing = {"prompt": "1", "completion": "100"}
+    deployment.lan.gate = asyncio.Event()
+    store = _Store()
+    async with _client(deployment, INTERNAL, store=store) as client:
+        turn = asyncio.create_task(_chat(client, "open-model", max_tokens=32768))
+        for _ in range(200):
+            if deployment.lan.roles:
+                break
+            await asyncio.sleep(0)
+        reserved = ledger_for(store)._reserved_users["u-internal"][0]
+        deployment.lan.gate.set()
+        response = await turn
+
+    assert response.status_code == 200
+    assert reserved > quota.ESTIMATED_REQUEST_COST_USD
 
 
 @pytest.mark.asyncio

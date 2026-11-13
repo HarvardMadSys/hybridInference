@@ -19,15 +19,22 @@ from serving.model_effort_capabilities import model_effort_domain
 from serving.servers.auth import (
     _account_quotas,
     _daily_quota_usd,
-    _quota_exceeded,
     _spend_check,
     publish_caller_role,
+)
+from serving.servers.concurrency import (
+    _admit_spend,
+    _slot_for_canonical,
+    _track_interactive_request,
+    canonical_model_id,
 )
 from serving.servers.deps import (
     get_completions_logger,
     get_cost_tracker,
     get_current_user,
+    get_embedding_adapters,
     get_log_store,
+    get_model_concurrency_resolver,
     get_model_router_registry,
     get_model_visibility_resolver,
     get_operational_store,
@@ -61,8 +68,10 @@ from serving.servers.routers.responses import (
     execute_responses,
 )
 from serving.servers.surface_http import client_origin, timeout_probe
+from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.surfaces.context import (
     ExecutionContext,
+    InteractiveAdmission,
     admission_from,
     read_only,
 )
@@ -162,19 +171,37 @@ def _authenticated_caller(user: dict[str, Any]) -> dict[str, Any]:
     return {**user, "authenticated": True}
 
 
+async def _request_payload(request: Request) -> Any:
+    """Read the request body once; None when it is not JSON.
+
+    The route's own ``request.json()`` reuses Starlette's cached decode. Reading
+    it here is what lets the admission reserve the request's own cost estimate,
+    as the API surfaces do.
+    """
+    try:
+        return await request.json()
+    except Exception:
+        return None
+
+
 async def _reserve_playground_spend(
     request: Request,
     user: dict[str, Any],
     role: str,
     op_store: Any,
+    router: Any,
+    embedding_adapters: dict[str, Any] | None,
 ) -> Reservation | None:
     """Check the session user's account budget and reserve this request's estimate.
 
     The playground runs on the console session, not an API key, so it cannot
     reuse ``verify_api_key``'s gate. This is the ``X-On-Behalf-Of`` path: the
     user's account quotas, with no key attributed, and the same 429 the API
-    surfaces return when over a limit. A reserved estimate is released by
-    ``_playground_slot`` once the response, stream included, has been sent.
+    surfaces return when over a limit. The check is then handed to the public
+    admission (:func:`serving.servers.concurrency._admit_spend`) with the
+    body's own model, so the reservation is the request's estimate rather than
+    the flat minimum. ``_playground_slot`` releases it once the response, stream
+    included, has been sent.
     """
     if op_store is None:
         return None
@@ -187,7 +214,7 @@ async def _reserve_playground_spend(
         "quota_daily_cost_usd": daily,
         "quota_monthly_cost_usd": monthly,
     }
-    check = await _spend_check(
+    user[SPEND_CHECK_KEY] = await _spend_check(
         identity,
         api_key_id=None,
         op_store=op_store,
@@ -195,10 +222,15 @@ async def _reserve_playground_spend(
         spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
         read_at=read_at,
     )
-    reservation, refusal = check.admit()
-    if refusal is not None:
-        raise _quota_exceeded(request, user_id=user_id, role=role, refusal=refusal)
-    return reservation
+    payload = getattr(request, "_json", None)
+    model = payload.get("model") if isinstance(payload, dict) else None
+    return _admit_spend(
+        request,
+        user,
+        model=model if isinstance(model, str) else None,
+        router=router,
+        embedding_adapters=embedding_adapters,
+    )
 
 
 async def _playground_slot(
@@ -206,26 +238,35 @@ async def _playground_slot(
     user: dict[str, Any] = Depends(get_current_user),
     limiter: Any = Depends(get_user_concurrency_limiter),
     op_store: Any = Depends(get_operational_store),
-) -> AsyncGenerator[None, None]:
-    """Hold a concurrency slot and the request's spend reservation until it ends.
+    router_exec: Any = Depends(get_router),
+    concurrency_resolver: Any = Depends(get_model_concurrency_resolver),
+    embedding_adapters: dict[str, Any] | None = Depends(get_embedding_adapters),
+) -> AsyncGenerator[InteractiveAdmission, None]:
+    """Hold a slot, interactive load and spend reservation until the request ends.
 
     The playground runs on the console session, not an API key, so the API
     surfaces' admission (``servers.concurrency.enforce_user_concurrency``) never
-    reaches it. It takes a slot from the same per-user budget instead, and
-    refuses an over-quota caller before any upstream call
-    (:func:`_reserve_playground_spend`). FastAPI tears this dependency down once
-    the response has been sent, the whole stream included, so both are held
-    exactly as long as the upstream work they admit.
+    reaches it. This buys the same things from the same source: the per-model
+    (or exempt) slot, the interactive-load count batch work yields to, and the
+    spend reservation against the session user's quotas. FastAPI tears the
+    dependency down once the response has been sent, the whole stream included.
     """
+    payload = await _request_payload(request)
+    model = payload.get("model") if isinstance(payload, dict) else None
+    model = model if isinstance(model, str) else None
+    canonical = canonical_model_id(model, router=router_exec, embedding_adapters=embedding_adapters)
     user_id = str(user["user_id"])
-    # Concurrency is independent of the quota: a limiter that is not configured
-    # still leaves the cost gate in force (and the reverse).
+    role = str(user.get("role") or "free")
+    slot_key = user_id
     if limiter is not None:
+        slot_key, max_concurrent = await _slot_for_canonical(
+            user, model, canonical, concurrency_resolver
+        )
         granted, limit, _role_label = await limiter.try_acquire(
-            user_id,
-            str(user.get("role") or "free"),
+            slot_key,
+            role,
             bool(user.get("is_admin", False)),
-            user.get("max_concurrent_requests"),
+            max_concurrent,
         )
         if not granted:
             raise HTTPException(
@@ -236,14 +277,15 @@ async def _playground_slot(
     reservation: Reservation | None = None
     try:
         reservation = await _reserve_playground_spend(
-            request, user, str(user.get("role") or "free"), op_store
+            request, user, role, op_store, router_exec, embedding_adapters
         )
-        yield
+        with _track_interactive_request(canonical) as tracker:
+            yield InteractiveAdmission(tracker)
     finally:
         if reservation is not None:
             reservation.release()
         if limiter is not None:
-            limiter.release(user_id)
+            limiter.release(slot_key)
 
 
 @router.get("/models")
@@ -419,7 +461,6 @@ def _with_route_frame(
     once the stream has run, not when it starts. A response that never reaches
     ``[DONE]`` still gets one, after its last frame.
     """
-
     inner = response.body_iterator
 
     async def frames() -> AsyncIterator[Any]:
@@ -473,7 +514,7 @@ async def playground_chat(
     http_response: Response,
     body: PlaygroundChatRequest = Depends(_chat_body),
     caller: dict[str, Any] = Depends(_require_internal),
-    _slot: None = Depends(_playground_slot),
+    _slot: InteractiveAdmission = Depends(_playground_slot),
     router_exec=Depends(get_router),
     model_router_registry=Depends(get_model_router_registry),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
@@ -541,7 +582,7 @@ _RESPONSES_SSE_HEADERS = {
 async def playground_responses(
     request: Request,
     caller: dict[str, Any] = Depends(_require_internal),
-    _slot: None = Depends(_playground_slot),
+    _slot: InteractiveAdmission = Depends(_playground_slot),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
     model_router_registry=Depends(get_model_router_registry),
@@ -602,7 +643,7 @@ async def playground_responses(
 async def playground_messages(
     request: Request,
     caller: dict[str, Any] = Depends(_require_internal),
-    _slot: None = Depends(_playground_slot),
+    _slot: InteractiveAdmission = Depends(_playground_slot),
     router_exec=Depends(get_router),
     log_store=Depends(get_log_store),
     op_store=Depends(get_operational_store),
