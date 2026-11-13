@@ -23,6 +23,7 @@ from .middleware.trailing_slash import TrailingSlashRedirectMiddleware
 from .routers import (
     admin,
     agent_grants,
+    agent_invitations,
     alert_history_ingest,
     anthropic_messages,
     auth_routes,
@@ -179,6 +180,8 @@ def create_app() -> FastAPI:
     app.include_router(playground.router)
     app.include_router(identity.router)
     app.include_router(agent_grants.router)
+    app.include_router(agent_invitations.router)
+    app.include_router(agent_invitations.internal_router)
     app.include_router(internal_lookups.router)
     app.include_router(alert_history_ingest.router)
 
