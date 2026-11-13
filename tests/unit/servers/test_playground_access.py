@@ -33,7 +33,7 @@ from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+    from collections.abc import AsyncGenerator, AsyncIterator
 
 INTERNAL = {"user_id": "u-internal", "role": "internal", "is_admin": False}
 ADMIN = {"user_id": "u-admin", "role": "admin", "is_admin": True}
@@ -149,16 +149,29 @@ class _Store:
         )
 
 
+class _ConcurrencyResolver:
+    """A resolver that says no model is concurrency-exempt."""
+
+    async def is_exempt(self, model: str) -> bool:
+        return False
+
+
 def _client(
-    deployment: _Deployment, user: dict[str, Any], limit: int = 8, store: Any = None
+    deployment: _Deployment,
+    user: dict[str, Any],
+    limit: int = 8,
+    store: Any = None,
+    limiter: UserConcurrencyLimiter | None = None,
+    concurrency_resolver: Any = None,
 ) -> AsyncClient:
     app = FastAPI()
     app.include_router(playground.router)
     limits = {"free": limit, "pro": limit, "internal": limit, "admin": limit}
     app.state.services = AppServices(
         router=deployment.router,
-        user_concurrency_limiter=UserConcurrencyLimiter(static_limits_provider(limits)),
+        user_concurrency_limiter=limiter or UserConcurrencyLimiter(static_limits_provider(limits)),
         operational_store=store,
+        model_concurrency_resolver=concurrency_resolver,
     )
     app.dependency_overrides[get_current_user] = lambda: user
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
@@ -276,6 +289,35 @@ async def test_a_stream_holds_one_of_the_callers_slots_until_it_ends() -> None:
     assert second.headers["retry-after"] == "1"
     assert first_response.status_code == 200
     assert third.status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_the_chat_body_is_read_while_the_intake_slot_is_held() -> None:
+    """Chat must not decode its body before the admission like the API does."""
+    deployment = _Deployment()
+    limiter = UserConcurrencyLimiter(static_limits_provider({"internal": 8}))
+    held: list[bool] = []
+
+    async def body() -> AsyncIterator[bytes]:
+        held.append("u-internal:intake" in limiter._slots)
+        yield json.dumps(
+            {"model": "open-model", "messages": [{"role": "user", "content": "hi"}]}
+        ).encode()
+
+    async with _client(
+        deployment,
+        INTERNAL,
+        limiter=limiter,
+        concurrency_resolver=_ConcurrencyResolver(),
+    ) as client:
+        response = await client.post(
+            "/internal/playground/chat",
+            content=body(),
+            headers={"content-type": "application/json"},
+        )
+
+    assert response.status_code == 200
+    assert held == [True]
 
 
 async def _responses(client: AsyncClient, model: str, **extra: Any) -> Any:

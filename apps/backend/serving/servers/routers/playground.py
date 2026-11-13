@@ -246,19 +246,19 @@ async def _playground_slot(
     # to take, or when the exemption resolver needs the model to choose one.
     parse_before_acquire = limiter is None or concurrency_resolver is not None
     intake_key: str | None = None
-    if limiter is not None and router_exec is not None and request.method == "POST":
-        intake_key = await _take_intake_slot(request, user, limiter)
     model: str | None = None
     canonical: str | None = None
-    try:
-        if parse_before_acquire:
+    if parse_before_acquire:
+        if limiter is not None and router_exec is not None and request.method == "POST":
+            intake_key = await _take_intake_slot(request, user, limiter)
+        try:
             model, canonical = await _request_model(
                 request, router=router_exec, embedding_adapters=embedding_adapters
             )
-    except BaseException:
-        if limiter is not None and intake_key is not None:
-            limiter.release(intake_key)
-        raise
+        except BaseException:
+            if limiter is not None and intake_key is not None:
+                limiter.release(intake_key)
+            raise
     slot_key = user_id
     if limiter is not None:
         try:
@@ -528,9 +528,9 @@ def _public_chat_request(body: PlaygroundChatRequest) -> dict[str, Any]:
 async def playground_chat(
     request: Request,
     http_response: Response,
-    body: PlaygroundChatRequest = Depends(_chat_body),
     caller: dict[str, Any] = Depends(_require_internal),
     _slot: InteractiveAdmission = Depends(_playground_slot),
+    body: PlaygroundChatRequest = Depends(_chat_body),
     router_exec=Depends(get_router),
     model_router_registry=Depends(get_model_router_registry),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
