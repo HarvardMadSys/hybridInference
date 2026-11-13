@@ -199,11 +199,11 @@ async def admin_mode_client(admin_mode_app: FastAPI):
         yield client
 
 
-def _route_stream(route: dict[str, Any]) -> Any:
+def _route_stream(route: Any) -> Any:
     return SimpleNamespace(session=SimpleNamespace(served_route=route))
 
 
-def _route_badge(route: dict[str, Any], *, show_host: bool = False) -> dict[str, Any] | None:
+def _route_badge(route: Any, *, show_host: bool = False) -> dict[str, Any] | None:
     frame = playground._route_frame(_route_stream(route), show_host=show_host)
     if frame is None:
         return None
@@ -327,13 +327,16 @@ class TestAdminModeUnit:
 
     def test_route_frame_never_raises_even_on_a_hostile_routing_blob(self):
         # `_route_frame` is total by contract: a redaction failure costs the
-        # badge, never the redaction.
-        for route in (
-            {"provider": "test", "failed_attempts": "not-a-list"},
-            {"provider": "test", "base_url": 42},
-            {},
-        ):
-            playground._route_frame(_route_stream(route), show_host=True)
+        # badge, never the redaction. Non-mappings produce no badge at all.
+        for route in ("a string", 42, None):
+            assert playground._route_frame(_route_stream(route), show_host=True) is None
+        frame = playground._route_frame(
+            _route_stream({"provider": "test", "base_url": 42, "failed_attempts": "not-a-list"}),
+            show_host=True,
+        )
+        assert frame is not None
+        assert "failed_attempts" not in frame
+        assert "base_url" not in frame
 
     def test_unrelated_frames_are_not_mistaken_for_the_terminator(self):
         assert playground._is_done_frame("data: [DONE]\n\n")

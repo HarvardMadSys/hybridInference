@@ -24,9 +24,10 @@ from serving.servers.auth import (
 )
 from serving.servers.concurrency import (
     _admit_spend,
+    _request_model,
     _slot_for_canonical,
+    _take_intake_slot,
     _track_interactive_request,
-    canonical_model_id,
 )
 from serving.servers.deps import (
     get_completions_logger,
@@ -171,19 +172,6 @@ def _authenticated_caller(user: dict[str, Any]) -> dict[str, Any]:
     return {**user, "authenticated": True}
 
 
-async def _request_payload(request: Request) -> Any:
-    """Read the request body once; None when it is not JSON.
-
-    The route's own ``request.json()`` reuses Starlette's cached decode. Reading
-    it here is what lets the admission reserve the request's own cost estimate,
-    as the API surfaces do.
-    """
-    try:
-        return await request.json()
-    except Exception:
-        return None
-
-
 async def _reserve_playground_spend(
     request: Request,
     user: dict[str, Any],
@@ -191,6 +179,7 @@ async def _reserve_playground_spend(
     op_store: Any,
     router: Any,
     embedding_adapters: dict[str, Any] | None,
+    model: str | None,
 ) -> Reservation | None:
     """Check the session user's account budget and reserve this request's estimate.
 
@@ -199,8 +188,8 @@ async def _reserve_playground_spend(
     user's account quotas, with no key attributed, and the same 429 the API
     surfaces return when over a limit. The check is then handed to the public
     admission (:func:`serving.servers.concurrency._admit_spend`) with the
-    body's own model, so the reservation is the request's estimate rather than
-    the flat minimum. ``_playground_slot`` releases it once the response, stream
+    request's own model, so the reservation is its estimate rather than the flat
+    minimum. ``_playground_slot`` releases it once the response, stream
     included, has been sent.
     """
     if op_store is None:
@@ -222,12 +211,10 @@ async def _reserve_playground_spend(
         spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
         read_at=read_at,
     )
-    payload = getattr(request, "_json", None)
-    model = payload.get("model") if isinstance(payload, dict) else None
     return _admit_spend(
         request,
         user,
-        model=model if isinstance(model, str) else None,
+        model=model,
         router=router,
         embedding_adapters=embedding_adapters,
     )
@@ -246,28 +233,47 @@ async def _playground_slot(
 
     The playground runs on the console session, not an API key, so the API
     surfaces' admission (``servers.concurrency.enforce_user_concurrency``) never
-    reaches it. This buys the same things from the same source: the per-model
-    (or exempt) slot, the interactive-load count batch work yields to, and the
-    spend reservation against the session user's quotas. FastAPI tears the
-    dependency down once the response has been sent, the whole stream included.
+    reaches it. This buys the same things from the same source: the intake
+    budget while the body is read, the per-model (or exempt) slot, the
+    interactive-load count batch work yields to, and the spend reservation
+    against the session user's quotas. FastAPI tears the dependency down once
+    the response has been sent, the whole stream included.
     """
-    payload = await _request_payload(request)
-    model = payload.get("model") if isinstance(payload, dict) else None
-    model = model if isinstance(model, str) else None
-    canonical = canonical_model_id(model, router=router_exec, embedding_adapters=embedding_adapters)
     user_id = str(user["user_id"])
     role = str(user.get("role") or "free")
+    is_admin = bool(user.get("is_admin", False))
+    # Mirrors ``enforce_user_concurrency``: parse first when there is no slot
+    # to take, or when the exemption resolver needs the model to choose one.
+    parse_before_acquire = limiter is None or concurrency_resolver is not None
+    intake_key: str | None = None
+    if limiter is not None and router_exec is not None and request.method == "POST":
+        intake_key = await _take_intake_slot(request, user, limiter)
+    model: str | None = None
+    canonical: str | None = None
+    try:
+        if parse_before_acquire:
+            model, canonical = await _request_model(
+                request, router=router_exec, embedding_adapters=embedding_adapters
+            )
+    except BaseException:
+        if limiter is not None and intake_key is not None:
+            limiter.release(intake_key)
+        raise
     slot_key = user_id
     if limiter is not None:
-        slot_key, max_concurrent = await _slot_for_canonical(
-            user, model, canonical, concurrency_resolver
-        )
-        granted, limit, _role_label = await limiter.try_acquire(
-            slot_key,
-            role,
-            bool(user.get("is_admin", False)),
-            max_concurrent,
-        )
+        try:
+            slot_key, max_concurrent = await _slot_for_canonical(
+                user, model, canonical, concurrency_resolver
+            )
+            granted, limit, _role_label = await limiter.try_acquire(
+                slot_key,
+                role,
+                is_admin,
+                max_concurrent,
+            )
+        finally:
+            if intake_key is not None:
+                limiter.release(intake_key)
         if not granted:
             raise HTTPException(
                 status_code=429,
@@ -276,8 +282,18 @@ async def _playground_slot(
             )
     reservation: Reservation | None = None
     try:
+        if not parse_before_acquire:
+            model, canonical = await _request_model(
+                request, router=router_exec, embedding_adapters=embedding_adapters
+            )
         reservation = await _reserve_playground_spend(
-            request, user, role, op_store, router_exec, embedding_adapters
+            request,
+            user,
+            role,
+            op_store,
+            router_exec,
+            embedding_adapters,
+            model,
         )
         with _track_interactive_request(canonical) as tracker:
             yield InteractiveAdmission(tracker)
