@@ -101,6 +101,12 @@ class _RaceBufferProgress:
         Returns ``None`` while the accumulated prefix could still be a warmup
         notice. A verdict that admits real work is latched: the race has
         already learned what it needed, and later chunks cannot change it.
+
+        A chunk that carries no generated text at all -- a role delta, a
+        keep-alive -- leaves the verdict undecided, but it is still evidence
+        that the stream produced *something*: the caller needs to tell a
+        content-bearing chunk from a content-free one, and only the caller
+        knows the difference.
         """
         if self._outcome is not None and self._outcome.admits_real_work:
             return self._outcome
@@ -117,6 +123,18 @@ class _RaceBufferProgress:
         outcome = classify_stream_prefix(self._text)
         if outcome is not None and outcome.admits_real_work:
             self._outcome = outcome
+        return self._outcome
+
+    def resolve(self) -> CompletionOutcome:
+        """Return the terminal verdict for everything buffered so far.
+
+        Used when the race resolves the leg without further content: the
+        buffer may hold no model text at all, which is EMPTY -- a stable
+        outcome the race may act on, and explicitly not progress.
+        """
+        if self._outcome is not None:
+            return self._outcome
+        self._outcome = classify_stream_prefix(self._text, terminal=True)
         return self._outcome
 
     def finish(self) -> CompletionOutcome:
@@ -801,16 +819,23 @@ class HedgedAdapter(BaseAdapter):
                         if primary_content:
                             _record_first_content_ttft(self.primary, schedule_start)
                         primary_buffer_bytes += _chunk_buffer_size(chunk)
-                        if primary_content or _stream_race_buffer_cap_reached(
+                        primary_capped = _stream_race_buffer_cap_reached(
                             primary_buffer_bytes,
                             leg="primary",
-                        ):
+                        )
+                        if primary_content or primary_capped:
                             # A warmup notice can be split across chunks, so
                             # the race outcome is decided from the accumulated
                             # prefix rather than a fragment. The accumulator
                             # keeps that prefix incrementally, so the cost of
                             # this decision does not grow with the buffer.
                             primary_outcome = primary_progress.observe(chunk)
+                            if primary_outcome is None and primary_capped:
+                                # The cap ended the race without content, so the
+                                # buffer's verdict is final: EMPTY when it holds
+                                # no model text, which is a stable outcome the
+                                # race may act on and explicitly not progress.
+                                primary_outcome = primary_progress.resolve()
                             if primary_outcome is not None and primary_outcome.admits_real_work:
                                 self.leg_first_content_progress.add(primary_endpoint)
                             primary_has_content = (
@@ -859,12 +884,16 @@ class HedgedAdapter(BaseAdapter):
                         if backup_content:
                             _record_first_content_ttft(self.backup, backup_start)
                         backup_buffer_bytes += _chunk_buffer_size(chunk)
-                        if backup_content or _stream_race_buffer_cap_reached(
+                        backup_capped = _stream_race_buffer_cap_reached(
                             backup_buffer_bytes,
                             leg="backup",
-                        ):
+                        )
+                        if backup_content or backup_capped:
                             # Same accumulated-prefix classification as primary.
                             backup_outcome = backup_progress.observe(chunk)
+                            if backup_outcome is None and backup_capped:
+                                # Same as the primary: the cap resolves the leg.
+                                backup_outcome = backup_progress.resolve()
                             if backup_outcome is not None and backup_outcome.admits_real_work:
                                 self.leg_first_content_progress.add(
                                     backup_endpoint or _endpoint_id_from_adapter(self.backup)
