@@ -291,18 +291,65 @@ async def test_a_stream_holds_one_of_the_callers_slots_until_it_ends() -> None:
     assert third.status_code == 200
 
 
+class _RecordingLimiter(UserConcurrencyLimiter):
+    """Tracks the slots held at any moment, without depending on their keys."""
+
+    def __init__(self) -> None:
+        super().__init__(static_limits_provider({"internal": 8}))
+        self.active: set[str] = set()
+
+    async def try_acquire(
+        self,
+        user_id: str,
+        role: str,
+        is_admin: bool,
+        max_concurrent_requests: int | None = None,
+    ) -> tuple[bool, int, str]:
+        granted, limit, label = await super().try_acquire(
+            user_id, role, is_admin, max_concurrent_requests
+        )
+        if granted:
+            self.active.add(user_id)
+        return granted, limit, label
+
+    def release(self, user_id: str) -> None:
+        self.active.discard(user_id)
+        super().release(user_id)
+
+
 @pytest.mark.asyncio
-async def test_the_chat_body_is_read_while_the_intake_slot_is_held() -> None:
-    """Chat must not decode its body before the admission like the API does."""
+@pytest.mark.parametrize(
+    ("path", "payload"),
+    [
+        (
+            "/internal/playground/chat",
+            {"model": "open-model", "messages": [{"role": "user", "content": "hi"}]},
+        ),
+        (
+            "/internal/playground/responses",
+            {"model": "open-model", "input": [{"role": "user", "content": "hi"}]},
+        ),
+        (
+            "/internal/playground/messages",
+            {
+                "model": "open-model",
+                "max_tokens": 64,
+                "messages": [{"role": "user", "content": "hi"}],
+            },
+        ),
+    ],
+)
+async def test_the_body_is_read_while_the_intake_slot_is_held(
+    path: str, payload: dict[str, Any]
+) -> None:
+    """Every format decodes its body under the admission, as the API does."""
     deployment = _Deployment()
-    limiter = UserConcurrencyLimiter(static_limits_provider({"internal": 8}))
-    held: list[bool] = []
+    limiter = _RecordingLimiter()
+    held: list[int] = []
 
     async def body() -> AsyncIterator[bytes]:
-        held.append("u-internal:intake" in limiter._slots)
-        yield json.dumps(
-            {"model": "open-model", "messages": [{"role": "user", "content": "hi"}]}
-        ).encode()
+        held.append(len(limiter.active))
+        yield json.dumps(payload).encode()
 
     async with _client(
         deployment,
@@ -311,13 +358,27 @@ async def test_the_chat_body_is_read_while_the_intake_slot_is_held() -> None:
         concurrency_resolver=_ConcurrencyResolver(),
     ) as client:
         response = await client.post(
-            "/internal/playground/chat",
+            path,
             content=body(),
             headers={"content-type": "application/json"},
         )
 
     assert response.status_code == 200
-    assert held == [True]
+    assert held == [1]
+
+
+@pytest.mark.asyncio
+async def test_an_over_quota_user_is_refused_before_a_malformed_body_is_validated() -> None:
+    """The quota gate is the API's, and it wins over the schema's 422."""
+    deployment = _Deployment()
+    store = _Store(daily_quota=1.0, spent_today=2.0)
+    async with _client(deployment, INTERNAL, store=store) as client:
+        response = await client.post(
+            "/internal/playground/chat",
+            json={"model": "open-model", "messages": "not-a-list"},
+        )
+
+    assert response.status_code == 429
 
 
 async def _responses(client: AsyncClient, model: str, **extra: Any) -> Any:

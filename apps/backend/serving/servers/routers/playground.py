@@ -233,17 +233,22 @@ async def _playground_slot(
 
     The playground runs on the console session, not an API key, so the API
     surfaces' admission (``servers.concurrency.enforce_user_concurrency``) never
-    reaches it. This buys the same things from the same source: the intake
-    budget while the body is read, the per-model (or exempt) slot, the
-    interactive-load count batch work yields to, and the spend reservation
-    against the session user's quotas. FastAPI tears the dependency down once
-    the response has been sent, the whole stream included.
+    reaches it. This buys the same things from the same source: the per-model
+    (or exempt) slot, the interactive-load count batch work yields to, and the
+    spend reservation against the session user's quotas. The intake budget
+    covers the body read only when the body is parsed first, i.e. when an
+    exemption resolver is configured; without one the slot is acquired first
+    and the body read afterwards, exactly as `enforce_user_concurrency` does.
+    FastAPI tears the dependency down once the response has been sent, the
+    whole stream included.
     """
     user_id = str(user["user_id"])
     role = str(user.get("role") or "free")
     is_admin = bool(user.get("is_admin", False))
     # Mirrors ``enforce_user_concurrency``: parse first when there is no slot
     # to take, or when the exemption resolver needs the model to choose one.
+    # The intake slot is held around that parse only; the acquire-first path
+    # reads the body under the normal slot instead.
     parse_before_acquire = limiter is None or concurrency_resolver is not None
     intake_key: str | None = None
     model: str | None = None
