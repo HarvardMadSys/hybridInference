@@ -1182,6 +1182,8 @@ def _finalize_admin_endpoint_publishability(
     target: ProviderTarget,
     base_url: str,
     endpoint_id: str | None,
+    adapter_kind: str | None = None,
+    registry_minted: bool = True,
 ) -> None:
     """Force non-publishable when the endpoint id is admin-supplied.
 
@@ -1197,10 +1199,88 @@ def _finalize_admin_endpoint_publishability(
     """
     cfg["openrouter_pinned_provider"] = None
     cfg["provider_profile"] = None
-    if endpoint_id is None:
-        return
-    if endpoint_id != _make_provider_id(model_id, target.kind, base_url):
-        cfg["endpoint_identity_publishable"] = False
+    # The disclosure decision is derived here, not merely narrowed: it is a
+    # property of the route's *effective* adapter kind and of the endpoint
+    # identity itself. Deriving it in one place means no later step can widen
+    # it by accident.
+    cfg["endpoint_identity_publishable"] = _admin_endpoint_publishability(
+        model_id=model_id,
+        adapter_kind=adapter_kind if adapter_kind is not None else target.kind,
+        base_url=base_url,
+        endpoint_id=endpoint_id,
+        registry_minted=registry_minted,
+    )
+
+
+def _apply_admin_endpoint_publishability(
+    cfg: dict[str, Any],
+    *,
+    model_id: str,
+    adapter_kind: str,
+    base_url: str,
+    registry_minted: bool = True,
+) -> None:
+    """Set the route's endpoint publishability from its effective adapter kind.
+
+    Applied after every step that may touch the value, so the decision cannot
+    depend on the order those steps run in. The decision itself lives in
+    :func:`_admin_endpoint_publishability`.
+    """
+    cfg["endpoint_identity_publishable"] = _admin_endpoint_publishability(
+        model_id=model_id,
+        adapter_kind=adapter_kind,
+        base_url=base_url,
+        endpoint_id=cfg.get("endpoint_id"),
+        registry_minted=registry_minted,
+    )
+
+
+def _admin_endpoint_publishability(
+    *,
+    model_id: str,
+    adapter_kind: str,
+    base_url: str,
+    endpoint_id: str | None,
+    registry_minted: bool = True,
+) -> bool:
+    """Whether an admin-edited route's endpoint identity may be published.
+
+    One decision, derived from the route's *effective* adapter kind and the
+    endpoint identity itself, never copied from the adapter the route used to
+    have:
+
+    * a generic kind (``openai_compat``, ``vllm``, ``sglang``, ...) mints its
+      endpoint id from whatever host the deployment chose, so it publishes
+      nothing;
+    * a dedicated kind publishes only an endpoint id the registry itself
+      minted for that kind and host -- an admin-supplied ``route_id`` reused
+      as the endpoint id is free text and publishes nothing.
+
+    ``adapter_kind`` is the kind the adapter is actually built from, which is
+    not always the requested target's kind: a route that keeps its registered
+    protocol is rebuilt from its ``registered_kind``. Deriving from the
+    requested kind instead would decide the disclosure of a route the
+    registry built differently.
+
+    ``registry_minted`` says the endpoint id came from the registry for this
+    kind and host. It is what distinguishes a minted id from an
+    administrator-supplied one that happens to look identical: an operator
+    may supply a ``route_id`` that is exactly what the registry would have
+    minted for that kind and host, and the two are indistinguishable as
+    strings. Only the provenance tells them apart, so string equality alone
+    is never taken as proof.
+
+    The kind is what an edit may change, so deriving the decision here (rather
+    than inheriting it) is what keeps a dedicated-kind route's publishability
+    from following it onto a generic kind.
+    """
+    if not _endpoint_identity_publishable(adapter_kind):
+        return False
+    if not endpoint_id:
+        return False
+    if not registry_minted:
+        return False
+    return endpoint_id == _make_provider_id(model_id, adapter_kind, base_url)
 
 
 def _target_provider_from_request(
@@ -1833,6 +1913,16 @@ def _validate_base_url_for_target(target: ProviderTarget, base_url: str) -> None
 # at the same endpoint.
 _UNCLONEABLE_ENDPOINT_FACTS = ("null_cache_details_means_miss", "endpoint_identity_publishable")
 
+#: Facts that describe the endpoint but must not follow a route across an edit
+#: that changes the route's *kind*. ``endpoint_identity_publishable`` is a
+#: decision about the kind (is this endpoint id a public identity, or a
+#: location this deployment must not disclose), and the kind is exactly what
+#: an edit may change: a dedicated-kind route edited onto a generic kind keeps
+#: its endpoint id -- the route still points at the same host -- but must stop
+#: being publishable, because a generic kind's endpoint id is minted from
+#: whatever host the deployment chose.
+_KIND_SCOPED_ENDPOINT_FACTS = ("endpoint_identity_publishable",)
+
 
 def _config_to_dict(config: Any, *, strip_route_capabilities: bool = False) -> dict[str, Any]:
     if is_dataclass(config):
@@ -1911,6 +2001,16 @@ def _carry_endpoint_facts_if_unmoved(
     ``<service>-api`` for a remote provider, so two different hosts on the same
     service share one. A raw base-URL comparison is too fine: it would read a
     re-spelling as a move.
+
+    ``endpoint_identity_publishable`` is deliberately not among the facts this
+    carries. It is a decision about the route's *effective* adapter kind (is
+    this endpoint id a public identity, or a location this deployment must
+    not disclose), and the kind is exactly what an edit may change: a
+    dedicated-kind route edited onto a generic kind keeps its endpoint id --
+    the route still points at the same host -- but must stop being
+    publishable. Carrying the old decision across that edit would publish a
+    generic route's minted endpoint id, which for a self-serve route is
+    derived from whatever host the deployment chose.
     """
     current = getattr(current_adapter, "config", None)
     if current is None:
@@ -1921,6 +2021,16 @@ def _carry_endpoint_facts_if_unmoved(
     if canonical is None or canonical != _canonical_base_url(getattr(current, "base_url", None)):
         return
     for name in _UNCLONEABLE_ENDPOINT_FACTS:
+        if name in _KIND_SCOPED_ENDPOINT_FACTS:
+            # The publishability decision belongs to the route's effective
+            # adapter kind, and the kind is what this edit may have changed.
+            # The caller has already decided it; carrying the old one here
+            # would hand a generic route the dedicated route's "publishable"
+            # and publish an endpoint id minted from the deployment's own
+            # host. The decision is re-asserted after this call as well (see
+            # ``_apply_admin_endpoint_publishability``), so the order of the
+            # two steps cannot matter.
+            continue
         value = getattr(current, name, None)
         if value:
             cfg[name] = value
@@ -2885,6 +2995,10 @@ async def _prepare_route_candidate(
         target=target,
         base_url=cleaned_base_url,
         endpoint_id=cfg.get("endpoint_id"),
+        # A route the administrator named keeps that name as its identity, and
+        # a name is free text: it may spell a host the deployment never
+        # published. Only an id the registry minted carries that provenance.
+        registry_minted=route_id is None,
     )
     await _apply_openrouter_endpoint_pricing(
         cfg,
@@ -3048,6 +3162,10 @@ async def _prepare_model_route_candidate(
         target=target,
         base_url=cleaned_base_url,
         endpoint_id=cfg.get("endpoint_id"),
+        # A route the administrator named keeps that name as its identity, and
+        # a name is free text: it may spell a host the deployment never
+        # published. Only an id the registry minted carries that provenance.
+        registry_minted=route_id is None,
     )
     if route_type == "quota":
         quota_pool = _runtime_quota_pool(model_id, candidate_route_id)
@@ -3251,16 +3369,31 @@ async def _prepare_route_update(
         adapter_kind = target.kind
         cfg["provider"] = _model_config_provider_for_target(target)
         _apply_target_adapter_defaults(cfg, target)
+    # The endpoint id here comes from ``_edited_endpoint_id``: either the id
+    # the adapter already carried, or one the registry mints for this kind and
+    # host. Both are registry provenance -- an edit does not take a free-text
+    # route id as the route's endpoint identity.
     _finalize_admin_endpoint_publishability(
         cfg,
         model_id=model_id,
         target=target,
         base_url=cleaned_base_url,
         endpoint_id=cfg.get("endpoint_id"),
+        adapter_kind=adapter_kind,
     )
     _carry_endpoint_facts_if_unmoved(
         cfg,
         current_adapter=current_adapter,
+        base_url=cleaned_base_url,
+    )
+    # Re-assert the disclosure decision after the fact-carry step: the carry
+    # step restores facts from the adapter the route used to have, and the
+    # publishability among them belongs to that adapter's kind, not this
+    # route's.
+    _apply_admin_endpoint_publishability(
+        cfg,
+        model_id=model_id,
+        adapter_kind=adapter_kind,
         base_url=cleaned_base_url,
     )
     _preserve_route_semantics(
