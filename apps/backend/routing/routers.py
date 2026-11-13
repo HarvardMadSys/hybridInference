@@ -41,6 +41,7 @@ from routing.offload import (
     abandoned_for_offload,
 )
 from routing.prefill_load import (
+    LOCALITY_ENABLED,
     PrefillLease,
     PrefillLoadTracker,
     _env_int,
@@ -899,6 +900,20 @@ def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None
     )
 
 
+def _locality_could_act(router: FixedRouter, model_id: str) -> bool:
+    """Return whether prefix locality could move a request for this model.
+
+    Locality refines a choice between comparable candidates, so it needs at
+    least two of them. A route with one endpoint has nothing to choose
+    between, and its request never needs the prompt anchor that locality
+    reads -- so it does not pay for computing one.
+    """
+    route = router.routes.get(model_id)
+    if route is None:
+        return False
+    return len(route.adapters) > 1
+
+
 def _schedules_by_priority(adapter: BaseAdapter) -> bool:
     """Return whether ``adapter`` sends the scheduling priority this router publishes.
 
@@ -915,20 +930,30 @@ class _PromptAnchor:
     """One request's prompt anchor, computed the first time an attempt needs it.
 
     The anchor is stored with the prefix hint so that a later turn can prove it
-    contains this prompt, and the only reader of that proof is the priority of
-    a dispatch to the same endpoint (``FixedRouter._dispatch_priority``). It
-    costs a pass over the whole prompt -- about 10 ms for a 3 MB history -- so a
-    request whose attempts reach no priority-scheduling endpoint never computes
-    it, and its hints carry none: the strict check then refuses to discount
-    against them, the direction that forgoes a discount rather than grants one.
+    contains this prompt. Two things read that proof: the priority of a
+    dispatch to the same endpoint (``FixedRouter._dispatch_priority``), and
+    prefix locality, which follows the prompt only when it still contains the
+    remembered one. It costs a pass over the whole prompt -- about 10 ms for a
+    3 MB history -- so a request whose attempts reach no priority-scheduling
+    endpoint and whose locality is off never computes it, and its hints carry
+    none: the strict check then refuses to discount against them, the
+    direction that forgoes a discount rather than grants one.
     """
 
-    __slots__ = ("_anchor", "_computed", "_messages")
+    __slots__ = ("_anchor", "_computed", "_messages", "_needed")
 
-    def __init__(self, messages: Sequence[dict[str, Any]] | None) -> None:
+    def __init__(
+        self,
+        messages: Sequence[dict[str, Any]] | None,
+        *,
+        needed: bool = False,
+    ) -> None:
         self._messages = messages
         self._anchor: tuple[int, str] | None = None
         self._computed = False
+        #: Whether some candidate reads the anchor for prefix locality, which
+        #: needs it on every endpoint rather than only the priority ones.
+        self._needed = needed
 
     def for_endpoint(self, adapter: BaseAdapter) -> tuple[int, str] | None:
         """Return the anchor to store with a lease on ``adapter``'s endpoint, or None.
@@ -937,7 +962,11 @@ class _PromptAnchor:
         prefill lease that only its ``try`` returns. A prompt that cannot be
         anchored is stored without one, which forgoes the discount.
         """
-        if not _schedules_by_priority(adapter):
+        if not (self._needed or _schedules_by_priority(adapter)):
+            # The anchor is work only where somebody reads it: an endpoint
+            # that schedules by priority computes it to price that priority,
+            # and an endpoint under prefix locality computes it to prove the
+            # prompt still contains the remembered one.
             return None
         if not self._computed:
             self._computed = True
@@ -2077,6 +2106,8 @@ class FixedRouter:
         preferred_endpoint_id: str | None = None,
         endpoint_scope: frozenset[str] | None = None,
         use_affinity: bool = True,
+        fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> BaseAdapter | None:
         """Return the adapter automatic routing would choose, without dispatching.
 
@@ -2098,6 +2129,12 @@ class FixedRouter:
             endpoint_scope: Candidate range, as for a dispatch.
             use_affinity: Whether the caller's affinity pin is followed and
                 updated (``RoutingRequestOptions.affinity``).
+            fingerprint: Conversation identity, without which locality is skipped
+                (see :meth:`PrefillLoadTracker.select_index`). A caller that
+                selects here and dispatches later must pass it, or the draw it
+                gets is the cache-blind one.
+            messages: This request's messages, so locality can also require that
+                the prompt still contains the remembered one.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -2109,6 +2146,8 @@ class FixedRouter:
             preferred_endpoint_id=preferred_endpoint_id,
             endpoint_scope=endpoint_scope,
             use_affinity=use_affinity,
+            fingerprint=fingerprint,
+            messages=messages,
         )
 
     def preferred_endpoint_for_provider(
@@ -2175,6 +2214,7 @@ class FixedRouter:
         require_target: bool = False,
         fingerprint: str | None = None,
         use_affinity: bool = True,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -2211,6 +2251,11 @@ class FixedRouter:
             use_affinity: Whether the caller's affinity pin is followed and
                 updated (``RoutingRequestOptions.affinity``). ``False`` leaves the
                 pin untouched; the prefill-aware draw still knows the caller.
+            fingerprint: Conversation identity, forwarded to locality selection.
+                Without it the draw keeps its full authority -- see
+                :meth:`PrefillLoadTracker.select_index`.
+            messages: This request's messages, so locality can also require that
+                the prompt still contains the remembered one.
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -2383,6 +2428,7 @@ class FixedRouter:
                         affinity_key=affinity_key,
                         avoid_endpoint_id=None,
                         fingerprint=fingerprint,
+                        messages=messages,
                     ),
                     pin_key,
                 )
@@ -2401,6 +2447,7 @@ class FixedRouter:
             affinity_key=affinity_key,
             avoid_endpoint_id=avoid_endpoint_id,
             fingerprint=fingerprint,
+            messages=messages,
         )
         return self._record_affinity_and_return(model_id, chosen, pin_key)
 
@@ -2431,6 +2478,7 @@ class FixedRouter:
         affinity_key: str | None,
         avoid_endpoint_id: str | None,
         fingerprint: str | None = None,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> BaseAdapter:
         """Draw one adapter from ``allowed`` by weight, prefill-aware.
 
@@ -2461,7 +2509,8 @@ class FixedRouter:
                 random.random,
                 affinity_key,
                 avoid_endpoint_id,
-                fingerprint=fingerprint,
+                fingerprint,
+                messages,
             )
         except Exception:
             logger.error(
@@ -2499,6 +2548,7 @@ class FixedRouter:
         require_target: bool = False,
         fingerprint: str | None = None,
         use_affinity: bool = True,
+        messages: Sequence[dict[str, Any]] | None = None,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -2567,6 +2617,7 @@ class FixedRouter:
                 require_target=require_target,
                 fingerprint=fingerprint,
                 use_affinity=use_affinity,
+                messages=messages,
             )
             if preferred is not None:
                 preferred_endpoint = endpoint_id_for_adapter(preferred)
@@ -2594,6 +2645,7 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
                 fingerprint=fingerprint,
                 use_affinity=use_affinity,
+                messages=messages,
             )
             if adapter is None:
                 return None, None
@@ -2695,16 +2747,20 @@ class FixedRouter:
         actual prefill -- as an elephant and have the upstream schedule it last
         and preempt it, which is the opposite of what its cost deserves.
 
-        Priority does NOT agree with routing by construction. ``uncached_estimate``
-        is read at three strictnesses, deliberately: this method passes
-        ``fingerprint`` *and* ``messages``, so a fork that shares only the
-        opening fails the anchor check; the elephant verdict -- ``acquire``'s
-        count and the ``select_index`` gate that has to predict it -- passes
-        ``fingerprint`` alone, enough to keep one caller's unrelated
-        conversations from inheriting each other's prefix on admission; the load
-        ``acquire`` charges passes neither, because a mis-estimated *load* skews
-        one draw and self-corrects. So priority and the elephant count can still
-        disagree about a fork or a retry.
+        Priority does NOT agree with routing by construction. Three callers read
+        ``uncached_estimate`` at three strictnesses, deliberately: this method
+        passes ``fingerprint`` *and* ``messages``, so a fork that shares only the
+        opening fails the anchor check; ``acquire`` passes ``fingerprint`` alone,
+        enough to keep one caller's unrelated conversations from inheriting each
+        other's prefix on the admission gate. Selection splits by purpose: its
+        load and elephant numbers use the loose caller-scoped discount, because
+        a mis-estimated *load* skews one draw and self-corrects, while a
+        *locality* verdict uses the same strict pair as this method -- it moves
+        the request and then records affinity, so an error persists. Without a
+        fingerprint, selection skips locality entirely rather than trust the
+        caller-scoped hint. So priority and the elephant count can still disagree
+        about a fork or a retry, and selection is the most conservative of the
+        three.
 
         Per endpoint, because the discount is: a prefix resident on the replica
         the caller has been talking to is not resident on a fallback that has
@@ -2771,8 +2827,12 @@ class FixedRouter:
             response_format=params.get("response_format"),
         )
         # Proof, for the next turn, that it really contains this prompt -- for
-        # the attempts whose endpoint reads it (see _PromptAnchor).
-        anchors = _PromptAnchor(messages)
+        # the attempts whose endpoint reads it (see _PromptAnchor). Prefix
+        # locality reads it on every endpoint, so it is computed whenever
+        # locality is on.
+        anchors = _PromptAnchor(
+            messages, needed=LOCALITY_ENABLED and _locality_could_act(self, model_id)
+        )
         primary = None
         primary_claim = None
         lease = None
@@ -2788,6 +2848,7 @@ class FixedRouter:
                     require_target=require_target,
                     fingerprint=fingerprint,
                     use_affinity=use_affinity,
+                    messages=messages,
                 )
                 if primary is not None:
                     lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
@@ -3101,8 +3162,12 @@ class FixedRouter:
             response_format=params.get("response_format"),
         )
         # Proof, for the next turn, that it really contains this prompt -- for
-        # the attempts whose endpoint reads it (see _PromptAnchor).
-        anchors = _PromptAnchor(messages)
+        # the attempts whose endpoint reads it (see _PromptAnchor). Prefix
+        # locality reads it on every endpoint, so it is computed whenever
+        # locality is on.
+        anchors = _PromptAnchor(
+            messages, needed=LOCALITY_ENABLED and _locality_could_act(self, model_id)
+        )
         primary = None
         primary_claim = None
         lease = None
@@ -3118,6 +3183,7 @@ class FixedRouter:
                     require_target=require_target,
                     fingerprint=fingerprint,
                     use_affinity=use_affinity,
+                    messages=messages,
                 )
                 if primary is not None:
                     lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)

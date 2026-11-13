@@ -23,7 +23,7 @@ from routing.hybrid import HybridRouter
 from routing.model_router_registry import ModelRouterRegistry
 from routing.offload import OffloadPolicy
 from routing.policies import FixedPolicy
-from routing.prefill_load import PrefillLoadTracker
+from routing.prefill_load import PrefillLoadTracker, conversation_fingerprint, prompt_anchor
 from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, FixedRouter
 from serving.adapters.base import BaseAdapter, DeploymentType, ModelConfig
@@ -372,6 +372,53 @@ def test_policy_splits_global_weights_between_local_and_cloud() -> None:
         expected = _LOCAL_ENDPOINT if decision.backend == "local" else _CLOUD_ENDPOINT
         assert decision.target is not None
         assert decision.target.endpoint_id == expected
+
+
+@pytest.mark.unit
+def test_policy_carries_the_conversation_into_locality_selection(monkeypatch) -> None:
+    """The global draw must know which conversation it is routing.
+
+    ``FixedPolicy`` makes the composition's first draw and decides the target the
+    backend then honours, so leaving the fingerprint out here would keep the one
+    cache-blind decision in the path: the policy would split a warm conversation
+    away from the endpoint holding its prefix while the execution layer's own
+    selection had the evidence to keep it.
+    """
+    from serving.utils import context as req_ctx
+
+    local = _adapter(_LOCAL_ENDPOINT, provider="local", base_url=_LOCAL_URL)
+    remote = _adapter(_CLOUD_ENDPOINT, provider="zai", base_url="https://api.zai.example/v1")
+    shared = FixedRouter()
+    shared.register_route(_MODEL_ID, [(local, 0.5), (remote, 0.5)])
+    policy = FixedPolicy(
+        compute=shared,
+        local_scope={_LOCAL_ENDPOINT},
+        cloud_scope={_CLOUD_ENDPOINT},
+    )
+
+    messages = [{"role": "user", "content": "k" * 40_000}]
+    tracker = shared.prefill_load
+    tracker.release(
+        tracker.acquire(
+            _CLOUD_ENDPOINT,
+            5_000,
+            affinity_key="u1",
+            fingerprint=conversation_fingerprint(messages),
+            anchor=prompt_anchor(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+    # Both draws land on the local candidate; only the resident prefix on the
+    # cloud endpoint argues for the other one.
+    monkeypatch.setattr("routing.routers.random.random", lambda: 0.0)
+
+    with req_ctx.push(affinity_key="u1"):
+        decision = policy.select_backend(_MODEL_ID, messages)
+
+    assert decision.backend == "cloud"
+    assert decision.target is not None
+    assert decision.target.endpoint_id == _CLOUD_ENDPOINT
 
 
 @pytest.mark.unit

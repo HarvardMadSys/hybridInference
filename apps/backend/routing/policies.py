@@ -33,7 +33,7 @@ from typing import TYPE_CHECKING, Any
 
 from routing.decisions import FallbackAttempt, RoutingDecision, RoutingTarget
 from routing.endpoints import endpoint_id_for_adapter
-from routing.prefill_load import estimate_prefill_tokens
+from routing.prefill_load import conversation_fingerprint, estimate_prefill_tokens
 from routing.routers import adapter_supports_modalities
 
 if TYPE_CHECKING:
@@ -156,6 +156,16 @@ class FixedPolicy:
                 tools=params.get("tools"),
                 response_format=params.get("response_format"),
             ),
+            # The same conversation identity the execution path will compute,
+            # from the same inputs, so the global draw can prefer the endpoint
+            # holding this conversation's prefix. Without it selection stays
+            # cache-blind and this policy's split is the whole decision.
+            fingerprint=conversation_fingerprint(
+                messages,
+                tools=params.get("tools"),
+                response_format=params.get("response_format"),
+            ),
+            messages=messages,
             endpoint_scope=options.endpoint_scope if options is not None else None,
             use_affinity=options.affinity if options is not None else True,
         )
