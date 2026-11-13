@@ -25,7 +25,11 @@ from httpx import ASGITransport, AsyncClient
 from routing.routers import FixedRouter
 from serving import quota
 from serving.adapters.base import BaseAdapter, ModelConfig
-from serving.servers.concurrency import UserConcurrencyLimiter, static_limits_provider
+from serving.servers.concurrency import (
+    UserConcurrencyLimiter,
+    _intake_slot_key,
+    static_limits_provider,
+)
 from serving.servers.deps import AppServices, get_current_user
 from serving.servers.routers import playground
 from serving.spend_ledger import ledger_for
@@ -345,10 +349,10 @@ async def test_the_body_is_read_while_the_intake_slot_is_held(
     """Every format decodes its body under the admission, as the API does."""
     deployment = _Deployment()
     limiter = _RecordingLimiter()
-    held: list[int] = []
+    held: list[set[str]] = []
 
     async def body() -> AsyncIterator[bytes]:
-        held.append(len(limiter.active))
+        held.append(set(limiter.active))
         yield json.dumps(payload).encode()
 
     async with _client(
@@ -364,7 +368,7 @@ async def test_the_body_is_read_while_the_intake_slot_is_held(
         )
 
     assert response.status_code == 200
-    assert held == [1]
+    assert held == [{_intake_slot_key("u-internal")}]
 
 
 @pytest.mark.asyncio
