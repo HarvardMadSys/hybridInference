@@ -7,6 +7,7 @@ so the session the callback issues is one ``/auth/refresh`` really accepts.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
@@ -443,6 +444,39 @@ async def test_a_token_that_does_not_validate_is_a_failed_sign_in(browser, idp, 
 
     assert _location(response) == ("/login", {"sso_error": ["failed"]})
     assert await store.get_user_by_email(EMAIL) is None
+
+
+async def test_the_gateways_log_keeps_none_of_a_sign_ins_secrets(browser, idp, sso, caplog):
+    """One sign-in that succeeds and one that fails: the log names the provider only."""
+    sso.configure(auto_create=True, require_approval=False)
+    caplog.set_level(logging.DEBUG)
+
+    succeeded = await _start(browser)
+    assert _location(await _answer(browser, idp, succeeded))[1]["sso"] == ["complete"]
+    accepted_token = idp.id_token
+    failed = await _start(browser)
+    refused = await _answer(browser, idp, {**failed, "nonce": ["another-flow"]})
+    assert _location(refused)[1]["sso_error"] == ["failed"]
+
+    exchanges = [
+        parse_qs(request.content.decode())
+        for request in idp.requests
+        if request.url.path.endswith("/token")
+    ]
+    assert len(exchanges) == 2
+    secrets = {"code-1", "at-1", "test-client-secret", accepted_token, idp.id_token}
+    secrets |= {exchange["code_verifier"][0] for exchange in exchanges}
+    for flow in (succeeded, failed):
+        secrets |= {flow["state"][0], flow["nonce"][0], flow["code_challenge"][0]}
+    # The gateway's own lines; the test's browser logs the addresses it requests.
+    logged = "\n".join(
+        caplog.handler.format(record)
+        for record in caplog.records
+        if record.name.startswith("serving")
+    )
+    assert "single sign-on" in logged.lower() and "example-univ" in logged
+    for secret in secrets:
+        assert secret not in logged
 
 
 async def test_a_return_address_outside_the_console_is_replaced(browser, idp, sso):

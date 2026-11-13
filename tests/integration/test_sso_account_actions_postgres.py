@@ -122,6 +122,25 @@ async def test_a_confirmation_is_for_one_action_and_is_spent_by_it(
     assert me["has_password"] is True and me["sso_reauth_provider"] is None
 
 
+async def test_a_confirmation_outlives_the_page_reload_that_brings_the_browser_back(
+    browser, idp, store, members_sign_straight_in
+):
+    """The console is a new document after the round trip, and gets a new token."""
+    headers = await _sso_session(browser, idp)
+    await _reauth(browser, idp, headers, "set_password")
+
+    # What the reloaded page does first: a new access token for the same session.
+    refreshed = await browser.post("/auth/refresh")
+    assert refreshed.status_code == 200, refreshed.text
+    reloaded = {"Authorization": f"Bearer {refreshed.json()['access_token']}"}
+
+    confirmed = await browser.post(
+        "/user/change-password", json={"new_password": NEW_PASSWORD}, headers=reloaded
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert (await store.get_user_by_email(EMAIL))["password_hash"] is not None
+
+
 async def test_a_confirmation_belongs_to_the_session_that_made_it(
     app, browser, idp, store, members_sign_straight_in
 ):
