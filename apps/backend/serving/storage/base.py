@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, Literal, NamedTuple
 
 if TYPE_CHECKING:
@@ -62,6 +63,38 @@ USER_PREFERENCES_MAX_BYTES = 16 * 1024
 Their saved prober layout, the largest entry, comes to a few KiB even listing
 every model of a deployment of dozens; the language choice is under 100 bytes.
 """
+
+
+class HardDeleteClaimProvenance(StrEnum):
+    """How the current operation obtained its hard-delete claim."""
+
+    NEW = "new"
+    RECOVERED = "recovered"
+
+
+class HardDeleteRecoveryMode(StrEnum):
+    """Server-verified basis for taking over a stale hard-delete claim."""
+
+    PRE_FENCE_OPERATOR = "pre_fence_operator"
+    POST_FENCE = "post_fence"
+
+
+@dataclass(frozen=True)
+class HardDeleteClaim:
+    """A claim token plus the provenance that governs its cleanup.
+
+    A *new* claim may be released after a pre-fence failure. A *recovered*
+    one may not: the worker it was taken from may still be unwinding, so
+    clearing the marker would let it (or a third caller) re-enter.
+    """
+
+    token: str
+    provenance: HardDeleteClaimProvenance
+
+    @property
+    def newly_acquired(self) -> bool:
+        """Whether this request owns a fresh, releasable pre-fence claim."""
+        return self.provenance is HardDeleteClaimProvenance.NEW
 
 
 class CostIncrement(NamedTuple):
@@ -317,16 +350,24 @@ class OperationalStore(ABC):
     async def update_user_fields(
         self,
         user_id: str,
+        *,
+        expected_status: str | None = None,
         **fields: Any,
     ) -> None:
         """Update one or more columns on the users table for *user_id*.
 
         Accepted keyword arguments map directly to column names, e.g.
         ``update_user_fields(uid, role="admin", status="active")``.
+        When ``expected_status`` is given the update must be atomic with the
+        status comparison (row lock / compare-and-swap) and raise
+        ``HardDeleteStateChanged`` without writing if the status moved; a
+        pending hard-delete claim must also fail closed.
         """
 
     @abstractmethod
-    async def suspend_user(self, user_id: str, **fields: Any) -> None:
+    async def suspend_user(
+        self, user_id: str, *, expected_status: str | None = None, **fields: Any
+    ) -> None:
         """Suspend *user_id*: status, *fields*, keys and sessions in one transaction.
 
         Sets ``status='suspended'`` together with any other users-table
@@ -335,6 +376,9 @@ class OperationalStore(ABC):
         suspension that committed its status but not the revocations could not
         be retried (suspended -> suspended is not a transition) and would leave
         the old sessions to come back on resume.
+        ``expected_status``, when given, is compared atomically under the row
+        lock; a mismatch or a pending hard-delete claim raises
+        ``HardDeleteStateChanged`` without writing.
         """
 
     @abstractmethod
@@ -367,15 +411,37 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def begin_hard_delete_user(self, user_id: str) -> str:
+    async def begin_hard_delete_user(
+        self,
+        user_id: str,
+        *,
+        recovery_mode: HardDeleteRecoveryMode | None = None,
+    ) -> HardDeleteClaim:
         """Atomically claim a soft-deleted user for hard deletion.
 
         The durable operational-store marker serializes hard-delete with
-        resume even when the LogStore uses a different database. Repeating
-        the claim for an already-pending deleted user takes ownership with a
-        fresh opaque token so a retry after a process failure can finish the
-        purge without allowing an older attempt to release or complete it.
-        The returned token must be supplied to release or finish the claim.
+        resume even when the LogStore uses a different database.
+
+        A pending claim belongs exclusively to the worker that made it: while
+        it is live, a second caller is refused rather than allowed to share
+        the token. A claim whose lease has passed the recovery grace period
+        may be taken over only by an explicit *recovery_mode* (the server has
+        verified a durable erasure fence or an operator attested that prior
+        workers are stopped); the takeover replaces the token atomically, so
+        two concurrent recovery callers cannot both proceed. A recovered
+        claim's provenance forbids releasing it after a pre-fence failure.
+
+        The returned claim token must be supplied to release or finish the
+        claim.
+        """
+
+    @abstractmethod
+    async def renew_hard_delete_user_claim(self, user_id: str, claim_token: str) -> None:
+        """Extend the claim lease, failing closed if superseded.
+
+        Must update the lease timestamp only while the account remains
+        soft-deleted and claimed by ``claim_token``; otherwise raise
+        ``HardDeleteStateChanged``.
         """
 
     @abstractmethod
@@ -398,12 +464,19 @@ class OperationalStore(ABC):
         admin_id: str | None = None,
         reason: str | None = None,
         email: str | None = None,
+        recover_stale_claim: bool = False,
         actor: AuditActor | None = None,
     ) -> None:
         """Resume a soft-deleted user: set status='active' and audit it as *actor*.
 
         API keys remain ``revoked`` — the user must re-create one through
         the normal flow.  All mutations and the audit-log insert are atomic.
+
+        A live hard-delete claim refuses the resume. When the claim's lease
+        has passed the recovery grace period the store raises
+        ``HardDeleteRecoveryAvailable`` unless *recover_stale_claim* is set,
+        in which case it rechecks the lease and clears the claim in the same
+        transaction as the status change.
         """
 
     @abstractmethod
@@ -520,8 +593,14 @@ class OperationalStore(ABC):
         *,
         admin_id: str,
         note: str | None = None,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='active', record reviewer and note."""
+        """Set status='active', record reviewer and note.
+
+        Must compare ``expected_status`` atomically under the row lock and
+        raise ``HardDeleteStateChanged`` without writing on a mismatch or a
+        pending hard-delete claim.
+        """
 
     @abstractmethod
     async def reject_user(
@@ -530,8 +609,12 @@ class OperationalStore(ABC):
         *,
         admin_id: str,
         reason: str,
+        expected_status: str | None = "pending_approval",
     ) -> None:
-        """Set status='rejected', record reviewer and reason."""
+        """Set status='rejected', record reviewer and reason.
+
+        Same atomic ``expected_status`` / pending-claim guard as approve_user.
+        """
 
     @abstractmethod
     async def get_user_counts_by_status(self) -> dict[str, int]:

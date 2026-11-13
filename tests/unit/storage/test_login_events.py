@@ -185,7 +185,7 @@ async def test_hard_delete_user_sweeps_login_events(store: PostgresOperationalSt
         user_agent=None,
     )
 
-    claim_token = await store.begin_hard_delete_user("doomed")
+    claim_token = (await store.begin_hard_delete_user("doomed")).token
     counts = await store.hard_delete_user(
         "doomed",
         claim_token=claim_token,
