@@ -332,7 +332,9 @@ async def test_postgres_key_entitlement_controls_real_chat_response_headers(
     chat_app.state.services.operational_store = store
     chat_app.state.services.log_store = log_store
     chat_app.state.services.db_logger = db_logger
-    adapter = chat_app.state.services.router.routes[CHAT_MODEL].adapters[0][0]
+    from serving.servers.routers import admin as admin_router
+
+    chat_app.include_router(admin_router.router)
     client = AsyncClient(transport=ASGITransport(app=chat_app), base_url="http://test")
 
     async def insert_key(metadata):
@@ -383,8 +385,82 @@ async def test_postgres_key_entitlement_controls_real_chat_response_headers(
         assert streamed.status_code == 200
         assert streamed.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
 
-        adapter.config.endpoint_id = f"{_PRIVATE_MODEL_LABEL}:{_PRIVATE_ROUTE_LABEL}"
-        adapter.config.endpoint_identity_publishable = False
+        # Exercise the real admin route update and PostgreSQL persistence. The
+        # fake DNS answer keeps URL validation deterministic while retaining a
+        # private-looking hostname in the endpoint being edited.
+        from serving.adapters import OpenAICompatAdapter
+        from serving.servers.routers.admin import provider_routes
+
+        target_name = "test-openai-compat"
+        monkeypatch.setitem(
+            provider_routes.PROVIDER_TARGETS,
+            target_name,
+            provider_routes.ProviderTarget(
+                provider=target_name,
+                label="Test OpenAI compatible",
+                kind="openai_compat",
+                key_provider=target_name,
+                default_base_url="https://example.test/v1",
+            ),
+        )
+        monkeypatch.setattr(
+            provider_routes.socket,
+            "getaddrinfo",
+            lambda *_args, **_kwargs: [
+                (2, 1, 6, "", ("8.8.8.8", 8000)),
+            ],
+        )
+
+        async def skip_upstream_verification(*_args):
+            return None
+
+        async def test_provider_key(*_args):
+            return ["test-provider-key"]
+
+        monkeypatch.setattr(provider_routes, "_verify_provider_route", skip_upstream_verification)
+        monkeypatch.setattr(
+            provider_routes,
+            "_active_env_keys_for_provider",
+            test_provider_key,
+        )
+
+        async def fake_chat_completion(self, messages, **params):
+            response = self.format_response(content="Edited response", model=self.config.id)
+            response["_routing"] = {
+                "provider": self.config.provider,
+                "endpoint_id": self.config.endpoint_id,
+                "base_url": self.config.base_url,
+            }
+            return response
+
+        async def fake_stream_chat_completion(self, messages, **params):
+            yield self.format_stream_chunk(model=self.config.id, content="Edited ")
+            yield make_final_usage_chunk(
+                model=self.config.id, messages=messages, total_content="Edited response"
+            )
+            yield done_sentinel()
+
+        monkeypatch.setattr(OpenAICompatAdapter, "chat_completion", fake_chat_completion)
+        monkeypatch.setattr(
+            OpenAICompatAdapter, "stream_chat_completion", fake_stream_chat_completion
+        )
+        edit = await client.put(
+            f"/admin/routing/provider-routes/{CHAT_MODEL}/{CHAT_MODEL}:zai-api",
+            json={
+                "upstream_provider": target_name,
+                "base_url": "http://gpu7-api.local:8000/v1",
+                "provider_model_id": "test/model",
+            },
+            headers={"authorization": "Bearer test-admin-token"},
+        )
+        assert edit.status_code == 200, edit.text
+        persisted = await store.list_provider_route_configs_for_model(CHAT_MODEL)
+        assert len(persisted) == 1
+        assert persisted[0]["provider"] == target_name
+        adapter = chat_app.state.services.router.routes[CHAT_MODEL].adapters[0][0]
+        assert adapter.config.base_url == "http://gpu7-api.local:8000/v1"
+        assert adapter.config.endpoint_identity_publishable is False
+
         private = await client.post(
             "/v1/chat/completions",
             json=request,
