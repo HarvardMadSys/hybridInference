@@ -11,12 +11,20 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from routing.engine_wait import FirstTokenWatch
-from routing.offload import OFFLOAD_ENGINE_WAIT, OFFLOAD_QUEUE_WAIT, OffloadPolicy
+from routing.offload import (
+    OFFLOAD_ENGINE_WAIT,
+    OFFLOAD_MAX_WAIT_SECONDS,
+    OFFLOAD_QUEUE_WAIT,
+    OffloadPolicy,
+)
+from routing.prefill_load import conversation_fingerprint, prompt_anchor
 from routing.protocols import RoutingRequestOptions
 from routing.routers import FixedRouter
 from serving.adapters.base import BaseAdapter, ModelConfig
@@ -35,6 +43,11 @@ if TYPE_CHECKING:
 MODEL = "m"
 MESSAGES = [{"role": "user", "content": "hi"}]
 KEY = "shared-key"
+
+#: The first-token wait is enforced with ``asyncio.timeout`` (Python 3.11+).
+needs_timeout = pytest.mark.skipif(
+    not hasattr(asyncio, "timeout"), reason="the first-token wait needs asyncio.timeout"
+)
 
 
 class _Engine(BaseAdapter):
@@ -156,6 +169,18 @@ def _limiter():
 
 
 @pytest.fixture(autouse=True)
+def _extension_on(monkeypatch):
+    """Turn the engine-wait extension on: it is what this module tests.
+
+    The extension ships dark -- it is off until an operator has staging
+    evidence for it -- so the module turns it on explicitly.
+    """
+    from routing import offload
+
+    monkeypatch.setattr(offload, "OFFLOAD_ENGINE_WAIT_EXTENSION", True)
+
+
+@pytest.fixture(autouse=True)
 def _first_draw_wins(monkeypatch):
     """Make the weighted draw pick the first candidate, so the primary is known."""
     monkeypatch.setattr("random.random", lambda: 0.0)
@@ -249,6 +274,73 @@ async def test_only_streaming_attempts_on_other_routes_are_watched():
     # took the stream had nowhere left to go.
     assert non_stream_watch is None
     assert reserved.watches == [None]
+
+
+# ------------------------------------------- the wait the prompt actually needs
+
+
+def _big_prompt(tokens: int) -> list[dict[str, Any]]:
+    """A prompt that estimates to about *tokens* (the estimator is four bytes a token)."""
+    return [{"role": "user", "content": "x" * (tokens * 4)}]
+
+
+@needs_timeout
+async def test_a_cold_prefill_longer_than_the_base_wait_is_not_cancelled_mid_prefill():
+    """A long cold prefill is given the time its own un-cached work needs.
+
+    The engine needs longer than the base wait to produce a first token -- what a
+    cold prefill of a long prompt costs -- but well inside the budget that
+    prompt's un-cached estimate earns. A flat deadline cancelled the attempt at
+    the base wait, which aborts the request at the engine, discards the prefill
+    it had already done, and re-sends the prompt cold to the offload route.
+    """
+    engine = _Engine("engine", answered=True, delay=0.3)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _big_prompt(24_576)))
+
+    assert _content(chunks) == "engine"
+    assert reserved.calls == 0
+    assert engine.cancelled == 0
+    (watch,) = engine.watches
+    assert isinstance(watch, FirstTokenWatch)
+    assert watch.wait_seconds > policy.wait_seconds
+
+
+@needs_timeout
+async def test_a_short_prompt_still_offloads_at_the_base_wait():
+    """The correction must not hold a short request for a prefill it does not have."""
+    engine = _Engine("engine", answered=True, delay=0.3)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, MESSAGES))
+
+    assert _content(chunks) == "reserved"
+    assert engine.cancelled == 1
+    (watch,) = engine.watches
+    assert watch.wait_seconds == pytest.approx(policy.wait_seconds)
+
+
+@needs_timeout
+async def test_a_fallback_stream_is_watched_under_its_own_budget():
+    """The fallback call site scales the wait too, not just the primary's."""
+    first = _Engine("first", fail_with=RuntimeError("503"))
+    second = _Engine("second", answered=True, delay=0.3)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(first, 1.0), (second, 1.0), (reserved, 1.0)], policy)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _big_prompt(24_576)))
+
+    assert _content(chunks) == "second"
+    assert reserved.calls == 0
+    (watch,) = second.watches
+    assert isinstance(watch, FirstTokenWatch)
+    assert watch.wait_seconds > policy.wait_seconds
 
 
 # ---------------------------------------------------- one decision per request
@@ -468,6 +560,162 @@ async def test_a_client_that_hangs_up_while_waiting_is_not_offloaded():
     assert reserved.calls == 0
 
 
+# ------------------------------------- evidence: warm, stale, and unrelated hints
+#
+# The wait is sized on the *un-cached* prefill, so it inherits that estimate's
+# evidence problem. ``affinity_key`` is the API-key hash and the hint table keeps
+# one prefix per (key, endpoint): a sibling conversation's hint reads as "warm"
+# for a prompt this engine has never seen. Here the failure direction is the
+# opposite of selection's -- a too-short wait cancels a cold prefill -- so the
+# wait requires the conversation fingerprint and charges a request it cannot
+# identify in full.
+
+
+def _prompt(tokens: int, fill: str = "x") -> list[dict[str, Any]]:
+    return [{"role": "user", "content": fill * (tokens * 4)}]
+
+
+def _remember(router: FixedRouter, endpoint_id: str, tokens: int) -> None:
+    """Record a completed prefill of a ``tokens``-sized prompt on ``endpoint_id``."""
+    messages = _prompt(tokens)
+    tracker = router.prefill_load
+    tracker.release(
+        tracker.acquire(
+            endpoint_id,
+            tokens,
+            affinity_key="u1",
+            fingerprint=conversation_fingerprint(messages),
+            anchor=prompt_anchor(messages),
+        ),
+        prefill_confirmed=True,
+    )
+
+
+@needs_timeout
+async def test_a_warm_continuation_keeps_the_base_wait():
+    """A real cache hit prefills its delta, so it is sized on the delta.
+
+    The 576-token growth earns only a small addition to the base wait, and the
+    engine answers well inside it. Sizing on the total prompt would hold the
+    request for a prefill the cache has already done. The delay is deliberately
+    below but not adjacent to that deadline: this test also guards regressions
+    under parallel CI, where a 50 ms margin was observed to flake.
+    """
+    engine = _Engine("engine", answered=True, delay=0.25)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+    _remember(router, "m:engine-api", 24_000)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _prompt(24_576)))
+
+    assert _content(chunks) == "engine"
+    assert engine.cancelled == 0
+    (watch,) = engine.watches
+    assert watch.wait_seconds == pytest.approx(policy.engine_wait_seconds(576))
+    assert watch.wait_seconds < policy.engine_wait_seconds(24_576) / 3
+    assert watch.base_wait_seconds == policy.wait_seconds
+    assert watch.uncached_prefill_tokens == 576
+
+
+@needs_timeout
+async def test_a_stale_hint_does_not_shorten_the_wait():
+    """A restart empties the cache but not the hint table; forgetting restores it.
+
+    ``forget_endpoint`` is what an endpoint failure calls. After it the request
+    is a cold prefill of the whole prompt again, and the wait it is given is the
+    one that prefill needs -- otherwise a restart would reintroduce the
+    premature cancellation the correction exists to remove.
+    """
+    engine = _Engine("engine", answered=True, delay=0.3)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+    _remember(router, "m:engine-api", 24_000)
+    router.prefill_load.forget_endpoint("m:engine-api")
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _prompt(24_576)))
+
+    assert _content(chunks) == "engine"
+    assert engine.cancelled == 0
+    (watch,) = engine.watches
+    assert watch.wait_seconds == pytest.approx(policy.engine_wait_seconds(24_576))
+
+
+@needs_timeout
+async def test_an_unrelated_conversation_does_not_shorten_the_wait():
+    """The same key and the same endpoint, but a different conversation.
+
+    The hint belongs to conversation A. Conversation B shares only the API key,
+    so its prompt is a cold prefill and must be given the whole budget. Sized on
+    the caller-scoped hint it would have received ~0.11 s, been cancelled at
+    0.3 s, and re-prefilled cold on the offload route -- the original defect,
+    reached through the evidence gap rather than the deadline.
+    """
+    engine = _Engine("engine", answered=True, delay=0.3)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+    _remember(router, "m:engine-api", 24_000)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _prompt(24_576, "y")))
+
+    assert _content(chunks) == "engine"
+    assert engine.cancelled == 0
+    (watch,) = engine.watches
+    assert watch.wait_seconds == pytest.approx(policy.engine_wait_seconds(24_576))
+
+
+@needs_timeout
+async def test_a_large_prompt_is_bounded_by_the_wait_ceiling():
+    """The extension is bounded, so a wedged engine still fails over."""
+    engine = _Engine("engine", answered=True, delay=0.01)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=1.0)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+
+    chunks = await _collect(router.stream_chat_completion(MODEL, _prompt(200_000)))
+
+    assert _content(chunks) == "engine"
+    (watch,) = engine.watches
+    # At the calibrated rate 200k would need ~78 s; the ceiling keeps it at 8.
+    assert watch.wait_seconds == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+    assert policy.engine_wait_seconds(200_000) == pytest.approx(OFFLOAD_MAX_WAIT_SECONDS)
+    assert watch.base_wait_seconds == policy.wait_seconds
+    assert watch.uncached_prefill_tokens == 200_000
+
+
+@needs_timeout
+async def test_the_adaptive_wait_does_not_extend_the_queue_wait():
+    """Queue waiting is still bounded by the configured wait, not by prefill.
+
+    A large prompt now earns a long *engine* budget. That must not become a long
+    tolerance for this gateway's own outbound queue: the engine is not even
+    occupied yet, and the offload route can serve instead.
+    """
+    limiter = UpstreamConcurrencyLimiter(initial_limit=1, max_limit=1, acquire_timeout=10.0)
+    reset_upstream_limiter(limiter)
+    engine = _Engine("engine", answered=True, local=False)
+    reserved = _Engine("reserved", route_id="offload", answered=True)
+    policy = _policy(wait_seconds=0.05)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    held = await limiter.acquire("engine", KEY, base_url=engine.config.base_url)
+
+    started = time.monotonic()
+    chunks = await _collect(router.stream_chat_completion(MODEL, _prompt(100_000)))
+    elapsed = time.monotonic() - started
+
+    assert _content(chunks) == "reserved"
+    assert _routing(chunks)[-1]["offload"] == OFFLOAD_QUEUE_WAIT
+    # The engine budget for this prompt is ~1.27 s; the queue left at 0.05 s.
+    assert policy.engine_wait_seconds(100_000) > 1.0
+    assert elapsed < 0.6
+    held.release(status_code=200)
+
+
 # ----------------------------------------- back to an engine that was cut short
 #
 # The offload route failed after the engine's wait cut the stream short. The
@@ -530,3 +778,55 @@ async def test_a_stream_whose_retry_fails_reports_the_engines_own_error():
         "m:reserved-api",
         "m:engine-api",
     ]
+
+
+@needs_timeout
+async def test_a_warm_continuation_through_the_router_keeps_the_short_wait():
+    """A warm continuation is not charged as a cold prefill.
+
+    The hint's anchor is what proves the prompt still contains the remembered
+    one, and the wait is sized on the un-cached remainder. When the anchor is
+    not computed, the strict estimate counts the whole prompt as un-cached and
+    the warm continuation is given the cold wait -- up to the ceiling.
+    """
+    engine = _Engine("engine", answered=True, delay=0.25)
+    reserved = _Engine("reserved", route_id="offload", answered=True, prelude=False)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+
+    first = _prompt(24_000)
+    await _collect(router.stream_chat_completion(MODEL, first))
+    # The second turn grows the prompt, so it prefills only the growth.
+    second = _prompt(24_576)
+    chunks = await _collect(router.stream_chat_completion(MODEL, second))
+
+    assert _content(chunks) == "engine"
+    # The second turn's watch is the last one the engine saw.
+    watch = engine.watches[-1]
+    assert watch.uncached_prefill_tokens < 1_000
+
+
+@needs_timeout
+async def test_the_expired_attempt_logs_its_own_wait(caplog):
+    """The telemetry describes the attempt that expired.
+
+    The offload route is chosen after the expiry, so logging the wait at the
+    offload would report the target's numbers rather than the abandoned
+    attempt's.
+    """
+    engine = _Engine("engine", answered=False, delay=0.0)
+    reserved = _Engine("reserved", route_id="offload", answered=True)
+    policy = _policy(wait_seconds=0.1)
+    router = _router([(engine, 1.0), (reserved, 1.0)], policy)
+    req_ctx.set({"affinity_key": "u1"})
+
+    with caplog.at_level(logging.INFO):
+        await _collect(router.stream_chat_completion(MODEL, _prompt(24_576)))
+
+    records = [r for r in caplog.records if r.getMessage() == "route_engine_wait_expired"]
+    assert records, "the expired attempt logged nothing"
+    fields = records[0].__dict__
+    assert fields["endpoint_id"] == "m:engine-api"
+    assert fields["engine_wait_uncached_tokens"] == 24_576
+    assert fields["engine_wait_seconds"] == pytest.approx(policy.engine_wait_seconds(24_576))
