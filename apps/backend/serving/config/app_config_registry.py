@@ -1043,6 +1043,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     ConfigEntry(
+        "HTTP_IDLE_TIMEOUT_SECONDS",
+        "routing",
+        "Close an accepted connection after this many seconds with no bytes in either "
+        "direction, including one whose next request never finishes arriving. Uvicorn's "
+        "keep-alive timer stops on the first byte and does not start again until the "
+        "response completes. 0 disables it. Kept above the request and stream-idle "
+        "clocks so a slow prefill still gets a 504 instead of a dropped connection.",
+        type="float",
+        default="600",
+        minimum=0,
+    ),
+    ConfigEntry(
         "REQUEST_TIMEOUT_SECONDS",
         "routing",
         "Seconds before a request that has not started responding gets a 504.",
