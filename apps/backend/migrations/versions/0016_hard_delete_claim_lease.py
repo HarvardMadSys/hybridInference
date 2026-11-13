@@ -22,7 +22,7 @@ Backfill is bounded to one batch per upgrade over pending claims only
 ``UPDATE`` touches nothing.
 
 Revision ID: 0016_hard_delete_claim_lease
-Revises: 0015_projects
+Revises: 0016_agent_provisioning
 Create Date: 2026-11-05
 """
 
@@ -31,7 +31,7 @@ from __future__ import annotations
 from alembic import op
 
 revision = "0016_hard_delete_claim_lease"
-down_revision = "0015_projects"
+down_revision = "0016_agent_provisioning"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
