@@ -569,7 +569,11 @@ function RequestMetricsCard({
               )}
               <span
                 data-segment="interactive"
-                className={`block w-full flex-1 ${isErrorHeavy ? 'bg-red-400' : 'bg-gray-900'}`}
+                // Near-black ink on the gray-50 well. Dark mode turns that well
+                // into the canvas, so request-volume-ink is what lightens it.
+                className={`block w-full flex-1 ${
+                  isErrorHeavy ? 'bg-red-400' : 'bg-gray-900 request-volume-ink'
+                }`}
               />
             </>
           );

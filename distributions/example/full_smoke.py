@@ -606,12 +606,14 @@ def _check_current_admin(
 def _active_key(
     base_url: str, access_token: str, password: str, data: Any
 ) -> tuple[str, str] | None:
-    """The account's active key in full; the listing masks it, the password reveals it.
+    """The account's active key in full; the listing masks it, the reveal route shows it.
 
     A release from before keys were masked lists the key in full and has no
     ``revealable`` field. The restore drill runs this smoke against that previous
     image, so a full key without the field is used as listed; a full key next to
-    the field means this release leaked it.
+    the field means this release leaked it. The password goes with the reveal
+    because releases before the route stopped asking for it still require it;
+    this one ignores it.
     """
     if not isinstance(data, dict) or not isinstance(data.get("keys"), list):
         raise SmokeError("API key listing returned an invalid response")

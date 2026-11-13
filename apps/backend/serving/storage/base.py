@@ -668,6 +668,7 @@ class OperationalStore(ABC):
         name: str | None = None,
         max_active_keys: int | None = None,
         project_id: str | None = None,
+        credential_scope: str = "",
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -1166,6 +1167,78 @@ class OperationalStore(ABC):
         Must be a single statement. Reading the row and then marking it used is
         a race in which two concurrent exchanges both observe an unused code.
         """
+
+    # -- agent invitations ----------------------------------------------------
+
+    async def create_agent_invite_token(
+        self,
+        *,
+        token_hash: str,
+        agent_account_id: str,
+        email: str,
+        expires_at: datetime,
+    ) -> None:
+        """Store a hashed agent-invitation token, superseding earlier live ones.
+
+        The token is stored hashed: a read of this table must not yield a
+        link anyone can redeem. Every still-usable earlier token for the
+        same agent account is superseded in the same write, so at most one
+        outstanding link per invited account can ever be redeemed. Only the
+        PostgreSQL store implements invitations; other stores inherit this
+        refusal.
+        """
+        raise NotImplementedError("This operational store does not support agent invitations")
+
+    async def redeem_agent_invite(
+        self,
+        *,
+        token_hash: str,
+        user_id: str,
+        user_name: str | None,
+        password_hash: str,
+        api_key_hash: str,
+        api_key_prefix: str,
+        credential_scope: str,
+        quota_daily_cost_usd: Decimal | float,
+        max_active_keys: int,
+    ) -> Row | None:
+        """Claim an invite and settle the account behind it, in one transaction.
+
+        Claims the token (unused, unexpired, not superseded), then — under
+        the same commit — finds the user by the invited email or creates it
+        with the given password hash, sets that password either way, marks
+        the email verified and the account active, ensures its personal
+        organization, and issues exactly one scoped API key. Any refusal
+        after the claim (for example the account's key ceiling) rolls the
+        whole transaction back, claim included, so the link stays usable.
+
+        Returns ``user_id, api_key_id, created`` (``created`` is True when
+        this call made the user), or ``None`` when the token is unknown,
+        used, superseded or expired — the caller cannot tell those apart,
+        and should not.
+
+        Raises:
+            APIKeyLimitReachedError: The account already holds
+                ``max_active_keys``; nothing was written.
+        """
+        raise NotImplementedError("This operational store does not support agent invitations")
+
+    async def get_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
+        """Return the provisioning link for an agent account id, or None.
+
+        The row names the local user and the scoped key issued for it, and
+        whether provisioning was revoked.
+        """
+        raise NotImplementedError("This operational store does not support agent invitations")
+
+    async def revoke_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
+        """Revoke a provisioned account's scoped key and mark the link revoked.
+
+        Returns the link row, or None when the agent account was never
+        provisioned here. Revoking an already-revoked link returns it
+        unchanged: the caller's intent already holds.
+        """
+        raise NotImplementedError("This operational store does not support agent invitations")
 
     # -- inference grants ----------------------------------------------------
 

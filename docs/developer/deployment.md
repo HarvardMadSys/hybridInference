@@ -103,8 +103,8 @@ deployment relied on that, set `FRONTEND_HOST` explicitly before upgrading;
 see [Releases and upgrades](releases.md).
 
 Which public paths the console serves itself and which it forwards to the
-backend is a separate question, and the answer is in the console's own
-`next.config.js` rather than in any proxy config. See
+backend is a separate question, and the answer is in `deploy/public-paths.json`
+and the console's own `next.config.js` rather than in any proxy config. See
 [The public path table](public-path-table.md).
 
 #### What your proxy still has to do
@@ -125,6 +125,136 @@ The gateway reads forwarded headers only from the proxies you authorize (see
 never rewrites them. Without a proxy that does, the leftmost `X-Forwarded-For`
 entry is whatever the caller sent — which is why `CF-Connecting-IP` is
 preferred when Cloudflare is in front.
+
+### Splitting inference traffic at the entry
+
+By default every request reaches the console, which forwards the gateway's
+paths to it. A long stream then passes through two processes that are each
+released and restarted, and a console release or restart interrupts it as
+surely as a gateway one does. An entry that can route by path — an
+Ingress path rule, a tunnel's path routing, a load balancer — may instead send
+the paths the public path manifest marks `entry_split`, `/v1` and
+`/anthropic`, straight to the gateway, and everything else to the console as
+before.
+
+This is optional and is the deployment's to set up: this repository ships no
+entry configuration, and the example and local stacks keep the built-in
+forwarding. The console's image is the same either way and still forwards
+both prefixes, so removing the entry's two rules is the rollback and needs no
+image change, provided the gateway still trusts the console as before and the
+console's stop grace period has not been shortened. The split does not change
+what a gateway release does to a stream (open requests still get 5 seconds
+after the stop signal), and the console's model playground,
+`/internal/playground`, still goes through the console.
+
+On the split paths the entry has to meet these conditions:
+
+| # | Condition |
+|---|---|
+| E1 | It sends to the gateway only the manifest's `entry_split` prefixes: a path equal to `/v1` or `/anthropic`, or beginning `/v1/` or `/anthropic/`. It matches after resolving `.` and `..` segments and percent-encoding, so `/v1/%2e%2e/openapi.json` is not under `/v1` |
+| E2 | It does not buffer responses, and does not read a whole request body before forwarding it |
+| E3 | Its idle timeout is longer than the gateway's `REQUEST_TIMEOUT_SECONDS`, and it sets no limit on a request's total duration shorter than `STREAM_REQUEST_TIMEOUT_SECONDS`. Streams send a keepalive every 15 seconds |
+| E4 | Its request body limit is no lower than the gateway's own, file uploads under `/v1` included |
+| E5 | When the client disconnects, it closes the request to the gateway |
+| E6 | It overwrites the forwarding header the client sent (`X-Forwarded-For` or `CF-Connecting-IP`) |
+| E7 | The gateway's port is reachable from the entry and the console only |
+| E8 | It does not resend a `POST` once the request has been sent to the gateway. Retrying on another instance when the connection could not be established is fine |
+| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. Not needed yet; the coexisting backend releases the design defers depend on it |
+
+What clients see on the split paths is the gateway's own answer, the same as
+through the console, with these differences:
+
+- `X-Content-Type-Options: nosniff` comes from the gateway, which adds it to
+  every response. The console's other two headers, `X-Frame-Options` and
+  `Referrer-Policy`, only mean something for a page and are not sent on these
+  paths.
+- A path that ends in a slash, `/v1/models/`, gets the same `308` to the bare
+  path `/v1/models` from the gateway as from the console.
+- When the gateway cannot be reached, the error comes from the entry: a
+  `502`, `503` or `504`, but with the entry's own body rather than the
+  console's OpenAI-shaped JSON. SDKs act on the status; a client that parses
+  error bodies will see different content. An entry that can be given a JSON
+  error body may be configured to send one.
+
+Which way a request went is shown by the gateway's request log, whose
+`peer_ip` names the process that connected to it, read together with the
+entry's own access log. A response header is not proof: anything in between
+can rewrite one.
+
+#### Client addresses with the entry in front
+
+With the split, two peers forward requests to the gateway on clients' behalf:
+the console, for everything that is not split, and the entry. Requests through
+the entry must resolve to the same client address as before, and must do so
+with the console stopped. Do not get there by trusting more: keep
+`TRUST_PROXY_HEADERS` on, add no network that holds other workloads to a trust
+list, and do not treat an `unknown` address as a normal result.
+
+**Static trust** (Kubernetes proxy discovery not enabled). Readiness does not
+depend on any proxy, so stopping the console leaves `/health/ready` as it was.
+For the address, add the entry's exact peer address, as the gateway sees it,
+to the setting for the header the entry writes: `TRUSTED_PROXIES` for an entry
+that writes `X-Forwarded-For`, `TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare.
+Keep the console's own entry. Add nothing wider than the entry itself: if the
+gateway cannot tell the entry's connections from other processes' — behind a
+loopback port mapping, every process on the host reaches the gateway from the
+same address — solve that first, rather than trusting the shared address.
+See [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
+
+**Kubernetes proxy discovery.** The split does not meet its goal in this mode
+today, so a deployment that uses it stays on the console's forwarding:
+
+- The discovered proxies are one Service's pods. An entry outside that Service
+  is not one of them, so every request it sends resolves to `unknown`.
+- With the frontend stopped the discovered set is empty, `/health/ready`
+  answers `503 proxy_discovery_unavailable`, and the entry takes the gateway
+  out of rotation: stopping the console would interrupt inference, the very
+  coupling the split removes.
+- The pinned identity is the frontend pods' direct controller. A frontend run
+  as a Deployment gets a new ReplicaSet on every release, which requires
+  updating that identity and restarting the gateway.
+
+### Checking an entry split with the probe
+
+`ops/dev/entry_split_probe.py` checks a deployment's inference path from
+outside, through the address clients use, on either topology. It uses a raw
+HTTP client and never retries, so every failed request counts:
+
+- long streams on `/v1/chat/completions`, `/v1/responses` and
+  `/anthropic/v1/messages`, with each frame's arrival time, the end marker
+  (`[DONE]`, `response.completed`, `message_stop`) and the usage report
+  checked;
+- short streaming and non-streaming requests on the same three paths, at a
+  fixed rate, for as long as the long streams run;
+- the boundary, from `deploy/public-paths.json`: each split prefix reaches the
+  gateway and carries `nosniff`, a trailing slash redirects to the same origin,
+  the gateway's unpublished paths (`/docs`, `/openapi.json`, `/health/deep`,
+  escapes such as `/v1/%2e%2e/openapi.json` and `//v1`) do not answer, and a
+  missing or wrong API key gets `401`;
+- `/health`, every few seconds, recorded but never counted.
+
+Give the long streams a synthetic upstream with a known shape: the example's
+fake provider (`distributions/example/fixtures/fake-openai-provider/server.py`)
+started with `--stream-frames 600 --frame-interval-ms 100` streams 600
+numbered frames 100 ms apart, and the probe then checks that every frame
+arrived once, in order, at that interval. An entry that buffers shows up here
+as frames arriving in bursts. Route one model to it for the long streams and,
+optionally, a second to a default instance for the short requests:
+
+```bash
+PROBE_API_KEY=... python ops/dev/entry_split_probe.py \
+  --base-url https://api.example.org --model probe-long --short-model probe-short \
+  --expect-frames 600 --frame-interval-ms 100 --short-rate 2 --output probe.json
+```
+
+The key is read from the environment variable `--api-key-env` names and is
+never printed. The report is JSON; the exit status is `0` only when nothing
+failed. Run it before and while you release, restart or stop the console: with
+the split in place, no long stream may break and no short request may fail.
+Run it once on the console's own path while stopping the console as well, to
+see that it does report the broken streams. Run against the gateway's port
+directly, it reports `/docs` and the other unpublished paths as reachable:
+that port is not an entry, which is why E7 keeps it private.
 
 ### Keeping it private: an SSH tunnel
 

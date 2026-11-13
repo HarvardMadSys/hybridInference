@@ -71,14 +71,12 @@ describe('Header', () => {
     expect(screen.queryByRole('link', { name: /dashboard/i })).not.toBeInTheDocument();
   });
 
-  it('shows a status link in the header', () => {
+  it('leaves the status link to the footer', () => {
     render(<Header />);
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }));
 
-    const statusLink = screen.getByRole('link', { name: 'Status' });
-
-    expect(statusLink).toHaveAttribute('href', 'https://status.example.test/');
-    expect(statusLink).toHaveAttribute('target', '_blank');
-    expect(statusLink).toHaveAttribute('rel', 'noopener noreferrer');
+    // Neither the bar nor the phone menu links it, though a status page is configured.
+    expect(screen.queryByRole('link', { name: 'Status' })).not.toBeInTheDocument();
   });
 
   it('renders a same-origin runtime logo without a build-time image allowlist', () => {
@@ -88,14 +86,6 @@ describe('Header', () => {
       'src',
       '/site-assets/logo.svg',
     );
-  });
-
-  it('hides the status link when the deployment has no status page', () => {
-    brandingOverride = { ...configuredBranding, statusUrl: '' };
-
-    render(<Header />);
-
-    expect(screen.queryByRole('link', { name: 'Status' })).not.toBeInTheDocument();
   });
 
   it('shows a distribution nav link to guests', () => {
@@ -108,7 +98,7 @@ describe('Header', () => {
     expect(navLink).toHaveAttribute('rel', 'noopener noreferrer');
   });
 
-  it('places distribution nav links after the console own Status link', () => {
+  it('places distribution nav links in the order the distribution listed them', () => {
     brandingOverride = {
       ...configuredBranding,
       navLinks: [
@@ -119,14 +109,12 @@ describe('Header', () => {
 
     render(<Header />);
 
-    // Order is deliberate: Status is the console's own link and leads, then
-    // the distribution's own links in the order it listed them.
     const labels = screen
       .getAllByRole('link')
       .map((node) => node.textContent?.trim())
-      .filter((label) => ['Status', 'Example Project', 'Example Forum'].includes(label ?? ''));
+      .filter((label) => ['Example Project', 'Example Forum'].includes(label ?? ''));
 
-    expect(labels).toEqual(['Status', 'Example Project', 'Example Forum']);
+    expect(labels).toEqual(['Example Project', 'Example Forum']);
   });
 
   it('shows a docs link only when the deployment configures a docs URL', () => {
@@ -163,7 +151,7 @@ describe('Header', () => {
     expect(statsLink).not.toHaveAttribute('target');
   });
 
-  it('places the stats link between Status and the distribution nav links', () => {
+  it('places the stats link before the distribution nav links', () => {
     featuresOverride = { rag: true, publicStats: true };
 
     render(<Header />);
@@ -171,9 +159,9 @@ describe('Header', () => {
     const labels = screen
       .getAllByRole('link')
       .map((node) => node.textContent?.trim())
-      .filter((label) => ['Status', 'Stats', 'Example Project'].includes(label ?? ''));
+      .filter((label) => ['Stats', 'Example Project'].includes(label ?? ''));
 
-    expect(labels).toEqual(['Status', 'Stats', 'Example Project']);
+    expect(labels).toEqual(['Stats', 'Example Project']);
   });
 
   it('renders no extra header links when the distribution lists none', () => {
@@ -182,7 +170,6 @@ describe('Header', () => {
     render(<Header />);
 
     expect(screen.queryByRole('link', { name: 'Example Project' })).not.toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Status' })).toBeInTheDocument();
   });
 
   it('offers guests no language button in the header', () => {
@@ -213,14 +200,16 @@ describe('Header', () => {
         .getAllByRole('link')
         .map((link) => [link.textContent, link.getAttribute('href')]),
     ).toEqual([
-      ['Status', 'https://status.example.test/'],
       ['Example Project', 'https://project.example.test/'],
       ['Docs Assistant', '/chat'],
       ['Dashboard', '/dashboard'],
       // On a phone the organization is listed here rather than in the bar.
       ['Example Org', 'https://org.example.test'],
     ]);
-    expect(within(menu).getByRole('link', { name: 'Status' })).toHaveAttribute('target', '_blank');
+    expect(within(menu).getByRole('link', { name: 'Example Project' })).toHaveAttribute(
+      'target',
+      '_blank',
+    );
   });
 
   it('closes the menu on Escape, returning focus to its button', () => {
@@ -283,7 +272,7 @@ describe('Header, for a reader who chose Chinese', () => {
       </LocaleProvider>,
     );
 
-    for (const name of ['服务状态', '统计', '文档助手', '控制台']) {
+    for (const name of ['统计', '文档助手', '控制台']) {
       expect(screen.getByRole('link', { name })).toBeInTheDocument();
     }
     expect(screen.getByRole('img', { name: 'Example Inference 标志' })).toBeInTheDocument();

@@ -17,10 +17,13 @@ from .middleware.exception_handler import install_exception_handlers
 from .middleware.proxy_trust import KubernetesProxyTrustMiddleware
 from .middleware.request_id import RequestIdMiddleware
 from .middleware.request_log import RequestLogMiddleware
+from .middleware.security_headers import NoSniffMiddleware
 from .middleware.timeout import TimeoutMiddleware
+from .middleware.trailing_slash import TrailingSlashRedirectMiddleware
 from .routers import (
     admin,
     agent_grants,
+    agent_invitations,
     alert_history_ingest,
     anthropic_messages,
     auth_routes,
@@ -123,6 +126,11 @@ def create_app() -> FastAPI:
     # response it did not write, so streams are unaffected.
     app.add_middleware(RequestBodyLimitMiddleware)
 
+    # A trailing slash on /v1 and /anthropic gets the console's bare-path 308
+    # instead of Starlette's absolute 307: outside the body limit, as the
+    # console redirects before reading a body, and inside CORS.
+    app.add_middleware(TrailingSlashRedirectMiddleware)
+
     # CORS: use specific origins when credentials are enabled. The origins are
     # read per request (CORS_ALLOWED_ORIGINS is database-backed).
     app.add_middleware(SettingsCORSMiddleware, **CORS_OPTIONS)
@@ -133,6 +141,10 @@ def create_app() -> FastAPI:
     app.add_middleware(KubernetesProxyTrustMiddleware)
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
+
+    # Outermost, so every response gets it, error answers included. It only
+    # adds a header to the response start; bodies, streams too, pass untouched.
+    app.add_middleware(NoSniffMiddleware)
 
     # Error handlers
     install_error_handlers(app)
@@ -168,6 +180,8 @@ def create_app() -> FastAPI:
     app.include_router(playground.router)
     app.include_router(identity.router)
     app.include_router(agent_grants.router)
+    app.include_router(agent_invitations.router)
+    app.include_router(agent_invitations.internal_router)
     app.include_router(internal_lookups.router)
     app.include_router(alert_history_ingest.router)
 
