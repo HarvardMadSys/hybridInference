@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import routing.routewise.router as routewise_router_module
+from routing.completion_outcome import CompletionOutcome
 from routing.route_table import EffectiveRoute
 from routing.routers import FixedRouter, RoutingObservation
 from routing.routewise.candidates import QuotaSource
@@ -360,6 +361,7 @@ class TestRouteWiseRouterScaffold:
                 prompt_tokens=100,
                 completion_tokens=500,
                 success=True,
+                outcome=CompletionOutcome.PROGRESS,
                 strategy_metadata={"routewise": {"quota_committed": 0.0}},
             )
         )
@@ -1127,6 +1129,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1136,6 +1139,60 @@ class TestRouteWiseObservation:
         assert state is not None
         assert state.count == 1
         assert state.mean == 500.0
+
+    @pytest.mark.parametrize(
+        ("terminal", "outcome"),
+        [
+            (True, CompletionOutcome.TRANSIENT_NO_PROGRESS),
+            (False, CompletionOutcome.PROGRESS),
+        ],
+    )
+    def test_non_progress_completion_does_not_train_serving_models(self, terminal, outcome):
+        router, _, _ = _make_router_with_quota_and_api()
+        endpoint_id = "test-model:api-provider"
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="test-model",
+                endpoint_id=endpoint_id,
+                ttft_ms=50.0,
+                total_latency_ms=200.0,
+                token_count=600,
+                prompt_tokens=100,
+                completion_tokens=500,
+                success=True,
+                terminal=terminal,
+                outcome=outcome,
+            )
+        )
+
+        assert router.predictor._model_states.get("test-model") is None
+        assert router._latency_profiles[endpoint_id].sample_count(time.time()) == 0
+        assert router.envelope.sample_count("test-model") == 0
+
+    def test_real_progress_completion_trains_serving_models(self):
+        router, _, _ = _make_router_with_quota_and_api()
+        endpoint_id = "test-model:api-provider"
+
+        router.record_observation(
+            RoutingObservation(
+                model_id="test-model",
+                endpoint_id=endpoint_id,
+                ttft_ms=50.0,
+                total_latency_ms=200.0,
+                token_count=600,
+                prompt_tokens=100,
+                completion_tokens=500,
+                success=True,
+                terminal=True,
+                outcome=CompletionOutcome.PROGRESS,
+            )
+        )
+
+        predictor_state = router.predictor._model_states["test-model"]
+        assert predictor_state.count == 1
+        assert router._latency_profiles[endpoint_id].sample_count(time.time()) == 1
+        assert router.envelope.sample_count("test-model") == 1
 
     def test_record_observation_does_not_consume_quota(self):
         """Quota is consumed at dispatch time, not in record_observation.
@@ -1157,6 +1214,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1179,6 +1237,7 @@ class TestRouteWiseObservation:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1294,6 +1353,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=500,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1324,6 +1384,7 @@ class TestRouteWiseLayer2:
             prompt_tokens=100,
             completion_tokens=4000,
             success=True,
+            outcome=CompletionOutcome.PROGRESS,
             strategy_metadata={"routewise": {"quota_committed": 0.0}},
         )
         router.record_observation(obs)
@@ -1475,6 +1536,42 @@ class TestRouteWiseLayer2:
                 "params": {"max_tokens": 8, "temperature": 0},
             }
         ]
+
+    async def test_probe_warmup_notice_trains_nothing(self):
+        """A warmup notice is not a latency sample, and not a failure either.
+
+        The notice comes back in milliseconds, so timing it would hand the
+        coldest endpoint in the pool the best sample and let it keep winning
+        probes it cannot serve. It is not a failure either: the endpoint
+        answered, it was just not ready -- charging it the error penalty
+        would punish a provider for warming up.
+        """
+        router, api_a, _api_b = _make_router_with_two_api()
+
+        async def stream(_messages, **_params):
+            yield (
+                'data: {"choices":[{"delta":{"content":'
+                '"The model is starting up. Please wait..."}}]}\n\n'
+            )
+
+        api_a.stream_chat_completion = stream
+        router._endpoint_adapter = {"test-model:api-a": api_a}
+        router._endpoint_models = {"test-model:api-a": {"test-model"}}
+
+        results = await router.run_probe_once(endpoint_id="test-model:api-a", idle_only=False)
+
+        assert len(results) == 1
+        assert results[0].ok is False, "a warmup notice is not a successful probe"
+        assert results[0].ttft_ms is None
+        assert results[0].inconclusive is True, (
+            "a warmup notice is neither a latency sample nor an endpoint failure"
+        )
+        # Nothing was trained: no timed sample, no error penalty.
+        profile = router._latency_profiles["test-model:api-a"]
+        assert profile.sample_count(time.time()) == 0, "a warmup notice trained the latency profile"
+        assert router._mean_ttft_sec("test-model:api-a", time.time()) != pytest.approx(60.0), (
+            "a warmup notice booked the endpoint's error penalty"
+        )
 
     async def test_probe_failure_records_error_penalty(self):
         """Active probe failures use the same 60s error penalty as traffic."""
@@ -3967,6 +4064,7 @@ class TestRouteWiseEnvelopeOnTheDecisionPath:
                 prompt_tokens=1000,
                 completion_tokens=500,
                 success=True,
+                outcome=CompletionOutcome.PROGRESS,
                 request_id="req-envelope",
             )
         )

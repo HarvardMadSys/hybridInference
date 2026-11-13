@@ -14,7 +14,14 @@ if TYPE_CHECKING:
 
 from llm_routewise.core import CheckpointBackupDispatch, CheckpointBackupSelector
 
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+    classify_stream_prefix,
+    could_still_be_transient_prefix,
+)
 from routing.endpoints import endpoint_id_for_adapter
+from routing.response_text import chunk_text, response_text, response_usage
 from routing.streaming import (
     PRE_CONTENT_BUFFER_MAX_BYTES,
     chunk_buffer_size,
@@ -30,6 +37,12 @@ logger = get_logger(__name__)
 _STREAM_RACE_BUFFER_MAX_BYTES = PRE_CONTENT_BUFFER_MAX_BYTES
 _STREAM_RACE_DEADLINE_SECONDS = 60.0
 
+#: How much generated text the race's running prefix may hold. A warmup
+#: notice is short and a genuine answer diverges from every marker within a
+#: few characters, so the prefix only has to be long enough to hold a notice;
+#: it also caps how much memory a pathological stream can pin.
+_RACE_PREFIX_MAX_CHARS = 512
+
 
 class HedgeBackupUnavailable(RuntimeError):
     """Raised when a planned backup cannot reserve state at dispatch time."""
@@ -37,6 +50,110 @@ class HedgeBackupUnavailable(RuntimeError):
 
 class HedgeStreamRaceTimeout(TimeoutError):
     """Raised when no stream produces race-winning output before the deadline."""
+
+
+def _could_still_become_warmup(text: str) -> bool:
+    """Return whether *text* can still become a bounded warmup notice.
+
+    While the accumulated content could still become a warmup notice, the race
+    must keep pulling so the full marker and any known provider suffix can be
+    classified together. A marker followed by an incomplete duration suffix
+    must not win the race as ordinary progress.
+    """
+    return could_still_be_transient_prefix(text)
+
+
+class _RaceBufferProgress:
+    """Incremental verdict on one hedge leg's buffered stream.
+
+    The race has to classify the text it has buffered so far, and it has to do
+    that on every chunk. Re-reading the whole buffer each time made the cost
+    quadratic in the chunk count: a provider that emits thousands of
+    whitespace-only chunks -- a JSON-mode grammar runaway produces exactly
+    that -- cost seconds of event-loop CPU.
+
+    This keeps the same bounded running prefix the other streaming paths use
+    (:class:`routing.response_text.StreamProgressTracker`), so each chunk costs
+    one extraction and one classification over at most ``max_chars``
+    characters, and the memory never grows with the stream.
+
+    Leading whitespace is not accumulated: it is not evidence in either
+    direction, and keeping it would let a whitespace flood fill the prefix
+    until the real content that follows no longer fits.
+    """
+
+    __slots__ = ("_cap", "_outcome", "_saw_content", "_text")
+
+    def __init__(self, max_chars: int = _RACE_PREFIX_MAX_CHARS) -> None:
+        self._cap = max(1, max_chars)
+        self._text = ""
+        self._saw_content = False
+        self._outcome: CompletionOutcome | None = None
+
+    @property
+    def saw_content(self) -> bool:
+        """Whether any non-whitespace generated text has arrived."""
+        return self._saw_content
+
+    def observe(self, chunk: Any) -> CompletionOutcome | None:
+        """Fold one buffered chunk in and return the verdict it now supports.
+
+        Returns ``None`` while the accumulated prefix could still be a warmup
+        notice. A verdict that admits real work is latched: the race has
+        already learned what it needed, and later chunks cannot change it.
+        """
+        if self._outcome is not None and self._outcome.admits_real_work:
+            return self._outcome
+        text = chunk_text(chunk)
+        if not text:
+            return self._outcome
+        if not self._saw_content:
+            if not text.strip():
+                return self._outcome
+            self._saw_content = True
+        room = self._cap - len(self._text)
+        if room > 0:
+            self._text += text[:room]
+        outcome = classify_stream_prefix(self._text)
+        if outcome is not None and outcome.admits_real_work:
+            self._outcome = outcome
+        return self._outcome
+
+    def finish(self) -> CompletionOutcome:
+        """Return the terminal verdict for the accumulated prefix.
+
+        A stream that only ever produced whitespace has no classifiable output,
+        which is EMPTY rather than progress.
+        """
+        if self._outcome is not None:
+            return self._outcome
+        self._outcome = classify_stream_prefix(self._text, terminal=True)
+        return self._outcome
+
+    def stable_enough_to_resolve(self) -> bool:
+        """Whether the accumulated text can no longer become a warmup notice.
+
+        A warmup notice split across chunks must not win the race while the
+        accumulated text is still a prefix of a warmup phrase, because a
+        longer continuation would classify TRANSIENT. Once the text diverges
+        from every warmup marker -- or the buffer holds no model text at all,
+        and therefore has a stable EMPTY outcome -- the race may resolve.
+        EMPTY is not semantic progress: health classification and prefill
+        confirmation remain gated on their own outcome.
+        """
+        if not self._saw_content:
+            return True
+        return not _could_still_become_warmup(self._text)
+
+
+def _classify_result_outcome(result: Any) -> CompletionOutcome:
+    """Classify a non-streaming hedge winner's completion result."""
+    return classify_completion_outcome(
+        content=response_text(result),
+        usage=response_usage(result),
+        http_status=200,
+        terminal=True,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +256,10 @@ class HedgedAdapter(BaseAdapter):
         # retry rules (``routing.routers.request_refusals_end_fallback``).
         self.leg_failures: list[tuple[str, BaseException]] = []
         self.leg_first_content_ttft_ms: dict[str, float] = {}
+        # Legs whose first content was *real* work. A leg that answered with a
+        # warmup notice has a TTFT too, and an instant one, so its sample must
+        # not reach the latency profile as if the endpoint were fast.
+        self.leg_first_content_progress: set[str] = set()
         # Event-loop time the leg that won the stream race was started.
         self._winner_started_at: float | None = None
         self._stream_backup_dispatch: CheckpointBackupDispatch[BaseAdapter] | None = None
@@ -428,12 +549,18 @@ class HedgedAdapter(BaseAdapter):
                         # Winner found -- cancel the loser.
                         winner_result = task.result()
                         if task is primary_task:
-                            self.event_sink.record_success(primary_endpoint)
+                            self.event_sink.record_success(
+                                primary_endpoint,
+                                outcome=_classify_result_outcome(winner_result),
+                            )
                             # self.config stays as primary.config (already correct).
                             backup_task.cancel()
                             await _safe_await_task(backup_task)
                         else:
-                            self.event_sink.record_success(_endpoint_id_from_adapter(self.backup))
+                            self.event_sink.record_success(
+                                _endpoint_id_from_adapter(self.backup),
+                                outcome=_classify_result_outcome(winner_result),
+                            )
                             # Swap config so RouteWise attributes to the real winner.
                             assert self.backup is not None
                             self.config = self.backup.config
@@ -554,6 +681,10 @@ class HedgedAdapter(BaseAdapter):
         """
         primary_buffer: list[str] = []
         backup_buffer: list[str] = []
+        # Incremental verdicts over the two buffers. The race classifies on
+        # every chunk, so it must not re-read what it has already read.
+        primary_progress = _RaceBufferProgress()
+        backup_progress = _RaceBufferProgress()
         primary_buffer_bytes = 0
         backup_buffer_bytes = 0
         primary_done = False
@@ -674,7 +805,22 @@ class HedgedAdapter(BaseAdapter):
                             primary_buffer_bytes,
                             leg="primary",
                         ):
-                            primary_has_content = True
+                            # A warmup notice can be split across chunks, so
+                            # the race outcome is decided from the accumulated
+                            # prefix rather than a fragment. The accumulator
+                            # keeps that prefix incrementally, so the cost of
+                            # this decision does not grow with the buffer.
+                            primary_outcome = primary_progress.observe(chunk)
+                            if primary_outcome is not None and primary_outcome.admits_real_work:
+                                self.leg_first_content_progress.add(primary_endpoint)
+                            primary_has_content = (
+                                primary_outcome is not None
+                                and primary_outcome is not CompletionOutcome.TRANSIENT_NO_PROGRESS
+                                and primary_progress.stable_enough_to_resolve()
+                            )
+                            if primary_has_content:
+                                _cancel_task(race_deadline_task)
+                                _cancel_task(hedge_timer_task)
                     except StopAsyncIteration:
                         primary_done = True
                         primary_next_task = None
@@ -717,7 +863,17 @@ class HedgedAdapter(BaseAdapter):
                             backup_buffer_bytes,
                             leg="backup",
                         ):
-                            backup_has_content = True
+                            # Same accumulated-prefix classification as primary.
+                            backup_outcome = backup_progress.observe(chunk)
+                            if backup_outcome is not None and backup_outcome.admits_real_work:
+                                self.leg_first_content_progress.add(
+                                    backup_endpoint or _endpoint_id_from_adapter(self.backup)
+                                )
+                            backup_has_content = (
+                                backup_outcome is not None
+                                and backup_outcome is not CompletionOutcome.TRANSIENT_NO_PROGRESS
+                                and backup_progress.stable_enough_to_resolve()
+                            )
                     except StopAsyncIteration:
                         await self._finish_stream_backup(
                             next_task=backup_next_task,
@@ -740,7 +896,10 @@ class HedgedAdapter(BaseAdapter):
                 # Decide winner.
                 if primary_has_content and backup_has_content:
                     # Tiebreaker: primary wins.
-                    self.event_sink.record_success(primary_endpoint)
+                    self.event_sink.record_success(
+                        primary_endpoint,
+                        outcome=primary_progress.finish(),
+                    )
                     # self.config stays as primary.config (already correct).
                     self._winner_started_at = schedule_start
                     self._schedule_stream_backup_cleanup(
@@ -751,7 +910,10 @@ class HedgedAdapter(BaseAdapter):
                     _cancel_task(race_deadline_task)
                     return primary_gen, backup_gen, primary_buffer
                 elif primary_has_content:
-                    self.event_sink.record_success(primary_endpoint)
+                    self.event_sink.record_success(
+                        primary_endpoint,
+                        outcome=primary_progress.finish(),
+                    )
                     self._winner_started_at = schedule_start
                     self._schedule_stream_backup_cleanup(
                         next_task=backup_next_task,
@@ -762,7 +924,10 @@ class HedgedAdapter(BaseAdapter):
                     return primary_gen, backup_gen, primary_buffer
                 elif backup_has_content:
                     endpoint = backup_endpoint or _endpoint_id_from_adapter(self.backup)
-                    self.event_sink.record_success(endpoint)
+                    self.event_sink.record_success(
+                        endpoint,
+                        outcome=backup_progress.finish(),
+                    )
                     # Swap config so RouteWise attributes to the real winner.
                     assert self.backup is not None
                     self.config = self.backup.config
@@ -816,7 +981,9 @@ class HedgedAdapter(BaseAdapter):
                 raise primary_error  # type: ignore[misc]
 
             # Return primary's buffer (even if empty -- no content from either).
-            self.event_sink.record_success(primary_endpoint)
+            # Neither leg produced anything, so this is liveness at most: a
+            # success here would clear failures for a stream that said nothing.
+            self.event_sink.record_liveness(primary_endpoint)
             self._winner_started_at = schedule_start
             _cancel_task(race_deadline_task)
             return primary_gen, backup_gen, primary_buffer
