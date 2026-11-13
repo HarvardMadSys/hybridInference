@@ -1509,6 +1509,32 @@ async def test_a_waiting_model_is_probed_with_one_item_until_it_answers(worker, 
     assert store.calls["retry_item"] == 0
 
 
+async def test_only_a_success_ends_probing_a_waiting_model(worker, dispatch):
+    # An error, whether a probe's own or a late answer from an item sent
+    # before the wait, says nothing of the model serving: the cap stays at one.
+    dispatch.results["m1"] = _queued(0.01)
+    store = FakeStore()
+    store.add(16)
+    timings = SchedulerTimings(
+        poll_seconds=0.005,
+        idle_poll_seconds=60,
+        sweep_seconds=3600,
+        heartbeat_seconds=3600,
+        stop_grace_seconds=0.05,
+    )
+    scheduler = worker(store, caps={"m1": 8}, timings=timings)
+
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 8)
+    dispatch.results["m1"] = INVALID
+    await until(lambda: dispatch.running["m1"] == 0)
+    dispatch.peak.clear()
+    await until(lambda: store.count("queued") + store.count("running") == 0)
+
+    # The rest went one at a time.
+    assert dispatch.peak["m1"] == 1
+
+
 async def test_a_week_long_queued_hint_holds_the_model_only_briefly(worker, dispatch, monkeypatch):
     # The answered item waits out its hint, capped at a week; the model's other
     # items must not wait with it. The hold has a short cap of its own.

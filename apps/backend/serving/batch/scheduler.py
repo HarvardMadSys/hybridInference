@@ -314,8 +314,11 @@ class BatchScheduler:
         self._queued_since: dict[str, float] = {}
         self._queued_last: dict[str, float] = {}
         self._queued_alerted: set[str] = set()
-        # Models whose latest answer here was "queued": one item probes whether
-        # the model serves yet before the rest of its cap is claimed.
+        # Models answered "queued" here and not served since: one item probes
+        # whether the model serves yet before the rest of its cap is claimed.
+        # Only a success ends it: an error (a caller's 4xx, a timeout, a 5xx
+        # while the job starts, or a late answer from before the wait) does not
+        # show the model serving, and claiming the cap on it brings the burst back.
         self._queued_probing: set[str] = set()
         self._alerts: set[asyncio.Task[Any]] = set()
         self._next_sweep = 0.0
@@ -917,6 +920,7 @@ class BatchScheduler:
 
     def _model_succeeded(self, model_id: str) -> None:
         self._failure_streak.pop(model_id, None)
+        self._queued_probing.discard(model_id)
         self._queued_since.pop(model_id, None)
         self._queued_last.pop(model_id, None)
         if model_id in self._queued_alerted:
@@ -1281,9 +1285,6 @@ class BatchScheduler:
     async def _settle(
         self, entry: _InFlight, result: DispatchResult, attempts: int, cfg: BatchConfig
     ) -> None:
-        if result.requeue_after is None:
-            # Answered: the model is no longer waiting for capacity.
-            self._queued_probing.discard(entry.model_id)
         if result.error is None:
             self._model_succeeded(entry.model_id)
             await self._complete(
@@ -1308,7 +1309,7 @@ class BatchScheduler:
             # attempt, and the model gets no new claims until it may be ready,
             # rather than every slot of its cap asking again at once. Nor when the
             # hold ends: one item asks, and the rest of the cap is claimed once
-            # the model answers. Each "queued" answer is an api_logs row and a
+            # the model serves one. Each "queued" answer is an api_logs row and a
             # batch_attempts row, and a model waiting all night for a GPU job
             # otherwise wrote its whole cap of both every couple of minutes
             # (2026-11-12: 720k of each in a day, against 15k items served).
