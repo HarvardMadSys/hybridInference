@@ -207,6 +207,13 @@ class LocalePreferenceUpdate(BaseModel):
     chosen_at: datetime | None = None
 
 
+class SsoProviderRef(BaseModel):
+    """An identity provider, as much of it as an account's own pages may show."""
+
+    id: str
+    name: str
+
+
 class UserInfo(BaseModel):
     """User information (public).
 
@@ -220,6 +227,9 @@ class UserInfo(BaseModel):
     phone: str | None = None
     phone_verified: bool = False
     has_password: bool = True
+    #: The provider an account with no password and no verified phone confirms
+    #: sensitive actions through; None for every other account.
+    sso_reauth_provider: SsoProviderRef | None = None
     user_name: str | None = None
     avatar_url: str | None = None
     role: str = "free"
@@ -248,6 +258,10 @@ class AccountSummary(BaseModel):
     agent_access: bool | None = Field(
         default=None,
         description="Whether it may use the Cloud Agent; None when signed out or unknown.",
+    )
+    sso_provider: SsoProviderRef | None = Field(
+        default=None,
+        description="The provider an account without a password signs in through.",
     )
 
 
@@ -773,3 +787,46 @@ class SsoMessageResponse(BaseModel):
     """Result of a single sign-on account operation."""
 
     message: str
+
+
+class SsoReauthStartRequest(BaseModel):
+    """Confirm a sensitive action by signing in at the account's identity provider again."""
+
+    purpose: Literal["set_password", "delete_account", "bind_email", "link_sso", "unlink_sso"]
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoIdentity(BaseModel):
+    """One identity linked to an account."""
+
+    id: str
+    provider_id: str
+    provider_name: str
+    email: str | None = None
+    linked_at: datetime
+    last_login_at: datetime | None = None
+    available: bool = Field(description="False when its provider is no longer offered.")
+
+
+class SsoIdentitiesResponse(BaseModel):
+    """The identities linked to the signed-in account."""
+
+    identities: list[SsoIdentity]
+
+
+class SsoLinkIdentityRequest(BaseModel):
+    """Link an identity to the signed-in account, confirmed by its owner.
+
+    An account with a password confirms with it; one that signs in only
+    through an identity provider confirms there first (purpose ``link_sso``).
+    """
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class SsoUnlinkIdentityRequest(BaseModel):
+    """Remove an identity from the signed-in account, confirmed by its owner."""
+
+    password: str | None = Field(default=None, max_length=1024)

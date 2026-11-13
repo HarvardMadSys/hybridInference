@@ -30,9 +30,13 @@ from serving.config import sso as sso_config
 from serving.config.settings import get_settings, get_signup_notify_emails
 from serving.schemas_auth import (
     SsoDiscoverRequest,
+    SsoIdentitiesResponse,
+    SsoLinkIdentityRequest,
     SsoMessageResponse,
     SsoPendingLinkResponse,
+    SsoReauthStartRequest,
     SsoStartResponse,
+    SsoUnlinkIdentityRequest,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
@@ -42,6 +46,7 @@ from serving.servers.deps import (
     user_audit_actor,
 )
 from serving.servers.routers.auth_routes import start_user_session
+from serving.servers.routers.reauth import confirm_account_owner
 from serving.setup_state import refresh_setup_state
 from serving.storage import sso as sso_store
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
@@ -522,8 +527,76 @@ async def _finish_login(
     return response
 
 
+async def _finish_reauth(
+    *,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    op_store: Any,
+    db_logger: Any,
+    provider: SsoProvider,
+    flow: dict[str, Any],
+    identity: oidc.ExternalIdentity,
+) -> RedirectResponse:
+    """Record that the account's owner just signed in again at their provider.
+
+    The confirmation counts only when the identity is the one linked to the
+    account that asked, and the provider says the sign-in happened during this
+    flow: ``prompt=login`` is a request a provider may ignore, so the time it
+    reports is what is checked.
+    """
+    linked = await op_store.get_user_identity(identity.issuer, identity.subject)
+    if linked is None or linked["user_id"] != flow["user_id"]:
+        # Someone else's identity, however valid, confirms nothing for this account.
+        return _flow_error(flow, "failed")
+    earliest = flow["created_at"] - timedelta(seconds=oidc.CLOCK_SKEW_SECONDS)
+    if identity.authenticated_at is None or identity.authenticated_at < earliest:
+        return _flow_error(flow, "failed")
+    await op_store.mark_sso_reauth_verified(flow["state_hash"])
+    return _redirect(_with_param(flow["return_to"], "reauth", flow["reauth_purpose"] or ""))
+
+
+async def _finish_link(
+    *,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    op_store: Any,
+    db_logger: Any,
+    provider: SsoProvider,
+    flow: dict[str, Any],
+    identity: oidc.ExternalIdentity,
+) -> RedirectResponse:
+    """Link the identity to the signed-in account that asked for it in Settings.
+
+    The email is not compared: the account's owner confirmed before the flow
+    started, and has now signed in at the provider, so both sides are theirs.
+    """
+    outcome = await op_store.link_user_identity(
+        identity_id=generate_ulid(),
+        user_id=flow["user_id"],
+        provider_id=provider.id,
+        issuer=identity.issuer,
+        subject=identity.subject,
+        email=identity.email,
+    )
+    if outcome != sso_store.LINKED:
+        codes = {
+            sso_store.IDENTITY_IN_USE: "identity_in_use",
+            sso_store.ISSUER_CONFLICT: "identity_conflict",
+            sso_store.ACCOUNT_INACTIVE: "inactive",
+        }
+        return _flow_error(flow, codes.get(outcome, "failed"))
+    await log_admin_action(
+        db_logger,
+        action="link_sso_identity",
+        details={"sso_provider": provider.id, "email": identity.email},
+        actor=AuditActor.user(flow["user_id"], get_client_ip(request)),
+        target=AuditTarget.user(flow["user_id"]),
+    )
+    return _redirect(_with_param(flow["return_to"], "sso_linked", "1"))
+
+
 #: What each flow purpose does with the identity the provider returned.
-_PURPOSES = {"login": _finish_login}
+_PURPOSES = {"login": _finish_login, "reauth": _finish_reauth, "link": _finish_link}
 
 
 # -- linking an identity to an account that already exists -----------------------
@@ -641,3 +714,208 @@ def _raise_unless_linked(outcome: str) -> None:
         status_code=409,
         detail="This single sign-on is already connected to another account.",
     )
+
+
+# -- confirming a sensitive action at the provider ---------------------------------
+
+
+async def _start_for_account(
+    op_store: Any,
+    request: Request,
+    response: Response,
+    provider: SsoProvider,
+    *,
+    purpose: str,
+    return_to: str,
+    current_user: dict[str, Any],
+    login_hint: str | None = None,
+    reauth_purpose: str | None = None,
+) -> SsoStartResponse:
+    """Start a flow for the signed-in account; the answer tells the page where to go."""
+    if not await _allow_start(request):
+        raise HTTPException(
+            status_code=429,
+            detail="Too many sign-in attempts. Please try again later.",
+            headers={"Retry-After": "3600"},
+        )
+    try:
+        url = await _start_flow(
+            op_store,
+            response,
+            provider,
+            purpose=purpose,
+            return_to=return_to,
+            login_hint=login_hint,
+            user_id=current_user["user_id"],
+            sid=current_user.get("sid"),
+            reauth_purpose=reauth_purpose,
+        )
+    except _Unavailable as exc:
+        logger.warning(f"Single sign-on unavailable: {exc}")
+        raise HTTPException(
+            status_code=503, detail="Single sign-on is unavailable right now."
+        ) from None
+    return SsoStartResponse(authorization_url=url)
+
+
+@router.post("/reauth/start", response_model=SsoStartResponse)
+async def start_reauthentication(
+    request: Request,
+    response: Response,
+    body: SsoReauthStartRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> SsoStartResponse:
+    """Confirm a sensitive action by signing in again at the account's provider.
+
+    For an account with no password and no verified phone. The provider is
+    asked for a fresh sign-in; when the browser comes back, the confirmation
+    is good for five minutes, once, for *purpose* and for this session, and
+    the action's own endpoint is then called without a password.
+
+    Raises:
+        HTTPException: 409 when the account has no identity at a provider
+            that is still offered; 429 and 503 as for starting a sign-in.
+    """
+    provider = await sso_accounts.account_provider(op_store, current_user["user_id"])
+    if provider is None:
+        raise HTTPException(
+            status_code=409,
+            detail="This account has no single sign-on to confirm with.",
+        )
+    return await _start_for_account(
+        op_store,
+        request,
+        response,
+        provider,
+        purpose="reauth",
+        return_to=internal_path(body.return_to, "/dashboard/settings"),
+        current_user=current_user,
+        login_hint=current_user.get("email"),
+        reauth_purpose=body.purpose,
+    )
+
+
+# -- an account's own identities ----------------------------------------------------
+
+
+async def _confirm_owner(
+    request: Request,
+    op_store: Any,
+    current_user: dict[str, Any],
+    *,
+    password: str | None,
+    purpose: str,
+) -> None:
+    """Ask the account's owner to confirm linking or unlinking a single sign-on.
+
+    Its password, or a fresh sign-in at its provider when it has neither a
+    password nor a phone. A phone code is not accepted for these two actions
+    (its purposes are fixed in the schema), so an account whose only other
+    proof is its phone sets a password first.
+    """
+    user_row = await op_store.get_user_by_id(current_user["user_id"])
+    if not user_row:
+        raise HTTPException(status_code=404, detail="User not found")
+    if not user_row.get("password_hash") and not sso_accounts.confirms_through_provider(user_row):
+        raise HTTPException(
+            status_code=400,
+            detail="Set a password before changing single sign-on.",
+        )
+    await confirm_account_owner(
+        request,
+        op_store,
+        user_row,
+        password=password,
+        phone_code=None,
+        purpose=purpose,
+        sid=current_user.get("sid"),
+    )
+
+
+@router.get("/identities", response_model=SsoIdentitiesResponse)
+async def list_identities(
+    current_user: dict[str, Any] = Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> SsoIdentitiesResponse:
+    """List the identities linked to the signed-in account."""
+    return SsoIdentitiesResponse(
+        identities=await sso_accounts.identity_summaries(op_store, current_user["user_id"])
+    )
+
+
+@router.post("/identities/link", response_model=SsoStartResponse)
+async def link_identity(
+    request: Request,
+    response: Response,
+    body: SsoLinkIdentityRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> SsoStartResponse:
+    """Start linking an identity to the signed-in account, from Settings.
+
+    Linking adds a way in to the account, so its owner confirms first, as for
+    binding an email. The provider is found from the email's domain; the
+    account's own email need not match it.
+
+    Raises:
+        HTTPException: 400 when the confirmation is wrong or missing, or the
+            account must set a password first; 429 and 503 as for starting a
+            sign-in.
+    """
+    await _confirm_owner(
+        request, op_store, current_user, password=body.password, purpose="link_sso"
+    )
+    provider = sso_config.provider_for_email(body.email)
+    if provider is None:
+        return SsoStartResponse(available=False)
+    return await _start_for_account(
+        op_store,
+        request,
+        response,
+        provider,
+        purpose="link",
+        return_to=internal_path(body.return_to, "/dashboard/settings"),
+        current_user=current_user,
+        login_hint=str(body.email).lower(),
+    )
+
+
+@router.post("/identities/{identity_id}/unlink", response_model=SsoMessageResponse)
+async def unlink_identity(
+    identity_id: str,
+    request: Request,
+    body: SsoUnlinkIdentityRequest,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+    db_logger=Depends(get_db_logger),
+) -> SsoMessageResponse:
+    """Remove one of the signed-in account's identities, confirmed by its owner.
+
+    Raises:
+        HTTPException: 400 when the confirmation is wrong or missing; 404 when
+            the account holds no such identity; 409 when it is the account's
+            only way to sign in.
+    """
+    await _confirm_owner(
+        request, op_store, current_user, password=body.password, purpose="unlink_sso"
+    )
+    outcome = await op_store.unlink_user_identity(
+        identity_id=identity_id, user_id=current_user["user_id"], keep_last_sign_in=True
+    )
+    if outcome == sso_store.NOT_FOUND:
+        raise HTTPException(status_code=404, detail="No such single sign-on on this account.")
+    if outcome == sso_store.LAST_SIGN_IN:
+        raise HTTPException(
+            status_code=409,
+            detail="This is the only way to sign in to this account. Set a password before "
+            "disconnecting it.",
+        )
+    await log_admin_action(
+        db_logger,
+        action="unlink_sso_identity",
+        details={"identity_id": identity_id},
+        actor=user_audit_actor(request, current_user),
+        target=AuditTarget.user(current_user["user_id"]),
+    )
+    return SsoMessageResponse(message="Single sign-on disconnected.")

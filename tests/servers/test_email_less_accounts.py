@@ -96,6 +96,7 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
     store.create_session = AsyncMock()
     store.rotate_session = AsyncMock()
     store.get_active_key_by_account = AsyncMock(return_value=None)
+    store.list_user_identities = AsyncMock(return_value=[])
     store.approve_user = AsyncMock()
     store.revoke_key = AsyncMock()
     store.log_admin_action = AsyncMock()

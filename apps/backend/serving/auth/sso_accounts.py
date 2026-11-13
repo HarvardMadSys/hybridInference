@@ -20,7 +20,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.auth.browser_sessions import email_verification_required
+from serving.config import sso as sso_config
 from serving.config.settings import is_admin_email
+from serving.schemas_auth import SsoIdentity, SsoProviderRef
 from serving.setup_state import refresh_setup_state
 from serving.storage import sso as sso_store
 from serving.utils.email_blocklist import is_email_domain_blocked
@@ -107,6 +109,54 @@ async def may_auto_link(provider: SsoProvider, user: dict[str, Any]) -> bool:
         and not is_administrator(user)
         and await email_verification_required()
     )
+
+
+def identity_summary(row: dict[str, Any]) -> SsoIdentity:
+    """Describe a linked identity, naming its provider as it is configured now."""
+    provider = sso_config.provider_for_issuer(row["issuer"])
+    return SsoIdentity(
+        id=row["id"],
+        provider_id=provider.id if provider else row["provider_id"],
+        provider_name=provider.display_name if provider else row["provider_id"],
+        email=row.get("email"),
+        linked_at=row["created_at"],
+        last_login_at=row.get("last_login_at"),
+        available=provider is not None,
+    )
+
+
+async def identity_summaries(op_store: Any, user_id: str) -> list[SsoIdentity]:
+    """Describe an account's linked identities; none from a store that keeps none."""
+    try:
+        rows = list(await op_store.list_user_identities(user_id))
+    except RuntimeError:
+        return []
+    return [identity_summary(row) for row in rows]
+
+
+def provider_ref(provider: SsoProvider | None) -> SsoProviderRef | None:
+    """A provider as an account's own pages may show it."""
+    return SsoProviderRef(id=provider.id, name=provider.display_name) if provider else None
+
+
+def confirms_through_provider(user: dict[str, Any]) -> bool:
+    """Whether an account has neither a password nor a verified phone to confirm with."""
+    return not user.get("password_hash") and not (user.get("phone") and user.get("phone_verified"))
+
+
+async def account_provider(op_store: Any, user_id: str) -> SsoProvider | None:
+    """The offered provider an account most recently signed in through, if any."""
+    try:
+        identities = list(await op_store.list_user_identities(user_id))
+    except RuntimeError:
+        # A store that does not keep identities has none to offer.
+        return None
+    identities.sort(key=lambda row: row.get("last_login_at") or row["created_at"], reverse=True)
+    for identity in identities:
+        provider = sso_config.provider_for_issuer(identity["issuer"])
+        if provider is not None:
+            return provider
+    return None
 
 
 async def resolve_sign_in(

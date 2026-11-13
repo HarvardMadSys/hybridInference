@@ -390,3 +390,73 @@ async def test_an_account_created_meanwhile_is_seen_on_the_second_pass(store):
 )
 def test_an_accounts_status_decides_the_refusal(status, code):
     assert sso_accounts.status_refusal(status) == code
+
+
+# -- an account's provider ---------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("fields", "confirms"),
+    [
+        ({"password_hash": None, "phone": None}, True),
+        ({"password_hash": None, "phone": "+8613800138000", "phone_verified": False}, True),
+        ({"password_hash": "hash", "phone": None}, False),
+        ({"password_hash": None, "phone": "+8613800138000", "phone_verified": True}, False),
+    ],
+)
+def test_only_an_account_with_no_password_and_no_verified_phone_confirms_at_its_provider(
+    fields, confirms
+):
+    assert sso_accounts.confirms_through_provider(fields) is confirms
+
+
+async def test_an_accounts_provider_is_the_offered_one_it_last_signed_in_through(monkeypatch):
+    from datetime import UTC, datetime
+
+    offered = {"https://new.example.edu": _provider(id="new", issuer="https://new.example.edu")}
+    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", offered.get)
+    rows = [
+        {"issuer": "https://new.example.edu", "created_at": datetime(2026, 1, 1, tzinfo=UTC)},
+        {
+            "issuer": "https://gone.example.edu",
+            "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+            "last_login_at": datetime(2026, 6, 1, tzinfo=UTC),
+        },
+    ]
+    store = AsyncMock()
+    store.list_user_identities.return_value = rows
+
+    # The most recently used identity belongs to a provider that is gone.
+    assert (await sso_accounts.account_provider(store, "u-1")).id == "new"
+
+    store.list_user_identities.return_value = rows[1:]
+    assert await sso_accounts.account_provider(store, "u-1") is None
+
+    # A store that keeps no identities has none to offer.
+    store.list_user_identities.side_effect = RuntimeError("unavailable in this store")
+    assert await sso_accounts.account_provider(store, "u-1") is None
+    assert await sso_accounts.identity_summaries(store, "u-1") == []
+
+
+def test_an_identity_is_described_with_its_provider_as_configured_now(monkeypatch):
+    from datetime import UTC, datetime
+
+    row = {
+        "id": "i-1",
+        "issuer": ISSUER,
+        "provider_id": "old-id",
+        "email": "alice@example.edu",
+        "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+        "last_login_at": None,
+    }
+    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", lambda issuer: _provider())
+
+    summary = sso_accounts.identity_summary(row)
+    assert (summary.provider_id, summary.provider_name) == ("example-univ", "Example University")
+    assert summary.available is True
+
+    # A provider that is no longer offered keeps the id it was linked under.
+    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", lambda issuer: None)
+    summary = sso_accounts.identity_summary(row)
+    assert (summary.provider_id, summary.provider_name) == ("old-id", "old-id")
+    assert summary.available is False
