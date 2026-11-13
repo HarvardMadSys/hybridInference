@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import json
 import uuid
 from unittest.mock import AsyncMock, patch
 
@@ -225,3 +226,96 @@ async def test_preload_restores_open_delivered_incidents_and_their_recovery(pool
     finally:
         hooks.install(None)
         alert_policy.reset_notification_policy()
+
+
+def _plan_nodes(node):
+    yield node
+    for child in node.get("Plans", ()):
+        yield from _plan_nodes(child)
+
+
+async def test_preload_uses_scoped_indexes_on_substantial_history(pool):
+    """The startup query stays selective as unrelated history accumulates."""
+    db_pool, namespace = pool
+    async with db_pool.acquire() as conn, conn.transaction():
+        await conn.execute(
+            """
+            INSERT INTO alert_history_events (
+                record_id, source, source_namespace, origin_record_id, payload_digest,
+                schema_version, deployment_id, target_environment, process_id, episode_id,
+                occurred_at, kind, origin, alert_type, alert_key
+            )
+            SELECT md5('preload-bg-' || n)::uuid, 'backend', $1,
+                   'preload-bg-' || n, md5('preload-bg-payload-' || n), 1,
+                   'unrelated-deployment', 'test', 'synthetic-process',
+                   'unrelated-episode-' || n,
+                   NOW() - (n::text || ' seconds')::interval,
+                   'condition_triggered', 'live', 'synthetic', 'unrelated-' || n
+            FROM generate_series(1, 30000) AS n
+            """,
+            namespace,
+        )
+        await conn.execute(
+            """
+            INSERT INTO alert_history_events (
+                record_id, source, source_namespace, origin_record_id, payload_digest,
+                schema_version, deployment_id, target_environment, process_id, episode_id,
+                occurred_at, kind, origin, alert_type, alert_key, facts
+            )
+            SELECT md5('preload-open-' || n)::uuid, 'backend', $1,
+                   'preload-open-' || n, md5('preload-open-payload-' || n), 1,
+                   'test-deployment', 'test', 'synthetic-process',
+                   'open-episode-' || n,
+                   CASE WHEN n = 1 THEN TIMESTAMPTZ '2000-01-01 00:00:00+00'
+                        ELSE NOW() - INTERVAL '2 minutes' END,
+                   'condition_triggered', 'live', 'synthetic', 'open-' || n,
+                   jsonb_build_object('tracker_kind', 'state')
+            FROM generate_series(1, 250) AS n
+            """,
+            namespace,
+        )
+        await conn.execute(
+            """
+            INSERT INTO alert_history_events (
+                record_id, source, source_namespace, origin_record_id, payload_digest,
+                schema_version, deployment_id, target_environment, process_id, episode_id,
+                occurred_at, kind, origin, alert_type, alert_key, facts, outcome
+            )
+            SELECT md5('preload-delivered-' || n)::uuid, 'backend', $1,
+                   'preload-delivered-' || n, md5('preload-delivered-payload-' || n), 1,
+                   'test-deployment', 'test', 'synthetic-process',
+                   'open-episode-' || n,
+                   CASE WHEN n = 1 THEN TIMESTAMPTZ '2000-01-01 00:01:00+00'
+                        ELSE NOW() - INTERVAL '1 minute' END,
+                   'delivery_result', 'live', 'synthetic', 'open-' || n,
+                   jsonb_build_object('notification', 'firing'), 'accepted'
+            FROM generate_series(1, 250) AS n
+            """,
+            namespace,
+        )
+        await conn.execute("ANALYZE alert_history_events")
+
+        explanation = await conn.fetchval(
+            "EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) " + alert_policy._PRELOAD_SQL,
+            "backend",
+            namespace,
+            "test-deployment",
+            "test",
+        )
+        plan_document = json.loads(explanation) if isinstance(explanation, str) else explanation
+        nodes = list(_plan_nodes(plan_document[0]["Plan"]))
+        indexes = {node.get("Index Name") for node in nodes}
+        restored = await conn.fetch(
+            alert_policy._PRELOAD_SQL,
+            "backend",
+            namespace,
+            "test-deployment",
+            "test",
+        )
+
+    assert len(restored) == 250
+    assert any(
+        row["alert_key"] == "open-1" and row["opened_at"] < 1_000_000_000 for row in restored
+    )
+    assert "idx_alert_history_events_preload_condition" in indexes
+    assert "idx_alert_history_events_preload_delivery" in indexes
