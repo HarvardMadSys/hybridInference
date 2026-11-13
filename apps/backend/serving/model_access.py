@@ -236,6 +236,23 @@ def is_model_outside_grant_scope(canonical_model_id: str, user_ctx: dict[str, An
 #: allowlist, since revoking the key says "no models" more plainly.
 KEY_ALLOWED_MODELS_KEY = "key_allowed_models"
 
+#: Set by the key auth paths when the presented key carries a credential
+#: scope, and only when the request is attributed to that key. Absent (or
+#: empty) means an ordinary credential: a browser session, an unscoped API
+#: key, a grant, an anonymous caller.
+CREDENTIAL_SCOPE_KEY = "credential_scope"
+
+#: The credential scope issued to a detached agent service's provisioned
+#: accounts. A model whose catalog entry names this scope (``credential_scope:
+#: agent``) answers only to those keys, and those keys answer only to such
+#: models — see :func:`model_access_denial`.
+AGENT_CREDENTIAL_SCOPE = "agent"
+
+#: Every credential scope this build can mint or honour. A catalog entry
+#: naming another scope is refused at registration rather than published as a
+#: model nobody can call.
+CREDENTIAL_SCOPES = frozenset({AGENT_CREDENTIAL_SCOPE})
+
 #: Set when the caller's key belongs to a project with a model allowlist.
 #: Absent (or None) means the project does not narrow access. An empty list is
 #: treated as unrestricted, as it is stored: the console does not allow saving
@@ -280,6 +297,7 @@ class ModelAccessDenial(enum.Enum):
 
     UNPUBLISHED = "unpublished"
     ROLE = "role"
+    CREDENTIAL_SCOPE = "credential_scope"
     DISABLED = "disabled"
     OUTSIDE_KEY = "outside_key"
     OUTSIDE_PROJECT = "outside_project"
@@ -313,12 +331,21 @@ async def model_access_denial(
     """Return why ``user_ctx`` may not use the model behind ``route``, or None.
 
     The check every surface applies before it serves or lists a model: the
-    route is published, the caller's role meets the role the model requires
-    (after the runtime visibility override), the caller has not disabled the
+    route is published, the caller's credential scope and role admit it (after
+    the runtime visibility override), the caller has not disabled the
     model, the caller's API key allows it, and, with ``grant_scope``, an
     inference grant names it. Overrides,
     denylists and grants are all keyed by the canonical id, so every check reads
     the canonical id: an alias is held to the same rules as its model.
+
+    **Credential scope is symmetric and replaces the role tier.** A route
+    that names a scope answers only to a credential carrying that scope —
+    an ordinary API key, a browser session, a grant and an anonymous caller
+    are all refused whatever their role, admins included — and a scoped
+    credential answers only to routes naming its scope, so a leaked scoped
+    key reaches nothing beyond its scoped models. The account's own state
+    (active, verified) is still settled by authentication before this runs;
+    scope decides only which models the credential may touch.
 
     Only queries; nothing is claimed or recorded.
 
@@ -340,11 +367,17 @@ async def model_access_denial(
     if not route.published:
         return ModelAccessDenial.UNPUBLISHED
     canonical = route_canonical_model_id(route, model_id)
-    required = baseline_required_role(route)
-    if visibility_resolver is not None:
-        required = await visibility_resolver.get_effective_required_role(canonical, required)
-    if not has_role((user_ctx or {}).get("role") or "free", required):
-        return ModelAccessDenial.ROLE
+    route_scope = getattr(route, "credential_scope", "") or ""
+    caller_scope = (user_ctx or {}).get(CREDENTIAL_SCOPE_KEY) or ""
+    if route_scope or caller_scope:
+        if caller_scope != route_scope:
+            return ModelAccessDenial.CREDENTIAL_SCOPE
+    else:
+        required = baseline_required_role(route)
+        if visibility_resolver is not None:
+            required = await visibility_resolver.get_effective_required_role(canonical, required)
+        if not has_role((user_ctx or {}).get("role") or "free", required):
+            return ModelAccessDenial.ROLE
     if is_model_disabled_for_user(canonical, user_ctx):
         return ModelAccessDenial.DISABLED
     if is_model_outside_key_scope(canonical, user_ctx):

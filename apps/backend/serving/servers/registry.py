@@ -392,6 +392,16 @@ def check_model_entry(model: Any, *, index: int = 0) -> None:
         or not all(isinstance(alias, str) and alias.strip() for alias in aliases)
     ):
         raise RegistryConfigError(f"aliases must be a list of non-empty strings ({where})")
+    credential_scope = model.get("credential_scope")
+    if credential_scope is not None:
+        from serving.model_access import CREDENTIAL_SCOPES
+
+        if not isinstance(credential_scope, str) or (
+            credential_scope.strip() and credential_scope.strip() not in CREDENTIAL_SCOPES
+        ):
+            raise RegistryConfigError(
+                f"credential_scope must be one of {sorted(CREDENTIAL_SCOPES)} or omitted ({where})"
+            )
     # An embedding model produces no output tokens, so it declares 0.
     for name, least in (("context_length", 1), ("max_output_length", 0)):
         limit = model.get(name)
@@ -807,6 +817,31 @@ def _parse_role_gate(model: dict[str, Any], model_id: str) -> tuple[bool, str]:
     return admin_only, required_role
 
 
+def _parse_credential_scope(model: dict[str, Any], model_id: str) -> str:
+    """Parse a model entry's ``credential_scope``, failing closed on a typo.
+
+    An omitted or empty scope is an ordinary model. A scope this build
+    cannot mint would publish a model nobody can call, so an unknown value
+    is kept as written — no credential can match it — and named in the log,
+    rather than dropped, which would open the model to every credential.
+    """
+    raw = model.get("credential_scope")
+    if raw is None:
+        return ""
+    scope = str(raw).strip()
+    if not scope:
+        return ""
+    from serving.model_access import CREDENTIAL_SCOPES
+
+    if scope not in CREDENTIAL_SCOPES:
+        logging.getLogger(__name__).warning(
+            "Model %s has unknown credential_scope '%s'; no credential can use it",
+            model_id,
+            scope,
+        )
+    return scope
+
+
 def _register_embedding_model(
     router: FixedRouter,
     embedding_adapters: dict[str, Any],
@@ -817,6 +852,7 @@ def _register_embedding_model(
     aliases: list[str],
     admin_only: bool,
     required_role: str,
+    credential_scope: str = "",
 ) -> None:
     """Publish one embedding model's adapter and its access gate, aliases included."""
     embedding_adapters[model_id] = emb_adapter
@@ -828,6 +864,7 @@ def _register_embedding_model(
         aliases=aliases,
         admin_only=admin_only,
         required_role=required_role,
+        credential_scope=credential_scope,
     )
     # Every adapter key, including aliases, must have a gate.
     _gate = router.embedding_routes
@@ -1473,6 +1510,7 @@ def register_from_models_document(
                             aliases=aliases,
                             admin_only=admin_only,
                             required_role=required_role,
+                            credential_scope=_parse_credential_scope(m, model_id),
                         )
                     )
                     count += 1 + len(aliases)
@@ -1487,6 +1525,7 @@ def register_from_models_document(
                         aliases=aliases,
                         admin_only=admin_only,
                         required_role=required_role,
+                        credential_scope=_parse_credential_scope(m, model_id),
                     )
                 )
                 count += 1 + len(aliases)

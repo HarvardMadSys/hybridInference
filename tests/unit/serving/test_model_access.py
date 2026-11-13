@@ -25,13 +25,20 @@ from serving.model_access import (
 CANONICAL = "canonical-model"
 
 
-def _route(*, published: bool = True, required_role: str = "free", admin_only: bool = False):
+def _route(
+    *,
+    published: bool = True,
+    required_role: str = "free",
+    admin_only: bool = False,
+    credential_scope: str = "",
+):
     adapter = SimpleNamespace(config=SimpleNamespace(id=CANONICAL))
     return SimpleNamespace(
         adapters=[(adapter, 1.0)],
         published=published,
         required_role=required_role,
         admin_only=admin_only,
+        credential_scope=credential_scope,
     )
 
 
@@ -394,3 +401,76 @@ def test_baseline_required_role():
     assert baseline_required_role(_route(required_role="pro")) == "pro"
     assert baseline_required_role(_route(required_role="", admin_only=True)) == "admin"
     assert baseline_required_role(_route(required_role="")) == "free"
+
+
+class TestCredentialScope:
+    """A scoped model answers only to its scope's keys, and the reverse."""
+
+    @pytest.mark.asyncio
+    async def test_a_matching_scoped_key_is_allowed_at_any_role(self):
+        route = _route(required_role="pro", credential_scope="agent")
+
+        assert (
+            await model_access_denial(route, CANONICAL, _ctx(role="free", credential_scope="agent"))
+            is None
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("role", ["free", "pro", "internal", "admin"])
+    async def test_an_ordinary_credential_is_refused_at_every_role(self, role):
+        route = _route(credential_scope="agent")
+
+        denial = await model_access_denial(route, CANONICAL, _ctx(role=role))
+
+        assert denial is ModelAccessDenial.CREDENTIAL_SCOPE
+
+    @pytest.mark.asyncio
+    async def test_an_anonymous_caller_is_refused(self):
+        route = _route(credential_scope="agent")
+
+        assert (
+            await model_access_denial(route, CANONICAL, None) is ModelAccessDenial.CREDENTIAL_SCOPE
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_grant_cannot_reach_a_scoped_model(self):
+        # A grant names models, never a credential scope; even naming this
+        # one does not open it.
+        route = _route(credential_scope="agent")
+
+        denial = await model_access_denial(route, CANONICAL, _ctx(agent_allowed_models=[CANONICAL]))
+
+        assert denial is ModelAccessDenial.CREDENTIAL_SCOPE
+
+    @pytest.mark.asyncio
+    async def test_a_scoped_key_reaches_no_ordinary_model(self):
+        denial = await model_access_denial(_route(), CANONICAL, _ctx(credential_scope="agent"))
+
+        assert denial is ModelAccessDenial.CREDENTIAL_SCOPE
+
+    @pytest.mark.asyncio
+    async def test_the_scope_is_read_for_an_alias_too(self):
+        route = _route(credential_scope="agent")
+
+        assert (
+            await model_access_denial(route, "model-alias", _ctx(credential_scope="agent")) is None
+        )
+        assert (
+            await model_access_denial(route, "model-alias", _ctx())
+            is ModelAccessDenial.CREDENTIAL_SCOPE
+        )
+
+    @pytest.mark.asyncio
+    async def test_unpublished_still_wins_over_scope(self):
+        route = _route(published=False, credential_scope="agent")
+
+        denial = await model_access_denial(route, CANONICAL, _ctx(credential_scope="agent"))
+
+        assert denial is ModelAccessDenial.UNPUBLISHED
+
+    @pytest.mark.asyncio
+    async def test_scope_does_not_open_a_model_the_key_excludes(self):
+        route = _route(credential_scope="agent")
+        ctx = _ctx(credential_scope="agent", key_allowed_models=["other-model"])
+
+        assert await model_access_denial(route, CANONICAL, ctx) is ModelAccessDenial.OUTSIDE_KEY
