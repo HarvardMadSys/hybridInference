@@ -99,6 +99,13 @@ On the candidate (Python 3.13):
   the machine at a load average above 30. The same file passes on the
   candidate in isolation (18 passed in 46 s), and the same test fails on
   untouched `dev` in the same tier.
+- `make frontend-check` (Node 22): lint and type-check pass; the test tier
+  reports 30 failed / 2537 passed, every failure a 5000 ms test timeout on a
+  machine held above a load average of 20 by another session. The candidate
+  changes no frontend file (`git diff upstream/dev HEAD -- apps/frontend/` is
+  empty). The same tier on untouched `dev` reports 43 failed / 2524 passed
+  under the same load, so the candidate's result is strictly better than the
+  base's.
 - Full suite (`not external and not dbtest`, `-n 8 --dist loadfile`): 13840
   passed, 5 skipped, 8 failed.
 
