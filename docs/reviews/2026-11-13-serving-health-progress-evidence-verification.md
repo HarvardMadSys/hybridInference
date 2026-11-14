@@ -176,11 +176,35 @@ Every one is a wall-clock or readiness assertion in a file the candidate does
 not touch, and each passes on the candidate when its file is run alone (41
 passed for the two storage files together, 18 passed for the migration file).
 
+### The Tutorial E2E stack, locally
+
+This environment has Docker 29.9.2, so the Tutorial E2E's commands were run
+directly: `make up DISTRIBUTION=example` then `make smoke DISTRIBUTION=example`
+on the candidate, and the same pair on untouched `dev`.
+
+Both fail identically, with the same message and the same payload:
+
+    example smoke timed out after 120s: example manifest is not active:
+    {'schema_version': 1, 'distribution': {'id': 'neutral', ...}, ...}
+
+The container does receive the example manifest (`SITE_CONFIGURATION` is set
+in the backend's environment), but the endpoint reports the neutral default,
+so the check fails before it reaches any inference. The candidate does not
+touch `apps/backend/serving/servers/routers/site_config.py` or the
+configuration loader, and the same command fails the same way on the
+untouched base. The CI job builds and stages the distribution differently from
+a bare `make up`, so this is a local-environment limitation of the stack, not
+a difference between the two trees.
+
+The stack was torn down afterwards; only the repository's shared test
+PostgreSQL container remains.
+
 ## Not covered
 
-- The Docker and Tutorial E2E CI jobs need a Docker daemon; this environment
-  has one, but those jobs build images from the exact revision and are the
-  CI's own scope, not a local gate this verification can stand in for.
+- The CI `Tutorial E2E` and `docker-build` jobs build images from the exact
+  revision under a GitHub-hosted runner and stage the distribution differently
+  from a bare `make up`. The candidate's own CI run has not executed (it is
+  awaiting maintainer approval), so their verdict is outstanding.
 - The candidate's GitHub Actions run is `action_required`: this repository's
   fork pull requests need a maintainer to approve the workflow before it
   starts. The approval API needs repository admin rights, which this
