@@ -7,8 +7,10 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ChangeEvent,
+  type RefObject,
 } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
@@ -159,6 +161,67 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/** From this width Configuration is a panel beside the conversation; below it, a drawer. */
+const PANEL_QUERY = '(min-width: 1024px)';
+
+function subscribeToPanelQuery(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(PANEL_QUERY);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+}
+
+function panelQueryMatches(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PANEL_QUERY).matches;
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * While `open`, Escape closes the panel and Tab stays inside it, so the
+ * keyboard cannot reach the conversation its backdrop covers.
+ */
+function useOverlayKeys(
+  open: boolean,
+  panelRef: RefObject<HTMLElement | null>,
+  onClose: () => void,
+): void {
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        // A picker inside the panel consumes its own Escape.
+        if (!event.defaultPrevented) closeRef.current();
+        return;
+      }
+      const panel = panelRef.current;
+      if (event.key !== 'Tab' || !panel) return;
+      const items = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const current = document.activeElement;
+      if (!panel.contains(current)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && current === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && current === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, panelRef]);
+}
+
 // Hover-revealed controls must still show for keyboard focus and on touch screens.
 const REVEAL_ON_HOVER =
   'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100';
@@ -183,13 +246,19 @@ export default function PlaygroundPage() {
   const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
   const [showJump, setShowJump] = useState(false);
   const [undo, setUndo] = useState<UndoAction | null>(null);
-  // Below `lg` the settings rail is a drawer over the conversation, opened
-  // from the header; from `lg` up it is the panel beside it.
-  const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsCollapsed, setSettingsCollapsed] = useState(false);
-  const [wideLayout, setWideLayout] = useState(false);
+  // Configuration is a panel beside the conversation on a wide window, shown
+  // unless collapsed, and a drawer over it on a narrow one, closed unless
+  // opened. `configChoice` is what the user last asked for where it differs
+  // from that default, so a drawer left open is still open as a panel after
+  // the window widens, and a collapsed panel stays away after it narrows.
+  const widePanel = useSyncExternalStore(subscribeToPanelQuery, panelQueryMatches, () => false);
+  const [configChoice, setConfigChoice] = useState<boolean | null>(null);
+  const configShown = configChoice ?? widePanel;
+  const configDrawerOpen = configShown && !widePanel;
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historySearch, setHistorySearch] = useState('');
+  const settingsRef = useRef<HTMLElement>(null);
+  const historyRef = useRef<HTMLElement>(null);
   const historyButtonRef = useRef<HTMLButtonElement>(null);
   const historySearchRef = useRef<HTMLInputElement>(null);
   const [codeOpen, setCodeOpen] = useState(false);
@@ -214,42 +283,31 @@ export default function PlaygroundPage() {
     visibleSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return;
-    const wide = window.matchMedia('(min-width: 1024px)');
-    const onWidth = () => {
-      setWideLayout(wide.matches);
-      if (wide.matches) setSettingsOpen(false);
-    };
-    onWidth();
-    wide.addEventListener('change', onWidth);
-    return () => wide.removeEventListener('change', onWidth);
+  const setConfigShown = useCallback(
+    (shown: boolean) => setConfigChoice(shown === widePanel ? null : shown),
+    [widePanel],
+  );
+  /** Put the drawer away; a panel beside the conversation stays where it is. */
+  const closeConfigDrawer = useCallback(() => {
+    if (!widePanel) setConfigChoice(null);
+  }, [widePanel]);
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    historyButtonRef.current?.focus();
   }, []);
 
   useEffect(() => {
-    if (!settingsOpen) return;
-    settingsCloseRef.current?.focus();
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      // A picker inside the drawer consumes its own Escape.
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      setSettingsOpen(false);
-      settingsButtonRef.current?.focus();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [settingsOpen]);
+    if (configDrawerOpen) settingsCloseRef.current?.focus();
+  }, [configDrawerOpen]);
+  useOverlayKeys(configDrawerOpen, settingsRef, () => {
+    setConfigChoice(null);
+    settingsButtonRef.current?.focus();
+  });
 
   useEffect(() => {
-    if (!historyOpen) return;
-    historySearchRef.current?.focus();
-    const onKey = (event: globalThis.KeyboardEvent) => {
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      setHistoryOpen(false);
-      historyButtonRef.current?.focus();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
+    if (historyOpen) historySearchRef.current?.focus();
   }, [historyOpen]);
+  useOverlayKeys(historyOpen, historyRef, closeHistory);
 
   useEffect(() => {
     if (!codeOpen) return;
@@ -852,8 +910,12 @@ export default function PlaygroundPage() {
   );
   const backgroundStreams = [...streamingIds].filter((id) => id !== activeSessionId).length;
 
-  const railLabel = 'text-xs font-semibold text-gray-800';
-  const railBlock = 'border-b border-gray-100 px-5 py-5';
+  const toolButton =
+    'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400';
+  const iconButton =
+    'rounded-md p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400';
+  const railLabel = 'text-[13px] font-medium text-gray-900';
+  const railBlock = 'border-b border-gray-100 px-4 py-5 last:border-b-0';
   const fieldLabel = 'block text-xs font-medium text-gray-600';
   const control =
     'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50';
@@ -882,21 +944,20 @@ export default function PlaygroundPage() {
   return (
     <ProtectedRoute>
       <div className="flex min-h-0 w-full flex-1 flex-col bg-white text-gray-900">
-        <div className="flex min-h-14 shrink-0 flex-wrap items-center justify-between gap-2 border-b border-gray-200 bg-white px-3 py-3 sm:min-h-16 sm:px-6">
+        <h1 className="sr-only">Chat</h1>
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-2 sm:px-3">
           <div className="flex min-w-0 items-center gap-2">
-            <h1 className="sr-only text-sm font-semibold sm:not-sr-only">Chat</h1>
             <button
               ref={settingsButtonRef}
               type="button"
               onClick={() => {
                 setHistoryOpen(false);
-                if (wideLayout) setSettingsCollapsed((value) => !value);
-                else setSettingsOpen((value) => !value);
+                setConfigShown(!configShown);
               }}
-              aria-expanded={wideLayout ? !settingsCollapsed : settingsOpen}
+              aria-expanded={configShown}
               aria-controls="playground-settings"
               aria-label="Configuration"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+              className={`${toolButton} ${configShown ? 'bg-gray-100 text-gray-900' : ''}`}
             >
               <svg
                 aria-hidden="true"
@@ -910,32 +971,38 @@ export default function PlaygroundPage() {
               >
                 <path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
               </svg>
-              <span>Configuration</span>
+              <span className="hidden sm:inline">Configuration</span>
             </button>
-            <div className="order-last min-w-0">
-              <span className="hidden max-w-[12rem] truncate text-xs text-gray-400 xl:block">
-                {session ? getSessionTitle(session) : 'New session'}
-              </span>
-            </div>
+            <span aria-hidden="true" className="h-4 w-px shrink-0 bg-gray-200" />
+            <p className="min-w-0 truncate text-[13px] text-gray-500">
+              {session ? getSessionTitle(session) : 'New session'}
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-0.5">
             <button
               type="button"
               aria-label="New chat"
-              title="New chat"
               onClick={() => {
                 newSession();
                 setHistoryOpen(false);
-                setSettingsOpen(false);
+                closeConfigDrawer();
                 textareaRef.current?.focus();
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+              className={toolButton}
             >
-              <span aria-hidden="true" className="text-base leading-4">
-                +
-              </span>
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
               <span className="hidden sm:inline">New chat</span>
             </button>
-          </div>
-          <div className="flex items-center gap-2">
             <button
               ref={historyButtonRef}
               type="button"
@@ -946,51 +1013,57 @@ export default function PlaygroundPage() {
               onClick={() => {
                 setHistoryOpen((value) => !value);
                 setHistorySearch('');
-                setSettingsOpen(false);
+                closeConfigDrawer();
               }}
-              className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 px-2.5 py-1.5 text-xs font-medium text-gray-600 transition hover:bg-gray-50"
+              className={`${toolButton} ${historyOpen ? 'bg-gray-100 text-gray-900' : ''}`}
             >
               <svg
                 aria-hidden="true"
-                className="h-3.5 w-3.5"
+                className="h-4 w-4"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
                 strokeWidth={1.5}
                 strokeLinecap="round"
+                strokeLinejoin="round"
               >
                 <path d="M3 11a9 9 0 1 1 2.6 7M3 5v6h6M12 7v5l3 2" />
               </svg>
-              History
+              <span className="hidden sm:inline">History</span>
               {backgroundStreams > 0 && (
-                <span
-                  id="background-generations"
-                  aria-label={`${backgroundStreams} background generations`}
-                  className="h-1.5 w-1.5 rounded-full bg-emerald-500"
-                />
+                <span id="background-generations" className="flex items-center">
+                  <span
+                    aria-hidden="true"
+                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+                  />
+                  <span className="sr-only">
+                    {backgroundStreams === 1
+                      ? '1 session is generating in the background'
+                      : `${backgroundStreams} sessions are generating in the background`}
+                  </span>
+                </span>
               )}
             </button>
             {showCode && (
               <button
-                aria-label="View code"
-                title="View code"
                 ref={codeButtonRef}
                 type="button"
+                aria-label="View code"
                 onClick={() => {
                   setCodeCopied(false);
                   setHistoryOpen(false);
-                  setSettingsOpen(false);
+                  closeConfigDrawer();
                   setCodeOpen(true);
                 }}
-                className="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+                className={toolButton}
               >
                 <svg
                   aria-hidden="true"
-                  className="h-3.5 w-3.5"
+                  className="h-4 w-4"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
-                  strokeWidth={2}
+                  strokeWidth={1.5}
                   strokeLinecap="round"
                   strokeLinejoin="round"
                 >
@@ -1002,49 +1075,55 @@ export default function PlaygroundPage() {
           </div>
         </div>
 
-        <div className="relative flex min-h-0 flex-1 overflow-hidden bg-white">
-          {settingsOpen && (
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+          {configDrawerOpen && (
             <div
               aria-hidden="true"
-              onClick={() => setSettingsOpen(false)}
-              className="fixed inset-0 z-30 bg-black/40 lg:hidden"
+              onClick={() => setConfigChoice(null)}
+              className="fixed inset-0 z-30 bg-black/40"
             />
           )}
           <aside
+            ref={settingsRef}
             id="playground-settings"
             aria-label="Configuration"
-            className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col overflow-hidden border-r border-gray-200 bg-white shadow-2xl duration-200 motion-reduce:transition-none lg:visible lg:static lg:z-auto lg:w-[20rem] lg:max-w-none lg:shrink-0 lg:transform-none lg:bg-white lg:shadow-none ${settingsCollapsed ? 'lg:hidden' : 'lg:flex'} ${
-              settingsOpen
-                ? 'visible translate-x-0 transition-transform'
-                : 'invisible -translate-x-full transition-[transform,visibility]'
-            }`}
+            className={
+              widePanel
+                ? `w-80 shrink-0 flex-col border-r border-gray-200 bg-white ${configShown ? 'flex' : 'hidden'}`
+                : `fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col border-r border-gray-200 bg-white shadow-2xl duration-200 motion-reduce:transition-none ${
+                    configShown
+                      ? 'visible translate-x-0 transition-transform'
+                      : 'invisible -translate-x-full transition-[transform,visibility]'
+                  }`
+            }
           >
-            <div className="flex h-14 shrink-0 items-center justify-between px-5">
-              <span className="text-sm font-semibold text-gray-900">Configuration</span>
-              <button
-                ref={settingsCloseRef}
-                type="button"
-                onClick={() => {
-                  setSettingsOpen(false);
-                  if (wideLayout) setSettingsCollapsed(true);
-                  settingsButtonRef.current?.focus();
-                }}
-                aria-label="Close configuration"
-                className="rounded-md p-2 text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
-              >
-                <svg
-                  aria-hidden="true"
-                  className="h-5 w-5"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                  stroke="currentColor"
-                  strokeWidth={1.75}
-                  strokeLinecap="round"
+            {!widePanel && (
+              <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-100 pl-4 pr-2">
+                <span className="text-sm font-semibold text-gray-900">Configuration</span>
+                <button
+                  ref={settingsCloseRef}
+                  type="button"
+                  onClick={() => {
+                    setConfigChoice(null);
+                    settingsButtonRef.current?.focus();
+                  }}
+                  aria-label="Close configuration"
+                  className={iconButton}
                 >
-                  <path d="M6 6l12 12M18 6L6 18" />
-                </svg>
-              </button>
-            </div>
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.75}
+                    strokeLinecap="round"
+                  >
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
+                </button>
+              </div>
+            )}
             <div className="min-h-0 flex-1 overflow-y-auto">
               <section className={railBlock}>
                 <label htmlFor="playground-system" className={railLabel}>
@@ -1103,33 +1182,33 @@ export default function PlaygroundPage() {
                   </div>
                 )}
 
-                <div className="mt-3">
-                  <label htmlFor="playground-api" className={railLabel}>
+                <div className="mt-4">
+                  <label htmlFor="playground-api" className={fieldLabel}>
                     API
                   </label>
                   <Select
                     id="playground-api"
                     size="lg"
-                    className="mt-2 w-full"
+                    className="mt-1.5 w-full"
                     value={sessionApi}
                     onValueChange={(value) => patch((s) => ({ ...s, api: value as PlaygroundApi }))}
                     disabled={activeStreaming}
                     options={API_OPTIONS}
                   />
-                  <p className="mt-2 text-[11px] leading-4 text-gray-400">
+                  <p className="mt-1.5 text-[11px] leading-4 text-gray-400">
                     Request format. View code shows the same call.
                   </p>
                 </div>
 
                 {modelProviders.length > 1 && (
-                  <div className="mt-3">
-                    <label htmlFor="playground-provider" className={railLabel}>
+                  <div className="mt-4">
+                    <label htmlFor="playground-provider" className={fieldLabel}>
                       Provider
                     </label>
                     <Select
                       id="playground-provider"
                       size="lg"
-                      className="mt-2 w-full"
+                      className="mt-1.5 w-full"
                       value={sessionApi === 'chat' ? (selectedProvider ?? '') : ''}
                       onValueChange={(value) =>
                         patch((s) => ({
@@ -1205,7 +1284,7 @@ export default function PlaygroundPage() {
                     <Select
                       id="playground-reasoning-effort"
                       size="lg"
-                      className="mt-2 w-full"
+                      className="mt-1.5 w-full"
                       value={reasoningEffort ?? ''}
                       onValueChange={(value) =>
                         patch((s) => ({ ...s, reasoningEffort: value || null }))
@@ -1266,16 +1345,18 @@ export default function PlaygroundPage() {
                         ? `You are talking to ${model.name}. Type a message below to begin.`
                         : 'Choose a model in Configuration, then type a message below.'}
                     </p>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHistoryOpen(false);
-                        setSettingsOpen(true);
-                      }}
-                      className="mt-4 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 lg:hidden"
-                    >
-                      Open configuration
-                    </button>
+                    {!configShown && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHistoryOpen(false);
+                          setConfigShown(true);
+                        }}
+                        className="mt-4 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
+                      >
+                        Open configuration
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
@@ -1635,49 +1716,54 @@ export default function PlaygroundPage() {
 
           {historyOpen && (
             <>
-              <button
-                type="button"
-                aria-label="Close history backdrop"
-                tabIndex={-1}
-                onClick={() => {
-                  setHistoryOpen(false);
-                  historyButtonRef.current?.focus();
-                }}
+              <div
+                aria-hidden="true"
+                onClick={closeHistory}
                 className="absolute inset-0 z-20 bg-gray-900/10"
               />
               <aside
+                ref={historyRef}
                 id="playground-history"
+                role="dialog"
+                aria-modal="true"
                 aria-label="History"
-                className="absolute inset-y-0 right-0 z-30 flex w-80 max-w-[calc(100%-1rem)] flex-col border-l border-gray-200 bg-white shadow-xl"
+                className="absolute inset-y-0 right-0 z-30 flex w-80 max-w-[calc(100%-2.5rem)] flex-col border-l border-gray-200 bg-white shadow-xl"
               >
-                <div className="flex h-14 shrink-0 items-center justify-between px-5">
-                  <h2 className="text-sm font-semibold">History</h2>
+                <div className="flex h-12 shrink-0 items-center justify-between pl-4 pr-2">
+                  <h2 className="text-sm font-semibold text-gray-900">History</h2>
                   <button
                     type="button"
                     aria-label="Close history"
-                    onClick={() => {
-                      setHistoryOpen(false);
-                      historyButtonRef.current?.focus();
-                    }}
-                    className="rounded-md px-2 py-1 text-lg text-gray-500 hover:bg-gray-100"
+                    onClick={closeHistory}
+                    className={iconButton}
                   >
-                    ×
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.75}
+                      strokeLinecap="round"
+                    >
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
                   </button>
                 </div>
-                <div className="px-5 pb-3">
+                <div className="px-3 pb-2">
                   <input
                     ref={historySearchRef}
                     type="search"
-                    aria-label="Search history"
-                    placeholder="Search history…"
+                    aria-label="Search sessions"
+                    placeholder="Search by title or model"
                     value={historySearch}
                     onChange={(event) => setHistorySearch(event.target.value)}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs outline-none focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5"
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5"
                   />
                 </div>
-                <div className="min-h-0 flex-1 overflow-y-auto p-3">
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
                   {filteredSessions.length === 0 && (
-                    <p className="px-2 py-4 text-xs text-gray-500">No matching sessions.</p>
+                    <p className="px-2.5 py-4 text-xs text-gray-500">No matching sessions.</p>
                   )}
                   {filteredSessions.map((s) => {
                     const active = s.id === activeSessionId;
@@ -1698,17 +1784,20 @@ export default function PlaygroundPage() {
                             textareaRef.current?.focus();
                           }}
                           aria-current={active ? 'true' : undefined}
-                          className="w-full px-2.5 py-3 pr-8 text-left"
+                          className="w-full rounded-lg px-2.5 py-2.5 pr-8 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                         >
                           <div className="flex items-center gap-2">
                             <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
                               {getSessionTitle(s)}
                             </span>
                             {streamingIds.has(s.id) && (
-                              <span
-                                className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-emerald-500"
-                                aria-label="Streaming"
-                              />
+                              <span className="flex shrink-0 items-center">
+                                <span
+                                  aria-hidden="true"
+                                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+                                />
+                                <span className="sr-only">Generating</span>
+                              </span>
                             )}
                           </div>
                           <div className="mt-0.5 truncate text-[11px] text-gray-400">
@@ -1722,9 +1811,8 @@ export default function PlaygroundPage() {
                             onClick={(e) => {
                               e.stopPropagation();
                               deleteSession(s.id);
-                              // Keep the conversation's Undo action visible and reachable.
-                              setHistoryOpen(false);
-                              historyButtonRef.current?.focus();
+                              // Undo is offered above the composer, under this panel.
+                              closeHistory();
                             }}
                             className={`absolute right-1.5 top-1.5 rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 ${REVEAL_ON_HOVER}`}
                             title="Delete session"
@@ -1750,9 +1838,9 @@ export default function PlaygroundPage() {
                     );
                   })}
                 </div>
-                <p className="shrink-0 border-t border-gray-100 px-5 py-4 text-[11px] leading-5 text-gray-400">
-                  Each session keeps its own configuration. History is available in this tab until
-                  you leave or reload.
+                <p className="shrink-0 border-t border-gray-100 px-4 py-3 text-[11px] leading-5 text-gray-400">
+                  Each session keeps its own configuration. Sessions last until you leave or reload
+                  this page.
                 </p>
               </aside>
             </>

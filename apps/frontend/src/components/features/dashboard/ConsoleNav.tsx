@@ -45,11 +45,11 @@ const ITEM_OTHER = 'text-gray-600 hover:bg-gray-100 hover:text-gray-900';
 /**
  * Navigation for everyday use, followed by a separate administrator group.
  *
- * A column beside the page from `md` up. Below that it is one row that
- * scrolls sideways, as the admin tabs do, so the page starts near the top of
- * a phone screen.
+ * From `md` up, a rail down the left edge of the window that stays in view
+ * while the page scrolls. Below that it is one row that scrolls sideways, as
+ * the admin tabs do, so the page starts near the top of a phone screen.
  */
-export function ConsoleNav({ workspace = false }: { workspace?: boolean }) {
+export function ConsoleNav() {
   const pathname = usePathname() ?? '';
   const { state } = useAuth();
   const { features, agentsUrl } = useSiteConfig();
@@ -133,13 +133,9 @@ export function ConsoleNav({ workspace = false }: { workspace?: boolean }) {
     <nav
       ref={scrollerRef}
       aria-label={t('console.nav.label', 'Console')}
-      className={
-        workspace
-          ? 'shrink-0 overflow-x-auto border-b border-gray-200 bg-gray-50 px-3 py-2 [scrollbar-width:thin] md:w-52 md:overflow-y-auto md:border-b-0 md:border-r md:px-4 md:py-6'
-          : '-mx-1 overflow-x-auto px-1 py-1 [scrollbar-width:thin] md:sticky md:top-6 md:mx-0 md:w-48 md:shrink-0 md:self-start md:overflow-visible md:px-0'
-      }
+      className="shrink-0 overflow-x-auto border-b border-gray-200 px-3 py-2 [scrollbar-width:thin] md:w-56 md:overflow-visible md:border-b-0 md:border-r md:p-0"
     >
-      <div className="flex w-max items-center gap-1 md:w-auto md:flex-col md:items-stretch md:gap-6">
+      <div className="flex w-max items-center gap-1 md:sticky md:top-14 md:max-h-[calc(100dvh-3.5rem)] md:w-auto md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:px-3 md:py-5">
         <ul className="flex items-center gap-1 md:flex-col md:items-stretch">
           {pages.map(renderItem)}
         </ul>

@@ -77,6 +77,26 @@ function mockStream(frames: string[]): void {
   );
 }
 
+/**
+ * Give the page a window whose width the test controls: `wide` is a window
+ * with room for Configuration beside the conversation.
+ */
+function stubWindowWidth(wide: boolean): { setWide: (next: boolean) => void } {
+  const listeners = new Set<() => void>();
+  const query = {
+    matches: wide,
+    addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+  };
+  vi.stubGlobal('matchMedia', () => query);
+  return {
+    setWide(next: boolean) {
+      query.matches = next;
+      act(() => listeners.forEach((listener) => listener()));
+    },
+  };
+}
+
 function openHistory(): void {
   const toggle = screen.getByRole('button', { name: 'History' });
   if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
@@ -618,7 +638,7 @@ describe('PlaygroundPage', () => {
 
     openHistory();
     fireEvent.click(screen.getAllByRole('button', { name: /^Delete session/ })[0]);
-    expect(screen.queryByRole('complementary', { name: 'History' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
     expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled();
     openHistory();
     expect(screen.queryAllByRole('button', { name: /^Delete session/ })).toHaveLength(0);
@@ -866,14 +886,14 @@ describe('PlaygroundPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.2' } });
 
-    expect(screen.queryByRole('complementary', { name: 'History' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
     openHistory();
-    expect(screen.getByRole('searchbox', { name: 'Search history' })).toHaveFocus();
+    expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveFocus();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'not found' } });
     expect(screen.getByText('No matching sessions.')).toBeInTheDocument();
     fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'first question' } });
     fireEvent.click(screen.getByRole('button', { name: /^first question/ }));
-    expect(screen.queryByRole('complementary', { name: 'History' })).toBeNull();
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
     expect(screen.getByLabelText('Message')).toHaveFocus();
     expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
     expect(screen.getByText('first answer')).toBeInTheDocument();
@@ -897,6 +917,105 @@ describe('PlaygroundPage', () => {
     expect(configuration).toHaveAttribute('aria-expanded', 'true');
     fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     expect(configuration).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps Tab inside History while it is open', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    openHistory();
+
+    const history = screen.getByRole('dialog', { name: 'History' });
+    const close = within(history).getByRole('button', { name: 'Close history' });
+    const session = within(history).getByRole('button', { name: /^New session/ });
+    expect(history).toHaveAttribute('aria-modal', 'true');
+
+    // Forwards off the last control and backwards off the first both wrap.
+    session.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(session).toHaveFocus();
+
+    // Focus that escaped to the page behind is brought back in.
+    screen.getByLabelText('Message').focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+  });
+
+  it('says on the History button that another session is still generating', async () => {
+    const first = controlledStream();
+    mockChats(first.response);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const history = screen.getByRole('button', { name: 'History' });
+    await sendPrompt('background turn');
+    expect(history).not.toHaveAccessibleDescription();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(history).toHaveAccessibleDescription('1 session is generating in the background');
+
+    await act(async () => first.end());
+    await waitFor(() => expect(history).not.toHaveAccessibleDescription());
+  });
+
+  describe('in a wide window', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('shows Configuration beside the conversation until it is collapsed', async () => {
+      stubWindowWidth(true);
+      mockStream([]);
+      render(<PlaygroundPage />);
+      await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+      const toggle = screen.getByRole('button', { name: 'Configuration' });
+
+      // A panel, not a drawer: nothing to close, and focus is left alone.
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.queryByRole('button', { name: 'Close configuration' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Open configuration' })).toBeNull();
+
+      // Neither a new chat nor History puts the panel away.
+      fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+      openHistory();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      // Escape is the drawer's key; a collapsed panel has nothing to close.
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open configuration' }));
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('keeps what the user chose when the window changes width', async () => {
+      const width = stubWindowWidth(true);
+      mockStream([]);
+      render(<PlaygroundPage />);
+      await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+      const toggle = screen.getByRole('button', { name: 'Configuration' });
+
+      // Collapsed while wide: still out of the way as a drawer.
+      fireEvent.click(toggle);
+      width.setWide(false);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+      // Opened as a drawer: still there as a panel once there is room.
+      fireEvent.click(toggle);
+      expect(screen.getByRole('button', { name: 'Close configuration' })).toHaveFocus();
+      width.setWide(true);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.queryByRole('button', { name: 'Close configuration' })).toBeNull();
+
+      // With no choice made, each width shows its own default.
+      width.setWide(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Close configuration' }));
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      width.setWide(true);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    });
   });
 
   it('aborts every live stream when the page unmounts', async () => {

@@ -8,7 +8,7 @@ import { isSetupPath } from '@/components/features/setup/SetupGate';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { publicRouteFor } from '@/site-ui/routes';
-import { useConsoleWidth } from '@/components/ui/consoleWidth';
+import { useConsoleFrame, useConsoleWidth } from '@/components/ui/consoleWidth';
 import { useT } from '@/components/providers/useT';
 
 /**
@@ -42,14 +42,19 @@ export function ConfigurationBanner(): JSX.Element | null {
 function MissingConfigurationNotice(): JSX.Element | null {
   const { state } = useAuth();
   const consoleWidth = useConsoleWidth();
+  const { bar } = useConsoleFrame();
   const t = useT();
   if (!state.isAuthenticated || !state.user) return null;
 
+  // Under the dashboard's bar it is a strip of the same width; elsewhere a
+  // card as wide as the page below it.
   return (
-    <div className={`mx-auto w-full ${consoleWidth} px-4 sm:px-6`}>
+    <div className={bar ? 'w-full shrink-0' : `mx-auto w-full ${consoleWidth} px-4 sm:px-6`}>
       <div
         role="status"
-        className="w-full rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900 shadow-subtle sm:px-5"
+        className={`w-full border-amber-200 bg-amber-50 text-sm text-amber-900 ${
+          bar ? 'border-b px-4 py-2 sm:px-6' : 'rounded-2xl border px-4 py-3 shadow-subtle sm:px-5'
+        }`}
       >
         {state.user.is_admin ? (
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
