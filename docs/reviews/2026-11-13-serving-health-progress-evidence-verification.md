@@ -92,6 +92,13 @@ On the candidate (Python 3.13):
 - `tests/unit/routing` + `tests/unit/servers` + the Anthropic health
   recording suite: 2760 passed, 2 skipped.
 - `tests/servers`: 3169 passed, 1 skipped.
+- `make test-db-local` (the `dbtest` tier, against this machine's shared
+  PostgreSQL 15): 1089 passed, 1 skipped, 1 failed. The failure is
+  `test_schema_migration_upgrades_postgres.py::test_an_open_write_bounds_the_wait_and_never_queues_other_writes`
+  -- `assert run_took < 8`, which measured 8.50 s while another session held
+  the machine at a load average above 30. The same file passes on the
+  candidate in isolation (18 passed in 46 s), and the same test fails on
+  untouched `dev` in the same tier.
 - Full suite (`not external and not dbtest`, `-n 8 --dist loadfile`): 13840
   passed, 5 skipped, 8 failed.
 
@@ -154,12 +161,26 @@ serving-health change. It is recorded here as a known flake with its measured
 rate on both trees, and it is the one item of this verification that a
 maintainer may want addressed separately.
 
+### The `dbtest` tier on untouched upstream `dev`
+
+The same tier on untouched `dev` at the same base gives 1087 passed, 1
+skipped, 3 failed. The candidate's failures are a strict subset of dev's:
+
+- candidate: `test_schema_migration_upgrades_postgres.py` (the `run_took < 8`
+  bound) and `test_application_configuration_runtime.py` (a cross-process
+  bootstrap readiness check).
+- `dev`: those two plus
+  `test_admin_performance_views_postgres.py::test_a_source_filtered_count_is_an_index_only_scan[batch]`.
+
+Every one is a wall-clock or readiness assertion in a file the candidate does
+not touch, and each passes on the candidate when its file is run alone (41
+passed for the two storage files together, 18 passed for the migration file).
+
 ## Not covered
 
-- The `dbtest` tier needs a PostgreSQL this environment does not provide; the
-  candidate does not change storage, SQL or migrations.
-- The Docker and Tutorial E2E CI jobs need a Docker daemon and were not run
-  locally.
+- The Docker and Tutorial E2E CI jobs need a Docker daemon; this environment
+  has one, but those jobs build images from the exact revision and are the
+  CI's own scope, not a local gate this verification can stand in for.
 - The candidate's GitHub Actions run is `action_required`: this repository's
   fork pull requests need a maintainer to approve the workflow before it
   starts. The approval API needs repository admin rights, which this
