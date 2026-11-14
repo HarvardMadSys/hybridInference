@@ -218,7 +218,7 @@ describe('PlaygroundPage', () => {
     expect(screen.queryByText('glm-4.6:chutes-api')).toBeNull();
   });
 
-  it('resets the provider when changing models while preserving each session draft and settings', async () => {
+  it('defaults to the first model by id, and resets the provider when changing models while preserving each session draft and settings', async () => {
     fetchWithAuth.mockResolvedValue({
       ok: true,
       json: async () => ({
@@ -245,8 +245,10 @@ describe('PlaygroundPage', () => {
       }),
     });
     render(<PlaygroundPage />);
-    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    const firstSession = screen.getByRole('button', { name: /New session No messages · glm-4.6/ });
+    await screen.findByRole('button', { name: 'Model: DeepSeek V4' });
+    const firstSession = screen.getByRole('button', {
+      name: /New session No messages · deepseek-v4/,
+    });
     chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'First session draft' },
@@ -256,14 +258,14 @@ describe('PlaygroundPage', () => {
     });
 
     fireEvent.click(screen.getByRole('button', { name: 'New' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
-    fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
+    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
     chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'Second session draft' },
     });
-    fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
-    fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
+    fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
+    fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
 
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Auto');
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('Second session draft');
