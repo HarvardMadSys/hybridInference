@@ -273,7 +273,6 @@ export default function PlaygroundPage() {
   const selectedProvider = session?.selectedProvider ?? null;
   const modelProviders = model?.providers ?? [];
 
-  const streaming = streamingIds.size > 0;
   const activeStreaming = streamingIds.has(session?.id ?? '');
 
   const patchSession = useCallback(
@@ -917,14 +916,6 @@ export default function PlaygroundPage() {
                 View code
               </button>
             )}
-            <span className="hidden items-center gap-1.5 rounded-full border border-gray-200 bg-white px-2.5 py-1 text-[11px] font-medium text-gray-600 sm:inline-flex">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  streaming ? 'animate-pulse bg-emerald-500' : 'bg-gray-300'
-                }`}
-              />
-              {streaming ? 'Streaming' : 'Ready'}
-            </span>
           </div>
         </div>
 
