@@ -120,6 +120,17 @@ order from the outside in is:
    through a route handler and is bounded only here, so raising
    `REQUEST_MAX_BODY_MB` takes effect behind the console too.
 
+Accepted connections have one more clock, and it is not a middleware.
+Uvicorn arms its keep-alive timer only while it is waiting for the next
+request, and cancels that timer on the first byte. A client that then stops,
+including one that never finishes the headers, holds the socket until the
+process restarts. `HTTP_IDLE_TIMEOUT_SECONDS` (default 600, `<=0` disables
+it) closes that connection after that many seconds with no bytes in either
+direction. Response bytes reset it, so a stream that keeps sending is limited
+by the streaming clocks below rather than by this one. It is longer than
+`REQUEST_TIMEOUT_SECONDS` and the inter-chunk stream idle, so a slow prefill
+still receives the gateway's 504 instead of a dropped connection.
+
 Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
 `/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
 `/admin/`. FastAPI reads and decodes a route's declared body model before any
