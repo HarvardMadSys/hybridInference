@@ -1261,6 +1261,9 @@ export function RequestsTab({
                       includeContent: exportIncludeContent || undefined,
                     });
                     setShowExportPanel(false);
+                    // The browser takes the download from here; the panel
+                    // closing alone would not say where the file went.
+                    toast.success('Download started. Your browser saves it to its downloads.');
                   } catch (err) {
                     toast.error(
                       `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
@@ -1271,7 +1274,7 @@ export function RequestsTab({
                 }}
                 className="rounded-lg bg-gray-900 px-3 py-2 text-[13px] text-white hover:bg-gray-700 disabled:opacity-50"
               >
-                {exportLoading ? 'Exporting…' : 'Export'}
+                {exportLoading ? 'Starting…' : 'Export'}
               </button>
             </div>
           </div>
