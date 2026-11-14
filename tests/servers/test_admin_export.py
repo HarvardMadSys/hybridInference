@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import Request
 from fastapi.testclient import TestClient
 
 from tests.fixtures.audit import ADMIN_ACTOR
@@ -66,6 +67,22 @@ def _make_mock_row(
         "metadata": metadata,
         "request_payload": request_payload,
     }
+
+
+def _request() -> Request:
+    """The request a test hands the route when it calls it without the app."""
+    return Request({"type": "http", "method": "GET", "path": "/admin/export/requests"})
+
+
+def _filters(**overrides: Any):
+    """The filters a test hands the route when it calls it without the app: all of 2024."""
+    from serving.servers.routers.admin.export import ExportFilters
+
+    return ExportFilters(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC),
+        end_time=datetime(2024, 12, 31, tzinfo=UTC),
+        **overrides,
+    )
 
 
 def _make_mock_db(rows_per_batch: list[list[dict]]):
@@ -506,15 +523,8 @@ def test_export_is_audited_before_any_row_is_streamed():
 
     response = asyncio.run(
         export_routes.admin_export_requests(
-            start_time=datetime(2024, 1, 1, tzinfo=UTC),
-            end_time=datetime(2024, 12, 31, tzinfo=UTC),
-            user_id=None,
-            session_id=None,
-            model_id=None,
-            errors_only=False,
-            outcome=None,
-            request_type=None,
-            include_content=True,
+            request=_request(),
+            filters=_filters(include_content=True),
             actor=ADMIN_ACTOR,
             db_logger=db,
         )
@@ -560,15 +570,8 @@ async def _export(db):
     from serving.servers.routers.admin import export as export_routes
 
     return await export_routes.admin_export_requests(
-        start_time=datetime(2024, 1, 1, tzinfo=UTC),
-        end_time=datetime(2024, 12, 31, tzinfo=UTC),
-        user_id=None,
-        session_id=None,
-        model_id=None,
-        errors_only=False,
-        outcome=None,
-        request_type=None,
-        include_content=False,
+        request=_request(),
+        filters=_filters(),
         actor=ADMIN_ACTOR,
         db_logger=db,
     )
@@ -709,9 +712,8 @@ async def test_a_page_goes_out_in_bounded_chunks_with_the_loop_given_back(monkey
     db.pool = _Pool([rows])
 
     response = await export.admin_export_requests(
-        start_time=datetime(2024, 1, 1, tzinfo=UTC),
-        end_time=datetime(2024, 12, 31, tzinfo=UTC),
-        include_content=True,
+        request=_request(),
+        filters=_filters(include_content=True),
         actor=ADMIN_ACTOR,
         db_logger=db,
     )
