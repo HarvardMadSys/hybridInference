@@ -1148,6 +1148,10 @@ class CachedOperationalStore(OperationalStore):
             offset=offset,
         )
 
+    async def list_audit_actions(self) -> list[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_audit_actions()
+
     # -- preferences (pass-through) ------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
