@@ -17,6 +17,7 @@ import json
 from dataclasses import dataclass, fields
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlencode
 
 import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -178,8 +179,10 @@ class ExportFilters:
         values = {name.name: claims.get(name.name) for name in fields(cls)}
         values["start_time"] = datetime.fromisoformat(claims["start_time"])
         values["end_time"] = datetime.fromisoformat(claims["end_time"])
-        values["errors_only"] = bool(values["errors_only"])
-        values["include_content"] = bool(values["include_content"])
+        # Only a JSON true is true: a string "false", should a claim ever be
+        # written as one, must not turn content on.
+        values["errors_only"] = values["errors_only"] is True
+        values["include_content"] = values["include_content"] is True
         return cls(**values)
 
 
@@ -499,8 +502,10 @@ async def admin_export_request_link(
         raise HTTPException(
             503, "Download links are unavailable: JWT_SECRET_KEY is not set."
         ) from exc
+    # The route's own path, wherever the admin router is mounted.
+    download_path = request.app.url_path_for("admin_export_request_download")
     return {
-        "url": f"{router.prefix}/export/requests/download?token={token}",
+        "url": f"{download_path}?{urlencode({'token': token})}",
         "expires_in": LINK_TTL_SECONDS,
     }
 
@@ -550,15 +555,24 @@ def _link_key() -> bytes:
     return hmac.new(get_jwt_secret().encode(), _LINK_KEY_LABEL, hashlib.sha256).digest()
 
 
+def _now() -> datetime:
+    return datetime.now(UTC)
+
+
 def mint_export_link(*, user_id: str, session_id: str, filters: ExportFilters) -> str:
-    """Sign a download link token for *filters*, issued to one admin session."""
-    now = datetime.now(UTC)
+    """Sign a download link token for *filters*, issued to one admin session.
+
+    It has an ``exp`` and no ``iat``. One instance may issue a link that
+    another follows a moment later, and PyJWT refuses an ``iat`` later than its
+    own clock: an instance a second behind would turn every link it was handed
+    away as "not valid". Without ``iat``, a skew of that size only stretches or
+    shortens the minute.
+    """
     claims = {
         "aud": _LINK_AUDIENCE,
         "sub": user_id,
         "sid": session_id,
-        "iat": now,
-        "exp": now + timedelta(seconds=LINK_TTL_SECONDS),
+        "exp": _now() + timedelta(seconds=LINK_TTL_SECONDS),
         "f": filters.to_claims(),
     }
     return jwt.encode(claims, _link_key(), algorithm="HS256")

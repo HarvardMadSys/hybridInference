@@ -1543,8 +1543,10 @@ interface ExportRequestsParams {
  * The browser writes a file to its downloads folder as it arrives only when it
  * requests the file itself, and then it sends no `Authorization` header. So
  * this asks the gateway for a short-lived link that stands in for the header,
- * and hands the link to the browser. It resolves once the download has been
- * started; the browser's downloads list shows its progress from there. Read
+ * and hands the link to the browser. It resolves once the browser has the
+ * link: from there only the browser's downloads list shows how the download
+ * goes, including a link refused when it is followed (the console cannot see
+ * that response). Read
  * through `fetch` instead, an export of a few gigabytes had to fit in the tab's
  * memory before anything was saved.
  */

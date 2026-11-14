@@ -492,14 +492,17 @@ async def admit_admin_session(request: Request, op_store: Any, payload: dict[str
         The admin's email, or its login name when the account has no email.
 
     Raises:
-        HTTPException: 401 for an ended session, 403 for an account that may
-            not act as admin, 503 when the database cannot be read.
+        HTTPException: 401 for a token that names no account or an ended
+            session, 403 for an account that may not act as admin, 503 when
+            the database cannot be read.
     """
     user_id = payload.get("sub")
-    if not op_store or not user_id:
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+    if not op_store:
         # DB unavailable — fail closed.  Admin endpoints require
         # authoritative role verification from the database.
-        logger.warning("verify_admin_access: DB unavailable, refusing admin access (fail-closed)")
+        logger.warning("admin auth: DB unavailable, refusing admin access (fail-closed)")
         raise HTTPException(
             status_code=503,
             detail="Database unavailable; cannot verify admin role. Try again later.",

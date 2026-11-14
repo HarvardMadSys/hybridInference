@@ -296,9 +296,9 @@ async def test_a_link_is_refused_once_its_admin_has_lost_the_role(app, account, 
 async def test_a_download_slower_than_the_request_timeout_is_served_whole(app, monkeypatch):
     """The link's download is the same long stream as the direct export."""
     rows = [[_row(page * 500 + i) for i in range(500)] for page in range(3)] + [[_row(1500)]]
-    slow = _Log(rows, delay=0.1)
+    slow = _Log(rows, delay=0.2)
     app.dependency_overrides[get_db_logger] = lambda: slow
-    wrapped = TimeoutMiddleware(app, timeout_s=0.25, stream_timeout_s=30)
+    wrapped = TimeoutMiddleware(app, timeout_s=0.5, stream_timeout_s=30)
 
     async with _client(wrapped) as client:
         url = await _issue(client)
@@ -306,3 +306,63 @@ async def test_a_download_slower_than_the_request_timeout_is_served_whole(app, m
 
     assert response.status_code == 200
     assert len(response.text.splitlines()) == 1501
+
+
+@pytest.mark.asyncio
+async def test_a_link_issued_by_an_instance_whose_clock_runs_ahead_is_accepted(
+    app, log, monkeypatch
+):
+    """Issued on one instance, followed on another a few seconds behind it."""
+    ahead = datetime.now(UTC) + timedelta(seconds=5)
+    monkeypatch.setattr(export, "_now", lambda: ahead)
+    async with _client(app) as client:
+        url = await _issue(client)
+        monkeypatch.undo()
+        monkeypatch.setattr(settings, "signup_require_email_verification", False)
+        download = await client.get(url)
+
+    assert download.status_code == 200, download.text
+    assert len(download.text.splitlines()) == 2
+
+
+@pytest.mark.asyncio
+async def test_a_link_that_names_no_account_is_refused_as_invalid(app, log):
+    """Not reported as a database outage: the database is not the problem."""
+    filters = export.export_filters(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC), end_time=datetime(2024, 12, 31, tzinfo=UTC)
+    )
+    token = export.mint_export_link(user_id="", session_id=SESSION, filters=filters)
+    async with _client(app) as client:
+        download = await client.get("/admin/export/requests/download", params={"token": token})
+
+    assert download.status_code == 401
+    assert log.queries == []
+
+
+@pytest.mark.asyncio
+async def test_the_link_names_the_download_route_wherever_the_router_is_mounted(
+    op_store, log, monkeypatch
+):
+    monkeypatch.setattr(settings, "signup_require_email_verification", False)
+    mounted = FastAPI()
+    mounted.include_router(export.router, prefix="/gateway")
+    mounted.dependency_overrides[get_operational_store] = lambda: op_store
+    mounted.dependency_overrides[get_db_logger] = lambda: log
+    async with _client(mounted) as client:
+        response = await client.post("/gateway" + LINK, params=QUERY, headers=_admin_session())
+        url = response.json()["url"]
+        download = await client.get(url)
+
+    assert url.startswith("/gateway/admin/export/requests/download?token=")
+    assert download.status_code == 200
+
+
+def test_only_a_json_true_turns_a_flag_on():
+    claims = export.ExportFilters(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC), end_time=datetime(2024, 12, 31, tzinfo=UTC)
+    ).to_claims()
+
+    assert export.ExportFilters.from_claims({**claims, "include_content": True}).include_content
+    for written in ("false", "true", 1, None):
+        filters = export.ExportFilters.from_claims({**claims, "include_content": written})
+        assert filters.include_content is False

@@ -1261,9 +1261,10 @@ export function RequestsTab({
                       includeContent: exportIncludeContent || undefined,
                     });
                     setShowExportPanel(false);
-                    // The browser takes the download from here; the panel
-                    // closing alone would not say where the file went.
-                    toast.success('Download started. Your browser saves it to its downloads.');
+                    // The browser takes the download from here, and the console
+                    // cannot see how it goes: a link refused at the last moment
+                    // shows only as a failed download in the browser's list.
+                    toast.success("Download requested. Check your browser's downloads.");
                   } catch (err) {
                     toast.error(
                       `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,

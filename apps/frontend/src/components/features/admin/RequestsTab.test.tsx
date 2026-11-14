@@ -896,7 +896,7 @@ describe('RequestsTab sources', () => {
     );
   });
 
-  it('closes the export panel and says the browser is downloading the file', async () => {
+  it('closes the export panel and points to the browser downloads list', async () => {
     vi.mocked(exportRequests).mockResolvedValue(undefined);
     render(<RequestsTab source="batch" initialBatchId="batch_0123456789abcdef" />);
 
@@ -907,7 +907,7 @@ describe('RequestsTab sources', () => {
 
     await waitFor(() =>
       expect(toast.success).toHaveBeenCalledWith(
-        'Download started. Your browser saves it to its downloads.',
+        "Download requested. Check your browser's downloads.",
       ),
     );
     expect(screen.queryByLabelText('Start date')).not.toBeInTheDocument();
