@@ -1553,6 +1553,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
             )
 
+    async def approve_users(
+        self,
+        user_ids: list[str],
+        *,
+        admin_id: str,
+        note: str | None = None,
+    ) -> list[Row]:
+        """Approve the listed users still pending, in one guarded UPDATE."""
+        if not user_ids:
+            return []
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "UPDATE users SET status = 'active', approval_note = $1, "
+                "reviewed_at = NOW(), reviewed_by = $2 "
+                "WHERE id = ANY($3::text[]) AND status = 'pending_approval' "
+                "RETURNING id, email, phone, login_name",
+                note,
+                admin_id,
+                list(user_ids),
+            )
+        return [dict(r) for r in rows]
+
     async def reject_user(
         self,
         user_id: str,
