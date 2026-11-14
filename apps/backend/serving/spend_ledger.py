@@ -948,7 +948,9 @@ def ledger_for(store: Any) -> Any:
         return None
     from serving.shared_spend import mode as spend_mode
 
-    if spend_mode.is_shared() and getattr(store, "shared_spend_backend", None) is not None:
+    if spend_mode.is_shared():
+        # Fails closed on a store that cannot keep it: never the per-process
+        # ledger behind a shared mode's back.
         from serving.shared_spend import ledger as shared_ledger
 
         return shared_ledger.ledger_for(store)

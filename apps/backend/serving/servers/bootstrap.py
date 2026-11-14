@@ -1326,6 +1326,12 @@ async def initialize() -> AppServices:
         )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
+        from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
+
+        if spend_mode.is_shared():
+            # Fail closed at startup: every admission and cost reaches one
+            # ledger through this store, or the process does not start.
+            shared_ledger.ledger_for(operational_store)
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,

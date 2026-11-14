@@ -15,8 +15,11 @@ from decimal import Decimal
 
 import asyncpg
 import pytest
-from fastapi import Depends
+from fastapi import Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
+from serving.adapters.dispatch_watch import report_sent
+from serving.batch.attempts import observe_billing
 from serving.servers.concurrency import (
     UserConcurrencyLimiter,
     enforce_user_concurrency,
@@ -49,6 +52,7 @@ def _shared_app(quota_usd: float = 1.0):
     store = _store(quota_usd=quota_usd)
     backend = FakeSharedBackend()
     store.shared_spend_backend = lambda: backend
+    store.shared_spend_root = lambda: store
     limiter = UserConcurrencyLimiter(static_limits_provider(LIMITS))
     app = _app(store, limiter)
     # The application's handlers: DatabaseBusyError is its 503 + Retry-After.
@@ -63,7 +67,59 @@ def _shared_app(quota_usd: float = 1.0):
         await app.state.gate.wait()
         return {"ok": True}
 
+    @app.post("/reject", dependencies=[Depends(enforce_user_concurrency)])
+    async def reject() -> None:
+        raise HTTPException(400, "invalid request, refused before any upstream call")
+
+    @app.post("/free", dependencies=[Depends(enforce_user_concurrency)])
+    async def free() -> dict[str, bool]:
+        report_sent()
+        observe_billing(cost_usd=0.0)  # a priced, free model
+        return {"ok": True}
+
+    @app.post("/unpriced", dependencies=[Depends(enforce_user_concurrency)])
+    async def unpriced() -> dict[str, bool]:
+        report_sent()
+        observe_billing(cost_usd=None)  # what CostTracker reports without pricing
+        return {"ok": True}
+
+    @app.post("/sent-unbilled", dependencies=[Depends(enforce_user_concurrency)])
+    async def sent_unbilled() -> dict[str, bool]:
+        report_sent()
+        return {"ok": True}
+
+    @app.post("/upstream/{status}", dependencies=[Depends(enforce_user_concurrency)])
+    async def upstream_error(status: int) -> None:
+        report_sent()
+        raise HTTPException(status, "upstream answered with an error")
+
+    @app.post("/sent-wait", dependencies=[Depends(enforce_user_concurrency)])
+    async def sent_wait() -> dict[str, bool]:
+        report_sent()
+        await app.state.gate.wait()
+        return {"ok": True}
+
+    async def billed_body():
+        report_sent()
+        try:
+            yield b"one\n"
+            await app.state.gate.wait()
+            yield b"two\n"
+        finally:
+            # The tail: a stream bills what it used as it ends, cut off or not.
+            ledger_for(store).record(USER, 0.07, api_key_id=KEY_ID)
+            observe_billing(cost_usd=0.07)
+
+    @app.post("/billed-stream", dependencies=[Depends(enforce_user_concurrency)])
+    async def billed_stream() -> StreamingResponse:
+        return StreamingResponse(billed_body(), media_type="text/plain")
+
     return app, store, backend, limiter
+
+
+async def _kinds(store, backend) -> list[str]:
+    assert await ledger_for(store).flush(5)
+    return [m.kind for b in backend.batches for m in b.members]
 
 
 @pytest.mark.asyncio
@@ -143,3 +199,67 @@ async def test_the_shared_admission_applies_the_same_partial_headroom_policy():
         assert [r.status_code for r in await asyncio.gather(*held)] == [200, 200, 200]
     assert await ledger_for(store).flush(5)
     assert backend.rows == {}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("path", "status", "kind", "unresolved"),
+    [
+        # Refused before any upstream call: nothing can have been charged.
+        ("/reject", 400, "settle", 0),
+        # Priced, and free: a known zero.
+        ("/free", 200, "settle", 0),
+        # Sent, and the billing point could not price it.
+        ("/unpriced", 200, "unresolved", 1),
+        # Sent, ended normally, and nothing billed it.
+        ("/sent-unbilled", 200, "unresolved", 1),
+        # Sent, and the upstream answered with an error the policy does not bill.
+        ("/upstream/400", 400, "settle", 0),
+        ("/upstream/429", 429, "settle", 0),
+        # Sent, and the answer was lost or broken: the upstream may have worked.
+        ("/upstream/502", 502, "unresolved", 1),
+        ("/upstream/504", 504, "unresolved", 1),
+    ],
+)
+async def test_an_unknown_charge_is_kept_while_known_ones_are_settled(
+    path, status, kind, unresolved
+):
+    app, store, backend, _ = _shared_app()
+    async with _client(app) as client:
+        response = await client.post(path)
+    assert response.status_code == status
+    assert await _kinds(store, backend) == [kind]
+    holdings = ledger_for(store).holdings()
+    assert holdings["unresolved"] == unresolved
+    assert ledger_for(store).fully_settled() is (unresolved == 0)
+    # Never an estimate charged: no cost was recorded, none is added.
+    assert backend.counters.get(USER, Decimal(0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_request_cancelled_after_it_was_sent_and_never_billed_stays_unresolved():
+    app, store, backend, _ = _shared_app()
+    async with _client(app) as client:
+        call = asyncio.create_task(client.post("/sent-wait"))
+        await _until(lambda: any(r.dispatched for r in ledger_for(store)._active.values()))
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        await _until(lambda: not ledger_for(store)._active)
+    assert await _kinds(store, backend) == ["unresolved"]
+
+
+@pytest.mark.asyncio
+async def test_a_cut_off_stream_settles_the_tail_its_billing_point_charged():
+    app, store, backend, _ = _shared_app()
+    async with _client(app) as client:
+        streaming = asyncio.create_task(client.post("/billed-stream"))
+        await _until(lambda: bool(ledger_for(store)._active))
+        streaming.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await streaming
+        await _until(lambda: not ledger_for(store)._active)
+    assert await _kinds(store, backend) == ["settle"]
+    (member,) = backend.batches[0].members
+    assert [line.cost_usd for line in member.costs] == [Decimal("0.07")]
+    assert backend.counters[USER] == Decimal("0.07")

@@ -174,11 +174,48 @@ def test_the_local_mode_is_the_default_and_keeps_the_per_process_ledger():
     assert isinstance(ledger_for(store), SpendLedger)
 
 
+class _RootStore:
+    """A store that keeps the shared accounting, as PostgresOperationalStore does."""
+
+    def __init__(self) -> None:
+        self.backend = FakeSharedBackend()
+
+    def shared_spend_root(self):
+        return self
+
+    def shared_spend_backend(self):
+        return self.backend
+
+
 def test_the_shared_mode_hands_out_the_shared_ledger(monkeypatch):
     monkeypatch.setattr(spend_mode, "_mode", "shared")
-    store = MagicMock()
-    store.shared_spend_backend = lambda: FakeSharedBackend()
+    store = _RootStore()
     assert isinstance(ledger_for(store), SharedSpendLedger)
     check = _check(ledger_for(store))
     with pytest.raises(RuntimeError, match="reserve"):
         check.admit()
+
+
+def test_the_production_wrapper_reaches_the_same_ledger_as_its_store(monkeypatch):
+    from serving.storage.cache import CachedOperationalStore, InMemoryCache
+
+    monkeypatch.setattr(spend_mode, "_mode", "shared")
+    inner = _RootStore()
+    wrapped = CachedOperationalStore(inner, InMemoryCache())
+    assert ledger_for(wrapped) is ledger_for(inner)
+    assert ledger_for(wrapped)._backend is inner.backend
+
+
+def test_a_store_that_cannot_keep_the_shared_accounting_fails_closed(monkeypatch):
+    from serving.shared_spend.ledger import SharedSpendUnsupported
+    from serving.storage.base import OperationalStore
+    from serving.storage.cache import CachedOperationalStore, InMemoryCache
+
+    monkeypatch.setattr(spend_mode, "_mode", "shared")
+    plain = MagicMock(spec=OperationalStore)
+    for store in (plain, CachedOperationalStore(plain, InMemoryCache())):
+        with pytest.raises(SharedSpendUnsupported):
+            ledger_for(store)
+    # The local mode is unaffected by the protocol.
+    monkeypatch.setattr(spend_mode, "_mode", "local")
+    assert isinstance(ledger_for(plain), SpendLedger)

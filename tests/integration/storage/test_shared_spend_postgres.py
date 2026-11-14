@@ -793,3 +793,35 @@ async def test_two_os_processes_share_one_accounts_headroom(db):
     assert amounts == [Decimal("0.100000"), *[Decimal("0.300000")] * 3]
     rows = await _rows(db.pool, user)
     assert sum(r["amount_usd"] for r in rows) == Decimal("1.000000")
+
+
+# -- the production wrapper: one ledger from the gate to the billing point ------
+
+
+async def test_the_production_store_wrapper_carries_admission_and_charge_to_one_ledger(
+    db, monkeypatch
+):
+    from serving.servers.concurrency import end_reservation
+    from serving.servers.routers.completions_cost import CostTracker, PricingLookup
+    from serving.servers.routers.routing_info import Pricing, RoutingInfo
+    from serving.spend_ledger import ledger_for
+    from serving.storage.cache import CachedOperationalStore, InMemoryCache
+
+    monkeypatch.setattr(spend_mode, "_mode", "shared")
+    wrapped = CachedOperationalStore(db.store, InMemoryCache())
+    ledger = ledger_for(wrapped)
+    assert ledger is ledger_for(db.store)
+    user = PREFIX + "wrapped"
+    reservation, _ = await check(ledger, user).reserve(0.30)
+
+    tracker = CostTracker(op_store=wrapped, pricing=PricingLookup(router=None))
+    routing = RoutingInfo(
+        request_id="r-1", model="m", pricing=Pricing(prompt_price=1.0, completion_price=2.0)
+    )
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        tracker.charge(user_id=user, routing=routing, prompt_tokens=1000, completion_tokens=1000)
+    assert reservation.cost() == Decimal("0.003")
+    end_reservation(reservation, None)
+    assert await ledger.flush(5)
+    assert await _account(db.pool, user) == Decimal("0.003")
+    assert list((await _members(db.pool)).values()) == ["settled"]

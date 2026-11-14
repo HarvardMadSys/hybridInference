@@ -86,6 +86,10 @@ _RETRY_MAX_SECONDS = 30.0
 #: attempt's row just became visible (23505), a serialization failure (40).
 _RETRY_ADMISSION_SQLSTATES = frozenset({"23505", "40001", "40P01"})
 
+#: Failure statuses after which an upstream may have finished, and charged,
+#: although the answer was lost: as the batch dispatcher's.
+_UNCERTAIN_STATUSES = frozenset({500, 502, 504})
+
 #: Settlement outcomes after which a member's liability is no longer held
 #: anywhere this process can see: kept here, counted and reported.
 _UNACCOUNTED_OUTCOMES = frozenset({"missing", "mismatch"})
@@ -116,8 +120,11 @@ class SharedReservation:
     __slots__ = (
         "_ledger",
         "amount",
+        "billed_known",
+        "billed_unknown",
         "charges",
         "check_day",
+        "dispatched",
         "key_id",
         "operation",
         "project_id",
@@ -149,6 +156,12 @@ class SharedReservation:
         self.operation = operation
         self.state = "active"
         self.charges: list[CostLine] = []
+        # What the request's billing points reported (``observe_billing``):
+        # how many priced it (zero included) and how many could not.
+        self.billed_known = 0
+        self.billed_unknown = 0
+        # Whether an upstream call left the gateway (``dispatch_watch.report_sent``).
+        self.dispatched = False
 
     def owns(self, user_id: str, api_key_id: int | None, project_id: str | None) -> bool:
         """Whether a cost so attributed is this reservation's."""
@@ -172,6 +185,44 @@ class SharedReservation:
         """
         if self.state == "active":
             self._ledger._complete(self, "unresolved" if charge_unknown else "settle")
+
+    def on_sent(self) -> None:
+        """An upstream call of the request is leaving the gateway (``report_sent``)."""
+        self.dispatched = True
+
+    def observe(self, cost_usd: float | None) -> None:
+        """A billing point reported what it charged: a cost (zero for free) or None (unknown)."""
+        if self.state != "active":
+            return
+        if cost_usd is None:
+            self.billed_unknown += 1
+        else:
+            self.billed_known += 1
+
+    def finish(self, error: BaseException | None = None) -> None:
+        """The request ended (with *error*, if it raised): settle it, or keep it as a liability.
+
+        Settled with what was recorded under it when its billing points priced
+        it (zero for a free model), or when no upstream call ever left the
+        gateway (nothing can have been charged). Kept as an unresolved
+        liability when a billing point could not price it, or when a call was
+        sent and nothing billed it, unless the request then failed with an
+        error the billing policy does not charge for -- every failure but a
+        cancellation, a timeout or a broken answer (500, 502, 504), after which
+        the upstream may have done the work. Never charges an estimate.
+        """
+        if self.state != "active":
+            return
+        if self.billed_unknown:
+            unknown = True
+        elif self.billed_known or self.charges or not self.dispatched:
+            unknown = False
+        elif error is None:
+            unknown = True  # sent, ended normally, billed by nobody
+        else:
+            status = getattr(error, "status_code", None)
+            unknown = not (isinstance(status, int) and status not in _UNCERTAIN_STATUSES)
+        self.release(charge_unknown=unknown)
 
     def cost(self) -> Decimal:
         """What the costs recorded under it add up to."""
@@ -971,27 +1022,55 @@ def _database_error(exc: Exception) -> bool:
     return _unavailable(exc) or _connection_error(exc)
 
 
-# One ledger per store, weakly, as the per-process ledgers are kept.
+class SharedSpendUnsupported(RuntimeError):
+    """The shared mode is on and the operational store cannot keep its accounting."""
+
+
+# One ledger per root store, weakly, as the per-process ledgers are kept.
 _LEDGERS: Any = None
 
 
+def root_store(store: Any) -> Any:
+    """The store the shared accounting is kept for, through any wrapper; None if unsupported.
+
+    The protocol is ``shared_spend_root()``: the PostgreSQL store returns
+    itself, and a wrapper (``CachedOperationalStore``) returns its wrapped
+    store's root. Every caller that reaches the same database through the same
+    root shares one ledger, so a request's admission and its costs meet.
+    """
+    root_of = getattr(store, "shared_spend_root", None)
+    root = root_of() if callable(root_of) else None
+    if root is None or not callable(getattr(root, "shared_spend_backend", None)):
+        return None
+    return root
+
+
 def ledger_for(store: Any) -> SharedSpendLedger | None:
-    """The shared ledger of operational store *store*, made on first use."""
+    """The shared ledger of operational store *store*, made on first use.
+
+    Raises:
+        SharedSpendUnsupported: *store* does not support the shared accounting
+            (it must never fall back to the per-process ledger silently).
+    """
     import weakref
 
     global _LEDGERS
     if store is None:
         return None
-    backend_of = getattr(store, "shared_spend_backend", None)
-    if backend_of is None:
-        return None
+    root = root_store(store)
+    if root is None:
+        raise SharedSpendUnsupported(
+            f"the shared spend accounting cannot be kept on a {type(store).__name__}"
+        )
     if _LEDGERS is None:
         _LEDGERS = weakref.WeakKeyDictionary()
-    ledger = _LEDGERS.get(store)
+    ledger = _LEDGERS.get(root)
     if ledger is None:
         from serving.servers import restart
 
-        ledger = _LEDGERS[store] = SharedSpendLedger(backend_of(), instance_id=restart.INSTANCE_ID)
+        ledger = _LEDGERS[root] = SharedSpendLedger(
+            root.shared_spend_backend(), instance_id=restart.INSTANCE_ID
+        )
     return ledger
 
 

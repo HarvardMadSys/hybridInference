@@ -551,6 +551,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         """A connection for a request-path lookup: the request pool, a bounded wait."""
         return request_connection(self._request_pool)
 
+    def shared_spend_root(self) -> PostgresOperationalStore:
+        """The store the shared spend accounting is kept for: this one."""
+        return self
+
     def shared_spend_backend(self) -> Any:
         """The shared spend accounting's statements on this store's pools (:mod:`serving.shared_spend`)."""
         from serving.shared_spend.store import SharedSpendStore

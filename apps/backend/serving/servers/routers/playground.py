@@ -28,6 +28,7 @@ from serving.servers.concurrency import (
     _slot_for_canonical,
     _take_intake_slot,
     _track_interactive_request,
+    end_reservation,
 )
 from serving.servers.deps import (
     get_completions_logger,
@@ -287,6 +288,7 @@ async def _playground_slot(
                 headers={"Retry-After": "1"},
             )
     reservation: Reservation | None = None
+    ended: BaseException | None = None
     try:
         if not parse_before_acquire:
             model, canonical = await _request_model(
@@ -303,9 +305,12 @@ async def _playground_slot(
         )
         with _track_interactive_request(canonical) as tracker:
             yield InteractiveAdmission(tracker)
+    except BaseException as exc:
+        ended = exc
+        raise
     finally:
         if reservation is not None:
-            reservation.release()
+            end_reservation(reservation, ended)
         if limiter is not None:
             limiter.release(slot_key)
 

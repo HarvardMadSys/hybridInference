@@ -66,6 +66,14 @@ off by default and nothing in this change turns it on.
   mode; its rollback is the same in reverse, after `status` shows no open
   reservation. Its bootstrap/release mechanics belong to that later review.
 
+**Store protocol.** The gateway's operational store is the
+`CachedOperationalStore` proxy over the PostgreSQL store. Both expose
+`shared_spend_root()` (the proxy returns its wrapped store's root), and the
+shared ledger is kept per root, so the gate, the billing points and the batch
+worker reach one ledger whichever object they hold. In the shared mode a
+store without a root raises (`SharedSpendUnsupported`) instead of falling
+back to the per-process ledger, and startup checks the store it built.
+
 ## 3. Admission (shared mode)
 
 One short transaction per admission on the request pool, never held during
@@ -109,13 +117,30 @@ writer only releases once `txid_status` reports each attempt final.
 
 The batched writer stays. A request's reservation collects the costs recorded
 under it (`req_ctx.SPEND_RESERVATION`, set at admission; batch dispatch seeds
-it). When the request ends, its slot is released at once (in memory) and the
-reservation is queued as one settlement entry: `settle` (its costs, any
-number, zero included), `release` (proven not dispatched), or `unresolved`
-(the charge is unknown: a batch attempt with `cost_status="unknown"`, or a
-worker cancelled mid-dispatch). Costs recorded with no open reservation
-(no check, or after the reservation was queued: late costs) are plain
-increments.
+it), hears every billing point's report (`observe_billing`: a cost, zero for a
+free model, or None when it could not price the request) and the existing
+"left the gateway" signal (`dispatch_watch.report_sent`, which the existing
+cancellation billing already relies on). When the request ends, its slot is
+released at once (in memory) and the reservation is queued as one settlement
+entry. HTTP, grant and playground requests are classified at teardown
+(`SharedReservation.finish`):
+
+| What happened | Entry |
+|---|---|
+| a billing point could not price it | `unresolved` |
+| billing points priced it (zero included), or costs were recorded | `settle` (those costs) |
+| no upstream call left the gateway | `settle` with no cost (proven not dispatched) |
+| sent, ended normally, billed by nobody | `unresolved` |
+| sent, then failed with an error the policy does not bill (4xx, 429, 503...) | `settle` with no cost |
+| sent, then cancelled, timed out, or 500/502/504 | `unresolved` |
+
+The pricing policy is unchanged (what is charged is what the billing points
+record; the cancellation billing still prices a cut-off call), and an estimate
+is never charged: an unresolved entry keeps the estimate as a liability, with
+any known part charged. Batch attempts keep the dispatcher's own
+`cost_status` (`unknown` → `unresolved`). Costs recorded with no open
+reservation (no check, or after the reservation was queued: late costs) are
+plain increments.
 
 Each batch has a random `batch_id`, frozen membership and a payload digest.
 A batch that lists a reservation twice, or carries a member cost attributed

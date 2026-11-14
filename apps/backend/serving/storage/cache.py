@@ -1742,6 +1742,16 @@ class CachedOperationalStore(OperationalStore):
             project_id=project_id,
         )
 
+    def shared_spend_root(self) -> Any:
+        """The wrapped store's shared spend root, or None when it has none.
+
+        Explicit rather than a general pass-through: the shared accounting
+        must reach the same store (and ledger) through this proxy as through
+        the store itself, and fail closed when the wrapped store has none.
+        """
+        root_of = getattr(self._store, "shared_spend_root", None)
+        return root_of() if callable(root_of) else None
+
     @property
     def atomic_cost_increments(self) -> bool:  # type: ignore[override]
         """Whatever the wrapped store applies its batches as."""

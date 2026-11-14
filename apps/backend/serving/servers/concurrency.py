@@ -277,6 +277,21 @@ async def _admit_spend(
     return reservation
 
 
+def end_reservation(reservation: Any, error: BaseException | None) -> None:
+    """Give back the request's reservation when it ends, *error* being what it raised.
+
+    A shared reservation decides from what its billing points reported, and
+    whether a call left the gateway, whether it is settled or kept as a
+    liability (:meth:`~serving.shared_spend.ledger.SharedReservation.finish`);
+    the per-process one is released, as it always was.
+    """
+    finish = getattr(reservation, "finish", None)
+    if finish is not None:
+        finish(error)
+    else:
+        reservation.release()
+
+
 def _reserved_cost(
     request: Request,
     model: str | None,
@@ -633,12 +648,16 @@ async def enforce_user_concurrency(
         reservation = await _admit_spend(
             request, user, model=model, router=router, embedding_adapters=embedding_adapters
         )
+        ended: BaseException | None = None
         try:
             with _track_interactive_request(canonical) as tracker:
                 yield InteractiveAdmission(tracker)
+        except BaseException as exc:
+            ended = exc
+            raise
         finally:
             if reservation is not None:
-                reservation.release()
+                end_reservation(reservation, ended)
         return
 
     user_id = user["user_id"]
@@ -688,6 +707,7 @@ async def enforce_user_concurrency(
         )
 
     reservation: Reservation | None = None
+    ended: BaseException | None = None
     acquired_slots = [slot_key]
     try:
         for scope, scoped_key, capacity in scope_concurrency_limits(user):
@@ -726,9 +746,12 @@ async def enforce_user_concurrency(
         )
         with _track_interactive_request(canonical) as tracker:
             yield InteractiveAdmission(tracker)
+    except BaseException as exc:
+        ended = exc
+        raise
     finally:
         if reservation is not None:
-            reservation.release()
+            end_reservation(reservation, ended)
         try:
             for acquired_key in reversed(acquired_slots):
                 limiter.release(acquired_key)

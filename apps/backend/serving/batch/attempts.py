@@ -90,9 +90,17 @@ def observe_billing(
 ) -> None:
     """Report what a billing point charged (None: it could not price the request).
 
-    Called by the billing points of the inference handlers; a no-op outside a
-    batch attempt. Never charges anything itself.
+    Called by the billing points of the inference handlers; outside a batch
+    attempt only the request's shared spend reservation, if any, hears it
+    (``req_ctx.SPEND_RESERVATION``: an unknown cost keeps the reservation as a
+    liability). Never charges anything itself.
     """
+    from serving.utils import context as req_ctx
+
+    reservation = req_ctx.get().get(req_ctx.SPEND_RESERVATION)
+    observe = getattr(reservation, "observe", None)
+    if observe is not None:
+        observe(None if cost_usd is None else float(cost_usd))
     observer = _OBSERVER.get()
     if observer is None:
         return
