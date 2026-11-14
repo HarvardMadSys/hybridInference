@@ -207,6 +207,28 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="cost_counter_write_refused",
     ),
     AlertType(
+        id="spend_settlement_refused",
+        label="Spend settlement refused an entry",
+        description=(
+            "In the shared spend accounting mode, the counters refused a settlement entry for "
+            "its own values; it was kept counted, and its reservation quarantined, for an "
+            "operator to reconcile."
+        ),
+        group="Cost",
+        key_pattern="spend_settlement_refused",
+    ),
+    AlertType(
+        id="spend_settlement_unaccounted",
+        label="Spend settlement found reservations not held as recorded",
+        description=(
+            "In the shared spend accounting mode, a settlement found reservations missing or "
+            "held otherwise than recorded; their costs were not added and stay counted in the "
+            "process that recorded them."
+        ),
+        group="Cost",
+        key_pattern="spend_settlement_unaccounted",
+    ),
+    AlertType(
         id="cost_above_request_ceiling",
         label="Request cost above the per-request ceiling",
         description=(

@@ -128,13 +128,25 @@ STATEMENTS = (
 
 
 def _trigger_statements() -> tuple[str, ...]:
+    # Created only where missing, so the revision can run again without
+    # replacing (or first removing) anything.
     statements: list[str] = []
     for table in COUNTER_TABLES:
         name = f"spend_unidentified_{table}"
-        statements.append(f"DROP TRIGGER IF EXISTS {name} ON {table}")
         statements.append(
-            f"CREATE TRIGGER {name} AFTER INSERT OR UPDATE ON {table} "
-            "FOR EACH STATEMENT EXECUTE FUNCTION spend_note_unidentified_write()"
+            f"""
+            DO $$
+            BEGIN
+                IF NOT EXISTS (
+                    SELECT 1 FROM pg_trigger
+                    WHERE tgname = '{name}' AND tgrelid = '{table}'::regclass
+                ) THEN
+                    CREATE TRIGGER {name} AFTER INSERT OR UPDATE ON {table}
+                    FOR EACH STATEMENT EXECUTE FUNCTION spend_note_unidentified_write();
+                END IF;
+            END
+            $$
+            """
         )
     return tuple(statements)
 
