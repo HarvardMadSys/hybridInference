@@ -524,6 +524,24 @@ class OperationalStore(ABC):
         """Set status='active', record reviewer and note."""
 
     @abstractmethod
+    async def approve_users(
+        self,
+        user_ids: list[str],
+        *,
+        admin_id: str,
+        note: str | None = None,
+    ) -> list[Row]:
+        """Approve each listed user that is still pending, in one statement.
+
+        Records reviewer and note as :meth:`approve_user` does, but only on
+        rows whose status is ``pending_approval`` when the update runs, so a
+        user rejected, deleted or already approved meanwhile is left as it is.
+        Returns ``id``, ``email``, ``phone`` and ``login_name`` of every user
+        approved, in no particular order; an ID that names no pending user is
+        absent. An empty list writes nothing.
+        """
+
+    @abstractmethod
     async def reject_user(
         self,
         user_id: str,

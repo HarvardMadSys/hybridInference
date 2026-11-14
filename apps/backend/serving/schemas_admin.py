@@ -393,6 +393,56 @@ class ApproveUserResponse(BaseModel):
     message: str
 
 
+#: Most users one batch approval takes: the Users tab's largest page.
+BATCH_APPROVE_MAX_USERS = 500
+
+
+class BatchApproveUsersRequest(BaseModel):
+    """Request payload for approving several pending registrations at once."""
+
+    user_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=BATCH_APPROVE_MAX_USERS,
+        description="Users to approve, in the order to report them; duplicates are ignored",
+    )
+    note: str | None = Field(None, max_length=500, description="Optional approval note")
+
+    @field_validator("user_ids")
+    @classmethod
+    def _distinct_and_not_blank(cls, user_ids: list[str]) -> list[str]:
+        cleaned = [user_id.strip() for user_id in user_ids]
+        if not all(cleaned):
+            raise ValueError("user_ids must not contain blank IDs")
+        return list(dict.fromkeys(cleaned))
+
+
+class BatchApprovedUser(BaseModel):
+    """One account a batch approval activated."""
+
+    user_id: str
+    email: str | None
+    phone: str | None = None
+
+
+class BatchApproveSkippedUser(BaseModel):
+    """One requested account a batch approval left unchanged, and why."""
+
+    user_id: str
+    reason: Literal["not_found", "not_pending"]
+    status: str | None = Field(
+        None, description="The account's status now; null when there is no such account"
+    )
+
+
+class BatchApproveUsersResponse(BaseModel):
+    """What a batch approval did with each requested user, in request order."""
+
+    approved: list[BatchApprovedUser]
+    skipped: list[BatchApproveSkippedUser]
+    message: str
+
+
 class RejectUserRequest(BaseModel):
     """Request payload for rejecting a user registration."""
 
@@ -2244,6 +2294,10 @@ __all__ = [
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
+    "BatchApproveSkippedUser",
+    "BatchApproveUsersRequest",
+    "BatchApproveUsersResponse",
+    "BatchApprovedUser",
     "BatchModelLimitItem",
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
