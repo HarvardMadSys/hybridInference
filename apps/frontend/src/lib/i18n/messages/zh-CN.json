@@ -935,6 +935,10 @@
     "source": "Your organization has not set up single sign-on here. Use another sign-in method.",
     "text": "你的机构还没有开通 SSO 登录，请改用其他方式登录。"
   },
+  "auth.sso.subtitle": {
+    "source": "Enter your work or school email. We will send you to your organization to sign in.",
+    "text": "输入工作或学校邮箱，我们会带你去所在机构的登录页。"
+  },
   "auth.validation.combined_max": {
     "source": "Combined use case and discovery response is too long (max 2000 characters)",
     "text": "用途和来源加起来太长了（最多 2000 个字符）"

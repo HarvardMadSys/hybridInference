@@ -463,6 +463,7 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.sso.link_title',
   'auth.sso.linked_toast',
   'auth.sso.not_available',
+  'auth.sso.subtitle',
   'auth.validation.combined_max',
   'auth.validation.discovery_max',
   'auth.validation.email_invalid',

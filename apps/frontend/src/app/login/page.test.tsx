@@ -1,12 +1,14 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import LoginPage from './page';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
 import { APIError } from '@/lib/utils/errors';
+import { AuthAppearanceProvider } from '@/site-ui/appearance';
+import type { AuthAppearance } from '@/site-ui/contract';
 
 let authState = {
   loading: false,
@@ -437,6 +439,13 @@ describe('the single sign-on email step', () => {
     renderLogin({ phoneAuth: true });
     openStep();
 
+    // The step says what it is for, in place of the sign-in form's own line.
+    expect(
+      screen.getByText(
+        'Enter your work or school email. We will send you to your organization to sign in.',
+      ),
+    ).toBeInTheDocument();
+
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'SMS code login' })).not.toBeInTheDocument();
     expect(ssoEntry()).not.toBeInTheDocument();
@@ -512,6 +521,83 @@ describe('the single sign-on email step', () => {
 
     expect(await screen.findByText('Please enter a valid email address')).toBeInTheDocument();
     expect(sso.discoverSso).not.toHaveBeenCalled();
+  });
+});
+
+describe('single sign-on under a distribution\u2019s sign-in skin', () => {
+  // The class names a distribution's module hands the shared forms.
+  const SKIN: AuthAppearance = {
+    form: 'x-form',
+    field: 'x-field',
+    label: 'x-label',
+    labelRow: 'x-label-row',
+    input: 'x-input',
+    inputError: 'x-input-error',
+    hint: 'x-hint',
+    error: 'x-error',
+    linkButton: 'x-link',
+    submit: 'x-submit',
+    notice: 'x-notice',
+    noticeError: 'x-notice-error',
+    noticeOk: 'x-notice-ok',
+    consentBlock: 'x-consent',
+    loading: 'x-loading',
+    loadingWrap: 'x-loading-wrap',
+  };
+
+  function renderSkinned() {
+    return render(
+      <AuthAppearanceProvider value={SKIN}>
+        <SiteConfigProvider initialConfig={{ ...buildTimeSiteConfig, sso: { enabled: true } }}>
+          <LoginPage />
+        </SiteConfigProvider>
+      </AuthAppearanceProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    authState.isAuthenticated = false;
+    authState.user = null;
+  });
+
+  it('draws the entry in the skin\u2019s own link and small print', () => {
+    renderSkinned();
+
+    const block = document.querySelector<HTMLElement>('[data-auth="sso"]')!;
+    expect(ssoEntry()).toHaveClass('x-link');
+    expect(within(block).getByText('or')).toHaveClass('x-hint');
+    // The rules beside the neutral divider are the console's colors, not the skin's.
+    expect(block.querySelector('[aria-hidden="true"]')).toBeNull();
+  });
+
+  it('keeps the way back out of the form, in the row the page spaces itself', () => {
+    renderSkinned();
+    fireEvent.click(ssoEntry()!);
+
+    const back = screen.getByRole('button', { name: 'Back to log in' });
+    expect(back).toHaveClass('x-link');
+    // A distribution's form class need not space its children.
+    expect(back.closest('form')).toBeNull();
+    expect(back.closest('[data-auth="secondary-actions"]')).toHaveClass('mt-4');
+    expect(screen.getByRole('button', { name: 'Continue' })).toHaveClass('x-submit');
+    expect(screen.getByLabelText('Work or school email')).toHaveClass('x-input');
+  });
+
+  it('does the same for declining a waiting identity', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    query = new URLSearchParams({ sso: 'link' });
+    sso.getPendingSsoLink.mockReset().mockResolvedValue({
+      provider_id: 'example-univ',
+      provider_name: 'Example University',
+      email: 'alice@example.edu',
+    });
+    renderSkinned();
+
+    const decline = await screen.findByRole('button', { name: 'Not now' });
+    expect(decline).toHaveClass('x-link');
+    expect(decline.closest('[data-auth="form"]')).toBeNull();
+    expect(decline.closest('[data-auth="secondary-actions"]')).toHaveClass('mt-4');
   });
 });
 

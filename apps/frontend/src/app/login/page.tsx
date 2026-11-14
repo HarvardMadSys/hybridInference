@@ -36,6 +36,12 @@ import type { AccountSummary } from '@/lib/api/auth';
 import { userDisplayName } from '@/lib/utils/userLabel';
 
 /**
+ * The row of alternative links under a form. The page spaces it, because a
+ * distribution's form class need not space its children.
+ */
+const UNDER_FORM = 'mt-4 flex items-center justify-center gap-4';
+
+/**
  * The identity a single sign-on left waiting for the owner of the account it
  * matched (`?sso=link`): still being read, there, or gone.
  */
@@ -416,18 +422,22 @@ function LoginContent() {
               >
                 {t('auth.sso.link_confirm', 'Connect')}
               </button>
-              <button
-                type="button"
-                className={skin.linkButton}
-                disabled={linkBusy !== null}
-                aria-busy={linkBusy === 'cancel'}
-                onClick={declineLink}
-              >
-                {t('auth.sso.link_cancel', 'Not now')}
-              </button>
             </>
           )}
         </div>
+        {!linkExpired && (
+          <div className={UNDER_FORM} data-auth={AUTH_DATA.secondaryActions}>
+            <button
+              type="button"
+              className={skin.linkButton}
+              disabled={linkBusy !== null}
+              aria-busy={linkBusy === 'cancel'}
+              onClick={declineLink}
+            >
+              {t('auth.sso.link_cancel', 'Not now')}
+            </button>
+          </div>
+        )}
       </AuthPageFrame>
     );
   }
@@ -464,11 +474,16 @@ function LoginContent() {
             : t('auth.login.title', 'Log In')
       }
       subtitle={
-        showChooser
-          ? t('auth.accounts.subtitle', 'Accounts signed in on this browser')
-          : features.phoneAuth
-            ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
-            : t('auth.login.subtitle', 'Welcome back, please log in')
+        ssoStep
+          ? t(
+              'auth.sso.subtitle',
+              'Enter your work or school email. We will send you to your organization to sign in.',
+            )
+          : showChooser
+            ? t('auth.accounts.subtitle', 'Accounts signed in on this browser')
+            : features.phoneAuth
+              ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
+              : t('auth.login.subtitle', 'Welcome back, please log in')
       }
       topbar={
         features.publicSignup ? (
@@ -529,48 +544,52 @@ function LoginContent() {
         </>
       )}
       {ssoStep ? (
-        <form onSubmit={submitSso} className={skin.form} data-auth={AUTH_DATA.form} noValidate>
-          {ssoNotice && <AuthNotice tone={ssoNotice.tone}>{ssoNotice.text}</AuthNotice>}
-          <AuthField
-            id="sso-email"
-            label={t('auth.sso.email_label', 'Work or school email')}
-            error={ssoEmailError}
-          >
-            <input
+        <>
+          <form onSubmit={submitSso} className={skin.form} data-auth={AUTH_DATA.form} noValidate>
+            {ssoNotice && <AuthNotice tone={ssoNotice.tone}>{ssoNotice.text}</AuthNotice>}
+            <AuthField
               id="sso-email"
-              className={ssoEmailError ? skin.inputError : skin.input}
-              data-auth="control"
-              type="email"
-              autoComplete="email"
-              autoCapitalize="none"
-              autoCorrect="off"
-              spellCheck={false}
-              value={ssoEmail}
-              onChange={(event) => {
-                setSsoEmail(event.target.value);
-                setSsoEmailError(undefined);
-              }}
+              label={t('auth.sso.email_label', 'Work or school email')}
+              error={ssoEmailError}
+            >
+              <input
+                id="sso-email"
+                className={ssoEmailError ? skin.inputError : skin.input}
+                data-auth="control"
+                type="email"
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={ssoEmail}
+                onChange={(event) => {
+                  setSsoEmail(event.target.value);
+                  setSsoEmailError(undefined);
+                }}
+                disabled={ssoBusy}
+              />
+            </AuthField>
+            <button
+              type="submit"
+              className={skin.submit}
+              data-auth={AUTH_DATA.submit}
               disabled={ssoBusy}
-            />
-          </AuthField>
-          <button
-            type="submit"
-            className={skin.submit}
-            data-auth={AUTH_DATA.submit}
-            disabled={ssoBusy}
-            aria-busy={ssoBusy}
-          >
-            {t('auth.sso.continue', 'Continue')}
-          </button>
-          <button
-            type="button"
-            className={skin.linkButton}
-            disabled={ssoBusy}
-            onClick={() => setSsoStep(false)}
-          >
-            {t('auth.sso.back', 'Back to log in')}
-          </button>
-        </form>
+              aria-busy={ssoBusy}
+            >
+              {t('auth.sso.continue', 'Continue')}
+            </button>
+          </form>
+          <div className={UNDER_FORM} data-auth={AUTH_DATA.secondaryActions}>
+            <button
+              type="button"
+              className={skin.linkButton}
+              disabled={ssoBusy}
+              onClick={() => setSsoStep(false)}
+            >
+              {t('auth.sso.back', 'Back to log in')}
+            </button>
+          </div>
+        </>
       ) : showChooser ? null : features.phoneAuth && method === 'phone' ? (
         <PhoneAuthForm
           purpose="login"
@@ -670,7 +689,8 @@ function LoginContent() {
               <span className="h-px flex-1 bg-gray-200" aria-hidden="true" />
             </div>
           ) : (
-            <span>{divider}</span>
+            // A distribution's own small print: its colors are not the page's to pick.
+            <span className={skin.hint}>{divider}</span>
           )}
           <button type="button" className={skin.linkButton} onClick={openSsoStep}>
             {t('auth.sso.button', 'Log in with SSO')}
