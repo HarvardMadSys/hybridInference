@@ -1147,6 +1147,14 @@ class OperationalStore(ABC):
         for a row written without them.
         """
 
+    @abstractmethod
+    async def list_audit_actions(self) -> list[str]:
+        """Return every distinct ``action`` recorded in the audit log, sorted.
+
+        The admin audit filter offers these, so an action can be filtered
+        on as soon as it has been recorded, without a client-side list.
+        """
+
     # -- cost counters (user_daily_cost table) ---------------------------------
 
     @abstractmethod
