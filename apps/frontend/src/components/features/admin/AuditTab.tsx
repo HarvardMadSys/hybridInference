@@ -4,7 +4,7 @@ import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNo
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { Select } from '@/components/ui/Select';
-import { AuditLogEntry, listAuditLog } from '@/lib/api/admin';
+import { AuditLogEntry, listAuditActions, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
   AdminEmptyState,
@@ -24,9 +24,10 @@ import {
 
 const AUDIT_PAGE_SIZE = 50;
 
-// The actions the filter offers. The log also records others (settings,
-// configuration, alerts, ...); "All actions" shows those, and a filter set by
-// a link is offered as it is (see the select below).
+// The user and key actions, always offered first. Every other action the log
+// has recorded (configuration, settings, routing, alerts, ...) is offered
+// after them, as the server lists it; a filter set by a link that neither
+// list has is offered as it is (see the select below).
 const AUDIT_ACTIONS = [
   'create_user',
   'approve_user',
@@ -462,6 +463,26 @@ export function AuditTab() {
   const actionFilterId = `${baseId}-action`;
   const userFilterId = `${baseId}-user`;
 
+  // Recorded actions beyond the user and key ones. If they cannot be loaded
+  // the filter still offers the user and key actions.
+  const [otherActions, setOtherActions] = useState<string[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    listAuditActions()
+      .then((actions) => {
+        if (cancelled) return;
+        setOtherActions(
+          actions
+            .filter((a) => a && !AUDIT_ACTIONS.includes(a))
+            .sort((a, b) => actionLabel(a).localeCompare(actionLabel(b))),
+        );
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const auditFilter = searchParams.get('action') ?? '';
   const auditUserFilter = searchParams.get('user_id') ?? '';
   const auditOffset = Number.parseInt(searchParams.get('offset') ?? '0', 10) || 0;
@@ -563,9 +584,19 @@ export function AuditTab() {
               label: 'Users and API keys',
               options: AUDIT_ACTIONS.map((a) => ({ value: a, label: actionLabel(a) })),
             },
-            // A filter from a link that is not in the list above: show it,
+            ...(otherActions.length > 0
+              ? [
+                  {
+                    label: 'Other actions',
+                    options: otherActions.map((a) => ({ value: a, label: actionLabel(a) })),
+                  },
+                ]
+              : []),
+            // A filter from a link that is not in the lists above: show it,
             // rather than claim "All actions" while it applies.
-            ...(auditFilter && !AUDIT_ACTIONS.includes(auditFilter)
+            ...(auditFilter &&
+            !AUDIT_ACTIONS.includes(auditFilter) &&
+            !otherActions.includes(auditFilter)
               ? [
                   {
                     label: 'Current filter',
@@ -574,8 +605,7 @@ export function AuditTab() {
                 ]
               : []),
           ]}
-          searchable={false}
-          className="w-48"
+          className="w-56"
         />
         <label htmlFor={userFilterId} className="sr-only">
           Filter by affected user ID

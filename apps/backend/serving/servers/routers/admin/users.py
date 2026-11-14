@@ -32,6 +32,7 @@ from serving.schemas_admin import (
     DeleteUserResponse,
     HardDeleteUserRequest,
     HardDeleteUserResponse,
+    ListAuditActionsResponse,
     ListAuditLogResponse,
     ListUserFilterProvidersResponse,
     ListUsersResponse,
@@ -928,6 +929,20 @@ async def update_user(
         updated_fields=updated,
         message=f"Updated {', '.join(updated)} for user {user_id}.",
     )
+
+
+@router.get("/audit-log/actions", response_model=ListAuditActionsResponse)
+async def list_audit_actions(
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ListAuditActionsResponse:
+    """List every distinct action recorded in the audit log, for the action filter.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    return ListAuditActionsResponse(actions=await op_store.list_audit_actions())
 
 
 @router.get("/audit-log", response_model=ListAuditLogResponse)
