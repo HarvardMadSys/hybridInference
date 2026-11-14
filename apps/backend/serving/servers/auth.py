@@ -25,7 +25,6 @@ from serving.grant_auth import (
     authenticate_grant_model_call,
 )
 from serving.model_access import (
-    CREDENTIAL_SCOPE_KEY,
     KEY_ALLOWED_MODELS_KEY,
     PROJECT_ALLOWED_MODELS_KEY,
     get_disabled_models_from_preferences,
@@ -643,11 +642,6 @@ def _user_context(
     project_allowed = identity.get("project_allowed_models")
     if api_key_id is not None and project_allowed is not None:
         context[PROJECT_ALLOWED_MODELS_KEY] = list(project_allowed)
-    # The key's scope binds like its allowlist: only while the request is
-    # attributed to that key, so impersonation never inherits it.
-    scope = identity.get("credential_scope")
-    if api_key_id is not None and scope:
-        context[CREDENTIAL_SCOPE_KEY] = scope
     return context
 
 
@@ -1547,8 +1541,6 @@ async def optional_verify_api_key(
             if row.get("allowed_models") is not None
             else {}
         ),
-        # And its scope decides which scoped models the listing may show.
-        **({CREDENTIAL_SCOPE_KEY: row["credential_scope"]} if row.get("credential_scope") else {}),
     }
 
 
