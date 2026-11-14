@@ -211,7 +211,7 @@ async def test_hard_delete_erases_personal_projects_and_their_counters(store):
     await store.delete_user(_USER)
     claim = await store.begin_hard_delete_user(_USER)
 
-    await store.hard_delete_user(_USER, claim_token=claim)
+    await store.hard_delete_user(_USER, claim_token=claim.token)
 
     async with store._pool.acquire() as conn:
         assert not await conn.fetchval(
