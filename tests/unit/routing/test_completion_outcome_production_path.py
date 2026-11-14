@@ -15,12 +15,28 @@ from typing import Any
 
 import pytest
 
-from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+    classify_stream_prefix,
+    could_still_be_transient_prefix,
+)
+from routing.response_text import chunk_text, response_text
 from routing.routers import RoutingObservation
 from serving.servers.routers.completions_logging import CompletionsLogger
 
 WARMUP_NOTICE = "The model is starting up - this takes about 120 seconds. Please wait..."
 REAL_ANSWER = "Applied the erasure-fence fix and verified it against postgres."
+# The maintainer's scenario: a short answer whose own first words are the warmup
+# phrase must still classify TRANSIENT, so short-prefix matching stays intact.
+SHORT_WARMUP_ANSWER = "The model is starting up; give it another second."
+# A genuine answer that merely mentions warmup in a longer reply must be PROGRESS.
+LONG_ANSWER_MENTIONING_WARMUP = (
+    "Applied the fix and verified it. The vLLM server can take a minute after a "
+    "restart; while the model is warming up, the probe returns the startup notice, "
+    "which is why the first request failed. The retry then succeeded with the "
+    "expected answer, so the route itself is healthy again."
+)
 
 
 def _body(content: str) -> dict:
@@ -67,10 +83,43 @@ class TestProductionPathSuppliesOutcome:
 
     def test_warmup_notice_is_not_progress(self):
         """A 200 whose only content is a warmup notice is not useful work."""
-        obs = _observe(response_body=_body(WARMUP_NOTICE))
+        obs = _observe(response_body=_body(WARMUP_NOTICE), completion_tokens=20)
         assert obs.success is True, "transport did succeed"
         assert obs.outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
         assert obs.admits_real_work is False
+
+    def test_non_streaming_handler_passes_response_body_to_the_classifier(self):
+        """The non-streaming handler must forward a warmup body with positive tokens."""
+        captured: dict[str, Any] = {}
+
+        def _record(active_router, model_id, routing, **kwargs):
+            captured.update(kwargs)
+
+        logger = CompletionsLogger(log_store=None)
+        logger.record_routing_observation = _record  # type: ignore[method-assign]
+
+        response = _body(WARMUP_NOTICE)
+        logger.record_routing_observation(
+            object(),
+            "m1",
+            None,
+            request_id="req-nonstream-body",
+            ttft_ms=None,
+            total_latency_ms=10.0,
+            prompt_tokens=10,
+            completion_tokens=20,
+            success=True,
+            cached_tokens=None,
+            response_body=response,
+        )
+
+        assert captured["response_body"] is response
+        outcome = CompletionsLogger.classify_outcome(
+            success=True,
+            response_body=captured["response_body"],
+            usage={"completion_tokens": 20},
+        )
+        assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
 
     def test_real_answer_admits_work(self):
         obs = _observe(response_body=_body(REAL_ANSWER))
@@ -137,6 +186,184 @@ class TestUnclassifiedObservationIsInert:
         )
         assert obs.success is True
         assert obs.admits_real_work is False
+
+
+class TestWarmupMarkerAnchoring:
+    """The warmup regex must not flag genuine answers that mention warmup."""
+
+    def test_short_answer_starting_with_warmup_is_still_transient(self):
+        from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+
+        outcome = classify_completion_outcome(
+            content=SHORT_WARMUP_ANSWER, http_status=200, terminal=True
+        )
+        assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
+
+    def test_long_answer_mentioning_warmup_is_progress(self):
+        from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+
+        assert len(LONG_ANSWER_MENTIONING_WARMUP) > 200
+        outcome = classify_completion_outcome(
+            content=LONG_ANSWER_MENTIONING_WARMUP, http_status=200, terminal=True
+        )
+        assert outcome is CompletionOutcome.PROGRESS
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Applied the fix. Note that the model is initializing on cold start.",
+            'UI copy: "Model is loading, please wait..." with a progress spinner.',
+            "That vLLM error means the model is not ready yet; retry after it loads.",
+            "I wrote a function that retries while the model is warming up.",
+        ],
+    )
+    def test_long_or_mid_text_containing_warmup_is_progress(self, text):
+        from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+
+        outcome = classify_completion_outcome(content=text, http_status=200, terminal=True)
+        assert outcome is CompletionOutcome.PROGRESS, text
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "The model is starting up - this takes about 120 seconds. Please wait...",
+            "Model is warming up.",
+            "model is initializing...",
+        ],
+    )
+    def test_short_leading_warmup_is_transient(self, text):
+        from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+
+        outcome = classify_completion_outcome(content=text, http_status=200, terminal=True)
+        assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS, text
+
+    def test_malformed_notice_suffix_is_bounded(self):
+        """Repeated caller-influenced punctuation cannot backtrack exponentially."""
+        from routing.completion_outcome import CompletionOutcome, classify_completion_outcome
+
+        # At the defective regex's roughly 4x-per-two-characters growth rate,
+        # this caller-influenced output would take minutes to classify.
+        adversarial = "the model is starting up" + (". " * 30) + "x"
+        start = time.perf_counter()
+        outcome = classify_completion_outcome(content=adversarial, http_status=200, terminal=True)
+        elapsed = time.perf_counter() - start
+
+        assert outcome is CompletionOutcome.PROGRESS
+        assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
+
+
+class TestStreamingOutcomePrefixes:
+    def test_short_warmup_prefix_is_undecided_until_stream_end(self):
+        assert classify_stream_prefix("The") is None
+        assert classify_stream_prefix("The model is starting up...") is None
+        assert (
+            classify_stream_prefix("The model is starting up...", terminal=True)
+            is CompletionOutcome.TRANSIENT_NO_PROGRESS
+        )
+
+    def test_substantive_continuation_resolves_a_warmup_prefix(self):
+        assert (
+            classify_stream_prefix("The model is starting up to answer the request")
+            is CompletionOutcome.PROGRESS
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Please wait while the model sta",
+            "Model is loading, please",
+            "The model is starting up - this takes about 12",
+        ],
+    )
+    def test_regex_alternatives_and_suffixes_remain_possible_prefixes(self, text):
+        assert could_still_be_transient_prefix(text)
+
+    def test_tool_call_and_thinking_deltas_are_semantic_output(self):
+        tool_call = (
+            'data: {"choices":[{"delta":{"tool_calls":'
+            '[{"id":"call-1","function":{"name":"lookup"}}]}}]}\n\n'
+        )
+        thinking = 'data: {"choices":[{"delta":{"thinking":"reasoning here"}}]}\n\n'
+
+        assert chunk_text(tool_call) == "[tool_call]"
+        assert chunk_text(thinking) == "reasoning here"
+
+    def test_legacy_function_call_is_semantic_output_in_stream_and_response(self):
+        function_call = {"name": "lookup", "arguments": "{}"}
+        chunk = (
+            'data: {"choices":[{"delta":{"function_call":'
+            '{"name":"lookup","arguments":"{}"}}}] }\n\n'
+        )
+
+        assert chunk_text(chunk) == "[tool_call]"
+        assert (
+            response_text({"choices": [{"message": {"function_call": function_call}}]})
+            == "[tool_call]"
+        )
+
+
+def test_record_success_requires_explicit_outcome():
+    """Unclassified success is rejected; #1712 call sites pass explicit outcomes.
+
+    The pre-outcome signature (dev #1712) is updated at the production call
+    sites rather than defaulted: a default PROGRESS would silently turn a
+    warmup notice into evidence of progress.
+    """
+    from routing.endpoint_health import EndpointHealthRegistry
+
+    registry = EndpointHealthRegistry()
+    try:
+        registry.record_success("endpoint")  # type: ignore[call-arg]
+    except TypeError:
+        pass
+    else:
+        raise AssertionError("record_success without outcome must raise TypeError")
+
+
+def test_alternating_notice_alternatives_do_not_backtrack():
+    """Repeated overlapping notice words with a failing tail stay linear (#1501 ancestry)."""
+    import time
+
+    adversarial = "The model is starting up" + (" try again shortly" * 20) + " x"
+    start = time.perf_counter()
+    outcome = classify_completion_outcome(
+        content=adversarial, usage=None, http_status=200, terminal=True
+    )
+    elapsed = time.perf_counter() - start
+    assert outcome is CompletionOutcome.PROGRESS
+    assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
+
+
+def test_whitespace_stream_prefix_stays_bounded():
+    """2000 whitespace chunks must classify quickly without recording success.
+
+    The routers classify a stream through :class:`StreamProgressTracker`, which
+    folds each chunk into a bounded running prefix. This drives the tracker --
+    the path production takes -- so the bound is measured where it holds.
+    """
+    import json as _json
+    import time
+
+    from routing.response_text import StreamProgressTracker
+
+    ws = _json.dumps(
+        {
+            "id": "x",
+            "object": "chat.completion.chunk",
+            "created": 0,
+            "model": "m",
+            "choices": [{"index": 0, "delta": {"content": " "}, "finish_reason": None}],
+        }
+    )
+    whitespace_chunk = "data: " + ws + "\n\n"
+    chunks = [whitespace_chunk for _ in range(2000)]
+    start = time.perf_counter()
+    tracker = StreamProgressTracker()
+    for chunk in chunks:
+        out = tracker.observe(chunk_text(chunk))
+        assert out is None or out is CompletionOutcome.EMPTY
+    elapsed = time.perf_counter() - start
+    assert elapsed < 2.0, f"whitespace classification took {elapsed:.3f}s"
 
 
 @pytest.mark.parametrize(
@@ -246,23 +473,6 @@ def test_logger_classifies_response_body_when_supplied():
         usage={"completion_tokens": 20},
     )
     assert outcome is CompletionOutcome.TRANSIENT_NO_PROGRESS
-
-
-def test_alternating_notice_alternatives_do_not_backtrack():
-    """Repeated overlapping notice words with a failing tail stay linear."""
-    import time
-
-    adversarial = "The model is starting up" + (" try again shortly" * 20) + " x"
-    start = time.perf_counter()
-    outcome = classify_completion_outcome(
-        content=adversarial,
-        usage=None,
-        http_status=200,
-        terminal=True,
-    )
-    elapsed = time.perf_counter() - start
-    assert outcome is CompletionOutcome.PROGRESS
-    assert elapsed < 0.1, f"classification took {elapsed:.3f}s"
 
 
 def test_overlong_text_bypasses_transient_regex():

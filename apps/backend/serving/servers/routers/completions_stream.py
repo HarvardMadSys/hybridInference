@@ -1082,6 +1082,9 @@ class StreamSession:
                 # built (text, reasoning, tool_calls, finish_reason) so the
                 # classifier sees the same evidence the DB row will, including
                 # tool-call-only completions, which are real work.
+                # response_for_db is built just above and carries the same content
+                # the emptiness check reads, so classify from it rather than from
+                # token counts alone.
                 response_body=response_for_db,
             )
 

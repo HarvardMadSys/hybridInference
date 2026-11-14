@@ -21,6 +21,7 @@ tails.
 
 import pytest
 
+from routing.completion_outcome import CompletionOutcome
 from routing.endpoint_health import EndpointHealthRegistry, _CircuitState
 from serving.adapters.key_pool import KeyPoolExhausted, KeyPoolRoleRestricted
 
@@ -31,7 +32,7 @@ def test_role_restricted_refusal_is_breaker_exempt(monkeypatch):
 
     registry = EndpointHealthRegistry()
     endpoint_id = "zai:api.example.com:443"
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
     # More consecutive refusals than the threshold: a real failure class would
@@ -61,7 +62,7 @@ def test_pool_exhausted_for_everyone_is_also_breaker_exempt(monkeypatch):
 
     registry = EndpointHealthRegistry()
     endpoint_id = "zai:api.example.com:8443"
-    registry.record_success(endpoint_id)
+    registry.record_success(endpoint_id, outcome=CompletionOutcome.PROGRESS)
     baseline = registry.snapshot()[endpoint_id]["availability"]
 
     for _ in range(5):
