@@ -368,7 +368,7 @@ def _count_tokens_slot_key(user_id: str) -> str:
     return f"{user_id}:count_tokens"
 
 
-def _intake_slot_key(user_id: str) -> str:
+def intake_slot_key(user_id: str) -> str:
     """Return the per-user budget key for bodies read before admission (see :func:`_exempt_slot_key`)."""
     return f"{user_id}:intake"
 
@@ -384,7 +384,7 @@ async def _take_intake_slot(
     concurrency 429 there and then, its body unread.
     """
     user_id = user["user_id"]
-    key = _intake_slot_key(user_id)
+    key = intake_slot_key(user_id)
     granted, limit, role_label = await limiter.try_acquire(
         key,
         user.get("role", "free") or "free",

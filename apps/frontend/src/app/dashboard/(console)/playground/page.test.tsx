@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
 
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const fetchWithAuth = vi.fn();
@@ -190,6 +190,34 @@ describe('PlaygroundPage', () => {
     expect(picker).toHaveFocus();
   });
 
+  it('shows Auto and hides the pinned provider when the format is not Chat', async () => {
+    fetchWithAuth.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        models: [
+          {
+            id: 'glm-4.6',
+            name: 'GLM 4.6',
+            provider: 'zai',
+            providers: [
+              { id: 'glm-4.6:zai-api', name: 'Z.AI' },
+              { id: 'glm-4.6:chutes-api', name: 'Chutes' },
+            ],
+          },
+        ],
+      }),
+    });
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('Provider', 'Chutes');
+    expect(screen.getByText('glm-4.6:chutes-api')).toBeInTheDocument();
+
+    chooseOption('API', 'Responses');
+
+    expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Auto');
+    expect(screen.queryByText('glm-4.6:chutes-api')).toBeNull();
+  });
+
   it('resets the provider when changing models while preserving each session draft and settings', async () => {
     fetchWithAuth.mockResolvedValue({
       ok: true,
@@ -218,7 +246,7 @@ describe('PlaygroundPage', () => {
     });
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    const firstSession = screen.getByRole('button', { name: /New session No messages -- glm-4.6/ });
+    const firstSession = screen.getByRole('button', { name: /New session No messages · glm-4.6/ });
     chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'First session draft' },
@@ -227,7 +255,7 @@ describe('PlaygroundPage', () => {
       target: { value: 'First session instructions' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     fireEvent.click(screen.getByRole('button', { name: 'Model: GLM 4.6' }));
     fireEvent.click(screen.getByRole('option', { name: /DeepSeek V4, deepseek-v4/ }));
     chooseOption('Provider', 'Chutes');
@@ -276,7 +304,7 @@ describe('PlaygroundPage', () => {
 
     // Leaving the streaming session is allowed again, and the fresh session's
     // controls are live while the background turn runs.
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('');
     expect(screen.getByLabelText('Temperature')).not.toBeDisabled();
 
@@ -293,7 +321,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('one');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt('two');
 
     // Both turns are in flight; each writes into its own session.
@@ -309,7 +337,7 @@ describe('PlaygroundPage', () => {
     expect(screen.getByText(/reply-one/)).toBeInTheDocument();
     // Back to idle: the label reads Send again (disabled only because the
     // editor is empty, not because something is streaming).
-    expect(screen.getByRole('button', { name: 'Send' })).toHaveTextContent('Send');
+    expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
   });
 
   it('protects the streaming session from deletion but not the others', async () => {
@@ -318,7 +346,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('busy');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     expect(screen.queryByRole('button', { name: /Delete session busy/ })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /Delete session New session/ }));
@@ -336,7 +364,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('stoppable');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
 
     // Another session's stream shows no Stop control here.
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
@@ -367,7 +395,7 @@ describe('PlaygroundPage', () => {
     const badge = await screen.findByTitle(/endpoint: glm-4\.6:zai-api/);
     expect(badge).toHaveTextContent('glm-4.6:zai-api');
     expect(badge.getAttribute('title')).toContain('host: api.z.ai');
-    expect(badge).not.toHaveClass('text-amber-400');
+    expect(badge).not.toHaveClass('text-amber-700');
   });
 
   it('flags a fallback and names the attempt that failed', async () => {
@@ -395,7 +423,7 @@ describe('PlaygroundPage', () => {
     // Last frame wins: the fallback is what actually served the response.
     const badge = await screen.findByTitle(/served by fallback/);
     expect(badge).toHaveTextContent('glm-4.6:chutes-api');
-    expect(badge).toHaveClass('text-amber-400');
+    expect(badge).toHaveClass('text-amber-700');
     expect(badge.getAttribute('title')).toContain('failed: glm-4.6:zai-api (HTTPStatusError)');
   });
 
@@ -560,7 +588,7 @@ describe('PlaygroundPage', () => {
     await screen.findByText('answer');
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear conversation' }));
-    expect(screen.getByText('Start a chat run')).toBeInTheDocument();
+    expect(screen.getByText('Start a conversation')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
     expect(screen.getByText('answer')).toBeInTheDocument();
   });
@@ -569,7 +597,7 @@ describe('PlaygroundPage', () => {
     fetchWithAuth.mockResolvedValue(MODELS);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
 
     fireEvent.click(screen.getAllByRole('button', { name: /^Delete session/ })[0]);
@@ -583,15 +611,15 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.5' } });
-    fireEvent.change(screen.getByLabelText('Max Tokens'), { target: { value: '8192' } });
-    fireEvent.change(screen.getByLabelText('System instructions'), {
+    fireEvent.change(screen.getByLabelText('Max tokens'), { target: { value: '8192' } });
+    fireEvent.change(screen.getByLabelText('System prompt'), {
       target: { value: 'Be terse.' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
-    expect(screen.getByLabelText('Max Tokens')).toHaveValue('8192');
-    expect(screen.getByLabelText('System instructions')).toHaveValue('Be terse.');
+    expect(screen.getByLabelText('Max tokens')).toHaveValue('8192');
+    expect(screen.getByLabelText('System prompt')).toHaveValue('Be terse.');
   });
 
   it('keeps reasoning expansion to the message it was opened on', async () => {
@@ -605,7 +633,7 @@ describe('PlaygroundPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^(Thought for|Thinking)/ }));
     expect(screen.getByText('pondering')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt();
     await screen.findByRole('button', { name: /^(Thought for|Thinking)/ });
     expect(screen.queryByText('pondering')).toBeNull();
@@ -663,7 +691,7 @@ describe('PlaygroundPage', () => {
     await sendPrompt('background turn');
 
     // Switch to a fresh session C; the first turn keeps streaming in secret.
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     const scrollTo = vi.mocked(Element.prototype.scrollTo);
     scrollTo.mockClear();
 
@@ -728,7 +756,7 @@ describe('PlaygroundPage', () => {
 
       // Session C: idle, gets the Undo action. Its Undo is live even though
       // session A streams — the pause is per session, not global.
-      fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+      fireEvent.click(screen.getByRole('button', { name: 'New' }));
       fireEvent.click(screen.getAllByRole('button', { name: /Delete session/ })[0]);
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled();
 
@@ -811,7 +839,7 @@ describe('PlaygroundPage', () => {
     const toggle = screen.getByRole('button', { name: 'Chat settings' });
 
     fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(toggle);
@@ -826,7 +854,7 @@ describe('PlaygroundPage', () => {
     const { unmount } = render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('first stream');
-    fireEvent.click(screen.getByRole('button', { name: '+ New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New' }));
     await sendPrompt('second stream');
 
     // Both turns are parked mid-stream, one per session.
@@ -966,5 +994,141 @@ describe('PlaygroundPage', () => {
       expect(await screen.findByText('worth the wait')).toBeInTheDocument();
       expect(screen.queryByText(/^Error:/)).toBeNull();
     });
+  });
+
+  it('sends Anthropic Messages to the messages endpoint with that format', async () => {
+    mockStream([
+      `event: content_block_delta\ndata: ${JSON.stringify({
+        type: 'content_block_delta',
+        delta: { type: 'text_delta', text: 'Anthropic reply' },
+      })}\n\n`,
+      `event: message_delta\ndata: ${JSON.stringify({
+        type: 'message_delta',
+        delta: { stop_reason: 'end_turn' },
+        usage: { output_tokens: 2 },
+      })}\n\n`,
+    ]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Anthropic Messages');
+    await sendPrompt('hello');
+
+    expect(await screen.findByText('Anthropic reply')).toBeInTheDocument();
+    const call = fetchWithAuth.mock.calls.find(
+      ([, path]) => path === '/internal/playground/messages',
+    );
+    expect(call).toBeTruthy();
+    const body = JSON.parse((call?.[2] as { body: string }).body);
+    expect(body).toMatchObject({
+      model: 'glm-4.6',
+      messages: [{ role: 'user', content: 'hello' }],
+      temperature: 0.7,
+      max_tokens: 4096,
+      stream: true,
+    });
+    expect(body).not.toHaveProperty('system_prompt');
+  });
+
+  it('renders Responses text deltas from the responses endpoint', async () => {
+    mockStream([
+      `event: response.output_text.delta\ndata: ${JSON.stringify({
+        type: 'response.output_text.delta',
+        delta: 'Responses reply',
+      })}\n\n`,
+    ]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Responses');
+    await sendPrompt('hello');
+
+    expect(await screen.findByText('Responses reply')).toBeInTheDocument();
+    expect(
+      fetchWithAuth.mock.calls.some(([, path]) => path === '/internal/playground/responses'),
+    ).toBe(true);
+  });
+
+  it("offers the model's reasoning efforts and sends the chosen level", async () => {
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) =>
+      path === '/internal/playground/models'
+        ? {
+            ok: true,
+            json: async () => ({
+              models: [
+                {
+                  id: 'glm-4.6',
+                  name: 'GLM 4.6',
+                  provider: 'zai',
+                  providers: [],
+                  reasoning_efforts: ['low', 'high'],
+                },
+              ],
+            }),
+          }
+        : sseResponse([routeFrame(), contentFrame('effort reply')]),
+    );
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('Reasoning effort', 'high');
+    await sendPrompt('think hard');
+    await screen.findByText('effort reply');
+
+    const call = fetchWithAuth.mock.calls.find(([, path]) => path === '/internal/playground/chat');
+    const body = JSON.parse((call?.[2] as { body: string }).body);
+    expect(body.reasoning_effort).toBe('high');
+  });
+
+  it('hides the reasoning effort control when the model publishes none', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    expect(screen.queryByRole('combobox', { name: 'Reasoning effort' })).toBeNull();
+  });
+
+  it('shows Python first, then the cURL form of the selected API', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    chooseOption('API', 'Anthropic Messages');
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'API request code' });
+    const python = within(dialog).getByRole('tab', { name: 'Python' });
+    const curl = within(dialog).getByRole('tab', { name: 'cURL' });
+    expect(python).toHaveAttribute('aria-selected', 'true');
+    expect(curl).toHaveAttribute('aria-selected', 'false');
+    expect(dialog).toHaveTextContent('from anthropic import Anthropic');
+    expect(dialog).toHaveTextContent('client.messages.create(');
+
+    fireEvent.click(curl);
+    expect(curl).toHaveAttribute('aria-selected', 'true');
+    expect(dialog).toHaveTextContent('/v1/messages');
+    expect(dialog).toHaveTextContent('x-api-key: $HYBRID_API_KEY');
+    expect(dialog).toHaveTextContent('anthropic-version: 2023-06-01');
+    expect(within(dialog).getByRole('button', { name: 'Copy' })).toBeInTheDocument();
+
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'API request code' })).not.toBeInTheDocument(),
+    );
+  });
+
+  it('highlights the generated code and switches tabs with arrow keys', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: 'View code' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'API request code' });
+    expect(dialog.querySelector('.token.keyword')).not.toBeNull();
+    expect(dialog.querySelector('.token.string')).not.toBeNull();
+
+    const python = within(dialog).getByRole('tab', { name: 'Python' });
+    python.focus();
+    fireEvent.keyDown(within(dialog).getByRole('tablist'), { key: 'ArrowRight' });
+    expect(within(dialog).getByRole('tab', { name: 'cURL' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(within(dialog).getByRole('tab', { name: 'cURL' })).toHaveFocus();
   });
 });
