@@ -63,8 +63,6 @@ async def cleanup_auth_tables(pool) -> None:
         async with conn.transaction():
             await conn.execute("DELETE FROM email_verification_tokens")
             await conn.execute("DELETE FROM password_reset_tokens")
-            await conn.execute("DELETE FROM agent_invite_tokens")
-            await conn.execute("DELETE FROM agent_provisioned_accounts")
             await conn.execute("DELETE FROM auth_sessions")
             await conn.execute("DELETE FROM browser_session_accounts")
             await conn.execute("DELETE FROM browser_sessions")

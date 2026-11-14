@@ -80,7 +80,6 @@ CONTROL_PREFIXES: tuple[tuple[str, int], ...] = (
     ("/user/", CONTROL_MAX_BODY_BYTES),
     ("/internal/", CONTROL_MAX_BODY_BYTES),
     ("/v1/identity/", CONTROL_MAX_BODY_BYTES),
-    ("/v1/agent-invites/", CONTROL_MAX_BODY_BYTES),
 )
 
 #: Control routes outside those prefixes, matched exactly.
