@@ -95,8 +95,10 @@ from serving.servers.concurrency import (
     canonical_model_id,
     scope_concurrency_limits,
 )
+from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
+from serving.storage.pools import DatabaseBusyError
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -1105,6 +1107,7 @@ class BatchScheduler:
             await self._defer_for_slot(entry)
             return
         reservation = None
+        result = None
         try:
             # Admitted against the owner's quotas and the key's budgets in one
             # step with the reservation of its estimated cost, counting the
@@ -1112,7 +1115,20 @@ class BatchScheduler:
             # check in authenticate_stored_key may since have been overtaken.
             check = spend_check_of(user_ctx)
             if check is not None:
-                reservation, refusal = check.admit()
+                try:
+                    reservation, refusal = await check.reserve(operation="batch")
+                except (DatabaseBusyError, AccountErased):
+                    # The shared admission could not be made (the database did
+                    # not answer in time) or the owner was erased meanwhile:
+                    # nothing ran, the item is tried again later.
+                    logger.warning(
+                        "batch item %s: spend admission unavailable; retrying later",
+                        entry.item_id,
+                        extra={"event": "batch_spend_admission_unavailable"},
+                        exc_info=True,
+                    )
+                    await self._release(entry, delay=self._timings.owner_retry_seconds)
+                    return
                 if refusal is not None:
                     await self._refused_spend(
                         entry, item, stored_key_quota_exceeded(refusal), check
@@ -1129,6 +1145,13 @@ class BatchScheduler:
                 entry.settled = True
                 return
             entry.dispatched = True
+            # A shared reservation rides into the attempt's request scope, so
+            # the costs it records are settled with it.
+            shared = (
+                {"spend_reservation": reservation}
+                if getattr(reservation, "charge", None) is not None
+                else {}
+            )
             result = await dispatch_item(
                 app=self._app,
                 services=self._services,
@@ -1140,11 +1163,18 @@ class BatchScheduler:
                 attempt=entry.attempt,
                 protocol_profile=item.get("protocol_profile"),
                 timeout_s=self._timings.attempt_timeout_seconds,
+                **shared,
             )
         finally:
-            # The item's real cost, if any, is recorded by now.
+            # The item's real cost, if any, is recorded by now. An attempt
+            # that was dispatched and whose charge its billing point could not
+            # tell (or that this worker abandoned mid-dispatch) keeps its
+            # reservation as an unresolved liability in the shared mode.
             if reservation is not None:
-                reservation.release()
+                reservation.release(
+                    charge_unknown=entry.dispatched
+                    and (result is None or result.cost_status == "unknown")
+                )
             give_back()
         await self._settle(entry, result, attempts, cfg)
 

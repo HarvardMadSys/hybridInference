@@ -301,10 +301,12 @@ class FakeDispatch:
         attempt=None,
         protocol_profile=None,
         timeout_s=None,
+        **shared,
     ):
         model = body["model"]
         self.calls.append(
             {
+                **shared,
                 "user_ctx": user_ctx,
                 "body": body,
                 "batch_id": batch_id,
@@ -1926,3 +1928,77 @@ async def test_project_cap_is_shared_by_batch_and_interactive_work():
     release()
     assert limiter._slots[slot].in_use == 0
     assert scheduler._role_slots._slots[OWNER].in_use == 0
+
+
+# -- the shared accounting mode -------------------------------------------------
+
+
+def _shared_ledger():
+    from serving.shared_spend.ledger import SharedSpendLedger
+    from tests.fixtures.shared_spend import FakeSharedBackend
+
+    backend = FakeSharedBackend()
+    return SharedSpendLedger(backend, instance_id="inst-batch"), backend
+
+
+async def test_a_shared_reservation_rides_into_the_attempt_and_is_settled(worker, dispatch, auth):
+    ledger, backend = _shared_ledger()
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+    (call,) = dispatch.calls
+    reservation = call["spend_reservation"]
+    assert reservation.state in ("queued", "retired")
+    assert await ledger.flush(5)
+    (batch,) = backend.batches
+    assert [m.kind for m in batch.members] == ["settle"]
+    assert backend.rows == {}
+
+
+async def test_an_attempt_whose_charge_is_unknown_keeps_an_unresolved_liability(
+    worker, dispatch, auth
+):
+    ledger, backend = _shared_ledger()
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    dispatch.results["m1"] = dataclasses.replace(
+        OK,
+        status_code=504,
+        response=None,
+        cost_status="unknown",
+        timed_out=True,
+        error={"code": "timeout", "message": "timed out", "status": 504},
+    )
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 1)
+    await until(lambda: bool(backend.batches))
+    assert await ledger.flush(5)
+    kinds = [m.kind for b in backend.batches for m in b.members]
+    assert kinds[0] == "unresolved"
+    assert ledger.holdings()["unresolved"] >= 1
+    assert not ledger.fully_settled()
+
+
+async def test_a_shared_admission_that_cannot_be_made_hands_the_item_back(worker, dispatch, auth):
+    ledger, backend = _shared_ledger()
+    backend.fail_admit = OSError("database down")
+    import serving.shared_spend.ledger as shared_ledger_module
+
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    original = shared_ledger_module.ADMISSION_BUDGET_SECONDS
+    shared_ledger_module.ADMISSION_BUDGET_SECONDS = 0.1
+    try:
+        scheduler = worker(store)
+        scheduler.start()
+        await until(lambda: store.calls["release_item"] >= 1)
+    finally:
+        shared_ledger_module.ADMISSION_BUDGET_SECONDS = original
+    assert dispatch.calls == []
+    assert backend.rows == {}

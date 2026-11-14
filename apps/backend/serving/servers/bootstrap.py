@@ -688,6 +688,7 @@ def _start_live_config(pool: Any) -> None:
         return
     from serving.config import instances
     from serving.servers import restart
+    from serving.shared_spend import mode as spend_mode
 
     reporter = instances.InstanceReporter(
         pool=pool,
@@ -697,6 +698,7 @@ def _start_live_config(pool: Any) -> None:
             **live_config.COORDINATOR.capabilities(),
             "groups": {**live_config.COORDINATOR.capabilities()["groups"], "routing.runtime": [1]},
             "details": instances.default_details(),
+            spend_mode.CAPABILITY: spend_mode.capability(),
         },
     )
     live_config.COORDINATOR.start(reporter)
@@ -1006,6 +1008,15 @@ async def initialize() -> AppServices:
                 # Checked again on the pool everything else uses: the
                 # configuration load may have run without the database.
                 await require_schema(db_logger.pool)
+                # The spend accounting mode, once, for this process's life.
+                from serving.shared_spend import mode as spend_mode
+
+                await spend_mode.load(db_logger.pool)
+                logger.info(
+                    "Spend accounting mode: %s",
+                    spend_mode.current(),
+                    extra={"event": "spend_accounting_mode", "mode": spend_mode.current()},
+                )
                 logger.info("Database logger initialized successfully")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
