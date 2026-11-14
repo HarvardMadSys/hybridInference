@@ -2149,7 +2149,22 @@ msgstr ""
 "`start_time` 和 `end_time`，用于列出某一柱条的请求：包含起点、不包含终点；若起点早于列表的回溯范围，回溯范围会扩大到起点，"
 "最多 90 天。"
 
-#: ../developer/batches.md:886
+#: ../developer/batches.md:921
+msgid ""
+"A row logged while a model was queued for capacity is left out of every one "
+"of these counts, interactive and batch. Its `error` starts with "
+"`UpstreamModelQueued:`. Nothing ran: the batch worker puts the item back "
+"without spending the attempt, and the failed-request alerter already ignores "
+"the same rows. The **Requests** list still shows the row, one attempt in the "
+"log. The Batches tab totals are each batch's stored items, all time, not the "
+"calls that ran in this window."
+msgstr ""
+"模型在等待容量时记下的一行，不计入这些统计中的任何一项，交互请求和批处理请求都如此。其 "
+"`error` 以 `UpstreamModelQueued:` 开头。当时什么都没有运行：批处理 worker 把该条目放回队列且不消耗这次尝试，"
+"失败请求告警也同样忽略这些行。**Requests** 列表仍会显示这一行，因为它是日志里的一次尝试。"
+"Batches 标签页的合计是每个批次所存储的条目，覆盖全部时间，而不是这个窗口里实际运行的调用。"
+
+#: ../developer/batches.md:929
 msgid ""
 "On **Recent Requests**, the **Request volume** cards count only the requests "
 "callers made directly; each card also says how many batch requests ran in its "
