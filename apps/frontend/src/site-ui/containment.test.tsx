@@ -29,6 +29,14 @@ vi.mock('@/components/ui/Header', () => ({
 vi.mock('@/components/ui/SiteFooter', () => ({
   SiteFooter: () => <footer data-testid="console-footer" />,
 }));
+// The console shell asks for the session before it draws the navigation.
+vi.mock('@/components/providers', async (original) => ({
+  ...(await original<typeof import('@/components/providers')>()),
+  useAuth: () => ({ state: { loading: false, isAuthenticated: false, user: null } }),
+}));
+vi.mock('@/components/features/dashboard/ConsoleNav', () => ({
+  ConsoleNav: () => <nav data-testid="console-nav" />,
+}));
 
 const descriptor = { siteUiApi: 1, id: 'failing', locale: 'fr' };
 
