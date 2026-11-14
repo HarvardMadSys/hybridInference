@@ -765,6 +765,12 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
+      # Into RUNNER_TEMP and onto GITHUB_PATH, not `sudo install` into
+      # /usr/local/bin: the self-hosted runners' accounts have no sudo, and
+      # their machine outlives the job and is shared with other repositories'
+      # CI, whose scan would otherwise run whichever gitleaks was installed
+      # last. Unpacking outside the workspace also keeps the tarball out of
+      # the tree the next step scans.
       - name: Install gitleaks
         run: |
           set -euo pipefail
@@ -775,13 +781,17 @@ jobs:
           esac
           asset="gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz"
           base_url="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          bindir="${RUNNER_TEMP}/bin"
+          mkdir -p "${bindir}"
+          cd "${RUNNER_TEMP}"
           curl -fsSLO "${base_url}/${asset}"
           curl -fsSLO "${base_url}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
           grep "  ${asset}$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" > gitleaks.sha256
           sha256sum -c gitleaks.sha256
           tar -xzf "${asset}" gitleaks
-          sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
-          gitleaks version
+          install -m 0755 gitleaks "${bindir}/gitleaks"
+          echo "${bindir}" >> "${GITHUB_PATH}"
+          "${bindir}/gitleaks" version
 
       - name: Run gitleaks
         run: gitleaks detect --source . --no-git --redact --verbose --no-banner
@@ -805,14 +815,19 @@ jobs:
       - name: Verify secret scanner coverage
         run: uv run --no-project --python "${PYTHON_VERSION}" python ops/ci/check_gitleaks_config.py
 
+      # The requirements go to RUNNER_TEMP, not a fixed name in /tmp: every
+      # runner account on a self-hosted machine shares that sticky directory,
+      # and a file another account left there cannot be replaced
+      # (fs.protected_regular), which fails the export on the next account.
       - name: Security audit
         env:
           REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
           SSL_CERT_FILE: /etc/ssl/certs/ca-certificates.crt
         run: |
-          uv export --no-dev --no-hashes --format requirements-txt -o /tmp/audit-requirements.txt
+          requirements="${RUNNER_TEMP}/audit-requirements.txt"
+          uv export --no-dev --no-hashes --format requirements-txt -o "${requirements}"
           uvx --python ${{ env.PYTHON_VERSION }} --from "pip-audit==${PIP_AUDIT_VERSION}" \
-            pip-audit --progress-spinner off --no-deps --disable-pip -r /tmp/audit-requirements.txt
+            pip-audit --progress-spinner off --no-deps --disable-pip -r "${requirements}"
 
   docker-build:
     # No custom name: skipped jobs do not expand matrix expressions in names;

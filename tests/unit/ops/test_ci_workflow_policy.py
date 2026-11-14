@@ -1,6 +1,8 @@
 """Regression tests for CI filtering and CD trigger safety."""
 
+import os
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -673,3 +675,110 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
             (setup,) = [s for s in steps if "astral-sh/setup-uv@" in str(s.get("uses", ""))]
             assert setup["with"].get("enable-cache") is True, (workflow, name)
     assert syncing >= 3
+
+
+# The self-hosted runners run under accounts that have no sudo, one account per
+# repository, side by side on the same machines. So a step that a self-hosted
+# runner can take must not call sudo, and must not use a fixed name in the
+# machines' shared /tmp, where a file another account left behind cannot be
+# replaced (fs.protected_regular).
+SUDO = re.compile(r"(?:^|[\s;&|(!`{])sudo(?=\s|$)")
+SHARED_TMP = re.compile(r"(?:^|[\s=:'\"(])/tmp/")
+HOSTED_ONLY = "runner.environment == 'github-hosted'"
+
+
+def _script(step: dict) -> str:
+    """A step's shell without its comment lines, which may name sudo freely."""
+    lines = str(step.get("run", "")).splitlines()
+    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
+
+
+def _self_hosted_jobs() -> list[tuple[str, str, dict]]:
+    """Jobs whose ``runs-on`` can name a self-hosted runner, for any event."""
+    return [
+        (workflow, name, job)
+        for workflow, name, job, _ in _jobs()
+        if "self-hosted" in str(job.get("runs-on", ""))
+    ]
+
+
+def test_no_step_a_self_hosted_runner_can_run_calls_sudo() -> None:
+    """Their accounts have no sudo, so such a step fails on every trusted event.
+
+    A step that only a hosted runner may take says so in its own condition, as
+    a conjunct the whole condition depends on.
+    """
+    jobs = _self_hosted_jobs()
+    for workflow, name, job in jobs:
+        for step in job.get("steps") or []:
+            if not SUDO.search(_script(step)):
+                continue
+            condition = str(step.get("if", "")).removeprefix("${{").removesuffix("}}")
+            conjuncts = [part.strip() for part in condition.split("&&")]
+            assert HOSTED_ONLY in conjuncts, (workflow, name, step.get("name"))
+    # The CI jobs a push reaches, the publish jobs, the diagnostic build and
+    # the release: the check above looked where it matters.
+    assert len(jobs) >= 15
+
+
+def test_gitleaks_installs_into_runner_temp_and_onto_the_path(tmp_path: Path) -> None:
+    """The scanner lands in this runner's own temp, never in /usr/local/bin.
+
+    The step runs with recorders in place of the network, the archive and sudo.
+    Afterwards the binary is on GITHUB_PATH for the scans that follow, and
+    nothing was written into the working tree the next step scans.
+    """
+    workflow = _workflow("ci.yml")
+    (step,) = [
+        step
+        for step in workflow["jobs"]["security"]["steps"]
+        if step.get("name") == "Install gitleaks"
+    ]
+    workspace = tmp_path / "workspace"
+    runner_temp = tmp_path / "runner-temp"
+    github_path = tmp_path / "github-path"
+    calls = tmp_path / "calls"
+    workspace.mkdir()
+    runner_temp.mkdir()
+    # Functions, not executables on PATH: shell startup cannot reorder them
+    # behind the host's real curl, tar or sudo.
+    recorders = r"""
+uname() { echo x86_64; }
+curl() {
+  printf '%s\n' "curl $*" >> "${CALLS}"
+  url="${*: -1}"
+  printf '0000  %s\n' "gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" > "${url##*/}"
+}
+sha256sum() { printf '%s\n' "sha256sum $*" >> "${CALLS}"; }
+tar() { printf '%s\n' "tar $*" >> "${CALLS}"; printf '#!/bin/sh\necho 0.0.0\n' > gitleaks; }
+sudo() { printf '%s\n' "sudo $*" >> "${CALLS}"; return 1; }
+"""
+    env = {key: value for key, value in os.environ.items() if key != "BASH_ENV"}
+    env.update(
+        CALLS=str(calls),
+        GITHUB_PATH=str(github_path),
+        GITLEAKS_VERSION=str(workflow["env"]["GITLEAKS_VERSION"]),
+        RUNNER_TEMP=str(runner_temp),
+    )
+    subprocess.run(["bash", "-c", recorders + step["run"]], cwd=workspace, env=env, check=True)
+
+    assert github_path.read_text().splitlines() == [str(runner_temp / "bin")]
+    installed = runner_temp / "bin" / "gitleaks"
+    assert installed.is_file()
+    assert os.access(installed, os.X_OK)
+    assert list(workspace.iterdir()) == []
+    recorded = calls.read_text().splitlines()
+    assert [line for line in recorded if line.startswith("tar ")]
+    assert not [line for line in recorded if line.startswith("sudo")]
+
+
+def test_no_self_hosted_step_uses_a_fixed_name_in_the_shared_tmp() -> None:
+    """Every runner account on a machine shares its sticky /tmp.
+
+    A file another account left at a fixed name there cannot be replaced, so the
+    step fails on whichever account comes second. RUNNER_TEMP belongs to one
+    runner process, and mktemp picks a fresh name.
+    """
+    for workflow, name, job in _self_hosted_jobs():
+        for step in job.get("steps") or []:
+            assert not SHARED_TMP.search(_script(step)), (workflow, name, step.get("name"))
