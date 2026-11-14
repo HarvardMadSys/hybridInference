@@ -4,7 +4,8 @@ import { ConfigurationBanner } from '@/components/ui/ConfigurationBanner';
 import { Header } from '@/components/ui/Header';
 import { SiteFooter } from '@/components/ui/SiteFooter';
 import { useModuleRendersRoute } from '@/site-ui/SiteUiBoundary';
-import { useConsoleWidth } from '@/components/ui/consoleWidth';
+import { isChatWorkspaceRoute, useConsoleWidth } from '@/components/ui/consoleWidth';
+import { usePathname } from 'next/navigation';
 
 /**
  * Exactly one layer owns the header, main and footer. A supplied Landing,
@@ -31,16 +32,25 @@ export function PublicRouteBoundary({ children }: { children: React.ReactNode })
  */
 export function ConsoleChrome({ children }: { children: React.ReactNode }) {
   const consoleWidth = useConsoleWidth();
+  const workspace = isChatWorkspaceRoute(usePathname() ?? '');
   return (
-    <div className="console-theme flex min-h-screen flex-1 flex-col bg-gray-50 text-gray-900">
-      <Header />
-      <ConfigurationBanner />
+    <div
+      className={`console-theme flex flex-col bg-gray-50 text-gray-900 ${workspace ? 'h-dvh min-h-0 flex-none overflow-hidden' : 'min-h-screen flex-1'}`}
+    >
+      <Header compact={workspace} />
+      <div className="shrink-0">
+        <ConfigurationBanner />
+      </div>
       <main
-        className={`mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-4 py-6 sm:px-6 sm:py-12`}
+        className={
+          workspace
+            ? 'flex min-h-0 w-full flex-1 flex-col overflow-hidden'
+            : `mx-auto flex w-full ${consoleWidth} flex-1 flex-col px-4 py-6 sm:px-6 sm:py-12`
+        }
       >
         {children}
       </main>
-      <SiteFooter />
+      {!workspace && <SiteFooter />}
     </div>
   );
 }

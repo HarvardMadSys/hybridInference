@@ -34,7 +34,7 @@ const MENU_LINK = `${MENU_ROW} font-medium text-gray-700`;
  * list: a phone has no room for them in a row, and wrapped they stacked the
  * bar three lines deep above every page.
  */
-export function Header() {
+export function Header({ compact = false }: { compact?: boolean }) {
   const consoleWidth = useConsoleWidth();
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
@@ -132,13 +132,13 @@ export function Header() {
 
   return (
     <header
-      className={`mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 sm:py-6`}
+      className={`mx-auto flex w-full ${consoleWidth} shrink-0 flex-wrap items-center justify-between gap-3 px-4 sm:px-6 ${compact ? 'min-h-14 border-b border-gray-200 bg-white py-2' : 'py-4 sm:py-6'}`}
     >
       <div className="flex min-w-0 items-baseline gap-2">
         <Link
           href="/"
           prefetch={false}
-          className="inline-flex min-w-0 items-center gap-2 text-xl font-bold tracking-tight"
+          className={`inline-flex min-w-0 items-center gap-2 font-bold tracking-tight ${compact ? 'text-base' : 'text-xl'}`}
         >
           {branding.logoUrl ? (
             // Runtime assets cannot use next/image because their origin is

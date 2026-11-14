@@ -18,6 +18,11 @@ const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
 const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';
 const CONSOLE_WIDTH_USER = 'max-w-7xl';
 
+/** Chat is a viewport workspace; other console pages retain their reading width. */
+export function isChatWorkspaceRoute(pathname: string): boolean {
+  return pathname === '/dashboard/playground' || pathname === '/dashboard/playground/';
+}
+
 export function isWideConsoleRoute(pathname: string): boolean {
   return pathname === '/dashboard/admin' || pathname.startsWith('/dashboard/admin/');
 }
@@ -30,6 +35,7 @@ export function isUserConsoleRoute(pathname: string): boolean {
 }
 
 export function consoleWidthFor(pathname: string): string {
+  if (isChatWorkspaceRoute(pathname)) return 'max-w-none';
   if (isWideConsoleRoute(pathname)) return CONSOLE_WIDTH_WIDE;
   return isUserConsoleRoute(pathname) ? CONSOLE_WIDTH_USER : CONSOLE_WIDTH_DEFAULT;
 }

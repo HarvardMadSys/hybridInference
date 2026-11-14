@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { consoleWidthFor, isUserConsoleRoute, isWideConsoleRoute } from './consoleWidth';
+import {
+  consoleWidthFor,
+  isChatWorkspaceRoute,
+  isUserConsoleRoute,
+  isWideConsoleRoute,
+} from './consoleWidth';
+
+describe('isChatWorkspaceRoute', () => {
+  it('limits viewport layout to Chat, including its trailing slash', () => {
+    for (const path of ['/dashboard/playground', '/dashboard/playground/']) {
+      expect(isChatWorkspaceRoute(path)).toBe(true);
+      expect(consoleWidthFor(path)).toBe('max-w-none');
+    }
+    for (const path of [
+      '/dashboard',
+      '/dashboard/playground-other',
+      '/dashboard/keys',
+      '/dashboard/admin',
+    ]) {
+      expect(isChatWorkspaceRoute(path)).toBe(false);
+    }
+  });
+});
 
 describe('isWideConsoleRoute', () => {
   it('widens the admin area only', () => {
