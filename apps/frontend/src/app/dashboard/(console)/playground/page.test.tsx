@@ -77,6 +77,31 @@ function mockStream(frames: string[]): void {
   );
 }
 
+/**
+ * Give the page a window whose width the test controls: `wide` is a window
+ * with room for Configuration beside the conversation.
+ */
+function stubWindowWidth(wide: boolean): { setWide: (next: boolean) => void } {
+  const listeners = new Set<() => void>();
+  const query = {
+    matches: wide,
+    addEventListener: (_type: string, listener: () => void) => listeners.add(listener),
+    removeEventListener: (_type: string, listener: () => void) => listeners.delete(listener),
+  };
+  vi.stubGlobal('matchMedia', () => query);
+  return {
+    setWide(next: boolean) {
+      query.matches = next;
+      act(() => listeners.forEach((listener) => listener()));
+    },
+  };
+}
+
+function openHistory(): void {
+  const toggle = screen.getByRole('button', { name: 'History' });
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+}
+
 async function sendPrompt(text = 'hi'): Promise<void> {
   const send = await screen.findByRole('button', { name: 'Send' });
   fireEvent.change(screen.getByPlaceholderText(/Type a message/), { target: { value: text } });
@@ -246,9 +271,6 @@ describe('PlaygroundPage', () => {
     });
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: DeepSeek V4' });
-    const firstSession = screen.getByRole('button', {
-      name: /New session No messages · deepseek-v4/,
-    });
     chooseOption('Provider', 'Chutes');
     fireEvent.change(screen.getByPlaceholderText(/Type a message/), {
       target: { value: 'First session draft' },
@@ -257,7 +279,7 @@ describe('PlaygroundPage', () => {
       target: { value: 'First session instructions' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     fireEvent.click(screen.getByRole('button', { name: 'Model: DeepSeek V4' }));
     fireEvent.click(screen.getByRole('option', { name: /GLM 4.6, glm-4.6/ }));
     chooseOption('Provider', 'Chutes');
@@ -269,8 +291,12 @@ describe('PlaygroundPage', () => {
 
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Auto');
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('Second session draft');
+    openHistory();
     expect(screen.getAllByRole('button', { name: /New session No messages/ })).toHaveLength(2);
-    fireEvent.click(firstSession);
+    openHistory();
+    fireEvent.click(
+      screen.getAllByRole('button', { name: /New session No messages · deepseek-v4/ })[1],
+    );
     expect(screen.getByRole('combobox', { name: 'Provider' })).toHaveTextContent('Chutes');
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('First session draft');
     expect(screen.getByPlaceholderText('You are a research assistant...')).toHaveValue(
@@ -306,12 +332,13 @@ describe('PlaygroundPage', () => {
 
     // Leaving the streaming session is allowed again, and the fresh session's
     // controls are live while the background turn runs.
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     expect(screen.getByPlaceholderText(/Type a message/)).toHaveValue('');
     expect(screen.getByLabelText('Temperature')).not.toBeDisabled();
 
     await act(async () => first.push(contentFrame('background ')));
     await act(async () => first.push(contentFrame('reply')));
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /first question/ }));
     await waitFor(() => expect(screen.getByText(/background reply/)).toBeInTheDocument());
   });
@@ -323,7 +350,7 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('one');
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await sendPrompt('two');
 
     // Both turns are in flight; each writes into its own session.
@@ -335,6 +362,7 @@ describe('PlaygroundPage', () => {
     });
     await waitFor(() => expect(screen.getByText(/reply-two/)).toBeInTheDocument());
 
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /^one \d/ }));
     expect(screen.getByText(/reply-one/)).toBeInTheDocument();
     // Back to idle: the label reads Send again (disabled only because the
@@ -348,14 +376,18 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('busy');
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
 
+    openHistory();
     expect(screen.queryByRole('button', { name: /Delete session busy/ })).toBeNull();
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /Delete session New session/ }));
+    openHistory();
     expect(screen.queryByRole('button', { name: /Delete session New session/ })).toBeNull();
 
     // The background stream survives the deletion of the other session.
     await act(async () => first.push(contentFrame('still streaming')));
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /busy/ }));
     await waitFor(() => expect(screen.getByText(/still streaming/)).toBeInTheDocument());
   });
@@ -366,10 +398,11 @@ describe('PlaygroundPage', () => {
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('stoppable');
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
 
     // Another session's stream shows no Stop control here.
     expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull();
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /stoppable/ }));
     fireEvent.click(await screen.findByRole('button', { name: 'Stop' }));
     // Aborting makes the parked read reject, exactly as a real reader does.
@@ -599,12 +632,19 @@ describe('PlaygroundPage', () => {
     fetchWithAuth.mockResolvedValue(MODELS);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    openHistory();
     expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
 
+    openHistory();
     fireEvent.click(screen.getAllByRole('button', { name: /^Delete session/ })[0]);
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled();
+    openHistory();
     expect(screen.queryAllByRole('button', { name: /^Delete session/ })).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: 'Close history' }));
     fireEvent.click(screen.getByRole('button', { name: 'Undo' }));
+    openHistory();
     expect(screen.getAllByRole('button', { name: /^Delete session/ })).toHaveLength(2);
   });
 
@@ -618,7 +658,7 @@ describe('PlaygroundPage', () => {
       target: { value: 'Be terse.' },
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
     expect(screen.getByLabelText('Max tokens')).toHaveValue('8192');
     expect(screen.getByLabelText('System prompt')).toHaveValue('Be terse.');
@@ -635,7 +675,7 @@ describe('PlaygroundPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^(Thought for|Thinking)/ }));
     expect(screen.getByText('pondering')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await sendPrompt();
     await screen.findByRole('button', { name: /^(Thought for|Thinking)/ });
     expect(screen.queryByText('pondering')).toBeNull();
@@ -693,7 +733,7 @@ describe('PlaygroundPage', () => {
     await sendPrompt('background turn');
 
     // Switch to a fresh session C; the first turn keeps streaming in secret.
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     const scrollTo = vi.mocked(Element.prototype.scrollTo);
     scrollTo.mockClear();
 
@@ -708,6 +748,7 @@ describe('PlaygroundPage', () => {
     expect(scrollTo).not.toHaveBeenCalled();
 
     // The background turn did land in its own session.
+    openHistory();
     fireEvent.click(screen.getByRole('button', { name: /^background turn/ }));
     await waitFor(() => expect(screen.getByText(/background deltas/)).toBeInTheDocument());
   });
@@ -758,7 +799,8 @@ describe('PlaygroundPage', () => {
 
       // Session C: idle, gets the Undo action. Its Undo is live even though
       // session A streams — the pause is per session, not global.
-      fireEvent.click(screen.getByRole('button', { name: 'New' }));
+      fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+      openHistory();
       fireEvent.click(screen.getAllByRole('button', { name: /Delete session/ })[0]);
       expect(screen.getByRole('button', { name: 'Undo' })).toBeEnabled();
 
@@ -768,6 +810,7 @@ describe('PlaygroundPage', () => {
 
       // And A's stream is unaffected: it still lands its deltas.
       await act(async () => first.push(contentFrame(' done')));
+      openHistory();
       fireEvent.click(screen.getByRole('button', { name: /^streaming one/ }));
       await act(async () => first.end());
       await waitFor(() => expect(screen.getByText(/done/)).toBeInTheDocument());
@@ -806,20 +849,20 @@ describe('PlaygroundPage', () => {
     }
   });
 
-  it('opens the sessions and settings from the header on a phone', async () => {
+  it('opens Configuration independently from History on a phone', async () => {
     mockStream([]);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
 
-    const toggle = screen.getByRole('button', { name: 'Chat settings' });
-    const drawer = screen.getByRole('complementary', { name: 'Chat settings' });
+    const toggle = screen.getByRole('button', { name: 'Configuration' });
+    const drawer = screen.getByRole('complementary', { name: 'Configuration' });
     expect(toggle).toHaveAttribute('aria-controls', drawer.id);
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
 
     fireEvent.click(toggle);
 
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByRole('button', { name: 'Close chat settings' })).toHaveFocus();
+    expect(screen.getByRole('button', { name: 'Close configuration' })).toHaveFocus();
 
     fireEvent.keyDown(document, { key: 'Escape' });
 
@@ -827,26 +870,152 @@ describe('PlaygroundPage', () => {
     expect(toggle).toHaveFocus();
 
     // The empty conversation offers the same drawer, and closing returns focus.
-    fireEvent.click(screen.getByRole('button', { name: 'Open chat settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Open configuration' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    fireEvent.click(screen.getByRole('button', { name: 'Close chat settings' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Close configuration' }));
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     expect(toggle).toHaveFocus();
   });
 
-  it('shows the conversation once a session is started or chosen from the drawer', async () => {
+  it('searches History and returns to the selected conversation without changing configuration', async () => {
+    mockStream([contentFrame('first answer'), 'data: [DONE]\n\n']);
+    render(<PlaygroundPage />);
+    await sendPrompt('first question');
+    await screen.findByText('first answer');
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '1.5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    fireEvent.change(screen.getByLabelText('Temperature'), { target: { value: '0.2' } });
+
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
+    openHistory();
+    expect(screen.getByRole('searchbox', { name: 'Search sessions' })).toHaveFocus();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'not found' } });
+    expect(screen.getByText('No matching sessions.')).toBeInTheDocument();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'first question' } });
+    fireEvent.click(screen.getByRole('button', { name: /^first question/ }));
+    expect(screen.queryByRole('dialog', { name: 'History' })).toBeNull();
+    expect(screen.getByLabelText('Message')).toHaveFocus();
+    expect(screen.getByLabelText('Temperature')).toHaveValue('1.5');
+    expect(screen.getByText('first answer')).toBeInTheDocument();
+  });
+
+  it('closes History with Escape and keeps the two mobile drawers mutually exclusive', async () => {
     mockStream([]);
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
-    const toggle = screen.getByRole('button', { name: 'Chat settings' });
+    const configuration = screen.getByRole('button', { name: 'Configuration' });
+    const history = screen.getByRole('button', { name: 'History' });
+    fireEvent.click(configuration);
+    openHistory();
+    expect(configuration).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(history).toHaveAttribute('aria-expanded', 'false');
+    expect(history).toHaveFocus();
+    openHistory();
+    fireEvent.click(configuration);
+    expect(history).toHaveAttribute('aria-expanded', 'false');
+    expect(configuration).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(configuration).toHaveAttribute('aria-expanded', 'false');
+  });
 
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  it('keeps Tab inside History while it is open', async () => {
+    mockStream([]);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    openHistory();
 
-    fireEvent.click(toggle);
-    fireEvent.click(screen.getAllByRole('button', { name: /^New session/ })[0]);
-    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    const history = screen.getByRole('dialog', { name: 'History' });
+    const close = within(history).getByRole('button', { name: 'Close history' });
+    const session = within(history).getByRole('button', { name: /^New session/ });
+    expect(history).toHaveAttribute('aria-modal', 'true');
+
+    // Forwards off the last control and backwards off the first both wrap.
+    session.focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(document, { key: 'Tab', shiftKey: true });
+    expect(session).toHaveFocus();
+
+    // Focus that escaped to the page behind is brought back in.
+    screen.getByLabelText('Message').focus();
+    fireEvent.keyDown(document, { key: 'Tab' });
+    expect(close).toHaveFocus();
+  });
+
+  it('says on the History button that another session is still generating', async () => {
+    const first = controlledStream();
+    mockChats(first.response);
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    const history = screen.getByRole('button', { name: 'History' });
+    await sendPrompt('background turn');
+    expect(history).not.toHaveAccessibleDescription();
+
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+    expect(history).toHaveAccessibleDescription('1 session is generating in the background');
+
+    await act(async () => first.end());
+    await waitFor(() => expect(history).not.toHaveAccessibleDescription());
+  });
+
+  describe('in a wide window', () => {
+    afterEach(() => vi.unstubAllGlobals());
+
+    it('shows Configuration beside the conversation until it is collapsed', async () => {
+      stubWindowWidth(true);
+      mockStream([]);
+      render(<PlaygroundPage />);
+      await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+      const toggle = screen.getByRole('button', { name: 'Configuration' });
+
+      // A panel, not a drawer: nothing to close, and focus is left alone.
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.queryByRole('button', { name: 'Close configuration' })).toBeNull();
+      expect(screen.queryByRole('button', { name: 'Open configuration' })).toBeNull();
+
+      // Neither a new chat nor History puts the panel away.
+      fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
+      openHistory();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      // Escape is the drawer's key; a collapsed panel has nothing to close.
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Open configuration' }));
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    });
+
+    it('keeps what the user chose when the window changes width', async () => {
+      const width = stubWindowWidth(true);
+      mockStream([]);
+      render(<PlaygroundPage />);
+      await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+      const toggle = screen.getByRole('button', { name: 'Configuration' });
+
+      // Collapsed while wide: still out of the way as a drawer.
+      fireEvent.click(toggle);
+      width.setWide(false);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+      // Opened as a drawer: still there as a panel once there is room.
+      fireEvent.click(toggle);
+      expect(screen.getByRole('button', { name: 'Close configuration' })).toHaveFocus();
+      width.setWide(true);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.queryByRole('button', { name: 'Close configuration' })).toBeNull();
+
+      // With no choice made, each width shows its own default.
+      width.setWide(false);
+      fireEvent.click(screen.getByRole('button', { name: 'Close configuration' }));
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      width.setWide(true);
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    });
   });
 
   it('aborts every live stream when the page unmounts', async () => {
@@ -856,7 +1025,7 @@ describe('PlaygroundPage', () => {
     const { unmount } = render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
     await sendPrompt('first stream');
-    fireEvent.click(screen.getByRole('button', { name: 'New' }));
+    fireEvent.click(screen.getByRole('button', { name: 'New chat' }));
     await sendPrompt('second stream');
 
     // Both turns are parked mid-stream, one per session.

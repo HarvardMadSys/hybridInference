@@ -40,8 +40,17 @@ vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => ({ appName: 'Test Console', logoUrl: '', orgName: '' }),
 }));
 
+/** Signed out unless a test says otherwise: the public routes are a visitor's. */
+const session = vi.hoisted(() => ({ signedIn: false }));
+
 vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: { loading: false, isAuthenticated: false, user: null } }),
+  useAuth: () => ({
+    state: { loading: false, isAuthenticated: session.signedIn, user: null },
+  }),
+}));
+
+vi.mock('@/components/features/dashboard/ConsoleNav', () => ({
+  ConsoleNav: () => <nav data-testid="console-nav" />,
 }));
 
 vi.mock('@/components/providers/AuthProvider', () => ({
@@ -233,6 +242,53 @@ describe('chrome ownership when a module draws whole pages', () => {
 
     expect(landmarks()).toEqual({ headers: 1, mains: 1, footers: 1 });
     expect(screen.getByTestId('console-header')).toBeInTheDocument();
+  });
+});
+
+describe('the user console shell', () => {
+  afterEach(() => {
+    cleanup();
+    session.signedIn = false;
+  });
+
+  it('draws the navigation beside the page, outside main, for a signed-in user', () => {
+    useNeutralModule();
+    session.signedIn = true;
+    renderAt('/dashboard/keys');
+
+    expect(landmarks()).toEqual({ headers: 1, mains: 1, footers: 1 });
+    const nav = screen.getByTestId('console-nav');
+    const main = screen.getByRole('main');
+    expect(main).not.toContainElement(nav);
+    expect(within(main).getByText('BODY')).toBeInTheDocument();
+    // Beside the navigation, so it is under the page rather than the window.
+    expect(nav.parentElement).toContainElement(screen.getByTestId('console-footer'));
+  });
+
+  it('leaves the navigation out until there is a session', () => {
+    useNeutralModule();
+    renderAt('/dashboard/keys');
+
+    expect(screen.queryByTestId('console-nav')).toBeNull();
+    expect(landmarks()).toEqual({ headers: 1, mains: 1, footers: 1 });
+  });
+
+  it('gives Chat the room beside the navigation, with no footer under it', () => {
+    useNeutralModule();
+    session.signedIn = true;
+    renderAt('/dashboard/playground');
+
+    expect(landmarks()).toEqual({ headers: 1, mains: 1, footers: 0 });
+    expect(screen.getByTestId('console-nav')).toBeInTheDocument();
+  });
+
+  it('keeps the admin area out of the shell: it brings its own tabs', () => {
+    useNeutralModule();
+    session.signedIn = true;
+    renderAt('/dashboard/admin/users');
+
+    expect(landmarks()).toEqual({ headers: 1, mains: 1, footers: 1 });
+    expect(screen.queryByTestId('console-nav')).toBeNull();
   });
 });
 
