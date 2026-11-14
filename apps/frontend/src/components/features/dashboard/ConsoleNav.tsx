@@ -38,7 +38,7 @@ export function isCurrent(pathname: string, href: string): boolean {
 }
 
 const ITEM =
-  'flex min-h-9 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400';
+  'flex min-h-9 items-center whitespace-nowrap rounded-md px-3 py-1.5 text-sm font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 md:px-4';
 const ITEM_CURRENT = 'bg-gray-900 text-white';
 const ITEM_OTHER = 'text-gray-600 hover:bg-gray-100 hover:text-gray-900';
 
@@ -133,16 +133,16 @@ export function ConsoleNav() {
     <nav
       ref={scrollerRef}
       aria-label={t('console.nav.label', 'Console')}
-      className="shrink-0 overflow-x-auto border-b border-gray-200 px-3 py-2 [scrollbar-width:thin] md:w-56 md:overflow-visible md:border-b-0 md:border-r md:p-0"
+      className="shrink-0 overflow-x-auto border-b border-gray-200 px-3 py-2 [scrollbar-width:thin] md:w-60 md:overflow-visible md:border-b-0 md:border-r md:p-0"
     >
-      <div className="flex w-max items-center gap-1 md:sticky md:top-14 md:max-h-[calc(100dvh-3.5rem)] md:w-auto md:flex-col md:items-stretch md:gap-6 md:overflow-y-auto md:px-3 md:py-5">
+      <div className="flex w-max items-center gap-1 md:sticky md:top-14 md:max-h-[calc(100dvh-3.5rem)] md:w-auto md:flex-col md:items-stretch md:gap-5 md:overflow-y-auto md:px-4 md:py-5">
         <ul className="flex items-center gap-1 md:flex-col md:items-stretch">
           {pages.map(renderItem)}
         </ul>
         {adminPages.length > 0 && (
-          <div className="flex items-center gap-1 md:flex-col md:items-stretch">
+          <div className="flex items-center gap-1 border-gray-200 md:flex-col md:items-stretch md:border-t md:pt-5">
             <span aria-hidden="true" className="mx-1 h-5 w-px bg-gray-200 md:hidden" />
-            <h2 className="hidden px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-gray-400 md:block">
+            <h2 className="hidden px-4 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-400 md:block">
               {t('console.nav.admin_group', 'Admin')}
             </h2>
             <ul

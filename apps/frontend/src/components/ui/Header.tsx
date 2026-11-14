@@ -139,7 +139,7 @@ export function Header() {
     <header
       className={
         bar
-          ? `flex min-h-14 w-full shrink-0 flex-wrap items-center justify-between gap-x-3 border-b border-gray-200 bg-white px-4 py-2 sm:px-6 ${shell ? 'md:sticky md:top-0 md:z-30' : ''}`
+          ? `flex min-h-14 w-full shrink-0 flex-wrap items-center justify-between gap-x-3 border-b border-gray-200 bg-white px-4 py-2 sm:px-6 md:px-8 ${shell ? 'md:sticky md:top-0 md:z-30' : ''}`
           : `mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 sm:py-6`
       }
     >

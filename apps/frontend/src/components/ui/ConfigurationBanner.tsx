@@ -53,7 +53,9 @@ function MissingConfigurationNotice(): JSX.Element | null {
       <div
         role="status"
         className={`w-full border-amber-200 bg-amber-50 text-sm text-amber-900 ${
-          bar ? 'border-b px-4 py-2 sm:px-6' : 'rounded-2xl border px-4 py-3 shadow-subtle sm:px-5'
+          bar
+            ? 'border-b px-4 py-2 sm:px-6 md:px-8'
+            : 'rounded-2xl border px-4 py-3 shadow-subtle sm:px-5'
         }`}
       >
         {state.user.is_admin ? (
