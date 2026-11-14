@@ -513,6 +513,12 @@ class ListAuditLogResponse(BaseModel):
     entries: list[AuditLogEntry]
 
 
+class ListAuditActionsResponse(BaseModel):
+    """Every distinct action recorded in the audit log, sorted."""
+
+    actions: list[str]
+
+
 # ========================================
 # Delete User Schemas
 # ========================================
@@ -2174,6 +2180,7 @@ __all__ = [
     "ListAPIKeysResponse",
     "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
+    "ListAuditActionsResponse",
     "ListAuditLogResponse",
     "ListBatchModelLimitsResponse",
     "ListModelVisibilityResponse",
