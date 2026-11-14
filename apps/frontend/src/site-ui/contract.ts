@@ -444,6 +444,7 @@ export const AUTH_MESSAGE_KEYS = [
   'auth.sso.email_label',
   'auth.sso.error.browser_full',
   'auth.sso.error.cancelled',
+  'auth.sso.error.email_in_use',
   'auth.sso.error.email_untrusted',
   'auth.sso.error.expired',
   'auth.sso.error.failed',

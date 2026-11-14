@@ -741,6 +741,16 @@ describe('the single sign-on section', () => {
     expect(toast.success).not.toHaveBeenCalled();
   });
 
+  it('says to sign in to the account that already has the organization email', async () => {
+    arriveAt('/dashboard/settings?sso_error=email_in_use');
+    renderSettings(false, true);
+
+    expect(screen.getByRole('alert')).toHaveTextContent(
+      'The email of this organization account already belongs to another account here. Sign in to that account to connect it.',
+    );
+    expect(toast.success).not.toHaveBeenCalled();
+  });
+
   // A verification code does not confirm these two actions.
   describe('for an account with a phone and no password', () => {
     beforeEach(() => {

@@ -26,6 +26,11 @@ export function ssoErrorMessage(t: Translate, code: SsoErrorCode): string {
         'auth.sso.error.email_untrusted',
         'We could not confirm the email of this organization account. Contact your administrator.',
       );
+    case 'email_in_use':
+      return t(
+        'auth.sso.error.email_in_use',
+        'The email of this organization account already belongs to another account here. Sign in to that account to connect it.',
+      );
     case 'no_account':
       return t(
         'auth.sso.error.no_account',

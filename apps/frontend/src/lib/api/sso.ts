@@ -31,6 +31,7 @@ export const SSO_ERROR_CODES = [
   'expired',
   'failed',
   'email_untrusted',
+  'email_in_use',
   'identity_conflict',
   'identity_in_use',
   'no_account',

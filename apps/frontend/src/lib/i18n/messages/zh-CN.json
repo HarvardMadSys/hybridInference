@@ -859,6 +859,10 @@
     "source": "Single sign-on was cancelled.",
     "text": "已取消 SSO 登录。"
   },
+  "auth.sso.error.email_in_use": {
+    "source": "The email of this organization account already belongs to another account here. Sign in to that account to connect it.",
+    "text": "这个机构账号的邮箱已经属于另一个平台账号。请登录那个账号再关联。"
+  },
   "auth.sso.error.email_untrusted": {
     "source": "We could not confirm the email of this organization account. Contact your administrator.",
     "text": "无法确认这个机构账号的邮箱，请联系管理员。"

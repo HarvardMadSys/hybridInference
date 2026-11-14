@@ -623,6 +623,10 @@ describe('a failed single sign-on (?sso_error)', () => {
     ],
     ['identity_in_use', 'This organization account is already connected to another account.'],
     [
+      'email_in_use',
+      'The email of this organization account already belongs to another account here. Sign in to that account to connect it.',
+    ],
+    [
       'no_account',
       'This organization account has no account here yet. Contact your administrator.',
     ],
