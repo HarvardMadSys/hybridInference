@@ -2979,7 +2979,12 @@ export async function updateProviderRouteBatch(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
-/** Delete a config (models.yaml) route from this deployment; it can be restored. */
+/**
+ * Delete a catalog route from this deployment.
+ *
+ * While the model has another route, Restore brings this one back. Deleting
+ * the model's last route removes the model from the stored catalog.
+ */
 export async function removeProviderRoute(
   modelId: string,
   routeId: string,

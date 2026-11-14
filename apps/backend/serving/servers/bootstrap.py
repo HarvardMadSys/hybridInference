@@ -268,12 +268,15 @@ async def _refresh_route_state_snapshots(
     interval_seconds: float = 10.0,
     router: Any | None = None,
     apply_removals: Callable[[], Awaitable[None]] | None = None,
+    services: Any | None = None,
 ) -> None:
     """Periodically reload disabled/removed routes so workers converge after admin edits.
 
     ``apply_removals`` is what boot could not do: take deleted config routes
     out of the route table. It runs once, after the first reload that
-    succeeds, and again on the next one if it fails.
+    succeeds, and again on the next one if it fails. ``services`` lets the
+    same pass drop a config model the stored catalog no longer lists, which
+    is how a model removed on another process leaves this one.
     """
     refresh_state = _EffectiveRouteRefreshState()
     while True:
@@ -287,6 +290,16 @@ async def _refresh_route_state_snapshots(
             if apply_removals is not None:
                 await apply_removals()
                 apply_removals = None
+            if services is not None:
+                # Its own try: a catalog read must not skip route-state reloads.
+                try:
+                    from serving.servers.routers.admin.provider_routes import (
+                        retire_models_removed_from_catalog,
+                    )
+
+                    await retire_models_removed_from_catalog(services)
+                except Exception:
+                    logger.warning("Catalog model retirement failed", exc_info=True)
             if changed:
                 _report_route_weight_divergence(router)
         except Exception:
@@ -1435,6 +1448,7 @@ async def initialize() -> AppServices:
     # a failure here should not prevent the server from starting.
     restored_routewise_model_ids: set[str] = set()
     route_state_resolver: RouteStateResolver | None = None
+    provider_route_services: AppServices | None = None
     # Set when boot could not take deleted config routes out of the table, so
     # the route-state refresh loop does it once the states can be read.
     late_route_removals: Callable[[], Awaitable[None]] | None = None
@@ -1715,6 +1729,7 @@ async def initialize() -> AppServices:
                     model_router_registry,
                     router=router,
                     apply_removals=late_route_removals,
+                    services=provider_route_services,
                 )
             )
             _BACKGROUND_TASKS.add(route_state_refresh_task)
