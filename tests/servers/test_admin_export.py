@@ -74,6 +74,17 @@ def _request() -> Request:
     return Request({"type": "http", "method": "GET", "path": "/admin/export/requests"})
 
 
+def _filters(**overrides: Any):
+    """The filters a test hands the route when it calls it without the app: all of 2024."""
+    from serving.servers.routers.admin.export import ExportFilters
+
+    return ExportFilters(
+        start_time=datetime(2024, 1, 1, tzinfo=UTC),
+        end_time=datetime(2024, 12, 31, tzinfo=UTC),
+        **overrides,
+    )
+
+
 def _make_mock_db(rows_per_batch: list[list[dict]]):
     """Return a mock db_logger whose pool yields rows_per_batch in successive fetches."""
     mock_db = MagicMock()
@@ -513,15 +524,7 @@ def test_export_is_audited_before_any_row_is_streamed():
     response = asyncio.run(
         export_routes.admin_export_requests(
             request=_request(),
-            start_time=datetime(2024, 1, 1, tzinfo=UTC),
-            end_time=datetime(2024, 12, 31, tzinfo=UTC),
-            user_id=None,
-            session_id=None,
-            model_id=None,
-            errors_only=False,
-            outcome=None,
-            request_type=None,
-            include_content=True,
+            filters=_filters(include_content=True),
             actor=ADMIN_ACTOR,
             db_logger=db,
         )
@@ -568,15 +571,7 @@ async def _export(db):
 
     return await export_routes.admin_export_requests(
         request=_request(),
-        start_time=datetime(2024, 1, 1, tzinfo=UTC),
-        end_time=datetime(2024, 12, 31, tzinfo=UTC),
-        user_id=None,
-        session_id=None,
-        model_id=None,
-        errors_only=False,
-        outcome=None,
-        request_type=None,
-        include_content=False,
+        filters=_filters(),
         actor=ADMIN_ACTOR,
         db_logger=db,
     )
@@ -718,9 +713,7 @@ async def test_a_page_goes_out_in_bounded_chunks_with_the_loop_given_back(monkey
 
     response = await export.admin_export_requests(
         request=_request(),
-        start_time=datetime(2024, 1, 1, tzinfo=UTC),
-        end_time=datetime(2024, 12, 31, tzinfo=UTC),
-        include_content=True,
+        filters=_filters(include_content=True),
         actor=ADMIN_ACTOR,
         db_logger=db,
     )

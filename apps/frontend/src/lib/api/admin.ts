@@ -1537,6 +1537,17 @@ interface ExportRequestsParams {
   includeContent?: boolean;
 }
 
+/**
+ * Start a download of the export the filters select, saved by the browser.
+ *
+ * The browser writes a file to its downloads folder as it arrives only when it
+ * requests the file itself, and then it sends no `Authorization` header. So
+ * this asks the gateway for a short-lived link that stands in for the header,
+ * and hands the link to the browser. It resolves once the download has been
+ * started; the browser's downloads list shows its progress from there. Read
+ * through `fetch` instead, an export of a few gigabytes had to fit in the tab's
+ * memory before anything was saved.
+ */
 export async function exportRequests(params: ExportRequestsParams): Promise<void> {
   const qs = new URLSearchParams({
     start_time: params.startTime,
@@ -1550,26 +1561,27 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   setSourceParams(qs, { source: params.source, batchId: params.batchId });
   if (params.includeContent) qs.set('include_content', 'true');
 
-  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
+  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests/link?${qs.toString()}`, {
+    method: 'POST',
+  });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     const message = (err as { detail?: string }).detail ?? `Export failed (HTTP ${resp.status})`;
     throw new Error(message);
   }
+  const { url } = (await resp.json()) as { url: string; expires_in: number };
 
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
+  // The gateway answers with `Content-Disposition: attachment` and the file
+  // name, so following the link saves the file and leaves this page as it is.
   const a = document.createElement('a');
-  const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
-  const endDate = (params.endTime ?? new Date().toISOString()).slice(0, 10).replace(/-/g, '');
-  a.href = url;
-  a.download = `requests-${startDate}-${endDate}.jsonl`;
+  a.href = `${API_BASE}${url}`;
+  a.download = '';
+  a.rel = 'noopener';
   try {
     document.body.appendChild(a);
     a.click();
   } finally {
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   }
 }
 
