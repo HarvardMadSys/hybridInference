@@ -22,8 +22,8 @@ from serving.servers.concurrency import (
     INTAKE_USER_CONCURRENCY_LIMIT,
     UserConcurrencyLimiter,
     _exempt_slot_key,
-    _intake_slot_key,
     enforce_user_concurrency,
+    intake_slot_key,
     static_limits_provider,
 )
 from serving.servers.deps import (
@@ -717,8 +717,8 @@ async def test_the_body_limit_applies_before_the_gate_parses_a_body():
         # slot, and gave its intake slot back.
         assert refused.status_code == 413
         assert len(produced) < 8
-        assert set(limiter._slots) == {_intake_slot_key("u1")}
-        assert limiter._slots[_intake_slot_key("u1")].in_use == 0
+        assert set(limiter._slots) == {intake_slot_key("u1")}
+        assert limiter._slots[intake_slot_key("u1")].in_use == 0
 
         accepted = await client.post("/probe", json={"model": "exempt-model"})
 
@@ -759,7 +759,7 @@ async def test_a_caller_at_its_intake_budget_is_refused_before_another_body_is_r
             asyncio.create_task(client.post("/probe", content=slow_body(), headers=headers))
             for _ in range(INTAKE_USER_CONCURRENCY_LIMIT)
         ]
-        await _wait_until_in_use(limiter, _intake_slot_key("u1"), INTAKE_USER_CONCURRENCY_LIMIT)
+        await _wait_until_in_use(limiter, intake_slot_key("u1"), INTAKE_USER_CONCURRENCY_LIMIT)
 
         refused = await client.post("/probe", content=watched_body(), headers=headers)
 
@@ -770,7 +770,7 @@ async def test_a_caller_at_its_intake_budget_is_refused_before_another_body_is_r
         assert [(await task).status_code for task in slow] == [200] * len(slow)
 
     # Each gave its intake slot back once it was admitted.
-    assert limiter._slots[_intake_slot_key("u1")].in_use == 0
+    assert limiter._slots[intake_slot_key("u1")].in_use == 0
     assert limiter._slots[_exempt_slot_key("u1")].in_use == 0
 
 

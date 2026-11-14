@@ -201,7 +201,10 @@ async def test_request_metrics_counts_disconnects_apart_from_errors():
         f"(l.status_code = {CLIENT_DISCONNECT_STATUS_CODE} "
         f"AND l.metadata->>'terminal_state' = '{CLIENT_DISCONNECT_TERMINAL_STATE}')"
     )
-    assert f"COUNT(*) FILTER (WHERE {disconnect})" in query
+    # The capacity-wait exclusion sits in front of the disconnect test. The
+    # disconnect itself is still status and terminal state together.
+    ran = "(l.error IS NULL OR l.error NOT LIKE 'UpstreamModelQueued:%')"
+    assert f"COUNT(*) FILTER (WHERE {ran} AND {disconnect})" in query
     assert f"AND {disconnect} IS NOT TRUE)" in query
 
 

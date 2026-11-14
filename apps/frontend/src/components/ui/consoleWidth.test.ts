@@ -12,7 +12,7 @@ describe('isWideConsoleRoute', () => {
 });
 
 describe('isUserConsoleRoute', () => {
-  it('covers the overview and its pages, not admin or the Playground', () => {
+  it('covers the overview and its pages, not admin', () => {
     for (const path of [
       '/dashboard',
       '/dashboard/keys',
@@ -20,23 +20,14 @@ describe('isUserConsoleRoute', () => {
       '/dashboard/models',
       '/dashboard/batches/batch_1',
       '/dashboard/settings',
+      '/dashboard/playground',
+      '/dashboard/playground/x',
     ]) {
       expect(isUserConsoleRoute(path), path).toBe(true);
     }
-    for (const path of [
-      '/dashboard/admin',
-      '/dashboard/admin/users',
-      '/dashboard/playground',
-      '/dashboard/playground/x',
-      '/dashboards',
-      '/settings',
-    ]) {
+    for (const path of ['/dashboard/admin', '/dashboard/admin/users', '/dashboards', '/settings']) {
       expect(isUserConsoleRoute(path), path).toBe(false);
     }
-  });
-
-  it('keeps the playground prefix exact', () => {
-    expect(isUserConsoleRoute('/dashboard/playgrounds')).toBe(true);
   });
 });
 

@@ -6,8 +6,8 @@ import { ConsoleNav } from '@/components/features/dashboard/ConsoleNav';
 /**
  * The user console: its navigation beside every page in this group.
  *
- * A route group, so the URLs stay `/dashboard/...`. The admin area and the
- * Playground sit outside it because they bring their own chrome.
+ * A route group, so the URLs stay `/dashboard/...`. The admin area sits
+ * outside it because it brings its own chrome.
  */
 export default function ConsoleLayout({ children }: { children: React.ReactNode }) {
   return (

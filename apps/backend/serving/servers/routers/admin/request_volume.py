@@ -24,6 +24,12 @@ also kept for the batch worker's rows alone (``_common.REQUEST_SOURCE_FILTERS``)
 so a card can show the requests callers made directly and stack the batch
 worker's beside them: a large batch would otherwise read as the gateway's traffic.
 
+One exception: a row whose ``error`` starts with ``UpstreamModelQueued:`` is left
+out of every count. The upstream said the model was waiting for capacity and
+nothing ran — the batch worker puts the item back without spending the attempt —
+so a day of those waits is not the worker's traffic. The request list still
+shows the row.
+
 A stored hour records the :data:`DEFINITION` its counts were made under. An hour
 stored under any other -- before the batch counts were added, or by a release
 that counts differently -- is not stored as far as reads and fills are
@@ -86,23 +92,35 @@ _TICK = timedelta(microseconds=1)
 # client disconnects are the outcome filters, so the two are disjoint, while a
 # 2xx row that also recorded an error counts as a success and as an error, as it
 # always has. The ``batch_*`` counts are the same over the batch worker's rows.
+#
+# A "model queued" 503 is not among them. The deployment is waiting for capacity
+# and nothing ran: the batch worker releases the item without spending the
+# attempt (``dispatch._model_queued``), and the failed-request alerter already
+# leaves the row out. ``format_exception_for_db`` prefixes the class name, so
+# this is that alerter's match. It applies to every count — dropping it from the
+# batch counts alone would show the wait as an interactive request — and it
+# lives in this text, which :data:`DEFINITION` hashes, so an hour stored before
+# the exclusion is counted again.
 _SUCCESS = "l.status_code >= 200 AND l.status_code < 400"
 _ERROR = REQUEST_OUTCOME_FILTERS["errors_excluding_disconnects"]
 _DISCONNECT = REQUEST_OUTCOME_FILTERS["client_disconnect"]
 _BATCH = REQUEST_SOURCE_FILTERS["batch"]
+_RAN = "(l.error IS NULL OR l.error NOT LIKE 'UpstreamModelQueued:%')"
 _COUNTS_SQL = f"""
-        COUNT(*) AS request_count,
-        COUNT(*) FILTER (WHERE {_SUCCESS}) AS success_count,
-        COUNT(*) FILTER (WHERE {_ERROR}) AS error_count,
-        COUNT(*) FILTER (WHERE {_DISCONNECT}) AS client_disconnect_count,
-        COUNT(l.latency_ms) AS latency_count,
-        COALESCE(SUM(l.latency_ms), 0) AS latency_sum_ms,
-        COUNT(*) FILTER (WHERE {_BATCH}) AS batch_request_count,
-        COUNT(*) FILTER (WHERE {_BATCH} AND {_SUCCESS}) AS batch_success_count,
-        COUNT(*) FILTER (WHERE {_BATCH} AND {_ERROR}) AS batch_error_count,
-        COUNT(*) FILTER (WHERE {_BATCH} AND {_DISCONNECT}) AS batch_client_disconnect_count,
-        COUNT(l.latency_ms) FILTER (WHERE {_BATCH}) AS batch_latency_count,
-        COALESCE(SUM(l.latency_ms) FILTER (WHERE {_BATCH}), 0) AS batch_latency_sum_ms"""
+        COUNT(*) FILTER (WHERE {_RAN}) AS request_count,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_SUCCESS}) AS success_count,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_ERROR}) AS error_count,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_DISCONNECT}) AS client_disconnect_count,
+        COUNT(l.latency_ms) FILTER (WHERE {_RAN}) AS latency_count,
+        COALESCE(SUM(l.latency_ms) FILTER (WHERE {_RAN}), 0) AS latency_sum_ms,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_BATCH}) AS batch_request_count,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_BATCH} AND {_SUCCESS}) AS batch_success_count,
+        COUNT(*) FILTER (WHERE {_RAN} AND {_BATCH} AND {_ERROR}) AS batch_error_count,
+        COUNT(*) FILTER (
+            WHERE {_RAN} AND {_BATCH} AND {_DISCONNECT}
+        ) AS batch_client_disconnect_count,
+        COUNT(l.latency_ms) FILTER (WHERE {_RAN} AND {_BATCH}) AS batch_latency_count,
+        COALESCE(SUM(l.latency_ms) FILTER (WHERE {_RAN} AND {_BATCH}), 0) AS batch_latency_sum_ms"""
 
 #: The columns :data:`_COUNTS_SQL` produces and a stored hour keeps, in order.
 #: :class:`VolumeCounts` has a field of each name.

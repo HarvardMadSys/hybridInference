@@ -87,13 +87,16 @@ CONTROL_PATHS: frozenset[str] = frozenset({"/v1/batch_webhook"})
 
 #: Control routes that legitimately take a large body and read it only once the
 #: caller is authenticated, so they keep the general limit: a configuration
-#: backup, a playground prompt, and the alert-history ingest, which enforces
+#: backup, a playground prompt in each of its API formats, and the
+#: alert-history ingest, which enforces
 #: its own smaller limit and error.
 AUTHENTICATED_BODY_PATHS: frozenset[str] = frozenset(
     {
         "/admin/config/restore",
         "/admin/config/restore/preview",
         "/internal/playground/chat",
+        "/internal/playground/responses",
+        "/internal/playground/messages",
         "/internal/alert-history/events",
     }
 )

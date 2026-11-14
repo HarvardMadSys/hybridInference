@@ -1331,7 +1331,8 @@ describe('ProviderRoutesTab', () => {
 
     const message = screen.getByRole('dialog').textContent!;
     expect(message).toContain('Delete config route minimax-fast:featherless-api');
-    expect(message).toContain('models.yaml is not changed');
+    expect(message).toContain('stays deleted after restarts');
+    expect(message).not.toContain('models.yaml');
     expect(message).toContain('Restore');
     expect(message).toContain('Reset config is different');
     expect(removeProviderRoute).not.toHaveBeenCalled();
@@ -1355,6 +1356,38 @@ describe('ProviderRoutesTab', () => {
     await waitFor(() => {
       expect(screen.queryByText('Deleted')).not.toBeInTheDocument();
     });
+  });
+
+  it('removes a config model when its last route is deleted', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(removeProviderRoute).mockResolvedValue({
+      model_id: 'minimax-fast',
+      strategy: 'fixed',
+      provider_options: providerOptions,
+      routes: [],
+    });
+
+    render(<ProviderRoutesTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Delete' }));
+
+    const message = screen.getByRole('dialog').textContent!;
+    expect(message).toContain('removed from the configuration');
+    expect(message).toContain('stays gone after restarts');
+    expect(message).toContain('cannot be undone');
+    expect(message).not.toContain('models.yaml');
+    expect(message).not.toContain('Restore');
+    confirmAction('Delete');
+
+    await waitFor(() => {
+      expect(removeProviderRoute).toHaveBeenCalledWith('minimax-fast', route.route_id);
+    });
+    expect(deleteProviderRouteCandidate).not.toHaveBeenCalled();
+    expect(toast.success).toHaveBeenCalledWith('Model removed from the configuration');
   });
 
   it('asks before deleting and does nothing when the admin cancels', async () => {

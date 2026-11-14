@@ -21,7 +21,7 @@ admission: there is no field that could.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from types import MappingProxyType
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -93,14 +93,16 @@ class ClientOrigin:
         """This origin with every entry of header *name* removed, in any case."""
         lowered = name.lower().encode("latin-1")
         kept = [(k, v) for k, v in self.headers.raw if k.lower() != lowered]
-        return ClientOrigin(
-            resolve_ip=self.resolve_ip,
-            user_agent=self.user_agent,
-            referer=self.referer,
-            route_path=self.route_path,
-            authorization_header=self.authorization_header,
-            headers=Headers(raw=kept),
-        )
+        return replace(self, headers=Headers(raw=kept))
+
+    def with_header(self, name: str, value: str) -> ClientOrigin:
+        """This origin with *name* set to *value*, replacing any entries of it."""
+        lowered = name.lower().encode("latin-1")
+        kept = [(k, v) for k, v in self.headers.raw if k.lower() != lowered]
+        # Starlette looks raw entries up by their bytes verbatim, and ASGI
+        # servers deliver them lowercased.
+        header = (lowered, value.encode("latin-1"))
+        return replace(self, headers=Headers(raw=[*kept, header]))
 
     @classmethod
     def for_batch(cls, *, path: str, ip: ClientIpInfo, user_agent: str) -> ClientOrigin:

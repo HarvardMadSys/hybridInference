@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap, restart
+from .idle_connection import install_idle_connection_timeout
 from .middleware.body_limit import RequestBodyLimitMiddleware
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
@@ -111,6 +112,10 @@ CORS_OPTIONS: dict[str, Any] = {
 
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
+    # Before any connection is accepted. Uvicorn's keep-alive timer stops at
+    # the first byte of a request and does not resume until the response
+    # completes, so a client that goes quiet mid-request would hold the socket.
+    install_idle_connection_timeout()
     app = FastAPI(
         title="OpenRouter-Compatible API Server",
         description="Unified API server supporting VLLM, DeepSeek, Gemini models",
