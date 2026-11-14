@@ -18,6 +18,7 @@ import { Markdown } from '@/components/ui/Markdown';
 import { Select } from '@/components/ui/Select';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
+import { sortModelsById } from '@/lib/utils/modelOrder';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
 import {
   API_OPTIONS,
@@ -295,10 +296,11 @@ export default function PlaygroundPage() {
     fetchWithAuth(API_BASE, '/internal/playground/models')
       .then((r) => jsonOrThrow<{ models: PlaygroundModel[] }>(r))
       .then((d) => {
-        setModels(d.models);
-        if (d.models.length > 0) {
+        const sorted = sortModelsById(d.models);
+        setModels(sorted);
+        if (sorted.length > 0) {
           setSessions((prev) =>
-            prev.map((s) => (s.selectedModelId ? s : { ...s, selectedModelId: d.models[0].id })),
+            prev.map((s) => (s.selectedModelId ? s : { ...s, selectedModelId: sorted[0].id })),
           );
         }
       })
