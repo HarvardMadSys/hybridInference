@@ -11,6 +11,7 @@ import { config } from '@/config/env';
 import { fetchWithAuth } from '@/lib/api/client';
 import { useT, type Translate } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
+import { sortModelsById } from '@/lib/utils/modelOrder';
 
 type GatewayStatus = 'checking' | 'healthy' | 'degraded' | 'unhealthy' | 'unreachable';
 
@@ -79,7 +80,7 @@ function readGatewayStatus(result: JsonResult): GatewayStatus {
 function readCatalog(payload: unknown): CatalogModel[] {
   const data = (payload as { data?: unknown } | null)?.data;
   if (!Array.isArray(data)) return [];
-  return data.flatMap((entry) => {
+  const models = data.flatMap((entry) => {
     if (!entry || typeof entry !== 'object') return [];
     const { id, supported_features: features } = entry as {
       id?: unknown;
@@ -89,6 +90,7 @@ function readCatalog(payload: unknown): CatalogModel[] {
     const chat = !(Array.isArray(features) && features.includes('embeddings'));
     return [{ id, chat }];
   });
+  return sortModelsById(models);
 }
 
 // Runs `load` under a deadline that covers the whole exchange, body included:

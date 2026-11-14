@@ -399,6 +399,40 @@ describe('HomePage', () => {
     );
   });
 
+  it('lists the catalog in order of model id, whatever order the gateway returns', async () => {
+    stubGateway({ status: 'healthy' }, [
+      'qwen3-32b',
+      'zeta',
+      'GLM-4.6',
+      'qwen3-8b',
+      'deepseek-v3',
+      'kimi-k2',
+      'auto',
+    ]);
+
+    render(<HomePage />);
+
+    const list = await screen.findByRole('list', { name: 'Public models' });
+    const shown = (): string[] =>
+      within(list)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent ?? '');
+    // The preview is the first six by id, not the first six the gateway sent.
+    expect(shown()).toEqual(['auto', 'deepseek-v3', 'GLM-4.6', 'kimi-k2', 'qwen3-8b', 'qwen3-32b']);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show all 7' }));
+
+    expect(shown()).toEqual([
+      'auto',
+      'deepseek-v3',
+      'GLM-4.6',
+      'kimi-k2',
+      'qwen3-8b',
+      'qwen3-32b',
+      'zeta',
+    ]);
+  });
+
   it('shows every model in a small catalog without an expansion control', async () => {
     const model = 'a-model-with-a-long-name-that-must-remain-readable-without-truncation';
     stubGateway({ status: 'healthy' }, [model]);
