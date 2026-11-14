@@ -130,9 +130,12 @@ a first sign-in.
 ## Linking and unlinking
 
 A user manages their own links under **Settings → Single sign-on**: they can
-connect an organization account, including one whose email differs from the
-account's, and disconnect one. Both ask the user to confirm, and the only way
-to sign in to an account cannot be disconnected.
+connect an organization account and disconnect one. Both ask the user to
+confirm, and the only way to sign in to an account cannot be disconnected.
+
+The organization account's email may differ from the account's. It cannot be
+the email of another account here: one address belongs to one account, so the
+user signs in to that account and connects the organization account there.
 
 An administrator sees a user's links in the user's detail panel under **Admin →
 Users** and can unlink one. Unlinking removes the link only: it does not end

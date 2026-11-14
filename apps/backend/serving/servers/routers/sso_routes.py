@@ -567,9 +567,17 @@ async def _finish_link(
 ) -> RedirectResponse:
     """Link the identity to the signed-in account that asked for it in Settings.
 
-    The email is not compared: the account's owner confirmed before the flow
-    started, and has now signed in at the provider, so both sides are theirs.
+    The account's own email need not be the identity's: its owner confirmed
+    before the flow started, and has now signed in at the provider, so both
+    sides are theirs. But an address that is already another account's is not
+    linked here. One address belongs to one account, and that account is where
+    its identity is connected.
     """
+    unlinked = await op_store.get_user_identity(identity.issuer, identity.subject) is None
+    if unlinked and identity.email:
+        holder = await op_store.get_user_by_email(identity.email)
+        if holder is not None and holder["id"] != flow["user_id"]:
+            return _flow_error(flow, "email_in_use")
     outcome = await op_store.link_user_identity(
         identity_id=generate_ulid(),
         user_id=flow["user_id"],
@@ -856,7 +864,8 @@ async def link_identity(
 
     Linking adds a way in to the account, so its owner confirms first, as for
     binding an email. The provider is found from the email's domain; the
-    account's own email need not match it.
+    account's own email need not match it, but the callback refuses an
+    identity whose address is already another account's.
 
     Raises:
         HTTPException: 400 when the confirmation is wrong or missing, or the

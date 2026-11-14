@@ -253,8 +253,11 @@ msgstr "有些身份提供方从不发送 `email_verified`，Microsoft Entra ID 
 msgid "Linking and unlinking"
 msgstr "关联与解除关联"
 
-msgid "A user manages their own links under **Settings → Single sign-on**: they can connect an organization account, including one whose email differs from the account's, and disconnect one. Both ask the user to confirm, and the only way to sign in to an account cannot be disconnected."
-msgstr "用户在 **Settings → Single sign-on** 下管理自己的关联：可以关联一个机构账号（邮箱可以和当前账号不同），也可以解除关联。两种操作都要求用户确认身份，而且账号唯一的登录方式不能解除。"
+msgid "A user manages their own links under **Settings → Single sign-on**: they can connect an organization account and disconnect one. Both ask the user to confirm, and the only way to sign in to an account cannot be disconnected."
+msgstr "用户在 **Settings → Single sign-on** 下管理自己的关联：可以关联一个机构账号，也可以解除关联。两种操作都要求用户确认身份，而且账号唯一的登录方式不能解除。"
+
+msgid "The organization account's email may differ from the account's. It cannot be the email of another account here: one address belongs to one account, so the user signs in to that account and connects the organization account there."
+msgstr "机构账号的邮箱可以和当前账号的邮箱不同，但不能是这里另一个账号的邮箱：一个邮箱只属于一个账号，用户应当登录那个账号，在那里关联机构账号。"
 
 msgid "An administrator sees a user's links in the user's detail panel under **Admin → Users** and can unlink one. Unlinking removes the link only: it does not end the account's sessions or revoke its API keys. Administrators cannot create a link for a user."
 msgstr "管理员可以在 **Admin → Users** 的用户详情面板中看到用户的关联，并解除其中一个。解除关联只删除关联本身：不会结束账号的会话，也不会吊销它的 API key。管理员不能替用户建立关联。"

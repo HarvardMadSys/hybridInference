@@ -300,6 +300,52 @@ async def test_linking_an_email_no_provider_answers_for_starts_nothing(browser, 
     assert response.json() == {"available": False, "authorization_url": None}
 
 
+async def test_an_identity_whose_email_is_another_accounts_cannot_be_linked(browser, idp, store):
+    # One address belongs to one account: the identity is connected from the
+    # account that has it, not from somebody else's.
+    holder = await existing_user(store)
+    await existing_user(store, "personal@elsewhere.org")
+    headers = await _password_session(browser, "personal@elsewhere.org")
+
+    started = await browser.post(
+        "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
+    )
+    back = await answer(browser, idp, parse_qs(urlsplit(started.json()["authorization_url"]).query))
+
+    assert location(back) == (SETTINGS, {"sso_error": ["email_in_use"]})
+    assert await store.get_user_identity(ISSUER, "subject-1") is None
+    assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {"identities": []}
+
+    # The account that has the address still connects it.
+    async with new_browser(browser._transport.app) as own:
+        own_headers = await _password_session(own)
+        started = await own.post(
+            "/auth/sso/identities/link",
+            json={"email": EMAIL, "password": PASSWORD},
+            headers=own_headers,
+        )
+        back = await answer(own, idp, parse_qs(urlsplit(started.json()["authorization_url"]).query))
+        assert location(back) == (SETTINGS, {"sso_linked": ["1"]})
+    assert (await store.get_user_identity(ISSUER, "subject-1"))["user_id"] == holder
+
+
+async def test_an_address_that_is_another_accounts_is_matched_whatever_its_case(
+    browser, idp, store
+):
+    await existing_user(store)
+    await existing_user(store, "personal@elsewhere.org")
+    headers = await _password_session(browser, "personal@elsewhere.org")
+
+    started = await browser.post(
+        "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
+    )
+    params = parse_qs(urlsplit(started.json()["authorization_url"]).query)
+    back = await answer(browser, idp, params, email=EMAIL.upper())
+
+    assert location(back) == (SETTINGS, {"sso_error": ["email_in_use"]})
+    assert await store.get_user_identity(ISSUER, "subject-1") is None
+
+
 async def test_an_identity_that_signs_in_to_another_account_cannot_be_linked(
     app, browser, idp, store, members_sign_straight_in
 ):
