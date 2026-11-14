@@ -7,7 +7,7 @@ import json
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from serving.servers.auth import log_admin_action
@@ -17,6 +17,7 @@ from serving.servers.routers.admin._common import (
     resolve_request_outcome_filter,
     resolve_request_source_filter,
 )
+from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -115,6 +116,7 @@ def _record_pieces(row: Mapping[str, Any], *, include_content: bool) -> Iterator
 
 @router.get("/export/requests")
 async def admin_export_requests(
+    request: Request,
     start_time: datetime,
     end_time: datetime | None = None,
     user_id: str | None = None,
@@ -313,6 +315,13 @@ async def admin_export_requests(
             cursor_ts = rows[-1]["timestamp"]
             cursor_id = rows[-1]["request_id"]
 
+    # Marked as the long-lived stream it is. ``TimeoutMiddleware`` ends a
+    # response at ``REQUEST_TIMEOUT_SECONDS`` (120 s by default) even after its
+    # status went out, and knows a stream only by this mark or by an SSE
+    # content type; unmarked, an export that takes longer stops short behind a
+    # ``200``. Marked, it gets the stream cap
+    # (``STREAM_REQUEST_TIMEOUT_SECONDS``) instead, as a batch download does.
+    request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
     return StreamingResponse(
         generate(),
         media_type="application/x-ndjson",
