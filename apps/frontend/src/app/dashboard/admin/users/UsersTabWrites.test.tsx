@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import UsersTab from './index';
 import {
   approveUser,
+  batchApproveUsers,
   getUserDetail,
   listModelVisibility,
   listUsers,
@@ -34,6 +35,7 @@ vi.mock('@/lib/api/admin', () => ({
   listModelVisibility: vi.fn(),
   updateUser: vi.fn(),
   approveUser: vi.fn(),
+  batchApproveUsers: vi.fn(),
   rejectUser: vi.fn(),
   deleteUser: vi.fn(),
   resumeUser: vi.fn(),
@@ -252,4 +254,70 @@ it('shows a failed rejection inside its confirmation instead of a toast', async 
   expect(rejectUser).toHaveBeenCalledTimes(2);
   expect(rejectUser).toHaveBeenLastCalledWith('fixture-user', 'not a student');
   expect(toast.success).toHaveBeenCalledWith('Rejected fixture@example.test');
+});
+
+function mockPendingList(...ids: string[]) {
+  vi.mocked(listUsers).mockResolvedValue({
+    total: ids.length,
+    users: ids.map((id) => ({
+      ...listedUser('pending_approval'),
+      id,
+      email: `${id}@example.test`,
+    })),
+    status_counts: {
+      all: ids.length,
+      active: 0,
+      pending_approval: ids.length,
+      suspended: 0,
+      rejected: 0,
+      deleted: 0,
+    },
+  });
+}
+
+it('approves the selected users in one request and names the ones left out', async () => {
+  mockPendingList('ann', 'bob', 'cat');
+  vi.mocked(batchApproveUsers).mockResolvedValue({
+    approved: [
+      { user_id: 'ann', email: 'ann@example.test' },
+      { user_id: 'cat', email: 'cat@example.test' },
+    ],
+    skipped: [{ user_id: 'bob', reason: 'not_pending', status: 'active' }],
+    message: 'Approved 2 users. 1 not approved: no longer pending or not found.',
+  });
+  renderUsers();
+
+  fireEvent.click(
+    await screen.findByRole('checkbox', { name: 'Select all pending users on this page' }),
+  );
+  fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+  const dialog = screen.getByRole('dialog', { name: 'Approve 3 users?' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Approve 3' }));
+
+  await waitFor(() => expect(toast.success).toHaveBeenCalledWith('Approved 2 users'));
+  expect(toast.error).toHaveBeenCalledWith('Not approved, no longer pending: bob@example.test');
+  expect(vi.mocked(batchApproveUsers).mock.calls).toEqual([[['ann', 'bob', 'cat']]]);
+  expect(approveUser).not.toHaveBeenCalled();
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
+
+it('says in the confirmation when none of the selected users could be approved', async () => {
+  mockPendingList('ann');
+  vi.mocked(batchApproveUsers).mockResolvedValue({
+    approved: [],
+    skipped: [{ user_id: 'ann', reason: 'not_pending', status: 'rejected' }],
+    message: 'Approved 0 users. 1 not approved: no longer pending or not found.',
+  });
+  renderUsers();
+
+  fireEvent.click(await screen.findByRole('checkbox', { name: 'Select ann@example.test' }));
+  fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+  const dialog = screen.getByRole('dialog', { name: 'Approve ann@example.test?' });
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }));
+
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'None of the selected users was approved: ann@example.test is no longer pending.',
+  );
+  expect(toast.success).not.toHaveBeenCalled();
+  expect(toast.error).not.toHaveBeenCalled();
 });

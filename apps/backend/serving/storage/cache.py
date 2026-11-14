@@ -466,6 +466,18 @@ class CachedOperationalStore(OperationalStore):
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
         await self.invalidate_user_auth_caches(user_id)
 
+    async def approve_users(
+        self, user_ids: list[str], *, admin_id: str, note: str | None = None
+    ) -> list[Row]:
+        """Delegate then invalidate user + auth caches of every user approved."""
+        approved = await self._store.approve_users(user_ids, admin_id=admin_id, note=note)
+        for row in approved:
+            # Same reason as approve_user above; a listed user left unchanged
+            # keeps its entries.
+            await self._cache.delete(self._user_key(row["id"]))
+            await self.invalidate_user_auth_caches(row["id"])
+        return approved
+
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)

@@ -163,6 +163,35 @@ export async function approveUser(userId: string, note?: string): Promise<Approv
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
+/** What a batch approval did with each requested user, in request order. */
+export interface BatchApproveUsersResponse {
+  approved: { user_id: string; email: string | null; phone?: string | null }[];
+  /** Requested users left unchanged: no such account, or no longer pending. */
+  skipped: {
+    user_id: string;
+    reason: 'not_found' | 'not_pending';
+    /** The account's status now; null when there is no such account. */
+    status: string | null;
+  }[];
+  message: string;
+}
+
+/**
+ * Approve several pending users in one request (at most 500). A user that is
+ * no longer pending is reported under `skipped` and left as it is.
+ */
+export async function batchApproveUsers(
+  userIds: string[],
+  note?: string,
+): Promise<BatchApproveUsersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/users/batch-approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note ? { user_ids: userIds, note } : { user_ids: userIds }),
+  });
+  return jsonOrThrow<BatchApproveUsersResponse>(resp);
+}
+
 export async function rejectUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/reject`, {
     method: 'POST',

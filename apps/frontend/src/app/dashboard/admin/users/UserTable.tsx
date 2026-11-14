@@ -1,6 +1,7 @@
 'use client';
 
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { CHECKBOX } from '@/components/features/admin/adminStyles';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import type {
   AdminModelVisibilityItem,
@@ -36,6 +37,8 @@ interface UserTableProps {
   // Write handlers. Each throws on failure: a confirmation the table opens
   // stays open with the error, and a direct write shows it where it was made.
   onApprove: (userId: string) => Promise<void>;
+  /** Approves the selected pending users in one request. */
+  onApproveMany: (userIds: string[]) => Promise<void>;
   onReject: (userId: string, reason: string) => Promise<void>;
   onUpdate: (userId: string, patch: UpdateUserData) => Promise<void>;
   onSuspend: (userId: string, suspensionMessage?: string | null) => Promise<void>;
@@ -131,6 +134,36 @@ export function UserTable(props: UserTableProps) {
     () => median(users.map((u) => Number(u.usage_today_usd)).filter((n) => n > 0)),
     [users],
   );
+
+  // Pending rows ticked for a batch approval. Only rows on this page that are
+  // still pending stay selected: a refetch, page or filter change drops the rest.
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(() => new Set());
+  const pendingIds = useMemo(
+    () => users.filter((u) => u.status === 'pending_approval').map((u) => u.id),
+    [users],
+  );
+  useEffect(() => {
+    setSelectedIds((prev) => {
+      const kept = pendingIds.filter((id) => prev.has(id));
+      return kept.length === prev.size ? prev : new Set(kept);
+    });
+  }, [pendingIds]);
+  const selectedCount = pendingIds.filter((id) => selectedIds.has(id)).length;
+  const selectable = pendingIds.length > 0;
+  const allSelected = selectable && selectedCount === pendingIds.length;
+  const selectAllRef = useRef<HTMLInputElement>(null);
+  useEffect(() => {
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedCount > 0 && !allSelected;
+    }
+  }, [selectedCount, allSelected]);
+  const setRowSelected = (userId: string, on: boolean) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(userId);
+      else next.delete(userId);
+      return next;
+    });
 
   const showSparkline = density === 'comfortable';
   // Metric columns actually rendered, in table order. The 7-day trend also
@@ -272,6 +305,54 @@ export function UserTable(props: UserTableProps) {
   };
 
   const approve = (user: UserRowType) => void apply(() => props.onApprove(user.id));
+
+  // A batch approval names everyone it will approve before it does.
+  const requestApproveSelected = () => {
+    const chosen = users.filter((u) => u.status === 'pending_approval' && selectedIds.has(u.id));
+    if (chosen.length === 0) return;
+    const one = chosen.length === 1;
+    confirmation.request({
+      title: one ? `Approve ${labelOf(chosen[0])}?` : `Approve ${chosen.length} users?`,
+      body: (
+        <>
+          <p>
+            {one ? 'The account becomes' : 'Each account becomes'} active, and its owner is told by
+            email when email delivery is set up.
+          </p>
+          {!one && (
+            <ul
+              aria-label="Users to approve"
+              className="max-h-48 list-disc overflow-y-auto pl-5 text-[13px] text-gray-700"
+            >
+              {chosen.map((u) => (
+                <li key={u.id} className="truncate">
+                  {labelOf(u)}
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      ),
+      confirmLabel: one ? 'Approve' : `Approve ${chosen.length}`,
+      busyLabel: 'Approving…',
+      run: async () => {
+        // The list may have been refetched since the dialog opened: approve
+        // only rows still listed and still pending.
+        const ids = chosen
+          .map((u) => u.id)
+          .filter((id) =>
+            usersRef.current.some((u) => u.id === id && u.status === 'pending_approval'),
+          );
+        if (ids.length === 0) {
+          throw new Error(
+            'None of these users is still pending in the list. Cancel and select again.',
+          );
+        }
+        await props.onApproveMany(ids);
+        setSelectedIds(new Set());
+      },
+    });
+  };
 
   const requestReject = (user: UserRowType) => {
     const label = labelOf(user);
@@ -419,6 +500,29 @@ export function UserTable(props: UserTableProps) {
 
   return (
     <>
+      {selectedCount > 0 && (
+        <div className="flex flex-wrap items-center gap-2 border-b border-emerald-100 bg-emerald-50/60 px-3 py-2">
+          <span className="text-[13px] font-medium text-gray-900" aria-live="polite">
+            {selectedCount} pending {selectedCount === 1 ? 'user' : 'users'} selected
+          </span>
+          <button
+            type="button"
+            onClick={requestApproveSelected}
+            disabled={confirmation.busy}
+            className="rounded-md bg-emerald-600 px-2.5 py-1 text-[12px] font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Approve selected
+          </button>
+          <button
+            type="button"
+            onClick={() => setSelectedIds(new Set())}
+            disabled={confirmation.busy}
+            className="rounded-md px-2 py-1 text-[12px] font-medium text-gray-600 transition hover:bg-white hover:text-gray-900 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Clear selection
+          </button>
+        </div>
+      )}
       {/* `container-type` lets the expanded detail row size itself to the
           visible width (100cqw) instead of the full scrolled table width, so
           its controls never end up off-screen to the right. */}
@@ -439,8 +543,29 @@ export function UserTable(props: UserTableProps) {
               ))}
             </tr>
             <tr className="border-b border-gray-200 bg-gray-50/70 text-[11px] font-medium uppercase tracking-wide text-gray-500">
-              <th className="sticky left-0 z-10 bg-gray-50 py-2 pl-9 pr-2.5 text-left align-bottom">
-                User
+              <th
+                className={`sticky left-0 z-10 bg-gray-50 py-2 pr-2.5 text-left align-bottom ${
+                  selectable ? 'pl-3' : 'pl-9'
+                }`}
+              >
+                {selectable ? (
+                  <div className="flex items-center gap-2">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      checked={allSelected}
+                      disabled={confirmation.busy}
+                      onChange={(e) => setSelectedIds(new Set(e.target.checked ? pendingIds : []))}
+                      aria-label="Select all pending users on this page"
+                      className={`${CHECKBOX} cursor-pointer disabled:cursor-not-allowed`}
+                    />
+                    {/* Where the rows' expand chevron sits. */}
+                    <span className="w-3.5 shrink-0" aria-hidden="true" />
+                    User
+                  </div>
+                ) : (
+                  'User'
+                )}
               </th>
               <th className="px-2.5 py-2 text-left align-bottom">Status</th>
               {visible.has('today') &&
@@ -568,6 +693,9 @@ export function UserTable(props: UserTableProps) {
                     busy={confirmation.busy}
                     onApprove={() => approve(u)}
                     onReject={() => requestReject(u)}
+                    selectable={selectable}
+                    selected={selectedIds.has(u.id)}
+                    onSelectedChange={(on) => setRowSelected(u.id, on)}
                   />
                   {isExpanded && (
                     <tr className="border-b border-gray-200">
