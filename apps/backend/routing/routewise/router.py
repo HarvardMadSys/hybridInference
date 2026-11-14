@@ -53,9 +53,19 @@ if TYPE_CHECKING:
     from .config import RouteWiseConfig
 
 from routing.backends import LeafBackend
+from routing.completion_outcome import (
+    CompletionOutcome,
+    classify_completion_outcome,
+)
 from routing.dispatch import DispatchMismatchError, binding_for_adapter, execution_adapter
 from routing.endpoint_health import EndpointHealthRegistry, is_client_error_status
 from routing.endpoints import endpoint_id_for_adapter
+from routing.response_text import (
+    StreamProgressTracker,
+    chunk_text,
+    response_text,
+    response_usage,
+)
 from routing.route_scope import adapter_in_endpoint_scope
 from routing.routers import (
     ROUTE_REFUSAL_CIRCUIT_OPEN,
@@ -330,13 +340,25 @@ class HedgePlan:
 
 @dataclass(frozen=True)
 class RouteWiseProbeResult:
-    """Result of one active RouteWise latency probe."""
+    """Result of one active RouteWise latency probe.
+
+    ``inconclusive`` marks a probe that reached the endpoint but produced no
+    evidence of real work -- a warmup notice, above all. It is neither a success
+    sample (the notice returns in milliseconds and would make a cold endpoint
+    look like the fastest) nor a failure sample (the endpoint answered), so it
+    trains nothing and is kept only for the operator's log trail.
+    """
 
     model_id: str
     endpoint_id: str
     ok: bool
     ttft_ms: float | None
     error: str | None = None
+    inconclusive: bool = False
+
+
+class _ProbeNoProgress(RuntimeError):
+    """A probe that reached the endpoint but produced no evidence of real work."""
 
 
 def _int_status(value: Any) -> int | None:
@@ -731,8 +753,60 @@ class RouteWiseRouter:
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)
 
-    def _on_success(self, endpoint_id: str) -> None:
-        self._health_registry.record_success(endpoint_id)
+    def _on_success(self, endpoint_id: str, response: Any) -> CompletionOutcome:
+        """Record a semantic serving success and return the verdict it used.
+
+        A transport-level 200 is not sufficient. The response is classified here
+        so endpoint health and prefix locality judge it by the same rule. A
+        caller that cannot classify a response must call ``record_liveness``
+        instead; a missing response is never positive evidence.
+        """
+        outcome = classify_completion_outcome(
+            content=response_text(response),
+            usage=response_usage(response),
+            http_status=200,
+            terminal=True,
+        )
+        self._health_registry.record_success(endpoint_id, outcome=outcome)
+        return outcome
+
+    def _observe_stream_progress(
+        self,
+        adapter: BaseAdapter,
+        progress: StreamProgressTracker,
+        chunk: Any,
+    ) -> bool:
+        """Fold one streamed chunk into the attempt's health verdict.
+
+        Returns True once the accumulated output proves real work, at which
+        point serving success is recorded and a half-open probe is released --
+        promptly, not at the end of the stream. A prefix that could still be a
+        warmup notice stays undecided.
+
+        The endpoint is resolved after the chunk, because an adapter that
+        swapped its serving config must be credited to the endpoint that is
+        actually producing the output.
+        """
+        outcome = progress.observe(chunk_text(chunk))
+        if outcome is None or not outcome.admits_real_work:
+            return False
+        self._health_registry.record_success(endpoint_id_for_adapter(adapter), outcome=outcome)
+        return True
+
+    def _finish_stream_progress(
+        self,
+        adapter: BaseAdapter,
+        progress: StreamProgressTracker,
+    ) -> CompletionOutcome | None:
+        """Record the terminal verdict for a stream that never proved progress.
+
+        A stream that was a complete warmup notice records nothing: a
+        non-progress outcome is a no-op at the registry.
+        """
+        outcome = progress.finish()
+        if outcome is not None and outcome.admits_real_work:
+            self._health_registry.record_success(endpoint_id_for_adapter(adapter), outcome=outcome)
+        return outcome
 
     def _on_failure(
         self,
@@ -1234,14 +1308,20 @@ class RouteWiseRouter:
                 )
         except Exception as exc:
             error = self._probe_error_summary(exc)
+            inconclusive = isinstance(exc, _ProbeNoProgress)
             result = RouteWiseProbeResult(
                 model_id=model_id,
                 endpoint_id=endpoint_id,
                 ok=False,
                 ttft_ms=None,
                 error=error,
+                inconclusive=inconclusive,
             )
-            self._record_probe_result(result)
+            if not inconclusive:
+                # An endpoint that answered with a warmup notice is not a
+                # failure sample either; training on it would charge the
+                # breaker for the provider not being ready yet.
+                self._record_probe_result(result)
             self._remember_self_probe_sample_id(await self._persist_probe_result(result))
             return result
 
@@ -1258,6 +1338,14 @@ class RouteWiseRouter:
 
     @staticmethod
     async def _measure_probe_ttft_ms(adapter: BaseAdapter) -> float:
+        """Return the probe's time to first *real* content, in milliseconds.
+
+        A warmup notice is also first content, and it arrives immediately: timing
+        it would hand the coldest endpoint the best sample in the pool and let it
+        keep winning probes it cannot serve. The prefix is classified the same way
+        the serving paths classify a stream, and a probe that only ever produced a
+        notice (or nothing) raises instead of producing a sample.
+        """
         messages = [{"role": "user", "content": "Write a one-sentence greeting."}]
         start = time.perf_counter()
         stream = adapter.stream_chat_completion(
@@ -1265,15 +1353,20 @@ class RouteWiseRouter:
             max_tokens=8,
             temperature=0,
         )
+        progress = StreamProgressTracker()
         try:
             async for chunk in stream:
-                if has_non_empty_content(chunk):
+                outcome = progress.observe(chunk_text(chunk))
+                if outcome is not None and outcome.admits_real_work:
                     return (time.perf_counter() - start) * 1000.0
+            outcome = progress.finish()
         finally:
             aclose = getattr(stream, "aclose", None)
             if callable(aclose):
                 with contextlib.suppress(Exception):
                     await aclose()
+        if progress.saw_content and (outcome is None or not outcome.admits_real_work):
+            raise _ProbeNoProgress("probe_no_progress")
         raise RuntimeError("probe_no_content")
 
     @staticmethod
@@ -2668,10 +2761,18 @@ class RouteWiseRouter:
         ttfts = getattr(adapter, "leg_first_content_ttft_ms", None)
         if not isinstance(ttfts, dict) or not ttfts:
             return
+        # A leg that only produced a warmup notice has an instant TTFT that is
+        # not a latency sample: recording it would teach the router that the
+        # coldest endpoint is the fastest. Only legs whose first content was
+        # real work are sampled, the same rule `_record_latency_outcome` applies.
+        progressed = getattr(adapter, "leg_first_content_progress", None)
+        progressed_endpoints = progressed if isinstance(progressed, set) else set()
         winner_endpoint = str(endpoint_id_for_adapter(adapter))
         now = time.time()
         for endpoint_id, ttft_ms in ttfts.items():
             if endpoint_id == winner_endpoint:
+                continue
+            if str(endpoint_id) not in progressed_endpoints:
                 continue
             try:
                 ttft = float(ttft_ms)
@@ -3063,13 +3164,14 @@ class RouteWiseRouter:
         if self.prefix_cache.enabled:
             self._commit_prefix_cache_observation(obs)
         model_id = self.canonical_model_id(obs.model_id)
-        if obs.completion_tokens > 0:
+        real_work = bool(obs.success and obs.terminal and obs.outcome.admits_real_work)
+        if real_work and obs.completion_tokens > 0:
             self.predictor.update(model_id, obs.prompt_tokens, obs.completion_tokens)
 
         if obs.endpoint_id and obs.endpoint_id in self._latency_profiles:
             self._record_latency_outcome(obs)
 
-        if obs.prompt_tokens > 0 and obs.completion_tokens > 0:
+        if real_work and obs.prompt_tokens > 0 and obs.completion_tokens > 0:
             sample_cost = self._reference_api_cost(
                 model_id,
                 prompt_tokens=obs.prompt_tokens,
@@ -3094,10 +3196,19 @@ class RouteWiseRouter:
         share honest without moving the latency estimate. A failure is an error
         sample only when it is evidence about the endpoint
         (``_failure_is_endpoint_evidence``).
+
+        A transport success that did not produce real work is not a sample at
+        all. A warmup notice comes back in milliseconds, so timing it would make
+        the coldest endpoint look like the fastest -- the same evidence rule
+        ``record_observation`` applies to the predictor and the cost envelope,
+        re-applied here because #1756 moved latency learning into this method,
+        outside that gate.
         """
         endpoint_id = obs.endpoint_id
         now = time.time()
         if obs.success:
+            if not (obs.terminal and obs.outcome.admits_real_work):
+                return
             ttft_ms = _observed_attempt_ttft_ms(obs)
             if ttft_ms is not None:
                 self._record_latency_success(
@@ -3367,7 +3478,7 @@ class RouteWiseRouter:
                 if not getattr(adapter, "reports_leg_outcomes", False):
                     # A composite adapter may replace its config with the leg
                     # that actually served, so resolve the endpoint after the call.
-                    self._on_success(endpoint_id_for_adapter(adapter))
+                    self._on_success(endpoint_id_for_adapter(adapter), result)
             decision.metadata[_ATTEMPT_COMPLETED_KEY] = True
             if getattr(adapter, "config", None) is not original_config:
                 decision.metadata["backup_won"] = True
@@ -3411,18 +3522,30 @@ class RouteWiseRouter:
                 decision.metadata[_ATTEMPT_TTFT_MS_KEY] = None
                 attempt_started = time.perf_counter()
                 stream = adapter.stream_chat_completion(messages, **params)
+                # A warmup notice arrives one token at a time, so the health
+                # verdict waits for the accumulated prefix to prove real work.
+                # TTFT is still taken at the *first* content chunk, below: the
+                # deferral must never delay #1756's per-attempt measurement.
+                # HedgedAdapter reports every leg itself, warmup included, so
+                # the composite is not classified a second time here.
+                progress = (
+                    None
+                    if getattr(adapter, "reports_leg_outcomes", False)
+                    else StreamProgressTracker()
+                )
                 async for chunk in stream:
                     if first and has_non_empty_content(chunk):
                         first = False
                         decision.metadata[_ATTEMPT_TTFT_MS_KEY] = _first_content_ms(
                             adapter, attempt_started
                         )
-                        # HedgedAdapter already records the winning leg. For
-                        # other adapters, resolve the endpoint after first output
-                        # in case the adapter swapped its serving config.
-                        if not getattr(adapter, "reports_leg_outcomes", False):
-                            self._on_success(endpoint_id_for_adapter(adapter))
+                    if progress is not None and self._observe_stream_progress(
+                        adapter, progress, chunk
+                    ):
+                        progress = None
                     yield chunk
+                if progress is not None:
+                    self._finish_stream_progress(adapter, progress)
                 decision.metadata[_ATTEMPT_COMPLETED_KEY] = True
         finally:
             try:

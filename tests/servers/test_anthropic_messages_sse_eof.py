@@ -204,7 +204,11 @@ async def test_truncated_residue_is_neither_credited_nor_terminated(
     """
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
     # Cut mid-JSON, after the delta that would otherwise have credited success.
     body_bytes = _MESSAGE_START + b'event: content_block_delta\ndata: {"type":"content_bl'
 
@@ -235,7 +239,11 @@ async def test_success_is_recorded_when_the_only_delta_is_unterminated(
     """
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
 
     async def _iter():
         yield _MESSAGE_START
@@ -258,7 +266,11 @@ async def test_properly_terminated_stream_records_success_once(
     """The drain must not double-count a stream that ended correctly."""
     registry = anthropic_compat_router.endpoint_health_registry
     calls: list[str] = []
-    monkeypatch.setattr(registry, "record_success", lambda endpoint_id: calls.append(endpoint_id))
+    monkeypatch.setattr(
+        registry,
+        "record_success",
+        lambda endpoint_id, **_kwargs: calls.append(endpoint_id),
+    )
 
     async def _iter():
         yield _MESSAGE_START + _TEXT_DELTA + _UNTERMINATED_MESSAGE_DELTA + b"\n"
