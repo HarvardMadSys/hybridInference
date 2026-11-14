@@ -27,8 +27,10 @@ from tests.fixtures.audit import ADMIN_ACTOR
 #: The route's page size: a page this long is followed by another.
 PAGE_ROWS = 500
 PAGES = 6
-PAGE_DELAY = 0.1
-REQUEST_TIMEOUT = 0.25
+PAGE_DELAY = 0.2
+#: Long enough for everything before the response starts (dependencies, the
+#: audit write) on a busy runner; the export as a whole takes 1.2 s.
+REQUEST_TIMEOUT = 0.5
 EXPORT_URL = "/admin/export/requests?start_time=2024-01-01T00:00:00Z&end_time=2024-12-31T23:59:59Z"
 
 
