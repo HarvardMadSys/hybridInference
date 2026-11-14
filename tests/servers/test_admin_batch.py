@@ -72,6 +72,9 @@ class _FakeBatchStore:
             }
             for n in (1, 2, 3)
         ]
+        # Item ids are shared by every batch: this one's may start well above 1.
+        base = getattr(self, "item_id_base", 0)
+        items = [{**item, "id": item["id"] + base} for item in items]
         return [item for item in items if item["id"] > after][:limit]
 
     async def user_labels(self, user_ids: list[str]) -> dict[str, dict]:
@@ -483,6 +486,18 @@ async def test_an_admin_reads_a_batchs_prompts_page_by_page(admin_client):
     assert kwargs["action"] == "batch.requests.read"
     assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
     assert kwargs["details"] == {"batch_id": "batch_1"}
+
+
+async def test_any_cursor_below_the_first_item_is_audited_as_opening_the_batch(admin_client):
+    client, store = admin_client
+    _store_prompts(client, True)
+    store.item_id_base = 100
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests?after=1", headers=ADMIN)
+
+    assert [item["custom_id"] for item in response.json()["data"]] == ["req-1", "req-2", "req-3"]
+    client.audit.assert_awaited_once()
+    assert client.audit.await_args.kwargs["action"] == "batch.requests.read"
 
 
 async def test_prompts_stay_unreadable_where_the_gateway_does_not_keep_them(admin_client):

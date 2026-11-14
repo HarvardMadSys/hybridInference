@@ -271,7 +271,14 @@ async def admin_batch_requests(
     batch = await batch_store.get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
-    if after == 0:
+    # Item ids are shared by every batch, so any cursor below this batch's
+    # first item opens its first page too: audit each of those, not only
+    # ``after=0``.
+    opens_first_page = after == 0
+    if not opens_first_page:
+        first = await batch_store.item_contents(batch_id, after=0, limit=1)
+        opens_first_page = not first or after < first[0]["id"]
+    if opens_first_page:
         await log_admin_action(
             op_store,
             action="batch.requests.read",

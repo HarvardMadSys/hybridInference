@@ -2334,86 +2334,94 @@ class BatchStore:
                 "status": 500,
             }
             status_code = 500
-        async with self._pool.acquire() as conn, conn.transaction():
-            counted: str | None = None
-            if stored_response is not None and max_batch_result_bytes:
-                budget = int(max_batch_result_bytes)
-                # The batch's row lock (taken again by the write below)
-                # orders every completion of the batch, so its count is read
-                # and raised by one of them at a time.
-                locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
-                if locked is not None:
-                    stored = await self._stored_result_bytes(conn, locked["id"])
-                    if stored + len(stored_response) > budget:
-                        self._result_bytes[locked["id"]] = max(stored, budget)
-                        stored_response = None
-                        response = None
-                        error = {
-                            "code": "result_too_large",
-                            "message": "The batch's responses reached their storage limit "
-                            f"of {budget} bytes.",
-                            "status": 500,
-                        }
-                        status_code = 500
-                    else:
-                        counted = locked["id"]
-            status = "completed" if error is None else "failed"
-            batch = await self._guarded_item_write(
-                conn,
-                _COMPLETE_ITEM_SQL,
-                item_id,
-                worker_id,
-                attempt,
-                status,
-                stored_response,
-                _dump_json(error),
-                status_code,
-                prompt_tokens,
-                completion_tokens,
-                cost_usd,
-                request_id,
-                _dump_json(usage),
-                cost_status,
-            )
-            if batch is None:
-                return False
-            batch_id, batch_status, _owner = batch
-            if counted is not None and stored_response is not None:
-                self._count_result_bytes(counted, len(stored_response))
-            await conn.execute(
-                _CLOSE_ATTEMPT_SQL,
-                item_id,
-                attempt,
-                "succeeded" if error is None else "failed",
-                status_code,
-                request_id,
-                _dump_json(usage),
-                cost_usd,
-                cost_status,
-                _dump_json(error),
-            )
-            await conn.execute(
-                """
-                UPDATE batch_jobs
-                SET completed_count = completed_count + $2,
-                    failed_count = failed_count + $3,
-                    cost_usd = cost_usd + $4,
-                    prompt_tokens = prompt_tokens + $5,
-                    completion_tokens = completion_tokens + $6,
-                    unknown_cost_count = unknown_cost_count + $7,
-                    cache_read_tokens = cache_read_tokens + $8
-                WHERE id = $1
-                """,
-                batch_id,
-                int(error is None),
-                int(error is not None),
-                float(cost_usd or 0.0),
-                int(prompt_tokens or 0),
-                int(completion_tokens or 0),
-                int(cost_status == "unknown"),
-                int(cached_tokens or 0),
-            )
-            await self._settle(conn, batch_id, batch_status)
+        counted: str | None = None
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                if stored_response is not None and max_batch_result_bytes:
+                    budget = int(max_batch_result_bytes)
+                    # The batch's row lock (taken again by the write below)
+                    # orders every completion of the batch, so its count is read
+                    # and raised by one of them at a time.
+                    locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
+                    if locked is not None:
+                        stored = await self._stored_result_bytes(conn, locked["id"])
+                        if stored + len(stored_response) > budget:
+                            self._result_bytes[locked["id"]] = max(stored, budget)
+                            stored_response = None
+                            response = None
+                            error = {
+                                "code": "result_too_large",
+                                "message": "The batch's responses reached their storage limit "
+                                f"of {budget} bytes.",
+                                "status": 500,
+                            }
+                            status_code = 500
+                        else:
+                            counted = locked["id"]
+                status = "completed" if error is None else "failed"
+                batch = await self._guarded_item_write(
+                    conn,
+                    _COMPLETE_ITEM_SQL,
+                    item_id,
+                    worker_id,
+                    attempt,
+                    status,
+                    stored_response,
+                    _dump_json(error),
+                    status_code,
+                    prompt_tokens,
+                    completion_tokens,
+                    cost_usd,
+                    request_id,
+                    _dump_json(usage),
+                    cost_status,
+                )
+                if batch is None:
+                    return False
+                batch_id, batch_status, _owner = batch
+                if counted is not None and stored_response is not None:
+                    self._count_result_bytes(counted, len(stored_response))
+                await conn.execute(
+                    _CLOSE_ATTEMPT_SQL,
+                    item_id,
+                    attempt,
+                    "succeeded" if error is None else "failed",
+                    status_code,
+                    request_id,
+                    _dump_json(usage),
+                    cost_usd,
+                    cost_status,
+                    _dump_json(error),
+                )
+                await conn.execute(
+                    """
+                    UPDATE batch_jobs
+                    SET completed_count = completed_count + $2,
+                        failed_count = failed_count + $3,
+                        cost_usd = cost_usd + $4,
+                        prompt_tokens = prompt_tokens + $5,
+                        completion_tokens = completion_tokens + $6,
+                        unknown_cost_count = unknown_cost_count + $7,
+                        cache_read_tokens = cache_read_tokens + $8
+                    WHERE id = $1
+                    """,
+                    batch_id,
+                    int(error is None),
+                    int(error is not None),
+                    float(cost_usd or 0.0),
+                    int(prompt_tokens or 0),
+                    int(completion_tokens or 0),
+                    int(cost_status == "unknown"),
+                    int(cached_tokens or 0),
+                )
+                await self._settle(conn, batch_id, batch_status)
+        except BaseException:
+            # The response was counted inside the transaction, under the batch's
+            # row lock; rolled back, it was never stored. Forget the count so
+            # the next completion reads the batch's stored total again.
+            if counted is not None:
+                self._result_bytes.pop(counted, None)
+            raise
         return True
 
     def result_budget_spent(self, batch_id: str, budget: int) -> bool:
