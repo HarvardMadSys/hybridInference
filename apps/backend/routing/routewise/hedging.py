@@ -91,7 +91,6 @@ class HedgedAdapter(BaseAdapter):
         backup_start_hook: Callable[[], bool] | None = None,
         backup_release: Callable[[], None] | None = None,
         checkpoint_backup_selector: CheckpointBackupSelector[BaseAdapter] | None = None,
-        backup_dispatch_hook: Callable[[BaseAdapter], None] | None = None,
         hedge_checkpoints_sec: Sequence[float] = (),
         stream_race_deadline_sec: float | None = _STREAM_RACE_DEADLINE_SECONDS,
         primary_priority: int | None = None,
@@ -128,7 +127,6 @@ class HedgedAdapter(BaseAdapter):
         self._primary_released = False
         self._stream_primary_cleanup_task: asyncio.Task[None] | None = None
         self.checkpoint_backup_selector = checkpoint_backup_selector
-        self.backup_dispatch_hook = backup_dispatch_hook
         self.primary_priority = primary_priority
         self.hedge_checkpoints_sec = _normalize_checkpoints(
             hedge_checkpoints_sec
@@ -204,8 +202,6 @@ class HedgedAdapter(BaseAdapter):
         self.hedge_triggered = True
         self.hedge_delay_sec = dispatch.elapsed_sec
         self.hedge_success_probability = dispatch.success_probability
-        if self.backup_dispatch_hook is not None:
-            self.backup_dispatch_hook(dispatch.backup)
         return dispatch
 
     def _record_leg_failure(
