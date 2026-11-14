@@ -1,9 +1,15 @@
 // @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest';
 import { act, fireEvent, render, screen, waitFor, within, cleanup } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BatchesTab } from './BatchesTab';
-import { getAdminBatchRequests, getBatchSummary, listAllBatches } from '@/lib/api/batches';
+import {
+  adminCancelBatch,
+  getAdminBatchRequests,
+  getBatchSummary,
+  listAllBatches,
+} from '@/lib/api/batches';
 import type { ConsoleBatch, ConsoleBatchPage } from '@/lib/api/batches';
 
 vi.mock('@/lib/api/batches', () => ({
@@ -11,10 +17,15 @@ vi.mock('@/lib/api/batches', () => ({
   listAllBatches: vi.fn(),
   adminCancelBatch: vi.fn(),
   getAdminBatchRequests: vi.fn(),
-  isCancellable: () => false,
+  isCancellable: (batch: { status: string }) => batch.status === 'in_progress',
 }));
+const confirmRequests = vi.hoisted(() => [] as { run: () => Promise<void> }[]);
 vi.mock('@/components/features/admin/confirm/useConfirmAction', () => ({
-  useConfirmAction: () => ({ request: vi.fn(), dialog: null, busy: false }),
+  useConfirmAction: () => ({
+    request: (options: { run: () => Promise<void> }) => confirmRequests.push(options),
+    dialog: null,
+    busy: false,
+  }),
 }));
 
 function deferred<T>() {
@@ -48,6 +59,7 @@ function page(id: string, hasMore = false): ConsoleBatchPage {
 afterEach(cleanup);
 beforeEach(() => {
   vi.clearAllMocks();
+  confirmRequests.length = 0;
   vi.mocked(getBatchSummary).mockResolvedValue({ users: [], totals: {} } as never);
 });
 
@@ -429,5 +441,34 @@ describe('Finish estimate and prompts', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Prompts' }));
     expect(await screen.findByText(/does not keep prompts/)).not.toBeNull();
+  });
+});
+
+describe('Batch list errors and actions', () => {
+  it('keeps the owner name after an admin cancel', async () => {
+    const running = page('batch_r').data[0];
+    vi.mocked(listAllBatches).mockResolvedValue({
+      ...page('batch_r'),
+      data: [{ ...running, status: 'in_progress', user_name: 'Ada', user_email: 'ada@x.test' }],
+    });
+    // The cancel answer carries no owner labels.
+    vi.mocked(adminCancelBatch).mockResolvedValue({ ...running, status: 'cancelling' });
+    render(<BatchesTab />);
+    await screen.findByText('Ada');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel/ }));
+    await act(async () => confirmRequests[0].run());
+    expect(adminCancelBatch).toHaveBeenCalledWith('batch_r');
+    expect(screen.getByText('Ada')).toBeInTheDocument();
+  });
+
+  it('shows a failed list as an error, not as an empty result', async () => {
+    vi.mocked(listAllBatches).mockRejectedValue(new Error('list is down'));
+    vi.mocked(getBatchSummary).mockRejectedValue(new Error('summary is down'));
+    render(<BatchesTab />);
+    expect(await screen.findByText('list is down')).toBeInTheDocument();
+    expect(await screen.findByText('summary is down')).toBeInTheDocument();
+    expect(screen.queryByText('No batch matches these filters.')).toBeNull();
+    expect(screen.queryByText('No user has a stored batch.')).toBeNull();
   });
 });

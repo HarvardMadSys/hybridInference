@@ -46,6 +46,10 @@ export function usePagedBatches(
   const reloading = useRef(false);
   const fetchRef = useRef(fetchPage);
   fetchRef.current = fetchPage;
+  const rowsRef = useRef(batches);
+  rowsRef.current = batches;
+  const hasMoreRef = useRef(hasMore);
+  hasMoreRef.current = hasMore;
 
   const reload = useCallback(async () => {
     const mine = ++generation.current;
@@ -113,9 +117,24 @@ export function usePagedBatches(
     setBatches((current) => current.map((row) => (row.id === batch.id ? batch : row)));
   }, []);
 
-  const remove = useCallback((batchId: string) => {
-    setBatches((current) => current.filter((row) => row.id !== batchId));
-  }, []);
+  const remove = useCallback(
+    (batchId: string) => {
+      const rest = rowsRef.current.filter((row) => row.id !== batchId);
+      if (cursor.current === batchId && hasMoreRef.current && !reloading.current) {
+        // The next page is found from the cursor row; once that row is gone
+        // the gateway ends the listing, so continue from the new last row
+        // (rows listed twice are not appended again) or start over.
+        if (rest.length === 0) {
+          void reload();
+          return;
+        }
+        cursor.current = rest[rest.length - 1].id;
+      }
+      rowsRef.current = rest;
+      setBatches((current) => current.filter((row) => row.id !== batchId));
+    },
+    [reload],
+  );
 
   return { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove };
 }

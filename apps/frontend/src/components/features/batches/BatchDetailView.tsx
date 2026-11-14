@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
@@ -22,7 +22,7 @@ import {
   type ResultKind,
 } from '@/lib/api/batches';
 import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 
 import {
@@ -85,31 +85,46 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   const [detail, setDetail] = useState<BatchDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [gone, setGone] = useState(false);
+  // Each request is numbered; only the newest one's answer is shown, so a slow
+  // poll cannot overwrite a fresher state (after a cancel, say), and an answer
+  // for a previous account or batch (a switch in another tab) is dropped.
+  const latest = useRef(0);
 
   const load = useCallback(async () => {
+    const mine = ++latest.current;
     const forUser = userId;
     try {
       const found = await getMyBatch(batchId);
-      // An answer for another account (a switch in another tab) is never shown here.
-      if (forUser !== userId || (found.user_id && found.user_id !== forUser)) return;
+      if (mine !== latest.current || (found.user_id && found.user_id !== forUser)) return;
       setDetail(found);
       setError(null);
     } catch (err) {
+      if (mine !== latest.current) return;
+      // A deleted batch (or one of another account) is not polled any longer.
+      if (err instanceof APIError && err.statusCode === 404) setGone(true);
       setError(getErrorMessage(err));
     }
   }, [batchId, userId]);
 
   useEffect(() => {
+    latest.current += 1;
     setDetail(null);
+    setError(null);
+    setGone(false);
     if (userId) void load();
   }, [load, userId]);
 
+  // An expired or failed batch can still be finishing its running requests:
+  // follow it until its results are sealed, not only until its status is final.
+  const following =
+    detail !== null && !gone && (!FINAL_STATUSES.has(detail.status) || !detail.results_available);
   useEffect(() => {
     // Follow an unfinished batch while the page is open.
-    if (!detail || FINAL_STATUSES.has(detail.status)) return;
+    if (!following) return;
     const timer = setInterval(() => void load(), 5000);
     return () => clearInterval(timer);
-  }, [detail, load]);
+  }, [following, load]);
 
   async function act(run: () => Promise<void>) {
     setBusy(true);
@@ -122,7 +137,7 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
     }
   }
 
-  if (error && !detail) {
+  if (error && (!detail || gone)) {
     return (
       <div className="space-y-4">
         <Link href="/dashboard/batches" className="text-sm text-gray-500 hover:text-gray-900">

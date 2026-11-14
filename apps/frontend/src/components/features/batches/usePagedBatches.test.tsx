@@ -85,4 +85,31 @@ describe('usePagedBatches', () => {
     expect(result.current.batches.map((row) => row.id)).toEqual(['first', 'second']);
     expect(result.current.hasMore).toBe(false);
   });
+
+  it('continues from the new last row after the last listed batch is removed', async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce(page(['a', 'b'], true))
+      .mockResolvedValueOnce(page(['c']));
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'mine'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'b']));
+
+    act(() => result.current.remove('b'));
+    await act(async () => result.current.loadMore());
+    expect(fetchPage).toHaveBeenLastCalledWith('a');
+    expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'c']);
+  });
+
+  it('starts over when every listed batch is removed', async () => {
+    const fetchPage = vi
+      .fn()
+      .mockResolvedValueOnce(page(['a'], true))
+      .mockResolvedValueOnce(page(['b']));
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'mine'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['a']));
+
+    await act(async () => result.current.remove('a'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['b']));
+    expect(fetchPage).toHaveBeenLastCalledWith(null);
+  });
 });

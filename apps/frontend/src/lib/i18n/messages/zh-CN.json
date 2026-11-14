@@ -2003,6 +2003,10 @@
     "source": "Batches",
     "text": "批次"
   },
+  "batches.toast.cancel_finishing": {
+    "source": "This batch is already finishing and can no longer be cancelled.",
+    "text": "该批次已在收尾，无法再取消。"
+  },
   "batches.toast.cancelled": {
     "source": "Batch cancelled.",
     "text": "批次已取消。"

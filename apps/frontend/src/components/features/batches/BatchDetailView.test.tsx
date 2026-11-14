@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { getMyBatch, type BatchDetail } from '@/lib/api/batches';
+import { APIError } from '@/lib/utils/errors';
 
 import { BatchDetailView } from './BatchDetailView';
 
@@ -212,5 +213,49 @@ describe('BatchDetailView', () => {
     const badge = await screen.findByTestId('batch-category');
     expect(badge).toHaveTextContent('With issues');
     expect(badge).toHaveTextContent('Some requests failed');
+  });
+});
+
+describe('BatchDetailView polling', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('follows an expired direct-request batch until its results are sealed', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const unsealed = detail({
+      api_surface: 'openai_inline',
+      input: 'inline',
+      status: 'expired',
+      phase: 'runnable',
+      results_available: false,
+    });
+    vi.mocked(getMyBatch)
+      .mockResolvedValueOnce(unsealed)
+      .mockResolvedValueOnce({ ...unsealed, phase: 'sealed', results_available: true })
+      .mockResolvedValue(detail({ status: 'expired' }));
+    render(<BatchDetailView batchId="batch_1" />);
+    await screen.findByText('eval-0420');
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('stops following a batch that was deleted and says so', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.mocked(getMyBatch)
+      .mockResolvedValueOnce(
+        detail({ status: 'in_progress', phase: 'runnable', results_available: false }),
+      )
+      .mockRejectedValue(new APIError('NOT_FOUND', "Batch 'batch_1' not found", 404));
+    render(<BatchDetailView batchId="batch_1" />);
+    await screen.findByText('eval-0420');
+
+    await act(async () => vi.advanceTimersByTimeAsync(5000));
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    await act(async () => vi.advanceTimersByTimeAsync(15000));
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
   });
 });
