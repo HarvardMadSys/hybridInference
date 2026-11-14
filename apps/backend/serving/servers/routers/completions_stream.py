@@ -452,6 +452,27 @@ class StreamSession:
         return self._model_queued
 
     @property
+    def served_route(self) -> dict[str, Any]:
+        """The upstream that served this response so far, as routing metadata.
+
+        The raw shape an adapter announces under ``_routing``, which the public
+        surfaces strip: only the playground republishes an allow-listed summary
+        of it. Empty when no attempt has announced itself yet.
+        """
+        route: dict[str, Any] = dict(self._adapter_routing or {})
+        for key, value in (
+            ("provider", self._routing.provider),
+            ("endpoint_id", self._routing.endpoint_id),
+            ("base_url", self._routing.base_url),
+        ):
+            if value:
+                route[key] = value
+        attempts = self._routing.extra.get("failed_attempts")
+        if isinstance(attempts, list) and attempts:
+            route["failed_attempts"] = attempts
+        return route
+
+    @property
     def yielded_first_chunk(self) -> bool:
         """Return ``True`` once the response has been committed.
 

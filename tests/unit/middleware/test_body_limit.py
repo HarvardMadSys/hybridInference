@@ -402,6 +402,8 @@ async def test_routes_that_read_after_authentication_keep_the_general_limit(path
         ("/admin/config", ADMIN_MAX_BODY_BYTES),
         ("/admin/config/restore", None),
         ("/internal/playground/chat", None),
+        ("/internal/playground/responses", None),
+        ("/internal/playground/messages", None),
         ("/internal/playground/models", CONTROL_MAX_BODY_BYTES),
     ],
 )
