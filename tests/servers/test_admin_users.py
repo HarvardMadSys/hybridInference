@@ -40,6 +40,7 @@ def mock_stores():
     op_store.release_hard_delete_user_claim = AsyncMock()
     op_store.hard_delete_user = AsyncMock(return_value={})
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
+    op_store.list_audit_actions = AsyncMock(return_value=[])
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
     op_store.set_user_preference = AsyncMock(return_value=True)
@@ -342,6 +343,29 @@ async def test_list_audit_log_filter_by_action(admin_client):
     op_store.list_audit_log.assert_awaited_once()
     call_kwargs = op_store.list_audit_log.await_args.kwargs
     assert call_kwargs["action"] == "approve_user"
+
+
+@pytest.mark.asyncio
+async def test_list_audit_actions_returns_recorded_actions(admin_client):
+    """GET /admin/audit-log/actions lists every recorded action, e.g. config.update."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_audit_actions.return_value = ["approve_user", "config.update"]
+
+    response = await client.get("/admin/audit-log/actions", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"actions": ["approve_user", "config.update"]}
+    op_store.list_audit_actions.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_list_audit_actions_requires_admin(admin_client):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get("/admin/audit-log/actions")
+
+    assert response.status_code in (401, 403)
+    op_store.list_audit_actions.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -465,6 +465,13 @@ export async function listAuditLog(
   return jsonOrThrow<ListAuditLogResponse>(resp);
 }
 
+/** Every distinct action recorded in the audit log, sorted: what the action filter offers. */
+export async function listAuditActions(): Promise<string[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/audit-log/actions');
+  const data = await jsonOrThrow<{ actions: string[] }>(resp);
+  return data.actions;
+}
+
 // ========================================
 // Recent Requests (Admin View)
 // ========================================

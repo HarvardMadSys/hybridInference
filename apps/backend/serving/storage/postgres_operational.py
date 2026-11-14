@@ -3216,6 +3216,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
 
         return total, [dict(r) for r in rows]
 
+    async def list_audit_actions(self) -> list[str]:
+        """Return every distinct recorded ``action``, sorted (uses idx_admin_audit_action)."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT DISTINCT action FROM admin_audit_log WHERE action IS NOT NULL ORDER BY action"
+            )
+        return [r["action"] for r in rows]
+
     # -- user preferences ----------------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
