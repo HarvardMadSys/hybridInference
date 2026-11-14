@@ -2682,3 +2682,129 @@ class TestStreamRaceCostIsBounded:
         assert sink.success_outcomes, (
             "genuine content after whitespace must record a serving success"
         )
+
+
+@pytest.mark.unit
+class TestStreamRaceCappedBranchResolution:
+    """The capped branch of the stream race resolves the leg and picks a winner.
+
+    A leg that reaches ``_STREAM_RACE_BUFFER_MAX_BYTES`` without model text
+    resolves EMPTY, which is a stable outcome the race may act on. The cap must
+    not let a leg that still might become a warmup notice win, and must not
+    suppress real output from a competing leg.
+    """
+
+    @staticmethod
+    def _role_chunks(count: int) -> list[str]:
+        chunk = 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+        return [chunk] * count
+
+    @pytest.mark.asyncio
+    async def test_capped_whitespace_primary_ends_the_race_with_empty(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A whitespace flood that hits the cap resolves the leg as EMPTY and wins."""
+        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 64)
+        sink = _FakeEventSink()
+        primary = _make_fake_adapter(provider="capped-whitespace-primary")
+
+        async def _flood_then_hang(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            for _ in range(100):
+                # Each chunk is ~51 bytes of role-only SSE, so 100 passes the
+                # 64-byte cap quickly without ever producing content.
+                yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}\n\n'
+            await asyncio.Event().wait()
+
+        primary.stream_chat_completion = _flood_then_hang
+        backup = _make_fake_adapter(provider="backup", stream_delay=10.0)
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=10.0,
+            event_sink=sink,
+            stream_race_deadline_sec=5.0,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        seen: list[str] = []
+        try:
+            while True:
+                try:
+                    seen.append(await asyncio.wait_for(stream.__anext__(), timeout=2.0))
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    break
+        finally:
+            await stream.aclose()
+
+        from routing.completion_outcome import CompletionOutcome
+
+        assert seen, "the capped primary must still deliver its buffered chunks"
+        assert sink.successes == ["test:capped-whitespace-primary"], (
+            "the capped leg should win the race"
+        )
+        assert sink.success_outcomes == [CompletionOutcome.EMPTY], (
+            "a cap-only win must resolve as EMPTY, not progress"
+        )
+
+    @pytest.mark.asyncio
+    async def test_capped_ambiguous_prefix_does_not_defeat_real_backup_progress(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """A leg that hits the cap while still ambiguous must not beat a real answer."""
+        monkeypatch.setattr(hedging_module, "_STREAM_RACE_BUFFER_MAX_BYTES", 64)
+        sink = _FakeEventSink()
+        # The primary streams a fragment that *starts* a warmup notice but is
+        # capped before the prefix can resolve -- so it hits the capped branch
+        # with an ambiguous prefix, not a real one.
+        primary = _make_fake_adapter(provider="ambiguous-capped-primary")
+
+        async def _ambiguous_then_hang(*args: Any, **kwargs: Any) -> AsyncGenerator[str, None]:
+            for _ in range(3):
+                yield 'data: {"choices":[{"delta":{"content":"The model is starting"}}]}\n\n'
+            await asyncio.Event().wait()
+
+        primary.stream_chat_completion = _ambiguous_then_hang
+        backup = _make_fake_adapter(
+            provider="real-answer-backup",
+            stream_chunks=['data: {"choices":[{"delta":{"content":"The answer is four."}}]}\n\n'],
+            stream_delay=0.0,
+        )
+        hedged = HedgedAdapter(
+            primary=primary,
+            backup=backup,
+            hedge_threshold_sec=0.0,
+            event_sink=sink,
+            stream_race_deadline_sec=5.0,
+        )
+
+        stream = hedged.stream_chat_completion([{"role": "user", "content": "hi"}])
+        seen: list[str] = []
+        try:
+            while True:
+                try:
+                    seen.append(await asyncio.wait_for(stream.__anext__(), timeout=3.0))
+                except StopAsyncIteration:
+                    break
+                except TimeoutError:
+                    break
+        finally:
+            await stream.aclose()
+
+        assert any("The answer is four." in chunk for chunk in seen), (
+            "the backup's genuine answer must reach the client"
+        )
+        # The ambiguous primary must not be the one that won.
+        assert "test:ambiguous-capped-primary" not in sink.successes, (
+            "a leg capped while its prefix is still ambiguous must not win the race"
+        )
+        # The backup with real progress should be the recorded success.
+        assert "test:real-answer-backup" in sink.successes, (
+            "the leg with real progress should be the recorded winner"
+        )
+        assert sink.success_outcomes and all(o.admits_real_work for o in sink.success_outcomes), (
+            f"the recorded outcome should be progress, not {sink.success_outcomes}"
+        )

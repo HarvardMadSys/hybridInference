@@ -1149,3 +1149,74 @@ async def test_non_streaming_genuine_answer_confirms_the_prefill(
     assert len(prefill_load._prefix_hints) > hints_before, (
         "a genuine answer did not confirm the prefill"
     )
+
+
+_TOOL_ONLY_BLOCK_START = (
+    b"event: content_block_start\n"
+    b'data: {"type":"content_block_start","index":0,'
+    b'"content_block":{"type":"tool_use","id":"toolu_01","name":"get_weather","input":{}}}\n\n'
+)
+_TOOL_PARTIAL_JSON_DELTA = (
+    b"event: content_block_delta\n"
+    + b"data: "
+    + json.dumps(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {
+                "type": "input_json_delta",
+                "partial_json": '{"city": "San Fra',
+            },
+        }
+    ).encode()
+    + b"\n\n"
+)
+_TOOL_BLOCK_STOP = b'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\n'
+
+
+@pytest.mark.asyncio
+async def test_streaming_tool_only_partial_json_closes_an_open_circuit(
+    anthropic_test_client, anthropic_compat_router, monkeypatch, quiet_alerts, no_log_store
+):
+    """A stream whose only content is tool_use ``partial_json`` proves progress.
+
+    Claude Code routinely calls tools that return no prose: the streamed
+    ``content_block_delta`` carries ``input_json_delta``/``partial_json``
+    fragments instead of ``text``. The first non-empty tool fragment must close
+    a half-open probe as soon as it arrives, not only after the stream ends,
+    because a held probe blocks every other call to the endpoint until it does.
+    """
+    monkeypatch.setenv("CIRCUIT_COOLDOWN_SECONDS", "0")
+    registry = anthropic_compat_router.endpoint_health_registry
+    endpoint_id = _endpoint_id(anthropic_compat_router)
+    for _ in range(5):
+        registry.record_failure(endpoint_id, reason="seeded")
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.OPEN
+
+    async def _iter():
+        yield (
+            _MESSAGE_START
+            + _TOOL_ONLY_BLOCK_START
+            + _TOOL_PARTIAL_JSON_DELTA
+            + _TOOL_BLOCK_STOP
+            + _MESSAGE_STOP
+        )
+
+    from serving.http import AsyncHTTPClient
+
+    monkeypatch.setattr(AsyncHTTPClient, "_ensure_session", _fake_session_from_iter(_iter))
+
+    prefill_load = anthropic_compat_router.prefill_load
+    hints_before = len(prefill_load._prefix_hints)
+
+    async with anthropic_test_client.stream(
+        "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+    ) as r:
+        assert r.status_code == 200
+        async for _ in r.aiter_bytes():
+            pass
+
+    assert registry.snapshot()[endpoint_id]["circuit_state"] == _CircuitState.CLOSED
+    assert len(prefill_load._prefix_hints) > hints_before, (
+        "a tool-only stream did not confirm the prefill and write the warm-prefix hint"
+    )

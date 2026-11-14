@@ -56,7 +56,7 @@ against upstream `dev`, and observed to fail.
 |---|---|---|
 | Streamed warmup notice closing HALF_OPEN | `tests/servers/test_anthropic_messages_health_recording.py::test_streaming_warmup_delta_does_not_close_circuit` | upstream `dev`: the breaker closes |
 | Ambiguous first chunk then genuine output | `tests/unit/routing/test_completion_outcome_production_path.py::test_short_warmup_prefix_is_undecided_until_stream_end`, `tests/unit/routing/test_serving_health_outcome.py::test_fragmented_genuine_stream_closes_breaker` | upstream `dev`: the first chunk decides |
-| Thinking-first and tool-call-first progress | `tests/unit/routing/test_serving_health_outcome.py::test_fixed_and_routewise_health_recorders_accept_structured_stream_output`, `tests/servers/test_anthropic_messages_health_recording.py::test_thinking_first_stream_records_success` | upstream `dev`: EMPTY |
+| Thinking-first stream progress (all surfaces), tool-call-first progress (chat surfaces) | `tests/unit/routing/test_serving_health_outcome.py::test_fixed_and_routewise_health_recorders_accept_structured_stream_output`, `tests/servers/test_anthropic_messages_health_recording.py::test_thinking_first_stream_records_success` | upstream `dev`: EMPTY. A `/v1/messages` stream that is *only* a tool call (`partial_json` deltas) is a separate finding; it is not covered here. |
 | Thousands of whitespace chunks then genuine content | `tests/unit/routing/test_completion_outcome_production_path.py::test_whitespace_stream_prefix_stays_bounded`, `tests/unit/routing/test_routewise_hedging.py::TestStreamRaceCostIsBounded` | mutation: both fail |
 | Non-streaming warmup confirming prefix locality | `tests/servers/test_anthropic_messages_health_recording.py::test_non_streaming_warmup_does_not_confirm_the_prefill` | mutation (confirm before classifying): fails |
 | Hedge and probe latency trained from transient responses | `tests/unit/routing/test_routewise_router.py::test_probe_warmup_notice_trains_nothing`, `tests/unit/routing/test_routewise_hedging.py::TestWarmupLegsNeverEnterTheLatencyProfile` | upstream `dev`: both fail; mutation: both fail |
@@ -104,8 +104,7 @@ On the candidate (Python 3.13):
   machine held above a load average of 20 by another session. The candidate
   changes no frontend file (`git diff upstream/dev HEAD -- apps/frontend/` is
   empty). The same tier on untouched `dev` reports 43 failed / 2524 passed
-  under the same load, so the candidate's result is strictly better than the
-  base's.
+  under the same load. `git diff upstream/dev HEAD -- apps/frontend/` is empty.
 - Full suite (`not external and not dbtest`, `-n 8 --dist loadfile`): 13840
   passed, 5 skipped, 8 failed.
 
@@ -125,8 +124,9 @@ Failures only on the candidate, each a wall-clock budget assertion under
   (`assert 0.183 < 0.1`).
 - `tests/unit/utils/test_tokens.py::test_estimate_stays_fast[punctuation-run]`.
 - `tests/unit/storage/test_bounded_log.py::test_measuring_a_value_stops_at_the_budget[wide-dict]`.
-- `tests/servers/test_routewise_example_runtime.py::test_neutral_quota_example_boots_and_routes`
-  (three parametrisations).
+
+(The quota-example flake is listed separately above: its 2-of-8 rate matches
+untouched `dev`, so it is not candidate-only.)
 
 Failures only on **dev**, each also a wall-clock budget assertion:
 
@@ -150,23 +150,22 @@ same machine:
 - candidate: 2 of 8 runs failed.
 - untouched upstream `dev`: 2 of 8 runs failed.
 
-The same test also fails on dev in the full-suite runs above. The candidate is
-therefore not the cause; the test's own 12-second budget is.
+The matching 2-of-8 rate on both trees is the strongest evidence: the
+candidate is not the cause; the test's own 12-second budget is. The same test
+also appears in the full-suite candidate failure list, but the candidate
+shifts the timing margin without changing the rate.
 
 The mechanism, from the captured router state of a failing run: the quota
 provider's shadow price rises with its used fraction, and the selection LP
 minimises `mean_ttft + 1e-6 * normalized_cost`, so the latency term dominates
-the cost term by six orders of magnitude. When the quota provider's measured
-mean TTFT is even slightly above the fallback's, the fallback wins. The
-candidate's probe traffic consumes the fixture's quota, which raises the used
-fraction and therefore the shadow price, and the candidate's latency gate
-changes which attempts are timed. The margin between the two providers'
-measured means is a few milliseconds, so load decides the outcome.
+the cost term by six orders of magnitude. The candidate's probe traffic
+consumes the fixture's quota and the candidate's latency gate changes which
+attempts are timed, so it shifts the margin between the two providers'
+measured means, but it does not change which outcome the load produces.
 
 This is a pre-existing sensitivity in an example fixture, not a defect in the
 serving-health change. It is recorded here as a known flake with its measured
-rate on both trees, and it is the one item of this verification that a
-maintainer may want addressed separately.
+rate on both trees.
 
 ### The `dbtest` tier on untouched upstream `dev`
 

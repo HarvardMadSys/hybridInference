@@ -1281,6 +1281,11 @@ def _content_delta_text(payload: Any) -> str:
     thinking = delta.get("thinking")
     if isinstance(thinking, str) and thinking:
         return thinking
+    # A tool call's streamed JSON fragment is the same ``[tool_call]`` sentinel
+    # the non-streaming classifiers use for structured output: it proves the
+    # endpoint is generating and must not be mistaken for a warmup notice.
+    if delta.get("partial_json"):
+        return "[tool_call]"
     return ""
 
 
