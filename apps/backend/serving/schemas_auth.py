@@ -157,17 +157,6 @@ class LoginResponse(BaseModel):
     user: "UserInfo"
 
 
-class AgentInviteRedeemResponse(LoginResponse):
-    """Redemption of an agent invitation: the login response, plus the key.
-
-    The agent-scoped API key is carried once, in this response only, for the
-    redemption page to show its holder; it is never readable again.
-    """
-
-    api_key: str
-    account_created: bool
-
-
 class RefreshResponse(BaseModel):
     """Token refresh response."""
 

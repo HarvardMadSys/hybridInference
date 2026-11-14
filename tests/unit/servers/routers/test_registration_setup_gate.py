@@ -42,8 +42,6 @@ ACCOUNT_INSERTS = {
     "serving.storage.postgres_operational.PostgresOperationalStore.create_user",
     "serving.storage.postgres_operational.PostgresOperationalStore.create_first_admin",
     "serving.storage.phone_auth.PostgresPhoneAuthMixin.create_phone_user",
-    # Agent invitation redemption settles an account as it claims its token.
-    "serving.storage.postgres_operational.PostgresOperationalStore.redeem_agent_invite",
 }
 
 # Every caller of those methods outside the store, with the public route it
@@ -51,8 +49,6 @@ ACCOUNT_INSERTS = {
 ACCOUNT_CREATORS: dict[str, str | None] = {
     "serving.servers.routers.auth_routes.signup": "/auth/signup",
     "serving.servers.routers.phone_auth_routes.phone_signup": "/auth/phone/signup",
-    # Redemption can create an account, so it waits for setup like signup.
-    "serving.servers.routers.agent_invitations.redeem_agent_invite": "/v1/agent-invites/redeem",
     # First-run setup itself: POST /auth/setup/admin, which takes the setup
     # code, and whose store transaction creates the administrator only while
     # no account exists (tests/servers/test_setup_routes.py).
@@ -74,11 +70,6 @@ REGISTRATION_REQUESTS: dict[str, dict[str, Any]] = {
         "phone": PHONE,
         "code": "123456",
         "user_name": "Stranger",
-        "accepted_tos": True,
-    },
-    "/v1/agent-invites/redeem": {
-        "token": "invitation-token",
-        "password": "Str0ngPassword",
         "accepted_tos": True,
     },
 }

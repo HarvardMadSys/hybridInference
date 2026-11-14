@@ -801,7 +801,6 @@ class CachedOperationalStore(OperationalStore):
         name: str | None = None,
         max_active_keys: int | None = None,
         project_id: str | None = None,
-        credential_scope: str = "",
     ) -> Row:
         """Delegate, then invalidate auth caches when the account quota may have moved.
 
@@ -825,7 +824,6 @@ class CachedOperationalStore(OperationalStore):
             name=name,
             max_active_keys=max_active_keys,
             project_id=project_id,
-            credential_scope=credential_scope,
         )
         if not inherit_account_quota:
             await self.invalidate_user_auth_caches(user_id)
@@ -1178,68 +1176,6 @@ class CachedOperationalStore(OperationalStore):
     async def consume_identity_auth_code(self, code_hash: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.consume_identity_auth_code(code_hash)
-
-    # -- agent invitations (never cached) --------------------------------------
-
-    async def create_agent_invite_token(
-        self,
-        *,
-        token_hash: str,
-        agent_account_id: str,
-        email: str,
-        expires_at: datetime,
-    ) -> None:
-        """Delegate to wrapped store."""
-        return await self._store.create_agent_invite_token(
-            token_hash=token_hash,
-            agent_account_id=agent_account_id,
-            email=email,
-            expires_at=expires_at,
-        )
-
-    async def redeem_agent_invite(
-        self,
-        *,
-        token_hash: str,
-        user_id: str,
-        user_name: str | None,
-        password_hash: str,
-        api_key_hash: str,
-        api_key_prefix: str,
-        credential_scope: str,
-        quota_daily_cost_usd: Decimal | float,
-        max_active_keys: int,
-    ) -> Row | None:
-        """Delegate to the wrapped store.
-
-        The account's password, status and keys just changed under the
-        cache's feet, so its cached identity is dropped on success.
-        """
-        row = await self._store.redeem_agent_invite(
-            token_hash=token_hash,
-            user_id=user_id,
-            user_name=user_name,
-            password_hash=password_hash,
-            api_key_hash=api_key_hash,
-            api_key_prefix=api_key_prefix,
-            credential_scope=credential_scope,
-            quota_daily_cost_usd=quota_daily_cost_usd,
-            max_active_keys=max_active_keys,
-        )
-        if row is not None:
-            await self.invalidate_user_auth_caches(row["user_id"])
-        return row
-
-    async def get_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
-        """Delegate to wrapped store."""
-        return await self._store.get_agent_provisioned_account(agent_account_id)
-
-    async def revoke_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
-        """Delegate, then drop the account's cached identity: a key died."""
-        row = await self._store.revoke_agent_provisioned_account(agent_account_id)
-        if row is not None:
-            await self.invalidate_user_auth_caches(row["user_id"])
-        return row
 
     # -- inference grants (never cached) -------------------------------------
     #
