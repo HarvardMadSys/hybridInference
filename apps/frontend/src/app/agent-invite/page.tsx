@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { redeemAgentInvite, type AgentInviteRedeemResponse } from '@/lib/api/agentInvite';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { fill } from '@/lib/utils/interpolate';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { AuthField, AuthNotice } from '@/components/auth/AuthForm';
 import { PasswordInput, PasswordRules } from '@/components/auth/PasswordInput';
@@ -13,6 +15,7 @@ import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 
 function AgentInviteContent() {
   const t = useT();
+  const branding = useBranding();
   const skin = useAuthAppearance();
   const searchParams = useSearchParams();
   // The invitation mail carries the token in the fragment, which browsers
@@ -79,9 +82,12 @@ function AgentInviteContent() {
           <AuthField
             id="apiKey"
             label={t('auth.agent_invite.key_label', 'Agent API key')}
-            hint={t(
-              'auth.agent_invite.key_hint',
-              'Paste this key into Cloud Agent under My settings → Model connections (FreeInference). It can use the agent models only, with this account’s usual quota.',
+            hint={fill(
+              t(
+                'auth.agent_invite.key_hint',
+                'Paste this key into Cloud Agent under My settings → Model connections ({app_name}). It can use the agent models only, with this account’s usual quota.',
+              ),
+              { app_name: branding.appName },
             )}
           >
             <input
