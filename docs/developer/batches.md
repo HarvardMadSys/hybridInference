@@ -918,6 +918,14 @@ request list takes `start_time` and `end_time`, timezone-aware, to list the
 requests of one bar: the start is inclusive, the end is not, and a start older
 than the list's lookback widens the lookback to reach it, as far as 90 days.
 
+A row logged while a model was queued for capacity is left out of every one of
+these counts, interactive and batch. Its `error` starts with
+`UpstreamModelQueued:`. Nothing ran: the batch worker puts the item back
+without spending the attempt, and the failed-request alerter already ignores
+the same rows. The **Requests** list still shows the row, one attempt in the
+log. The Batches tab totals are each batch's stored items, all time, not the
+calls that ran in this window.
+
 On **Recent Requests**, the **Request volume** cards count only the requests
 callers made directly; each card also says how many batch requests ran in its
 window, and each bar stacks them on top, in violet. Clicking a bar narrows the

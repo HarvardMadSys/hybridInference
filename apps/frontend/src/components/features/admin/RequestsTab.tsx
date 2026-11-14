@@ -534,7 +534,7 @@ function RequestMetricsCard({
           )}
           <div>{formatLatency(metric.avg_latency_ms)} avg</div>
           {batchRequests > 0 && (
-            <div title="Requests the batch worker ran in this window. They are not in the figures above; each bar stacks them on top, in violet.">
+            <div title="Requests the batch worker ran in this window. Waits while a model was queued for capacity are left out. They are not in the figures above; each bar stacks them on top, in violet.">
               <span className="text-violet-600">{batchRequests.toLocaleString()}</span> batch
             </div>
           )}
