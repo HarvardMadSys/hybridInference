@@ -251,3 +251,14 @@ async def test_audit_log_filters_by_action_and_target_and_pages_newest_first(adm
 
     total, rows = await store.list_audit_log(target_user_id="u-adml-b")
     assert (total, [row["action"] for row in rows]) == (1, ["itest.suspend"])
+
+
+async def test_audit_actions_lists_each_recorded_action_once_sorted(admin_store):
+    store, _pool = admin_store
+    for action in ["itest.z.update", "config.update", "itest.z.update", "approve_user"]:
+        await store.log_admin_action(admin_ip="203.0.113.9", action=action)
+
+    actions = await store.list_audit_actions()
+
+    assert actions == sorted(set(actions))
+    assert {"itest.z.update", "config.update", "approve_user"} <= set(actions)
