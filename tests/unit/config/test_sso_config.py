@@ -258,6 +258,29 @@ def test_the_secret_a_document_references_is_listed_as_a_setting_to_fill():
     assert reference.credential is True
 
 
+def test_the_referenced_secret_says_what_references_it_and_waits_for_a_restart():
+    """Like every setting a document references, it is read when the gateway starts."""
+    from serving.config import app_config_registry as registry
+
+    found = registry.discover_documents({}, {}, {}, {"providers": [_provider()]})
+    entry = registry.build_entries(found, {}, {})["SSO_EXAMPLE_UNIV_CLIENT_SECRET"]
+
+    assert entry.description == "Referenced by the single sign-on providers."
+    assert entry.secret is True
+    assert entry.restart_required is True
+
+
+def test_a_secret_the_alert_rules_also_reference_stays_theirs():
+    from serving.config import app_config_registry as registry
+
+    alerts = {"channels": [{"url": "${SSO_EXAMPLE_UNIV_CLIENT_SECRET}"}]}
+    found = registry.discover_documents({}, {}, alerts, {"providers": [_provider()]})
+    entry = registry.build_entries(found, {}, {})["SSO_EXAMPLE_UNIV_CLIENT_SECRET"]
+
+    assert entry.category == "alerts"
+    assert entry.description == "Referenced by the alert rules."
+
+
 def test_the_document_is_a_security_relevant_application_setting():
     from serving.config import app_config
     from serving.config.app_config_registry import static_entry

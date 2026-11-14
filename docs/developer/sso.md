@@ -15,9 +15,8 @@ are not supported yet.
    that uses the authorization code flow. Set its redirect URI to
    `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you
    will give the provider below. Note the client id and the client secret.
-2. **Store the client secret** in **Admin > Configuration** as a secret setting,
-   for example `SSO_EXAMPLE_UNIV_CLIENT_SECRET`.
-3. **Describe the provider** in the `SSO_PROVIDERS` setting, on the same tab:
+2. **Describe the provider** in the `SSO_PROVIDERS` setting, under
+   **Admin → Settings → Models**, in the **Application** section:
 
    ```json
    {
@@ -33,17 +32,27 @@ are not supported yet.
    }
    ```
 
-4. **Check `FRONTEND_URL`.** It must be the address users open the console at.
+   `client_secret` names a secret setting. It never holds the secret itself.
+3. **Store the client secret.** Saving the provider adds the setting it names,
+   here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under **Admin → Settings → Access**,
+   in the **Security** section. Enter the secret there.
+4. **Restart the gateway.** The secret setting is marked **Restart required**:
+   the gateway reads it when it starts.
+5. **Check `FRONTEND_URL`.** It must be the address users open the console at.
    The redirect URI is built from it, and users must reach the console through
    that address for a sign-in to complete.
 
-The change applies without a restart. The sign-in page now shows **Log in with
-SSO**. A user selects it, enters their work or school email, and is sent to the
-provider whose `domains` cover that email. The page does not list which
-organizations are connected.
+The sign-in page shows **Log in with SSO** as soon as the provider is saved.
+Until the secret is stored and the gateway has restarted, the entry reports
+that single sign-on is unavailable. A user selects it, enters their work or
+school email, and is sent to the provider whose `domains` cover that email. The
+page does not list which organizations are connected.
 
-Saving the setting asks for the administrator's password, as other changes to
-who may sign in do.
+Later changes to `SSO_PROVIDERS` apply without a restart. A changed client
+secret needs one.
+
+Saving either setting asks for the administrator's password, as other changes
+to who may sign in do.
 
 ## Provider fields
 
@@ -83,7 +92,7 @@ With a trusted email, the result depends on whether an account already has it:
 | Account with that email | Result |
 |---|---|
 | None, and `auto_create` is off | The sign-in is refused |
-| None, and `auto_create` is on | An account is created with `default_role`. With `require_approval` it waits in **Admin > Users** like any registration |
+| None, and `auto_create` is on | An account is created with `default_role`. With `require_approval` it waits in **Admin → Users** like any registration |
 | Exists and is active | The member is asked to sign in to it once, the way they usually do, and then to accept the link |
 | Exists and is not active | The sign-in is refused. This includes a deleted account: its email stays taken, as it does for signup |
 
@@ -120,12 +129,12 @@ a first sign-in.
 
 ## Linking and unlinking
 
-A user manages their own links under **Settings > Single sign-on**: they can
+A user manages their own links under **Settings → Single sign-on**: they can
 connect an organization account, including one whose email differs from the
 account's, and disconnect one. Both ask the user to confirm, and the only way
 to sign in to an account cannot be disconnected.
 
-An administrator sees a user's links in the user's detail panel under **Admin >
+An administrator sees a user's links in the user's detail panel under **Admin →
 Users** and can unlink one. Unlinking removes the link only: it does not end
 the account's sessions or revoke its API keys. Administrators cannot create a
 link for a user.
@@ -148,7 +157,7 @@ password first, under **Settings**.
 
 The gateway is not told when a provider disables an account. The member can no
 longer sign in through the provider, but sessions that are already open and
-API keys keep working. Suspend the account in **Admin > Users** to end both.
+API keys keep working. Suspend the account in **Admin → Users** to end both.
 
 ## Stop offering a provider
 
@@ -180,10 +189,10 @@ browser and for the gateway.
    a user with an email and a password, and an OpenID Connect client with
    client authentication on and the redirect URI
    `<FRONTEND_URL>/auth/sso/keycloak/callback`.
-3. In the gateway, store the client's secret as a secret setting and add a
-   provider whose `issuer` is `http://localhost:8081/realms/<realm>`, whose
-   `id` is `keycloak` and whose `domains` include the domain of the user's
-   email.
+3. In the gateway, add a provider whose `issuer` is
+   `http://localhost:8081/realms/<realm>`, whose `id` is `keycloak` and whose
+   `domains` include the domain of the user's email. Store the client's secret
+   in the setting the provider names, then restart the gateway.
 4. Open the console's sign-in page, select **Log in with SSO** and enter the
    user's email.
 
@@ -196,9 +205,9 @@ and the reason, and never contains a token or a secret.
 
 | Message says | Usual cause |
 |---|---|
-| Single sign-on is unavailable | The provider cannot be reached, the client secret setting is empty, or `FRONTEND_URL` is not an absolute URL |
+| Single sign-on is unavailable | The provider cannot be reached, the client secret setting is empty, the gateway has not restarted since the secret was stored, or `FRONTEND_URL` is not an absolute URL |
 | The sign-in took too long | The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL` |
 | The email could not be confirmed | The email is outside the provider's `domains`, or the provider does not report it as verified |
 | No account here yet | `auto_create` is off, or the address is on `ADMIN_EMAILS` |
-| Pending approval | The account was created and waits in **Admin > Users** |
+| Pending approval | The account was created and waits in **Admin → Users** |
 | Already connected to a different identity | See [Linking and unlinking](#linking-and-unlinking) |

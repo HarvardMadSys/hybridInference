@@ -2010,6 +2010,8 @@ class DiscoveredReference:
     #: ``api_keys``, any field whose name looks like a credential's), so it is
     #: secret whatever its own name.
     credential: bool = False
+    #: Only the single sign-on providers reference it.
+    single_sign_on: bool = False
 
 
 def _references(value: Any) -> set[str]:
@@ -2069,6 +2071,14 @@ def _load_yaml_text(text: str) -> Any:
         return yaml.safe_load(text)
     except yaml.YAMLError:
         return None
+
+
+def _discovered_description(reference: DiscoveredReference) -> str:
+    if reference.category == "providers":
+        return "Referenced by the model registry."
+    if reference.single_sign_on:
+        return "Referenced by the single sign-on providers."
+    return "Referenced by the alert rules."
 
 
 def _note(
@@ -2152,7 +2162,9 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
 
 def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
     for key in _references(data):
-        _note(found, key, "security")
+        # Read last: a name already found belongs to another document too.
+        if key not in found:
+            _note(found, key, "security").single_sign_on = True
 
 
 def discover_documents(
@@ -2289,9 +2301,7 @@ def build_entries(
         entries[key] = ConfigEntry(
             key,
             reference.category,
-            "Referenced by the model registry."
-            if reference.category == "providers"
-            else "Referenced by the alert rules.",
+            _discovered_description(reference),
             secret=reference.credential or is_secret_name(key),
             required=requirement,
             restart_required=True,

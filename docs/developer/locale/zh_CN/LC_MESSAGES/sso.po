@@ -34,20 +34,29 @@ msgstr "对接一个身份提供方"
 msgid "**Register the gateway at the identity provider** as a confidential client that uses the authorization code flow. Set its redirect URI to `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you will give the provider below. Note the client id and the client secret."
 msgstr "**在身份提供方那边登记网关**，登记为使用授权码流程的机密客户端。把重定向 URI 设为 `<FRONTEND_URL>/auth/sso/<id>/callback`，其中 `<id>` 是你下面要给这个身份提供方起的短名。记下 client id 和 client secret。"
 
-msgid "**Store the client secret** in **Admin > Configuration** as a secret setting, for example `SSO_EXAMPLE_UNIV_CLIENT_SECRET`."
-msgstr "**保存 client secret**：在 **Admin > Configuration** 中把它存为一个密钥设置，例如 `SSO_EXAMPLE_UNIV_CLIENT_SECRET`。"
+msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, under **Admin → Settings → Models**, in the **Application** section:"
+msgstr "**描述这个身份提供方**：在 **Admin → Settings → Models** 的 **Application** 部分，填写 `SSO_PROVIDERS` 设置："
 
-msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, on the same tab:"
-msgstr "**描述这个身份提供方**：在同一个标签页的 `SSO_PROVIDERS` 设置中填写："
+msgid "`client_secret` names a secret setting. It never holds the secret itself."
+msgstr "`client_secret` 填的是一个密钥设置的名字，不是密钥本身。"
+
+msgid "**Store the client secret.** Saving the provider adds the setting it names, here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under **Admin → Settings → Access**, in the **Security** section. Enter the secret there."
+msgstr "**保存 client secret**。保存身份提供方之后，它引用的那个设置（这里是 `SSO_EXAMPLE_UNIV_CLIENT_SECRET`）会出现在 **Admin → Settings → Access** 的 **Security** 部分。在那里填入密钥。"
+
+msgid "**Restart the gateway.** The secret setting is marked **Restart required**: the gateway reads it when it starts."
+msgstr "**重启网关**。这个密钥设置标有 **Restart required**：网关只在启动时读取它。"
 
 msgid "**Check `FRONTEND_URL`.** It must be the address users open the console at. The redirect URI is built from it, and users must reach the console through that address for a sign-in to complete."
 msgstr "**检查 `FRONTEND_URL`**。它必须是用户打开控制台时使用的地址。重定向 URI 由它生成，用户也必须通过这个地址访问控制台，登录才能完成。"
 
-msgid "The change applies without a restart. The sign-in page now shows **Log in with SSO**. A user selects it, enters their work or school email, and is sent to the provider whose `domains` cover that email. The page does not list which organizations are connected."
-msgstr "修改后不需要重启即可生效。登录页会出现 **Log in with SSO**。用户点击后输入工作或学校邮箱，就会被送到 `domains` 覆盖该邮箱的身份提供方。登录页不会列出对接了哪些机构。"
+msgid "The sign-in page shows **Log in with SSO** as soon as the provider is saved. Until the secret is stored and the gateway has restarted, the entry reports that single sign-on is unavailable. A user selects it, enters their work or school email, and is sent to the provider whose `domains` cover that email. The page does not list which organizations are connected."
+msgstr "身份提供方一保存，登录页就会出现 **Log in with SSO**。在密钥填好、网关重启之前，这个入口会提示单点登录暂时不可用。用户点击后输入工作或学校邮箱，就会被送到 `domains` 覆盖该邮箱的身份提供方。登录页不会列出对接了哪些机构。"
 
-msgid "Saving the setting asks for the administrator's password, as other changes to who may sign in do."
-msgstr "保存这个设置时会要求输入管理员密码，和其他涉及谁可以登录的修改一样。"
+msgid "Later changes to `SSO_PROVIDERS` apply without a restart. A changed client secret needs one."
+msgstr "之后再修改 `SSO_PROVIDERS` 不需要重启。修改 client secret 需要重启。"
+
+msgid "Saving either setting asks for the administrator's password, as other changes to who may sign in do."
+msgstr "保存这两个设置时都会要求输入管理员密码，和其他涉及谁可以登录的修改一样。"
 
 msgid "Provider fields"
 msgstr "身份提供方的字段"
@@ -199,8 +208,8 @@ msgstr "拒绝登录"
 msgid "None, and `auto_create` is on"
 msgstr "没有，且 `auto_create` 打开"
 
-msgid "An account is created with `default_role`. With `require_approval` it waits in **Admin > Users** like any registration"
-msgstr "用 `default_role` 创建账号。打开 `require_approval` 时，它和普通注册一样在 **Admin > Users** 中等待审批"
+msgid "An account is created with `default_role`. With `require_approval` it waits in **Admin → Users** like any registration"
+msgstr "用 `default_role` 创建账号。打开 `require_approval` 时，它和普通注册一样在 **Admin → Users** 中等待审批"
 
 msgid "Exists and is active"
 msgstr "存在且处于活动状态"
@@ -244,11 +253,11 @@ msgstr "有些身份提供方从不发送 `email_verified`，Microsoft Entra ID 
 msgid "Linking and unlinking"
 msgstr "关联与解除关联"
 
-msgid "A user manages their own links under **Settings > Single sign-on**: they can connect an organization account, including one whose email differs from the account's, and disconnect one. Both ask the user to confirm, and the only way to sign in to an account cannot be disconnected."
-msgstr "用户在 **Settings > Single sign-on** 下管理自己的关联：可以关联一个机构账号（邮箱可以和当前账号不同），也可以解除关联。两种操作都要求用户确认身份，而且账号唯一的登录方式不能解除。"
+msgid "A user manages their own links under **Settings → Single sign-on**: they can connect an organization account, including one whose email differs from the account's, and disconnect one. Both ask the user to confirm, and the only way to sign in to an account cannot be disconnected."
+msgstr "用户在 **Settings → Single sign-on** 下管理自己的关联：可以关联一个机构账号（邮箱可以和当前账号不同），也可以解除关联。两种操作都要求用户确认身份，而且账号唯一的登录方式不能解除。"
 
-msgid "An administrator sees a user's links in the user's detail panel under **Admin > Users** and can unlink one. Unlinking removes the link only: it does not end the account's sessions or revoke its API keys. Administrators cannot create a link for a user."
-msgstr "管理员可以在 **Admin > Users** 的用户详情面板中看到用户的关联，并解除其中一个。解除关联只删除关联本身：不会结束账号的会话，也不会吊销它的 API key。管理员不能替用户建立关联。"
+msgid "An administrator sees a user's links in the user's detail panel under **Admin → Users** and can unlink one. Unlinking removes the link only: it does not end the account's sessions or revoke its API keys. Administrators cannot create a link for a user."
+msgstr "管理员可以在 **Admin → Users** 的用户详情面板中看到用户的关联，并解除其中一个。解除关联只删除关联本身：不会结束账号的会话，也不会吊销它的 API key。管理员不能替用户建立关联。"
 
 msgid "If a sign-in is refused because the account is already connected to a different identity from the same organization, the provider has recreated the member or given the address to someone else. Confirm which, then unlink the old identity."
 msgstr "如果登录被拒绝的原因是账号已经关联了同一机构的另一个身份，说明身份提供方重建了这个成员，或者把地址给了别人。先确认是哪种情况，再解除旧的关联。"
@@ -265,8 +274,8 @@ msgstr "管理员自己的确认始终要求输入密码。只通过身份提供
 msgid "When a member leaves the organization"
 msgstr "成员离开机构时"
 
-msgid "The gateway is not told when a provider disables an account. The member can no longer sign in through the provider, but sessions that are already open and API keys keep working. Suspend the account in **Admin > Users** to end both."
-msgstr "身份提供方停用某个账号时，网关不会得到通知。该成员无法再通过身份提供方登录，但已经打开的会话和 API key 仍然有效。在 **Admin > Users** 中停用该账号可以同时结束两者。"
+msgid "The gateway is not told when a provider disables an account. The member can no longer sign in through the provider, but sessions that are already open and API keys keep working. Suspend the account in **Admin → Users** to end both."
+msgstr "身份提供方停用某个账号时，网关不会得到通知。该成员无法再通过身份提供方登录，但已经打开的会话和 API key 仍然有效。在 **Admin → Users** 中停用该账号可以同时结束两者。"
 
 msgid "Stop offering a provider"
 msgstr "停止提供某个身份提供方"
@@ -289,8 +298,8 @@ msgstr "在网关没有占用的端口上启动 Keycloak："
 msgid "In the Keycloak admin console at `http://localhost:8081`, create a realm, a user with an email and a password, and an OpenID Connect client with client authentication on and the redirect URI `<FRONTEND_URL>/auth/sso/keycloak/callback`."
 msgstr "在 `http://localhost:8081` 的 Keycloak 管理控制台中，创建一个 realm、一个带邮箱和密码的用户，以及一个 OpenID Connect 客户端：打开客户端认证，重定向 URI 设为 `<FRONTEND_URL>/auth/sso/keycloak/callback`。"
 
-msgid "In the gateway, store the client's secret as a secret setting and add a provider whose `issuer` is `http://localhost:8081/realms/<realm>`, whose `id` is `keycloak` and whose `domains` include the domain of the user's email."
-msgstr "在网关中，把该客户端的 secret 存为密钥设置，并添加一个身份提供方：`issuer` 为 `http://localhost:8081/realms/<realm>`，`id` 为 `keycloak`，`domains` 包含该用户邮箱的域名。"
+msgid "In the gateway, add a provider whose `issuer` is `http://localhost:8081/realms/<realm>`, whose `id` is `keycloak` and whose `domains` include the domain of the user's email. Store the client's secret in the setting the provider names, then restart the gateway."
+msgstr "在网关中添加一个身份提供方：`issuer` 为 `http://localhost:8081/realms/<realm>`，`id` 为 `keycloak`，`domains` 包含该用户邮箱的域名。然后把该客户端的 secret 填进它引用的那个设置，并重启网关。"
 
 msgid "Open the console's sign-in page, select **Log in with SSO** and enter the user's email."
 msgstr "打开控制台的登录页，选择 **Log in with SSO**，输入该用户的邮箱。"
@@ -313,8 +322,8 @@ msgstr "常见原因"
 msgid "Single sign-on is unavailable"
 msgstr "SSO 登录暂时不可用"
 
-msgid "The provider cannot be reached, the client secret setting is empty, or `FRONTEND_URL` is not an absolute URL"
-msgstr "连不上身份提供方，client secret 设置为空，或者 `FRONTEND_URL` 不是绝对地址"
+msgid "The provider cannot be reached, the client secret setting is empty, the gateway has not restarted since the secret was stored, or `FRONTEND_URL` is not an absolute URL"
+msgstr "连不上身份提供方，client secret 设置为空，保存密钥之后网关还没有重启，或者 `FRONTEND_URL` 不是绝对地址"
 
 msgid "The sign-in took too long"
 msgstr "登录已超时"
@@ -337,8 +346,8 @@ msgstr "`auto_create` 关闭，或者该地址在 `ADMIN_EMAILS` 中"
 msgid "Pending approval"
 msgstr "等待审批"
 
-msgid "The account was created and waits in **Admin > Users**"
-msgstr "账号已创建，正在 **Admin > Users** 中等待审批"
+msgid "The account was created and waits in **Admin → Users**"
+msgstr "账号已创建，正在 **Admin → Users** 中等待审批"
 
 msgid "Already connected to a different identity"
 msgstr "已经关联了另一个身份"
