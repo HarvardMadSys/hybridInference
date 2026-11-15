@@ -332,3 +332,52 @@ async def test_backfill_gives_every_account_a_default_project_and_adopts_old_one
     # rolled-back release leaves the account alone.
     assert dict(key) == {"project_id": "proj_d_u-bare", "org_id": "org_p_u-bare"}
     assert member == "owner"
+
+
+async def test_rows_whose_account_is_gone_are_left_as_they_are(scratch):
+    """Shapes found in a long-running database: nothing owns them, nothing touches them."""
+    from serving.storage.postgres_operational import reconcile_key_quota_copies
+
+    await mig.upgrade(scratch, PREVIOUS)
+    async with mig.connected(scratch) as conn:
+        # An organization and its Default project whose account was deleted.
+        await conn.execute(
+            "INSERT INTO organizations (id, name, kind) VALUES ('org_p_gone', 'g', 'personal')"
+        )
+        await conn.execute(
+            "INSERT INTO projects (id, org_id, name, is_default) "
+            "VALUES ('proj_d_gone', 'org_p_gone', 'Default', TRUE)"
+        )
+        # Keys from before accounts had rows: no user, project or organization.
+        await conn.execute(
+            "INSERT INTO api_keys (key_hash, key_prefix, user_id, account_id, status, "
+            "quota_daily_cost_usd) VALUES "
+            "('h-stray', 'hyi-stray', 'nobody', 'nobody', 'active', 4), "
+            "('h-stray-revoked', 'hyi-strayr', 'nobody', 'nobody', 'revoked', 4)"
+        )
+        await _personal_account(conn, "u-here")
+        await _key(conn, "h-here", "u-here", daily=7)
+
+    await mig.upgrade(scratch)
+
+    async with mig.connected(scratch) as conn:
+        assert await backfill_projects(conn) == 0
+        assert await reconcile_key_quota_copies(conn) == 0
+        quotas = await _quotas(conn)
+        owner = await conn.fetchval("SELECT user_id FROM projects WHERE id = 'proj_d_gone'")
+        strays = [
+            tuple(row)
+            for row in await conn.fetch(
+                "SELECT key_hash, status, quota_daily_cost_usd, project_id, org_id "
+                "FROM api_keys WHERE user_id = 'nobody' ORDER BY key_hash"
+            )
+        ]
+        budgets = await _org_budgets(conn)
+
+    assert quotas == {"u-here": (7, None)}
+    assert owner is None
+    assert strays == [
+        ("h-stray", "active", 4, None, None),
+        ("h-stray-revoked", "revoked", 4, None, None),
+    ]
+    assert budgets["org_p_gone"] == (None, None)
