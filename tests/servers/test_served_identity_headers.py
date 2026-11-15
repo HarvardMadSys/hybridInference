@@ -11,6 +11,7 @@ headers.
 
 from __future__ import annotations
 
+import contextlib
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -1056,3 +1057,179 @@ async def test_streaming_failure_after_commit_keeps_committed_headers(chat_app):
     assert r.headers["x-fi-served-endpoint"] == f"{CHAT_MODEL}:zai-api"
     assert "partial" in r.text
     assert '"error"' in r.text
+
+
+@pytest.mark.dbtest
+@pytest.mark.asyncio
+async def test_postgres_same_target_edit_preserves_adapter_specific_configuration(
+    chat_app, auth_backend, test_user, monkeypatch
+):
+    """A same-target admin edit must not wipe the OpenRouter pin or profile.
+
+    The edit path keys the reset of adapter-specific values on whether the
+    target moved, not on whether the current adapter records a
+    ``registered_kind``. A config route whose adapter carries no recorded kind
+    still belongs to the same upstream provider, so pinning it through a
+    same-target URL change must preserve the pin and the profile; only a
+    genuine target change clears them.
+    """
+    from decimal import Decimal
+
+    from serving.config.settings import get_settings
+    from serving.servers.auth import generate_api_key, hash_api_key
+    from serving.servers.routers import admin as admin_router
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    get_settings.cache_clear()
+    store, log_store, db_logger, _backend = auth_backend
+    chat_app.state.services.operational_store = store
+    chat_app.state.services.log_store = log_store
+    chat_app.state.services.db_logger = db_logger
+    chat_app.include_router(admin_router.router)
+    client = AsyncClient(transport=ASGITransport(app=chat_app), base_url="http://test")
+
+    plaintext = generate_api_key()
+    await store.create_key(
+        key_hash=hash_api_key(plaintext),
+        key_prefix=plaintext[:12],
+        user_id=test_user["id"],
+        account_id=test_user["id"],
+        quota_daily_cost_usd=Decimal("100.00"),
+        metadata={"diagnostic_entitlements": ["served_identity"]},
+    )
+    opt_in = {"x-fi-served-identity": "include"}
+    request = {"model": CHAT_MODEL, "messages": [{"role": "user", "content": "Hi"}]}
+
+    # Register a second config route with a pin, the way models.yaml would:
+    # provider zai's own kind, a pinned OpenRouter provider recorded in the
+    # adapter's config, and no ``registered_kind`` (a DummyAdapter never
+    # builds through the registry's _make_adapter, which is the state the
+    # missing-kind branch the reviewer found reaches).
+    from serving.adapters.base import ModelConfig as _ModelConfig
+
+    # A generic kind (openai_compat) carrying an OpenRouter pin: the exact
+    # state the reviewer found. A generic kind has no bracket syntax for the
+    # registry to re-derive the pin from, so the pin survives an edit only
+    # when the edit path keeps cfg's value.
+    pinned_cfg = _ModelConfig(
+        id=CHAT_MODEL,
+        name=CHAT_MODEL,
+        provider="openai_compat",
+        base_url="https://openrouter.example.test/api/v1",
+        chat_path="/chat/completions",
+        endpoint_id=f"{CHAT_MODEL}:openrouter-pinned",
+        endpoint_identity_publishable=False,
+        openrouter_pinned_provider="parasail",
+        provider_profile="deepseek",
+        context_length=8192,
+        max_output_length=4096,
+        supported_params=["temperature", "top_p", "max_tokens", "stream", "tools"],
+    )
+    chat_app.state.services.router.register_route(CHAT_MODEL, [(DummyAdapter(pinned_cfg), 1.0)])
+    pinned_route_id = f"{CHAT_MODEL}:openrouter-pinned"
+
+    adapter_before = None
+    for _adapter, _weight in chat_app.state.services.router.routes[CHAT_MODEL].adapters:
+        if _adapter.config.endpoint_id == pinned_route_id:
+            adapter_before = _adapter
+            break
+    assert adapter_before is not None, "the pinned route was not registered"
+    assert adapter_before.config.openrouter_pinned_provider == "parasail"
+    assert adapter_before.config.provider_profile == "deepseek"
+    assert getattr(adapter_before, "registered_kind", None) is None
+
+    # Stub the upstream verification and DNS so the edit does not reach the
+    # real provider or the real resolver.
+    from serving.servers.routers.admin import provider_routes
+
+    async def skip_upstream_verification(*_args):
+        return None
+
+    async def test_provider_key(*_args):
+        return ["test-provider-key"]
+
+    monkeypatch.setattr(provider_routes, "_verify_provider_route", skip_upstream_verification)
+    monkeypatch.setattr(
+        provider_routes,
+        "_active_env_keys_for_provider",
+        test_provider_key,
+    )
+    monkeypatch.setattr(
+        provider_routes.socket,
+        "getaddrinfo",
+        lambda *_args, **_kwargs: [(2, 1, 6, "", ("8.8.8.8", 443))],
+    )
+
+    try:
+        # Same-target edit: keep the same upstream provider, change only the
+        # base URL. Because the current adapter has no ``registered_kind``, the
+        # old code took the reset branch and wiped both adapter-specific values.
+        edit = await client.put(
+            f"/admin/routing/provider-routes/{CHAT_MODEL}/{pinned_route_id}",
+            json={
+                "upstream_provider": "parasail",
+                "base_url": "https://openrouter.example2.test/api/v1",
+                "provider_model_id": "z-ai/glm-4.7",
+            },
+            headers={"authorization": "Bearer test-admin-token"},
+        )
+        assert edit.status_code == 200, edit.text
+        print("EDIT RESPONSE:", edit.text[:400])
+
+        # The edited adapter is the one on the new URL (the endpoint id moves
+        # with the host). The pin must be on it.
+        edited_route_id = edit.json()["route_id"]
+        adapter_after = None
+        for _adapter, _weight in chat_app.state.services.router.routes[CHAT_MODEL].adapters:
+            if _adapter.config.route_metadata.get("route_id") == edited_route_id:
+                adapter_after = _adapter
+                break
+        assert adapter_after is not None, (
+            f"the route disappeared after the edit; adapters: "
+            f"{[a.config.endpoint_id for a, _w in chat_app.state.services.router.routes[CHAT_MODEL].adapters]}"
+        )
+        assert adapter_after.config.base_url == "https://openrouter.example2.test/api/v1", (
+            "the same-target edit did not apply the new base URL"
+        )
+        assert adapter_after.config.openrouter_pinned_provider == "parasail", (
+            "a same-target edit wiped the OpenRouter pin"
+        )
+        # The profile the route carried must survive a same-target edit too:
+        # the registry only defaults it when cfg does not carry one.
+        assert adapter_after.config.provider_profile == "deepseek", (
+            "a same-target edit wiped the provider profile"
+        )
+
+        # The pin survives into the real inference response. The edit rebuilt
+        # the route as a real OpenAICompatAdapter, so stub its chat call.
+        from serving.adapters import OpenAICompatAdapter
+
+        async def fake_chat_completion(self, messages, **params):
+            response = self.format_response(content="Edited response", model=self.config.id)
+            response["_routing"] = {
+                "provider": self.config.provider,
+                "endpoint_id": self.config.endpoint_id,
+                "base_url": self.config.base_url,
+            }
+            return response
+
+        monkeypatch.setattr(OpenAICompatAdapter, "chat_completion", fake_chat_completion)
+        chat = await client.post(
+            "/v1/chat/completions",
+            json=request,
+            headers={**opt_in, "authorization": f"Bearer {plaintext}"},
+        )
+        assert chat.status_code == 200, chat.text
+    finally:
+        # The route this test registers would break the other PostgreSQL
+        # test's single-route assertion on the shared database.
+        with contextlib.suppress(Exception):
+            await store.delete_provider_route_config(CHAT_MODEL, pinned_route_id)
+        # The other test's own edit (the private-looking hostname it PUTs) also
+        # persists; a run where this test ran first leaves its zai-api row
+        # edited, so restore it by clearing the whole table.
+        with contextlib.suppress(Exception):
+            pool = getattr(store, "_pool", None)
+            if pool is not None:
+                await pool.execute("DELETE FROM provider_route_configs")
+        await client.aclose()

@@ -664,23 +664,27 @@ def _build_adapter(kind: str, cfg: dict[str, Any]):
     if factory is not None:
         return factory(dict(cfg))
 
-    if kind == "openrouter":
-        cfg = {**cfg, "provider_profile": "openrouter"}
+    # The profile is a kind default: it applies only when the config the
+    # caller built does not already carry one, so a same-target edit (which
+    # copies the route's own adapter-specific values) preserves them.
+    if "provider_profile" not in cfg or cfg.get("provider_profile") is None:
+        if kind == "openrouter":
+            cfg = {**cfg, "provider_profile": "openrouter"}
 
-    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
-    if kind == "deepseek":
-        cfg = {**cfg, "provider_profile": "deepseek"}
-    # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
-    elif kind == "zai":
-        cfg = {
-            **cfg,
-            "provider_profile": "zai",
-            "chat_path": "/chat/completions",
-        }
-    elif kind == "kimi":
-        cfg = {**cfg, "provider_profile": "kimi"}
-    elif kind == "minimax":
-        cfg = {**cfg, "provider_profile": "minimax"}
+        # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
+        if kind == "deepseek":
+            cfg = {**cfg, "provider_profile": "deepseek"}
+        # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
+        elif kind == "zai":
+            cfg = {
+                **cfg,
+                "provider_profile": "zai",
+                "chat_path": "/chat/completions",
+            }
+        elif kind == "kimi":
+            cfg = {**cfg, "provider_profile": "kimi"}
+        elif kind == "minimax":
+            cfg = {**cfg, "provider_profile": "minimax"}
     elif kind == "vllm":
         cfg = {**cfg, "vllm_structured_outputs": True}
 

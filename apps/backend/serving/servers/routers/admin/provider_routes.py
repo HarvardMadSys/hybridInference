@@ -3363,9 +3363,14 @@ async def _prepare_route_update(
 
     # The same provider keeps its registered protocol even when moving to
     # a newly validated URL. Endpoint-specific capabilities are handled above.
+    # Target-change detection and adapter-kind resolution are separate
+    # decisions: a same-target edit preserves the adapter-specific values
+    # (``openrouter_pinned_provider``, ``provider_profile``) whether or not the
+    # current adapter recorded a ``registered_kind``. A missing kind means the
+    # adapter never stored one, not that the target moved.
     registered_kind = getattr(current_adapter, "registered_kind", None)
-    if same_target and registered_kind:
-        adapter_kind = registered_kind
+    if same_target:
+        adapter_kind = registered_kind or target.kind
     else:
         adapter_kind = target.kind
         cfg["provider"] = _model_config_provider_for_target(target)
