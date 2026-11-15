@@ -182,6 +182,33 @@ def _charge(ledger, reservation, cost: float, *, project: str | None = None, key
         ledger.record(reservation.user_id, cost, api_key_id=key)
 
 
+class RefusesCosts:
+    """The real backend, whose counters refuse any batch that carries a cost (as an overflow does)."""
+
+    def __init__(self, backend) -> None:
+        self._backend = backend
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+    async def settle(self, batch, **kwargs):
+        if batch.all_costs():
+            raise asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+        return await self._backend.settle(batch, **kwargs)
+
+
+async def end_quarantined(ledger, reservation, cost: float, *, project=None, key=None) -> None:
+    """End *reservation* with *cost* the counters refuse: quarantined, its cost in no counter."""
+    _charge(ledger, reservation, cost, project=project, key=key)
+    real, ledger._backend = ledger._backend, RefusesCosts(ledger._backend)
+    try:
+        reservation.release()
+        assert await ledger.flush(5)
+    finally:
+        ledger._backend = real
+    assert reservation.state == "quarantined"
+
+
 # -- admission contention -----------------------------------------------------
 
 
@@ -474,11 +501,11 @@ async def test_an_admission_identity_cannot_be_reused_once_retired_or_for_anothe
     # Retired: the same identity can never admit (and dispatch) again.
     assert (await admit(base)).result == "retired"
 
-    # An unresolved liability keeps its row and its receipt: retired as well.
+    # A quarantined reservation keeps its row: its identity is retired as well.
     held = dataclasses.replace(base, reservation_id="sr_ident_2")
     assert (await admit(held)).result == "admitted"
-    unresolved = Member(held.reservation_id, user, "unresolved", liability_day=utc_day())
-    await backend.settle(SettlementBatch.make("inst-a", [unresolved], []))
+    quarantined = Member(held.reservation_id, user, "settle")
+    assert await backend.quarantine(quarantined, "inst-a", day=utc_day(), note="refused")
     assert (await admit(held)).result == "retired"
 
 
@@ -620,25 +647,41 @@ async def test_a_refused_entry_is_split_out_and_kept_counted(db):
     assert not db.a.fully_settled()
 
 
-async def test_an_unknown_charge_stays_an_unresolved_liability_counted_on_its_day(db):
-    user = PREFIX + "unknown"
-    reservation, _ = await db.a.admit(check(db.a, user), 0.30)
-    _charge(db.a, reservation, 0.10)
-    reservation.release(charge_unknown=True)
-    assert await db.a.flush(5)
+async def test_a_request_that_ended_holds_nothing_whatever_it_was_charged(db):
+    """What a request is charged is what its billing point recorded; the rest is given back.
 
-    rows = await _rows(db.pool, user)
-    assert [(r["state"], r["liability_day"], r["amount_usd"]) for r in rows] == [
-        ("unresolved", utc_day(), Decimal("0.300000"))
-    ]
-    assert await _account(db.pool, user) == Decimal("0.1")  # the known part
-    assert db.a.holdings()["unresolved"] == 1
-    assert not db.a.fully_settled()
+    Four requests of $0.30 against $1.00 that end with nothing charged (the
+    upstream failed them, say) leave nothing held: the fifth is admitted in
+    full by either process, and the gate of the process that served them
+    passes it as the other's does. Kept as liabilities they would have used up
+    the quota with nothing spent.
+    """
+    user = PREFIX + "ended"
+    for _ in range(4):
+        reservation, refusal = await db.a.admit(check(db.a, user), 0.30)
+        assert refusal is None
+        reservation.release()
+        assert await db.a.flush(5)
+    assert await _rows(db.pool, user) == []
+    assert await _account(db.pool, user) == 0
+    assert db.a.fully_settled()
+    for ledger in (db.a, db.b):
+        assert ledger.refusal(check(ledger, user)) is None
+        admitted, refusal = await ledger.admit(check(ledger, user), 0.30)
+        assert refusal is None and admitted.amount == Decimal("0.300000")
+        admitted.release()
+        assert await ledger.flush(5)
+
+    # One that was charged for part of what it reserved: exactly that is added.
+    partly, _ = await db.a.admit(check(db.a, user), 0.30)
+    _charge(db.a, partly, 0.10)
+    partly.release()
+    assert await db.a.flush(5)
+    assert await _account(db.pool, user) == Decimal("0.1")
+    assert await _rows(db.pool, user) == []
     snapshot = await _snapshot(db.b, user)
-    assert (snapshot.account_day, snapshot.reserved_account_day) == (
-        Decimal("0.1"),
-        Decimal("0.3"),
-    )
+    assert (snapshot.account_day, snapshot.reserved_account_day) == (Decimal("0.1"), Decimal(0))
+    assert sorted((await _members(db.pool)).values()) == [*["released"] * 6, "settled"]
 
 
 async def test_a_crashed_process_leaves_its_reservations_counted_and_listed(db):
@@ -656,6 +699,13 @@ async def test_a_crashed_process_leaves_its_reservations_counted_and_listed(db):
     states = {(r["instance_id"], r["state"]): r["n"] for r in status["open_reservations"]}
     assert states == {("inst-crashed", "active"): 1, ("inst-b", "active"): 1}
     assert status["mode"] == "local" and status["participation_proven"] is False
+    # Neither test ledger registers: both owners are "not heard from", so both
+    # reservations are what an operator is pointed at ($0.30 + $0.70).
+    assert {r["owner"] for r in status["open_reservations"]} == {"not registered"}
+    assert status["stranded"]["reservations"] == 2
+    assert Decimal(str(status["stranded"]["amount_usd"])) == Decimal("1.0")
+    assert status["stranded"]["instances"] == ["inst-b", "inst-crashed"]
+    assert status["stranded"]["oldest_age_seconds"] >= 0
     listing = await run(SimpleNamespace(command="list", limit=10), db.b._backend)
     assert json.loads(listing[0])["owner"] == "not registered"
     assert user not in "".join(listing)  # no account names in the listing
@@ -801,7 +851,6 @@ async def test_two_os_processes_share_one_accounts_headroom(db):
 async def test_the_production_store_wrapper_carries_admission_and_charge_to_one_ledger(
     db, monkeypatch
 ):
-    from serving.servers.concurrency import end_reservation
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
     from serving.servers.routers.routing_info import Pricing, RoutingInfo
     from serving.spend_ledger import ledger_for
@@ -821,7 +870,7 @@ async def test_the_production_store_wrapper_carries_admission_and_charge_to_one_
     with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
         tracker.charge(user_id=user, routing=routing, prompt_tokens=1000, completion_tokens=1000)
     assert reservation.cost() == Decimal("0.003")
-    end_reservation(reservation, None)
+    reservation.release()
     assert await ledger.flush(5)
     assert await _account(db.pool, user) == Decimal("0.003")
     assert list((await _members(db.pool)).values()) == ["settled"]

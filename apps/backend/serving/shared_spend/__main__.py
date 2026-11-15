@@ -1,17 +1,22 @@
 """Inspect the shared spend accounting: ``python -m serving.shared_spend status | list``.
 
 Read-only. ``status`` shows the stored mode, which registered processes report
-which mode, the reservations still open (by instance and state: active,
-unresolved, quarantined) and how many counter writes were made outside the
-shared settlement while the mode was ``shared``. ``list`` shows the open
-reservations themselves, oldest first, without account names.
+which mode, the reservations still open (by instance and state: active or
+quarantined, with how the registry knows their owner) and how many counter
+writes were made outside the shared settlement while the mode was ``shared``.
+Its ``stranded`` entry adds up the active reservations whose owner the registry
+no longer hears from (stopped, stale, or not registered): a process that was
+killed leaves these, and they keep counting against their account's day and
+month until someone retires them. The registry cannot prove a process gone, so
+this is what to look at, not a verdict. ``list`` shows the open reservations
+themselves, oldest first, without account names.
 
 There is deliberately no command that changes the mode or retires a
 reservation. Activating or deactivating the shared mode is a controlled,
 offline transition that still needs its own reviewed procedure (see the
 implementation plan): processes cache the mode at startup, so changing it
 while they run would mix the two accountings. A reservation is retired only by
-its owner's settlement; an unresolved or quarantined one stays counted until a
+its owner's settlement; a stranded or quarantined one stays counted until a
 separately reviewed reconciliation, with evidence of its actual charge,
 exists.
 
@@ -59,32 +64,63 @@ def participation(instances: list[dict[str, Any]], stored_mode: str) -> dict[str
     }
 
 
+#: How the registry knows an owner that may no longer settle what it holds.
+NOT_HEARD_FROM = frozenset({"not registered", "stale", "stopped"})
+
+
+def owner_state(owner: dict[str, Any] | None) -> str:
+    """How the registry knows a reservation's owner: its lifecycle, ``stale`` or ``not registered``."""
+    if owner is None:
+        return "not registered"
+    return "stale" if owner["stale"] else str(owner["lifecycle"])
+
+
+def stranded(reservations: list[dict[str, Any]]) -> dict[str, Any]:
+    """The active reservations whose owner the registry no longer hears from, added up.
+
+    Nothing settles these until their owner does, and a process that was
+    killed never will: they count against their account's current day and
+    month for as long as they stay. Not hearing from an owner does not prove it
+    stopped (it may be cut off from the database), so this is what an operator
+    looks at first, not a verdict.
+    """
+    rows = [
+        row for row in reservations if row["state"] == "active" and row["owner"] in NOT_HEARD_FROM
+    ]
+    return {
+        "reservations": sum(int(row["n"]) for row in rows),
+        "amount_usd": sum((row["amount_usd"] or 0 for row in rows), 0),
+        "oldest_age_seconds": max((row["oldest_age_seconds"] or 0 for row in rows), default=None),
+        "instances": sorted({row["instance_id"] for row in rows}),
+    }
+
+
 async def run(args: argparse.Namespace, backend: SharedSpendStore) -> list[str]:
     """Run one parsed command; return the lines to print."""
     from serving.config.instances import fetch_instances
 
     async with backend.pool.acquire() as conn:
         instances = await fetch_instances(conn)
+    by_id = {i["instance_id"]: i for i in instances}
     if args.command == "status":
         stored = await backend.read_mode()
         summary = await backend.summary()
+        reservations = [
+            {**row, "owner": owner_state(by_id.get(row["instance_id"]))}
+            for row in summary["reservations"]
+        ]
         body = {
             "mode": stored,
             **participation(instances, stored),
-            "open_reservations": summary["reservations"],
+            "open_reservations": reservations,
+            "stranded": stranded(reservations),
             "unidentified_writes": summary["unidentified_writes"],
             "last_unidentified_write": summary["last_unidentified_write"],
         }
         return [json.dumps(body, default=str, indent=2)]
-    by_id = {i["instance_id"]: i for i in instances}
     lines = []
     for row in await backend.open_reservations(limit=args.limit):
-        owner = by_id.get(row["instance_id"])
-        row["owner"] = (
-            "not registered"
-            if owner is None
-            else ("stale" if owner["stale"] else owner["lifecycle"])
-        )
+        row["owner"] = owner_state(by_id.get(row["instance_id"]))
         lines.append(json.dumps(row, default=str))
     return lines or ["No open reservations."]
 

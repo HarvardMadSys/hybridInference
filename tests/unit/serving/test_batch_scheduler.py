@@ -1958,9 +1958,11 @@ async def test_a_shared_reservation_rides_into_the_attempt_and_is_settled(worker
     assert backend.rows == {}
 
 
-async def test_an_attempt_whose_charge_is_unknown_keeps_an_unresolved_liability(
+async def test_an_attempt_whose_charge_is_unknown_gives_its_reservation_back(
     worker, dispatch, auth
 ):
+    # The batch records the attempt's cost as unknown itself (``cost_status``);
+    # the owner's budget is not held for it, as in the per-process mode.
     ledger, backend = _shared_ledger()
     auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
     dispatch.results["m1"] = dataclasses.replace(
@@ -1979,9 +1981,8 @@ async def test_an_attempt_whose_charge_is_unknown_keeps_an_unresolved_liability(
     await until(lambda: bool(backend.batches))
     assert await ledger.flush(5)
     kinds = [m.kind for b in backend.batches for m in b.members]
-    assert kinds[0] == "unresolved"
-    assert ledger.holdings()["unresolved"] >= 1
-    assert not ledger.fully_settled()
+    assert kinds[0] == "settle"
+    assert backend.rows == {} and backend.counters == {}
 
 
 async def test_a_shared_admission_that_cannot_be_made_hands_the_item_back(worker, dispatch, auth):

@@ -7,12 +7,14 @@ import time
 from decimal import Decimal
 from unittest.mock import MagicMock
 
+import asyncpg
 import pytest
 
-from serving.shared_spend import mode as spend_mode
+from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
 from serving.shared_spend.ledger import SharedSpendLedger
 from serving.shared_spend.store import CostLine, Member, SettlementBatch, usd
 from serving.spend_ledger import SpendCheck, SpendLedger, ledger_for, utc_day
+from serving.utils import context as req_ctx
 from tests.fixtures.shared_spend import FakeSharedBackend
 
 pytestmark = pytest.mark.asyncio
@@ -155,6 +157,101 @@ async def test_a_cost_attributed_elsewhere_is_not_attached_to_the_reservation():
         ledger.record("someone-else", 0.10)
     assert reservation.charges == []
     assert len(ledger._increments) == 2
+
+
+async def test_a_request_that_ended_holds_only_what_its_billing_point_recorded():
+    # However it ended: released with no cost, the whole estimate comes back;
+    # with a cost, exactly that is added. Four requests of $0.30 against $1.00
+    # that were charged nothing leave the fifth its full $0.30.
+    ledger, backend = _ledger()
+    for _ in range(4):
+        reservation, refusal = await ledger.admit(_check(ledger), 0.30)
+        assert refusal is None
+        reservation.release()
+        reservation.release()  # idempotent
+        assert await ledger.flush(5)
+    assert backend.rows == {} and backend.counters == {}
+    assert ledger.fully_settled()
+    assert ledger.refusal(_check(ledger)) is None
+    fifth, refusal = await ledger.admit(_check(ledger), 0.30)
+    assert refusal is None and fifth.amount == Decimal("0.300000")
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: fifth}):
+        ledger.record(USER, 0.12)
+    fifth.release()
+    assert await ledger.flush(5)
+    assert backend.rows == {} and backend.counters == {USER: Decimal("0.12")}
+
+
+async def test_a_liability_counts_against_the_day_it_ended_on_and_no_later_one(monkeypatch):
+    # The gate's early check adds what this process holds to what it read. A
+    # reservation the counters refused (quarantined) is held on the day it
+    # ended, as its row is in the database: counted against a later day, this
+    # process's gate alone would go on refusing a caller every other gate, and
+    # the admission itself, lets through.
+    day = {"today": "2031-03-15"}
+    monkeypatch.setattr("serving.spend_ledger.utc_day", lambda now=None: day["today"])
+    ledger, backend = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.50)
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    reservation.release()
+    assert await ledger.flush(5)
+    backend.fail_settle = None
+    assert (reservation.state, reservation.ended_day) == ("quarantined", "2031-03-15")
+
+    def gate() -> tuple[float, float]:
+        extra = ledger._local_extra(USER, None, None, reserved=True)
+        return (pytest.approx(extra[0]), pytest.approx(extra[1]))
+
+    assert gate() == (0.5, 0.5)  # its day: the larger of its estimate and its cost
+    assert ledger.refusal(_check(ledger, quota=0.5)) is not None
+    day["today"] = "2031-03-16"
+    assert gate() == (0.0, 0.5)  # the next day: its month only
+    assert ledger.refusal(_check(ledger, quota=0.5)) is None
+    day["today"] = "2031-04-01"
+    assert gate() == (0.0, 0.0)  # the next month: nothing
+    # Set apart from what every check reads, never from what is reported.
+    assert ledger._liabilities == {} and len(ledger._past_liabilities) == 1
+    assert ledger.holdings()["quarantined"] == 1
+    assert ledger.unwritten() == (pytest.approx(0.5), 1)
+    assert not ledger.fully_settled()
+
+
+async def test_a_defect_in_the_writer_is_retried_after_a_back_off_not_at_once_and_not_never(
+    monkeypatch,
+):
+    # Not a failed write (those are answered, and the batch sent again):
+    # something raising in the writer's own bookkeeping. Tried again at once it
+    # would spin for as long as the defect lasts; never tried again, what is
+    # queued would wait for the next request to wake the writer.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.05)
+    ledger, backend = _ledger()
+    next_batch = ledger._next_batch
+    attempts: list[float] = []
+    defect = {"present": True}
+    loop = asyncio.get_running_loop()
+
+    def defective():
+        attempts.append(loop.time())
+        if defect["present"]:
+            raise RuntimeError("a defect before anything was sent")
+        return next_batch()
+
+    ledger._next_batch = defective
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    reservation.release()
+    await asyncio.sleep(0.2)
+    # At 0, 0.05 and 0.15 s: a few attempts, backing off -- not thousands.
+    assert 2 <= len(attempts) <= 5
+    assert len(backend.rows) == 1  # nothing was written, nothing was lost
+
+    defect["present"] = False
+    deadline = loop.time() + 5
+    while backend.rows and loop.time() < deadline:
+        await asyncio.sleep(0.01)
+    assert backend.rows == {}
+    assert ledger.fully_settled()
 
 
 def test_a_batch_names_each_reservation_once_with_its_own_costs():

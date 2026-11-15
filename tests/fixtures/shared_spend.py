@@ -2,7 +2,7 @@
 
 For unit and API tests of the shared ledger's own logic and of its call sites.
 It keeps the protocol's outcomes (admitted / refused, settled / released /
-unresolved / missing) but none of its concurrency: what the real statements
+missing) but none of its concurrency: what the real statements
 guarantee is tested against PostgreSQL in
 ``tests/integration/storage/test_shared_spend_postgres.py``.
 """
@@ -86,10 +86,7 @@ class FakeSharedBackend:
             if self.rows.pop(member.reservation_id, None) is None:
                 result.add("missing", member.reservation_id)
                 continue
-            if member.kind == "unresolved":
-                result.add("unresolved", member.reservation_id)
-            else:
-                result.add("settled" if member.costs else "released", member.reservation_id)
+            result.add("settled" if member.costs else "released", member.reservation_id)
             costs.extend(member.costs)
         for line in costs:
             self.counters[line.user_id] = self.counters.get(line.user_id, Decimal(0)) + (

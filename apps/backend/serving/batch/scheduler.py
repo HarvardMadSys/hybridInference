@@ -1107,7 +1107,6 @@ class BatchScheduler:
             await self._defer_for_slot(entry)
             return
         reservation = None
-        result = None
         try:
             # Admitted against the owner's quotas and the key's budgets in one
             # step with the reservation of its estimated cost, counting the
@@ -1167,14 +1166,10 @@ class BatchScheduler:
             )
         finally:
             # The item's real cost, if any, is recorded by now. An attempt
-            # that was dispatched and whose charge its billing point could not
-            # tell (or that this worker abandoned mid-dispatch) keeps its
-            # reservation as an unresolved liability in the shared mode.
+            # whose charge could not be told is recorded as such by the batch
+            # itself (``cost_status``); its reservation is given back either way.
             if reservation is not None:
-                reservation.release(
-                    charge_unknown=entry.dispatched
-                    and (result is None or result.cost_status == "unknown")
-                )
+                reservation.release()
             give_back()
         await self._settle(entry, result, attempts, cfg)
 

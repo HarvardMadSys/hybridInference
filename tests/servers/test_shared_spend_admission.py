@@ -4,8 +4,11 @@ The same app as ``test_spend_reservation.py``: the gate, then
 ``enforce_user_concurrency``. In the shared mode the reservation is made through
 the shared ledger, published to the request, and the costs the handler records
 are settled with it; the concurrency slot is given back when the request ends,
-while the money waits for its settlement. A database that cannot admit answers
-the request path's 503; requests already admitted keep running.
+while the money waits for its settlement. A request is charged what its
+billing point recorded and nothing else, however it ended: one the upstream
+failed, or that was cancelled, gives its whole reservation back. A database
+that cannot admit answers the request path's 503; requests already admitted
+keep running.
 """
 
 from __future__ import annotations
@@ -203,50 +206,70 @@ async def test_the_shared_admission_applies_the_same_partial_headroom_policy():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("path", "status", "kind", "unresolved"),
+    ("path", "status"),
     [
-        # Refused before any upstream call: nothing can have been charged.
-        ("/reject", 400, "settle", 0),
+        # Refused before any upstream call.
+        ("/reject", 400),
         # Priced, and free: a known zero.
-        ("/free", 200, "settle", 0),
-        # Sent, and the billing point could not price it.
-        ("/unpriced", 200, "unresolved", 1),
+        ("/free", 200),
+        # Sent, and the billing point could not price it: it records nothing,
+        # as in the per-process mode.
+        ("/unpriced", 200),
         # Sent, ended normally, and nothing billed it.
-        ("/sent-unbilled", 200, "unresolved", 1),
-        # Sent, and the upstream answered with an error the policy does not bill.
-        ("/upstream/400", 400, "settle", 0),
-        ("/upstream/429", 429, "settle", 0),
-        # Sent, and the answer was lost or broken: the upstream may have worked.
-        ("/upstream/502", 502, "unresolved", 1),
-        ("/upstream/504", 504, "unresolved", 1),
+        ("/sent-unbilled", 200),
+        # Sent, and the upstream answered with an error, whichever it was.
+        ("/upstream/400", 400),
+        ("/upstream/429", 429),
+        ("/upstream/500", 500),
+        ("/upstream/502", 502),
+        ("/upstream/503", 503),
+        ("/upstream/504", 504),
     ],
 )
-async def test_an_unknown_charge_is_kept_while_known_ones_are_settled(
-    path, status, kind, unresolved
-):
+async def test_a_request_nothing_was_charged_for_gives_its_whole_reservation_back(path, status):
     app, store, backend, _ = _shared_app()
     async with _client(app) as client:
         response = await client.post(path)
     assert response.status_code == status
-    assert await _kinds(store, backend) == [kind]
-    holdings = ledger_for(store).holdings()
-    assert holdings["unresolved"] == unresolved
-    assert ledger_for(store).fully_settled() is (unresolved == 0)
-    # Never an estimate charged: no cost was recorded, none is added.
+    assert await _kinds(store, backend) == ["settle"]
+    # Nothing is held afterwards, here or in the database, and an estimate is
+    # never charged: no cost was recorded, none is added.
+    assert backend.rows == {}
+    assert ledger_for(store).fully_settled()
     assert backend.counters.get(USER, Decimal(0)) == 0
 
 
 @pytest.mark.asyncio
-async def test_a_request_cancelled_after_it_was_sent_and_never_billed_stays_unresolved():
+async def test_requests_the_upstream_fails_do_not_use_up_the_quota():
+    # Room for three $0.01 estimates. Ten requests the upstream fails, one after
+    # another, are each admitted (they answer the upstream's 502, never the
+    # quota's 429), and so is the next request: a failure its billing point
+    # charged nothing for holds nothing once it has ended.
+    app, store, backend, _ = _shared_app(quota_usd=0.035)
+    async with _client(app) as client:
+        for _ in range(10):
+            failed = await client.post("/upstream/502")
+            assert failed.status_code == 502
+            assert await ledger_for(store).flush(5)
+        assert (await client.post("/free")).status_code == 200
+    assert await ledger_for(store).flush(5)
+    assert backend.rows == {}
+    assert backend.counters.get(USER, Decimal(0)) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_request_cancelled_after_it_was_sent_and_never_billed_is_given_back():
     app, store, backend, _ = _shared_app()
     async with _client(app) as client:
         call = asyncio.create_task(client.post("/sent-wait"))
-        await _until(lambda: any(r.dispatched for r in ledger_for(store)._active.values()))
+        await _until(lambda: bool(ledger_for(store)._active))
         call.cancel()
         with pytest.raises(asyncio.CancelledError):
             await call
         await _until(lambda: not ledger_for(store)._active)
-    assert await _kinds(store, backend) == ["unresolved"]
+    assert await _kinds(store, backend) == ["settle"]
+    assert backend.rows == {}
+    assert ledger_for(store).fully_settled()
 
 
 @pytest.mark.asyncio

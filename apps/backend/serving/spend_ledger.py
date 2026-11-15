@@ -181,13 +181,8 @@ class Reservation:
         self.amount = amount
         self._open = True
 
-    def release(self, *, charge_unknown: bool = False) -> None:
-        """Stop counting the estimate. Idempotent.
-
-        ``charge_unknown`` is the shared reservation's (it then keeps the
-        estimate as a liability); here the estimate is released either way, as
-        it always was.
-        """
+    def release(self) -> None:
+        """Stop counting the estimate. Idempotent."""
         if self._open:
             self._open = False
             self._ledger._unreserve(self)

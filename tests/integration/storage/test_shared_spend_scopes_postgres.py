@@ -50,6 +50,7 @@ _advisory_waiters = _base._advisory_waiters
 _rows = _base._rows
 _members = _base._members
 _charge = _base._charge
+end_quarantined = _base.end_quarantined
 
 pytestmark = [pytest.mark.dbtest, pytest.mark.asyncio]
 
@@ -297,13 +298,13 @@ async def test_settlement_adds_each_cost_to_the_account_key_and_project_counters
     settled, _ = await db.a.admit(make(db.a), 0.30)
     _charge(db.a, settled, 0.25, project=project, key=KEY)
     _charge(db.a, settled, 0.15, project=project, key=KEY)
-    unknown, _ = await db.a.admit(make(db.a), 0.30)
-    _charge(db.a, unknown, 0.05, project=project, key=KEY)
+    small, _ = await db.a.admit(make(db.a), 0.30)
+    _charge(db.a, small, 0.05, project=project, key=KEY)
     no_scope, _ = await db.a.admit(limits(db.a, user), 0.30)
     _charge(db.a, no_scope, 0.10)
     db.a.record(other, 0.07, api_key_id=KEY + 1)  # a plain increment, another key
     settled.release()
-    unknown.release(charge_unknown=True)
+    small.release()
     no_scope.release()
     assert await db.a.flush(5)
 
@@ -323,8 +324,8 @@ async def test_settlement_adds_each_cost_to_the_account_key_and_project_counters
             "WHERE scope_id = $1 ORDER BY period",
             project,
         )
-    # $0.25 + $0.15 settled, $0.05 known of the unresolved one, $0.10 without
-    # a key or project; one request per cost recorded.
+    # $0.25 + $0.15 of one request, $0.05 of another, $0.10 without a key or
+    # project; one request per cost recorded.
     assert [tuple(r) for r in account] == [
         (user, clock.day, D("0.55"), 4),
         (other, clock.day, D("0.07"), 1),
@@ -338,8 +339,8 @@ async def test_settlement_adds_each_cost_to_the_account_key_and_project_counters
         (f"m:{month}", D("0.45"), 3),
     ]
 
-    # Every scope's next admission reads those counters, and the unresolved
-    # estimate still held, in one snapshot.
+    # Every scope's next admission reads those counters, and nothing held:
+    # each request gave back what it had reserved beyond its cost.
     snap = await _probe(db.b, user, day=clock.day, key_id=KEY, project_id=project)
     assert (snap.account_day, snap.key_day, snap.project_day) == (D("0.55"), D("0.45"), D("0.45"))
     assert (snap.account_month, snap.key_month, snap.project_month) == (
@@ -348,17 +349,31 @@ async def test_settlement_adds_each_cost_to_the_account_key_and_project_counters
         D("0.45"),
     )
     assert (snap.reserved_account_day, snap.reserved_key_day, snap.reserved_project_day) == (
-        D("0.3"),
-        D("0.3"),
-        D("0.3"),
+        D(0),
+        D(0),
+        D(0),
     )
-    assert sorted((await _members(db.pool)).values()) == ["settled", "settled", "unresolved"]
+    assert sorted((await _members(db.pool)).values()) == ["settled", "settled", "settled"]
 
 
 # -- UTC day and month boundaries ---------------------------------------------------
 
 
-async def test_at_midnight_an_active_reservation_moves_on_and_an_ended_one_stays(db, clock):
+def _gate_extra(ledger, user: str) -> tuple[float, float]:
+    """What *ledger*'s gate adds to the account's day and month spend, from its own memory."""
+    extra = ledger._local_extra(user, None, None, reserved=True)
+    return (pytest.approx(extra[0]), pytest.approx(extra[1]))
+
+
+async def test_at_midnight_an_active_reservation_moves_on_and_a_quarantined_one_stays(db, clock):
+    """A running reservation counts against the current day; one that ended, against its own.
+
+    Both in the database (what every process's admission reads) and in the
+    memory of the process that holds it (what its gate adds before admission):
+    the two must name the same day, or the gate of the process that served a
+    request refuses on later days what the admission, and every other
+    process's gate, lets through.
+    """
     user = PREFIX + "midnight"
     clock.day = "2031-01-31"
 
@@ -368,12 +383,13 @@ async def test_at_midnight_an_active_reservation_moves_on_and_an_ended_one_stays
     await _settle_plain(db.a, CostLine(user, clock.day, None, usd(0.20)))
     running, _ = await db.a.admit(make(db.a), 0.30)  # still running at midnight
     ended, _ = await db.a.admit(make(db.a), 0.30)
-    _charge(db.a, ended, 0.10)
-    ended.release(charge_unknown=True)  # ended on Jan 31, charge unknown
-    assert await db.a.flush(5)
+    await end_quarantined(db.a, ended, 0.10)  # ended on Jan 31; the counters refused its cost
 
     jan = await _probe(db.b, user, day="2031-01-31")
-    assert (jan.account_day, jan.reserved_account_day) == (D("0.3"), D("0.6"))
+    assert (jan.account_day, jan.reserved_account_day) == (D("0.2"), D("0.6"))
+    # The holder's gate: the running one and the quarantined one, both today.
+    assert _gate_extra(db.a, user) == (0.6, 0.6)
+    assert _gate_extra(db.b, user) == (0.0, 0.0)
 
     # Feb 1: the running reservation counts against the new day and month; the
     # one that ended counts against the day and month it ended in, so neither
@@ -382,33 +398,75 @@ async def test_at_midnight_an_active_reservation_moves_on_and_an_ended_one_stays
     feb = await _probe(db.b, user, day=clock.day)
     assert (feb.account_day, feb.reserved_account_day) == (D(0), D("0.3"))
     assert (feb.account_month, feb.reserved_account_month) == (D(0), D("0.3"))
+    assert _gate_extra(db.a, user) == (0.3, 0.3)  # as the database: the running one only
+    # With $0.60 of the $1.00 spent today, both gates pass the caller: the
+    # holder's adds the running $0.30 and nothing of Jan 31. (Counting that
+    # liability today as well, the gate of the process that holds it refused
+    # what the admission and every other process's gate let through.)
+    for ledger in (db.b, db.a):
+        assert ledger.refusal(limits(ledger, user, daily=1.0, spent_today=0.60)) is None
     assert (await db.b.admit(make(db.b), 5.0))[0].amount == D("0.7")
 
-    # It ends now, its charge unknown: a liability of Feb 1, not of the day it
-    # was admitted. A cost recorded meanwhile is Feb 1's as well.
-    _charge(db.a, running, 0.05)
-    running.release(charge_unknown=True)
-    assert await db.a.flush(5)
+    # It ends now, its cost refused as well: a liability of Feb 1, not of the
+    # day it was admitted.
+    await end_quarantined(db.a, running, 0.05)
     rows = {r["reservation_id"]: r for r in await _rows(db.pool, user)}
     assert (
         rows[running.reservation_id]["state"],
         rows[running.reservation_id]["liability_day"],
     ) == (
-        "unresolved",
+        "quarantined",
         "2031-02-01",
     )
     assert rows[ended.reservation_id]["liability_day"] == "2031-01-31"
+    assert _gate_extra(db.a, user) == (0.3, 0.3)  # Feb 1's liability, today
 
-    # Feb 2: Feb 1's liability and costs count against the month, not the day.
+    # Feb 2: Feb 1's liability counts against the month, not the day.
     clock.day = "2031-02-02"
     snap = await _probe(db.b, user, day=clock.day)
     open_feb = D("0.7")  # the reservation admitted on Feb 1 above, still active
     assert (snap.account_day, snap.reserved_account_day) == (D(0), open_feb)
-    assert (snap.account_month, snap.reserved_account_month) == (D("0.05"), open_feb + D("0.3"))
-    # Day: $1.00 - $0.70 = $0.30 left; month: $1.50 - $1.05 = $0.45 left.
+    assert (snap.account_month, snap.reserved_account_month) == (D(0), open_feb + D("0.3"))
+    assert _gate_extra(db.a, user) == (0.0, 0.3)
+    # Day: $1.00 - $0.70 = $0.30 left; month: $1.50 - $1.00 = $0.50 left.
     assert (await db.a.admit(make(db.a), 5.0))[0].amount == D("0.3")
-    # Nothing expired: every reservation is still there.
+    # Nothing expired: every reservation is still there, and still reported.
     assert len(await _rows(db.pool, user)) == 4
+    assert db.a.holdings()["quarantined"] == 2
+    # January's no longer counts against anything: it left what every check
+    # reads, and stays in what the process reports.
+    assert list(db.a._past_liabilities) == [ended.reservation_id]
+    assert list(db.a._liabilities) == [running.reservation_id]
+
+
+async def test_a_liability_held_only_in_memory_counts_on_its_day_and_month_alone(db, clock):
+    """An unaccounted reservation is in no table: its holder alone counts it, on its own day."""
+    user = PREFIX + "unaccounted"
+    clock.day = "2031-06-29"
+    lost, _ = await db.a.admit(limits(db.a, user, daily=1.0, monthly=5.0), 0.30)
+    _charge(db.a, lost, 0.40)
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "DELETE FROM spend_reservations WHERE reservation_id = $1", lost.reservation_id
+        )
+    lost.release()
+    assert await db.a.flush(5)
+    assert lost.state == "unaccounted"
+
+    def both(ledger):
+        return (
+            _gate_extra(ledger, user),
+            pytest.approx(ledger._local_extra(user, None, None, reserved=False)[0]),
+            pytest.approx(ledger._local_extra(user, None, None, reserved=False)[1]),
+        )
+
+    assert both(db.a) == ((0.4, 0.4), 0.4, 0.4)  # its day: the gate and the admission
+    clock.day = "2031-06-30"
+    assert both(db.a) == ((0.0, 0.4), 0.0, 0.4)  # the next day: its month only
+    clock.day = "2031-07-01"
+    assert both(db.a) == ((0.0, 0.0), 0.0, 0.0)  # the next month: nothing
+    assert db.a.holdings()["unaccounted"] == 1  # still reported
+    assert db.a.unwritten() == (pytest.approx(0.4), 1)
 
 
 async def test_month_ceilings_of_key_and_project_turn_over_with_the_utc_month(db, clock):
@@ -420,13 +478,13 @@ async def test_month_ceilings_of_key_and_project_turn_over_with_the_utc_month(db
             ledger, user, key_id=KEY, project_id=project, key_monthly=1.0, project_monthly=1.0
         )
 
-    # April: $0.70 settled on an earlier day, and a $0.30 liability of Apr 30,
-    # fill both month ceilings (the key's is checked first).
+    # April: $0.70 settled on an earlier day, and a $0.30 liability of Apr 30
+    # (a reservation whose cost the counters refused), fill both month
+    # ceilings (the key's is checked first).
     clock.day = "2031-04-30"
     await _settle_plain(db.a, CostLine(user, "2031-04-03", KEY, usd(0.70), 1, None, project))
     ended, _ = await db.a.admit(make(db.a), 0.30)
-    ended.release(charge_unknown=True)
-    assert await db.a.flush(5)
+    await end_quarantined(db.a, ended, 0.10, project=project, key=KEY)
     apr = await _probe(db.b, user, day=clock.day, key_id=KEY, project_id=project)
     assert (apr.key_day, apr.key_month, apr.project_day, apr.project_month) == (
         D(0),

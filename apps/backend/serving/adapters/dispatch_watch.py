@@ -89,8 +89,6 @@ def report_sent() -> None:
     """Tell the watch, and the dispatch record, the request holds a slot and is about to be sent."""
     _tell("on_sent")
     _tell("on_sent", key=req_ctx.UPSTREAM_DISPATCH_RECORD)
-    # A shared spend reservation learns that the request may now be charged.
-    _tell("on_sent", key=req_ctx.SPEND_RESERVATION)
 
 
 def report_first_token() -> None:

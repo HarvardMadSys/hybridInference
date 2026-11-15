@@ -185,9 +185,10 @@ SELECT txid_current() AS xid,
 # Statement B: issued only after the locks were granted, so its snapshot
 # follows every earlier holder's commit; counters and reservations in one
 # snapshot. Open reservations: an active one counts against the current day
-# and month; an unresolved or quarantined one against the day it ended (and
-# that day's month), at the larger of its estimate and its known cost. The
-# reservation id's own row and retirement receipt come from the same snapshot.
+# and month; a quarantined one (the counters refused its costs, so they are in
+# none) against the day it ended and that day's month, at the larger of its
+# estimate and its known cost. The reservation id's own row and retirement
+# receipt come from the same snapshot.
 _HELD_FROM = """
     SELECT COALESCE(SUM(held) FILTER (WHERE active OR liability_day = $3), 0) AS day_held,
            COALESCE(SUM(held) FILTER (WHERE active OR left(liability_day, 7) = $4), 0)
@@ -413,7 +414,10 @@ class SharedSpendStore:
         changes nothing; with another digest it is a ``conflict`` and changes
         nothing. A member not retired is reported -- ``duplicate`` (another
         batch retired it), ``mismatch`` (held, but not as this member says),
-        ``erased`` or ``missing`` -- and its costs are not added.
+        ``erased`` or ``missing`` -- and its costs are not added. (``erased``
+        is told by the erasure fence, which the gateway always configures; a
+        store built without its secret reports a hard-deleted account's
+        members as ``missing``.)
 
         Raises whatever the database raises before or at COMMIT; the caller
         sends the same batch again, which the recorded id makes harmless.
@@ -472,7 +476,6 @@ class SharedSpendStore:
                     [m.project_id for m in members],
                 )
 
-            retiring = [m for m in batch.members if m.kind != "unresolved"]
             retired = {
                 row["reservation_id"]
                 for row in await conn.fetch(
@@ -484,39 +487,11 @@ class SharedSpendStore:
                     "  AND r.api_key_id IS NOT DISTINCT FROM m.key_id "
                     "  AND r.project_id IS NOT DISTINCT FROM m.project_id "
                     "RETURNING r.reservation_id",
-                    *owned(retiring),
+                    *owned(list(batch.members)),
                     batch.instance_id,
                 )
             }
-            unresolved = [m for m in batch.members if m.kind == "unresolved"]
-            marked: set[str] = set()
-            if unresolved:
-                marked = {
-                    row["reservation_id"]
-                    for row in await conn.fetch(
-                        "UPDATE spend_reservations AS r SET state = 'unresolved', "
-                        "  liability_day = u.day, cost_usd = u.cost, note = u.note, "
-                        "  updated_at = NOW() "
-                        "FROM unnest($1::text[], $2::text[], $3::bigint[], $4::text[], "
-                        "            $5::text[], $6::numeric[], $7::text[]) "
-                        "  AS u(id, user_id, key_id, project_id, day, cost, note) "
-                        "WHERE r.reservation_id = u.id AND r.instance_id = $8 "
-                        "  AND r.state = 'active' AND r.user_id = u.user_id "
-                        "  AND r.api_key_id IS NOT DISTINCT FROM u.key_id "
-                        "  AND r.project_id IS NOT DISTINCT FROM u.project_id "
-                        "RETURNING r.reservation_id",
-                        *owned(unresolved),
-                        [m.liability_day for m in unresolved],
-                        [m.cost_usd() for m in unresolved],
-                        [m.note for m in unresolved],
-                        batch.instance_id,
-                    )
-                }
-            absent = [
-                m.reservation_id
-                for m in batch.members
-                if m.reservation_id not in retired and m.reservation_id not in marked
-            ]
+            absent = [m.reservation_id for m in batch.members if m.reservation_id not in retired]
             duplicates: set[str] = set()
             still_held: set[str] = set()
             if absent:
@@ -543,9 +518,6 @@ class SharedSpendStore:
                 rid = member.reservation_id
                 if rid in retired:
                     result.add("settled" if member.costs else "released", rid)
-                    costs.extend(member.costs)
-                elif rid in marked:
-                    result.add("unresolved", rid)
                     costs.extend(member.costs)
                 elif rid in duplicates:
                     result.add("duplicate", rid)
@@ -577,7 +549,7 @@ class SharedSpendStore:
 
             recorded = [
                 (rid, outcome)
-                for outcome in ("settled", "released", "unresolved")
+                for outcome in ("settled", "released")
                 for rid in result.members.get(outcome, [])
             ]
             if recorded:
@@ -648,14 +620,18 @@ class SharedSpendStore:
         async with self.pool.acquire() as conn:
             by_state = await conn.fetch(
                 "SELECT instance_id, state, COUNT(*) AS n, SUM(amount_usd) AS amount_usd, "
-                "SUM(cost_usd) AS known_cost_usd "
+                "SUM(cost_usd) AS known_cost_usd, "
+                "EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) AS oldest_age_seconds "
                 "FROM spend_reservations GROUP BY instance_id, state ORDER BY instance_id, state"
             )
             unidentified = await conn.fetchrow(
                 "SELECT COUNT(*) AS n, MAX(written_at) AS last FROM spend_unidentified_writes"
             )
         return {
-            "reservations": [dict(row) for row in by_state],
+            "reservations": [
+                {**dict(row), "oldest_age_seconds": round(float(row["oldest_age_seconds"]), 1)}
+                for row in by_state
+            ],
             "unidentified_writes": int(unidentified["n"] or 0),
             "last_unidentified_write": unidentified["last"],
         }
@@ -689,16 +665,18 @@ class CostLine:
         ]
 
 
-MemberKind = Literal["settle", "release", "unresolved"]
+MemberKind = Literal["settle", "release"]
 
 
 @dataclass(frozen=True, slots=True)
 class Member:
-    """One reservation a batch retires: ``settle`` (its costs), ``release``, or ``unresolved``.
+    """One reservation a batch retires: ``settle`` (with its costs, if any) or ``release``.
 
-    ``user_id``, ``api_key_id`` and ``project_id`` are the reservation's own
-    attribution; settlement retires the row only when they match it, and every
-    cost the member carries must be attributed the same way.
+    ``settle`` is a request that ended, with whatever its billing points
+    recorded; ``release`` an admission that never became a request. ``user_id``,
+    ``api_key_id`` and ``project_id`` are the reservation's own attribution;
+    settlement retires the row only when they match it, and every cost the
+    member carries must be attributed the same way.
     """
 
     reservation_id: str
@@ -707,8 +685,6 @@ class Member:
     api_key_id: int | None = None
     project_id: str | None = None
     costs: tuple[CostLine, ...] = ()
-    liability_day: str | None = None
-    note: str | None = None
 
     def cost_usd(self) -> Decimal:
         """The member's known cost."""
@@ -723,8 +699,6 @@ class Member:
             self.project_id,
             self.kind,
             [c.canonical() for c in self.costs],
-            self.liability_day,
-            self.note,
         ]
 
 

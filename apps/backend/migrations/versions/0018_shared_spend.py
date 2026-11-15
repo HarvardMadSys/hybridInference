@@ -66,7 +66,7 @@ STATEMENTS = (
         operation      TEXT NOT NULL,
         digest         TEXT NOT NULL,
         state          TEXT NOT NULL DEFAULT 'active'
-                         CHECK (state IN ('active', 'unresolved', 'quarantined')),
+                         CHECK (state IN ('active', 'quarantined')),
         liability_day  TEXT,
         cost_usd       DECIMAL(14, 6),
         note           TEXT,
@@ -95,8 +95,7 @@ STATEMENTS = (
     CREATE TABLE IF NOT EXISTS spend_settlement_members (
         reservation_id TEXT PRIMARY KEY,
         batch_id       TEXT NOT NULL,
-        outcome        TEXT NOT NULL
-                         CHECK (outcome IN ('settled', 'released', 'unresolved')),
+        outcome        TEXT NOT NULL CHECK (outcome IN ('settled', 'released')),
         settled_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,

@@ -1,6 +1,8 @@
 # Shared spend admission and batched settlement (phase 2a)
 
-Status: implementation contract, 2026-11-14. Base: `dev` at `b98678a42`.
+Status: implementation contract, 2026-11-14; revised 2026-11-15 after review
+(what a finished request holds, section 4; the day a liability counts against,
+section 5; what activation still needs, section 6b). Base: `dev` at `b98678a42`.
 Scope: the shared-accounting preparation layer for the backend release
 handoff. It does not implement Pod handoff, drain, ingress control or a
 deployment controller, and it does not activate anything: the new mode is
@@ -117,30 +119,40 @@ writer only releases once `txid_status` reports each attempt final.
 
 The batched writer stays. A request's reservation collects the costs recorded
 under it (`req_ctx.SPEND_RESERVATION`, set at admission; batch dispatch seeds
-it), hears every billing point's report (`observe_billing`: a cost, zero for a
-free model, or None when it could not price the request) and the existing
-"left the gateway" signal (`dispatch_watch.report_sent`, which the existing
-cancellation billing already relies on). When the request ends, its slot is
-released at once (in memory) and the reservation is queued as one settlement
-entry. HTTP, grant and playground requests are classified at teardown
-(`SharedReservation.finish`):
+it). When the request ends, however it ends, its slot is released at once (in
+memory) and the reservation is queued as one settlement entry carrying exactly
+those costs, none included. The entry retires the reservation and adds the
+costs in one transaction; the rest of the estimate is given back.
 
-| What happened | Entry |
+**What a request is charged is decided where it always was:** by the billing
+points (`CostTracker.charge`, the Anthropic surface, embeddings) under the
+unchanged pricing policy. They price an answer from its usage, a call that was
+cancelled or timed out from what it used or an estimate of that (the
+cancellation billing), and charge nothing for a call the upstream refused or
+failed. The shared ledger records what they recorded and infers nothing of its
+own. In particular it does not keep a reservation because the request ended
+with a 500, 502 or 504, was cancelled, or was billed by nobody: such a request
+holds nothing once it has ended, exactly as in the per-process mode.
+
+| How the request ended | Settlement entry |
 |---|---|
-| a billing point could not price it | `unresolved` |
-| billing points priced it (zero included), or costs were recorded | `settle` (those costs) |
-| no upstream call left the gateway | `settle` with no cost (proven not dispatched) |
-| sent, ended normally, billed by nobody | `unresolved` |
-| sent, then failed with an error the policy does not bill (4xx, 429, 503...) | `settle` with no cost |
-| sent, then cancelled, timed out, or 500/502/504 | `unresolved` |
+| billing points recorded one or more costs (a cut-off stream's tail included) | `settle` with those costs |
+| priced at zero, not priced, refused, failed upstream, cancelled unbilled | `settle` with no cost: the reservation is released |
+| never became a request (admission abandoned, see section 3) | `release` |
 
-The pricing policy is unchanged (what is charged is what the billing points
-record; the cancellation billing still prices a cut-off call), and an estimate
-is never charged: an unresolved entry keeps the estimate as a liability, with
-any known part charged. Batch attempts keep the dispatcher's own
-`cost_status` (`unknown` → `unresolved`). Costs recorded with no open
-reservation (no check, or after the reservation was queued: late costs) are
-plain increments.
+An earlier revision kept a request that was sent and not billed, or that failed
+with 500/502/504, as an `unresolved` liability at its estimate, counted against
+its day and month until an operator resolved it. Review withdrew it: it changed
+what a failure costs the caller (four requests of $0.30 the upstream answered
+502 used up a $1.00 quota with nothing spent, and nothing released them) and it
+accumulated without bound. Whether an upstream charged the operator for a call
+it failed is a question for the pricing policy and its billing points, not for
+the accounting that records them.
+
+A batch attempt whose charge could not be told is recorded as such by the batch
+itself (`batch_attempts.cost_status = 'unknown'`), as before; its reservation is
+given back like any other. Costs recorded with no open reservation (no check,
+or after the reservation was queued: late costs) are plain increments.
 
 Each batch has a random `batch_id`, frozen membership and a payload digest.
 A batch that lists a reservation twice, or carries a member cost attributed
@@ -152,10 +164,10 @@ anything is written (`invalid`). Otherwise one transaction:
    result is returned); different, nothing is written (`conflict`).
 2. Fence locks (shared) as today.
 3. Retire the members this instance holds *for the same account, key and
-   project*: `DELETE ... USING unnest(...)` for settle/release, `UPDATE
-   state='unresolved'` for unresolved. A member not retired is `duplicate`
-   (another batch retired it), `mismatch` (held, but not as the member says),
-   `erased` or `missing`; none of them is charged.
+   project*: `DELETE ... USING unnest(...)`. A member not retired is
+   `duplicate` (another batch retired it), `mismatch` (held, but not as the
+   member says), `erased` or `missing`; none of them is charged. (`erased` is
+   told by the erasure fence, which the gateway always configures.)
 4. Counter increments (the existing fenced statement) for the costs of the
    retired members and for the plain increments.
 5. `spend_settlement_members` rows (primary key `reservation_id`: at most one
@@ -176,18 +188,30 @@ can only over-count transiently. Batches are capped in size.
 
 ## 5. States
 
-In memory per reservation: active (executing) → completed, pending settlement
-→ writing → settled/released (confirmed), or unknown (replaying), or
-quarantined. In the database: `active`, `unresolved`, `quarantined`; a
-settled or released reservation's row is gone and its id is in
+In memory per reservation: active (executing) → queued (ended, pending
+settlement) → retired (settled or released, confirmed), or quarantined (the
+counters refused its costs), or unaccounted (its settlement found it no longer
+held as recorded). In the database: `active`, `quarantined`; a settled or
+released reservation's row is gone and its id is in
 `spend_settlement_members`. Releasing an execution slot is not retiring a
 reservation; the row count is never used as concurrency, and no distributed
 concurrency policy is added.
 
-An `active` row counts against the current day and month. `unresolved` and
-`quarantined` rows count against the day (and month) in which they ended,
-the day their cost would have been recorded on, and stay until an explicit
-resolution. Nothing expires them.
+An `active` row counts against the current day and month. A `quarantined` row
+counts against the day on which its request ended, and that day's month, at the
+larger of its estimate and its known cost (its costs are in no counter), and
+stays until an explicit resolution. Nothing expires either.
+
+**One day, in the database and in memory.** The process that holds a
+quarantined or unaccounted reservation adds it to its own checks -- the gate's
+early refusal reads the counters only, so it adds the quarantined ones too --
+against that same day and month (`SharedReservation.ended_day`), never against
+a later one. The gate of the process that served a request and every other
+process's gate therefore answer a caller alike on every day; they differ only
+in where a refusal happens (the holder's gate, before the database is asked).
+Liabilities of an earlier month count against nothing a check can still be made
+for: they leave the set every check reads and stay in what the process reports
+(`holdings`, `unwritten`, the shutdown log).
 
 ## 6. Recovery, liabilities and what is not done here
 
@@ -196,20 +220,29 @@ resolution. Nothing expires them.
   reports the rest (`holdings`, `unwritten`).
 - Process crash: its `active` rows stay counted in the current day and month;
   `status`/`list` show them with their owner's registration state.
+- Process crash, continued: such rows count against every later day and month
+  as well, for as long as they stay (an active row counts against the current
+  one). `status` adds them up under `stranded` -- the active reservations whose
+  owner the registry no longer hears from -- with their oldest age; the
+  registry cannot prove a process gone, so that is where an operator looks, not
+  a verdict. Retiring them is section 6b's.
+- A defect in the writer's own bookkeeping (not a failed write) is tried again
+  after the usual back-off: not at once, where a defect that persists would
+  spin the writer, and not never, which would leave what is queued waiting for
+  the next request.
 - A settlement that finds a member not held as recorded (`missing`,
   `mismatch`) adds none of its costs and keeps the member in this process as
   an *unaccounted* liability: counted in this process's checks at the larger
-  of its estimate and its known cost, reported by `holdings`/`unwritten`,
-  logged and alerted. An `unresolved` or `quarantined` member stays in the
-  database (and in `holdings`).
+  of its estimate and its known cost, on the day it ended, reported by
+  `holdings`/`unwritten`, logged and alerted. A `quarantined` member stays in
+  the database (and in `holdings`).
 - Nothing expires: no TTL, heartbeat or retention retires a reservation,
   forgives a liability or deletes a settlement receipt (`spend_settlements`,
   `spend_settlement_members` grow with traffic; a retention rule needs a
   replay horizon that a later review would have to establish).
-- No reconciliation command is shipped. Retiring an unresolved, quarantined
-  or stranded reservation needs explicit evidence of its actual charge and a
-  separately reviewed tool; an estimate is never charged as if it were the
-  cost.
+- No reconciliation command is shipped. Retiring a quarantined or stranded
+  reservation needs explicit evidence of its actual charge and a separately
+  reviewed tool; an estimate is never charged as if it were the cost.
 - Hard delete: the account's reservations are purged in the hard-delete
   transaction; admission checks the tombstone under the fence lock, so no row
   is written for an erased account; a settlement for one finds its rows gone
@@ -226,19 +259,53 @@ estimate (several charges included) are added to every later check at once;
 other processes see the actual cost when the settlement commits. Late costs
 (after the request ended) are plain increments of the next batch.
 
+A request that has ended keeps its estimate in the database until its
+settlement commits, normally milliseconds later. An admission made in that
+interval counts the estimate rather than the (usually smaller) cost, so a
+caller within one estimate of a limit can be refused then and admitted a moment
+later: conservative, never the reverse.
+
+## 6b. Required before the shared mode is activated (not in this change)
+
+Merging this change activates nothing. Before any deployment switches the row:
+
+1. The offline transition and its rollback (section 2).
+2. **Retiring what a dead process left.** A killed gateway's `active` rows
+   lower their accounts' headroom on every later day and month until someone
+   removes them by hand. This needs an operator path with evidence and an
+   audit record, and two decisions it depends on: what evidence is enough (the
+   reservation row does not yet reference the request's `api_logs` row, which
+   is where its actual charge would be found), and whether anything may be
+   released on the registry's word that the owner is gone.
+3. **A retention rule for the receipts** (`spend_settlements`,
+   `spend_settlement_members`: about 0.25-0.8 kB per request, never deleted)
+   that keeps the replay guarantee. A batch is only ever sent again by the
+   process that made it, so the rule has to be stated in terms of that
+   process being gone, not of age alone.
+4. **Monitoring.** There is none yet: admission latency and its refusals for
+   an unavailable database, the amount and age of what is held (queued,
+   stranded, quarantined), and settlement failures.
+5. Sizing the request pool for the admission's round trips, measured on the
+   deployment's own database (section 7's benchmark is a loopback exercise).
+
 ## 7. Verification plan
 
 - Unit: the shared ledger's state machine with a fake store (admit retry and
-  ambiguity, cancellation, settle/release/unresolved, late cost, unknown
-  replay, refusal split, quarantine), and the mode switch at every call site
-  (HTTP surfaces, grants, playground, batch).
+  ambiguity, cancellation, settle/release, late cost, unknown replay, refusal
+  split, quarantine, the day a liability counts against, the writer recovering
+  from its own defect), and the mode switch at every call site (HTTP surfaces,
+  grants, playground, batch), including that a request the upstream failed
+  gives its reservation back.
 - `dbtest`: two connections/processes contending on the same and on
   independent scopes under the partial-headroom policy; settlement racing
   admission with deterministic interleavings (including the naive two-read
   hazard, shown to lose a cost, and the protocol, shown not to); lock wait
   before read; replay, changed payload, overlap, unknown commit, refused
   entry, crash with stranded reservations, erasure; the migration and the
-  no-runtime-DDL guard.
+  no-runtime-DDL guard. Two gateways through the whole request path (the
+  key's gate, then the admission) on one database: what one answers a caller
+  the other answers too, after upstream failures and across midnight with a
+  quarantined liability.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

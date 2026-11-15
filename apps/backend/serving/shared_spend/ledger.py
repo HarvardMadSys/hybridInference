@@ -17,8 +17,11 @@ and the same batched writer, but its state of record is PostgreSQL:
 - **Costs** recorded while a request runs are attached to its reservation
   (``req_ctx.SPEND_RESERVATION``) and counted in this process's checks at
   once wherever they exceed its estimate. When the request ends, its
-  execution slot is given back at once by its owner; the reservation is
-  queued for settlement, not released.
+  execution slot is given back at once by its owner, and the reservation is
+  queued for settlement with exactly the costs its billing points recorded,
+  none included: what a request costs is theirs to decide, as it is in the
+  per-process mode. A request that failed, was cancelled or timed out is
+  charged what they charged it and holds nothing afterwards.
 - **Settlement** sends what is queued in batches, one at a time per process:
   each batch has its own id and a frozen payload, and one transaction
   (:meth:`SharedSpendStore.settle`) adds the costs to the counters and
@@ -30,8 +33,9 @@ What only this process knows -- costs settled to nobody yet, the part of a
 request's recorded cost above its reservation, and settlements whose outcome
 left a liability unaccounted -- is added to every check made here and
 reported by :meth:`SharedSpendLedger.holdings`. Nothing here expires a
-reservation or forgives a liability: one this process could not settle stays
-counted in the database (``python -m serving.shared_spend status`` lists it).
+reservation: one whose process died before settling it stays counted in the
+database (``python -m serving.shared_spend status`` lists it), and one whose
+costs the counters refused stays there quarantined.
 """
 
 from __future__ import annotations
@@ -86,10 +90,6 @@ _RETRY_MAX_SECONDS = 30.0
 #: attempt's row just became visible (23505), a serialization failure (40).
 _RETRY_ADMISSION_SQLSTATES = frozenset({"23505", "40001", "40P01"})
 
-#: Failure statuses after which an upstream may have finished, and charged,
-#: although the answer was lost: as the batch dispatcher's.
-_UNCERTAIN_STATUSES = frozenset({500, 502, 504})
-
 #: Settlement outcomes after which a member's liability is no longer held
 #: anywhere this process can see: kept here, counted and reported.
 _UNACCOUNTED_OUTCOMES = frozenset({"missing", "mismatch"})
@@ -112,19 +112,18 @@ class SharedReservation:
 
     ``state``: ``active`` while the request runs; ``queued`` once it ended and
     its settlement waits for (or is in) a batch; then ``retired`` (a batch
-    retired it), ``unresolved`` (kept as a liability: its charge is unknown),
-    ``quarantined`` (the counters refused its costs) or ``unaccounted`` (its
-    settlement found it no longer held as recorded here).
+    retired it), ``quarantined`` (the counters refused its costs) or
+    ``unaccounted`` (its settlement found it no longer held as recorded here).
+    ``ended_day`` is the UTC day the request ended on: the day a reservation
+    that outlives its settlement keeps counting against.
     """
 
     __slots__ = (
         "_ledger",
         "amount",
-        "billed_known",
-        "billed_unknown",
         "charges",
         "check_day",
-        "dispatched",
+        "ended_day",
         "key_id",
         "operation",
         "project_id",
@@ -156,12 +155,7 @@ class SharedReservation:
         self.operation = operation
         self.state = "active"
         self.charges: list[CostLine] = []
-        # What the request's billing points reported (``observe_billing``):
-        # how many priced it (zero included) and how many could not.
-        self.billed_known = 0
-        self.billed_unknown = 0
-        # Whether an upstream call left the gateway (``dispatch_watch.report_sent``).
-        self.dispatched = False
+        self.ended_day: str | None = None
 
     def owns(self, user_id: str, api_key_id: int | None, project_id: str | None) -> bool:
         """Whether a cost so attributed is this reservation's."""
@@ -174,72 +168,33 @@ class SharedReservation:
         self.charges.append(line)
         return True
 
-    def release(self, *, charge_unknown: bool = False) -> None:
+    def release(self) -> None:
         """The request ended: queue the reservation for settlement. Idempotent.
 
-        Its costs are those recorded under it, any number, none included: the
-        billing point has decided what it costs. ``charge_unknown`` says it
-        could not decide (an attempt abandoned while the upstream may have
-        been working): the reservation is then kept as an unresolved liability
-        rather than retired.
+        However it ended. Its costs are those its billing points recorded
+        under it, any number, none included, and the rest of the estimate is
+        given back: a failure, a cancellation or a timeout costs what the
+        billing point charged for it (the cancellation billing prices a call
+        that was cut off; a refused or failed call is charged nothing), and
+        never holds the caller's budget after it. The estimate itself is never
+        charged.
         """
         if self.state == "active":
-            self._ledger._complete(self, "unresolved" if charge_unknown else "settle")
-
-    def on_sent(self) -> None:
-        """An upstream call of the request is leaving the gateway (``report_sent``)."""
-        self.dispatched = True
-
-    def observe(self, cost_usd: float | None) -> None:
-        """A billing point reported what it charged: a cost (zero for free) or None (unknown)."""
-        if self.state != "active":
-            return
-        if cost_usd is None:
-            self.billed_unknown += 1
-        else:
-            self.billed_known += 1
-
-    def finish(self, error: BaseException | None = None) -> None:
-        """The request ended (with *error*, if it raised): settle it, or keep it as a liability.
-
-        Settled with what was recorded under it when its billing points priced
-        it (zero for a free model), or when no upstream call ever left the
-        gateway (nothing can have been charged). Kept as an unresolved
-        liability when a billing point could not price it, or when a call was
-        sent and nothing billed it, unless the request then failed with an
-        error the billing policy does not charge for -- every failure but a
-        cancellation, a timeout or a broken answer (500, 502, 504), after which
-        the upstream may have done the work. Never charges an estimate.
-        """
-        if self.state != "active":
-            return
-        if self.billed_unknown:
-            unknown = True
-        elif self.billed_known or self.charges or not self.dispatched:
-            unknown = False
-        elif error is None:
-            unknown = True  # sent, ended normally, billed by nobody
-        else:
-            status = getattr(error, "status_code", None)
-            unknown = not (isinstance(status, int) and status not in _UNCERTAIN_STATUSES)
-        self.release(charge_unknown=unknown)
+            self._ledger._complete(self)
 
     def cost(self) -> Decimal:
         """What the costs recorded under it add up to."""
         return sum((line.cost_usd for line in self.charges), Decimal(0))
 
-    def member(self, kind: str, *, day: str | None = None) -> Member:
-        """The settlement member this reservation is retired (or kept) by."""
-        unresolved = kind == "unresolved"
+    def member(self) -> Member:
+        """The settlement member this reservation is retired by."""
         return Member(
             reservation_id=self.reservation_id,
             user_id=self.user_id,
             api_key_id=self.key_id,
             project_id=self.project_id,
-            kind="unresolved" if unresolved else "settle",
+            kind="settle",
             costs=tuple(self.charges),
-            liability_day=day if unresolved else None,
-            note="charge unknown" if unresolved else None,
         )
 
 
@@ -278,10 +233,15 @@ class SharedSpendLedger:
         self._solo: list[SettlementBatch] = []
         # What the counters refused, kept counted here and reported.
         self._set_aside: list[CostLine] = []
-        # Reservations past settlement that still hold a liability: kept in the
-        # database as unresolved or quarantined, or no longer held as recorded
-        # (unaccounted, counted here in full). Never forgotten by this process.
+        # Reservations past settlement that still hold a liability: quarantined
+        # in the database (the counters refused their costs), or no longer held
+        # as recorded (unaccounted, counted here in full). One counts against
+        # the day it ended on and that day's month, as a quarantined row does
+        # in the database; those of an earlier month count against nothing any
+        # more and are set apart, for the report only. Never forgotten by this
+        # process.
         self._liabilities: dict[str, SharedReservation] = {}
+        self._past_liabilities: dict[str, SharedReservation] = {}
         self._writer: asyncio.Task[None] | None = None
         self._retry: asyncio.TimerHandle | None = None
         self._retry_delay = 0.0
@@ -310,12 +270,18 @@ class SharedSpendLedger:
         """What to add, for this process, to the account's, key's and project's day and month.
 
         Always: costs settled to nobody yet (plain increments, and what the
-        counters refused); for every reservation not retired, active ones
-        included, the part of its recorded cost above its reservation; and the
-        whole of a liability no longer held where it was recorded. With
-        *reserved* -- for a check that read the counters only, not the
-        reservations -- every reservation this process holds counts at the
-        larger of its estimate and its recorded cost.
+        counters refused); for every reservation still running or waiting for
+        its settlement, the part of its recorded cost above its reservation;
+        and the whole of a liability no longer held where it was recorded
+        (unaccounted). With *reserved* -- for a check that read the counters
+        only, not the reservations -- every reservation this process holds
+        counts at the larger of its estimate and its recorded cost, a
+        quarantined one included.
+
+        A reservation running or waiting counts against today, as its row
+        does. A liability counts against the day it ended on and that day's
+        month, never against a later one: the database counts a quarantined
+        row the same way, so this process's gate and every other's agree.
         """
         from serving.spend_ledger import utc_day
 
@@ -358,21 +324,37 @@ class SharedSpendLedger:
                 held = max(known - reservation.amount, Decimal(0))
             if held:
                 add(reservation.user_id, reservation.key_id, reservation.project_id, today, held)
-        for reservation in self._liabilities.values():
-            if reservation.state == "unaccounted" or (
-                reserved and reservation.state == "quarantined"
-            ):
-                # Its costs are in no counter; the database holds nothing (or
-                # holds it where a counters-only read does not look).
-                held = max(reservation.amount, reservation.cost())
-            elif reserved:
-                # Unresolved: its known costs are in the counters already; the
-                # estimate stays held as the unknown part.
-                held = reservation.amount
-            else:
+        for reservation in self._current_liabilities(month):
+            if reservation.state == "quarantined" and not reserved:
+                # Its row holds it, on the day it ended: the admission read it.
                 continue
-            add(reservation.user_id, reservation.key_id, reservation.project_id, today, held)
+            # Its costs are in no counter, and the database holds nothing of it
+            # (unaccounted) or holds it where a counters-only read does not
+            # look (quarantined).
+            add(
+                reservation.user_id,
+                reservation.key_id,
+                reservation.project_id,
+                reservation.ended_day or today,
+                max(reservation.amount, reservation.cost()),
+            )
         return totals[0], totals[1], totals[2], totals[3], totals[4], totals[5]
+
+    def _current_liabilities(self, month: str) -> list[SharedReservation]:
+        """The liabilities that ended in *month* or later; earlier ones are set apart.
+
+        One that ended in an earlier month counts against no day or month a
+        check can still be made for, so it leaves the set every check reads and
+        stays only in what this process reports (:meth:`holdings`).
+        """
+        past = [
+            rid
+            for rid, reservation in self._liabilities.items()
+            if reservation.ended_day is not None and reservation.ended_day[:7] < month
+        ]
+        for rid in past:
+            self._past_liabilities[rid] = self._liabilities.pop(rid)
+        return list(self._liabilities.values())
 
     def _unsettled_batches(self) -> list[SettlementBatch]:
         """Every batch not yet answered, each once (the one being written is also queued)."""
@@ -637,12 +619,13 @@ class SharedSpendLedger:
         self._increments.append(line)
         return self._start_write()
 
-    def _complete(self, reservation: SharedReservation, kind: str) -> None:
+    def _complete(self, reservation: SharedReservation) -> None:
         from serving.spend_ledger import utc_day
 
         self._active.pop(reservation.reservation_id, None)
         reservation.state = "queued"
-        self._queued[reservation.reservation_id] = reservation.member(kind, day=utc_day())
+        reservation.ended_day = utc_day()
+        self._queued[reservation.reservation_id] = reservation.member()
         self._queued_reservations[reservation.reservation_id] = reservation
         self._start_write()
 
@@ -669,8 +652,10 @@ class SharedSpendLedger:
 
     def _write_finished(self, task: asyncio.Task[None]) -> None:
         self._writer = None
-        if task.cancelled() or task.exception() is not None:
+        if task.cancelled():
             return
+        # The next batch, unless a retry is waiting out its back-off (the
+        # tracked task has swallowed and reported whatever the writer raised).
         self._start_write()
 
     async def _resolve_abandoned(self) -> None:
@@ -713,6 +698,21 @@ class SharedSpendLedger:
         return SettlementBatch.make(self._instance_id, members, increments), "new"
 
     async def _write_once(self) -> None:
+        try:
+            await self._write_batch()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Not a failed write (those are answered in _write_batch, and the
+            # batch sent again): a defect in this writer. It is tried again
+            # after the usual back-off: not at once, where a defect that
+            # persists would spin, and not never, which would leave what is
+            # queued waiting for the next request to wake the writer.
+            self._writing = None
+            self._schedule_retry()
+            raise
+
+    async def _write_batch(self) -> None:
         await self._resolve_abandoned()
         batch, source = self._next_batch()
         if batch is None:
@@ -777,12 +777,13 @@ class SharedSpendLedger:
         with contextlib.suppress(ValueError):
             queue.remove(batch)
 
-    def _keep_liability(self, member: Member, state: str) -> None:
+    def _keep_liability(self, member: Member, state: str) -> SharedReservation | None:
         reservation = self._queued_reservations.pop(member.reservation_id, None)
         if reservation is None:
-            return
+            return None
         reservation.state = state
         self._liabilities[member.reservation_id] = reservation
+        return reservation
 
     async def _set_aside_refused(self, batch: SettlementBatch, exc: Exception) -> None:
         from serving.spend_ledger import _send_alert, utc_day
@@ -792,12 +793,13 @@ class SharedSpendLedger:
         for member in batch.members:
             if member.kind == "release":
                 continue
-            self._keep_liability(member, "quarantined")
+            reservation = self._keep_liability(member, "quarantined")
+            ended = reservation.ended_day if reservation is not None else None
             try:
                 await self._backend.quarantine(
                     member,
                     self._instance_id,
-                    day=member.liability_day or utc_day(),
+                    day=ended or utc_day(),
                     note=f"settlement refused: {sqlstate}",
                 )
             except Exception:
@@ -856,8 +858,6 @@ class SharedSpendLedger:
                 reservation = self._queued_reservations.pop(member.reservation_id, None)
                 if reservation is not None:
                     reservation.state = "retired"
-            elif what == "unresolved":
-                self._keep_liability(member, "unresolved")
             else:
                 # missing or mismatch: nothing holds it as recorded here.
                 self._keep_liability(member, "unaccounted")
@@ -942,22 +942,24 @@ class SharedSpendLedger:
         for rid, member in self._queued.items():
             if rid not in queued_in_batches:
                 lines.extend(member.costs)
-        for reservation in self._liabilities.values():
-            if reservation.state in ("quarantined", "unaccounted"):
-                lines.extend(reservation.charges)
+        for reservation in self._every_liability():
+            lines.extend(reservation.charges)
         return float(sum((line.cost_usd for line in lines), Decimal(0))), len(lines)
+
+    def _every_liability(self) -> list[SharedReservation]:
+        """Every liability this process holds, those of earlier months included."""
+        return [*self._liabilities.values(), *self._past_liabilities.values()]
 
     def holdings(self) -> dict[str, int]:
         """What this process holds that is not settled, by kind, for status and shutdown."""
         in_batches = {m.reservation_id for b in self._unsettled_batches() for m in b.members}
         states: dict[str, int] = {}
-        for reservation in self._liabilities.values():
+        for reservation in self._every_liability():
             states[reservation.state] = states.get(reservation.state, 0) + 1
         return {
             "active": len(self._active),
             "queued": len(set(self._queued) | in_batches),
             "abandoned": len(self._abandoned),
-            "unresolved": states.get("unresolved", 0),
             "quarantined": states.get("quarantined", 0),
             "unaccounted": states.get("unaccounted", 0),
         }
