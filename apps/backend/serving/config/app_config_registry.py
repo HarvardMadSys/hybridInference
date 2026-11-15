@@ -892,6 +892,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         maximum=1,
     ),
     ConfigEntry(
+        "CIRCUIT_CALLER_WINDOW_SECONDS",
+        "routing",
+        "Seconds during which one caller's repeated failures on an endpoint that is "
+        "serving other callers do not count toward opening its circuit. 0 counts "
+        "every failure.",
+        type="float",
+        default="60",
+        restart_required=True,
+        minimum=0,
+    ),
+    ConfigEntry(
         "ROUTING_AFFINITY_ENABLED",
         "routing",
         "Keep a caller on the endpoint that already holds its prompt cache.",

@@ -154,7 +154,23 @@ through: a success closes it, a failure opens it again.
 While that test request is in flight, other requests that have nowhere else to
 go get **503** rather than a second request onto a provider that is probably
 still down. A model with a healthy route elsewhere simply uses that one
-instead. The four settings:
+instead.
+
+One caller cannot open a circuit by itself while the endpoint is serving other
+callers. Callers are told apart by the credential they present (the request's
+affinity key: an API key, an inference grant, or an anonymous client's address).
+A caller's first failure on an endpoint counts as usual. Until the endpoint
+serves that caller again, its further failures there count only if nobody else
+has been served there within `CIRCUIT_CALLER_WINDOW_SECONDS` either, and at
+most once per window. Otherwise they are logged as `caller_repeat_skip_breaker`
+and leave the circuit and the success rate alone. Without this, a client that
+kept retrying a request the endpoint fails on, such as a prompt the engine
+answers with a 5xx, opened the circuit after three tries and took the model
+away from every other caller, then failed the half-open test request with its
+next retry. An outage still opens the circuit: several callers failing in a row
+count separately, and a lone caller's failures count again once nobody else has
+been served for a window. Failures with no caller attached, and credential
+rejections (401, 407), always count. The five settings:
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -162,6 +178,7 @@ instead. The four settings:
 | `CIRCUIT_COOLDOWN_SECONDS` | `30` | Seconds before a half-open probe is admitted. |
 | `CIRCUIT_MIN_AVAILABILITY` | `0.7` | Success-rate floor: a failure that leaves the endpoint's average below it opens the circuit. |
 | `ROUTER_HEALTH_EWMA_ALPHA` | `0.1` | Smoothing factor for the availability EWMA. |
+| `CIRCUIT_CALLER_WINDOW_SECONDS` | `60` | How recently another caller must have been served for one caller's repeated failures to be kept off the circuit. `0` counts every failure. |
 
 `GET /health/deep` shows each endpoint's availability and circuit state. It
 also marks an endpoint degraded from the first time a provider rejects the

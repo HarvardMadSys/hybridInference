@@ -187,6 +187,31 @@ def test_request_system_array_concatenated():
     assert messages[0] == {"role": "system", "content": "You are helpful.\n\nBe concise."}
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"messages": [{"role": "user", "content": [{"type": "text", "text": 123}]}]},
+        {
+            "system": [{"type": "text", "text": {"nested": True}}],
+            "messages": [{"role": "user", "content": "Hi"}],
+        },
+    ],
+    ids=["message-block", "system-block"],
+)
+def test_request_the_translation_cannot_read_is_a_400_the_breaker_exempts(body):
+    """Raised before any upstream I/O, so it is never evidence against the endpoint."""
+    from routing.endpoint_health import _http_status_of, is_client_error_status
+    from serving.adapters.anthropic_translator import UntranslatableRequest
+
+    with pytest.raises(UntranslatableRequest) as refused:
+        anthropic_request_to_openai({"model": "glm-4.7", "max_tokens": 100, **body})
+
+    assert refused.value.status == 400
+    assert isinstance(refused.value.__cause__, TypeError)
+    assert is_client_error_status(_http_status_of(refused.value))
+    assert "unsupported shape" in str(refused.value)
+
+
 def test_request_tool_choice_auto():
     body = {
         "model": "glm-4.7",

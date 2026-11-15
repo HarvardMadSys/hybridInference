@@ -15,6 +15,8 @@ import uuid
 from collections import deque
 from typing import TYPE_CHECKING, Any
 
+import aiohttp
+
 from serving.storage.utils import billable_output_tokens
 from serving.utils.token_utils import (
     extract_cache_tokens,
@@ -29,6 +31,35 @@ if TYPE_CHECKING:
 # ---------------------------------------------------------------------------
 # Request translation: Anthropic -> OpenAI
 # ---------------------------------------------------------------------------
+
+
+class UntranslatableRequest(aiohttp.ClientResponseError):
+    """An Anthropic request the translation cannot read. A 400, raised before any upstream I/O.
+
+    :func:`anthropic_request_to_openai` reads nothing but the client's body, so
+    an error it raises is about that body and never about the endpoint the
+    request was bound for. Raised as it was -- a ``TypeError`` from a text block
+    whose ``text`` is a number -- it reached ``/v1/messages``'s catch-all, was
+    answered 502 and was counted by that endpoint's circuit breaker: three such
+    requests from one caller opened the circuit for every caller of the model,
+    with nothing sent upstream. An ``aiohttp`` ``ClientResponseError`` with status
+    400, as ``ReasoningEffortRefused`` is, so every caller handles it as the
+    upstream 400 it stands in for: the breaker exempts it as a client error, and
+    ``/v1/messages`` answers ``invalid_request_error``. The error it replaces is
+    its ``__cause__``.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(
+            request_info=None,  # type: ignore[arg-type]
+            history=(),
+            status=400,
+            message="Invalid request: a message or system block has an unsupported shape",
+        )
+
+    def __str__(self) -> str:
+        # ``ClientResponseError.__str__`` reads the request's URL, and there is none.
+        return f"400, message={self.message!r}"
 
 
 def anthropic_request_to_openai(
@@ -49,22 +80,29 @@ def anthropic_request_to_openai(
     Returns:
         (openai_messages, openai_params) where openai_params holds non-message
         fields like max_tokens, temperature, tools, etc.
+
+    Raises:
+        UntranslatableRequest: Some part of ``body`` has a shape the
+            translation cannot read.
     """
-    # An inline `role: "system"` message goes wherever normalize_inline_system
-    # puts it, so this path and the native passthrough place it the same way.
-    body = normalize_inline_system(body)
-    messages: list[dict[str, Any]] = []
+    try:
+        # An inline `role: "system"` message goes wherever normalize_inline_system
+        # puts it, so this path and the native passthrough place it the same way.
+        body = normalize_inline_system(body)
+        messages: list[dict[str, Any]] = []
 
-    # System prompt -> system message prepended.
-    if system_text := _flatten_system(body.get("system")):
-        messages.append({"role": "system", "content": system_text})
+        # System prompt -> system message prepended.
+        if system_text := _flatten_system(body.get("system")):
+            messages.append({"role": "system", "content": system_text})
 
-    for msg in body.get("messages", []):
-        if isinstance(msg, dict):
-            messages.extend(_translate_message(msg, tool_images=tool_images))
-    messages = _place_tool_images(messages)
+        for msg in body.get("messages", []):
+            if isinstance(msg, dict):
+                messages.extend(_translate_message(msg, tool_images=tool_images))
+        messages = _place_tool_images(messages)
 
-    params = _translate_params(body)
+        params = _translate_params(body)
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise UntranslatableRequest() from exc
     return messages, params
 
 

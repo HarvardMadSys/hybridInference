@@ -272,12 +272,19 @@ Circuit state lives per `endpoint_id` in
 | Seconds an open circuit waits before a half-open probe | `CIRCUIT_COOLDOWN_SECONDS` | 30 |
 | Availability floor | `CIRCUIT_MIN_AVAILABILITY` | 0.7 |
 | EWMA smoothing for the availability estimate | `ROUTER_HEALTH_EWMA_ALPHA` | 0.1 |
+| How recently another caller must have been served to keep one caller's repeated failures off a circuit | `CIRCUIT_CALLER_WINDOW_SECONDS` | 60 |
 
 Client errors do not trip the breaker: a 4xx other than 408, 429, 401, and 407
 is the caller's problem, and counting it would let one malformed request take an
 endpoint away from everybody. 408 and 429 signal upstream overload and do count;
 401 and 407 are unambiguous rejections of *the gateway's own* credential and
 count too, because no user can fix them.
+
+Nor can one caller open a circuit by itself while the endpoint is serving
+other callers: its first failure there counts, and its further failures, until
+it is served again, count only once nobody else has been served within
+`CIRCUIT_CALLER_WINDOW_SECONDS`. See
+[Endpoint health and circuit breaking](routing.md#endpoint-health-and-circuit-breaking).
 
 Separately, the routing file can turn on a probe that polls the `/health`
 path of the local endpoints it lists. The probe only reports; it never changes
