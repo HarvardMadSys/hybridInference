@@ -452,6 +452,27 @@ describe('taking up a session a redirect signed in', () => {
     expect(authExpiredEvents).toBe(0);
   });
 
+  // The page still shows the account it showed before the round trip. Left
+  // without a token, its next refresh would install the cookie's account
+  // under that page, with nothing to compare it against.
+  it('keeps the token the tab held when the gateway cannot say', async () => {
+    const before = token('before', -60);
+    client.setAccessToken(before);
+    fetchMock.mockResolvedValueOnce(new Response('busy', { status: 503 }));
+
+    await expect(client.resumeBrowserSession(API)).rejects.toMatchObject({ statusCode: 503 });
+
+    expect(client.getAccessToken()).toBe(before);
+    expect(sessionStorage.getItem('access_token')).toBe(before);
+
+    fetchMock.mockResolvedValueOnce(refreshAnswer(token('sso-user', 900)));
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'ACCOUNT_CHANGED',
+    });
+    expect(accountChangedEvents).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it('starts in a new document when this one is kept signed out', async () => {
     const reload = vi.fn();
     vi.stubGlobal('location', { ...window.location, reload });

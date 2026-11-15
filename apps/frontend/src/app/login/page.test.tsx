@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import LoginPage from './page';
@@ -482,6 +482,13 @@ describe('the single sign-on email step', () => {
     );
     // Leaving: the button stays busy rather than inviting a second attempt.
     expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+
+    // Back from the provider, the browser can show this same document again
+    // from its back-forward cache: the form must be usable, not left busy.
+    act(() => {
+      window.dispatchEvent(Object.assign(new Event('pageshow'), { persisted: true }));
+    });
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
   });
 
   it('says so, and stays, when no provider answers for the email', async () => {
@@ -800,7 +807,9 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/keys'));
+    // Replaced: going back must not return to a question that is answered.
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/dashboard/keys'));
+    expect(pushMock).not.toHaveBeenCalled();
     expect(sso.confirmSsoLink).toHaveBeenCalledTimes(1);
     expect(sso.cancelSsoLink).not.toHaveBeenCalled();
   });
@@ -812,7 +821,8 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Not now' }));
 
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/keys'));
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/dashboard/keys'));
+    expect(pushMock).not.toHaveBeenCalled();
     expect(sso.cancelSsoLink).toHaveBeenCalledTimes(1);
     expect(sso.confirmSsoLink).not.toHaveBeenCalled();
   });
@@ -842,7 +852,7 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(pushMock).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
-    await waitFor(() => expect(pushMock).toHaveBeenCalledWith('/dashboard/keys'));
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/dashboard/keys'));
   });
 
   it('asks the same of a visitor signed in to a different account', async () => {

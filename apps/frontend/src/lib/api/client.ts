@@ -290,7 +290,9 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
  * request.
  *
  * Resolves to the account the new token names, or to `null` when the browser
- * holds no session to take up. Throws when the gateway could not answer.
+ * holds no session to take up. Throws when the gateway could not answer, and
+ * then the tab holds the token it held before: with none, its next refresh
+ * would install the cookie's account under a page that still shows the other.
  */
 export async function resumeBrowserSession(apiBase: string): Promise<string | null> {
   if (keptSignedOut) {
@@ -298,11 +300,24 @@ export async function resumeBrowserSession(apiBase: string): Promise<string | nu
     reloadDocument();
     return null;
   }
+  const held = getAccessToken();
   sessionGeneration += 1;
+  const generation = sessionGeneration;
   accountChanged = false;
   accessToken = null;
   sessionStorage.removeItem('access_token');
-  if (!(await refreshAccessToken(apiBase))) return null;
+  try {
+    if (!(await refreshAccessToken(apiBase))) return null;
+  } catch (error) {
+    // Nothing was said about the session, so the tab is still the account it
+    // showed. With its token back, a later refresh that names another account
+    // is refused as an account change instead of being installed unnoticed.
+    if (held && generation === sessionGeneration && !getAccessToken()) {
+      accessToken = held;
+      sessionStorage.setItem('access_token', held);
+    }
+    throw error;
+  }
   return tokenSubject(getAccessToken());
 }
 

@@ -19,6 +19,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { createAuthSchemas } from '@/lib/schemas/auth';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
+import { usePageRestored } from '@/lib/hooks/usePageRestored';
 import { navigateTo } from '@/lib/utils/navigation';
 import {
   SsoReauthConfirm,
@@ -310,6 +311,7 @@ function ConnectForm({
   const [emailError, setEmailError] = useState<string | undefined>();
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
+  usePageRestored(() => setBusy(false));
   const [error, setError] = useState<string | null>(null);
 
   const submit = async (event: FormEvent) => {
@@ -341,14 +343,16 @@ function ConnectForm({
         returnTo,
         ...(reauth ? {} : { password }),
       });
-      // The gateway takes the confirmation before it looks for a provider, so
-      // it is used whichever answer comes back.
-      reauth?.settle();
       if (url) {
+        // The gateway took the confirmation to start this.
+        reauth?.settle();
         // The page is on its way out: the button stays busy until it is gone.
         navigateTo(url);
         return;
       }
+      // No provider answers for this address. The gateway looks for one before
+      // it takes the confirmation, so the confirmation is still good for
+      // another address.
       setError(
         t(
           'auth.sso.not_available',

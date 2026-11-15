@@ -16,6 +16,7 @@ import {
 } from '@/lib/api/sso';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
+import { usePageRestored } from '@/lib/hooks/usePageRestored';
 import { navigateTo } from '@/lib/utils/navigation';
 
 /**
@@ -237,6 +238,7 @@ export function SsoReauthConfirm({
 }) {
   const t = useT();
   const [busy, setBusy] = useState(false);
+  usePageRestored(() => setBusy(false));
   const [error, setError] = useState<string | null>(null);
 
   if (reauth.confirmed) {

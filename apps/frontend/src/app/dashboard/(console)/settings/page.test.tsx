@@ -899,7 +899,7 @@ describe('the single sign-on section', () => {
       await waitFor(() => expect(navigateTo).toHaveBeenCalled());
     });
 
-    it('asks to confirm again when no provider answers: the confirmation was used', async () => {
+    it('keeps the confirmation when no provider answers: the gateway did not take it', async () => {
       window.sessionStorage.setItem(
         'sso-reauth-draft',
         JSON.stringify({
@@ -919,10 +919,22 @@ describe('the single sign-on section', () => {
       expect(await within(section).findByRole('alert')).toHaveTextContent(
         'Your organization has not set up single sign-on here. Use another sign-in method.',
       );
-      expect(
-        within(section).getByRole('button', { name: 'Confirm with Example University' }),
-      ).toBeInTheDocument();
       expect(navigateTo).not.toHaveBeenCalled();
+      // Still confirmed: another address goes out without a trip to the provider.
+      expect(
+        within(section).getByText('Identity confirmed. You can continue.'),
+      ).toBeInTheDocument();
+      sso.linkSsoIdentity.mockResolvedValue('https://idp.example.edu/authorize?state=link');
+      fireEvent.change(within(section).getByLabelText('Work or school email'), {
+        target: { value: 'carol@other.example' },
+      });
+      fireEvent.click(within(section).getByRole('button', { name: 'Continue' }));
+
+      await waitFor(() => expect(navigateTo).toHaveBeenCalled());
+      expect(sso.linkSsoIdentity).toHaveBeenLastCalledWith({
+        email: 'carol@other.example',
+        returnTo: '/dashboard/settings',
+      });
     });
 
     // A link someone was sent can name a confirmation; only the gateway holds one.

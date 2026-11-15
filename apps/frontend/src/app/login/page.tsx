@@ -21,6 +21,7 @@ import {
   type SsoErrorCode,
 } from '@/lib/api/sso';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
+import { usePageRestored } from '@/lib/hooks/usePageRestored';
 import { internalPathOr, navigateTo } from '@/lib/utils/navigation';
 import { useT } from '@/components/providers/useT';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
@@ -99,6 +100,7 @@ function LoginContent() {
   const [ssoEmail, setSsoEmail] = useState('');
   const [ssoEmailError, setSsoEmailError] = useState<string | undefined>();
   const [ssoBusy, setSsoBusy] = useState(false);
+  usePageRestored(() => setSsoBusy(false));
   const [ssoNotice, setSsoNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
   // ?sso=complete: the session is being taken up, or could not be.
   const [completion, setCompletion] = useState<'running' | 'failed' | null>(
@@ -320,7 +322,9 @@ function LoginContent() {
     try {
       await confirmSsoLink();
       toast.success(t('auth.sso.linked_toast', 'Single sign-on connected.'));
-      router.push(nextPath);
+      // Replaced, not pushed: going back to the question would find nothing
+      // waiting any more and say the sign-in took too long.
+      router.replace(nextPath);
     } catch (err) {
       if (err instanceof APIError && err.statusCode === 404) {
         // Nothing is waiting any more: the identity was kept for ten minutes.
@@ -340,7 +344,7 @@ function LoginContent() {
     } catch {
       // Left alone, the waiting identity expires by itself.
     }
-    router.push(nextPath);
+    router.replace(nextPath);
   };
 
   if (
