@@ -205,7 +205,7 @@ def stored(monkeypatch):
     sso.get_sso_document.cache_clear()
 
 
-def test_a_provider_is_found_by_email_domain_id_and_issuer(stored):
+def test_a_provider_is_found_by_email_domain_and_id(stored):
     stored(
         _provider(),
         _provider(id="company", domains=["example.com"], issuer="https://sso.example.com"),
@@ -217,8 +217,22 @@ def test_a_provider_is_found_by_email_domain_id_and_issuer(stored):
     assert sso.provider_for_email("not-an-email") is None
     assert sso.provider_by_id("company").display_name == "Example University"
     assert sso.provider_by_id("missing") is None
-    assert sso.provider_for_issuer("https://sso.example.com").id == "company"
-    assert sso.provider_for_issuer("https://unknown.example.com") is None
+
+
+def test_an_identitys_provider_is_the_one_it_was_linked_through(stored):
+    google = "https://accounts.google.com"
+    stored(
+        _provider(id="univ", issuer=google),
+        _provider(id="company", domains=["example.com"], issuer=google),
+    )
+
+    # Two organizations at one issuer: the issuer alone does not say which.
+    assert sso.provider_for_identity("univ", google).id == "univ"
+    assert sso.provider_for_identity("company", google).id == "company"
+    # An identity linked under an id that has since changed is found by its issuer.
+    assert sso.provider_for_identity("an-earlier-id", google).id == "univ"
+    # An id that names a provider at another issuer is not the identity's provider.
+    assert sso.provider_for_identity("company", "https://unknown.example.com") is None
 
 
 def test_a_disabled_provider_is_not_offered(stored):

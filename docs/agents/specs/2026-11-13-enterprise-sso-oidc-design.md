@@ -155,7 +155,8 @@ the secrets Admin asks for (Settings → Access, the Security section).
   the order for a first setup is: save the IdP configuration, enter the secret, restart. Until the restart, the
   sign-in page already shows the SSO entry, and using it reports that SSO is temporarily unavailable.
 - Each issuer's discovery document and JWKS are cached in each process's memory for one hour; any configuration
-  change clears them all.
+  change clears them all. Keys are fetched one address at a time, so an IdP whose key address answers slowly
+  holds up only its own sign-ins.
 
 ### 4.4 What the console is told
 
@@ -242,8 +243,8 @@ in the body, so it does not reach the access log.
 1. Find the IdP by the email's domain. If there is none, or it is not enabled, return `{"available": false}` and
    the page says SSO is not set up for this email.
 2. Insert an `sso_flows` row holding the state, nonce, PKCE verifier and `return_to`.
-3. Set the flow cookie (the session cookie's name with `_sso_flow` appended): a random value, HttpOnly, path
-   `/auth/sso`, SameSite=Lax, valid for 10 minutes.
+3. Set the flow cookie (the session cookie's name with `_sso_flow_` and the flow's purpose appended, here
+   `login`): a random value, HttpOnly, path `/auth/sso`, SameSite=Lax, valid for 10 minutes.
 4. Return `{"authorization_url": "..."}`, and the page goes there. The address carries `state`, `nonce` and
    `code_challenge` (S256), and passes the email to the IdP as `login_hint` so the user does not type it again.
 
@@ -257,8 +258,10 @@ Constraints:
 - An IdP that is found but cannot be reached, or whose secret is not entered yet, returns 503.
 - Before first-run setup is complete it returns 503, as registration does. Every other entry in this record is
   unavailable then too.
-- The flow cookie holds one value. When a sign-in is started in two tabs one after the other, the earlier one
-  reports `expired`; starting it again works.
+- Each purpose (`login`, `reauth`, `link`) has a flow cookie of its own, and each holds one value. When a
+  sign-in is started in two tabs one after the other, the earlier one reports `expired`; starting it again
+  works. A sign-in can be started by a plain link from any site (§5.3). With its own cookie it cannot end a
+  link (§7.2) or a confirmation (§9) that a signed-in user is in the middle of.
 
 ### 5.3 `GET /auth/sso/{id}/start?return_to=…`
 
@@ -279,14 +282,18 @@ page with `sso_error=rate_limited`.
 
 They run in order. A failure at any step answers with a 302 to `/login?sso_error=<code>`.
 
-1. The IdP sent back an `error` (the user cancelled, for example): `cancelled`.
-2. State: claim the `sso_flows` row by the hash of the state, then check two more things. If any of the three
-   fails the result is `expired`, and the flow is spent with it.
-   - The claim is one atomic `UPDATE … WHERE consumed_at IS NULL RETURNING`, so a row is used once, and an
+1. State: claim the `sso_flows` row. A request that cannot claim it gets `expired`. The claim is one atomic
+   `UPDATE … WHERE … RETURNING` whose conditions are all of:
+   - The hash of the state is the row's, and the row is unused and not expired. So a row is used once, and an
      expired row cannot be claimed.
-   - The cookie is bound to this row.
+   - The request carries the row's flow cookie.
    - The `{id}` in the callback path equals the row's IdP. With several IdPs configured, this stops one IdP's
      callback from being taken for another's.
+
+   A request that fails any of them changes nothing: the row stays good for the browser that started the
+   flow, and no cookie is cleared. So a `state` value that leaks cannot be used from another browser to use
+   the flow up.
+2. The IdP sent back an `error` (the user cancelled, for example): `cancelled`.
 3. Exchange the code: a POST to the token endpoint with `code`, `redirect_uri` and `code_verifier`, following
    no redirect. Every endpoint address the discovery document gives must be https (`localhost` excepted).
 4. Validate the ID token as OIDC Core 1.0 §3.1.3.7 says: signature, `iss`, `aud`, `azp`, `exp` and `nonce`.
@@ -442,7 +449,8 @@ linking cannot: the platform account's email differs from the organization's ema
    so it is confirmed first, as binding an email is.
 2. `POST /auth/sso/identities/link` (Bearer header) finds the IdP by the email's domain, inserts an `sso_flows`
    row with the purpose `link` that records the user id and the `sid`, and returns the IdP's authorization
-   address.
+   address. The IdP is found before the confirmation is checked: an email no IdP answers for returns
+   `{"available": false}` and does not spend a confirmation made at the IdP, which is good only once.
 3. Besides the checks of §6.1, the callback checks three things. When they pass it writes the link and returns
    to Settings.
    - This (issuer, sub) is not linked to another account; otherwise `identity_in_use`.
@@ -475,7 +483,8 @@ linking, when it was linked, the last SSO sign-in), each with "Disconnect". It i
 and `identity_conflict`.
 
 - Unlinking asks the administrator for their password (`confirm_administrator`), like promoting a role. Each
-  one is audited.
+  one is audited. When the link was removed by another request meanwhile, the answer is 404 and nothing is
+  audited.
 - Unlinking removes the link only and leaves the account's sessions and API keys alone. To cut off access,
   suspend the account.
 - An account that uses SSO only has no way to sign in after unlinking; the administrator is told before acting.
@@ -528,7 +537,7 @@ write endpoint authenticated by a cookie alone.
 2. That button calls `POST /auth/sso/reauth/start` with the body `{"purpose": "...", "return_to": "..."}` and
    the Bearer header.
    - It uses the IdP the account is linked to; with several, the one most recently signed in with that is still
-     enabled.
+     enabled. Which IdP a link belongs to is decided as §11 says.
    - It inserts an `sso_flows` row that records the user id, the session id from the access token (`sid`) and
      the purpose.
    - It sets the flow cookie and returns `{"authorization_url": "..."}`. The authorization request also carries
@@ -629,6 +638,10 @@ Notes:
 - Expired rows are removed whenever a new row is inserted.
 - A link is keyed by `issuer`, not `provider_id`: an administrator renaming an IdP does not affect existing
   links, while changing the issuer invalidates all of them, and the operator guide says so.
+- Two IdPs may share an issuer: every Google Workspace organization signs in at `https://accounts.google.com`.
+  So the issuer alone does not say which IdP a link belongs to. To show a link's IdP, or to confirm through it
+  (§9), the gateway takes the IdP the link was made through (`provider_id`) while it is enabled and still has
+  the link's issuer, and otherwise the first enabled IdP with that issuer.
 - `provider_id` and `issuer` record which organization an account came from, which later serves usage figures
   by organization directly.
 

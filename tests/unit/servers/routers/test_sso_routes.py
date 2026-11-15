@@ -91,5 +91,10 @@ def test_without_an_absolute_public_address_there_is_no_callback_address(monkeyp
 def test_the_cookies_are_named_after_the_deployments_session_cookie(monkeypatch):
     monkeypatch.setattr(get_settings(), "refresh_token_cookie_name", "campus_session")
 
-    assert sso_routes._flow_cookie() == "campus_session_sso_flow"
+    # One flow cookie for each purpose: starting one never replaces another's.
+    assert [sso_routes._flow_cookie(purpose) for purpose in sso_routes._PURPOSES] == [
+        "campus_session_sso_flow_login",
+        "campus_session_sso_flow_reauth",
+        "campus_session_sso_flow_link",
+    ]
     assert sso_routes._link_cookie() == "campus_session_sso_link"

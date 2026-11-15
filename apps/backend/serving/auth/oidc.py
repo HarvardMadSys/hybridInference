@@ -55,7 +55,9 @@ _transport: httpx.AsyncBaseTransport | None = None
 
 _discovery_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _jwks_cache: dict[str, tuple[float, list[jwt.PyJWK]]] = {}
-_cache_lock = asyncio.Lock()
+#: One lock for each JWKS address, held while its keys are fetched: a provider
+#: that answers slowly holds up only the sign-ins that need its own keys.
+_jwks_locks: dict[str, asyncio.Lock] = {}
 
 
 class SsoProtocolError(Exception):
@@ -119,6 +121,7 @@ def clear_caches() -> None:
     """Forget every provider's discovery document and keys."""
     _discovery_cache.clear()
     _jwks_cache.clear()
+    _jwks_locks.clear()
 
 
 async def begin(
@@ -296,16 +299,29 @@ async def _discovery(issuer: str) -> dict[str, Any]:
     return document
 
 
+def _cached_keys(jwks_uri: str, *, refetch: bool) -> list[jwt.PyJWK] | None:
+    """The cached keys that still answer this request; None when they must be fetched."""
+    cached = _jwks_cache.get(jwks_uri)
+    if cached is None:
+        return None
+    age = time.monotonic() - cached[0]
+    if (not refetch and age < _JWKS_TTL_SECONDS) or age < _JWKS_REFETCH_INTERVAL_SECONDS:
+        return cached[1]
+    return None
+
+
 async def _keys(jwks_uri: str, *, refetch: bool = False) -> list[jwt.PyJWK]:
-    async with _cache_lock:
-        cached = _jwks_cache.get(jwks_uri)
-        now = time.monotonic()
-        if cached:
-            age = now - cached[0]
-            if (not refetch and age < _JWKS_TTL_SECONDS) or age < _JWKS_REFETCH_INTERVAL_SECONDS:
-                return cached[1]
+    keys = _cached_keys(jwks_uri, refetch=refetch)
+    if keys is not None:
+        return keys
+    async with _jwks_locks.setdefault(jwks_uri, asyncio.Lock()):
+        # Sign-ins that arrived together fetch once: the ones that waited
+        # read what the first one stored.
+        keys = _cached_keys(jwks_uri, refetch=refetch)
+        if keys is not None:
+            return keys
         payload = await _get_json(jwks_uri, what="JWKS")
-        keys: list[jwt.PyJWK] = []
+        keys = []
         for entry in payload.get("keys") or []:
             if not isinstance(entry, dict) or entry.get("use") == "enc":
                 continue
@@ -314,7 +330,7 @@ async def _keys(jwks_uri: str, *, refetch: bool = False) -> list[jwt.PyJWK]:
             except jwt.PyJWTError:
                 # A key in a format this library cannot use; the others may do.
                 continue
-        _jwks_cache[jwks_uri] = (now, keys)
+        _jwks_cache[jwks_uri] = (time.monotonic(), keys)
         return keys
 
 

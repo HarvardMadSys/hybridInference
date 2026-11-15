@@ -7,6 +7,7 @@ key, so every check in ``serving.auth.oidc`` runs on real signatures.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import time
@@ -399,6 +400,55 @@ async def test_unknown_key_ids_do_not_refetch_more_than_once_a_minute(provider):
             await _complete(state)
 
     assert provider.count("/keys") == 1
+
+
+async def test_one_providers_slow_keys_do_not_hold_up_anothers(provider, monkeypatch):
+    answered = asyncio.Event()
+    fetched: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        fetched.append(request.url.host)
+        if request.url.host == "slow.example.edu":
+            await answered.wait()
+        return httpx.Response(200, json={"keys": []})
+
+    monkeypatch.setattr(oidc, "_transport", httpx.MockTransport(handler))
+    slow = [asyncio.create_task(oidc._keys("https://slow.example.edu/keys")) for _ in range(3)]
+    await asyncio.sleep(0.01)
+
+    # Another provider's keys are fetched while the slow one has not answered.
+    assert await asyncio.wait_for(oidc._keys("https://quick.example.edu/keys"), 1) == []
+    assert not any(task.done() for task in slow)
+
+    answered.set()
+    assert await asyncio.gather(*slow) == [[], [], []]
+    # The sign-ins that waited for the slow provider fetched its keys once.
+    assert sorted(fetched) == ["quick.example.edu", "slow.example.edu"]
+
+
+async def test_cached_keys_are_read_while_the_same_providers_keys_are_refetched(
+    provider, monkeypatch
+):
+    monkeypatch.setattr(oidc, "_JWKS_REFETCH_INTERVAL_SECONDS", 0.0)
+    answered = asyncio.Event()
+    answered.set()
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await answered.wait()
+        return httpx.Response(200, json={"keys": []})
+
+    monkeypatch.setattr(oidc, "_transport", httpx.MockTransport(handler))
+    address = "https://idp.example.edu/keys"
+    await oidc._keys(address)
+
+    answered.clear()
+    refetch = asyncio.create_task(oidc._keys(address, refetch=True))
+    await asyncio.sleep(0.01)
+
+    assert await asyncio.wait_for(oidc._keys(address), 1) == []
+    assert not refetch.done()
+    answered.set()
+    await refetch
 
 
 # -- the provider itself ------------------------------------------------------------

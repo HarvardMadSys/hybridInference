@@ -414,10 +414,17 @@ async def test_an_accounts_provider_is_the_offered_one_it_last_signed_in_through
     from datetime import UTC, datetime
 
     offered = {"https://new.example.edu": _provider(id="new", issuer="https://new.example.edu")}
-    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", offered.get)
+    monkeypatch.setattr(
+        sso_accounts.sso_config, "provider_for_identity", lambda _id, issuer: offered.get(issuer)
+    )
     rows = [
-        {"issuer": "https://new.example.edu", "created_at": datetime(2026, 1, 1, tzinfo=UTC)},
         {
+            "provider_id": "new",
+            "issuer": "https://new.example.edu",
+            "created_at": datetime(2026, 1, 1, tzinfo=UTC),
+        },
+        {
+            "provider_id": "gone",
             "issuer": "https://gone.example.edu",
             "created_at": datetime(2026, 1, 1, tzinfo=UTC),
             "last_login_at": datetime(2026, 6, 1, tzinfo=UTC),
@@ -449,14 +456,16 @@ def test_an_identity_is_described_with_its_provider_as_configured_now(monkeypatc
         "created_at": datetime(2026, 1, 1, tzinfo=UTC),
         "last_login_at": None,
     }
-    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", lambda issuer: _provider())
+    monkeypatch.setattr(
+        sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer: _provider()
+    )
 
     summary = sso_accounts.identity_summary(row)
     assert (summary.provider_id, summary.provider_name) == ("example-univ", "Example University")
     assert summary.available is True
 
     # A provider that is no longer offered keeps the id it was linked under.
-    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_issuer", lambda issuer: None)
+    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer: None)
     summary = sso_accounts.identity_summary(row)
     assert (summary.provider_id, summary.provider_name) == ("old-id", "old-id")
     assert summary.available is False

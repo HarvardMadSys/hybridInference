@@ -89,6 +89,18 @@ async def _flow(store, state_hash: str, *, purpose: str = "login", ttl: int = 60
     )
 
 
+async def _claim(
+    store,
+    state_hash: str,
+    *,
+    provider_id: str = "sso-test",
+    bindings: tuple[str, ...] = ("binding",),
+):
+    return await store.consume_sso_flow(
+        state_hash, provider_id=provider_id, binding_hashes=list(bindings)
+    )
+
+
 # -- identities ---------------------------------------------------------------
 
 
@@ -285,22 +297,36 @@ async def test_a_flow_is_claimed_exactly_once(store_and_pool):
     store, _pool = store_and_pool
     await _flow(store, "state-once")
 
-    claims = await asyncio.gather(*(store.consume_sso_flow("state-once") for _ in range(8)))
+    claims = await asyncio.gather(*(_claim(store, "state-once") for _ in range(8)))
 
     won = [claim for claim in claims if claim is not None]
     assert len(won) == 1
     assert won[0]["purpose"] == "login"
     assert won[0]["binding_hash"] == "binding"
     assert won[0]["protocol_state"] == {"nonce_hash": "n", "code_verifier": "v"}
-    assert await store.consume_sso_flow("state-once") is None
-    assert await store.consume_sso_flow("no-such-state") is None
+    assert await _claim(store, "state-once") is None
+    assert await _claim(store, "no-such-state") is None
+
+
+async def test_a_flow_is_claimed_only_with_its_own_cookie_at_its_own_provider(store_and_pool):
+    store, _pool = store_and_pool
+    await _flow(store, "state-bound")
+
+    # None of these is the browser that started the flow, at its provider...
+    assert await _claim(store, "state-bound", bindings=()) is None
+    assert await _claim(store, "state-bound", bindings=("another-browser",)) is None
+    assert await _claim(store, "state-bound", provider_id="another-provider") is None
+
+    # ...so the flow is still there for the one that is, whatever else it holds.
+    flow = await _claim(store, "state-bound", bindings=("an-older-flow", "binding"))
+    assert flow["state_hash"] == "state-bound"
 
 
 async def test_an_expired_flow_cannot_be_claimed(store_and_pool):
     store, _pool = store_and_pool
     await _flow(store, "state-expired", ttl=-1)
 
-    assert await store.consume_sso_flow("state-expired") is None
+    assert await _claim(store, "state-expired") is None
 
 
 async def test_a_reauthentication_is_spent_once_by_the_session_and_purpose_it_confirmed(
@@ -329,7 +355,7 @@ async def test_a_reauthentication_is_spent_once_by_the_session_and_purpose_it_co
 
     # Not before the identity provider answered.
     assert await spend() is False
-    flow = await store.consume_sso_flow("state-reauth")
+    flow = await _claim(store, "state-reauth")
     assert (flow["user_id"], flow["sid"], flow["reauth_purpose"]) == (
         user_id,
         "sid-1",
@@ -353,7 +379,7 @@ async def test_a_sign_in_flow_never_counts_as_a_reauthentication(store_and_pool)
     store, _pool = store_and_pool
     user_id = await _user(store, "login", password=False)
     await _flow(store, "state-login", user_id=user_id, sid="sid-1", reauth_purpose="bind_email")
-    await store.consume_sso_flow("state-login")
+    await _claim(store, "state-login")
 
     await store.mark_sso_reauth_verified("state-login")
 

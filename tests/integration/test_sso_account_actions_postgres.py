@@ -25,6 +25,7 @@ from tests.fixtures.sso_app import (
     location,
     new_browser,
     sign_in,
+    start,
 )
 
 pytest_plugins = ["tests.servers.conftest_auth", "tests.fixtures.sso_app"]
@@ -219,6 +220,59 @@ async def test_the_return_address_of_a_confirmation_stays_inside_the_console(
     assert location(back) == (SETTINGS, {"reauth": ["set_password"]})
 
 
+async def test_a_sign_in_started_meanwhile_does_not_end_a_confirmation(
+    browser, idp, members_sign_straight_in
+):
+    # Any page can send a browser to the direct sign-in link. That starts a
+    # sign-in with a cookie of its own; the confirmation under way keeps its own.
+    headers = await _sso_session(browser, idp)
+    params = await _reauth_start(browser, headers, "delete_account")
+
+    _path, sign_in = location(await browser.get("/auth/sso/example-univ/start"))
+    back = await answer(browser, idp, params, auth_time=int(time.time()))
+
+    assert location(back) == (SETTINGS, {"reauth": ["delete_account"]})
+    # Nor did the confirmation finishing end the sign-in.
+    assert location(await answer(browser, idp, sign_in))[1]["sso"] == ["complete"]
+
+
+async def test_two_providers_at_one_issuer_each_confirm_their_own_members(browser, idp, sso):
+    # Every Google Workspace organization signs in at one issuer, so the
+    # issuer of an identity does not say which provider it belongs to.
+    members = {"auto_create": True, "require_approval": False}
+    sso.providers = [
+        sso.provider(**members),
+        sso.provider(
+            id="college",
+            display_name="Example College",
+            domains=["college.edu"],
+            client_id="college-client",
+            **members,
+        ),
+    ]
+    params = await start(browser, "bob@college.edu")
+    idp.id_token = sign_id_token(
+        id_token_claims(
+            params["nonce"][0], sub="subject-2", email="bob@college.edu", aud="college-client"
+        )
+    )
+    done = await browser.get(
+        "/auth/sso/college/callback", params={"code": "code-1", "state": params["state"][0]}
+    )
+    assert location(done)[1].get("sso") == ["complete"], done.headers["location"]
+    refreshed = await browser.post("/auth/refresh")
+    headers = {"Authorization": f"Bearer {refreshed.json()['access_token']}"}
+
+    me = (await browser.get("/user/me", headers=headers)).json()
+    assert me["sso_reauth_provider"] == {"id": "college", "name": "Example College"}
+    (identity,) = (await browser.get("/auth/sso/identities", headers=headers)).json()["identities"]
+    assert identity["provider_name"] == "Example College"
+    # The confirmation goes to the client the member signed in through.
+    confirm = await _reauth_start(browser, headers, "delete_account")
+    assert confirm["client_id"] == ["college-client"]
+    assert confirm["redirect_uri"] == ["http://test/auth/sso/college/callback"]
+
+
 # -- the account chooser -------------------------------------------------------------
 
 
@@ -298,6 +352,39 @@ async def test_linking_an_email_no_provider_answers_for_starts_nothing(browser, 
     )
 
     assert response.json() == {"available": False, "authorization_url": None}
+
+
+async def test_an_email_no_provider_answers_for_does_not_spend_the_confirmation(
+    browser, idp, members_sign_straight_in
+):
+    headers = await _sso_session(browser, idp)
+    await _reauth(browser, idp, headers, "link_sso")
+
+    async def link(email: str):
+        return await browser.post(
+            "/auth/sso/identities/link", json={"email": email}, headers=headers
+        )
+
+    assert (await link("someone@elsewhere.org")).json()["available"] is False
+    # The confirmation made at the provider is still there for an address that
+    # is offered, and is spent by the link that address starts.
+    assert (await link("second@example.edu")).status_code == 200
+    assert (await link("second@example.edu")).status_code == 400
+
+
+async def test_a_sign_in_started_meanwhile_does_not_end_a_link(browser, idp, store):
+    user_id = await existing_user(store)
+    headers = await _password_session(browser)
+    started = await browser.post(
+        "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
+    )
+    params = parse_qs(urlsplit(started.json()["authorization_url"]).query)
+
+    await browser.get("/auth/sso/example-univ/start")
+    back = await answer(browser, idp, params)
+
+    assert location(back) == (SETTINGS, {"sso_linked": ["1"]})
+    assert (await store.get_user_identity(ISSUER, "subject-1"))["user_id"] == user_id
 
 
 async def test_an_identity_whose_email_is_another_accounts_cannot_be_linked(browser, idp, store):
@@ -511,6 +598,40 @@ async def test_an_administrator_sees_and_unlinks_a_users_identity(
             "SELECT action FROM admin_audit_log WHERE target_user_id = $1 ORDER BY id", user["id"]
         )
     assert [row["action"] for row in actions][-1] == "unlink_sso_identity"
+
+
+async def test_an_identity_removed_meanwhile_is_not_reported_as_unlinked(
+    app, browser, idp, store, auth_backend, members_sign_straight_in, monkeypatch
+):
+    async with new_browser(app) as member:
+        await _sso_session(member, idp)
+    user = await store.get_user_by_email(EMAIL)
+    identity = await store.get_user_identity(ISSUER, "subject-1")
+    admin = await _admin_session(browser, store)
+    unlink = store.unlink_user_identity
+
+    async def removed_by_another_request_first(**fields: Any) -> str:
+        await unlink(**fields)
+        return await unlink(**fields)
+
+    monkeypatch.setattr(store, "unlink_user_identity", removed_by_another_request_first)
+
+    response = await browser.post(
+        f"/admin/users/{user['id']}/sso-identities/{identity['id']}/unlink",
+        json={"password": PASSWORD},
+        headers=admin,
+    )
+
+    # This request removed nothing, so it says so and records nothing.
+    assert response.status_code == 404
+    _store, _log_store, db_logger, _backend = auth_backend
+    async with db_logger.pool.acquire() as conn:
+        recorded = await conn.fetchval(
+            "SELECT COUNT(*) FROM admin_audit_log "
+            "WHERE target_user_id = $1 AND action = 'unlink_sso_identity'",
+            user["id"],
+        )
+    assert recorded == 0
 
 
 async def test_only_an_administrator_may_unlink_for_someone_else(

@@ -13,6 +13,7 @@ import json
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
 
 #: What :meth:`PostgresSsoMixin.link_user_identity` answers.
@@ -268,14 +269,26 @@ class PostgresSsoMixin:
             )
             await conn.execute("DELETE FROM sso_flows WHERE expires_at < NOW() - INTERVAL '1 day'")
 
-    async def consume_sso_flow(self, state_hash: str) -> dict | None:
-        """Atomically claim an unused, unexpired flow; None when there is none to claim."""
+    async def consume_sso_flow(
+        self, state_hash: str, *, provider_id: str, binding_hashes: Sequence[str]
+    ) -> dict | None:
+        """Atomically claim an unused, unexpired flow; None when there is none to claim.
+
+        Only for the provider the flow was started at, and only for a browser
+        that holds the flow's cookie: *binding_hashes* are the hashes of the
+        flow cookies the request carried. Any other request claims nothing,
+        so the flow stays good for the browser that started it.
+        """
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "UPDATE sso_flows SET consumed_at = NOW() "
-                "WHERE state_hash = $1 AND consumed_at IS NULL AND expires_at > NOW() "
+                "WHERE state_hash = $1 AND provider_id = $2 "
+                "AND binding_hash = ANY($3::text[]) "
+                "AND consumed_at IS NULL AND expires_at > NOW() "
                 f"RETURNING {_FLOW_COLUMNS}",
                 state_hash,
+                provider_id,
+                list(binding_hashes),
             )
         return _flow(row)
 

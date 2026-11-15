@@ -243,8 +243,8 @@ class OperationalStore(ABC):
         """Record one redirect to an identity provider."""
         raise RuntimeError("Single sign-on is unavailable in this store")
 
-    async def consume_sso_flow(self, state_hash: str) -> Row | None:
-        """Atomically claim an unused, unexpired flow."""
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
         raise RuntimeError("Single sign-on is unavailable in this store")
 
     async def mark_sso_reauth_verified(self, state_hash: str) -> None:

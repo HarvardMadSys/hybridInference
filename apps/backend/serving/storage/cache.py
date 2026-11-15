@@ -1072,9 +1072,9 @@ class CachedOperationalStore(OperationalStore):
         """Record one redirect to an identity provider."""
         return await self._store.create_sso_flow(**fields)
 
-    async def consume_sso_flow(self, state_hash: str) -> Row | None:
-        """Atomically claim an unused, unexpired flow."""
-        return await self._store.consume_sso_flow(state_hash)
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
+        return await self._store.consume_sso_flow(state_hash, **fields)
 
     async def mark_sso_reauth_verified(self, state_hash: str) -> None:
         """Record that a claimed re-authentication flow ended in a fresh sign-in."""

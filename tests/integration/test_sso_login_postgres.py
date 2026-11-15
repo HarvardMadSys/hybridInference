@@ -61,7 +61,7 @@ async def test_discover_starts_a_sign_in_at_the_provider_for_the_emails_domain(b
     assert params["code_challenge_method"] == ["S256"]
     # The browser is bound to the flow by a cookie only the single sign-on routes see.
     cookie = response.headers["set-cookie"]
-    assert cookie.startswith("refresh_token_sso_flow=")
+    assert cookie.startswith("refresh_token_sso_flow_login=")
     assert "HttpOnly" in cookie and "Path=/auth/sso" in cookie and "SameSite=lax" in cookie
 
 
@@ -112,7 +112,7 @@ async def test_the_direct_link_goes_straight_to_the_provider(browser, idp):
     path, params = _location(response)
     assert path == "/realms/main/authorize"
     assert "login_hint" not in params
-    assert "refresh_token_sso_flow=" in response.headers["set-cookie"]
+    assert "refresh_token_sso_flow_login=" in response.headers["set-cookie"]
 
     # The flow it started completes like one started from the sign-in page.
     done = await _answer(browser, idp, params)
@@ -390,10 +390,17 @@ async def test_a_flow_completes_only_in_the_browser_that_started_it(app, browser
     params = await _start(browser)
 
     async with _browser(app) as attacker:
+        # With no flow cookie at all, and then with the cookie of a sign-in of its own.
+        without_cookie = await _answer(attacker, idp, params)
+        await _start(attacker)
         response = await _answer(attacker, idp, params)
 
-    assert _location(response) == ("/login", {"sso_error": ["expired"]})
+    for refused in (without_cookie, response):
+        assert _location(refused) == ("/login", {"sso_error": ["expired"]})
     assert await store.get_user_by_email(EMAIL) is None
+
+    # Neither attempt used the flow up: it completes in the browser that started it.
+    assert _location(await _answer(browser, idp, params))[1]["sso"] == ["complete"]
 
 
 async def test_a_flow_completes_only_at_the_provider_it_started_at(browser, idp, sso, store):
@@ -410,6 +417,9 @@ async def test_a_flow_completes_only_at_the_provider_it_started_at(browser, idp,
 
     assert _location(response) == ("/login", {"sso_error": ["expired"]})
     assert await store.get_user_by_email(EMAIL) is None
+
+    # The flow is still good at the provider it was started at.
+    assert _location(await _answer(browser, idp, params))[1]["sso"] == ["complete"]
 
 
 async def test_a_callback_without_a_flow_is_refused(browser, idp):

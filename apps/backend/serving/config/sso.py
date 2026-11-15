@@ -191,8 +191,19 @@ def provider_for_email(email: str | None) -> SsoProvider | None:
     return next((p for p in enabled_providers() if p.answers_for(email)), None)
 
 
-def provider_for_issuer(issuer: str) -> SsoProvider | None:
-    """Find an enabled provider by the issuer of an identity it linked."""
+def provider_for_identity(provider_id: str, issuer: str) -> SsoProvider | None:
+    """Find the enabled provider a linked identity signs in through.
+
+    The provider it was linked through, while that one still has the
+    identity's issuer. Two providers may share an issuer (every Google
+    Workspace organization signs in at ``https://accounts.google.com``), so
+    the issuer alone does not say which one. Failing that, the first enabled
+    provider with the issuer: an identity belongs to its issuer, and so
+    outlives a change of its provider's id.
+    """
+    linked = provider_by_id(provider_id)
+    if linked is not None and linked.issuer == issuer:
+        return linked
     return next((p for p in enabled_providers() if p.issuer == issuer), None)
 
 

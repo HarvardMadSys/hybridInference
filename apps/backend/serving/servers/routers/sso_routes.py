@@ -3,7 +3,9 @@
 The browser leaves for the provider and comes back, so two things carry a
 sign-in across that trip: a row in ``sso_flows`` found by the hash of the
 ``state`` value, and a cookie that binds the row to the browser that started
-it. Whatever the answer, the callback ends in a redirect to a console page
+it. The row is claimed once, and only by a request that carries that cookie to
+the provider the sign-in was started at; any other request leaves it as it was.
+Whatever the answer, the callback ends in a redirect to a console page
 with at most an error code; nothing the provider said travels in a URL.
 
 The console's access token lives in page memory and travels in the
@@ -14,7 +16,6 @@ a navigation, acts only on what the flow row recorded when it was started.
 
 from __future__ import annotations
 
-import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -65,7 +66,7 @@ logger = get_logger(__name__)
 FLOW_LIFETIME = timedelta(minutes=10)
 PENDING_LINK_LIFETIME = timedelta(minutes=10)
 
-#: The path both cookies are scoped to: only these routes ever read them.
+#: The path every cookie here is scoped to: only these routes ever read them.
 _COOKIE_PATH = "/auth/sso"
 _DEFAULT_RETURN = "/dashboard"
 _LOGIN_PAGE = "/login"
@@ -74,8 +75,14 @@ _LOGIN_PAGE = "/login"
 # -- small helpers --------------------------------------------------------------
 
 
-def _flow_cookie() -> str:
-    return f"{get_settings().refresh_token_cookie_name}_sso_flow"
+def _flow_cookie(purpose: str) -> str:
+    """The cookie that binds a flow of one purpose to the browser that started it.
+
+    One for each purpose. A sign-in can be started by a plain link, from any
+    site; with a cookie of its own it cannot replace the binding of a
+    confirmation or a link the signed-in user is in the middle of.
+    """
+    return f"{get_settings().refresh_token_cookie_name}_sso_flow_{purpose}"
 
 
 def _link_cookie() -> str:
@@ -216,7 +223,7 @@ async def _start_flow(
         sid=sid,
         reauth_purpose=reauth_purpose,
     )
-    _set_cookie(response, _flow_cookie(), binding, FLOW_LIFETIME)
+    _set_cookie(response, _flow_cookie(purpose), binding, FLOW_LIFETIME)
     return url
 
 
@@ -337,15 +344,15 @@ async def sso_start(
 # -- the provider's answer ---------------------------------------------------------
 
 
-def _flow_error(flow: dict[str, Any] | None, code: str) -> RedirectResponse:
-    """Send the browser back with an error code, to where the flow was started from."""
-    if flow is None or flow["purpose"] == "login":
+def _flow_error(flow: dict[str, Any], code: str) -> RedirectResponse:
+    """End a claimed flow with an error code, back where it was started from."""
+    if flow["purpose"] == "login":
         response = _login_error(code)
     else:
         # Started by a signed-in user from a console page: the sign-in page
         # would only send them on, and the code with it.
         response = _redirect(_with_param(flow["return_to"], "sso_error", code))
-    _clear_cookie(response, _flow_cookie())
+    _clear_cookie(response, _flow_cookie(flow["purpose"]))
     return response
 
 
@@ -368,17 +375,25 @@ async def sso_callback(
     flow's purpose decides what the identity is used for.
     """
     if not op_store or await refresh_setup_state():
-        return _flow_error(None, "unavailable")
-    flow = await op_store.consume_sso_flow(oidc.hash_value(state)) if state else None
-    binding = request.cookies.get(_flow_cookie())
-    if (
-        flow is None
-        or not binding
-        or not hmac.compare_digest(oidc.hash_value(binding), flow["binding_hash"])
-        # A flow started at one provider is never completed by another's answer.
-        or flow["provider_id"] != provider_id
-    ):
-        return _flow_error(None, "expired")
+        return _login_error("unavailable")
+    bindings = [
+        oidc.hash_value(value)
+        for purpose in _PURPOSES
+        if (value := request.cookies.get(_flow_cookie(purpose)))
+    ]
+    # One statement finds the flow, checks that this browser holds its cookie
+    # and that this is the provider it was started at, and marks it used. A
+    # request that fails any of these changes nothing: the flow stays good for
+    # the browser that started it, and that browser's cookies are left alone.
+    flow = (
+        await op_store.consume_sso_flow(
+            oidc.hash_value(state), provider_id=provider_id, binding_hashes=bindings
+        )
+        if state and bindings
+        else None
+    )
+    if flow is None:
+        return _login_error("expired")
     if error:
         # The provider's description of the error is not shown or logged in full.
         logger.info(f"Single sign-on at {provider_id} returned error {error[:64]!r}")
@@ -411,7 +426,7 @@ async def sso_callback(
         flow=flow,
         identity=identity,
     )
-    _clear_cookie(response, _flow_cookie())
+    _clear_cookie(response, _flow_cookie(flow["purpose"]))
     return response
 
 
@@ -872,12 +887,14 @@ async def link_identity(
             account must set a password first; 429 and 503 as for starting a
             sign-in.
     """
-    await _confirm_owner(
-        request, op_store, current_user, password=body.password, purpose="link_sso"
-    )
+    # Before the confirmation: with no provider there is nothing to confirm,
+    # and a confirmation made at a provider is good only once.
     provider = sso_config.provider_for_email(body.email)
     if provider is None:
         return SsoStartResponse(available=False)
+    await _confirm_owner(
+        request, op_store, current_user, password=body.password, purpose="link_sso"
+    )
     return await _start_for_account(
         op_store,
         request,

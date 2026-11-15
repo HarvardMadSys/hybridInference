@@ -113,7 +113,7 @@ async def may_auto_link(provider: SsoProvider, user: dict[str, Any]) -> bool:
 
 def identity_summary(row: dict[str, Any]) -> SsoIdentity:
     """Describe a linked identity, naming its provider as it is configured now."""
-    provider = sso_config.provider_for_issuer(row["issuer"])
+    provider = sso_config.provider_for_identity(row["provider_id"], row["issuer"])
     return SsoIdentity(
         id=row["id"],
         provider_id=provider.id if provider else row["provider_id"],
@@ -153,7 +153,7 @@ async def account_provider(op_store: Any, user_id: str) -> SsoProvider | None:
         return None
     identities.sort(key=lambda row: row.get("last_login_at") or row["created_at"], reverse=True)
     for identity in identities:
-        provider = sso_config.provider_for_issuer(identity["issuer"])
+        provider = sso_config.provider_for_identity(identity["provider_id"], identity["issuer"])
         if provider is not None:
             return provider
     return None

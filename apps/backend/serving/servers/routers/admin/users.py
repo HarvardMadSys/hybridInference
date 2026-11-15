@@ -78,6 +78,7 @@ from serving.servers.deps import (
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
 from serving.servers.routers.admin.reauthentication import confirm_administrator
+from serving.storage import sso as sso_store
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -879,9 +880,13 @@ async def unlink_user_sso_identity(
         payload.password if payload else None,
         action=f"Unlinking single sign-on from {_user_label(user_row)}",
     )
-    await op_store.unlink_user_identity(
+    outcome = await op_store.unlink_user_identity(
         identity_id=identity_id, user_id=user_id, keep_last_sign_in=False
     )
+    if outcome != sso_store.UNLINKED:
+        # Removed by another request since the lookup above: this one did
+        # nothing, so it records nothing and does not say it did.
+        raise HTTPException(404, "No such single sign-on on this account")
     await log_admin_action(
         op_store,
         action="unlink_sso_identity",
