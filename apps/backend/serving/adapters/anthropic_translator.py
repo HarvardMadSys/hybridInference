@@ -82,9 +82,14 @@ def anthropic_request_to_openai(
         fields like max_tokens, temperature, tools, etc.
 
     Raises:
-        UntranslatableRequest: Some part of ``body`` has a shape the
+        UntranslatableRequest: The system prompt or a message has a shape the
             translation cannot read.
     """
+    # Only the walk over the client's system prompt and messages is answered as
+    # the client's error. ``_place_tool_images`` reads what this function built,
+    # and the fields ``_translate_params`` reads are typed by the surface first
+    # (``_shape_error``), so an error from either is the gateway's own and stays
+    # a gateway error rather than telling a client its valid request is wrong.
     try:
         # An inline `role: "system"` message goes wherever normalize_inline_system
         # puts it, so this path and the native passthrough place it the same way.
@@ -98,11 +103,11 @@ def anthropic_request_to_openai(
         for msg in body.get("messages", []):
             if isinstance(msg, dict):
                 messages.extend(_translate_message(msg, tool_images=tool_images))
-        messages = _place_tool_images(messages)
-
-        params = _translate_params(body)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
         raise UntranslatableRequest() from exc
+    messages = _place_tool_images(messages)
+
+    params = _translate_params(body)
     return messages, params
 
 

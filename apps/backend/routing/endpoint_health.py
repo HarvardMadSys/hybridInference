@@ -86,21 +86,27 @@ _CALLERS_IN_ALERT = 10
 # could keep a model off the air for everyone.
 #
 # So the breaker tells callers apart, by the identity ``_caller_key`` reads. A
-# caller's first failure on an endpoint counts as before. Until the endpoint
-# next serves that caller, its further failures there count only if nobody
-# else has been served there within ``CIRCUIT_CALLER_WINDOW_SECONDS`` either,
-# and at most once per window: an endpoint that is serving other callers while
-# failing one has said something about that caller, not about itself. Such a
-# failure is logged as ``caller_repeat_skip_breaker`` and leaves availability,
-# the streak and the circuit alone, as a client error does.
+# caller's failure on an endpoint counts, as before. Until the endpoint next
+# serves that caller, and for at most ``CIRCUIT_CALLER_WINDOW_SECONDS`` after
+# that counted failure, its further failures there are skipped if the endpoint
+# has served somebody else since: an endpoint that served others in between
+# has said something about that caller, not about itself. A skipped failure is
+# logged as ``caller_repeat_skip_breaker`` and leaves availability, the streak
+# and the circuit alone, as a client error does. Once the window is up the
+# caller's next failure counts again, so it is heard at most once a window.
 #
-# An outage still opens the circuit, by either of the two routes it always
-# has. Several callers failing in a row are several first failures, so a busy
-# endpoint trips as fast as it did. A lone caller's failures all count again
-# once nobody else has been served for a window, so an endpoint with a single
-# active caller trips at most a window later. A failure with no caller attached
-# always counts, and so does a credential rejection, which is never the
-# caller's (``_AUTH_MISCONFIG_STATUSES``).
+# The evidence has to come after the counted failure. A success from before it
+# says nothing about whether the endpoint is up now, and taking it as evidence
+# would excuse every failure for a window after an outage began. An outage
+# serves nobody, so every failure in it counts, whoever sends it: the circuit
+# opens, and a failed half-open probe reopens it, as fast as they always did.
+# The exception is a caller whose failure the endpoint had already served
+# others around before the outage, whose repeats stay skipped: a probe it
+# fails passes to the next caller. Equally, a caller's failures with nobody
+# served in between all count -- a burst from one caller looks, from here,
+# like the start of an outage. A failure with no caller attached always
+# counts, and so does a credential rejection, which is never the caller's
+# (``_AUTH_MISCONFIG_STATUSES``).
 #
 # Bound on the callers one endpoint remembers as charged and not yet served
 # since. Past it the oldest is forgotten, which only makes that caller's next
@@ -632,9 +638,9 @@ class _CircuitBreaker:
             )
             or ""
         )
-        # How long serving other callers keeps one caller's repeated failures off
-        # this breaker; 0 counts every failure. See the module comment above
-        # ``_MAX_CHARGED_CALLERS``.
+        # How long after a caller's counted failure its repeats can be skipped,
+        # when this endpoint has served somebody else since; 0 counts every
+        # failure. See the module comment above ``_MAX_CHARGED_CALLERS``.
         self.caller_window_seconds = float(
             config_value(
                 "CIRCUIT_CALLER_WINDOW_SECONDS",
@@ -799,10 +805,11 @@ class _CircuitBreaker:
     def counts_caller_failure(self, caller: str | None, *, always: bool = False) -> bool:
         """Return whether a failure from ``caller`` counts against this endpoint.
 
-        False only for a caller whose earlier failure here counted within the
-        window, who has not been served here since, while somebody else has
-        been, within the window too: that failure is about the caller. Anything
-        else counts, and is remembered as this caller's counted failure. See the
+        False only for a caller whose earlier failure here counted less than a
+        window ago and who has not been served here since, while somebody else
+        has been, after that counted failure: the endpoint served others while
+        failing this caller, so this failure is about the caller. Anything else
+        counts, and is remembered as this caller's counted failure. See the
         module comment above ``_MAX_CHARGED_CALLERS``.
 
         Args:
@@ -821,7 +828,9 @@ class _CircuitBreaker:
                 not always
                 and charged_at is not None
                 and now - charged_at < window
-                and self._served_other_since_locked(caller, now - window)
+                # Since the counted failure, not merely within the window: a
+                # success from before it is no evidence the endpoint is up now.
+                and self._served_other_since_locked(caller, charged_at)
             ):
                 return False
             # Re-inserted rather than updated so the dict stays oldest first,
@@ -836,10 +845,14 @@ class _CircuitBreaker:
             return True
 
     def _served_other_since_locked(self, caller: str, since: float) -> bool:
-        """Return whether a caller other than ``caller`` was served at or after ``since``."""
+        """Return whether a caller other than ``caller`` was served after ``since``.
+
+        Strictly after: a success stamped with the same instant cannot be told
+        apart from one just before, and that one would excuse nothing.
+        """
         for served, at in self._served:
             if served != caller:
-                return at >= since
+                return at > since
         return False
 
     def on_success(self) -> None:

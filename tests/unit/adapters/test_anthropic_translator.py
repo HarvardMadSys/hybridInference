@@ -212,6 +212,24 @@ def test_request_the_translation_cannot_read_is_a_400_the_breaker_exempts(body):
     assert "unsupported shape" in str(refused.value)
 
 
+def test_request_an_error_outside_the_content_walk_stays_the_gateways(monkeypatch):
+    """Only reading the client's system prompt and messages is answered as its 400.
+
+    The parameters are typed by the surface before translation, so an error there
+    is a gateway bug, and must not tell a client its valid request is malformed.
+    """
+    from serving.adapters import anthropic_translator
+
+    def broken(body):
+        raise KeyError("a gateway bug")
+
+    monkeypatch.setattr(anthropic_translator, "_translate_params", broken)
+    with pytest.raises(KeyError):
+        anthropic_request_to_openai(
+            {"model": "glm-4.7", "max_tokens": 100, "messages": [{"role": "user", "content": "Hi"}]}
+        )
+
+
 def test_request_tool_choice_auto():
     body = {
         "model": "glm-4.7",

@@ -894,9 +894,9 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     ConfigEntry(
         "CIRCUIT_CALLER_WINDOW_SECONDS",
         "routing",
-        "Seconds during which one caller's repeated failures on an endpoint that is "
-        "serving other callers do not count toward opening its circuit. 0 counts "
-        "every failure.",
+        "Seconds after one caller's counted failure on an endpoint during which its "
+        "repeat failures there do not count toward opening the circuit, if the "
+        "endpoint has served another caller since. 0 counts every failure.",
         type="float",
         default="60",
         restart_required=True,

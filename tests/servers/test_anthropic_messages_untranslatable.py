@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 
 import pytest
 
@@ -154,6 +155,7 @@ async def test_a_body_the_translation_cannot_read_is_never_charged(
     anthropic_test_client,
     anthropic_compat_router,
     monkeypatch,
+    caplog,
     quiet_alerts,
     no_log_store,
     upstream,
@@ -170,9 +172,12 @@ async def test_a_body_the_translation_cannot_read_is_never_charged(
     monkeypatch.setenv("CIRCUIT_FAILURE_THRESHOLD", "3")
 
     for _ in range(5):
-        r = await anthropic_test_client.post(
-            "/v1/messages", json=_body(stream=stream, messages=_TEXT_NOT_A_STRING), headers=_auth()
-        )
+        with caplog.at_level(logging.WARNING, logger="serving.adapters.base"):
+            r = await anthropic_test_client.post(
+                "/v1/messages",
+                json=_body(stream=stream, messages=_TEXT_NOT_A_STRING),
+                headers=_auth(),
+            )
         if stream:
             # Committed before the adapter ran, so the refusal is in-band.
             assert r.status_code == 200
@@ -191,6 +196,10 @@ async def test_a_body_the_translation_cannot_read_is_never_charged(
     circuit = _circuit(anthropic_compat_router)
     assert circuit["circuit_state"] == _CircuitState.CLOSED
     assert circuit["availability"] == 1.0
+    # Each one is logged under its own event, so a run of them stands out.
+    logged = [r for r in caplog.records if r.getMessage() == "untranslatable_request"]
+    assert len(logged) == 5
+    assert {(r.model_id, r.error_type) for r in logged} == {(TRANSLATED_MODEL, "TypeError")}
     good = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
     assert good.status_code == 200
     await asyncio.sleep(0)
