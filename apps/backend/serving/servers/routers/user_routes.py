@@ -702,26 +702,34 @@ async def list_api_keys(
 
     rows = await op_store.list_account_keys(current_user["user_id"])
 
-    keys: list[APIKeyListItem] = []
-    for row in rows:
-        keys.append(
-            APIKeyListItem(
-                key_prefix=row["key_prefix"],
-                key_masked=mask_key_prefix(row["key_prefix"]),
+    return APIKeyListResponse(
+        keys=[
+            key_list_item(
+                row,
                 revealable=row["status"] in _REVEALABLE_STATUSES
                 and bool(row.get("api_key_encrypted")),
-                name=row.get("name"),
-                created_at=row["created_at"],
-                last_used_at=row["last_used_at"],
-                status=row["status"],
-                spent_today_usd=float(row.get("spent_today_usd") or 0),
-                spent_month_usd=float(row.get("spent_month_usd") or 0),
-                project_id=row.get("project_id"),
-                project_name=row.get("project_name"),
-                **_key_limits(row),
             )
-        )
-    return APIKeyListResponse(keys=keys)
+            for row in rows
+        ]
+    )
+
+
+def key_list_item(row: dict[str, Any], *, revealable: bool) -> APIKeyListItem:
+    """One ``list_account_keys`` row as the key listings show it: masked, never the key."""
+    return APIKeyListItem(
+        key_prefix=row["key_prefix"],
+        key_masked=mask_key_prefix(row["key_prefix"]),
+        revealable=revealable,
+        name=row.get("name"),
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+        status=row["status"],
+        spent_today_usd=float(row.get("spent_today_usd") or 0),
+        spent_month_usd=float(row.get("spent_month_usd") or 0),
+        project_id=row.get("project_id"),
+        project_name=row.get("project_name"),
+        **_key_limits(row),
+    )
 
 
 @router.post("/api-keys/{key_prefix}/reveal", response_model=APIKeyRevealResponse)

@@ -14,6 +14,7 @@ import type {
   UserDetail,
 } from '@/lib/api/admin';
 import { UserAutomationPanel } from './UserAutomationPanel';
+import { UserProjects } from './UserProjects';
 import { UserRecentRequests } from './UserRecentRequests';
 import { UserUsageInsights } from './UserUsageInsights';
 import {
@@ -823,12 +824,14 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         </div>
       </div>
 
-      {/* These three panels are siblings, so their keys must be unique relative
+      {/* These panels are siblings, so their keys must be unique relative
           to each other — keying them all on `u.id` collides and makes React
           duplicate them on re-render (e.g. after a quota save), stacking extra
           copies of each box. Each key is prefixed so it stays unique here while
           still changing per user, which remounts the panels (resetting their
           computed state) when the admin switches to a different user. */}
+      {/* The account's projects and the keys in each, read-only. */}
+      <UserProjects key={`projects-${u.id}`} userId={u.id} />
       {/* On-demand automation score. */}
       <UserAutomationPanel key={`automation-${u.id}`} userId={u.id} />
       {/* LLM analysis of this user's requests. */}
