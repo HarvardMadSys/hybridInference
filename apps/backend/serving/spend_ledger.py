@@ -124,7 +124,6 @@ class _Amount:
     cost: float = 0.0
     counted: Decimal = Decimal(0)
     requests: int = 0
-    org_id: str | None = None
     project_id: str | None = None
 
     def add(self, cost: float, counted: Decimal, requests: int) -> None:
@@ -482,10 +481,9 @@ class SpendLedger:
             cost_usd = MAX_REQUEST_COST_USD
         day = utc_day()
         context = req_ctx.get() or {}
-        org_id = context.get(req_ctx.ORG_ID) or None
         project_id = context.get(req_ctx.PROJECT_ID) or None
         key: _Key = (user_id, api_key_id, day, project_id)
-        self._pending.setdefault(key, _Amount(org_id=org_id, project_id=project_id)).add(
+        self._pending.setdefault(key, _Amount(project_id=project_id)).add(
             cost_usd, counted_amount(cost_usd), 1
         )
         unconfirmed = self._unconfirmed.setdefault(user_id, {}).setdefault(
@@ -540,9 +538,9 @@ class SpendLedger:
             self._set_aside([(key, batch[key], error) for key, error in outcome.refused])
         if outcome.failed:
             for key in outcome.failed:
-                self._pending.setdefault(
-                    key, _Amount(org_id=batch[key].org_id, project_id=batch[key].project_id)
-                ).add(batch[key].cost, batch[key].counted, batch[key].requests)
+                self._pending.setdefault(key, _Amount(project_id=batch[key].project_id)).add(
+                    batch[key].cost, batch[key].counted, batch[key].requests
+                )
             self._schedule_retry()
         else:
             self._retry_delay = 0.0
@@ -743,8 +741,6 @@ async def _write(store: Any, batch: dict[_Key, _Amount]) -> _Outcome:
         async def write_one(key: _Key) -> None:
             amount = batch[key]
             scopes = {}
-            if amount.org_id is not None:
-                scopes["org_id"] = amount.org_id
             if amount.project_id is not None:
                 scopes["project_id"] = amount.project_id
             await store.increment_user_cost(
@@ -807,7 +803,6 @@ def _increment(key: _Key, amount: _Amount) -> CostIncrement:
         api_key_id=key[1],
         cost_usd=amount.counted,
         requests=amount.requests,
-        org_id=amount.org_id,
         project_id=amount.project_id,
     )
 

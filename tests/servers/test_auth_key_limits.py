@@ -71,7 +71,6 @@ def _store(row: dict | None) -> MagicMock:
     store.get_user_cost_today = AsyncMock(return_value=0.0)
     store.get_key_spend = AsyncMock(return_value=(0.0, 0.0))
     store.update_key_last_used = AsyncMock()
-    store.get_personal_org_status = AsyncMock(return_value=None)
     return store
 
 
@@ -212,7 +211,7 @@ async def test_on_behalf_of_ignores_the_service_keys_limits(monkeypatch):
     assert KEY_ALLOWED_MODELS_KEY not in ctx
 
 
-async def test_on_behalf_of_a_suspended_org_falls_back_to_the_service_account(monkeypatch):
+async def test_on_behalf_of_a_suspended_account_falls_back_to_the_service_account(monkeypatch):
     monkeypatch.setenv("RAG_API_KEY", KEY)
     store = _store(_row())
     store.get_user_by_id = AsyncMock(
@@ -220,12 +219,11 @@ async def test_on_behalf_of_a_suspended_org_falls_back_to_the_service_account(mo
             "id": "end-user-1",
             "user_name": "End User",
             "role": "free",
-            "status": "active",
+            "status": "suspended",
             "preferences": None,
             "max_concurrent_requests": None,
         }
     )
-    store.get_personal_org_status = AsyncMock(return_value="suspended")
 
     ctx = await _verify(store, x_on_behalf_of="end-user-1")
 

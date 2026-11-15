@@ -709,7 +709,7 @@ class ProjectResponse(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
-    """Create a project under the caller's personal organization."""
+    """Create a project owned by the caller."""
 
     name: str = Field(..., min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)

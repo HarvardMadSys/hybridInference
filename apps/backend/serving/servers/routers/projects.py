@@ -1,7 +1,7 @@
 """Console API for projects.
 
-A project groups the account's keys under budgets below the organization's
-ceiling and an optional model allowlist. Every account has a Default project
+A project groups the account's keys under budgets below the account's quota
+and an optional model allowlist. Every account has a Default project
 that cannot be archived.
 """
 
@@ -39,6 +39,15 @@ logger = get_logger(__name__)
 router = APIRouter(prefix="/user/projects", tags=["User Dashboard"])
 
 _MAX_PROJECTS = 100
+
+#: The unique index on an account's active project names. It is on
+#: ``projects.org_id``, which holds one value per account (``legacy_org_id``).
+_NAME_INDEX = "idx_projects_org_name"
+
+
+def _is_duplicate_name(exc: Exception) -> bool:
+    """Whether *exc* is a write refused for reusing an active project's name."""
+    return _NAME_INDEX in str(exc)
 
 
 async def project_response(op_store: Any, row: dict[str, Any]) -> ProjectResponse:
@@ -101,7 +110,7 @@ async def create_project(
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     db_logger=Depends(get_db_logger),
 ) -> ProjectResponse:
-    """Create a project under the caller's personal organization."""
+    """Create a project owned by the caller."""
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
     name = payload.name.strip()
@@ -142,7 +151,7 @@ async def create_project(
             max_concurrent_requests=payload.max_concurrent_requests,
         )
     except Exception as exc:
-        if "idx_projects_org_name" in str(exc):
+        if _is_duplicate_name(exc):
             raise HTTPException(
                 status_code=409, detail="A project with that name already exists."
             ) from exc
@@ -217,7 +226,7 @@ async def update_project(
     try:
         row = await op_store.update_project(current_user["user_id"], project_id, changes)
     except Exception as exc:
-        if "idx_projects_org_name" in str(exc):
+        if _is_duplicate_name(exc):
             raise HTTPException(
                 status_code=409, detail="A project with that name already exists."
             ) from exc
