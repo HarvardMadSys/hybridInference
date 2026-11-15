@@ -1010,53 +1010,61 @@ at that time, rather than shaping today's model around a guess.
 
 - `projects.user_id` owns a project, and every project query filters on it.
 - The account quota gets a home of its own, `account_quotas` (one row per
-  account). It is what a new key inherits and what a project budget may not
-  exceed. Every write of the account quota (key creation, the admin quota
-  edit, the per-role bulk apply) writes it and the keys' copies in one
-  transaction; the request path keeps reading the presented key's copy.
-  Before, the keys' copies were the only record outside the organization,
-  and a revoked key could carry an old quota into the next key (review of
-  #1806: an admin cut to $1/$2 came back as $100 with no monthly cap).
+  account), and that record is what requests are checked against: the auth
+  lookup and the grant lookup join it. A daily quota it leaves NULL is unset,
+  and the presented key's copy applies; an account without a row (created by
+  the previous release mid-rollout) is read from its keys. Every write of the
+  account quota (key creation, the admin quota edit, the per-role bulk apply)
+  writes the record and the unrevoked keys' copies in one transaction. Before,
+  the keys' copies were the only record outside the organization, and a
+  revoked key could carry an old quota into the next key.
 - The organization concurrency slot, the `organization_suspended` refusal,
   the suspended-organization check on `X-On-Behalf-Of`, `org_id` attribution
   in the spend ledger and `PATCH /admin/orgs` are gone. Project concurrency,
   budgets and allowlists are unchanged.
 - Signup, first-run setup and phone signup create the Default project only.
-  Boot backfill gives any account without one its Default project.
+  Boot backfill gives any account without one its Default project, and brings
+  key copies that differ from the record back in line.
 
 ### 19.4 Migration and rollback
 
-`0018_projects_owned_by_accounts` is an expand revision. In order:
+`0018_projects_owned_by_accounts` is an expand revision. The previous release
+enforces an organization budget ahead of a key's copy, so for as long as it
+may run, both stay copies of the account quota. In order, the revision:
 
-1. It refuses to run while any organization has a concurrency cap, naming
-   them. That cap limited batch and interactive work together, which no
-   account setting does; an administrator decides what replaces each one.
-2. It fills `account_quotas` from the organization's budget where one was
-   set, otherwise from the keys (a live key's quota, else the most recently
-   revoked one's), so an account with a budget but no key keeps it, and gives
-   the keys a budget set on the organization.
-3. It adds `projects.user_id`, filled from each organization's owner, and
-   suspends the account of a suspended organization.
-4. It clears the organizations' budgets and status, so the previous release,
-   which reads an organization ceiling ahead of the key quota, enforces what
-   this one does.
-5. It adds two triggers for the time both releases may run: a project the
-   previous release creates gets its owning account, and a budget or
-   suspension it writes to an organization goes to the account (a
-   concurrency cap is refused).
+1. takes the lock every quota writer takes, to its end, so no quota the
+   running release writes falls between the copy and the triggers;
+2. refuses to run while any organization holds what no account setting
+   replaces, naming them: a concurrency cap (it limited batch and interactive
+   work together), a suspension (not an account suspension, which revokes
+   sessions), or a budget of 1,000,000 USD or more (a key's quota column
+   cannot hold it). All three could only be set through `PATCH /admin/orgs`;
+3. fills `account_quotas` with what the previous release enforced: the
+   organization's budget where set, otherwise the keys' quota (a live key's,
+   else the most recently revoked one's), so an account with a budget but no
+   key keeps it;
+4. gives the account's unrevoked keys and its organization that quota;
+5. adds `projects.user_id`, filled from each organization's owner;
+6. adds three triggers: every `account_quotas` write is mirrored to the
+   account's organization; a budget the previous release writes on an
+   organization becomes the account's quota (seeding what it leaves untouched
+   from the record or the keys, forwarding a cleared value, and refusing the
+   three settings above); and a project the previous release creates gets its
+   owning account.
 
 It drops and constrains nothing. This release still writes
 `projects.org_id` and `api_keys.org_id` as `'org_p_' || user_id`, and the
-empty `organizations` row and owner membership they name. That keeps the
-unique indexes on `projects.org_id` (one active name and one Default per
-account) holding, and keeps a rolled-back release from moving keys: its
-startup backfill reassigns a key without an organization to Default. Nothing
-reads these values. Hard delete removes the row with the account.
+organization row and owner membership they name. That keeps the unique
+indexes on `projects.org_id` (one active name and one Default per account)
+holding, and keeps a rolled-back release from moving keys: its startup
+backfill reassigns a key without an organization to Default. Nothing in this
+release reads these values or the organization's budgets. Hard delete removes
+the row with the account.
 
 A contract revision, shipped once this release is the oldest one running,
-drops the two triggers, `organizations`, `org_members`, `projects.org_id` and
-`api_keys.org_id`, moves the two unique indexes onto `projects.user_id`, and
-removes the placeholder writes.
+drops the three triggers, `organizations`, `org_members`, `projects.org_id`
+and `api_keys.org_id`, moves the two unique indexes onto `projects.user_id`,
+and removes the placeholder writes.
 
 ## References
 

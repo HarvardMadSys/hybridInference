@@ -72,14 +72,15 @@ async def test_a_new_key_lands_in_the_default_project(store):
     assert default is not None
     assert default["id"] == default_project_id(_USER)
     async with store._pool.acquire() as conn:
-        # Only the placeholder a rolled-back release needs, holding nothing.
+        # The row a rolled-back release needs: no settings of its own, and
+        # the account's quota, which that release enforces from it.
         placeholder = await conn.fetchrow(
             "SELECT budget_daily_usd, budget_monthly_usd, max_concurrent_requests, status "
             "FROM organizations WHERE id = $1",
             legacy_org_id(_USER),
         )
     assert dict(placeholder) == {
-        "budget_daily_usd": None,
+        "budget_daily_usd": key["quota_daily_cost_usd"],
         "budget_monthly_usd": None,
         "max_concurrent_requests": None,
         "status": "active",
@@ -451,3 +452,76 @@ async def test_every_key_keeps_the_organization_id_a_rolled_back_release_needs(s
         )
     assert dict(key) == {"org_id": legacy_org_id(_USER), "project_id": "proj_auth_test"}
     assert member == "owner"
+
+
+async def test_a_budget_set_before_the_first_key_applies_to_it(store):
+    await store.update_key(_USER, quota_daily_cost_usd=2, quota_monthly_cost_usd=5)
+
+    await store.create_key(
+        key_hash="h-keyless-budget",
+        key_prefix="hyi-klb",
+        user_id=_USER,
+        quota_daily_cost_usd=100,
+        inherit_account_quota=True,
+    )
+
+    key = await store.get_auth_context_with_spend("h-keyless-budget")
+    assert (float(key["quota_daily_cost_usd"]), float(key["quota_monthly_cost_usd"])) == (2, 5)
+
+
+async def test_an_unset_daily_quota_leaves_the_first_key_its_default(store):
+    """A monthly cap alone, set before any key, does not blank the daily quota."""
+    await store.update_key(_USER, quota_monthly_cost_usd=5)
+
+    await store.create_key(
+        key_hash="h-keyless-monthly",
+        key_prefix="hyi-klm",
+        user_id=_USER,
+        quota_daily_cost_usd=100,
+        inherit_account_quota=True,
+    )
+
+    key = await store.get_auth_context_with_spend("h-keyless-monthly")
+    assert (float(key["quota_daily_cost_usd"]), float(key["quota_monthly_cost_usd"])) == (100, 5)
+    assert await store.get_account_budgets(_USER) == (100.0, 5.0)
+
+
+async def test_requests_are_checked_against_the_record_not_a_keys_copy(store):
+    """A key the previous release creates mid-rollout carries its role's default."""
+    from serving.storage.postgres_operational import reconcile_key_quota_copies
+
+    await store.create_key(
+        key_hash="h-copy", key_prefix="hyi-cpy", user_id=_USER, quota_daily_cost_usd=2
+    )
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET quota_daily_cost_usd = 1000, quota_monthly_cost_usd = NULL "
+            "WHERE key_hash = 'h-copy'"
+        )
+
+    key = await store.get_auth_context_with_spend("h-copy")
+    grant = (await store.get_quota_context_for_user(_USER))[0]
+    assert float(key["quota_daily_cost_usd"]) == 2
+    assert float(grant["quota_daily_cost_usd"]) == 2
+
+    async with store._pool.acquire() as conn:
+        assert await reconcile_key_quota_copies(conn) == 1
+        assert await reconcile_key_quota_copies(conn) == 0
+        copy = await conn.fetchval(
+            "SELECT quota_daily_cost_usd FROM api_keys WHERE key_hash = 'h-copy'"
+        )
+    assert float(copy) == 2
+
+
+async def test_a_quota_edit_reaches_the_organization(store):
+    """The organization is where a rolled-back release enforces the account quota from."""
+    await store.create_key(key_hash="h-org-a", key_prefix="hyi-oga", user_id=_USER)
+
+    await store.update_key(_USER, quota_daily_cost_usd=1, quota_monthly_cost_usd=2)
+
+    async with store._pool.acquire() as conn:
+        org = await conn.fetchrow(
+            "SELECT budget_daily_usd, budget_monthly_usd FROM organizations WHERE id = $1",
+            legacy_org_id(_USER),
+        )
+    assert (float(org["budget_daily_usd"]), float(org["budget_monthly_usd"])) == (1, 2)

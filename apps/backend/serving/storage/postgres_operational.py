@@ -310,30 +310,46 @@ _KEY_SPEND_JOIN = (
 #: read only when the account has a monthly quota: at most a month of counter
 #: rows through the counter's primary key. Same days ``get_user_cost_period``
 #: sums, so the gate and the console agree.
+#: The account's quota as the request path enforces it, for key ``k`` joined to
+#: its account's ``account_quotas`` row ``aq`` (:data:`_ACCOUNT_QUOTA_JOIN`).
+#: The row is the record; the key's own copy stands in for an account without
+#: one, and for a daily quota the row leaves unset.
+_ACCOUNT_DAILY_QUOTA = "COALESCE(aq.quota_daily_cost_usd, k.quota_daily_cost_usd)"
+_ACCOUNT_MONTHLY_QUOTA = (
+    "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_usd "
+    "ELSE k.quota_monthly_cost_usd END"
+)
+_ACCOUNT_QUOTA_COLUMNS = (
+    f"{_ACCOUNT_DAILY_QUOTA} AS quota_daily_cost_usd, "
+    f"{_ACCOUNT_MONTHLY_QUOTA} AS quota_monthly_cost_usd"
+)
+_ACCOUNT_QUOTA_JOIN = "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
+
 _ACCOUNT_MONTH_SPEND_JOIN = (
     "LEFT JOIN LATERAL ("
     "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd "
     "  FROM user_daily_cost m "
     "  WHERE m.user_id = k.user_id "
-    "    AND k.quota_monthly_cost_usd IS NOT NULL "
+    f"    AND {_ACCOUNT_MONTHLY_QUOTA} IS NOT NULL "
     "    AND m.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
     ") am ON TRUE "
 )
 
 
 #: The key's project: where the request is attributed, and the budgets between
-#: the key and its account. The account's own quota is the one every key of
-#: the account carries.
+#: the key and its account; and the account's own quota above them.
 _PROJECT_SCOPE_COLUMNS = (
     "k.project_id, p.name AS project_name, "
     "p.budget_daily_usd AS project_budget_daily_usd, "
     "p.budget_monthly_usd AS project_budget_monthly_usd, "
     "p.allowed_models AS project_allowed_models, "
-    "k.quota_daily_cost_usd, k.quota_monthly_cost_usd, "
+    f"{_ACCOUNT_QUOTA_COLUMNS}, "
     "p.max_concurrent_requests AS project_max_concurrent_requests"
 )
 
-_PROJECT_SCOPE_JOIN = "LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' "
+_PROJECT_SCOPE_JOIN = (
+    f"LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' {_ACCOUNT_QUOTA_JOIN}"
+)
 
 #: Daily and monthly spend for the key's project, read from ``spend_counters``
 #: through its primary key. Project counters are written at settlement; the
@@ -440,23 +456,29 @@ async def _sync_account_quota(
 
 #: The account's quota: what a key added to the account takes (``create_key``
 #: with ``inherit_account_quota``) and what a project budget may not exceed.
-#: ``account_quotas`` holds it, written with every change to the keys' copies
-#: (:func:`_set_account_quota`), so revoking keys can never bring back a quota
-#: an administrator replaced. An account it has no row for yet -- one the
-#: previous release created while this one rolled out -- falls back to its
-#: keys: an unrevoked key's quota, else the most recently revoked key's.
+#: ``account_quotas`` records it, written with every change
+#: (:func:`_set_account_quota`). Where the record has no answer its keys do --
+#: an unrevoked key's copy, else the most recently revoked key's: for an
+#: account the previous release created while this one rolled out, which has
+#: no record yet, and for a daily quota the record leaves unset. ``has_key``
+#: tells a daily quota of NULL that the keys carry (the store's default
+#: applies) from one nothing has set. No row when the account has neither.
 ACCOUNT_QUOTA_SOURCE_SQL = (
-    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM ("
-    "  SELECT 0 AS source, quota_daily_cost_usd, quota_monthly_cost_usd "
-    "  FROM account_quotas WHERE user_id = $1 "
-    "  UNION ALL ("
-    "    SELECT 1, quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys WHERE user_id = $1 "
-    "    ORDER BY status = 'revoked', "
-    "    CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END "
-    "    DESC NULLS LAST, created_at, id "
-    "    LIMIT 1"
-    "  )"
-    ") quota ORDER BY source LIMIT 1"
+    "SELECT COALESCE(q.quota_daily_cost_usd, k.quota_daily_cost_usd) AS quota_daily_cost_usd, "
+    "CASE WHEN q.user_id IS NOT NULL THEN q.quota_monthly_cost_usd "
+    "ELSE k.quota_monthly_cost_usd END AS quota_monthly_cost_usd, "
+    "k.user_id IS NOT NULL AS has_key "
+    "FROM (SELECT $1::text AS user_id) a "
+    "LEFT JOIN account_quotas q ON q.user_id = a.user_id "
+    "LEFT JOIN LATERAL ("
+    "  SELECT user_id, quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys "
+    "  WHERE user_id = a.user_id "
+    "  ORDER BY status = 'revoked', "
+    "  CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END "
+    "  DESC NULLS LAST, created_at, id "
+    "  LIMIT 1"
+    ") k ON TRUE "
+    "WHERE q.user_id IS NOT NULL OR k.user_id IS NOT NULL"
 )
 
 
@@ -464,7 +486,8 @@ async def _set_account_quota(conn: Any, user_id: str, **changes: Any) -> None:
     """Record the account quota: ``quota_daily_cost_usd``/``quota_monthly_cost_usd`` given.
 
     A value left out keeps what the account had. Runs in the caller's
-    transaction, beside the write that gives the keys the same values.
+    transaction, under the account's key lock, beside the write that gives the
+    account's unrevoked keys the same values.
     """
     current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
     daily = changes.get(
@@ -482,6 +505,28 @@ async def _set_account_quota(conn: Any, user_id: str, **changes: Any) -> None:
         daily,
         monthly,
     )
+
+
+async def reconcile_key_quota_copies(conn: asyncpg.Connection) -> int:
+    """Give every unrevoked key the quota its account records; return how many changed.
+
+    A key the previous release creates while this one rolls out takes its
+    quota from the account's other keys, or its role's default, and not from
+    ``account_quotas``. Requests are checked against the record either way;
+    this brings the copies the consoles show back in line. Run at startup.
+    """
+    async with conn.transaction():
+        await _lock_all_account_keys(conn)
+        tag = await conn.execute(
+            "UPDATE api_keys k SET "
+            "quota_daily_cost_usd = COALESCE(q.quota_daily_cost_usd, k.quota_daily_cost_usd), "
+            "quota_monthly_cost_usd = q.quota_monthly_cost_usd "
+            "FROM account_quotas q WHERE q.user_id = k.user_id AND k.status <> 'revoked' "
+            "AND (k.quota_daily_cost_usd IS DISTINCT FROM "
+            "COALESCE(q.quota_daily_cost_usd, k.quota_daily_cost_usd) "
+            "OR k.quota_monthly_cost_usd IS DISTINCT FROM q.quota_monthly_cost_usd)"
+        )
+    return _parse_command_tag_count(tag)
 
 
 def _coerce_user_row(row: Any) -> Row | None:
@@ -1856,7 +1901,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             if inherit_account_quota:
                 current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
                 if current is not None:
-                    daily = current["quota_daily_cost_usd"]
+                    # A daily quota nothing has set, on an account with no key
+                    # to carry one, stays the default the caller gave.
+                    if current["quota_daily_cost_usd"] is not None or current["has_key"]:
+                        daily = current["quota_daily_cost_usd"]
                     monthly = current["quota_monthly_cost_usd"]
             from serving.storage.project_backfill import (
                 default_project_id,
@@ -2990,9 +3038,10 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 "p.budget_monthly_usd AS project_budget_monthly_usd, "
                 "p.max_concurrent_requests AS project_max_concurrent_requests, "
                 f"{_SCOPE_SPEND_COLUMNS}, "
-                "k.quota_daily_cost_usd, k.quota_monthly_cost_usd, u.role "
+                f"{_ACCOUNT_QUOTA_COLUMNS}, u.role "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
+                f"{_ACCOUNT_QUOTA_JOIN}"
                 "LEFT JOIN projects p "
                 "  ON p.user_id = k.user_id AND p.is_default AND p.status = 'active' "
                 f"{_SCOPE_SPEND_JOIN.replace('k.project_id', 'p.id')}"
