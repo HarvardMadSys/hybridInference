@@ -7,18 +7,32 @@ import {
   useLayoutEffect,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type ChangeEvent,
+  type RefObject,
 } from 'react';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
-import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { hasRole } from '@/components/providers/AuthProvider';
+import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { Markdown } from '@/components/ui/Markdown';
 import { Select } from '@/components/ui/Select';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
+import { sortModelsById } from '@/lib/utils/modelOrder';
 import { ModelPicker, type PlaygroundModel } from './ModelPicker';
+import {
+  API_OPTIONS,
+  CODE_LANGUAGES,
+  buildCode,
+  buildRequest,
+  endpointFor,
+  parseStreamEvent,
+  type CodeLanguage,
+  type PlaygroundApi,
+} from './api';
+import { CodeBlock } from './CodeBlock';
 import {
   decodeRate,
   finishNote,
@@ -41,6 +55,10 @@ const UNDO_MS = 8000;
 const STREAM_IDLE_MS = 45_000;
 const NO_MESSAGES: Message[] = [];
 
+function isAbsoluteUrl(value: string): boolean {
+  return /^https?:\/\//i.test(value);
+}
+
 interface PlaygroundSession {
   id: string;
   title: string;
@@ -49,6 +67,8 @@ interface PlaygroundSession {
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
+  reasoningEffort: string | null;
+  api: PlaygroundApi;
   messages: Message[];
   input: string;
 }
@@ -76,6 +96,8 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     systemPrompt: '',
     temperature: 0.7,
     maxTokens: 4096,
+    reasoningEffort: null,
+    api: 'chat',
     messages: [],
     input: '',
   };
@@ -98,40 +120,6 @@ function getMessageCount(messages: Message[]): string {
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-/** An in-band `error` frame's message, whatever shape the upstream used. */
-function frameError(raw: unknown): string | null {
-  if (!raw) return null;
-  if (typeof raw === 'string') return raw;
-  if (typeof raw === 'object') {
-    const message = (raw as Record<string, unknown>).message;
-    if (typeof message === 'string' && message) return message;
-  }
-  return 'The upstream reported an error.';
-}
-
-/** Read a `_playground_route` frame; returns null for anything unrecognized. */
-function parseRouting(raw: unknown): RoutingInfo | null {
-  if (!raw || typeof raw !== 'object') return null;
-  const r = raw as Record<string, unknown>;
-  const endpointId = typeof r.endpoint_id === 'string' ? r.endpoint_id : '';
-  if (!endpointId) return null;
-  const rawAttempts = Array.isArray(r.failed_attempts) ? r.failed_attempts : [];
-  const attempts = rawAttempts
-    .filter((a): a is Record<string, unknown> => !!a && typeof a === 'object')
-    .map((a) => ({
-      provider: String(a.provider ?? ''),
-      endpointId: String(a.endpoint_id ?? ''),
-      errorType: String(a.error_type ?? ''),
-    }));
-  return {
-    provider: typeof r.provider === 'string' ? r.provider : '',
-    endpointId,
-    ...(typeof r.host === 'string' && r.host ? { host: r.host } : {}),
-    ...(r.fallback === true ? { fallback: true } : {}),
-    ...(attempts.length > 0 ? { failedAttempts: attempts } : {}),
-  };
 }
 
 function routingLines(routing: RoutingInfo): string[] {
@@ -173,6 +161,67 @@ async function copyToClipboard(text: string): Promise<boolean> {
   }
 }
 
+/** From this width Configuration is a panel beside the conversation; below it, a drawer. */
+const PANEL_QUERY = '(min-width: 1024px)';
+
+function subscribeToPanelQuery(onChange: () => void): () => void {
+  if (typeof window.matchMedia !== 'function') return () => {};
+  const query = window.matchMedia(PANEL_QUERY);
+  query.addEventListener('change', onChange);
+  return () => query.removeEventListener('change', onChange);
+}
+
+function panelQueryMatches(): boolean {
+  return typeof window.matchMedia === 'function' && window.matchMedia(PANEL_QUERY).matches;
+}
+
+const FOCUSABLE =
+  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+/**
+ * While `open`, Escape closes the panel and Tab stays inside it, so the
+ * keyboard cannot reach the conversation its backdrop covers.
+ */
+function useOverlayKeys(
+  open: boolean,
+  panelRef: RefObject<HTMLElement | null>,
+  onClose: () => void,
+): void {
+  const closeRef = useRef(onClose);
+  useEffect(() => {
+    closeRef.current = onClose;
+  });
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        // A picker inside the panel consumes its own Escape.
+        if (!event.defaultPrevented) closeRef.current();
+        return;
+      }
+      const panel = panelRef.current;
+      if (event.key !== 'Tab' || !panel) return;
+      const items = [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)];
+      if (items.length === 0) return;
+      const first = items[0];
+      const last = items[items.length - 1];
+      const current = document.activeElement;
+      if (!panel.contains(current)) {
+        event.preventDefault();
+        first.focus();
+      } else if (event.shiftKey && current === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && current === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [open, panelRef]);
+}
+
 // Hover-revealed controls must still show for keyboard focus and on touch screens.
 const REVEAL_ON_HOVER =
   'opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 focus-visible:opacity-100 [@media(hover:none)]:opacity-100';
@@ -197,11 +246,28 @@ export default function PlaygroundPage() {
   const [expandedRouting, setExpandedRouting] = useState<Set<string>>(new Set());
   const [showJump, setShowJump] = useState(false);
   const [undo, setUndo] = useState<UndoAction | null>(null);
-  // Below `md` the sessions and settings are a drawer over the conversation,
-  // opened from the header; from `md` up they are the sidebar beside it.
-  const [settingsOpen, setSettingsOpen] = useState(false);
+  // Configuration is a panel beside the conversation on a wide window, shown
+  // unless collapsed, and a drawer over it on a narrow one, closed unless
+  // opened. `configChoice` is what the user last asked for where it differs
+  // from that default, so a drawer left open is still open as a panel after
+  // the window widens, and a collapsed panel stays away after it narrows.
+  const widePanel = useSyncExternalStore(subscribeToPanelQuery, panelQueryMatches, () => false);
+  const [configChoice, setConfigChoice] = useState<boolean | null>(null);
+  const configShown = configChoice ?? widePanel;
+  const configDrawerOpen = configShown && !widePanel;
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historySearch, setHistorySearch] = useState('');
+  const settingsRef = useRef<HTMLElement>(null);
+  const historyRef = useRef<HTMLElement>(null);
+  const historyButtonRef = useRef<HTMLButtonElement>(null);
+  const historySearchRef = useRef<HTMLInputElement>(null);
+  const [codeOpen, setCodeOpen] = useState(false);
+  const [codeCopied, setCodeCopied] = useState(false);
+  const [codeLang, setCodeLang] = useState<CodeLanguage>('python');
   const settingsButtonRef = useRef<HTMLButtonElement>(null);
   const settingsCloseRef = useRef<HTMLButtonElement>(null);
+  const codeButtonRef = useRef<HTMLButtonElement>(null);
+  const codeCloseRef = useRef<HTMLButtonElement>(null);
   const chatRef = useRef<HTMLElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const abortControllersRef = useRef<Map<string, AbortController>>(new Map());
@@ -217,29 +283,43 @@ export default function PlaygroundPage() {
     visibleSessionRef.current = activeSessionId;
   }, [activeSessionId]);
 
+  const setConfigShown = useCallback(
+    (shown: boolean) => setConfigChoice(shown === widePanel ? null : shown),
+    [widePanel],
+  );
+  /** Put the drawer away; a panel beside the conversation stays where it is. */
+  const closeConfigDrawer = useCallback(() => {
+    if (!widePanel) setConfigChoice(null);
+  }, [widePanel]);
+  const closeHistory = useCallback(() => {
+    setHistoryOpen(false);
+    historyButtonRef.current?.focus();
+  }, []);
+
   useEffect(() => {
-    if (!settingsOpen) return;
-    settingsCloseRef.current?.focus();
+    if (configDrawerOpen) settingsCloseRef.current?.focus();
+  }, [configDrawerOpen]);
+  useOverlayKeys(configDrawerOpen, settingsRef, () => {
+    setConfigChoice(null);
+    settingsButtonRef.current?.focus();
+  });
+
+  useEffect(() => {
+    if (historyOpen) historySearchRef.current?.focus();
+  }, [historyOpen]);
+  useOverlayKeys(historyOpen, historyRef, closeHistory);
+
+  useEffect(() => {
+    if (!codeOpen) return;
+    codeCloseRef.current?.focus();
     const onKey = (event: globalThis.KeyboardEvent) => {
-      // A picker inside the drawer consumes its own Escape.
-      if (event.key !== 'Escape' || event.defaultPrevented) return;
-      setSettingsOpen(false);
-      settingsButtonRef.current?.focus();
-    };
-    // Widened past `md`, the sidebar is back in place: drop the drawer rather
-    // than have it reappear over the conversation on the next narrowing.
-    const wide =
-      typeof window.matchMedia === 'function' ? window.matchMedia('(min-width: 768px)') : null;
-    const onWidth = () => {
-      if (wide?.matches) setSettingsOpen(false);
+      if (event.key !== 'Escape') return;
+      setCodeOpen(false);
+      codeButtonRef.current?.focus();
     };
     document.addEventListener('keydown', onKey);
-    wide?.addEventListener('change', onWidth);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      wide?.removeEventListener('change', onWidth);
-    };
-  }, [settingsOpen]);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [codeOpen]);
 
   // Navigating away must not leave generations running until the network or
   // idle timeout ends them: every live abort controller fires on unmount. The
@@ -257,17 +337,19 @@ export default function PlaygroundPage() {
   }, []);
 
   const session = sessions.find((s) => s.id === activeSessionId) ?? sessions[0];
+  const sessionApi = session?.api ?? 'chat';
   const modelId = session?.selectedModelId || '';
   const sysPrompt = session?.systemPrompt || '';
   const temp = session?.temperature ?? 0.7;
   const maxTok = session?.maxTokens ?? 4096;
+  const reasoningEffort = session?.reasoningEffort ?? null;
+  const reasoningEfforts = models.find((model) => model.id === modelId)?.reasoning_efforts ?? [];
   const msgs = session?.messages ?? NO_MESSAGES;
   const input = session?.input || '';
   const model = models.find((m) => m.id === modelId) ?? null;
   const selectedProvider = session?.selectedProvider ?? null;
   const modelProviders = model?.providers ?? [];
 
-  const streaming = streamingIds.size > 0;
   const activeStreaming = streamingIds.has(session?.id ?? '');
 
   const patchSession = useCallback(
@@ -290,10 +372,11 @@ export default function PlaygroundPage() {
     fetchWithAuth(API_BASE, '/internal/playground/models')
       .then((r) => jsonOrThrow<{ models: PlaygroundModel[] }>(r))
       .then((d) => {
-        setModels(d.models);
-        if (d.models.length > 0) {
+        const sorted = sortModelsById(d.models);
+        setModels(sorted);
+        if (sorted.length > 0) {
           setSessions((prev) =>
-            prev.map((s) => (s.selectedModelId ? s : { ...s, selectedModelId: d.models[0].id })),
+            prev.map((s) => (s.selectedModelId ? s : { ...s, selectedModelId: sorted[0].id })),
           );
         }
       })
@@ -539,6 +622,7 @@ export default function PlaygroundPage() {
     async (base: Message[], undo: UndoAction | null = null) => {
       const turnSessionId = activeSessionId;
       if (streamingIds.has(turnSessionId) || !modelId) return;
+      const api = session?.api ?? 'chat';
       const turn: TurnDeltas = { content: '', reasoning: '', routing: null, raf: null };
       const timing = {
         start: 0,
@@ -586,17 +670,20 @@ export default function PlaygroundPage() {
       resetIdle();
 
       try {
-        const resp = await fetchWithAuth(API_BASE, '/internal/playground/chat', {
+        const resp = await fetchWithAuth(API_BASE, endpointFor(api), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            model: modelId,
-            system_prompt: sysPrompt,
-            messages: requestHistory(base),
-            temperature: temp,
-            max_tokens: maxTok,
-            ...(selectedProvider ? { provider: selectedProvider } : {}),
-          }),
+          body: JSON.stringify(
+            buildRequest(api, {
+              model: modelId,
+              history: requestHistory(base),
+              systemPrompt: sysPrompt,
+              temperature: temp,
+              maxTokens: maxTok,
+              reasoningEffort,
+              provider: selectedProvider,
+            }),
+          ),
           signal: ctrl.signal,
         });
 
@@ -630,34 +717,29 @@ export default function PlaygroundPage() {
             const payload = line.slice(6).trim();
             if (payload === '[DONE]') continue;
             try {
-              const parsed = JSON.parse(payload);
-              if (parsed.usage?.completion_tokens) {
-                timing.tokens = parsed.usage.completion_tokens;
-              }
-              const inBandError = frameError(parsed.error);
-              if (inBandError) failure = { status: 'error', error: inBandError };
+              const event = parseStreamEvent(api, JSON.parse(payload));
+              if (!event) continue;
+              if (event.tokens) timing.tokens = event.tokens;
+              if (event.error) failure = { status: 'error', error: event.error };
+              if (event.finishReason) timing.finishReason = event.finishReason;
               // The router announces one routing frame per attempt, so a
               // fallback overwrites the primary — last one wins is the one
               // that actually served the response.
-              const routing = parseRouting(parsed._playground_route);
-              if (routing) {
-                turn.routing = routing;
+              if (event.routing) {
+                turn.routing = event.routing;
                 scheduleFlush(turnSessionId, turn);
               }
-              const choice = parsed.choices?.[0];
-              if (choice?.finish_reason) timing.finishReason = choice.finish_reason;
-              const delta = choice?.delta;
-              if (delta?.content || delta?.reasoning_content) {
+              if (event.content || event.reasoning) {
                 const now = performance.now();
                 if (!timing.firstToken) timing.firstToken = now;
-                if (delta.content && !timing.contentStart) timing.contentStart = now;
+                if (event.content && !timing.contentStart) timing.contentStart = now;
               }
-              if (delta?.content) {
-                turn.content += delta.content;
+              if (event.content) {
+                turn.content += event.content;
                 scheduleFlush(turnSessionId, turn);
               }
-              if (delta?.reasoning_content) {
-                turn.reasoning += delta.reasoning_content;
+              if (event.reasoning) {
+                turn.reasoning += event.reasoning;
                 scheduleFlush(turnSessionId, turn);
               }
             } catch {
@@ -729,6 +811,8 @@ export default function PlaygroundPage() {
       sysPrompt,
       temp,
       maxTok,
+      reasoningEffort,
+      session,
       selectedProvider,
       patchSession,
       flushDelta,
@@ -799,8 +883,8 @@ export default function PlaygroundPage() {
 
   if (state.loading) {
     return (
-      <div className="flex h-full items-center justify-center bg-gray-950">
-        <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-700 border-t-white" />
+      <div className="flex h-full items-center justify-center">
+        <div className="h-6 w-6 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
       </div>
     );
   }
@@ -808,13 +892,10 @@ export default function PlaygroundPage() {
   if (!hasRole(state.user?.role, 'internal')) {
     return (
       <ProtectedRoute>
-        <div className="flex h-full flex-col items-center justify-center gap-4 bg-gray-950 text-white">
-          <h1 className="text-2xl font-semibold">Admin Access Required</h1>
-          <p className="text-sm text-gray-400">This page is only available to administrators.</p>
-          <Link
-            href="/dashboard"
-            className="text-sm font-medium text-indigo-400 hover:text-indigo-300"
-          >
+        <div className="flex h-full flex-col items-center justify-center gap-4 text-gray-900">
+          <h1 className="text-2xl font-semibold">Access Required</h1>
+          <p className="text-sm text-gray-500">Chat is only available to internal users.</p>
+          <Link href="/dashboard" className="text-sm font-medium text-crimson hover:opacity-80">
             Back to Dashboard
           </Link>
         </div>
@@ -823,24 +904,64 @@ export default function PlaygroundPage() {
   }
 
   const lastUserIndex = msgs.map((m) => m.role).lastIndexOf('user');
+  const query = historySearch.trim().toLowerCase();
+  const filteredSessions = sessions.filter((item) =>
+    `${getSessionTitle(item)} ${item.selectedModelId}`.toLowerCase().includes(query),
+  );
+  const backgroundStreams = [...streamingIds].filter((id) => id !== activeSessionId).length;
+
+  const toolButton =
+    'inline-flex h-8 shrink-0 items-center gap-1.5 rounded-md px-2.5 text-[13px] font-medium text-gray-600 transition hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400';
+  const iconButton =
+    'rounded-md p-1.5 text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400';
+  const railLabel = 'text-[13px] font-medium text-gray-900';
+  const railBlock = 'border-b border-gray-100 px-4 py-5 last:border-b-0';
+  const fieldLabel = 'block text-xs font-medium text-gray-600';
+  const control =
+    'mt-1.5 w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50';
+  const sliderLabelRow = 'mb-2 flex items-center justify-between';
+
+  const pageOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+  const codeBase =
+    branding.exampleApiBase || (isAbsoluteUrl(config.apiBase) ? config.apiBase : pageOrigin);
+  const showCode = !branding.exampleHidden;
+  const codeHistory = input.trim()
+    ? [...requestHistory(msgs), { role: 'user' as const, content: input.trim() }]
+    : requestHistory(msgs);
+  const codeText = buildCode(codeLang, sessionApi, codeBase, {
+    model: modelId || 'your-model-id',
+    history: codeHistory,
+    systemPrompt: sysPrompt,
+    temperature: temp,
+    maxTokens: maxTok,
+    reasoningEffort,
+    provider: selectedProvider,
+  });
+  const copyCode = async () => {
+    setCodeCopied(await copyToClipboard(codeText));
+  };
 
   return (
     <ProtectedRoute>
-      <div className="flex h-full flex-col bg-gray-950 text-white">
-        <header className="flex h-14 shrink-0 items-center justify-between gap-3 border-b border-gray-800 px-3 sm:px-5">
-          <div className="flex min-w-0 items-center gap-2 sm:gap-4">
+      <div className="flex min-h-0 w-full flex-1 flex-col bg-white text-gray-900">
+        <h1 className="sr-only">Chat</h1>
+        <div className="flex h-12 shrink-0 items-center justify-between gap-2 border-b border-gray-200 px-2 sm:px-3">
+          <div className="flex min-w-0 items-center gap-2">
             <button
               ref={settingsButtonRef}
               type="button"
-              onClick={() => setSettingsOpen(true)}
-              aria-expanded={settingsOpen}
+              onClick={() => {
+                setHistoryOpen(false);
+                setConfigShown(!configShown);
+              }}
+              aria-expanded={configShown}
               aria-controls="playground-settings"
-              aria-label="Chat settings"
-              className="-ml-1 rounded-md p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white md:hidden"
+              aria-label="Configuration"
+              className={`${toolButton} ${configShown ? 'bg-gray-100 text-gray-900' : ''}`}
             >
               <svg
                 aria-hidden="true"
-                className="h-5 w-5"
+                className="h-4 w-4"
                 fill="none"
                 viewBox="0 0 24 24"
                 stroke="currentColor"
@@ -850,211 +971,252 @@ export default function PlaygroundPage() {
               >
                 <path d="M10.5 6h9.75M10.5 6a1.5 1.5 0 1 1-3 0m3 0a1.5 1.5 0 1 0-3 0M3.75 6H7.5m3 12h9.75m-9.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-3.75 0H7.5m9-6h3.75m-3.75 0a1.5 1.5 0 0 1-3 0m3 0a1.5 1.5 0 0 0-3 0m-9.75 0h9.75" />
               </svg>
+              <span className="hidden sm:inline">Configuration</span>
             </button>
-            <Link
-              href="/dashboard"
-              className="truncate text-sm font-semibold text-gray-400 transition hover:text-white"
-            >
-              {branding.appName}
-            </Link>
-            <span className="text-gray-700">/</span>
-            <span className="text-sm font-medium text-white">Chat</span>
+            <span aria-hidden="true" className="h-4 w-px shrink-0 bg-gray-200" />
+            <p className="min-w-0 truncate text-[13px] text-gray-500">
+              {session ? getSessionTitle(session) : 'New session'}
+            </p>
           </div>
-          <div className="flex shrink-0 items-center gap-3">
-            {/* Below `sm` the composer names the model instead. */}
-            <span className="hidden max-w-[16rem] truncate rounded-md bg-gray-800 px-2.5 py-1 text-xs font-medium text-gray-300 sm:block">
-              {model ? model.name : 'No model'}
-            </span>
-            <span
-              className={`rounded-md px-2.5 py-1 text-xs font-medium ${
-                streaming ? 'bg-indigo-600/20 text-indigo-400' : 'bg-gray-800 text-gray-500'
-              }`}
+          <div className="flex shrink-0 items-center gap-0.5">
+            <button
+              type="button"
+              aria-label="New chat"
+              onClick={() => {
+                newSession();
+                setHistoryOpen(false);
+                closeConfigDrawer();
+                textareaRef.current?.focus();
+              }}
+              className={toolButton}
             >
-              {streaming ? 'Streaming' : 'Ready'}
-            </span>
-          </div>
-        </header>
-
-        <div className="flex min-h-0 flex-1 overflow-hidden">
-          {settingsOpen && (
-            <div
-              aria-hidden="true"
-              onClick={() => setSettingsOpen(false)}
-              className="fixed inset-0 z-30 bg-black/60 md:hidden"
-            />
-          )}
-          <aside
-            id="playground-settings"
-            aria-label="Chat settings"
-            // Shown at once on opening, so focus can move into it; hidden only
-            // once it has slid away on closing.
-            className={`fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col border-r border-gray-800 bg-gray-900 shadow-2xl shadow-black/50 duration-200 motion-reduce:transition-none md:visible md:static md:z-auto md:w-80 md:max-w-none md:shrink-0 md:transform-none md:shadow-none ${
-              settingsOpen
-                ? 'visible translate-x-0 transition-transform'
-                : 'invisible -translate-x-full transition-[transform,visibility]'
-            }`}
-          >
-            <div className="flex h-14 shrink-0 items-center justify-between border-b border-gray-800 pl-4 pr-2 md:hidden">
-              <span className="text-sm font-semibold text-white">Chat settings</span>
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+              >
+                <path d="M12 5v14M5 12h14" />
+              </svg>
+              <span className="hidden sm:inline">New chat</span>
+            </button>
+            <button
+              ref={historyButtonRef}
+              type="button"
+              aria-label="History"
+              aria-describedby={backgroundStreams > 0 ? 'background-generations' : undefined}
+              aria-expanded={historyOpen}
+              aria-controls="playground-history"
+              onClick={() => {
+                setHistoryOpen((value) => !value);
+                setHistorySearch('');
+                closeConfigDrawer();
+              }}
+              className={`${toolButton} ${historyOpen ? 'bg-gray-100 text-gray-900' : ''}`}
+            >
+              <svg
+                aria-hidden="true"
+                className="h-4 w-4"
+                fill="none"
+                viewBox="0 0 24 24"
+                stroke="currentColor"
+                strokeWidth={1.5}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              >
+                <path d="M3 11a9 9 0 1 1 2.6 7M3 5v6h6M12 7v5l3 2" />
+              </svg>
+              <span className="hidden sm:inline">History</span>
+              {backgroundStreams > 0 && (
+                <span id="background-generations" className="flex items-center">
+                  <span
+                    aria-hidden="true"
+                    className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+                  />
+                  <span className="sr-only">
+                    {backgroundStreams === 1
+                      ? '1 session is generating in the background'
+                      : `${backgroundStreams} sessions are generating in the background`}
+                  </span>
+                </span>
+              )}
+            </button>
+            {showCode && (
               <button
-                ref={settingsCloseRef}
+                ref={codeButtonRef}
                 type="button"
+                aria-label="View code"
                 onClick={() => {
-                  setSettingsOpen(false);
-                  settingsButtonRef.current?.focus();
+                  setCodeCopied(false);
+                  setHistoryOpen(false);
+                  closeConfigDrawer();
+                  setCodeOpen(true);
                 }}
-                aria-label="Close chat settings"
-                className="rounded-md p-2 text-gray-400 transition hover:bg-gray-800 hover:text-white"
+                className={toolButton}
               >
                 <svg
                   aria-hidden="true"
-                  className="h-5 w-5"
+                  className="h-4 w-4"
                   fill="none"
                   viewBox="0 0 24 24"
                   stroke="currentColor"
-                  strokeWidth={1.75}
+                  strokeWidth={1.5}
                   strokeLinecap="round"
+                  strokeLinejoin="round"
                 >
-                  <path d="M6 6l12 12M18 6L6 18" />
+                  <path d="M8 6l-5 6 5 6M16 6l5 6-5 6" />
                 </svg>
+                <span className="hidden sm:inline">View code</span>
               </button>
-            </div>
-            <div className="border-b border-gray-800 px-4 py-4">
-              <div className="mb-3 flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-gray-500">
-                  Sessions
-                </span>
+            )}
+          </div>
+        </div>
+
+        <div className="relative flex min-h-0 flex-1 overflow-hidden">
+          {configDrawerOpen && (
+            <div
+              aria-hidden="true"
+              onClick={() => setConfigChoice(null)}
+              className="fixed inset-0 z-30 bg-black/40"
+            />
+          )}
+          <aside
+            ref={settingsRef}
+            id="playground-settings"
+            aria-label="Configuration"
+            className={
+              widePanel
+                ? `w-80 shrink-0 flex-col border-r border-gray-200 bg-white ${configShown ? 'flex' : 'hidden'}`
+                : `fixed inset-y-0 left-0 z-40 flex w-[85vw] max-w-xs flex-col border-r border-gray-200 bg-white shadow-2xl duration-200 motion-reduce:transition-none ${
+                    configShown
+                      ? 'visible translate-x-0 transition-transform'
+                      : 'invisible -translate-x-full transition-[transform,visibility]'
+                  }`
+            }
+          >
+            {!widePanel && (
+              <div className="flex h-12 shrink-0 items-center justify-between border-b border-gray-100 pl-4 pr-2">
+                <span className="text-sm font-semibold text-gray-900">Configuration</span>
                 <button
+                  ref={settingsCloseRef}
                   type="button"
                   onClick={() => {
-                    newSession();
-                    setSettingsOpen(false);
+                    setConfigChoice(null);
+                    settingsButtonRef.current?.focus();
                   }}
-                  className="rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-50"
+                  aria-label="Close configuration"
+                  className={iconButton}
                 >
-                  + New
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={1.75}
+                    strokeLinecap="round"
+                  >
+                    <path d="M6 6l12 12M18 6L6 18" />
+                  </svg>
                 </button>
               </div>
-              <div className="dark-scrollbar max-h-[200px] space-y-1 overflow-y-auto">
-                {sessions.map((s) => {
-                  const active = s.id === activeSessionId;
-                  return (
-                    <div
-                      key={s.id}
-                      className={`group relative rounded-lg transition ${
-                        active
-                          ? 'bg-gray-800 text-white'
-                          : 'text-gray-400 hover:bg-gray-800/60 hover:text-gray-200'
-                      }`}
-                    >
-                      <button
-                        type="button"
-                        onClick={() => {
-                          switchSession(s.id);
-                          setSettingsOpen(false);
-                        }}
-                        className="w-full px-3 py-2.5 text-left text-sm"
-                      >
-                        <div className="truncate pr-6 font-medium">{getSessionTitle(s)}</div>
-                        <div className="mt-1 truncate text-xs text-gray-600">
-                          {getMessageCount(s.messages)} -- {s.selectedModelId || 'no model'}
-                        </div>
-                      </button>
-                      {sessions.length > 1 && !streamingIds.has(s.id) && (
-                        <button
-                          type="button"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            deleteSession(s.id);
-                          }}
-                          className={`absolute right-2 top-2.5 rounded p-1 text-gray-600 transition hover:bg-gray-700 hover:text-gray-300 ${REVEAL_ON_HOVER}`}
-                          title="Delete session"
-                          aria-label={`Delete session ${getSessionTitle(s)}`}
-                        >
-                          <svg
-                            aria-hidden="true"
-                            className="h-3.5 w-3.5"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                          >
-                            <path
-                              strokeLinecap="round"
-                              strokeLinejoin="round"
-                              strokeWidth={2}
-                              d="M6 18L18 6M6 6l12 12"
-                            />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="dark-scrollbar flex-1 overflow-y-auto px-4 py-4">
-              <div className="space-y-5">
-                <div>
-                  <label
-                    htmlFor="playground-model"
-                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                  >
-                    Model
-                  </label>
+            )}
+            <div className="min-h-0 flex-1 overflow-y-auto">
+              <section className={railBlock}>
+                <label htmlFor="playground-system" className={railLabel}>
+                  System prompt
+                </label>
+                <textarea
+                  id="playground-system"
+                  value={sysPrompt}
+                  onChange={(e) => patch((s) => ({ ...s, systemPrompt: e.target.value }))}
+                  placeholder="You are a research assistant..."
+                  rows={6}
+                  disabled={activeStreaming}
+                  className={`${control} mt-2 min-h-[10rem] resize-y leading-6`}
+                />
+              </section>
+              <section className={railBlock}>
+                <label htmlFor="playground-model" className={railLabel}>
+                  Model
+                </label>
+                <div className="mt-2">
                   <ModelPicker
                     key={activeSessionId}
                     id="playground-model"
                     models={models}
                     value={modelId}
                     onChange={(newId) => {
+                      const next = models.find((model) => model.id === newId);
                       patch((s) => ({
                         ...s,
                         selectedModelId: newId,
                         selectedProvider: null,
+                        reasoningEffort:
+                          s.reasoningEffort &&
+                          (next?.reasoning_efforts ?? []).includes(s.reasoningEffort)
+                            ? s.reasoningEffort
+                            : null,
                       }));
                     }}
                     disabled={activeStreaming}
                     loading={modelsLoading}
                     emptyLabel={modelsError ? 'Models unavailable' : undefined}
                   />
-                  {modelsError && !modelsLoading && (
-                    <div className="mt-2 flex items-start justify-between gap-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-300">
-                      <span className="min-w-0 break-words">
-                        Couldn&apos;t load models: {modelsError}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={loadModels}
-                        className="shrink-0 font-medium text-red-200 underline-offset-2 hover:underline"
-                      >
-                        Retry
-                      </button>
-                    </div>
-                  )}
+                </div>
+                {modelsError && !modelsLoading && (
+                  <div className="mt-2 flex items-start justify-between gap-2 rounded-lg border border-red-200 bg-red-50 px-2.5 py-2 text-[11px] text-red-700">
+                    <span className="min-w-0 break-words">
+                      Couldn&apos;t load models: {modelsError}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={loadModels}
+                      className="shrink-0 font-medium underline-offset-2 hover:underline"
+                    >
+                      Retry
+                    </button>
+                  </div>
+                )}
+
+                <div className="mt-4">
+                  <label htmlFor="playground-api" className={fieldLabel}>
+                    API
+                  </label>
+                  <Select
+                    id="playground-api"
+                    size="lg"
+                    className="mt-1.5 w-full"
+                    value={sessionApi}
+                    onValueChange={(value) => patch((s) => ({ ...s, api: value as PlaygroundApi }))}
+                    disabled={activeStreaming}
+                    options={API_OPTIONS}
+                  />
+                  <p className="mt-1.5 text-[11px] leading-4 text-gray-400">
+                    Request format. View code shows the same call.
+                  </p>
                 </div>
 
                 {modelProviders.length > 1 && (
-                  <div>
-                    <label
-                      htmlFor="playground-provider"
-                      className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                    >
+                  <div className="mt-4">
+                    <label htmlFor="playground-provider" className={fieldLabel}>
                       Provider
                     </label>
                     <Select
                       id="playground-provider"
-                      tone="dark"
                       size="lg"
-                      className="w-full"
-                      value={selectedProvider ?? ''}
+                      className="mt-1.5 w-full"
+                      value={sessionApi === 'chat' ? (selectedProvider ?? '') : ''}
                       onValueChange={(value) =>
                         patch((s) => ({
                           ...s,
                           selectedProvider: value || null,
                         }))
                       }
-                      disabled={activeStreaming}
+                      disabled={activeStreaming || sessionApi !== 'chat'}
                       options={[
                         { value: '', label: 'Auto' },
                         ...modelProviders.map((p) => ({ value: p.id, label: p.name })),
@@ -1062,16 +1224,18 @@ export default function PlaygroundPage() {
                     />
                   </div>
                 )}
+              </section>
 
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <label
-                      htmlFor="playground-temperature"
-                      className="text-xs font-semibold uppercase tracking-wider text-gray-500"
-                    >
+              <section className={railBlock}>
+                <span className={railLabel}>Parameters</span>
+                <div className="mt-3">
+                  <div className={sliderLabelRow}>
+                    <label htmlFor="playground-temperature" className={fieldLabel}>
                       Temperature
                     </label>
-                    <span className="text-xs tabular-nums text-gray-400">{temp.toFixed(1)}</span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] tabular-nums text-gray-600">
+                      {temp.toFixed(1)}
+                    </span>
                   </div>
                   <input
                     id="playground-temperature"
@@ -1084,19 +1248,18 @@ export default function PlaygroundPage() {
                       patch((s) => ({ ...s, temperature: parseFloat(e.target.value) }))
                     }
                     disabled={activeStreaming}
-                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
                   />
                 </div>
 
-                <div>
-                  <div className="mb-1.5 flex items-center justify-between">
-                    <label
-                      htmlFor="playground-max-tokens"
-                      className="text-xs font-semibold uppercase tracking-wider text-gray-500"
-                    >
-                      Max Tokens
+                <div className="mt-4">
+                  <div className={sliderLabelRow}>
+                    <label htmlFor="playground-max-tokens" className={fieldLabel}>
+                      Max tokens
                     </label>
-                    <span className="text-xs tabular-nums text-gray-400">{maxTok}</span>
+                    <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] tabular-nums text-gray-600">
+                      {maxTok}
+                    </span>
                   </div>
                   <input
                     id="playground-max-tokens"
@@ -1109,52 +1272,59 @@ export default function PlaygroundPage() {
                       patch((s) => ({ ...s, maxTokens: parseInt(e.target.value, 10) }))
                     }
                     disabled={activeStreaming}
-                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-700 accent-indigo-500 disabled:opacity-50"
+                    className="h-1.5 w-full cursor-pointer appearance-none rounded-full bg-gray-200 accent-crimson disabled:opacity-50"
                   />
                 </div>
 
-                <div>
-                  <label
-                    htmlFor="playground-system"
-                    className="mb-1.5 block text-xs font-semibold uppercase tracking-wider text-gray-500"
-                  >
-                    System instructions
-                  </label>
-                  <textarea
-                    id="playground-system"
-                    value={sysPrompt}
-                    onChange={(e) => patch((s) => ({ ...s, systemPrompt: e.target.value }))}
-                    placeholder="You are a research assistant..."
-                    rows={6}
-                    disabled={activeStreaming}
-                    className="w-full resize-none rounded-lg border border-gray-700 bg-gray-800 px-3 py-2.5 text-sm leading-6 text-white outline-none transition placeholder:text-gray-600 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500 disabled:opacity-50"
-                  />
-                </div>
+                {reasoningEfforts.length > 0 && (
+                  <div className="mt-4">
+                    <label htmlFor="playground-reasoning-effort" className={fieldLabel}>
+                      Reasoning effort
+                    </label>
+                    <Select
+                      id="playground-reasoning-effort"
+                      size="lg"
+                      className="mt-1.5 w-full"
+                      value={reasoningEffort ?? ''}
+                      onValueChange={(value) =>
+                        patch((s) => ({ ...s, reasoningEffort: value || null }))
+                      }
+                      disabled={activeStreaming}
+                      options={[
+                        { value: '', label: 'Default' },
+                        ...reasoningEfforts.map((effort) => ({ value: effort, label: effort })),
+                      ]}
+                    />
+                  </div>
+                )}
+              </section>
+            </div>
 
-                <button
-                  type="button"
-                  onClick={resetSession}
-                  className="w-full rounded-lg border border-gray-700 px-3 py-2 text-sm font-medium text-gray-400 transition hover:border-gray-600 hover:text-gray-200"
-                >
-                  Clear conversation
-                </button>
-              </div>
+            <div className="border-t border-gray-100 p-3">
+              <button
+                type="button"
+                onClick={resetSession}
+                className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[13px] font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+              >
+                Clear conversation
+              </button>
             </div>
           </aside>
 
-          <div className="flex min-w-0 flex-1 flex-col bg-gray-950">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-white">
             <section
               ref={chatRef}
               onScroll={onChatScroll}
               aria-label="Conversation"
-              className="dark-scrollbar flex-1 overflow-y-auto px-4 py-4 sm:px-6 sm:py-6"
+              className="min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-8 sm:py-8"
             >
               {msgs.length === 0 ? (
                 <div className="flex h-full items-center justify-center">
-                  <div className="max-w-lg text-center">
-                    <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-gray-800">
+                  <div className="max-w-md text-center">
+                    <div className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-2xl border border-gray-200 bg-gray-50">
                       <svg
-                        className="h-6 w-6 text-gray-500"
+                        aria-hidden="true"
+                        className="h-6 w-6 text-gray-400"
                         fill="none"
                         viewBox="0 0 24 24"
                         stroke="currentColor"
@@ -1167,22 +1337,30 @@ export default function PlaygroundPage() {
                         />
                       </svg>
                     </div>
-                    <h2 className="text-xl font-semibold text-white">Start a chat run</h2>
-                    <p className="mt-2 text-sm leading-6 text-gray-500">
-                      Choose a model and system prompt in the sidebar, then type a message below.
+                    <h2 className="text-lg font-semibold tracking-tight text-gray-900">
+                      Start a conversation
+                    </h2>
+                    <p className="mx-auto mt-1.5 max-w-xs text-sm leading-6 text-gray-500">
+                      {model
+                        ? `You are talking to ${model.name}. Type a message below to begin.`
+                        : 'Choose a model in Configuration, then type a message below.'}
                     </p>
-                    {/* On a phone the sidebar is behind the header's settings button. */}
-                    <button
-                      type="button"
-                      onClick={() => setSettingsOpen(true)}
-                      className="mt-4 rounded-lg border border-gray-700 px-3 py-2 text-sm font-medium text-gray-300 transition hover:border-gray-600 hover:text-white md:hidden"
-                    >
-                      Open chat settings
-                    </button>
+                    {!configShown && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setHistoryOpen(false);
+                          setConfigShown(true);
+                        }}
+                        className="mt-4 rounded-lg border border-gray-300 px-3 py-2 text-sm font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
+                      >
+                        Open configuration
+                      </button>
+                    )}
                   </div>
                 </div>
               ) : (
-                <div className="mx-auto max-w-3xl space-y-6">
+                <div className="mx-auto max-w-3xl space-y-7">
                   {msgs.map((msg, i) => {
                     const isUser = msg.role === 'user';
                     const isLast = i === msgs.length - 1;
@@ -1200,13 +1378,14 @@ export default function PlaygroundPage() {
 
                     return (
                       <div key={msg.id} className="group">
-                        <div className="mb-1.5 flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+                        <div className="mb-1.5 flex items-center justify-between gap-3">
                           <div className="flex min-w-0 items-center gap-2">
-                            <span
-                              className={`text-xs font-medium ${
-                                isUser ? 'text-indigo-400' : 'text-gray-500'
-                              }`}
-                            >
+                            {!isUser && (
+                              <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-gray-900 text-[10px] font-semibold text-white">
+                                AI
+                              </span>
+                            )}
+                            <span className="truncate text-[13px] font-medium text-gray-700">
                               {isUser ? 'You' : msg.modelName || model?.name || 'Assistant'}
                             </span>
                             {!isUser && msg.routing && (
@@ -1214,10 +1393,10 @@ export default function PlaygroundPage() {
                                 type="button"
                                 onClick={() => toggleIn(setExpandedRouting, msg.id)}
                                 aria-expanded={isRoutingExpanded}
-                                className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium transition hover:brightness-125 ${
+                                className={`truncate rounded px-1.5 py-0.5 text-[11px] font-medium transition ${
                                   msg.routing.fallback
-                                    ? 'bg-amber-500/10 text-amber-400'
-                                    : 'bg-gray-800 text-gray-400'
+                                    ? 'bg-amber-50 text-amber-700'
+                                    : 'bg-gray-100 text-gray-500 hover:text-gray-700'
                                 }`}
                                 title={routingLines(msg.routing).join('\n')}
                               >
@@ -1226,9 +1405,9 @@ export default function PlaygroundPage() {
                               </button>
                             )}
                           </div>
-                          <div className="flex shrink-0 items-center gap-2">
+                          <div className="flex shrink-0 items-center gap-1.5">
                             {!isUser && msg.durationMs != null && !isStreamingThis && (
-                              <span className="text-xs tabular-nums text-gray-500">
+                              <span className="hidden text-[11px] tabular-nums text-gray-400 sm:inline">
                                 {msg.ttftMs != null && `${msg.ttftMs}ms TTFT · `}
                                 {rate != null && `${rate.toFixed(1)} tok/s · `}
                                 {formatDuration(msg.durationMs)}
@@ -1238,7 +1417,7 @@ export default function PlaygroundPage() {
                               <button
                                 type="button"
                                 onClick={editLast}
-                                className={`rounded px-1.5 py-0.5 text-xs text-gray-500 transition hover:bg-gray-800 hover:text-gray-200 ${REVEAL_ON_HOVER}`}
+                                className={`rounded px-1.5 py-0.5 text-[11px] text-gray-500 transition hover:bg-gray-100 hover:text-gray-900 ${REVEAL_ON_HOVER}`}
                               >
                                 Edit
                               </button>
@@ -1248,10 +1427,10 @@ export default function PlaygroundPage() {
                                 type="button"
                                 onClick={regenerate}
                                 disabled={!modelId}
-                                className={`rounded px-1.5 py-0.5 text-xs transition hover:bg-gray-800 disabled:opacity-40 ${
+                                className={`rounded px-1.5 py-0.5 text-[11px] transition hover:bg-gray-100 disabled:opacity-40 ${
                                   msg.status || note
-                                    ? 'text-gray-300 hover:text-white'
-                                    : `text-gray-500 hover:text-gray-200 ${REVEAL_ON_HOVER}`
+                                    ? 'text-gray-700 hover:text-gray-900'
+                                    : `text-gray-500 hover:text-gray-900 ${REVEAL_ON_HOVER}`
                                 }`}
                               >
                                 {msg.status ? 'Retry' : 'Regenerate'}
@@ -1261,7 +1440,7 @@ export default function PlaygroundPage() {
                               <button
                                 type="button"
                                 onClick={() => void handleCopy(msg.content, msg.id)}
-                                className={`rounded p-1 text-gray-600 transition hover:bg-gray-800 hover:text-gray-300 ${REVEAL_ON_HOVER}`}
+                                className={`rounded p-1 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700 ${REVEAL_ON_HOVER}`}
                                 title={
                                   copied
                                     ? copied.ok
@@ -1276,7 +1455,7 @@ export default function PlaygroundPage() {
                                 {copied?.ok ? (
                                   <svg
                                     aria-hidden="true"
-                                    className="h-3.5 w-3.5 text-green-500"
+                                    className="h-3.5 w-3.5 text-green-600"
                                     fill="none"
                                     viewBox="0 0 24 24"
                                     stroke="currentColor"
@@ -1291,7 +1470,7 @@ export default function PlaygroundPage() {
                                 ) : copied ? (
                                   <svg
                                     aria-hidden="true"
-                                    className="h-3.5 w-3.5 text-red-400"
+                                    className="h-3.5 w-3.5 text-red-500"
                                     fill="none"
                                     viewBox="0 0 24 24"
                                     stroke="currentColor"
@@ -1324,7 +1503,7 @@ export default function PlaygroundPage() {
                           </div>
                         </div>
                         {!isUser && msg.routing && isRoutingExpanded && (
-                          <ul className="mb-2 space-y-0.5 rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 font-mono text-[11px] leading-5 text-gray-400">
+                          <ul className="mb-2 space-y-0.5 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 font-mono text-[11px] leading-5 text-gray-600">
                             {routingLines(msg.routing).map((line) => (
                               <li key={line} className="break-all">
                                 {line}
@@ -1333,15 +1512,15 @@ export default function PlaygroundPage() {
                           </ul>
                         )}
                         <div
-                          className={`rounded-2xl px-4 py-3 text-sm leading-7 sm:px-5 sm:py-4 ${
+                          className={
                             isUser
-                              ? 'bg-indigo-600 text-white'
-                              : 'bg-gray-900 text-gray-200 ring-1 ring-gray-800'
-                          }`}
+                              ? 'ml-auto w-fit max-w-[85%] rounded-2xl rounded-tr-md bg-gray-100 px-4 py-2.5 text-sm leading-7 text-gray-800'
+                              : 'text-sm leading-7 text-gray-800'
+                          }
                         >
                           {isWaiting ? (
                             <div className="flex items-center gap-2.5 text-gray-500">
-                              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-700 border-t-gray-400" />
+                              <span className="inline-block h-3.5 w-3.5 animate-spin rounded-full border-2 border-gray-200 border-t-gray-900" />
                               <span className="text-xs">Waiting for the first token...</span>
                             </div>
                           ) : (
@@ -1352,13 +1531,11 @@ export default function PlaygroundPage() {
                                     type="button"
                                     onClick={() => toggleIn(setExpandedThinking, msg.id)}
                                     aria-expanded={isThinkingExpanded}
-                                    className="flex items-center gap-1.5 text-xs text-gray-500 transition hover:text-gray-300"
+                                    className="flex items-center gap-1.5 text-xs text-gray-500 transition hover:text-gray-800"
                                   >
                                     <svg
                                       aria-hidden="true"
-                                      className={`h-3 w-3 transition-transform ${
-                                        isThinkingExpanded ? 'rotate-90' : ''
-                                      }`}
+                                      className={`h-3 w-3 transition-transform ${isThinkingExpanded ? 'rotate-90' : ''}`}
                                       fill="none"
                                       viewBox="0 0 24 24"
                                       stroke="currentColor"
@@ -1379,7 +1556,7 @@ export default function PlaygroundPage() {
                                     </span>
                                   </button>
                                   {isThinkingExpanded && (
-                                    <div className="mt-2 rounded-lg border border-gray-800 bg-gray-950 px-4 py-3 text-xs leading-6 text-gray-500 whitespace-pre-wrap">
+                                    <div className="mt-2 rounded-lg border border-gray-200 bg-gray-50 px-4 py-3 text-xs leading-6 text-gray-600 whitespace-pre-wrap">
                                       {msg.reasoningContent}
                                     </div>
                                   )}
@@ -1388,12 +1565,12 @@ export default function PlaygroundPage() {
                               {isUser ? (
                                 <div className="whitespace-pre-wrap">{msg.content}</div>
                               ) : (
-                                msg.content && <Markdown text={msg.content} tone="dark" />
+                                msg.content && <Markdown text={msg.content} />
                               )}
                               {msg.status === 'error' && (
-                                <div className="mt-3 rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs leading-5 text-red-300">
+                                <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
                                   <p className="break-words">{`Error: ${msg.error}`}</p>
-                                  <p className="mt-0.5 text-red-300/70">
+                                  <p className="mt-0.5 text-red-600/70">
                                     This turn is left out of the context for later messages.
                                   </p>
                                 </div>
@@ -1406,7 +1583,7 @@ export default function PlaygroundPage() {
                                 </p>
                               )}
                               {note && (
-                                <div className="mt-3 rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs leading-5 text-amber-300">
+                                <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs leading-5 text-amber-700">
                                   {note}
                                 </div>
                               )}
@@ -1420,12 +1597,12 @@ export default function PlaygroundPage() {
               )}
             </section>
 
-            <div className="relative shrink-0 border-t border-gray-800 bg-gray-950 px-3 py-3 sm:px-6 sm:py-4">
+            <div className="relative shrink-0 px-4 pb-4 sm:px-6">
               {showJump && msgs.length > 0 && (
                 <button
                   type="button"
                   onClick={() => scrollDown('smooth', true)}
-                  className="absolute bottom-full left-1/2 mb-3 -translate-x-1/2 rounded-full border border-gray-700 bg-gray-900/95 px-3 py-1.5 text-xs font-medium text-gray-200 shadow-lg shadow-black/40 transition hover:border-gray-500 hover:text-white"
+                  className="absolute bottom-full left-1/2 mb-3 -translate-x-1/2 rounded-full border border-gray-200 bg-white/95 px-3 py-1.5 text-xs font-medium text-gray-700 shadow-lg transition hover:border-gray-300 hover:text-gray-900"
                 >
                   ↓ Jump to latest
                 </button>
@@ -1434,7 +1611,7 @@ export default function PlaygroundPage() {
                 {undo && (
                   <div
                     role="status"
-                    className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 px-3 py-2 text-xs text-gray-300"
+                    className="mb-3 flex items-center justify-between gap-3 rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700"
                   >
                     <span className="min-w-0 truncate">{undo.label}</span>
                     <div className="flex shrink-0 items-center gap-3">
@@ -1445,7 +1622,7 @@ export default function PlaygroundPage() {
                           undo.restore();
                           setUndo(null);
                         }}
-                        className="font-medium text-indigo-400 hover:text-indigo-300 disabled:opacity-40"
+                        className="font-medium text-crimson hover:opacity-80 disabled:opacity-40"
                       >
                         Undo
                       </button>
@@ -1453,14 +1630,14 @@ export default function PlaygroundPage() {
                         type="button"
                         onClick={() => setUndo(null)}
                         aria-label="Dismiss"
-                        className="text-gray-500 hover:text-gray-300"
+                        className="text-gray-500 hover:text-gray-800"
                       >
                         ×
                       </button>
                     </div>
                   </div>
                 )}
-                <div className="rounded-2xl border border-gray-800 bg-gray-900 p-3">
+                <div className="rounded-[20px] border border-gray-200 bg-white p-2 shadow-sm transition focus-within:border-gray-300 focus-within:ring-2 focus-within:ring-gray-900/5">
                   <textarea
                     ref={textareaRef}
                     value={input}
@@ -1469,19 +1646,29 @@ export default function PlaygroundPage() {
                     aria-label="Message"
                     placeholder="Type a message... (Ctrl+Enter to send)"
                     rows={1}
-                    className="max-h-[200px] min-h-[44px] w-full resize-none bg-transparent px-2 py-2 text-sm leading-6 text-white outline-none placeholder:text-gray-600"
+                    className="max-h-[200px] min-h-[48px] w-full resize-none bg-transparent px-3 py-2.5 text-sm leading-6 text-gray-900 outline-none placeholder:text-gray-400"
                   />
-                  <div className="flex items-center justify-between gap-3 border-t border-gray-800 px-2 pt-3">
-                    <div className="min-w-0 text-xs text-gray-600">
-                      {(() => {
-                        if (!model) return modelsLoading ? 'Loading...' : 'No model selected';
-                        const parts = [model.name];
-                        if (selectedProvider) parts.push(selectedProvider);
-                        parts.push(`temp ${temp.toFixed(1)}`);
-                        parts.push(`max ${maxTok}`);
-                        if (sysPrompt.trim()) parts.push('custom instructions');
-                        return parts.join(' / ');
-                      })()}
+                  <div className="flex items-center justify-between gap-3 px-1.5 pb-0.5 pt-1">
+                    <div className="flex min-w-0 items-center gap-1.5 overflow-hidden">
+                      <span className="max-w-[10rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-600">
+                        {model ? model.name : modelsLoading ? 'Loading...' : 'No model'}
+                      </span>
+                      {selectedProvider && sessionApi === 'chat' && (
+                        <span className="hidden max-w-[8rem] truncate rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 sm:inline">
+                          {selectedProvider}
+                        </span>
+                      )}
+                      <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] tabular-nums text-gray-500 sm:inline">
+                        temp {temp.toFixed(1)}
+                      </span>
+                      <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] tabular-nums text-gray-500 md:inline">
+                        max {maxTok}
+                      </span>
+                      {sysPrompt.trim() && (
+                        <span className="hidden rounded-md bg-gray-100 px-2 py-0.5 text-[11px] text-gray-500 md:inline">
+                          instructions
+                        </span>
+                      )}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       {activeStreaming && (
@@ -1490,7 +1677,7 @@ export default function PlaygroundPage() {
                           onClick={() => {
                             if (session) abortControllersRef.current.get(session.id)?.abort();
                           }}
-                          className="rounded-lg border border-gray-700 px-3 py-1.5 text-xs font-medium text-gray-400 transition hover:border-gray-600 hover:text-white"
+                          className="rounded-full border border-gray-300 px-3 py-1.5 text-[11px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900"
                         >
                           Stop
                         </button>
@@ -1499,17 +1686,274 @@ export default function PlaygroundPage() {
                         type="button"
                         onClick={send}
                         disabled={activeStreaming || !input.trim() || !modelId}
-                        className="rounded-lg bg-indigo-600 px-4 py-1.5 text-xs font-medium text-white transition hover:bg-indigo-500 disabled:opacity-40"
+                        aria-label={activeStreaming ? 'Sending...' : 'Send'}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full bg-gray-900 text-white transition hover:bg-black disabled:opacity-30"
                       >
-                        {activeStreaming ? 'Sending...' : 'Send'}
+                        <svg
+                          aria-hidden="true"
+                          className="h-4 w-4"
+                          fill="none"
+                          viewBox="0 0 24 24"
+                          stroke="currentColor"
+                        >
+                          <path
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            strokeWidth={2}
+                            d="M12 19V5m0 0l-6 6m6-6l6 6"
+                          />
+                        </svg>
                       </button>
                     </div>
                   </div>
                 </div>
+                <p className="mt-2 text-center text-[11px] text-gray-400">
+                  Responses are generated by the selected model and may be inaccurate.
+                </p>
+              </div>
+            </div>
+          </section>
+
+          {historyOpen && (
+            <>
+              <div
+                aria-hidden="true"
+                onClick={closeHistory}
+                className="absolute inset-0 z-20 bg-gray-900/10"
+              />
+              <aside
+                ref={historyRef}
+                id="playground-history"
+                role="dialog"
+                aria-modal="true"
+                aria-label="History"
+                className="absolute inset-y-0 right-0 z-30 flex w-80 max-w-[calc(100%-2.5rem)] flex-col border-l border-gray-200 bg-white shadow-xl"
+              >
+                <div className="flex h-12 shrink-0 items-center justify-between pl-4 pr-2">
+                  <h2 className="text-sm font-semibold text-gray-900">History</h2>
+                  <button
+                    type="button"
+                    aria-label="Close history"
+                    onClick={closeHistory}
+                    className={iconButton}
+                  >
+                    <svg
+                      aria-hidden="true"
+                      className="h-4 w-4"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                      stroke="currentColor"
+                      strokeWidth={1.75}
+                      strokeLinecap="round"
+                    >
+                      <path d="M6 6l12 12M18 6L6 18" />
+                    </svg>
+                  </button>
+                </div>
+                <div className="px-3 pb-2">
+                  <input
+                    ref={historySearchRef}
+                    type="search"
+                    aria-label="Search sessions"
+                    placeholder="Search by title or model"
+                    value={historySearch}
+                    onChange={(event) => setHistorySearch(event.target.value)}
+                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5"
+                  />
+                </div>
+                <div className="min-h-0 flex-1 space-y-0.5 overflow-y-auto px-3 pb-3">
+                  {filteredSessions.length === 0 && (
+                    <p className="px-2.5 py-4 text-xs text-gray-500">No matching sessions.</p>
+                  )}
+                  {filteredSessions.map((s) => {
+                    const active = s.id === activeSessionId;
+                    return (
+                      <div
+                        key={s.id}
+                        className={`group relative rounded-lg transition ${
+                          active
+                            ? 'bg-gray-100 text-gray-900'
+                            : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => {
+                            switchSession(s.id);
+                            setHistoryOpen(false);
+                            textareaRef.current?.focus();
+                          }}
+                          aria-current={active ? 'true' : undefined}
+                          className="w-full rounded-lg px-2.5 py-2.5 pr-8 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span className="min-w-0 flex-1 truncate text-[13px] font-medium">
+                              {getSessionTitle(s)}
+                            </span>
+                            {streamingIds.has(s.id) && (
+                              <span className="flex shrink-0 items-center">
+                                <span
+                                  aria-hidden="true"
+                                  className="h-1.5 w-1.5 animate-pulse rounded-full bg-emerald-500"
+                                />
+                                <span className="sr-only">Generating</span>
+                              </span>
+                            )}
+                          </div>
+                          <div className="mt-0.5 truncate text-[11px] text-gray-400">
+                            {getMessageCount(s.messages)}
+                            {s.selectedModelId ? ` · ${s.selectedModelId}` : ''}
+                          </div>
+                        </button>
+                        {sessions.length > 1 && !streamingIds.has(s.id) && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              deleteSession(s.id);
+                              // Undo is offered above the composer, under this panel.
+                              closeHistory();
+                            }}
+                            className={`absolute right-1.5 top-1.5 rounded p-1 text-gray-400 transition hover:bg-gray-200 hover:text-gray-700 ${REVEAL_ON_HOVER}`}
+                            title="Delete session"
+                            aria-label={`Delete session ${getSessionTitle(s)}`}
+                          >
+                            <svg
+                              aria-hidden="true"
+                              className="h-3 w-3"
+                              fill="none"
+                              viewBox="0 0 24 24"
+                              stroke="currentColor"
+                            >
+                              <path
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                strokeWidth={2}
+                                d="M6 18L18 6M6 6l12 12"
+                              />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="shrink-0 border-t border-gray-100 px-4 py-3 text-[11px] leading-5 text-gray-400">
+                  Each session keeps its own configuration. Sessions last until you leave or reload
+                  this page.
+                </p>
+              </aside>
+            </>
+          )}
+        </div>
+
+        {codeOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 p-4 pt-[10vh]"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target !== event.currentTarget) return;
+              setCodeOpen(false);
+              codeButtonRef.current?.focus();
+            }}
+          >
+            <div
+              role="dialog"
+              aria-modal="true"
+              aria-label="API request code"
+              className="flex max-h-[75vh] w-full max-w-2xl flex-col overflow-hidden rounded-2xl border border-gray-200 bg-white shadow-2xl"
+            >
+              <div className="flex items-start justify-between gap-3 border-b border-gray-100 px-5 py-4">
+                <div className="min-w-0">
+                  <h2 className="text-sm font-semibold text-gray-900">View code</h2>
+                  <p className="mt-0.5 text-xs text-gray-500">
+                    The same request against the public API, using your own key.
+                  </p>
+                </div>
+                <button
+                  ref={codeCloseRef}
+                  type="button"
+                  onClick={() => {
+                    setCodeOpen(false);
+                    codeButtonRef.current?.focus();
+                  }}
+                  aria-label="Close code view"
+                  className="rounded p-1.5 text-gray-400 transition hover:bg-gray-100 hover:text-gray-700"
+                >
+                  <svg
+                    aria-hidden="true"
+                    className="h-4 w-4"
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                  >
+                    <path d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+              <div
+                role="tablist"
+                aria-label="Code language"
+                className="flex shrink-0 gap-1 border-b border-gray-100 px-5 py-2"
+                onKeyDown={(event) => {
+                  if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                  event.preventDefault();
+                  const index = CODE_LANGUAGES.findIndex((option) => option.value === codeLang);
+                  const step = event.key === 'ArrowRight' ? 1 : -1;
+                  const next =
+                    CODE_LANGUAGES[(index + step + CODE_LANGUAGES.length) % CODE_LANGUAGES.length];
+                  setCodeLang(next.value);
+                  document.getElementById(`code-language-${next.value}`)?.focus();
+                }}
+              >
+                {CODE_LANGUAGES.map((option) => {
+                  const selected = option.value === codeLang;
+                  return (
+                    <button
+                      key={option.value}
+                      id={`code-language-${option.value}`}
+                      role="tab"
+                      type="button"
+                      aria-selected={selected}
+                      tabIndex={selected ? 0 : -1}
+                      onClick={() => setCodeLang(option.value)}
+                      className={`rounded-md px-2.5 py-1 text-xs font-medium transition ${
+                        selected
+                          ? 'bg-gray-100 text-gray-900'
+                          : 'text-gray-500 hover:bg-gray-50 hover:text-gray-800'
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+              <div
+                role="tabpanel"
+                aria-labelledby={`code-language-${codeLang}`}
+                className="min-h-0 flex-1 overflow-auto bg-gray-50 p-4"
+              >
+                <CodeBlock code={codeText} language={codeLang} />
+              </div>
+              <div className="flex items-center justify-between gap-3 border-t border-gray-100 px-5 py-3">
+                <span className="min-w-0 text-[11px] leading-4 text-gray-500">
+                  Start with <code className="font-mono">export HYBRID_API_KEY=...</code> from API
+                  Keys.
+                </span>
+                <button
+                  type="button"
+                  onClick={copyCode}
+                  className="shrink-0 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-xs font-medium text-gray-700 transition hover:border-gray-300 hover:text-gray-900"
+                >
+                  {codeCopied ? 'Copied' : 'Copy'}
+                </button>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </ProtectedRoute>
   );

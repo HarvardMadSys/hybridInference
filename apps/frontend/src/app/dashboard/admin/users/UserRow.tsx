@@ -1,5 +1,6 @@
 'use client';
 
+import { CHECKBOX } from '@/components/features/admin/adminStyles';
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
@@ -32,6 +33,14 @@ interface UserRowProps {
   busy?: boolean;
   onApprove: () => void;
   onReject: () => void;
+  /**
+   * The table has a selection column (its page lists pending users): a
+   * pending row gets a checkbox, any other row an empty slot of the same width
+   * so the names stay aligned.
+   */
+  selectable?: boolean;
+  selected?: boolean;
+  onSelectedChange?: (selected: boolean) => void;
 }
 
 // Token counts run large (millions–billions for heavy users); render them
@@ -77,6 +86,9 @@ export function UserRow({
   busy = false,
   onApprove,
   onReject,
+  selectable = false,
+  selected = false,
+  onSelectedChange,
 }: UserRowProps) {
   const status = STATUS_STYLE[user.status] ?? STATUS_STYLE.active;
   const today = Number(user.usage_today_usd);
@@ -108,6 +120,21 @@ export function UserRow({
     >
       <td className={`sticky left-0 z-10 max-w-[12.5rem] py-1.5 pl-3 pr-2.5 ${stickyBg}`}>
         <div className="flex items-center gap-2">
+          {selectable &&
+            (user.status === 'pending_approval' ? (
+              <input
+                type="checkbox"
+                checked={selected}
+                disabled={busy}
+                // Selecting is not opening: the row's click expands it.
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => onSelectedChange?.(e.target.checked)}
+                aria-label={`Select ${label || user.id}`}
+                className={`${CHECKBOX} cursor-pointer disabled:cursor-not-allowed`}
+              />
+            ) : (
+              <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+            ))}
           <svg
             className={`h-3.5 w-3.5 shrink-0 text-gray-300 transition-transform group-hover:text-gray-500 ${expanded ? 'rotate-90 text-gray-500' : ''}`}
             viewBox="0 0 20 20"

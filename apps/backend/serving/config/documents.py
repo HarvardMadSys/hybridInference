@@ -80,6 +80,26 @@ def parse(text: str) -> dict[str, Any]:
     return value
 
 
+def without_model(document: dict[str, Any], model_id: str) -> tuple[dict[str, Any], bool]:
+    """Return *document* without the model whose ``id`` is *model_id*.
+
+    Every matching entry is removed. Any other key — an ``auto`` section, a
+    block carried over from an older catalog — stays. The input is not changed.
+
+    Returns:
+        The catalog to store, and whether *model_id* was in it.
+    """
+    models = document.get("models")
+    if not isinstance(models, list):
+        return document, False
+    kept = [
+        model for model in models if not (isinstance(model, dict) and model.get("id") == model_id)
+    ]
+    if len(kept) == len(models):
+        return document, False
+    return {**document, "models": kept}, True
+
+
 def encode(value: dict[str, Any]) -> str:
     """Encode JSON, preserving legacy YAML dates and rejecting non-finite numbers."""
 

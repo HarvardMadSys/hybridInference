@@ -269,7 +269,7 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 - [frontend/src/lib/api/user.ts](../../apps/frontend/src/lib/api/user.ts) — user profile, API keys, usage stats, recent requests (200 lines)
 - [frontend/src/lib/api/admin.ts](../../apps/frontend/src/lib/api/admin.ts) — user management, auditing, broadcasts, analytics (768 lines)
 
-**Coupling observation**: Playground page (820 lines) directly calls `fetchWithAuth()` for streaming chat ([frontend/src/app/dashboard/playground/page.tsx:271](../../apps/frontend/src/app/dashboard/playground/page.tsx)), bypassing the API layer.
+**Coupling observation**: Playground page (820 lines) directly calls `fetchWithAuth()` for streaming chat ([frontend/src/app/dashboard/playground/page.tsx:271](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx)), bypassing the API layer.
 
 **Auth flow**: JWT in sessionStorage, token refresh on 401 via `/auth/refresh` with `credentials: 'include'` (cookies); `AuthProvider` (103 lines) manages session state.
 
@@ -322,7 +322,7 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 | File | Lines | Issue |
 |------|-------|-------|
 | [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) | 3343 | Monolithic admin with 32 useState, 6+ tabs |
-| [frontend/src/app/dashboard/playground/page.tsx](../../apps/frontend/src/app/dashboard/playground/page.tsx) | 820 | Chat UI with streaming |
+| [frontend/src/app/dashboard/playground/page.tsx](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx) | 820 | Chat UI with streaming |
 | [frontend/src/lib/api/admin.ts](../../apps/frontend/src/lib/api/admin.ts) | 768 | Large but appropriate (interface defs) |
 
 #### Top Architectural Concerns
@@ -330,7 +330,7 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 1. **Admin page monolith** (3343 lines).
 2. **No state machine for complex workflows** (playground + admin).
 3. **Auth state not cached by React Query**.
-4. **Playground streaming bypasses API layer** ([frontend/src/app/dashboard/playground/page.tsx:271](../../apps/frontend/src/app/dashboard/playground/page.tsx)).
+4. **Playground streaming bypasses API layer** ([frontend/src/app/dashboard/playground/page.tsx:271](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx)).
 5. **Error handling complexity in API client** (`jsonOrThrow` uses pattern matching on error messages, 18+ conditional checks at [frontend/src/lib/api/client.ts:110-162](../../apps/frontend/src/lib/api/client.ts)).
 
 **Testing**: Only 4 test files found; no component test infrastructure.
@@ -513,5 +513,5 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 3. **Adopt a real DB migration framework and wire it into deploy.** Replace startup-driven schema initialization with versioned migrations (Alembic or equivalent), gate deploy on migration apply, and add a nightly restore-test of `scripts/db/backup.sh`. Schema drift between code and DB is a silent-corruption class of bug; backups that have never been restored aren't backups.
 4. **Add a deployment safety gate and rollback path.** Require human approval (or canary + auto-rollback) between green CI and SSH `git reset --hard` to prod; move secrets out of plaintext `.env` to a managed store. Today any `main` merge is a one-shot to production with no undo.
 5. **Make pending-decision state observable, not silent.** Add a TTL/cleanup sweep for `_pending_decisions` in [routing/routewise/router.py](../../apps/backend/routing/routewise/router.py), bound the hedging decision log, and surface request-path failures with real metrics + alerts. These are unbounded-leak / silent-failure bugs waiting to happen at scale.
-6. **Break up the admin page and unify frontend state.** Split [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) by tab into route segments, push auth state into React Query, and route the playground stream through the API layer instead of bypassing it ([frontend/src/app/dashboard/playground/page.tsx:271](../../apps/frontend/src/app/dashboard/playground/page.tsx)). 3343 lines + 32 useState is the frontend equivalent of `completions.py`.
+6. **Break up the admin page and unify frontend state.** Split [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) by tab into route segments, push auth state into React Query, and route the playground stream through the API layer instead of bypassing it ([frontend/src/app/dashboard/playground/page.tsx:271](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx)). 3343 lines + 32 useState is the frontend equivalent of `completions.py`.
 7. **Consolidate client tooling around the harness contract.** Either delete `client/` and `llm-prober/` or rebuild `client/` on top of the harness's HTTP-only black-box pattern; share a single percentile/metrics implementation; add a lint rule enforcing harness's no-`serving`-imports rule. The current state has a `NotImplementedError` in a "production" load tester, an empty directory, and duplicated metrics — net negative.

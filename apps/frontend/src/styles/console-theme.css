@@ -296,3 +296,92 @@
 :root[data-console-theme='dark'] .console-theme .border-indigo-200 {
   border-color: #66518a;
 }
+
+/* Prism tokens in the console's generated code samples. */
+.console-theme .code-highlight .token.comment {
+  color: #6b7280;
+}
+
+.console-theme .code-highlight .token.punctuation {
+  color: #6b7280;
+}
+
+.console-theme .code-highlight .token.string,
+.console-theme .code-highlight .token.triple-quoted-string {
+  color: #0a7d4f;
+}
+
+.console-theme .code-highlight .token.keyword,
+.console-theme .code-highlight .token.control-flow {
+  color: #a626a4;
+}
+
+.console-theme .code-highlight .token.function,
+.console-theme .code-highlight .token.function-name {
+  color: #0969da;
+}
+
+.console-theme .code-highlight .token.class-name,
+.console-theme .code-highlight .token.namespace {
+  color: #c18401;
+}
+
+.console-theme .code-highlight .token.number,
+.console-theme .code-highlight .token.boolean {
+  color: #b76b01;
+}
+
+.console-theme .code-highlight .token.operator {
+  color: #6b7280;
+}
+
+.console-theme .code-highlight .token.property,
+.console-theme .code-highlight .token.builtin {
+  color: #0550ae;
+}
+
+.console-theme .code-highlight .token.variable {
+  color: #953800;
+}
+
+.console-theme .code-highlight .token.parameter {
+  color: inherit;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.comment {
+  color: #8b98a9;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.punctuation,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.operator {
+  color: #b0bdce;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.string,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.triple-quoted-string {
+  color: #7ee2a8;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.keyword,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.control-flow {
+  color: #c792ea;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.function,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.function-name,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.property,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.builtin {
+  color: #82aaff;
+}
+
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.class-name,
+:root[data-console-theme='dark'] .console-theme .code-highlight .token.namespace {
+  color: #ffcb6b;
+}
+
+:root[data-console-theme='dark']
+  .console-theme
+  .code-highlight
+  :is(.token.number, .token.boolean, .token.variable) {
+  color: #f78c6c;
+}

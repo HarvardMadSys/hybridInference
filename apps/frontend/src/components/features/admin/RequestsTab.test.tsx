@@ -30,6 +30,7 @@ import {
   listRecentRequests,
 } from '@/lib/api/admin';
 import { chooseOption } from '@/test-utils/select';
+import toast from 'react-hot-toast';
 
 function makeRequest(overrides: Partial<AdminRecentRequestItem> = {}): AdminRecentRequestItem {
   return {
@@ -893,6 +894,23 @@ describe('RequestsTab sources', () => {
         expect.objectContaining({ source: 'batch', batchId: 'batch_0123456789abcdef' }),
       ),
     );
+  });
+
+  it('closes the export panel and points to the browser downloads list', async () => {
+    vi.mocked(exportRequests).mockResolvedValue(undefined);
+    render(<RequestsTab source="batch" initialBatchId="batch_0123456789abcdef" />);
+
+    await screen.findByText('gpt-4o-mini');
+    fireEvent.click(screen.getByRole('button', { name: 'Export JSONL' }));
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-09-01' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    await waitFor(() =>
+      expect(toast.success).toHaveBeenCalledWith(
+        "Download requested. Check your browser's downloads.",
+      ),
+    );
+    expect(screen.queryByLabelText('Start date')).not.toBeInTheDocument();
   });
 
   it('says when there is no batch request', async () => {

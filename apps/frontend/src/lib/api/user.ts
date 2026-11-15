@@ -1,6 +1,7 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
+import { sortModelsById } from '@/lib/utils/modelOrder';
 
 const API_BASE = config.apiBase;
 
@@ -183,7 +184,8 @@ export async function updateLocalePreference(
 
 export async function getModels(): Promise<ModelCatalogResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/models');
-  return jsonOrThrow<ModelCatalogResponse>(resp);
+  const catalog = await jsonOrThrow<ModelCatalogResponse>(resp);
+  return { ...catalog, data: sortModelsById(catalog.data ?? []) };
 }
 
 /** Create another key for the account; `name` labels it and may be omitted. */

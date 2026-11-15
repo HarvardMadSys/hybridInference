@@ -19,9 +19,11 @@ let authState: {
   isAuthenticated: false,
 };
 
+const navigation = vi.hoisted(() => ({ pathname: '/dashboard' }));
+
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace, push: vi.fn() }),
-  usePathname: () => '/dashboard',
+  usePathname: () => navigation.pathname,
 }));
 
 vi.mock('@/components/providers', () => ({
@@ -58,6 +60,7 @@ describe('Header', () => {
 
   beforeEach(() => {
     replace.mockClear();
+    navigation.pathname = '/dashboard';
     brandingOverride = configuredBranding;
     featuresOverride = { rag: true, publicStats: false };
     authState = {
@@ -255,6 +258,40 @@ describe('Header', () => {
     render(<Header />);
 
     expect(screen.getByRole('link', { name: /dashboard/i })).toHaveAttribute('href', '/dashboard');
+  });
+});
+
+describe('Header, across the dashboard', () => {
+  afterEach(() => {
+    cleanup();
+    navigation.pathname = '/dashboard';
+  });
+
+  it('is a bar across the window that stays in view over the user console', () => {
+    navigation.pathname = '/dashboard/keys';
+    render(<Header />);
+
+    const header = screen.getByRole('banner');
+    expect(header).toHaveClass('border-b', 'md:sticky');
+    expect(header.className).not.toMatch(/max-w-/);
+  });
+
+  it('is the same bar over the admin area, where the tables keep their own sticky rows', () => {
+    navigation.pathname = '/dashboard/admin/users';
+    render(<Header />);
+
+    const header = screen.getByRole('banner');
+    expect(header).toHaveClass('border-b');
+    expect(header).not.toHaveClass('md:sticky');
+  });
+
+  it('is as wide as the page on every other route', () => {
+    navigation.pathname = '/login';
+    render(<Header />);
+
+    const header = screen.getByRole('banner');
+    expect(header).toHaveClass('max-w-5xl');
+    expect(header).not.toHaveClass('border-b');
   });
 });
 

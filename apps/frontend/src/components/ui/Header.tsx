@@ -8,7 +8,7 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 import { AccountMenu } from './AccountMenu';
-import { useConsoleWidth } from '@/components/ui/consoleWidth';
+import { useConsoleFrame, useConsoleWidth } from '@/components/ui/consoleWidth';
 
 interface HeaderLink {
   key: string;
@@ -33,9 +33,14 @@ const MENU_LINK = `${MENU_ROW} font-medium text-gray-700`;
  * a Menu button and the account menu, and the links open beneath it as a
  * list: a phone has no room for them in a row, and wrapped they stacked the
  * bar three lines deep above every page.
+ *
+ * On a dashboard route it is a bar across the window; in the user console it
+ * also stays at the top while the page scrolls, with the navigation under it.
+ * Elsewhere it is as wide as the page below it.
  */
 export function Header() {
   const consoleWidth = useConsoleWidth();
+  const { bar, shell } = useConsoleFrame();
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
   const t = useT();
@@ -132,13 +137,17 @@ export function Header() {
 
   return (
     <header
-      className={`mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 sm:py-6`}
+      className={
+        bar
+          ? `flex min-h-14 w-full shrink-0 flex-wrap items-center justify-between gap-x-3 border-b border-gray-200 bg-white px-4 py-2 sm:px-6 md:px-8 ${shell ? 'md:sticky md:top-0 md:z-30' : ''}`
+          : `mx-auto flex w-full ${consoleWidth} flex-wrap items-center justify-between gap-3 px-4 py-4 sm:px-6 sm:py-6`
+      }
     >
       <div className="flex min-w-0 items-baseline gap-2">
         <Link
           href="/"
           prefetch={false}
-          className="inline-flex min-w-0 items-center gap-2 text-xl font-bold tracking-tight"
+          className={`inline-flex min-w-0 items-center gap-2 font-bold tracking-tight ${bar ? 'text-base' : 'text-xl'}`}
         >
           {branding.logoUrl ? (
             // Runtime assets cannot use next/image because their origin is
@@ -149,7 +158,7 @@ export function Header() {
               alt={fill(t('chrome.header.logo_alt', '{app_name} logo'), {
                 app_name: branding.appName,
               })}
-              className="h-8 w-auto shrink-0 object-contain"
+              className={`${bar ? 'h-7' : 'h-8'} w-auto shrink-0 object-contain`}
             />
           ) : null}
           {branding.appName}
