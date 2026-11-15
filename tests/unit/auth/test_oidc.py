@@ -191,6 +191,28 @@ async def test_an_email_the_provider_did_not_vouch_for_is_reported_as_such(provi
     assert (await _complete(state)).email_verified is False
 
 
+async def test_a_claim_the_provider_is_required_to_send_must_have_the_required_value(provider):
+    # One issuer for every Google account: only hd says the account is the organization's.
+    settings = oidc.OidcSettings(
+        issuer=ISSUER,
+        client_id=CLIENT_ID,
+        client_secret=CLIENT_SECRET,
+        required_claims=(("hd", "example.edu"),),
+    )
+
+    nonce, state = await _nonce_and_state()
+    provider.id_token = _sign(_claims(nonce, hd="example.edu"))
+    assert (await _complete(state, settings)).subject == "subject-1"
+
+    for claims in ({}, {"hd": "elsewhere.org"}, {"hd": ["example.edu"]}):
+        nonce, state = await _nonce_and_state()
+        provider.id_token = _sign(_claims(nonce, **claims))
+        with pytest.raises(oidc.SsoProtocolError) as excinfo:
+            await _complete(state, settings)
+        assert excinfo.value.code == "failed"
+        assert "hd" in excinfo.value.reason
+
+
 async def test_an_audience_list_is_accepted_when_this_client_is_the_authorized_party(provider):
     nonce, state = await _nonce_and_state()
     provider.id_token = _sign(_claims(nonce, aud=[CLIENT_ID, "another-api"], azp=CLIENT_ID))

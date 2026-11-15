@@ -122,6 +122,7 @@ therefore gets validation before saving, conditional writes, audit, backup and r
 | `client_id` / `client_secret` | required | `client_secret` can only be written as `${NAME}`, naming a separate secret setting (§4.2) |
 | `client_auth_method` | `client_secret_basic` | How the client proves itself to the token endpoint; `client_secret_post` is the other choice |
 | `scopes` | `["openid","email","profile"]` | Must include `openid` |
+| `required_claims` | `{}` | Claims the ID token must carry, each with exactly the value given. For an issuer that several organizations share: Google signs every account in at one issuer and names the organization in `hd`, so a personal Google account with a verified email in the domain is told apart only by this claim (§6.1) |
 | `domains` | required, not empty | The email domains this IdP answers for; a sign-in finds its IdP by them (§5.2). Same rule as `signup_allowed_domains`: an exact match, and `*.x` matches only subdomains of x |
 | `assume_email_verified` | `false` | Some IdPs do not return `email_verified` (Entra ID does not by default). An operator who knows the organization manages these addresses can turn it on |
 | `auto_create` | `false` | Whether an account is created on a first SSO sign-in when none exists here |
@@ -129,8 +130,9 @@ therefore gets validation before saving, conditional writes, audit, backup and r
 | `auto_link` | `false` | Whether an existing account with the same email is linked without confirmation (conditions in §6.2) |
 | `default_role` | `free` | The role of a new account: `free`, `pro` or `internal`, never `admin` |
 
-- **Only five fields are specific to OIDC**: `issuer`, `client_id`, `client_secret`, `client_auth_method` and
-  `scopes`. The rest do not depend on the protocol and apply to another protocol as they are.
+- **Only six fields are specific to OIDC**: `issuer`, `client_id`, `client_secret`, `client_auth_method`,
+  `required_claims` and `scopes`. The rest do not depend on the protocol and apply to another protocol as they
+  are.
 - **A field name cannot contain `token`, `secret` or `password`** unless its value really is a secret reference.
   `documents.py` treats every field with such a name as a secret and requires `${NAME}`. That is why the client
   authentication method is `client_auth_method`, not the specification's `token_endpoint_auth_method`.
@@ -254,6 +256,11 @@ Constraints:
 - Every call writes a database row, so it is rate limited by client address: 120 calls per address per hour
   (`serving/utils/sso_rate_limit.py`). No credential is checked here, so the limit is looser than the sign-in
   limit and enough for many people behind one campus address. Over the limit it returns 429.
+- A start made by a signed-in account (linking from Settings, §7.2; a confirmation, §9) is counted for the
+  account, not the address, with the same allowance. Behind a proxy the gateway is not told to trust, every
+  browser has the proxy's address: counted by address, anyone's starts would use up the allowance a signed-in
+  user needs. Anonymous starts still share one allowance there, as password sign-ins do, and the operator
+  guide points to the trusted-proxy settings.
 - Domain matching follows the signup allow-list's rule and is a pure function in `serving/config/sso.py`.
 - An IdP that is found but cannot be reached, or whose secret is not entered yet, returns 503.
 - Before first-run setup is complete it returns 503, as registration does. Every other entry in this record is
@@ -297,7 +304,8 @@ They run in order. A failure at any step answers with a 302 to `/login?sso_error
 3. Exchange the code: a POST to the token endpoint with `code`, `redirect_uri` and `code_verifier`, following
    no redirect. Every endpoint address the discovery document gives must be https (`localhost` excepted).
 4. Validate the ID token as OIDC Core 1.0 §3.1.3.7 says: signature, `iss`, `aud`, `azp`, `exp` and `nonce`.
-   Only the RS, PS and ES signature algorithms are accepted; `none` and HS* are refused.
+   Only the RS, PS and ES signature algorithms are accepted; `none` and HS* are refused. Then every claim in
+   the IdP's `required_claims` must be in the ID token with exactly its value; otherwise `failed`.
 5. Read the claims: `sub` is required. `email`, `email_verified` and `name` come from the ID token first; with
    no `email` there, the userinfo endpoint is asked, and its `sub` must equal the ID token's.
 6. Decide whether the email is trusted. Both must hold. Emails are lowercased before any comparison.

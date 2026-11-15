@@ -1,10 +1,16 @@
-"""Per-address limit on starting a single sign-on.
+"""Limit on starting a single sign-on, for each address and for each account.
 
 Starting a sign-on tests no credential: the identity provider does that, and
 throttles it. What a start costs here is one flow row, written before anyone
 has signed in, so the limit bounds those writes from one address. It is kept in
 process memory, like the login limits, and is generous enough for many people
 behind one campus or office address.
+
+A start made by a signed-in account (a confirmation, a link from Settings) is
+counted for the account instead. An address tells clients apart only as well
+as the gateway can see it: behind a proxy it is not told to trust, every
+browser has the proxy's address, and anyone's starts would use up the
+allowance a signed-in user needs.
 """
 
 from __future__ import annotations
@@ -36,14 +42,19 @@ def _now() -> float:
     return time.monotonic()
 
 
-async def check_and_record_sso_start(client: ClientIpInfo) -> bool:
-    """Count one start for the client's address; False when the hour's allowance is spent.
+async def check_and_record_sso_start(client: ClientIpInfo, *, account: str | None = None) -> bool:
+    """Count one start; False when the hour's allowance is spent.
 
-    Refused attempts are not recorded, so a source that keeps trying is let
-    through again as its earlier starts age out of the window.
+    Counted for *account* when a signed-in account makes it, and for the
+    client's address otherwise. Refused attempts are not recorded, so a source
+    that keeps trying is let through again as its earlier starts age out of
+    the window.
     """
     global _calls
-    key = normalize_ip_bucket(client.client_ip) if client.resolved else _UNRESOLVED
+    if account is not None:
+        key = f"account:{account}"
+    else:
+        key = normalize_ip_bucket(client.client_ip) if client.resolved else _UNRESOLVED
     now = _now()
     cutoff = now - _HOUR_SECONDS
     async with _lock:

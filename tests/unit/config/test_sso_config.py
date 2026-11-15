@@ -74,6 +74,14 @@ def test_only_the_required_fields_are_needed():
     assert provider.default_role == "free"
     assert provider.client_auth_method == "client_secret_basic"
     assert provider.scopes == ["openid", "email", "profile"]
+    assert provider.required_claims == {}
+
+
+def test_claims_an_id_token_must_carry_are_accepted():
+    # Google has one issuer for every account and names the organization in hd.
+    _validate(
+        _provider(issuer="https://accounts.google.com", required_claims={"hd": "example.edu"})
+    )
 
 
 def test_a_client_secret_is_only_ever_a_reference():
@@ -101,6 +109,9 @@ def test_a_client_secret_is_only_ever_a_reference():
         ("id", "x" * 33, "String should match pattern"),
         ("display_name", "   ", "must not be blank"),
         ("client_auth_method", "private_key_jwt", "Input should be"),
+        ("required_claims", {"hd": ""}, "needs a claim name and the value"),
+        ("required_claims", {" ": "example.edu"}, "needs a claim name and the value"),
+        ("required_claims", {"hd": True}, "Input should be a valid string"),
     ],
 )
 def test_a_field_that_is_wrong_is_refused_by_name(field, value, reason):

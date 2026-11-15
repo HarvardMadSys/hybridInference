@@ -357,3 +357,33 @@ msgstr "已经关联了另一个身份"
 
 msgid "See [Linking and unlinking](#linking-and-unlinking)"
 msgstr "参见[关联与解除关联](#linking-and-unlinking)"
+
+msgid "`required_claims`"
+msgstr "`required_claims`"
+
+msgid "`{}`"
+msgstr "`{}`"
+
+msgid "Claims the ID token must carry, each with exactly the value given. See [Issuers that several organizations share](#issuers-that-several-organizations-share)"
+msgstr "ID token 里必须带的 claim，值要与这里写的完全相同。参见[多个机构共用的 issuer](#issuers-that-several-organizations-share)"
+
+msgid "Issuers that several organizations share"
+msgstr "多个机构共用的 issuer"
+
+msgid "Some providers sign in every organization's accounts at one issuer. Google is one: an account in your organization and a personal Google account both come from `https://accounts.google.com`, and a personal account can carry a verified email in your domain. Such a provider names the organization an account belongs to in a claim. Put that claim and its value in `required_claims`, and a sign-in whose ID token does not carry it is refused:"
+msgstr "有些身份提供方让所有机构的账号都从同一个 issuer 登录，Google 就是这样：你机构里的账号和个人 Google 账号都来自 `https://accounts.google.com`，而个人账号也可以带着你域名下已验证的邮箱。这类提供方用一个 claim 说明账号属于哪个机构。把这个 claim 和它的值写进 `required_claims`，ID token 里没有它的登录就会被拒绝："
+
+msgid "For Google the claim is `hd`, the organization's primary domain."
+msgstr "Google 用的 claim 是 `hd`，值是机构的主域名。"
+
+msgid "Too many sign-in attempts"
+msgstr "登录尝试过于频繁"
+
+msgid "More than 120 sign-ins were started from one client address in an hour. Behind a reverse proxy the gateway sees the proxy's address for every browser, and all of them share that allowance, until it is told which proxies to trust: see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md)"
+msgstr "一小时内从同一个客户端地址发起了超过 120 次登录。网关在反向代理后面时，看到的每个浏览器都是代理的地址，所有浏览器共用这一个额度，直到配置了可信代理为止：见[可信代理与客户端 IP](trusted-proxies-and-client-ips.md)"
+
+msgid "Single sign-on failed"
+msgstr "SSO 登录失败"
+
+msgid "The provider's answer did not validate, or the account lacks a claim that `required_claims` asks for"
+msgstr "身份提供方的回答没有通过校验，或者账号没有 `required_claims` 要求的 claim"

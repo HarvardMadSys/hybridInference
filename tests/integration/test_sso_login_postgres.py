@@ -104,6 +104,32 @@ async def test_starts_from_one_address_are_limited(browser, monkeypatch):
     assert statuses == [200, 200, 429]
 
 
+async def test_anonymous_starts_do_not_use_up_a_signed_in_accounts_allowance(
+    browser, idp, sso, monkeypatch
+):
+    # Behind a proxy the gateway is not told to trust, every browser has one
+    # address: whoever starts sign-ins from it must not stop a signed-in user.
+    sso.configure(auto_create=True, require_approval=False)
+    await _sign_in(browser, idp)
+    token = (await browser.post("/auth/refresh")).json()["access_token"]
+    monkeypatch.setattr(sso_rate_limit, "STARTS_PER_HOUR", 2)
+    sso_rate_limit.reset_sso_rate_limit_state()
+    for _ in range(2):
+        await browser.get("/auth/sso/example-univ/start")
+    assert (await browser.post("/auth/sso/discover", json={"email": EMAIL})).status_code == 429
+
+    async def confirm() -> int:
+        response = await browser.post(
+            "/auth/sso/reauth/start",
+            json={"purpose": "delete_account"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        return response.status_code
+
+    # The account has an allowance of its own, of the same size.
+    assert [await confirm() for _ in range(3)] == [200, 200, 429]
+
+
 async def test_the_direct_link_goes_straight_to_the_provider(browser, idp):
     response = await browser.get(
         "/auth/sso/example-univ/start", params={"return_to": "/dashboard/keys"}
@@ -225,6 +251,23 @@ async def test_an_email_the_provider_cannot_vouch_for_is_refused(browser, idp, s
 
     assert _location(response) == ("/login", {"sso_error": ["email_untrusted"]})
     assert await store.get_user_identity(ISSUER, "subject-1") is None
+
+
+async def test_an_account_outside_the_organization_at_a_shared_issuer_is_refused(
+    browser, idp, sso, store
+):
+    # The provider signs in accounts of other organizations too, and can
+    # report a verified email in this one's domain for them.
+    sso.configure(auto_create=True, require_approval=False, required_claims={"hd": "example.edu"})
+
+    outside = await _sign_in(browser, idp)
+
+    assert _location(outside) == ("/login", {"sso_error": ["failed"]})
+    assert await store.get_user_by_email(EMAIL) is None
+    assert await store.get_user_identity(ISSUER, "subject-1") is None
+
+    member = await _sign_in(browser, idp, hd="example.edu")
+    assert _location(member)[1]["sso"] == ["complete"]
 
 
 async def test_an_address_on_the_administrator_list_is_never_created(

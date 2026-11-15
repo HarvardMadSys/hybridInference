@@ -173,6 +173,7 @@ def _oidc_settings(provider: SsoProvider) -> oidc.OidcSettings | None:
         client_secret=secret,
         client_auth_method=provider.client_auth_method,
         scopes=tuple(provider.scopes),
+        required_claims=tuple(provider.required_claims.items()),
     )
 
 
@@ -227,8 +228,8 @@ async def _start_flow(
     return url
 
 
-async def _allow_start(request: Request) -> bool:
-    return await check_and_record_sso_start(get_client_ip_info(request))
+async def _allow_start(request: Request, *, account: str | None = None) -> bool:
+    return await check_and_record_sso_start(get_client_ip_info(request), account=account)
 
 
 async def _record_login(
@@ -755,7 +756,7 @@ async def _start_for_account(
     reauth_purpose: str | None = None,
 ) -> SsoStartResponse:
     """Start a flow for the signed-in account; the answer tells the page where to go."""
-    if not await _allow_start(request):
+    if not await _allow_start(request, account=current_user["user_id"]):
         raise HTTPException(
             status_code=429,
             detail="Too many sign-in attempts. Please try again later.",

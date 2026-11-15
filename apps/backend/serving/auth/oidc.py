@@ -85,6 +85,8 @@ class OidcSettings:
     client_secret: str
     client_auth_method: str = "client_secret_basic"
     scopes: tuple[str, ...] = ("openid", "email", "profile")
+    #: Claims the ID token must carry, as (name, value) pairs.
+    required_claims: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -217,6 +219,12 @@ async def complete(
     expected = str(protocol_state.get("nonce_hash") or "")
     if not isinstance(nonce, str) or not hmac.compare_digest(hash_value(nonce), expected):
         raise SsoProtocolError("failed", "the ID token's nonce does not belong to this flow")
+
+    # An issuer shared by many organizations says which one an account is in
+    # with a claim. An account that lacks it is someone else's, however valid.
+    for name, expected in settings.required_claims:
+        if claims.get(name) != expected:
+            raise SsoProtocolError("failed", f"the ID token's {name} claim is not the required one")
 
     authenticated_at = _auth_time(claims)
     if protocol_state.get("fresh_login") and authenticated_at is None:

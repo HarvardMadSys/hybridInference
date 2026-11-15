@@ -55,6 +55,10 @@ class SsoProvider(BaseModel):
     client_secret: str = Field(min_length=1)
     client_auth_method: Literal["client_secret_basic", "client_secret_post"] = "client_secret_basic"
     scopes: list[str] = Field(default_factory=lambda: ["openid", "email", "profile"])
+    #: Claims the ID token must carry, with exactly these values. For an issuer
+    #: that more than one organization signs in at: Google has one issuer for
+    #: every account and names an account's organization in ``hd``.
+    required_claims: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("display_name")
     @classmethod
@@ -79,6 +83,13 @@ class SsoProvider(BaseModel):
             raise ValueError("must include openid")
         if any(not _SCOPE.fullmatch(scope) for scope in value):
             raise ValueError("each scope must be one word")
+        return value
+
+    @field_validator("required_claims")
+    @classmethod
+    def _required_claims(cls, value: dict[str, str]) -> dict[str, str]:
+        if any(not name.strip() or not expected.strip() for name, expected in value.items()):
+            raise ValueError("each entry needs a claim name and the value it must have")
         return value
 
     @field_validator("domains")

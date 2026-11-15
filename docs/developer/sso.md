@@ -66,6 +66,7 @@ to who may sign in do.
 | `client_id`, `client_secret` | required | `client_secret` is always a `${NAME}` reference to a secret setting, never the secret itself |
 | `client_auth_method` | `client_secret_basic` | How the gateway authenticates to the token endpoint. The other value is `client_secret_post` |
 | `scopes` | `["openid", "email", "profile"]` | Must include `openid` |
+| `required_claims` | `{}` | Claims the ID token must carry, each with exactly the value given. See [Issuers that several organizations share](#issuers-that-several-organizations-share) |
 | `domains` | required | The email domains this provider answers for. `example.edu` matches that domain; `*.example.edu` matches its subdomains and not `example.edu` itself. Two providers cannot claim the same domain |
 | `assume_email_verified` | `false` | Treat the provider's email as verified although the provider does not say so |
 | `auto_create` | `false` | Create an account at a member's first sign-in |
@@ -126,6 +127,21 @@ Some providers never send `email_verified`. Microsoft Entra ID is one. If the
 organization manages its own email addresses, set `assume_email_verified` to
 `true` for that provider. Without it, no member of such a provider can complete
 a first sign-in.
+
+### Issuers that several organizations share
+
+Some providers sign in every organization's accounts at one issuer. Google is
+one: an account in your organization and a personal Google account both come
+from `https://accounts.google.com`, and a personal account can carry a verified
+email in your domain. Such a provider names the organization an account belongs
+to in a claim. Put that claim and its value in `required_claims`, and a sign-in
+whose ID token does not carry it is refused:
+
+```json
+"required_claims": {"hd": "example.edu"}
+```
+
+For Google the claim is `hd`, the organization's primary domain.
 
 ## Linking and unlinking
 
@@ -210,6 +226,8 @@ and the reason, and never contains a token or a secret.
 |---|---|
 | Single sign-on is unavailable | The provider cannot be reached, the client secret setting is empty, the gateway has not restarted since the secret was stored, or `FRONTEND_URL` is not an absolute URL |
 | The sign-in took too long | The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL` |
+| Too many sign-in attempts | More than 120 sign-ins were started from one client address in an hour. Behind a reverse proxy the gateway sees the proxy's address for every browser, and all of them share that allowance, until it is told which proxies to trust: see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
+| Single sign-on failed | The provider's answer did not validate, or the account lacks a claim that `required_claims` asks for |
 | The email could not be confirmed | The email is outside the provider's `domains`, or the provider does not report it as verified |
 | No account here yet | `auto_create` is off, or the address is on `ADMIN_EMAILS` |
 | Pending approval | The account was created and waits in **Admin → Users** |
