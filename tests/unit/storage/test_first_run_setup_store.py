@@ -286,6 +286,7 @@ class _SimulatedConnection:
             table in sql
             for table in (
                 "INSERT INTO organizations",
+                "INSERT INTO org_members",
                 "INSERT INTO projects",
                 "UPDATE api_keys SET project_id",
             )

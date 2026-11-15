@@ -274,9 +274,9 @@ def _decode_grant(row: Any) -> Row:
 _KEY_INSERT_COLUMNS = (
     "key_hash, key_prefix, user_id, user_name, quota_daily_cost_usd, "
     "quota_monthly_cost_usd, expires_at, notes, metadata, account_id, "
-    "api_key_encrypted, name, project_id"
+    "api_key_encrypted, name, project_id, org_id"
 )
-_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13"
+_KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14"
 
 #: A key's own limits (P2a), on top of its account's quota. NULL means no limit
 #: at the key.
@@ -438,23 +438,50 @@ async def _sync_account_quota(
     )
 
 
-#: The key whose quota a key added to an account takes (``create_key`` with
-#: ``inherit_account_quota``). An unrevoked key when the account has one: each
-#: carries the account quota (:func:`_sync_account_quota`). Failing that, the
-#: most recently revoked key, which carried it when it was revoked: the quota is
-#: the account's, so revoking every key must not reset it, or a cut an admin
-#: made -- a lowered daily limit, a monthly cap -- would end with the next key
-#: the user creates. Revocation keeps no time of its own, so the most recently
-#: revoked key is taken to be the one last used or created: a key is used until
-#: it is revoked, and an account that holds one key at a time revokes each
-#: before it creates the next.
+#: The account's quota: what a key added to the account takes (``create_key``
+#: with ``inherit_account_quota``) and what a project budget may not exceed.
+#: ``account_quotas`` holds it, written with every change to the keys' copies
+#: (:func:`_set_account_quota`), so revoking keys can never bring back a quota
+#: an administrator replaced. An account it has no row for yet -- one the
+#: previous release created while this one rolled out -- falls back to its
+#: keys: an unrevoked key's quota, else the most recently revoked key's.
 ACCOUNT_QUOTA_SOURCE_SQL = (
-    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys WHERE user_id = $1 "
-    "ORDER BY status = 'revoked', "
-    "CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END DESC NULLS LAST, "
-    "created_at, id "
-    "LIMIT 1"
+    "SELECT quota_daily_cost_usd, quota_monthly_cost_usd FROM ("
+    "  SELECT 0 AS source, quota_daily_cost_usd, quota_monthly_cost_usd "
+    "  FROM account_quotas WHERE user_id = $1 "
+    "  UNION ALL ("
+    "    SELECT 1, quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys WHERE user_id = $1 "
+    "    ORDER BY status = 'revoked', "
+    "    CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END "
+    "    DESC NULLS LAST, created_at, id "
+    "    LIMIT 1"
+    "  )"
+    ") quota ORDER BY source LIMIT 1"
 )
+
+
+async def _set_account_quota(conn: Any, user_id: str, **changes: Any) -> None:
+    """Record the account quota: ``quota_daily_cost_usd``/``quota_monthly_cost_usd`` given.
+
+    A value left out keeps what the account had. Runs in the caller's
+    transaction, beside the write that gives the keys the same values.
+    """
+    current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
+    daily = changes.get(
+        "quota_daily_cost_usd", current["quota_daily_cost_usd"] if current else None
+    )
+    monthly = changes.get(
+        "quota_monthly_cost_usd", current["quota_monthly_cost_usd"] if current else None
+    )
+    await conn.execute(
+        "INSERT INTO account_quotas (user_id, quota_daily_cost_usd, quota_monthly_cost_usd) "
+        "VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET "
+        "quota_daily_cost_usd = EXCLUDED.quota_daily_cost_usd, "
+        "quota_monthly_cost_usd = EXCLUDED.quota_monthly_cost_usd, updated_at = NOW()",
+        user_id,
+        daily,
+        monthly,
+    )
 
 
 def _coerce_user_row(row: Any) -> Row | None:
@@ -1028,6 +1055,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 user_id,
             )
             await conn.execute("DELETE FROM projects WHERE user_id = $1", user_id)
+            await conn.execute("DELETE FROM account_quotas WHERE user_id = $1", user_id)
             # The placeholder organization (``legacy_org_id``), which an older
             # release may have named after the account, goes with it too.
             await conn.execute("DELETE FROM organizations WHERE id = $1", legacy_org_id(user_id))
@@ -1833,6 +1861,7 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
             from serving.storage.project_backfill import (
                 default_project_id,
                 ensure_default_project,
+                legacy_org_id,
             )
 
             target_project = project_id or default_project_id(user_id)
@@ -1861,9 +1890,14 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                 api_key_encrypted,
                 name,
                 target_project,
+                # Read by the previous release only; see ``legacy_org_id``.
+                legacy_org_id(user_id),
             )
             await _sync_account_quota(
                 conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
+            )
+            await _set_account_quota(
+                conn, user_id, quota_daily_cost_usd=daily, quota_monthly_cost_usd=monthly
             )
         return dict(row)
 
@@ -2302,6 +2336,13 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
         async with self._pool.acquire() as conn, conn.transaction():
             await _lock_account_keys(conn, user_id)
             await conn.execute(sql, *params)
+            quota = {
+                name: fields[name]
+                for name in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+                if name in fields
+            }
+            if quota:
+                await _set_account_quota(conn, user_id, **quota)
 
     async def revoke_key(self, user_id: str, *, hard_delete: bool = False) -> None:
         """Soft-revoke (status='revoked') or hard-delete every key of *user_id*."""
@@ -4776,6 +4817,28 @@ class PostgresOperationalStore(PostgresPhoneAuthMixin, OperationalStore):
                     SET quota_daily_cost_usd = $1
                     WHERE status <> 'revoked'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
+                    """,
+                quota,
+                role,
+            )
+            # The account quota too, for accounts with keys and without: an
+            # account without a row keeps the monthly quota its keys carry.
+            await conn.execute(
+                """
+                    INSERT INTO account_quotas
+                        (user_id, quota_daily_cost_usd, quota_monthly_cost_usd)
+                    SELECT u.id, $1, k.quota_monthly_cost_usd
+                    FROM users u
+                    LEFT JOIN LATERAL (
+                        SELECT quota_monthly_cost_usd FROM api_keys
+                        WHERE user_id = u.id
+                        ORDER BY status = 'revoked', created_at DESC
+                        LIMIT 1
+                    ) k ON TRUE
+                    WHERE u.role = $2
+                    ON CONFLICT (user_id) DO UPDATE SET
+                        quota_daily_cost_usd = EXCLUDED.quota_daily_cost_usd,
+                        updated_at = NOW()
                     """,
                 quota,
                 role,

@@ -1009,9 +1009,14 @@ at that time, rather than shaping today's model around a guess.
 ### 19.3 What changed
 
 - `projects.user_id` owns a project, and every project query filters on it.
-- The account quota is the key quota again: auth, grants and the project
-  budget validation read `api_keys.quota_*` directly
-  (`ACCOUNT_QUOTA_SOURCE_SQL` for the account-wide value).
+- The account quota gets a home of its own, `account_quotas` (one row per
+  account). It is what a new key inherits and what a project budget may not
+  exceed. Every write of the account quota (key creation, the admin quota
+  edit, the per-role bulk apply) writes it and the keys' copies in one
+  transaction; the request path keeps reading the presented key's copy.
+  Before, the keys' copies were the only record outside the organization,
+  and a revoked key could carry an old quota into the next key (review of
+  #1806: an admin cut to $1/$2 came back as $100 with no monthly cap).
 - The organization concurrency slot, the `organization_suspended` refusal,
   the suspended-organization check on `X-On-Behalf-Of`, `org_id` attribution
   in the spend ledger and `PATCH /admin/orgs` are gone. Project concurrency,
@@ -1021,28 +1026,37 @@ at that time, rather than shaping today's model around a guess.
 
 ### 19.4 Migration and rollback
 
-`0018_projects_owned_by_accounts` is an expand revision:
+`0018_projects_owned_by_accounts` is an expand revision. In order:
 
-1. It adds `projects.user_id` and fills it from each personal organization's
-   owner. It drops and constrains nothing.
-2. It moves what an administrator set on an organization onto the account: a
-   budget onto every key of the account (revoked keys included, as a new key
-   inherits from them), a concurrency cap onto `users.max_concurrent_requests`
-   (never raising an existing cap), and a suspension onto `users.status`.
-3. It clears those organization values, so the previous release, which reads
-   an organization ceiling ahead of the key quota, enforces the same limits.
+1. It refuses to run while any organization has a concurrency cap, naming
+   them. That cap limited batch and interactive work together, which no
+   account setting does; an administrator decides what replaces each one.
+2. It fills `account_quotas` from the organization's budget where one was
+   set, otherwise from the keys (a live key's quota, else the most recently
+   revoked one's), so an account with a budget but no key keeps it, and gives
+   the keys a budget set on the organization.
+3. It adds `projects.user_id`, filled from each organization's owner, and
+   suspends the account of a suspended organization.
+4. It clears the organizations' budgets and status, so the previous release,
+   which reads an organization ceiling ahead of the key quota, enforces what
+   this one does.
+5. It adds two triggers for the time both releases may run: a project the
+   previous release creates gets its owning account, and a budget or
+   suspension it writes to an organization goes to the account (a
+   concurrency cap is refused).
 
-This release still writes `projects.org_id = 'org_p_' || user_id`, and the
-empty `organizations` row that foreign key needs. That keeps two things
-working without schema changes an expand revision may not make: the unique
-indexes on `projects.org_id` still allow one active name and one Default per
-account, and a rolled-back release finds every project. Nothing reads the
-column or the row. Hard delete removes the row with the account.
+It drops and constrains nothing. This release still writes
+`projects.org_id` and `api_keys.org_id` as `'org_p_' || user_id`, and the
+empty `organizations` row and owner membership they name. That keeps the
+unique indexes on `projects.org_id` (one active name and one Default per
+account) holding, and keeps a rolled-back release from moving keys: its
+startup backfill reassigns a key without an organization to Default. Nothing
+reads these values. Hard delete removes the row with the account.
 
 A contract revision, shipped once this release is the oldest one running,
-drops `organizations`, `org_members`, `projects.org_id` and `api_keys.org_id`,
-moves the two unique indexes onto `projects.user_id`, and removes the
-placeholder write.
+drops the two triggers, `organizations`, `org_members`, `projects.org_id` and
+`api_keys.org_id`, moves the two unique indexes onto `projects.user_id`, and
+removes the placeholder writes.
 
 ## References
 

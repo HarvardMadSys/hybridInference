@@ -162,9 +162,14 @@ class TestAPIKeyManagement:
     ):
         """Every key spends one account quota, so a custom one is not reset by adding a key."""
         async with auth_db_logger.pool.acquire() as conn:
+            # As an admin quota edit writes it: the account's record and its keys.
             await conn.execute(
                 "UPDATE api_keys SET quota_daily_cost_usd = 3.5 WHERE key_prefix = $1",
                 test_user_with_key["key_prefix"],
+            )
+            await conn.execute(
+                "UPDATE account_quotas SET quota_daily_cost_usd = 3.5 WHERE user_id = $1",
+                test_user_with_key["id"],
             )
 
         created = (await auth_app_client.post("/user/api-keys", headers=auth_headers)).json()
@@ -474,10 +479,16 @@ class TestAPIKeyManagement:
         """A key made after every key was revoked keeps the account's cut and monthly cap."""
         prefix = test_user_with_key["key_prefix"]
         async with auth_db_logger.pool.acquire() as conn:
+            # As an admin quota edit writes it: the account's record and its keys.
             await conn.execute(
                 "UPDATE api_keys SET quota_daily_cost_usd = 2, quota_monthly_cost_usd = 20 "
                 "WHERE key_prefix = $1",
                 prefix,
+            )
+            await conn.execute(
+                "UPDATE account_quotas SET quota_daily_cost_usd = 2, quota_monthly_cost_usd = 20 "
+                "WHERE user_id = $1",
+                test_user_with_key["id"],
             )
         revoked = await auth_app_client.delete(f"/user/api-keys/{prefix}", headers=auth_headers)
         assert revoked.json()["status"] == "revoked"

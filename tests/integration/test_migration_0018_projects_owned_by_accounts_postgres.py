@@ -63,16 +63,27 @@ async def _key(conn, key_hash: str, user_id: str, *, status: str = "active", dai
     )
 
 
+async def _quotas(conn) -> dict[str, tuple]:
+    return {
+        row["user_id"]: (row["quota_daily_cost_usd"], row["quota_monthly_cost_usd"])
+        for row in await conn.fetch(
+            "SELECT user_id, quota_daily_cost_usd, quota_monthly_cost_usd FROM account_quotas"
+        )
+    }
+
+
 async def test_organization_settings_move_onto_the_account(scratch):
     await mig.upgrade(scratch, PREVIOUS)
     async with mig.connected(scratch) as conn:
-        await _personal_account(conn, "u-budget", daily=3, monthly=30, cap=2)
+        await _personal_account(conn, "u-budget", daily=3, monthly=30)
         await _key(conn, "h-live", "u-budget", daily=5)
         await _key(conn, "h-revoked", "u-budget", status="revoked", daily=5)
-        await _personal_account(conn, "u-capped", cap=10, user_cap=4)
+        # A budget set for an account before it had a key.
+        await _personal_account(conn, "u-keyless", daily=1, monthly=2)
         await _personal_account(conn, "u-suspended", status="suspended")
         await _personal_account(conn, "u-plain")
         await _key(conn, "h-plain", "u-plain", daily=7)
+        await _personal_account(conn, "u-nothing")
 
     await mig.upgrade(scratch)
 
@@ -83,9 +94,9 @@ async def test_organization_settings_move_onto_the_account(scratch):
                 "SELECT key_hash, quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys"
             )
         }
-        users = {
-            row["id"]: (row["status"], row["max_concurrent_requests"])
-            for row in await conn.fetch("SELECT id, status, max_concurrent_requests FROM users")
+        quotas = await _quotas(conn)
+        statuses = {
+            row["id"]: row["status"] for row in await conn.fetch("SELECT id, status FROM users")
         }
         owners = {
             row["id"]: row["user_id"]
@@ -93,33 +104,50 @@ async def test_organization_settings_move_onto_the_account(scratch):
         }
         leftover = await conn.fetchval(
             "SELECT COUNT(*) FROM organizations WHERE budget_daily_usd IS NOT NULL "
-            "OR budget_monthly_usd IS NOT NULL OR max_concurrent_requests IS NOT NULL "
-            "OR status <> 'active'"
+            "OR budget_monthly_usd IS NOT NULL OR status <> 'active'"
         )
 
-    # The budget reaches every key, revoked ones too, since a new key inherits
-    # from the newest revoked key when no live key remains.
+    # The account quota has a home of its own, keys or no keys.
+    assert quotas == {"u-budget": (3, 30), "u-keyless": (1, 2), "u-plain": (7, None)}
+    # The keys carry the organization's budget too, revoked ones included.
     assert keys["h-live"] == (3, 30)
     assert keys["h-revoked"] == (3, 30)
     assert keys["h-plain"] == (7, None)
-    # A cap is taken over, but never raises one the account already had.
-    assert users["u-budget"] == ("active", 2)
-    assert users["u-capped"] == ("active", 4)
-    assert users["u-suspended"] == ("suspended", None)
-    assert users["u-plain"] == ("active", None)
-    assert owners == {default_project_id(user): user for user in users}
+    assert statuses["u-suspended"] == "suspended"
+    assert statuses["u-plain"] == "active"
+    assert owners == {default_project_id(user): user for user in statuses}
     # Nothing is left for the previous release to enforce on top.
     assert leftover == 0
+
+
+async def test_an_organization_concurrency_cap_stops_the_migration(scratch):
+    await mig.upgrade(scratch, PREVIOUS)
+    async with mig.connected(scratch) as conn:
+        await _personal_account(conn, "u-capped", cap=2)
+
+    with pytest.raises(Exception, match="org_p_u-capped"):
+        await mig.upgrade(scratch)
+
+    async with mig.connected(scratch) as conn:
+        # Nothing ran: the cap still applies under the previous release.
+        assert (
+            await conn.fetchval(
+                "SELECT max_concurrent_requests FROM organizations WHERE id = 'org_p_u-capped'"
+            )
+            == 2
+        )
+        assert not await conn.fetchval("SELECT to_regclass('account_quotas') IS NOT NULL")
 
 
 async def test_the_previous_release_keeps_working_after_it_runs(scratch):
     await mig.upgrade(scratch, PREVIOUS)
     async with mig.connected(scratch) as conn:
         await _personal_account(conn, "u-old")
+        await _key(conn, "h-old", "u-old", daily=7)
     await mig.upgrade(scratch)
 
     async with mig.connected(scratch) as conn:
-        # How the previous release provisions an account and a project.
+        # How the previous release provisions an account and a project ...
         await conn.execute(
             "INSERT INTO users (id, email, password_hash) VALUES ('u-new', 'new@x.test', 'h')"
         )
@@ -133,11 +161,41 @@ async def test_the_previous_release_keeps_working_after_it_runs(scratch):
         await conn.execute(
             "INSERT INTO projects (id, org_id, name) VALUES ('proj_old', 'org_p_u-old', 'CI')"
         )
-        # And how it finds them: by organization id, which this release still writes.
+        # ... and how it finds them: by organization id, which this release still writes.
         found = await conn.fetchval(
             "SELECT COUNT(*) FROM projects WHERE org_id = 'org_p_u-old' AND status = 'active'"
         )
+        # This release finds them by account.
+        owners = {
+            row["id"]: row["user_id"]
+            for row in await conn.fetch(
+                "SELECT id, user_id FROM projects WHERE id IN ('proj_d_u-new', 'proj_old')"
+            )
+        }
+        # An account quota the previous release writes reaches the account; the
+        # organization keeps none, so that release enforces it from the keys.
+        await conn.execute("UPDATE organizations SET budget_daily_usd = 2 WHERE id = 'org_p_u-old'")
+        await conn.execute(
+            "UPDATE organizations SET budget_monthly_usd = 9 WHERE id = 'org_p_u-new'"
+        )
+        quotas = await _quotas(conn)
+        org_budgets = await conn.fetchval(
+            "SELECT COUNT(*) FROM organizations "
+            "WHERE budget_daily_usd IS NOT NULL OR budget_monthly_usd IS NOT NULL"
+        )
+        await conn.execute("UPDATE organizations SET status = 'suspended' WHERE id = 'org_p_u-new'")
+        suspended = await conn.fetchval("SELECT status FROM users WHERE id = 'u-new'")
+        with pytest.raises(Exception, match="concurrency caps"):
+            await conn.execute(
+                "UPDATE organizations SET max_concurrent_requests = 3 WHERE id = 'org_p_u-old'"
+            )
+
     assert found == 2
+    assert owners == {"proj_d_u-new": "u-new", "proj_old": "u-old"}
+    assert quotas["u-old"] == (2, None)
+    assert quotas["u-new"] == (None, 9)
+    assert org_budgets == 0
+    assert suspended == "suspended"
 
 
 async def test_backfill_gives_every_account_a_default_project_and_adopts_old_ones(scratch):

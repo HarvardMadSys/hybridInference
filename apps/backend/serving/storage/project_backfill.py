@@ -34,19 +34,31 @@ def legacy_org_id(user_id: str) -> str:
 
     Those releases found a project through ``projects.org_id``, which must name
     an ``organizations`` row, and kept one active name and one Default per
-    account through unique indexes on it. This release still fills the column,
-    and creates the empty row it points to, so the indexes keep holding and a
-    rolled-back release finds every project. Nothing here reads either; both go
-    with the contract revision that drops the table.
+    account through unique indexes on it; their startup backfill moves a key
+    whose ``api_keys.org_id`` is empty to Default. This release still fills
+    both columns, and creates the empty row they point to, so the indexes keep
+    holding and a rolled-back release finds every project with its keys.
+    Nothing here reads them; they go with the contract revision that drops the
+    table.
     """
     return f"org_p_{user_id}"
 
 
 async def ensure_legacy_org(conn: asyncpg.Connection, *, user_id: str) -> None:
-    """Create the empty organization row :func:`legacy_org_id` points to, if absent."""
+    """Create the empty organization :func:`legacy_org_id` names, and its owner, if absent.
+
+    The membership is what the previous release's startup backfill looks for;
+    without it that backfill would revisit the account on every start.
+    """
     await conn.execute(
         "INSERT INTO organizations (id, name, kind) VALUES ($1, $2, 'personal') "
         "ON CONFLICT (id) DO NOTHING",
+        legacy_org_id(user_id),
+        user_id,
+    )
+    await conn.execute(
+        "INSERT INTO org_members (org_id, user_id, role) VALUES ($1, $2, 'owner') "
+        "ON CONFLICT (org_id, user_id) DO NOTHING",
         legacy_org_id(user_id),
         user_id,
     )
@@ -65,9 +77,12 @@ async def ensure_default_project(conn: asyncpg.Connection, *, user_id: str) -> N
             legacy_org_id(user_id),
         )
         await conn.execute(
-            "UPDATE api_keys SET project_id = $1 WHERE user_id = $2 AND project_id IS NULL",
+            "UPDATE api_keys SET project_id = COALESCE(project_id, $1), "
+            "org_id = COALESCE(org_id, $3) "
+            "WHERE user_id = $2 AND (project_id IS NULL OR org_id IS NULL)",
             project_id,
             user_id,
+            legacy_org_id(user_id),
         )
 
 
@@ -88,7 +103,8 @@ async def backfill_projects(conn: asyncpg.Connection) -> int:
         rows = await conn.fetch(
             "SELECT u.id FROM users u "
             "WHERE NOT EXISTS (SELECT 1 FROM projects p WHERE p.id = 'proj_d_' || u.id) "
-            "OR EXISTS (SELECT 1 FROM api_keys k WHERE k.user_id = u.id AND k.project_id IS NULL) "
+            "OR EXISTS (SELECT 1 FROM api_keys k WHERE k.user_id = u.id "
+            "AND (k.project_id IS NULL OR k.org_id IS NULL)) "
             "ORDER BY u.created_at LIMIT $1",
             BACKFILL_BATCH_SIZE,
         )

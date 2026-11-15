@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 import pytest_asyncio
 
@@ -398,3 +400,54 @@ async def test_an_active_project_name_is_unique_per_account(store):
     with pytest.raises(asyncpg.UniqueViolationError) as caught:
         await store.create_project(project_id="proj_archive_test", user_id=_USER, name="eval")
     assert _is_duplicate_name(caught.value)
+
+
+async def test_revoking_keys_never_brings_back_a_quota_an_admin_replaced(store):
+    """A newer revoked key still carries the old quota; the account's own record wins."""
+    await store.create_key(key_hash="h-q-old", key_prefix="hyi-qol", user_id=_USER)
+    await store.create_key(
+        key_hash="h-q-new", key_prefix="hyi-qnw", user_id=_USER, inherit_account_quota=True
+    )
+    async with store._pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() WHERE key_hash = 'h-q-new'"
+        )
+    await store.update_key(_USER, quota_daily_cost_usd=1, quota_monthly_cost_usd=2)
+    await store.revoke_key(_USER)
+
+    await store.create_key(
+        key_hash="h-q-next", key_prefix="hyi-qnx", user_id=_USER, inherit_account_quota=True
+    )
+
+    key = await store.get_auth_context_with_spend("h-q-next")
+    assert (float(key["quota_daily_cost_usd"]), float(key["quota_monthly_cost_usd"])) == (1, 2)
+    assert await store.get_account_budgets(_USER) == (1.0, 2.0)
+
+
+async def test_a_role_quota_reaches_an_account_without_keys(store):
+    async with store._pool.acquire() as conn:
+        role = await conn.fetchval("SELECT role FROM users WHERE id = $1", _USER)
+
+    await store.apply_role_quota(role, Decimal(4))
+
+    daily, _ = await store.get_account_budgets(_USER)
+    assert daily == 4.0
+
+
+async def test_every_key_keeps_the_organization_id_a_rolled_back_release_needs(store):
+    """The previous release's backfill moves a key with no organization id to Default."""
+    await store.create_project(project_id="proj_auth_test", user_id=_USER, name="Named")
+    await store.create_key(
+        key_hash="h-legacy-org", key_prefix="hyi-lgo", user_id=_USER, project_id="proj_auth_test"
+    )
+    async with store._pool.acquire() as conn:
+        key = await conn.fetchrow(
+            "SELECT org_id, project_id FROM api_keys WHERE key_hash = 'h-legacy-org'"
+        )
+        member = await conn.fetchval(
+            "SELECT role FROM org_members WHERE org_id = $1 AND user_id = $2",
+            legacy_org_id(_USER),
+            _USER,
+        )
+    assert dict(key) == {"org_id": legacy_org_id(_USER), "project_id": "proj_auth_test"}
+    assert member == "owner"
