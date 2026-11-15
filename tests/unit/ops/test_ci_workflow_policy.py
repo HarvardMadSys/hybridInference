@@ -374,6 +374,18 @@ def test_compose_jobs_cannot_strand_docker_volumes() -> None:
     assert max(timeouts) * 60 < 6 * 60 * 60
 
 
+def test_the_test_database_leaves_no_volume_on_a_self_hosted_runner() -> None:
+    """The runner removes service containers without `-v`.
+
+    postgres:15 declares its data directory a volume, so each shard of a dev
+    push stranded an anonymous volume on the self-hosted runner. Mounting
+    tmpfs at that path means Docker never creates one.
+    """
+    service = _workflow("ci.yml")["jobs"]["test"]["services"]["postgres"]
+
+    assert "--tmpfs /var/lib/postgresql/data:" in service["options"]
+
+
 def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     workflow = _workflow("ci.yml")
     changes = workflow["jobs"]["changes"]
