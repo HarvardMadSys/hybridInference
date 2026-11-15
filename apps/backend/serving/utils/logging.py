@@ -119,6 +119,11 @@ _STRUCTURED_LOG_KEYS = (
     # victims of an upstream fault as its culprits — see the module comment on
     # routing/endpoint_health._MAX_TRACKED_CALLERS.
     "affected_callers",
+    # Whose request a breaker-exempt failure was (``client_error_skip_breaker``,
+    # ``caller_repeat_skip_breaker``): ``endpoint_health._caller_key``, a short
+    # hash of the affinity key with no way back to the credential. A skipped
+    # repeat is only actionable when it says which caller kept failing.
+    "caller",
     # Upstream rejection of the gateway's own credential
     # (routing/endpoint_health.py ``upstream_auth_misconfig``).
     "consecutive_auth_rejections",
