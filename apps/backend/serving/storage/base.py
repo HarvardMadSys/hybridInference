@@ -942,6 +942,101 @@ class OperationalStore(ABC):
         session was still live to revoke.
         """
 
+    # -- second factor ---------------------------------------------------------
+    #
+    # An account's authenticator (``user_two_factor``), its recovery codes, and
+    # what each of its sessions has proved (two columns of ``auth_sessions``).
+    # See ``serving.auth.two_factor``.
+
+    @abstractmethod
+    async def get_two_factor(self, user_id: str) -> Row | None:
+        """Fetch an account's second factor, or None when it has never started one.
+
+        Returns: ``secret_encrypted, pending_secret_encrypted, confirmed_at,
+        last_used_step, failed_attempts, locked_until, recovery_codes_left``.
+        ``confirmed_at`` is NULL until the account has given a first code.
+        """
+
+    @abstractmethod
+    async def set_pending_two_factor(self, user_id: str, pending_secret_encrypted: str) -> None:
+        """Record a secret the account has been shown and not yet proved.
+
+        Replaces an earlier pending one. A confirmed secret keeps working
+        until :meth:`confirm_two_factor` swaps the pending one in.
+        """
+
+    @abstractmethod
+    async def confirm_two_factor(
+        self,
+        user_id: str,
+        *,
+        pending_secret_encrypted: str,
+        step: int,
+        recovery_code_hashes: Sequence[str],
+    ) -> bool:
+        """Make the pending secret the account's authenticator, in one transaction.
+
+        *pending_secret_encrypted* must still be the pending value, so of two
+        confirmations racing only one wins. Sets ``last_used_step`` to *step*
+        and replaces every recovery code. Returns whether it did.
+        """
+
+    @abstractmethod
+    async def begin_two_factor_attempt(
+        self, user_id: str, *, lock_every: int, lock_seconds: int, max_lock_seconds: int
+    ) -> datetime | None:
+        """Count one attempt at the account's codes; return when it may next try, or None.
+
+        None means the attempt was counted and may be checked. Every
+        *lock_every*-th attempt in a row holds the account's codes off, for
+        *lock_seconds* the first time and twice as long each time after, up to
+        *max_lock_seconds*; an attempt made during a hold is not counted and
+        gets the time it ends. Counting and deciding are one statement, so
+        guesses sent together are let through one run at a time. A code that
+        is accepted (:meth:`use_two_factor_step`, :meth:`use_recovery_code`)
+        ends the run.
+        """
+
+    @abstractmethod
+    async def use_two_factor_step(self, user_id: str, step: int) -> bool:
+        """Record that a code for time step *step* was accepted; False if not newer.
+
+        The comparison and the write are one statement, so the same code
+        presented twice at once is accepted once.
+        """
+
+    @abstractmethod
+    async def use_recovery_code(self, user_id: str, code_hash: str) -> bool:
+        """Spend a recovery code; False when it is unknown or already spent."""
+
+    @abstractmethod
+    async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
+        """Replace a confirmed account's recovery codes; False when it has no authenticator."""
+
+    @abstractmethod
+    async def delete_two_factor(self, user_id: str) -> bool:
+        """Remove an account's authenticator, its recovery codes and what its sessions proved.
+
+        Returns whether there was one. The account's sessions stay signed in;
+        none of them counts as verified any longer.
+        """
+
+    @abstractmethod
+    async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
+        """Fetch what session *sid* of *user_id* has proved, or None for no such live session.
+
+        Returns: ``enrolled`` (the account has a confirmed authenticator),
+        ``verified_at``, ``environment``. Never cached: a code given, or an
+        authenticator removed, counts on the very next request.
+        """
+
+    @abstractmethod
+    async def mark_session_two_factor(self, user_id: str, sid: str, environment: str) -> bool:
+        """Record that session *sid* gave a code now, from *environment*.
+
+        Returns whether a live session was there to mark.
+        """
+
     # -- browser sessions ----------------------------------------------------
     #
     # A browser holds one cookie naming one browser session, and that session

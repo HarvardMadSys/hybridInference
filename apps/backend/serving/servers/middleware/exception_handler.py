@@ -46,6 +46,7 @@ from serving.exceptions import (
     SessionRevokedError,
     TokenAlreadyUsedError,
     TokenExpiredError,
+    TwoFactorRequiredError,
     UserAlreadyExistsError,
     UserNotFoundError,
     WeakPasswordError,
@@ -186,6 +187,35 @@ def install_exception_handlers(app: FastAPI) -> None:
                 # unset. Kept: it is written by an operator *for* this user, not
                 # internal detail that leaked into an exception.
                 "suspension_message": exc.suspension_message,
+                "timestamp": datetime.now(UTC).isoformat(),
+            },
+        )
+
+    @app.exception_handler(TwoFactorRequiredError)
+    async def two_factor_required_handler(request: Request, exc: TwoFactorRequiredError):
+        # Two codes, because the console answers them differently: one opens
+        # the enrollment page, the other asks for six digits and retries.
+        enrollment = exc.reason == "enrollment"
+        error_code = "TWO_FACTOR_ENROLLMENT_REQUIRED" if enrollment else "TWO_FACTOR_REQUIRED"
+        _log_domain_exception(request, exc, error_code, 403)
+        subject = f"{exc.action} needs" if exc.action else "This needs"
+        message = (
+            f"{subject} two-factor authentication, and this account has not set it up. "
+            "Add an authenticator app in Settings first."
+            if enrollment
+            else f"{subject} a code from your authenticator app."
+        )
+        return JSONResponse(
+            status_code=403,
+            content={
+                "error_code": error_code,
+                "message": message,
+                # The same text where a plain HTTP error carries it, for a
+                # client that reads only that.
+                "detail": message,
+                # Which of the reasons a code answers; fixed words, never
+                # anything about the session that gave the earlier code.
+                "reason": exc.reason,
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )

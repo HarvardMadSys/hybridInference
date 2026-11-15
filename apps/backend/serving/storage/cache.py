@@ -918,6 +918,72 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return revoked
 
+    # -- second factor (pass-through) ------------------------------------------
+    #
+    # Nothing here is cached. What a session has proved is asked on every
+    # administrator request and must be true at that moment: a code just
+    # given, or an authenticator just removed, counts on the next request in
+    # every process, which a cache entry in this one could not promise.
+
+    async def get_two_factor(self, user_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_two_factor(user_id)
+
+    async def set_pending_two_factor(self, user_id: str, pending_secret_encrypted: str) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.set_pending_two_factor(user_id, pending_secret_encrypted)
+
+    async def confirm_two_factor(
+        self,
+        user_id: str,
+        *,
+        pending_secret_encrypted: str,
+        step: int,
+        recovery_code_hashes: Sequence[str],
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.confirm_two_factor(
+            user_id,
+            pending_secret_encrypted=pending_secret_encrypted,
+            step=step,
+            recovery_code_hashes=recovery_code_hashes,
+        )
+
+    async def begin_two_factor_attempt(
+        self, user_id: str, *, lock_every: int, lock_seconds: int, max_lock_seconds: int
+    ) -> datetime | None:
+        """Delegate to wrapped store."""
+        return await self._store.begin_two_factor_attempt(
+            user_id,
+            lock_every=lock_every,
+            lock_seconds=lock_seconds,
+            max_lock_seconds=max_lock_seconds,
+        )
+
+    async def use_two_factor_step(self, user_id: str, step: int) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.use_two_factor_step(user_id, step)
+
+    async def use_recovery_code(self, user_id: str, code_hash: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.use_recovery_code(user_id, code_hash)
+
+    async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.replace_recovery_codes(user_id, code_hashes)
+
+    async def delete_two_factor(self, user_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_two_factor(user_id)
+
+    async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_session_two_factor(user_id, sid)
+
+    async def mark_session_two_factor(self, user_id: str, sid: str, environment: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.mark_session_two_factor(user_id, sid, environment)
+
     # -- browser sessions (pass-through) -------------------------------------
 
     async def create_browser_session(
