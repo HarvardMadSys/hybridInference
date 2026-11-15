@@ -231,15 +231,13 @@ msgstr ""
 "以下，熔断器就会打开，不再把请求路由到这个端点。过了 `CIRCUIT_COOLDOWN_SECONDS` "
 "秒，它会放行**一个**测试请求：成功就关闭熔断器，失败则重新打开。"
 
-#: ../developer/routing.md:119
-msgid ""
-"While that test request is in flight, other requests that have nowhere "
-"else to go get **503** rather than a second request onto a provider that "
-"is probably still down. A model with a healthy route elsewhere simply "
-"uses that one instead. The four settings:"
-msgstr ""
-"这个测试请求还在进行时，其他无处可去的请求会直接拿到 **503**，而不是再往一个多半仍然宕着的 provider "
-"上压第二个请求。如果模型在别处还有健康的路由，就直接改用那一条。相关的四个设置："
+#: ../developer/routing.md:154
+msgid "While that test request is in flight, other requests that have nowhere else to go get **503** rather than a second request onto a provider that is probably still down. A model with a healthy route elsewhere simply uses that one instead."
+msgstr "这个测试请求还在进行时，其他无处可去的请求会直接拿到 **503**，而不是再往一个多半仍然宕着的 provider 上压第二个请求。如果模型在别处还有健康的路由，就直接改用那一条。"
+
+#: ../developer/routing.md:159
+msgid "One caller cannot open a circuit by itself while the endpoint is serving other callers. Callers are told apart by the credential they present (the request's affinity key: an API key, an inference grant, or an anonymous client's address). A caller's first failure on an endpoint counts as usual. Until the endpoint serves that caller again, its further failures there count only if nobody else has been served there within `CIRCUIT_CALLER_WINDOW_SECONDS` either, and at most once per window. Otherwise they are logged as `caller_repeat_skip_breaker` and leave the circuit and the success rate alone. Without this, a client that kept retrying a request the endpoint fails on, such as a prompt the engine answers with a 5xx, opened the circuit after three tries and took the model away from every other caller, then failed the half-open test request with its next retry. An outage still opens the circuit: several callers failing in a row count separately, and a lone caller's failures count again once nobody else has been served for a window. Failures with no caller attached, and credential rejections (401, 407), always count. The five settings:"
+msgstr "端点还在为其他调用方提供服务时，单个调用方无法独自让熔断器打开。调用方按它出示的凭据区分（即请求的 affinity key：API key、推理 grant，或匿名客户端的地址）。一个调用方在某个端点上的第一次失败照常计入。在端点再次服务这个调用方之前，它在该端点上的后续失败，只有在 `CIRCUIT_CALLER_WINDOW_SECONDS` 内那里也没有服务过其他任何人时才计入，而且每个窗口最多计一次；否则只记一条 `caller_repeat_skip_breaker` 日志，熔断器和成功率都不受影响。没有这条规则时，一个客户端反复重试端点处理不了的请求（例如引擎对它返回 5xx 的 prompt），重试三次就让熔断器打开、让其他所有调用方都用不了这个模型，下一次重试又让半开测试请求失败。真正的故障仍然会让熔断器打开：多个调用方接连失败会分别计入；单独一个调用方的失败，在一个窗口内没有服务过其他任何人之后，也会重新计入。没有附带调用方的失败，以及凭据被拒（401、407），始终计入。相关的五个设置："
 
 #: ../developer/routing.md
 msgid "Variable"
@@ -302,6 +300,18 @@ msgstr ""
 #: ../developer/routing.md
 msgid "Smoothing factor for the availability EWMA."
 msgstr "可用性 EWMA 的平滑系数。"
+
+#: ../developer/routing.md
+msgid "`CIRCUIT_CALLER_WINDOW_SECONDS`"
+msgstr ""
+
+#: ../developer/routing.md
+msgid "`60`"
+msgstr ""
+
+#: ../developer/routing.md
+msgid "How recently another caller must have been served for one caller's repeated failures to be kept off the circuit. `0` counts every failure."
+msgstr "其他调用方要在多近的时间内被服务过，单个调用方的重复失败才不计入熔断器。`0` 表示每次失败都计入。"
 
 #: ../developer/routing.md:131
 msgid ""
