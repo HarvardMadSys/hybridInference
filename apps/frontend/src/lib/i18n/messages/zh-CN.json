@@ -4348,5 +4348,17 @@
   "dashboard.projects.spend_today_of": {
     "source": "{amount} of {budget} today",
     "text": "今日 {amount} / {budget}"
+  },
+  "dashboard.projects.load_failed": {
+    "source": "Failed to load projects. Please try again later.",
+    "text": "无法加载项目，请稍后重试。"
+  },
+  "dashboard.keys.default_project_hint": {
+    "source": "Your keys share the Default project, which has no limits of its own.",
+    "text": "你的 Key 都在 Default 项目里，这个项目目前没有设自己的限额。"
+  },
+  "dashboard.keys.default_project_limits": {
+    "source": "Set limits for Default",
+    "text": "为 Default 设置限额"
   }
 }

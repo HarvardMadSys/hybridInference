@@ -539,6 +539,54 @@ describe('ApiKeyManager and projects', () => {
     expect(within(screen.getByRole('dialog')).getByText(/Archive CI\?/)).toBeInTheDocument();
   });
 
+  it("reaches Default's limits from the plain list", () => {
+    mockProjects([project()]);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_default' })]);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set limits for Default' }));
+    expect(within(screen.getByRole('dialog')).getByLabelText('Daily budget (USD)')).toHaveValue('');
+  });
+
+  it('keeps archived-project keys apart after the last named project is archived', () => {
+    mockProjects([project()]);
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'laptop', project_id: 'proj_default' }),
+      makeItem({
+        key_prefix: 'hyi-cccccccc',
+        name: 'old',
+        status: 'revoked',
+        project_id: 'proj_gone',
+        project_name: 'Gone',
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    const archived = screen.getByRole('region', { name: 'Archived projects' });
+    expect(within(archived).getByText('Gone')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Default' })).getByRole('link', { name: 'laptop' }),
+    ).toBeInTheDocument();
+  });
+
+  it('says so when the projects fail to load, instead of acting as if there were none', () => {
+    vi.mocked(useProjects).mockReturnValue({
+      data: undefined,
+      error: new Error('boom'),
+    } as unknown as ReturnType<typeof useProjects>);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_ci', project_name: 'CI' })]);
+    render(<ApiKeyManager />);
+
+    expect(
+      screen.getByText('Failed to load projects. Please try again later.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'laptop' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Archived projects' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Set limits for Default' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('keeps the revoked keys of an archived project, under their old project name', () => {
     mockProjects([project(), CI]);
     mockKeys([

@@ -146,7 +146,7 @@ export function ApiKeyManager(): JSX.Element {
   const submittingRef = useRef(false);
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
-  const { data: projects } = useProjects();
+  const { data: projects, error: projectsError } = useProjects();
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
@@ -162,12 +162,21 @@ export function ApiKeyManager(): JSX.Element {
   const apiKeys = apiKeysResponse?.keys ?? [];
   const revokedKeys = apiKeys.filter((key) => key.status === 'revoked');
   const projectList = projects ?? [];
-  // Projects stay out of sight until the account uses them: with only an
-  // unlimited Default project the page is a plain list of keys.
-  const grouped = projectList.length > 1 || projectList.some(projectHasLimits);
+  // Until the projects have loaded, nothing is known about them: show the keys
+  // as a plain list and do not take an absent list for "no projects".
+  const projectsKnown = projects !== undefined && !projectsError;
   const projectIds = new Set(projectList.map((project) => project.id));
   // Keys of an archived project, which are revoked and kept for their history.
-  const orphanKeys = apiKeys.filter((key) => !key.project_id || !projectIds.has(key.project_id));
+  const orphanKeys = projectsKnown
+    ? apiKeys.filter((key) => !key.project_id || !projectIds.has(key.project_id))
+    : [];
+  const defaultProject = projectList.find((project) => project.is_default);
+  // Projects stay out of sight until the account uses them: with only an
+  // unlimited Default project and no keys of an archived one, the page is a
+  // plain list of keys.
+  const grouped =
+    projectsKnown &&
+    (projectList.length > 1 || projectList.some(projectHasLimits) || orphanKeys.length > 0);
 
   function showNewKey(value: string): void {
     setNewApiKey(value);
@@ -629,7 +638,30 @@ export function ApiKeyManager(): JSX.Element {
         </div>
       )}
 
+      {projectsError && (
+        <div className="mb-4 rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
+          {t('dashboard.projects.load_failed', 'Failed to load projects. Please try again later.')}
+        </div>
+      )}
+
       {!grouped && apiKeys.length > 0 && renderTable(liveFirst(apiKeys))}
+
+      {!grouped && projectsKnown && defaultProject && (
+        <p className="mt-3 text-sm text-gray-500">
+          {t(
+            'dashboard.keys.default_project_hint',
+            'Your keys share the Default project, which has no limits of its own.',
+          )}{' '}
+          <button
+            type="button"
+            className="font-medium text-gray-700 underline hover:text-gray-900"
+            onClick={() => setProjectDialog({ mode: 'edit', project: defaultProject })}
+            disabled={isLoading}
+          >
+            {t('dashboard.keys.default_project_limits', 'Set limits for Default')}
+          </button>
+        </p>
+      )}
 
       {grouped && (
         <div className="space-y-4">
