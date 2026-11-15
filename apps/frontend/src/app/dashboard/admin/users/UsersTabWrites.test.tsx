@@ -32,6 +32,8 @@ vi.mock('@/lib/api/admin', () => ({
   listUsers: vi.fn(),
   getBulkUsageTotals: vi.fn(),
   getUserDetail: vi.fn(),
+  // The projects panel loads on its own; these tests are about the rest.
+  getUserProjects: vi.fn(() => new Promise(() => {})),
   listModelVisibility: vi.fn(),
   updateUser: vi.fn(),
   approveUser: vi.fn(),

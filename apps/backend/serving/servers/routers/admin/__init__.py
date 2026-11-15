@@ -40,6 +40,7 @@ from serving.servers.routers.admin import (
     system,
     upstream_concurrency,
     usage_insights,
+    user_projects,
     users,
 )
 
@@ -83,5 +84,6 @@ router.include_router(system.router)
 router.include_router(upstream_concurrency.router)
 router.include_router(usage_insights.router)
 router.include_router(users.router)
+router.include_router(user_projects.router)
 
 __all__ = ["_decode_throughput_tps", "router"]
