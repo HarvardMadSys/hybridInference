@@ -23,8 +23,8 @@ a gateway that does not take part -- an older build, say -- is seen. It never
 refuses the write. While the mode is ``local`` the trigger reads one row and
 records nothing.
 
-Revision ID: 0018_shared_spend
-Revises: 0017_revoke_scoped_keys
+Revision ID: 0019_shared_spend
+Revises: 0018_projects_owned_by_accounts
 Create Date: 2026-11-14
 """
 
@@ -32,8 +32,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0018_shared_spend"
-down_revision = "0017_revoke_scoped_keys"
+revision = "0019_shared_spend"
+down_revision = "0018_projects_owned_by_accounts"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

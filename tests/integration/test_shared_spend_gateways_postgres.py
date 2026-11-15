@@ -157,10 +157,10 @@ async def test_requests_the_upstream_fails_leave_both_gateways_admitting_the_cal
 
 
 async def test_what_a_request_was_charged_is_what_both_gateways_then_count(gateways):
-    # $0.05 of quota. A request that cost $0.03 through one gateway leaves
-    # $0.02: two more $0.01 requests fit through the other, the third does not,
-    # through either.
-    a, b = await gateways(quota_usd=0.05)
+    # $0.055 of quota. A request that cost $0.03 through one gateway leaves
+    # $0.025: two more $0.01 requests fit through the other, the third does
+    # not, through either.
+    a, b = await gateways(quota_usd=0.055)
     assert await _answers(a, path="/spend/3") == [200]
     assert await _base._account(a.pool, USER) == Decimal("0.03")
     assert await _answers(b, path="/spend/1") == [200]

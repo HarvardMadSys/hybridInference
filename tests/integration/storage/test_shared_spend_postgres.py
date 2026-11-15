@@ -377,7 +377,6 @@ def _member(reservation, *costs: float, kind="settle", **override) -> Member:
                 reservation.key_id,
                 usd(c),
                 1,
-                None,
                 reservation.project_id,
             )
             for c in costs
@@ -427,11 +426,7 @@ async def test_settlement_refuses_inconsistent_members_before_writing(db):
     listed_twice = SettlementBatch.make("inst-a", [_member(r, 0.1), _member(r, 0.1)], [])
     elsewhere = SettlementBatch.make(
         "inst-a",
-        [
-            _member(
-                r, costs=(CostLine(PREFIX + "other", utc_day(), 71, usd(0.1), 1, None, "p-ss-1"),)
-            )
-        ],
+        [_member(r, costs=(CostLine(PREFIX + "other", utc_day(), 71, usd(0.1), 1, "p-ss-1"),))],
         [],
     )
     for batch in (listed_twice, elsewhere):

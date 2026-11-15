@@ -72,6 +72,16 @@ describe('ConfigurationBanner', () => {
     );
   });
 
+  it('is a strip under the dashboard bar, and a card on a page of its own width', () => {
+    renderBanner({ pathname: '/dashboard/keys' });
+    expect(screen.getByRole('status')).toHaveClass('border-b');
+    expect(screen.getByRole('status')).not.toHaveClass('rounded-2xl');
+    cleanup();
+
+    renderBanner({ pathname: '/chat' });
+    expect(screen.getByRole('status')).toHaveClass('rounded-2xl');
+  });
+
   it('leaves the Settings tab to list the missing settings itself', () => {
     renderBanner({ pathname: '/dashboard/admin/settings' });
 

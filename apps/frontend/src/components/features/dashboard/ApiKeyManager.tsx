@@ -3,7 +3,7 @@
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useRef, useState } from 'react';
-import type { ApiKeyListItem } from '@/lib/api/user';
+import type { ApiKeyListItem, Project } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   useApiKeys,
@@ -26,6 +26,8 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
 import { formatUsd } from '@/lib/utils/currency';
 import { keyDetailHref, limitsSummary } from './keyLimits';
+import { ProjectDialogs, projectHasLimits, projectSummary } from './ProjectDialogs';
+import type { ProjectDialog } from './ProjectDialogs';
 
 function EyeIcon(): JSX.Element {
   return (
@@ -102,8 +104,16 @@ const GRID_COLUMNS =
   'md:grid md:grid-cols-[minmax(0,2.6fr)_auto_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1.4fr)_auto]';
 
 type KeyAction =
-  | { type: 'create' }
+  | { type: 'create'; projectId?: string }
   | { type: 'rename' | 'regenerate' | 'delete'; key: ApiKeyListItem };
+
+/** Live keys first, then revoked ones, each in the order the server listed them. */
+function liveFirst(keys: ApiKeyListItem[]): ApiKeyListItem[] {
+  return [
+    ...keys.filter((key) => key.status !== 'revoked'),
+    ...keys.filter((key) => key.status === 'revoked'),
+  ];
+}
 
 export function ApiKeyManager(): JSX.Element {
   const toast = useAccountToast();
@@ -130,12 +140,13 @@ export function ApiKeyManager(): JSX.Element {
   const [keyName, setKeyName] = useState('');
 
   const [projectId, setProjectId] = useState('');
+  const [projectDialog, setProjectDialog] = useState<ProjectDialog | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
 
   const { data: apiKeysResponse, isLoading: isLoadingKeys, error: apiKeysError } = useApiKeys();
-  const { data: projects } = useProjects();
+  const { data: projects, error: projectsError } = useProjects();
   const createMutation = useCreateApiKey();
   const deleteMutation = useDeleteApiKey();
   const regenerateMutation = useRegenerateApiKey();
@@ -149,8 +160,23 @@ export function ApiKeyManager(): JSX.Element {
     renameMutation.isPending;
 
   const apiKeys = apiKeysResponse?.keys ?? [];
-  const liveKeys = apiKeys.filter((key) => key.status !== 'revoked');
   const revokedKeys = apiKeys.filter((key) => key.status === 'revoked');
+  const projectList = projects ?? [];
+  // Until the projects have loaded, nothing is known about them: show the keys
+  // as a plain list and do not take an absent list for "no projects".
+  const projectsKnown = projects !== undefined && !projectsError;
+  const projectIds = new Set(projectList.map((project) => project.id));
+  // Keys of an archived project, which are revoked and kept for their history.
+  const orphanKeys = projectsKnown
+    ? apiKeys.filter((key) => !key.project_id || !projectIds.has(key.project_id))
+    : [];
+  const defaultProject = projectList.find((project) => project.is_default);
+  // Projects stay out of sight until the account uses them: with only an
+  // unlimited Default project and no keys of an archived one, the page is a
+  // plain list of keys.
+  const grouped =
+    projectsKnown &&
+    (projectList.length > 1 || projectList.some(projectHasLimits) || orphanKeys.length > 0);
 
   function showNewKey(value: string): void {
     setNewApiKey(value);
@@ -161,7 +187,7 @@ export function ApiKeyManager(): JSX.Element {
     setKeyName(next.type === 'rename' ? (next.key.name ?? '') : '');
 
     if (next.type === 'create') {
-      setProjectId(projects?.find((project) => project.is_default)?.id ?? '');
+      setProjectId(next.projectId ?? projects?.find((project) => project.is_default)?.id ?? '');
     }
     setActionError(null);
     setAction(next);
@@ -319,7 +345,7 @@ export function ApiKeyManager(): JSX.Element {
             >
               {apiKey.name ?? t('dashboard.keys.unnamed', 'Unnamed key')}
             </Link>
-            {apiKey.project_name && (
+            {grouped && !projectIds.has(apiKey.project_id ?? '') && apiKey.project_name && (
               <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-600">
                 {apiKey.project_name}
               </span>
@@ -461,6 +487,82 @@ export function ApiKeyManager(): JSX.Element {
     );
   }
 
+  function renderTable(keys: ApiKeyListItem[]): JSX.Element {
+    return (
+      <div className={`rounded-lg ring-1 ring-gray-200 ${GRID_COLUMNS}`}>
+        <div className="hidden gap-4 rounded-t-lg bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:col-span-full md:grid md:grid-cols-subgrid md:items-center">
+          <span>{t('dashboard.keys.col_key', 'API Key')}</span>
+          <span>{t('dashboard.keys.col_status', 'Status')}</span>
+          <span>{t('dashboard.keys.col_created', 'Created')}</span>
+          <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
+          <span>{t('dashboard.keys.col_spend', 'Spend (UTC)')}</span>
+          <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
+        </div>
+        <div className="divide-y divide-gray-200 md:contents">{keys.map(renderRow)}</div>
+      </div>
+    );
+  }
+
+  function renderProject(project: Project): JSX.Element {
+    const keys = apiKeys.filter((key) => key.project_id === project.id);
+    return (
+      <section key={project.id} aria-label={project.name} className="space-y-3">
+        <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <h3 className="flex flex-wrap items-baseline gap-x-2 text-sm">
+              <span className="font-medium text-gray-900">{project.name}</span>
+              {/* Default needs its badge only once it has been renamed. */}
+              {project.is_default && project.name !== 'Default' && (
+                <span className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-700">
+                  {t('dashboard.projects.default_badge', 'Default')}
+                </span>
+              )}
+            </h3>
+            <p className="mt-1 text-xs text-gray-500">{projectSummary(project, t)}</p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={() => openAction({ type: 'create', projectId: project.id })}
+              disabled={isLoading}
+            >
+              {t('dashboard.keys.add_key', 'Add key')}
+            </Button>
+            <KeyActionsMenu
+              label={fill(t('dashboard.keys.project_actions', 'Actions for {name}'), {
+                name: project.name,
+              })}
+              disabled={isLoading}
+              items={[
+                {
+                  label: t('dashboard.projects.edit_limits', 'Edit limits'),
+                  onSelect: () => setProjectDialog({ mode: 'edit', project }),
+                },
+                ...(project.is_default
+                  ? []
+                  : [
+                      {
+                        label: t('dashboard.projects.archive', 'Archive'),
+                        danger: true,
+                        onSelect: () => setProjectDialog({ mode: 'archive', project }),
+                      },
+                    ]),
+              ]}
+            />
+          </div>
+        </div>
+        {keys.length > 0 ? (
+          renderTable(liveFirst(keys))
+        ) : (
+          <div className="rounded-lg bg-gray-50 px-4 py-4 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
+            {t('dashboard.keys.project_empty', 'No keys in this project yet.')}
+          </div>
+        )}
+      </section>
+    );
+  }
+
   return (
     <div className="rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
@@ -479,13 +581,22 @@ export function ApiKeyManager(): JSX.Element {
           </p>
         </div>
         {!isLoadingKeys && (
-          <Button
-            onClick={() => openAction({ type: 'create' })}
-            disabled={isLoading}
-            isLoading={createMutation.isPending}
-          >
-            {t('dashboard.keys.create', 'Create API Key')}
-          </Button>
+          <div className="flex shrink-0 gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setProjectDialog({ mode: 'create' })}
+              disabled={isLoading}
+            >
+              {t('dashboard.keys.new_project', 'New project')}
+            </Button>
+            <Button
+              onClick={() => openAction({ type: 'create' })}
+              disabled={isLoading}
+              isLoading={createMutation.isPending}
+            >
+              {t('dashboard.keys.create', 'Create API Key')}
+            </Button>
+          </div>
         )}
       </div>
 
@@ -521,25 +632,51 @@ export function ApiKeyManager(): JSX.Element {
         <div className="mb-4 text-sm text-gray-500">{t('common.loading', 'Loading...')}</div>
       )}
 
-      {!isLoadingKeys && !apiKeysError && apiKeys.length === 0 && (
+      {!isLoadingKeys && !apiKeysError && !grouped && apiKeys.length === 0 && (
         <div className="rounded-lg bg-gray-50 px-4 py-5 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
           {t('dashboard.keys.empty', 'No API keys yet. Create one to start using the API.')}
         </div>
       )}
 
-      {apiKeys.length > 0 && (
-        <div className={`rounded-lg ring-1 ring-gray-200 ${GRID_COLUMNS}`}>
-          <div className="hidden gap-4 rounded-t-lg bg-gray-50 px-4 py-3 text-xs font-medium uppercase tracking-wide text-gray-500 md:col-span-full md:grid md:grid-cols-subgrid md:items-center">
-            <span>{t('dashboard.keys.col_key', 'API Key')}</span>
-            <span>{t('dashboard.keys.col_status', 'Status')}</span>
-            <span>{t('dashboard.keys.col_created', 'Created')}</span>
-            <span>{t('dashboard.keys.col_last_used', 'Last Used')}</span>
-            <span>{t('dashboard.keys.col_spend', 'Spend (UTC)')}</span>
-            <span className="text-right">{t('dashboard.keys.col_actions', 'Actions')}</span>
-          </div>
-          <div className="divide-y divide-gray-200 md:contents">
-            {[...liveKeys, ...revokedKeys].map(renderRow)}
-          </div>
+      {projectsError && (
+        <div className="mb-4 rounded-md bg-red-50 px-4 py-3 text-sm text-red-700 ring-1 ring-inset ring-red-200">
+          {t('dashboard.projects.load_failed', 'Failed to load projects. Please try again later.')}
+        </div>
+      )}
+
+      {!grouped && apiKeys.length > 0 && renderTable(liveFirst(apiKeys))}
+
+      {!grouped && projectsKnown && defaultProject && (
+        <p className="mt-3 text-sm text-gray-500">
+          {t(
+            'dashboard.keys.default_project_hint',
+            'Your keys share the Default project, which has no limits of its own.',
+          )}{' '}
+          <button
+            type="button"
+            className="font-medium text-gray-700 underline hover:text-gray-900"
+            onClick={() => setProjectDialog({ mode: 'edit', project: defaultProject })}
+            disabled={isLoading}
+          >
+            {t('dashboard.keys.default_project_limits', 'Set limits for Default')}
+          </button>
+        </p>
+      )}
+
+      {grouped && (
+        <div className="space-y-4">
+          {projectList.map(renderProject)}
+          {orphanKeys.length > 0 && (
+            <section
+              aria-label={t('dashboard.keys.archived_projects', 'Archived projects')}
+              className="space-y-3"
+            >
+              <h3 className="text-sm font-medium text-gray-900">
+                {t('dashboard.keys.archived_projects', 'Archived projects')}
+              </h3>
+              {renderTable(liveFirst(orphanKeys))}
+            </section>
+          )}
         </div>
       )}
 
@@ -590,7 +727,7 @@ export function ApiKeyManager(): JSX.Element {
               <button type="submit" className="hidden" tabIndex={-1} disabled={isLoading} />
             </form>
           )}
-          {action.type === 'create' && (
+          {action.type === 'create' && grouped && (
             <label className="block">
               <span className="text-sm font-medium text-gray-700">
                 {t('dashboard.keys.project_label', 'Project')}
@@ -614,6 +751,7 @@ export function ApiKeyManager(): JSX.Element {
           )}
         </ConfirmDialog>
       )}
+      <ProjectDialogs dialog={projectDialog} onClose={() => setProjectDialog(null)} />
     </div>
   );
 }

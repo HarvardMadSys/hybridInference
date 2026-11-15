@@ -183,9 +183,9 @@ async def test_each_ceiling_counts_settled_cost_and_every_processes_reservations
         )
 
     settled_on = earlier if window == "month" else today
-    lines = [CostLine(other, settled_on, key, usd(0.40), 1, None, project)]
+    lines = [CostLine(other, settled_on, key, usd(0.40), 1, project)]
     if window == "day":
-        lines.append(CostLine(other, earlier, key, usd(5.0), 1, None, project))
+        lines.append(CostLine(other, earlier, key, usd(5.0), 1, project))
     await _settle_plain(db.b, *lines)
     held, _ = await db.b.admit(make(db.b, other), 0.30)  # another process, still running
     assert held.amount == D("0.3")
@@ -482,7 +482,7 @@ async def test_month_ceilings_of_key_and_project_turn_over_with_the_utc_month(db
     # (a reservation whose cost the counters refused), fill both month
     # ceilings (the key's is checked first).
     clock.day = "2031-04-30"
-    await _settle_plain(db.a, CostLine(user, "2031-04-03", KEY, usd(0.70), 1, None, project))
+    await _settle_plain(db.a, CostLine(user, "2031-04-03", KEY, usd(0.70), 1, project))
     ended, _ = await db.a.admit(make(db.a), 0.30)
     await end_quarantined(db.a, ended, 0.10, project=project, key=KEY)
     apr = await _probe(db.b, user, day=clock.day, key_id=KEY, project_id=project)

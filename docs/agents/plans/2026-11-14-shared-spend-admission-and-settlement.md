@@ -43,7 +43,7 @@ off by default and nothing in this change turns it on.
 ## 2. Mode and activation boundary
 
 - New single-row table `spend_accounting` (`mode` = `local` | `shared`),
-  created by migration `0018_shared_spend` with `local`. `local` is today's
+  created by migration `0019_shared_spend` with `local`. `local` is today's
   behaviour, unchanged, and is what every existing deployment keeps. Nothing
   in this change writes the row.
 - A process reads the mode once, at startup (after the schema check, inside

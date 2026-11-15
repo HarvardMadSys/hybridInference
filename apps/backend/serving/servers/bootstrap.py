@@ -1340,17 +1340,20 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
+        from serving.storage.postgres_operational import reconcile_key_quota_copies
         from serving.storage.project_backfill import backfill_projects
 
         async def _run_project_backfill() -> None:
             try:
                 async with db_logger.pool.acquire() as conn:
                     accounts = await backfill_projects(conn)
+                    key_quotas = await reconcile_key_quota_copies(conn)
                 logger.info(
                     "project_backfill_complete",
                     extra={
                         "event": "project_backfill_complete",
                         "accounts": accounts,
+                        "key_quotas_reconciled": key_quotas,
                     },
                 )
             except Exception:

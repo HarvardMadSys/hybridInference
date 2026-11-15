@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from . import context as req_ctx
@@ -118,6 +119,11 @@ _STRUCTURED_LOG_KEYS = (
     # victims of an upstream fault as its culprits — see the module comment on
     # routing/endpoint_health._MAX_TRACKED_CALLERS.
     "affected_callers",
+    # Whose request a breaker-exempt failure was (``client_error_skip_breaker``,
+    # ``caller_repeat_skip_breaker``): ``endpoint_health._caller_key``, a short
+    # hash of the affinity key with no way back to the credential. A skipped
+    # repeat is only actionable when it says which caller kept failing.
+    "caller",
     # Upstream rejection of the gateway's own credential
     # (routing/endpoint_health.py ``upstream_auth_misconfig``).
     "consecutive_auth_rejections",
@@ -293,16 +299,47 @@ class _QuietPathFilter(logging.Filter):
         return not any(f'"{path} ' in msg or f'"{path}"' in msg for path in _QUIET_PATHS)
 
 
+#: Paths whose ``token`` query parameter is a credential: an admin export's
+#: download link (``serving.servers.routers.admin.export``), which downloads the
+#: export with no other authentication for as long as it lasts.
+_CREDENTIAL_QUERY_PATHS = ("/admin/export/requests/download",)
+_TOKEN_PARAM = re.compile(r"([?&]token=)[^&]*")
+
+
+class _CredentialQueryFilter(logging.Filter):
+    """Write a download link's ``token`` as ``<redacted>`` in uvicorn's access log.
+
+    The link is a URL, so uvicorn logs it whole; the log would otherwise hold
+    a usable credential for the rest of its minute.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Redact the token in place; never suppress the line."""
+        # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if path.startswith(_CREDENTIAL_QUERY_PATHS) and "token=" in path:
+                redacted = _TOKEN_PARAM.sub(r"\1<redacted>", path)
+                record.args = (*args[:2], redacted, *args[3:])
+        return True
+
+
 def attach_quiet_access_filter() -> None:
-    """Attach the quiet-path filter to uvicorn's access logger.
+    """Attach the gateway's filters to uvicorn's access logger.
+
+    The quiet-path filter drops polling paths; set LOG_LEVEL=DEBUG to disable
+    that and see all access logs. The credential filter redacts a download
+    link's token, at every level.
 
     Must be called after uvicorn's own logging setup (i.e., from the app
-    lifespan), otherwise uvicorn's dictConfig will wipe the filter.
-    Set LOG_LEVEL=DEBUG to disable suppression and see all access logs.
+    lifespan), otherwise uvicorn's dictConfig will wipe the filters.
     """
     uvicorn_access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, _QuietPathFilter) for f in uvicorn_access.filters):
         uvicorn_access.addFilter(_QuietPathFilter())
+    if not any(isinstance(f, _CredentialQueryFilter) for f in uvicorn_access.filters):
+        uvicorn_access.addFilter(_CredentialQueryFilter())
 
 
 # Resolves LOG_LEVEL and LOG_FORMAT: the environment until the database-backed

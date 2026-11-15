@@ -627,8 +627,6 @@ def _user_context(
         "project_id": identity.get("project_id"),
         "project_name": identity.get("project_name"),
         "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
-        "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
-        "org_id": identity.get("org_id"),
         "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
         "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
         "project_spent_today_usd": identity.get("project_spent_today_usd"),
@@ -850,17 +848,6 @@ async def _authenticate_by_api_key(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
         )
-    if user.get("org_status") == "suspended":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": {
-                    "type": "organization_suspended",
-                    "message": "This organization has been suspended by the operator.",
-                }
-            },
-        )
-
     _remember_key_privilege(key_hash, user.get("role"))
     return user, key_hash, spend_today
 
@@ -923,13 +910,6 @@ async def _resolve_effective_identity(
     if not target or target.get("status") != "active":
         logger.warning(
             "X-On-Behalf-Of target %r not found or inactive; "
-            "attributing request to the service account",
-            on_behalf_of,
-        )
-        return caller
-    if await op_store.get_personal_org_status(target["id"]) == "suspended":
-        logger.warning(
-            "X-On-Behalf-Of target %r belongs to a suspended organization; "
             "attributing request to the service account",
             on_behalf_of,
         )
@@ -1024,7 +1004,6 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
         {
             req_ctx.USER_ROLE: user_ctx.get("role") or "free",
             req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
-            req_ctx.ORG_ID: user_ctx.get("org_id") or "",
         }
     )
     return user_ctx
@@ -1255,8 +1234,6 @@ async def authenticate_stored_key(
         )
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
-    if user.get("org_status") == "suspended":
-        raise StoredKeyRejected("the organization has been suspended by the operator")
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
@@ -1500,7 +1477,7 @@ async def optional_verify_api_key(
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
-    if not row or row.get("org_status") == "suspended":
+    if not row:
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification

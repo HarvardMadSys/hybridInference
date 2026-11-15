@@ -1,7 +1,7 @@
 """The SQL of shared spend accounting: admission, settlement, and a read-only status view.
 
 Every statement here runs on tables the schema migrations create
-(``0018_shared_spend``); nothing issues DDL. See
+(``0019_shared_spend``); nothing issues DDL. See
 ``docs/agents/plans/2026-11-14-shared-spend-admission-and-settlement.md`` for
 the protocol; the invariants each function keeps are stated where it keeps
 them.
@@ -55,7 +55,7 @@ LOCK_CLASS_KEY = 0x53500002
 LOCK_CLASS_PROJECT = 0x53500003
 
 #: The setting a shared settlement marks its transaction with, so the counter
-#: tables' trigger knows the write as one of its own (``0018_shared_spend``).
+#: tables' trigger knows the write as one of its own (``0019_shared_spend``).
 WRITER_SETTING = "hybridinference.spend_writer"
 
 #: More accounts than this in one settlement check the fence in the counter
@@ -535,7 +535,6 @@ class SharedSpendStore:
                     [c.api_key_id for c in costs],
                     [c.cost_usd for c in costs],
                     [c.requests for c in costs],
-                    [c.org_id for c in costs],
                     [c.project_id for c in costs],
                 )
                 if self.fence_secret:
@@ -649,7 +648,6 @@ class CostLine:
     api_key_id: int | None
     cost_usd: Decimal
     requests: int = 1
-    org_id: str | None = None
     project_id: str | None = None
 
     def canonical(self) -> list[Any]:
@@ -660,7 +658,6 @@ class CostLine:
             self.api_key_id,
             str(self.cost_usd),
             self.requests,
-            self.org_id,
             self.project_id,
         ]
 

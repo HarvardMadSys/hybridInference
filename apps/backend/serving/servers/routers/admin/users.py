@@ -23,6 +23,10 @@ from serving.schemas_admin import (
     ApproveUserResponse,
     AuditLogEntry,
     AutomationSignal,
+    BatchApprovedUser,
+    BatchApproveSkippedUser,
+    BatchApproveUsersRequest,
+    BatchApproveUsersResponse,
     BulkUserAskQuestionFractionsResponse,
     BulkUserAutomationScoresResponse,
     BulkUserCostHistoryResponse,
@@ -32,6 +36,7 @@ from serving.schemas_admin import (
     DeleteUserResponse,
     HardDeleteUserRequest,
     HardDeleteUserResponse,
+    ListAuditActionsResponse,
     ListAuditLogResponse,
     ListUserFilterProvidersResponse,
     ListUsersResponse,
@@ -560,6 +565,78 @@ async def approve_user(
     )
 
 
+@router.post("/users/batch-approve", response_model=BatchApproveUsersResponse)
+async def batch_approve_users(
+    payload: BatchApproveUsersRequest,
+    background_tasks: BackgroundTasks,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> BatchApproveUsersResponse:
+    """Approve several pending user registrations at once.
+
+    One guarded update activates every listed user still in
+    ``pending_approval``. Each one approved gets its own ``approve_user``
+    audit entry and approval email, as a single approval does. A listed user
+    that does not exist or is no longer pending is left unchanged and
+    reported under ``skipped``, so a selection made before another admin
+    acted never overrides that decision. Up to ``BATCH_APPROVE_MAX_USERS``
+    IDs per request; a repeated ID counts once.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    user_ids = payload.user_ids
+    note = payload.note
+    approved_rows = {
+        row["id"]: row
+        for row in await op_store.approve_users(user_ids, admin_id=admin_id, note=note)
+    }
+
+    approved: list[BatchApprovedUser] = []
+    skipped: list[BatchApproveSkippedUser] = []
+    for user_id in user_ids:
+        row = approved_rows.get(user_id)
+        if row is not None:
+            approved.append(
+                BatchApprovedUser(user_id=user_id, email=row["email"], phone=row.get("phone"))
+            )
+            continue
+        current = await op_store.get_user_by_id(user_id)
+        skipped.append(
+            BatchApproveSkippedUser(
+                user_id=user_id,
+                reason="not_pending" if current else "not_found",
+                status=current["status"] if current else None,
+            )
+        )
+
+    for user in approved:
+        await log_admin_action(
+            op_store,
+            action="approve_user",
+            details={"email": user.email, "note": note, "batch_size": len(approved)},
+            actor=actor,
+            target=AuditTarget.user(user.user_id),
+        )
+
+    from serving.utils.email import is_email_enabled, send_approval_email
+
+    if is_email_enabled():
+        for user in approved:
+            if user.email:
+                # Off the event loop, as in approve_user above.
+                background_tasks.add_task(send_approval_email, user.email)
+
+    count = len(approved)
+    message = f"Approved {count} user{'' if count == 1 else 's'}."
+    if skipped:
+        message += f" {len(skipped)} not approved: no longer pending or not found."
+    return BatchApproveUsersResponse(approved=approved, skipped=skipped, message=message)
+
+
 @router.post("/users/{user_id}/reject", response_model=RejectUserResponse)
 async def reject_user(
     request: Request,
@@ -928,6 +1005,20 @@ async def update_user(
         updated_fields=updated,
         message=f"Updated {', '.join(updated)} for user {user_id}.",
     )
+
+
+@router.get("/audit-log/actions", response_model=ListAuditActionsResponse)
+async def list_audit_actions(
+    admin_id: str = Depends(verify_admin_access),
+    op_store=Depends(get_operational_store),
+) -> ListAuditActionsResponse:
+    """List every distinct action recorded in the audit log, for the action filter.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    return ListAuditActionsResponse(actions=await op_store.list_audit_actions())
 
 
 @router.get("/audit-log", response_model=ListAuditLogResponse)

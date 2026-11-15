@@ -605,7 +605,6 @@ class SharedSpendLedger:
             api_key_id=api_key_id,
             cost_usd=usd(cost_usd),
             requests=1,
-            org_id=context.get(req_ctx.ORG_ID) or None,
             project_id=context.get(req_ctx.PROJECT_ID) or None,
         )
         reservation = context.get(req_ctx.SPEND_RESERVATION)
@@ -970,16 +969,16 @@ class SharedSpendLedger:
 
 
 def _coalesce(lines: list[CostLine]) -> list[CostLine]:
-    """Plain increments summed per account, key, day, project and organization."""
+    """Plain increments summed per account, key, day and project."""
     sums: dict[tuple[Any, ...], list[Any]] = {}
     for line in lines:
-        key = (line.user_id, line.day, line.api_key_id, line.org_id, line.project_id)
+        key = (line.user_id, line.day, line.api_key_id, line.project_id)
         entry = sums.setdefault(key, [Decimal(0), 0])
         entry[0] += line.cost_usd
         entry[1] += line.requests
     return [
-        CostLine(user, day, key_id, total, requests, org, project)
-        for (user, day, key_id, org, project), (total, requests) in sums.items()
+        CostLine(user, day, key_id, total, requests, project)
+        for (user, day, key_id, project), (total, requests) in sums.items()
     ]
 
 

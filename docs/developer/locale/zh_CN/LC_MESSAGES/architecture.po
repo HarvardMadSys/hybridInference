@@ -492,6 +492,18 @@ msgstr ""
 msgid "0.1"
 msgstr ""
 
+#: ../developer/architecture.md
+msgid "Seconds a caller's repeat failures stay off a circuit that has served others since its counted failure"
+msgstr "调用方的失败计入后，若端点此后服务过其他人，它的重复失败不计入熔断器的秒数"
+
+#: ../developer/architecture.md
+msgid "`CIRCUIT_CALLER_WINDOW_SECONDS`"
+msgstr ""
+
+#: ../developer/architecture.md
+msgid "60"
+msgstr ""
+
 #: ../developer/architecture.md:197
 msgid ""
 "Client errors do not trip the breaker: a 4xx other than 408, 429, 401, "
@@ -503,6 +515,10 @@ msgstr ""
 "客户端错误不会触发熔断：除 408、429、401、407 之外的 4xx "
 "都是调用方自己的问题，如果计入，一个格式错误的请求就能让端点对所有人都不可用。408 和 429 说明上游过载，要计入；401 和 407 "
 "明确表示*网关自己的*凭据被拒，也要计入，因为用户没法修复它们。"
+
+#: ../developer/architecture.md:283
+msgid "Nor can one caller open a circuit by itself while the endpoint keeps serving other callers: its failure there counts, and its further failures, until it is served again, are skipped for up to `CIRCUIT_CALLER_WINDOW_SECONDS` if the endpoint has served somebody else since. An outage serves nobody, so it still opens the circuit at once. See [Endpoint health and circuit breaking](routing.md#endpoint-health-and-circuit-breaking)."
+msgstr "端点还在持续为其他调用方提供服务时，单个调用方也无法独自让熔断器打开：它在该端点上的失败照常计入；在它再次被服务之前，如果端点此后服务过其他人，它的后续失败在最多 `CIRCUIT_CALLER_WINDOW_SECONDS` 秒内会被跳过。真正的故障不会服务任何人，所以照样立刻让熔断器打开。见[端点健康与熔断](routing.md#endpoint-health-and-circuit-breaking)。"
 
 #: ../developer/architecture.md:203
 msgid ""

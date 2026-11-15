@@ -30,12 +30,11 @@ MODEL_QUEUED = "model_queued"
 # REQUEST_SCOPED_KEYS is what makes "absent" trustworthy.
 USER_ROLE = "user_role"
 
-# req_ctx key holding the project and personal organization the presented key
-# belongs to. Billing reads them to charge every spend counter the request
-# touches. A leftover value would bill the next request to the previous
-# caller's project, so both are request-scoped.
+# req_ctx key holding the project the presented key belongs to. Billing reads
+# it to charge every spend counter the request touches. A leftover value would
+# bill the next request to the previous caller's project, so it is
+# request-scoped.
 PROJECT_ID = "project_id"
-ORG_ID = "org_id"
 
 # req_ctx key holding the request's shared spend reservation
 # (``serving.shared_spend.ledger.SharedReservation``), published by its
@@ -145,7 +144,6 @@ REQUEST_SCOPED_KEYS = (
     "affinity_key",
     USER_ROLE,
     PROJECT_ID,
-    ORG_ID,
     SPEND_RESERVATION,
     PRICING_TIME,
     PRICING_SNAPSHOT,

@@ -1,7 +1,7 @@
 """The deployment's spend accounting mode, as this process read it at startup.
 
 ``local`` (the default, and what a database the migrations just brought to
-``0018_shared_spend`` holds) is the per-process accounting of
+``0019_shared_spend`` holds) is the per-process accounting of
 :mod:`serving.spend_ledger`, unchanged. ``shared`` is the accounting of
 :mod:`serving.shared_spend.ledger`: reservations and settlements in
 PostgreSQL, the same for every process.

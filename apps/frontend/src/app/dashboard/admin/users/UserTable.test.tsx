@@ -11,6 +11,8 @@ import type { UserRow } from './types';
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
+  // The projects panel loads on its own; these tests are about the rest.
+  getUserProjects: vi.fn(() => new Promise(() => {})),
   listModelVisibility: vi.fn(),
   updateUser: vi.fn(),
 }));
@@ -70,6 +72,7 @@ function tableProps(
     },
     onSortChange: vi.fn(),
     onApprove: vi.fn(async () => undefined),
+    onApproveMany: vi.fn(async () => undefined),
     onReject: vi.fn(async () => undefined),
     onUpdate: vi.fn(async () => undefined),
     onSuspend: vi.fn(async () => undefined),
@@ -1411,5 +1414,146 @@ describe('UserTable independent account drafts', () => {
     await waitFor(() =>
       expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { max_concurrent_requests: 4 }),
     );
+  });
+});
+
+describe('UserTable batch approval', () => {
+  const pending = (id: string, email: string): UserRow => ({
+    ...baseUser,
+    id,
+    email,
+    status: 'pending_approval',
+  });
+  const userA = pending('user-a', 'a@example.com');
+  const userB = pending('user-b', 'b@example.com');
+  const activeC: UserRow = { ...baseUser, id: 'user-c', email: 'c@example.com' };
+  const SELECT_ALL = 'Select all pending users on this page';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('offers a checkbox on pending rows only, and none on a page without them', () => {
+    const { unmount } = renderTable(userA, { users: [userA, activeC, userB] });
+
+    expect(screen.getByRole('checkbox', { name: 'Select a@example.com' })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Select b@example.com' })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Select c@example.com' })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: SELECT_ALL })).toBeInTheDocument();
+    unmount();
+
+    renderTable(activeC, { users: [activeC] });
+    expect(screen.queryByRole('checkbox')).toBeNull();
+  });
+
+  it('selects rows without opening them, and selects or clears the whole page', () => {
+    renderTable(userA, { users: [userA, userB] });
+    const all = screen.getByRole('checkbox', { name: SELECT_ALL }) as HTMLInputElement;
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select a@example.com' }));
+    expect(screen.getByText('1 pending user selected')).toBeInTheDocument();
+    expect(getUserDetail).not.toHaveBeenCalled();
+    expect(all.checked).toBe(false);
+    expect(all.indeterminate).toBe(true);
+
+    fireEvent.click(all);
+    expect(screen.getByText('2 pending users selected')).toBeInTheDocument();
+    expect(all.checked).toBe(true);
+    expect(all.indeterminate).toBe(false);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear selection' }));
+    expect(screen.queryByRole('button', { name: 'Approve selected' })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: 'Select a@example.com' })).not.toBeChecked();
+  });
+
+  it('names the users it will approve, approves them in one call, then clears the selection', async () => {
+    const onApproveMany = vi.fn(async () => undefined);
+    renderTable(userA, { users: [userA, activeC, userB], onApproveMany });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_ALL }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+
+    const confirm = screen.getByRole('dialog', { name: 'Approve 2 users?' });
+    const listed = within(within(confirm).getByRole('list', { name: 'Users to approve' }))
+      .getAllByRole('listitem')
+      .map((item) => item.textContent);
+    expect(listed).toEqual(['a@example.com', 'b@example.com']);
+    expect(onApproveMany).not.toHaveBeenCalled();
+
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve 2' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(onApproveMany).toHaveBeenCalledExactlyOnceWith(['user-a', 'user-b']);
+    expect(screen.queryByRole('button', { name: 'Approve selected' })).toBeNull();
+  });
+
+  it('keeps a failed approval in its confirmation, with the selection intact', async () => {
+    const onApproveMany = vi.fn(async () => {
+      throw new Error('Database not configured');
+    });
+    renderTable(userA, { users: [userA, userB], onApproveMany });
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select b@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+    const confirm = screen.getByRole('dialog', { name: 'Approve b@example.com?' });
+    fireEvent.click(within(confirm).getByRole('button', { name: 'Approve' }));
+
+    expect(await within(confirm).findByRole('alert')).toHaveTextContent('Database not configured');
+    expect(onApproveMany).toHaveBeenCalledExactlyOnceWith(['user-b']);
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(screen.getByText('1 pending user selected')).toBeInTheDocument();
+  });
+
+  it('drops a row from the selection once it is no longer pending', () => {
+    const props = tableProps(userA, { users: [userA, userB] });
+    const { rerender } = render(<UserTable {...props} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_ALL }));
+    expect(screen.getByText('2 pending users selected')).toBeInTheDocument();
+
+    // A refetch shows user-a approved, here or by another admin.
+    rerender(<UserTable {...props} users={[{ ...userA, status: 'active' }, userB]} />);
+
+    expect(screen.getByText('1 pending user selected')).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: 'Select a@example.com' })).toBeNull();
+  });
+
+  it('approves only the rows still pending when the list changed under the dialog', async () => {
+    const onApproveMany = vi.fn(async () => undefined);
+    const props = tableProps(userA, { users: [userA, userB], onApproveMany });
+    const { rerender } = render(<UserTable {...props} />);
+    fireEvent.click(screen.getByRole('checkbox', { name: SELECT_ALL }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+
+    rerender(<UserTable {...props} users={[{ ...userA, status: 'active' }, userB]} />);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve 2' }));
+
+    await waitFor(() => expect(onApproveMany).toHaveBeenCalledExactlyOnceWith(['user-b']));
+  });
+
+  it('holds the selection controls while the approval runs', async () => {
+    let finish: () => void = () => undefined;
+    const onApproveMany = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    renderTable(userA, { users: [userA, userB], onApproveMany });
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select a@example.com' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Approve selected' }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() =>
+      expect(screen.getByRole('checkbox', { name: 'Select b@example.com' })).toBeDisabled(),
+    );
+    expect(screen.getByRole('checkbox', { name: SELECT_ALL })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Approve selected' })).toBeDisabled();
+
+    finish();
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(screen.getByRole('checkbox', { name: 'Select b@example.com' })).toBeEnabled();
   });
 });

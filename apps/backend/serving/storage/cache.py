@@ -466,6 +466,18 @@ class CachedOperationalStore(OperationalStore):
         # rows labelled ``user_pending_approval`` for the rest of the TTL.
         await self.invalidate_user_auth_caches(user_id)
 
+    async def approve_users(
+        self, user_ids: list[str], *, admin_id: str, note: str | None = None
+    ) -> list[Row]:
+        """Delegate then invalidate user + auth caches of every user approved."""
+        approved = await self._store.approve_users(user_ids, admin_id=admin_id, note=note)
+        for row in approved:
+            # Same reason as approve_user above; a listed user left unchanged
+            # keeps its entries.
+            await self._cache.delete(self._user_key(row["id"]))
+            await self.invalidate_user_auth_caches(row["id"])
+        return approved
+
     async def reject_user(self, user_id: str, *, admin_id: str, reason: str) -> None:
         """Delegate then invalidate user + auth caches."""
         await self._store.reject_user(user_id, admin_id=admin_id, reason=reason)
@@ -610,19 +622,9 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.count_project_keys(project_id)
 
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Delegate, then invalidate auth caches."""
-        row = await self._store.update_org(org_id, changes)
-        await self.invalidate_auth_caches()
-        return row
-
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Delegate to wrapped store."""
         return await self._store.get_account_budgets(user_id)
-
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Delegate to wrapped store."""
-        return await self._store.get_personal_org_status(user_id)
 
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
@@ -1260,6 +1262,10 @@ class CachedOperationalStore(OperationalStore):
             offset=offset,
         )
 
+    async def list_audit_actions(self) -> list[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_audit_actions()
+
     # -- preferences (pass-through) ------------------------------------------
 
     async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
@@ -1728,7 +1734,6 @@ class CachedOperationalStore(OperationalStore):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -1738,7 +1743,6 @@ class CachedOperationalStore(OperationalStore):
             day=day,
             api_key_id=api_key_id,
             requests=requests,
-            org_id=org_id,
             project_id=project_id,
         )
 

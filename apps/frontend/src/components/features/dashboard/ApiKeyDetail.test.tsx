@@ -10,6 +10,7 @@ import { parseBudget } from './keyLimits';
 vi.mock('@/lib/hooks', () => ({
   useApiKeys: vi.fn(),
   useModels: vi.fn(),
+  useProjects: vi.fn(() => ({ data: [] })),
   useUpdateApiKey: vi.fn(),
   useUsageStats: vi.fn(),
 }));
@@ -18,7 +19,7 @@ vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
-import { useApiKeys, useModels, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
+import { useApiKeys, useModels, useProjects, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
 
 const PREFIX = 'hyi-detail01';
 
@@ -73,6 +74,37 @@ afterEach(() => {
 });
 
 describe('ApiKeyDetail', () => {
+  it("says which of its project's limits apply to the key too", () => {
+    setup(makeKey({ project_id: 'proj_ci', project_name: 'CI' }));
+    vi.mocked(useProjects).mockReturnValue({
+      data: [
+        {
+          id: 'proj_ci',
+          name: 'CI',
+          is_default: false,
+          budget_daily_usd: 5,
+          budget_monthly_usd: null,
+          allowed_models: null,
+          max_concurrent_requests: null,
+          spent_today_usd: 2,
+          spent_month_usd: 9,
+          key_count: 2,
+          created_at: '2026-11-01T00:00:00Z',
+        },
+      ],
+    } as unknown as ReturnType<typeof useProjects>);
+    render(<ApiKeyDetail keyPrefix={PREFIX} />);
+
+    expect(
+      screen.getByText(
+        'Project CI limits this key too, together with its other keys: $2.00 of $5.00 today · $9.00 this month.',
+      ),
+    ).toBeInTheDocument();
+    vi.mocked(useProjects).mockReturnValue({ data: [] } as unknown as ReturnType<
+      typeof useProjects
+    >);
+  });
+
   it('shows the key and its spend against its budgets', () => {
     setup(makeKey({ budget_daily_usd: 5 }));
     render(<ApiKeyDetail keyPrefix={PREFIX} />);
