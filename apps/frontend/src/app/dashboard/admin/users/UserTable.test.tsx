@@ -11,6 +11,8 @@ import type { UserRow } from './types';
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
+  // The projects panel loads on its own; these tests are about the rest.
+  getUserProjects: vi.fn(() => new Promise(() => {})),
   listModelVisibility: vi.fn(),
   updateUser: vi.fn(),
 }));

@@ -5,6 +5,7 @@ import type {
   QuotaStateFilter,
   UsersSummary,
 } from '@/app/dashboard/admin/users/types';
+import type { ApiKeyListItem, Project } from './user';
 
 const API_BASE = config.apiBase;
 
@@ -249,6 +250,17 @@ export async function getUserDetail(
     `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
   );
   return jsonOrThrow<UserDetail>(resp);
+}
+
+/** An account's projects and every key it holds, as an administrator reads them. */
+export interface AdminUserProjects {
+  projects: Project[];
+  keys: ApiKeyListItem[];
+}
+
+export async function getUserProjects(userId: string): Promise<AdminUserProjects> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/projects`);
+  return jsonOrThrow<AdminUserProjects>(resp);
 }
 
 export interface UserUsageTotals {
