@@ -41,7 +41,8 @@ router = APIRouter(prefix="/user/projects", tags=["User Dashboard"])
 _MAX_PROJECTS = 100
 
 
-async def _project_response(op_store: Any, row: dict[str, Any]) -> ProjectResponse:
+async def project_response(op_store: Any, row: dict[str, Any]) -> ProjectResponse:
+    """A project row as the console API shows it, with its spend and live key count."""
     today, month = await op_store.get_project_spend(row["id"])
     return ProjectResponse(
         id=row["id"],
@@ -86,7 +87,7 @@ async def list_projects(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
     rows = await op_store.list_projects(current_user["user_id"])
-    return [await _project_response(op_store, row) for row in rows]
+    return [await project_response(op_store, row) for row in rows]
 
 
 @router.post("", response_model=ProjectResponse, status_code=201)
@@ -153,7 +154,7 @@ async def create_project(
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -168,7 +169,7 @@ async def get_project(
     row = await op_store.get_project(current_user["user_id"], project_id)
     if not row:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -230,7 +231,7 @@ async def update_project(
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.post("/{project_id}/archive")
