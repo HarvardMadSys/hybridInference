@@ -77,7 +77,6 @@ class CostIncrement(NamedTuple):
     api_key_id: int | None
     cost_usd: Decimal | float
     requests: int = 1
-    org_id: str | None = None
     project_id: str | None = None
 
 
@@ -731,7 +730,7 @@ class OperationalStore(ABC):
 
     # -- projects ------------------------------------------------------------
     #
-    # A project belongs to the owner's personal organization. Its budgets are
+    # A project belongs to one account. Its budgets are
     # sub-limits of the account ceiling, and its allowlist narrows the models
     # its keys may call. The Default project of each account is where keys go
     # when the caller names none.
@@ -749,7 +748,7 @@ class OperationalStore(ABC):
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
     ) -> Row:
-        """Insert a project under the user's personal organization."""
+        """Insert a project owned by *user_id*."""
 
     @abstractmethod
     async def list_projects(self, user_id: str) -> list[Row]:
@@ -782,19 +781,11 @@ class OperationalStore(ABC):
         """Return how many active keys the project holds."""
 
     @abstractmethod
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Update an organization's ceilings or status; return the row."""
-
-    @abstractmethod
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Return the status of the account's personal organization, or None."""
-
-    @abstractmethod
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
 
-        Reads the personal organization first and falls back to the legacy key
-        quota while the organization has no ceiling of its own.
+        The account quota is the one every key of the account carries, and the
+        one its next key would inherit.
         """
 
     @abstractmethod
@@ -1312,7 +1303,6 @@ class OperationalStore(ABC):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
@@ -1330,7 +1320,6 @@ class OperationalStore(ABC):
         writes them.
 
         Args:
-            org_id: Organization attributed at request admission.
             project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
@@ -1361,7 +1350,6 @@ class OperationalStore(ABC):
                 day=increment.day,
                 api_key_id=increment.api_key_id,
                 requests=increment.requests,
-                org_id=increment.org_id,
                 project_id=increment.project_id,
             )
 

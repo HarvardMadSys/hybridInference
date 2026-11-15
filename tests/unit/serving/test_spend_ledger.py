@@ -615,7 +615,7 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     store = _AtomicStore()
     store.gate = asyncio.Event()
     ledger = SpendLedger(store)
-    req_ctx.update({req_ctx.PROJECT_ID: "proj_shared", req_ctx.ORG_ID: "org_shared"})
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_shared"})
     ledger.record("u1", 0.02, api_key_id=1)
     req_ctx.reset_request_scope()
     check = _check(ledger, key_id=2, project_id="proj_shared", project_budget_daily_usd=0.025)
@@ -627,7 +627,7 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     store.gate.set()
     assert await ledger.flush()
     increment = store.batches[0][0]
-    assert (increment.org_id, increment.project_id) == ("org_shared", "proj_shared")
+    assert increment.project_id == "proj_shared"
     assert check.refusal().scope == "project"
 
 
@@ -636,7 +636,7 @@ async def test_keyless_cost_records_keep_their_own_project():
 
     store = _AtomicStore()
     ledger = SpendLedger(store)
-    req_ctx.update({req_ctx.PROJECT_ID: "proj_a", req_ctx.ORG_ID: "org_shared"})
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_a"})
     ledger.record("u1", 0.02)
     req_ctx.update({req_ctx.PROJECT_ID: "proj_b"})
     ledger.record("u1", 0.03)

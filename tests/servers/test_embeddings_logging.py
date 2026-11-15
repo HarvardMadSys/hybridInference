@@ -108,7 +108,6 @@ class _CapturingOpStore:
         day=None,
         api_key_id=None,
         requests=1,
-        org_id=None,
         project_id=None,
     ) -> None:
         self.increments.append((user_id, cost_usd))

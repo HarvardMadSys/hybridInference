@@ -145,7 +145,6 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "user_role",
         "auth_key_hash",
         "project_id",
-        "org_id",
         "affinity_key",
         "client_error_kind",
         "provider",
