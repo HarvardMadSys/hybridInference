@@ -622,19 +622,9 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.count_project_keys(project_id)
 
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Delegate, then invalidate auth caches."""
-        row = await self._store.update_org(org_id, changes)
-        await self.invalidate_auth_caches()
-        return row
-
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Delegate to wrapped store."""
         return await self._store.get_account_budgets(user_id)
-
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Delegate to wrapped store."""
-        return await self._store.get_personal_org_status(user_id)
 
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
@@ -1744,7 +1734,6 @@ class CachedOperationalStore(OperationalStore):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -1754,7 +1743,6 @@ class CachedOperationalStore(OperationalStore):
             day=day,
             api_key_id=api_key_id,
             requests=requests,
-            org_id=org_id,
             project_id=project_id,
         )
 

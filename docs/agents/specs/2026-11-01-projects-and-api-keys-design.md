@@ -3,8 +3,11 @@
 Status: P1a (several keys per account) and P1b usage attribution are
 implemented; see §16 and §17 for what was built and where it departs from the
 original plan. Rotation with a grace period was dropped (§17). P2 is split:
-P2a (per-key limits) is implemented as §18 describes; P2b (projects) and P3 are a draft for
-discussion. Baseline: `dev` at `09a0dbcff`.
+P2a (per-key limits) is implemented as §18 describes. P2b (projects) shipped in
+#1729 with a hidden personal organization; §19 removes that organization and
+makes a project belong to its account, which supersedes the organization parts
+of §1, §5, §6 and §10. P3 is a draft for discussion. Baseline: `dev` at
+`09a0dbcff`.
 
 ## 1. Summary
 
@@ -974,6 +977,72 @@ the same account is unaffected.
   the key, as before P2a. Now that a key keeps its id across a rotation,
   batches could be bound to the id instead.
 - **The account monthly quota** is now enforced (§18.8).
+
+## 19. P2b revision: projects belong to accounts (2026-11-15)
+
+### 19.1 Decision
+
+The hidden personal organization is removed. The hierarchy is
+**account → project → API key**: a project belongs to one account, and the
+account carries the ceilings the platform grants.
+
+### 19.2 Why
+
+Every account had exactly one organization, which nobody could see, join or
+share. Everything it held already existed on the account:
+
+| Organization field | Already on the account |
+|---|---|
+| `budget_daily_usd`, `budget_monthly_usd` | The account quota every key carries (`api_keys.quota_*`, §16) |
+| `max_concurrent_requests` | `users.max_concurrent_requests` |
+| `status = 'suspended'` | `users.status` |
+
+Holding the quota in two places needed write paths that kept them equal (key
+creation, the per-role bulk apply, `PATCH /admin/orgs`) and a read path that
+preferred one and fell back to the other. A missed sync would make the
+console and the gate disagree. `PATCH /admin/orgs` had no console UI.
+
+The case for the organization was teams (§1, P3). None is planned yet. When
+one is, a team can own projects next to accounts, with the requirements known
+at that time, rather than shaping today's model around a guess.
+
+### 19.3 What changed
+
+- `projects.user_id` owns a project, and every project query filters on it.
+- The account quota is the key quota again: auth, grants and the project
+  budget validation read `api_keys.quota_*` directly
+  (`ACCOUNT_QUOTA_SOURCE_SQL` for the account-wide value).
+- The organization concurrency slot, the `organization_suspended` refusal,
+  the suspended-organization check on `X-On-Behalf-Of`, `org_id` attribution
+  in the spend ledger and `PATCH /admin/orgs` are gone. Project concurrency,
+  budgets and allowlists are unchanged.
+- Signup, first-run setup and phone signup create the Default project only.
+  Boot backfill gives any account without one its Default project.
+
+### 19.4 Migration and rollback
+
+`0018_projects_owned_by_accounts` is an expand revision:
+
+1. It adds `projects.user_id` and fills it from each personal organization's
+   owner. It drops and constrains nothing.
+2. It moves what an administrator set on an organization onto the account: a
+   budget onto every key of the account (revoked keys included, as a new key
+   inherits from them), a concurrency cap onto `users.max_concurrent_requests`
+   (never raising an existing cap), and a suspension onto `users.status`.
+3. It clears those organization values, so the previous release, which reads
+   an organization ceiling ahead of the key quota, enforces the same limits.
+
+This release still writes `projects.org_id = 'org_p_' || user_id`, and the
+empty `organizations` row that foreign key needs. That keeps two things
+working without schema changes an expand revision may not make: the unique
+indexes on `projects.org_id` still allow one active name and one Default per
+account, and a rolled-back release finds every project. Nothing reads the
+column or the row. Hard delete removes the row with the account.
+
+A contract revision, shipped once this release is the oldest one running,
+drops `organizations`, `org_members`, `projects.org_id` and `api_keys.org_id`,
+moves the two unique indexes onto `projects.user_id`, and removes the
+placeholder write.
 
 ## References
 

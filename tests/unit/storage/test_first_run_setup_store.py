@@ -284,7 +284,11 @@ class _SimulatedConnection:
             self._ops.append(("delete", args[0], args[0] in self._settings()))
         elif any(
             table in sql
-            for table in ("organizations", "org_members", "projects", "UPDATE api_keys SET org_id")
+            for table in (
+                "INSERT INTO organizations",
+                "INSERT INTO projects",
+                "UPDATE api_keys SET project_id",
+            )
         ):
             pass
         elif "INSERT INTO admin_audit_log" in sql:

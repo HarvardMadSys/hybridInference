@@ -519,16 +519,12 @@ async def _slot_for_canonical(
 
 
 def scope_concurrency_limits(user: dict[str, Any]) -> list[tuple[str, str, int]]:
-    """Return the shared project and organization slots with explicit caps."""
-    limits = []
-    for scope, scope_id in (
-        ("project", user.get("project_id")),
-        ("org", user.get("org_id")),
-    ):
-        capacity = user.get(f"{scope}_max_concurrent_requests")
-        if scope_id is not None and capacity is not None:
-            limits.append((scope, f"scope:{scope}:{scope_id}", int(capacity)))
-    return limits
+    """Return the shared project slot, when the project has an explicit cap."""
+    project_id = user.get("project_id")
+    capacity = user.get("project_max_concurrent_requests")
+    if project_id is None or capacity is None:
+        return []
+    return [("project", f"scope:project:{project_id}", int(capacity))]
 
 
 def _rejection_prompt(request: Request) -> list[dict[str, Any]] | str:
