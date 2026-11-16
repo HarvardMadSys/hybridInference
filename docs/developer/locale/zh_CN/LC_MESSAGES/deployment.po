@@ -2451,9 +2451,9 @@ msgstr ""
 
 #: ../developer/deployment.md:846
 msgid ""
-"an administrator who has no authenticator yet has no administrator access until they add one (`POST /auth/two-factor/setup`, then `/confirm`);"
+"an administrator who has no authenticator yet has no administrator access until they add one;"
 msgstr ""
-"还没有验证器的管理员在添加之前没有管理员权限（`POST /auth/two-factor/setup`，然后 `/confirm`）；"
+"还没有验证器的管理员在添加之前没有管理员权限；"
 
 #: ../developer/deployment.md:848
 msgid ""
@@ -2469,15 +2469,39 @@ msgstr ""
 
 #: ../developer/deployment.md:852
 msgid ""
+"In the console:"
+msgstr ""
+"在控制台中："
+
+#: ../developer/deployment.md:854
+msgid ""
+"**Settings → Two-Factor Authentication** adds the authenticator: the account's password, a QR code to scan, the first code, then ten recovery codes that are shown once. Administrators see the section. An account that is about to be made an administrator opens it at `/dashboard/settings#two-factor`."
+msgstr ""
+"**设置 → 两步验证** 用来添加验证器：输入账号密码，扫描二维码，输入第一个验证码，然后得到十个只显示一次的恢复码。管理员可以直接看到这一栏。即将被设为管理员的账号通过 `/dashboard/settings#two-factor` 打开它。"
+
+#: ../developer/deployment.md:859
+msgid ""
+"**Admin** asks a session that owes a code before it opens, and a dialog asks again when a change needs a more recent one."
+msgstr ""
+"**Admin** 在打开之前会向还没给过验证码的会话要验证码；当某项更改需要更新的验证码时，会弹出对话框再次询问。"
+
+#: ../developer/deployment.md:861
+msgid ""
+"**Admin → Users** shows in an account's details whether it has an authenticator (`Two-factor: on`), and removes one for someone who lost the device."
+msgstr ""
+"**Admin → Users** 在账号详情中显示它是否有验证器（`Two-factor: on`），并可以为丢失设备的人移除验证器。"
+
+#: ../developer/deployment.md:865
+msgid ""
 "Turn it on after the administrators have enrolled, not before: until an administrator account has an authenticator, someone who has its password can add their own."
 msgstr ""
 "请在管理员都完成绑定之后再开启，而不是之前：在管理员账号有验证器之前，拿到其密码的人可以添加自己的验证器。"
 
 #: ../developer/deployment.md:857
 msgid ""
-"An administrator who loses the device and the recovery codes cannot reach the Admin API. Another administrator removes the lost authenticator with `POST /admin/users/{user_id}/two-factor/reset`. If there is no other administrator, remove it in the database and let the account add a new one with its password:"
+"An administrator who loses the device and the recovery codes cannot reach the Admin API. Another administrator removes the lost authenticator in **Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If there is no other administrator, remove it in the database and let the account add a new one with its password:"
 msgstr ""
-"同时丢失设备和恢复码的管理员无法访问 Admin API。其他管理员可以用 `POST /admin/users/{user_id}/two-factor/reset` 移除丢失的验证器。如果没有其他管理员，请在数据库中移除它，再让该账号用密码添加一个新的："
+"同时丢失设备和恢复码的管理员无法访问 Admin API。其他管理员可以在 **Admin → Users** 中移除丢失的验证器（`POST /admin/users/{user_id}/two-factor/reset`）。如果没有其他管理员，请在数据库中移除它，再让该账号用密码添加一个新的："
 
 #: ../developer/deployment.md:866
 msgid ""

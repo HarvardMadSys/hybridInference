@@ -809,6 +809,7 @@ async def get_user_detail(
         email_verified=user_row["email_verified"],
         created_at=user_row["created_at"],
         last_login_at=user_row.get("last_login_at"),
+        two_factor_enabled=has_authenticator(await op_store.get_two_factor(user_id)),
         has_key=has_key,
         key_prefix=key_row["key_prefix"] if key_row else None,
         # ``is not None``: a quota of 0 is a limit, not an unset one.
@@ -930,9 +931,9 @@ async def update_user(
     ):
         raise HTTPException(
             409,
-            f"{_user_label(user_row)} has not set up two-factor authentication. "
-            "Administrators need it here: ask them to add an authenticator app in "
-            "Settings first.",
+            f"{_user_label(user_row)} has not set up two-factor authentication, which "
+            "administrators need here. Ask them to add an authenticator app first, on the "
+            "console page /dashboard/settings#two-factor.",
         )
     if new_role is not None and ROLE_RANK.get(new_role, 0) > ROLE_RANK.get(current_role, 0):
         await confirm_administrator(

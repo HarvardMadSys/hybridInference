@@ -479,6 +479,9 @@ class UserDetailResponse(BaseModel):
     phone_verified: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
+    two_factor_enabled: bool = Field(
+        False, description="The account has an authenticator app (see /auth/two-factor)"
+    )
     # Key info
     has_key: bool = False
     key_prefix: str | None = None
