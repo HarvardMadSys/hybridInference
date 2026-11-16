@@ -245,6 +245,40 @@ def test_an_identitys_provider_is_the_one_it_was_linked_through(stored):
     # An id that names a provider at another issuer is not the identity's provider.
     assert sso.provider_for_identity("company", "https://unknown.example.com") is None
 
+    # Each provider serves the identities linked through it, and not the other's.
+    univ, company = sso.provider_by_id("univ"), sso.provider_by_id("company")
+    assert sso.serves_identity(univ, "univ", google)
+    assert not sso.serves_identity(company, "univ", google)
+    assert not sso.serves_identity(univ, "univ", "https://unknown.example.com")
+
+
+def test_a_provider_that_is_switched_off_is_not_replaced_by_one_with_its_issuer(stored):
+    google = "https://accounts.google.com"
+    stored(
+        _provider(id="univ", issuer=google, enabled=False, required_claims={"hd": "example.edu"}),
+        _provider(id="personal", domains=["gmail.com"], issuer=google),
+    )
+    personal = sso.provider_by_id("personal")
+
+    # Linked through the provider that is switched off: no other one serves it.
+    assert sso.provider_for_identity("univ", google) is None
+    assert not sso.serves_identity(personal, "univ", google)
+    # Its own identities, and one whose provider's id the document no longer has.
+    assert sso.serves_identity(personal, "personal", google)
+    assert sso.serves_identity(personal, "an-earlier-id", google)
+    assert sso.provider_for_identity("an-earlier-id", google).id == "personal"
+
+
+def test_an_id_that_now_names_a_provider_at_another_issuer_is_a_changed_id(stored):
+    google = "https://accounts.google.com"
+    stored(
+        _provider(id="univ"),
+        _provider(id="personal", domains=["gmail.com"], issuer=google),
+    )
+
+    # The identity was linked through "univ" when that id had Google's issuer.
+    assert sso.provider_for_identity("univ", google).id == "personal"
+
 
 def test_a_disabled_provider_is_not_offered(stored):
     stored(_provider(enabled=False))

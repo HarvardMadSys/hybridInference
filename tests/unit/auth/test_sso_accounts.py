@@ -156,6 +156,35 @@ async def test_a_linked_account_that_is_not_active_is_refused_by_its_status(stor
     assert (await _resolve(store)).refused == code
 
 
+@pytest.mark.parametrize(
+    ("own", "signs_in"),
+    [
+        pytest.param({}, False, id="its own provider is offered"),
+        pytest.param({"enabled": False}, False, id="its own provider is switched off"),
+        pytest.param(None, True, id="its own provider's id is gone"),
+    ],
+)
+async def test_a_linked_identity_signs_in_only_through_its_own_provider(
+    store, monkeypatch, own, signs_in
+):
+    # Two providers at one issuer, as for two Google Workspace organizations.
+    # The identity was linked through "example-univ" and comes back through
+    # "personal", which requires no claim.
+    personal = _provider(id="personal", domains=["gmail.com"])
+    entries = [personal] if own is None else [_provider(**own), personal]
+    document = sso_accounts.sso_config.SsoProvidersDocument(providers=entries)
+    monkeypatch.setattr(sso_accounts.sso_config, "get_sso_document", lambda: document)
+    user = store.add_user("u-1", "alice@example.edu")
+    store.add_identity("u-1")
+
+    resolution = await _resolve(store, personal)
+
+    if signs_in:
+        assert resolution.user == user
+    else:
+        assert resolution.refused == "failed" and resolution.user is None
+
+
 # -- 2. the email must be trusted -------------------------------------------------
 
 

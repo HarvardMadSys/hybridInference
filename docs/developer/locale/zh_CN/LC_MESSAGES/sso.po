@@ -49,6 +49,9 @@ msgstr "**重启网关**。这个密钥设置标有 **Restart required**：网�
 msgid "**Check `FRONTEND_URL`.** It must be the address users open the console at. The redirect URI is built from it, and users must reach the console through that address for a sign-in to complete."
 msgstr "**检查 `FRONTEND_URL`**。它必须是用户打开控制台时使用的地址。重定向 URI 由它生成，用户也必须通过这个地址访问控制台，登录才能完成。"
 
+msgid "**Check which host the browser calls the gateway on.** The provider sends the browser back to the host of `FRONTEND_URL`, and the cookies of a sign-in must reach that host and the host the console calls the gateway on. A console built with an empty `NEXT_PUBLIC_API_BASE` calls its own host, and nothing more is needed. When `NEXT_PUBLIC_API_BASE` names another host, set `COOKIE_DOMAIN` to a domain that covers both hosts. Two ports on `localhost` are one host for cookies."
+msgstr "**检查浏览器通过哪个主机访问网关**。身份提供方把浏览器送回 `FRONTEND_URL` 所在的主机，而登录用到的 cookie 既要能到达这个主机，也要能到达控制台访问网关时用的主机。构建时 `NEXT_PUBLIC_API_BASE` 为空的控制台访问的是它自己的主机，不需要再做什么。`NEXT_PUBLIC_API_BASE` 指向另一个主机时，把 `COOKIE_DOMAIN` 设成同时覆盖这两个主机的域名。`localhost` 上的两个端口对 cookie 来说是同一个主机。"
+
 msgid "The sign-in page shows **Log in with SSO** as soon as the provider is saved. Until the secret is stored and the gateway has restarted, the entry reports that single sign-on is unavailable. A user selects it, enters their work or school email, and is sent to the provider whose `domains` cover that email. The page does not list which organizations are connected."
 msgstr "身份提供方一保存，登录页就会出现 **Log in with SSO**。在密钥填好、网关重启之前，这个入口会提示单点登录暂时不可用。用户点击后输入工作或学校邮箱，就会被送到 `domains` 覆盖该邮箱的身份提供方。登录页不会列出对接了哪些机构。"
 
@@ -286,6 +289,9 @@ msgstr "停止提供某个身份提供方"
 msgid "Set `enabled` to `false`. Accounts that sign in only through that provider can then use **Forgot password** to set a password, which needs outgoing email to be configured. Without outgoing email, set passwords for those accounts before you disable the provider."
 msgstr "把 `enabled` 设为 `false`。只通过该身份提供方登录的账号之后可以用 **Forgot password** 设置密码，这需要已配置发信。没有配置发信时，请在停用该身份提供方之前先为这些账号设置密码。"
 
+msgid "Do not remove the provider from `SSO_PROVIDERS` to keep its members out. A link whose provider `id` is no longer in `SSO_PROVIDERS` is served by another provider with the same issuer, which is what keeps links working when you change an `id`."
+msgstr "不要为了不让成员登录而把身份提供方从 `SSO_PROVIDERS` 里删掉。关联所记录的身份提供方 `id` 不在 `SSO_PROVIDERS` 里时，issuer 相同的另一个身份提供方会接手这个关联；修改 `id` 之后关联仍然可用，靠的就是这一点。"
+
 msgid "Changing a provider's `issuer` breaks every existing link to it, because links are recorded against the issuer."
 msgstr "修改身份提供方的 `issuer` 会让已有的关联全部失效，因为关联是按 issuer 记录的。"
 
@@ -331,8 +337,8 @@ msgstr "连不上身份提供方，client secret 设置为空，保存密钥之�
 msgid "The sign-in took too long"
 msgstr "登录已超时"
 
-msgid "The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL`"
-msgstr "用户用了超过十分钟，在另一个浏览器里打开了回调地址，或者通过 `FRONTEND_URL` 以外的地址访问控制台"
+msgid "The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL`. Every sign-in ends this way when the console calls the gateway on another host and `COOKIE_DOMAIN` does not cover both: see step 6 of [Connect a provider](#connect-a-provider). A link from **Settings** also ends this way when the user signed out before it completed"
+msgstr "用户用了超过十分钟，在另一个浏览器里打开了回调地址，或者通过 `FRONTEND_URL` 以外的地址访问控制台。如果控制台通过另一个主机访问网关，而 `COOKIE_DOMAIN` 没有同时覆盖这两个主机，每一次登录都会这样结束：参见[对接一个身份提供方](#connect-a-provider)的第 6 步。在 **Settings** 里发起的关联，如果用户在完成之前退出了登录，也会这样结束"
 
 msgid "The email could not be confirmed"
 msgstr "无法确认邮箱"
@@ -376,6 +382,9 @@ msgstr "有些身份提供方让所有机构的账号都从同一个 issuer 登�
 msgid "For Google the claim is `hd`, the organization's primary domain."
 msgstr "Google 用的 claim 是 `hd`，值是机构的主域名。"
 
+msgid "A member signs in only through the provider they were linked through. Another provider with the same issuer does not let them in, so a provider's `required_claims` and its `enabled` switch hold for all of its members."
+msgstr "成员只能通过自己关联时用的那个身份提供方登录。issuer 相同的另一个身份提供方不会放他们进来，所以一个身份提供方的 `required_claims` 和 `enabled` 开关对它的所有成员都有效。"
+
 msgid "Too many sign-in attempts"
 msgstr "登录尝试过于频繁"
 
@@ -385,5 +394,5 @@ msgstr "一小时内从同一个客户端地址发起了超过 120 次登录。�
 msgid "Single sign-on failed"
 msgstr "SSO 登录失败"
 
-msgid "The provider's answer did not validate, or the account lacks a claim that `required_claims` asks for"
-msgstr "身份提供方的回答没有通过校验，或者账号没有 `required_claims` 要求的 claim"
+msgid "The provider's answer did not validate, the account lacks a claim that `required_claims` asks for, or the member was linked through another provider that has the same issuer"
+msgstr "身份提供方的回答没有通过校验，账号没有 `required_claims` 要求的 claim，或者成员是通过 issuer 相同的另一个身份提供方关联的"

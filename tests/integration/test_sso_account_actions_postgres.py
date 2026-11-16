@@ -387,6 +387,28 @@ async def test_a_sign_in_started_meanwhile_does_not_end_a_link(browser, idp, sto
     assert (await store.get_user_identity(ISSUER, "subject-1"))["user_id"] == user_id
 
 
+@pytest.mark.parametrize("ended_by", ["signing out", "a revocation"])
+async def test_a_link_does_not_land_once_the_session_that_asked_has_ended(
+    browser, idp, store, ended_by
+):
+    user_id = await existing_user(store)
+    headers = await _password_session(browser)
+    started = await browser.post(
+        "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
+    )
+    params = parse_qs(urlsplit(started.json()["authorization_url"]).query)
+
+    # While the provider's page is open.
+    if ended_by == "signing out":
+        assert (await browser.post("/auth/logout", headers=headers)).status_code == 200
+    else:
+        assert await store.revoke_user_sessions(user_id) >= 1
+    back = await answer(browser, idp, params)
+
+    assert location(back) == (SETTINGS, {"sso_error": ["expired"]})
+    assert await store.get_user_identity(ISSUER, "subject-1") is None
+
+
 async def test_an_identity_whose_email_is_another_accounts_cannot_be_linked(browser, idp, store):
     # One address belongs to one account: the identity is connected from the
     # account that has it, not from somebody else's.
@@ -550,6 +572,57 @@ async def test_a_provider_that_is_no_longer_offered_is_marked_in_the_list(
 
     assert identity["available"] is False
     assert identity["provider_name"] == "example-univ"
+
+
+def _beside(sso, **own: Any) -> list[dict[str, Any]]:
+    """The account's own provider, and one beside it with the same issuer."""
+    return [
+        *([sso.provider(**own)] if own else []),
+        sso.provider(id="personal", display_name="Personal accounts", domains=["gmail.com"]),
+    ]
+
+
+async def test_a_provider_that_is_switched_off_is_not_replaced_by_one_with_its_issuer(
+    browser, idp, sso, members_sign_straight_in
+):
+    headers = await _sso_session(browser, idp)
+
+    sso.providers = _beside(sso, enabled=False)
+
+    (identity,) = (await browser.get("/auth/sso/identities", headers=headers)).json()["identities"]
+    assert (identity["provider_id"], identity["available"]) == ("example-univ", False)
+    me = (await browser.get("/user/me", headers=headers)).json()
+    assert me["sso_reauth_provider"] is None
+    # So nothing is confirmed through the provider beside it.
+    refused = await browser.post(
+        "/auth/sso/reauth/start",
+        json={"purpose": "delete_account", "return_to": SETTINGS},
+        headers=headers,
+    )
+    assert refused.status_code == 409
+
+
+async def test_a_confirmation_is_refused_when_the_identitys_provider_is_back_and_switched_off(
+    browser, idp, sso, store, members_sign_straight_in
+):
+    headers = await _sso_session(browser, idp)
+    # The document has lost the id the identity was linked through, so the
+    # provider with its issuer stands in, and the confirmation starts there.
+    sso.providers = _beside(sso)
+    params = await _reauth_start(browser, headers, "delete_account")
+    assert params["redirect_uri"] == ["http://test/auth/sso/personal/callback"]
+
+    # Meanwhile the id is back, switched off.
+    sso.providers = _beside(sso, enabled=False)
+    idp.id_token = sign_id_token(id_token_claims(params["nonce"][0], auth_time=int(time.time())))
+    back = await browser.get(
+        "/auth/sso/personal/callback", params={"code": "code-1", "state": params["state"][0]}
+    )
+
+    assert location(back) == (SETTINGS, {"sso_error": ["failed"]})
+    refused = await browser.post("/auth/delete-account", json={"confirm": EMAIL}, headers=headers)
+    assert refused.status_code == 400
+    assert (await store.get_user_by_email(EMAIL))["status"] == "active"
 
 
 # -- an administrator removes a link ---------------------------------------------------

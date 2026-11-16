@@ -4,7 +4,8 @@ Works from a protocol-neutral :class:`~serving.auth.oidc.ExternalIdentity` and
 the provider's shared settings; nothing here knows how the identity was
 obtained. The decisions, in order:
 
-1. An identity that is already linked signs in to its account.
+1. An identity that is already linked signs in to its account, through the
+   provider it was linked through and no other.
 2. Otherwise the provider's email must be trusted: verified, and in a domain
    this provider answers for. A provider vouches only for its own domains.
 3. An account with that email, if not active, refuses the sign-in.
@@ -181,6 +182,15 @@ async def _resolve(
 ) -> Resolution | None:
     linked = await op_store.get_user_identity(identity.issuer, identity.subject)
     if linked is not None:
+        if not sso_config.serves_identity(provider, linked["provider_id"], linked["issuer"]):
+            # Linked through another provider with the same issuer. That one's
+            # required claims and its switch decide for this identity, and a
+            # sign-in through this provider answers to neither.
+            logger.warning(
+                f"Single sign-on at {provider.id} refused identity {linked['id']}: "
+                f"it signs in through provider {linked['provider_id']}"
+            )
+            return Resolution(refused="failed")
         user = await op_store.get_user_by_id(linked["user_id"])
         if user is None:
             return Resolution(refused="failed")

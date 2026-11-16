@@ -564,6 +564,9 @@ async def _finish_reauth(
     if linked is None or linked["user_id"] != flow["user_id"]:
         # Someone else's identity, however valid, confirms nothing for this account.
         return _flow_error(flow, "failed")
+    if not sso_config.serves_identity(provider, linked["provider_id"], linked["issuer"]):
+        # As for a sign-in: only the provider the identity was linked through.
+        return _flow_error(flow, "failed")
     earliest = flow["created_at"] - timedelta(seconds=oidc.CLOCK_SKEW_SECONDS)
     if identity.authenticated_at is None or identity.authenticated_at < earliest:
         return _flow_error(flow, "failed")
@@ -588,7 +591,14 @@ async def _finish_link(
     sides are theirs. But an address that is already another account's is not
     linked here. One address belongs to one account, and that account is where
     its identity is connected.
+
+    The session that asked must still be live. Its owner confirmed in that
+    session; once they sign out, or the session is revoked, what it started
+    no longer adds a way in.
     """
+    sid = flow.get("sid")
+    if not sid or not await op_store.session_is_live(flow["user_id"], sid):
+        return _flow_error(flow, "expired")
     unlinked = await op_store.get_user_identity(identity.issuer, identity.subject) is None
     if unlinked and identity.email:
         holder = await op_store.get_user_by_email(identity.email)

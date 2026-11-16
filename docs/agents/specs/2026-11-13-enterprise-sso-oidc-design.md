@@ -187,6 +187,11 @@ response:
   and logs the reason.
 - Users must reach the console through `FRONTEND_URL`. From another domain, the flow cookie does not come back
   with the callback and the sign-in reports `expired`.
+- The console must call the gateway on a host that shares cookies with `FRONTEND_URL`. The flow cookie is set by
+  the host that answers `discover` or `start`, and the session cookie by the callback. A console built with an
+  empty `NEXT_PUBLIC_API_BASE` calls its own host, and needs nothing more. A console that calls the gateway on
+  another host needs `COOKIE_DOMAIN` to cover both hosts; without it every sign-in reports `expired`. The
+  operator guide says so.
 
 ## 5. Where a sign-in starts
 
@@ -321,7 +326,7 @@ The access token and refresh token the IdP returns are discarded after use and n
 
 | # | Case | Result |
 |---|---|---|
-| 1 | (issuer, sub) is already linked to an account | Sign in after the status check of §6.3 |
+| 1 | (issuer, sub) is already linked to an account | Sign in after the status check of §6.3, when the sign-in came through the IdP the link belongs to (§11); through another IdP with the same issuer, refuse, `failed` |
 | 2 | Not linked; the email is not trusted | Refuse, `email_untrusted` |
 | 3 | Not linked; trusted email; an account here has this email but its status is not `active` | Refuse by the status of §6.3; no link, no new account |
 | 4 | Not linked; trusted email; the `active` account with this email is already linked to another identity of the same issuer | Refuse, `identity_conflict` |
@@ -459,8 +464,10 @@ linking cannot: the platform account's email differs from the organization's ema
    row with the purpose `link` that records the user id and the `sid`, and returns the IdP's authorization
    address. The IdP is found before the confirmation is checked: an email no IdP answers for returns
    `{"available": false}` and does not spend a confirmation made at the IdP, which is good only once.
-3. Besides the checks of §6.1, the callback checks three things. When they pass it writes the link and returns
+3. Besides the checks of §6.1, the callback checks four things. When they pass it writes the link and returns
    to Settings.
+   - The session that started the link (the `sid` in the flow) is still live; otherwise `expired`. The owner
+     confirmed in that session. After they sign out, or the session is revoked, what it started adds no way in.
    - This (issuer, sub) is not linked to another account; otherwise `identity_in_use`.
    - The organization's email is not another account's email; otherwise `email_in_use`.
    - The current account is not linked to another identity of the same issuer; otherwise `identity_conflict`.
@@ -647,9 +654,13 @@ Notes:
 - A link is keyed by `issuer`, not `provider_id`: an administrator renaming an IdP does not affect existing
   links, while changing the issuer invalidates all of them, and the operator guide says so.
 - Two IdPs may share an issuer: every Google Workspace organization signs in at `https://accounts.google.com`.
-  So the issuer alone does not say which IdP a link belongs to. To show a link's IdP, or to confirm through it
-  (§9), the gateway takes the IdP the link was made through (`provider_id`) while it is enabled and still has
-  the link's issuer, and otherwise the first enabled IdP with that issuer.
+  So the issuer alone does not say which IdP a link belongs to. A link belongs to the IdP it was made through
+  (`provider_id`), while the document still has an IdP with that id and the link's issuer, enabled or not. Only
+  that IdP signs the link in, shows it as available and confirms through it (§9). A sign-in that arrives through
+  another IdP with the same issuer is refused with `failed`: otherwise an IdP that is disabled, or that has
+  `required_claims`, could be passed through the IdP beside it. Only when no IdP has that id for the issuer any
+  more (the id was changed) does an enabled IdP with the issuer serve the link. So an operator disables an IdP
+  to keep its members out, and does not delete it.
 - `provider_id` and `issuer` record which organization an account came from, which later serves usage figures
   by organization directly.
 

@@ -270,6 +270,72 @@ async def test_an_account_outside_the_organization_at_a_shared_issuer_is_refused
     assert _location(member)[1]["sso"] == ["complete"]
 
 
+def _two_providers_at_one_issuer(sso) -> None:
+    """An organization that requires a claim, and a provider beside it that does not."""
+    members = {"auto_create": True, "require_approval": False}
+    sso.providers = [
+        sso.provider(required_claims={"hd": "example.edu"}, **members),
+        sso.provider(
+            id="personal", display_name="Personal accounts", domains=["gmail.com"], **members
+        ),
+    ]
+
+
+async def _sign_in_through(browser, idp, provider_id: str, **claims: Any):
+    """Sign in by a provider's direct link. One issuer answers for every provider."""
+    started = await browser.get(f"/auth/sso/{provider_id}/start")
+    params = _location(started)[1]
+    idp.id_token = sign_id_token(id_token_claims(params["nonce"][0], **claims))
+    return await browser.get(
+        f"/auth/sso/{provider_id}/callback",
+        params={"code": "code-1", "state": params["state"][0]},
+    )
+
+
+async def test_a_member_signs_in_only_through_the_provider_they_were_linked_through(
+    browser, idp, sso, auth_backend
+):
+    _two_providers_at_one_issuer(sso)
+    assert _location(await _sign_in(browser, idp, hd="example.edu"))[1]["sso"] == ["complete"]
+
+    # The same identity through the provider beside it, which would not ask
+    # for the claim its own provider requires.
+    refused = await _sign_in_through(browser, idp, "personal")
+
+    assert _location(refused) == ("/login", {"sso_error": ["failed"]})
+    assert "refresh_token=" not in refused.headers.get("set-cookie", "")
+    assert (await _login_events(auth_backend))[-1]["failure_reason"] == "sso_failed"
+    # Its own provider still signs it in.
+    assert _location(await _sign_in(browser, idp, hd="example.edu"))[1]["sso"] == ["complete"]
+
+
+async def test_switching_a_provider_off_keeps_its_members_out(browser, idp, sso):
+    _two_providers_at_one_issuer(sso)
+    assert _location(await _sign_in(browser, idp, hd="example.edu"))[1]["sso"] == ["complete"]
+
+    sso.providers[0]["enabled"] = False
+
+    # Not through the provider itself, and not through one with the same issuer.
+    own = await browser.get("/auth/sso/example-univ/start")
+    assert _location(own) == ("/login", {"sso_error": ["unavailable"]})
+    beside = await _sign_in_through(browser, idp, "personal", hd="example.edu")
+    assert _location(beside) == ("/login", {"sso_error": ["failed"]})
+    assert "refresh_token=" not in beside.headers.get("set-cookie", "")
+
+
+async def test_an_identity_outlives_a_change_of_its_providers_id(browser, idp, sso, store):
+    sso.configure(auto_create=True, require_approval=False)
+    assert _location(await _sign_in(browser, idp))[1]["sso"] == ["complete"]
+    user = await store.get_user_by_email(EMAIL)
+
+    # The identity still names the earlier id, which no provider has any more.
+    sso.configure(id="renamed", auto_create=True, require_approval=False)
+    again = await _sign_in_through(browser, idp, "renamed")
+
+    assert _location(again)[1]["sso"] == ["complete"]
+    assert (await store.get_user_identity(ISSUER, "subject-1"))["user_id"] == user["id"]
+
+
 async def test_an_address_on_the_administrator_list_is_never_created(
     browser, idp, sso, store, monkeypatch
 ):
@@ -444,6 +510,50 @@ async def test_a_flow_completes_only_in_the_browser_that_started_it(app, browser
 
     # Neither attempt used the flow up: it completes in the browser that started it.
     assert _location(await _answer(browser, idp, params))[1]["sso"] == ["complete"]
+
+
+@pytest.mark.parametrize(
+    ("started_on", "cookie_domain", "callback", "refresh"),
+    [
+        pytest.param("api", None, {"sso_error": ["expired"]}, 401, id="host-only cookies"),
+        # Starting on the console's host brings the flow's cookie back, but the
+        # session's cookie then stays on that host too.
+        pytest.param("console", None, {"sso": ["complete"]}, 401, id="started on the console"),
+        pytest.param("api", "example.edu", {"sso": ["complete"]}, 200, id="a shared cookie domain"),
+    ],
+)
+async def test_a_console_on_another_host_than_the_gateway_needs_a_shared_cookie_domain(
+    app, idp, sso, monkeypatch, started_on, cookie_domain, callback, refresh
+):
+    """The console calls the gateway on one host; the provider returns to another.
+
+    The callback is on the host of ``FRONTEND_URL``. The flow's cookie is set
+    by the host that answered the start, and the session's cookie by the
+    callback: each has to reach the other host.
+    """
+    hosts = {"api": "http://api.example.edu", "console": "http://console.example.edu"}
+    sso.configure(auto_create=True, require_approval=False)
+    monkeypatch.setattr(get_settings(), "frontend_url", hosts["console"])
+    monkeypatch.setattr(get_settings(), "cookie_domain", cookie_domain)
+
+    async with _browser(app) as browser:
+        started = await browser.post(
+            f"{hosts[started_on]}/auth/sso/discover", json={"email": EMAIL}
+        )
+        params = parse_qs(urlsplit(started.json()["authorization_url"]).query)
+        assert params["redirect_uri"] == [f"{hosts['console']}{CALLBACK}"]
+        idp.id_token = sign_id_token(id_token_claims(params["nonce"][0]))
+        done = await browser.get(
+            f"{hosts['console']}{CALLBACK}",
+            params={"code": "code-1", "state": params["state"][0]},
+        )
+        # Where the console asks for the session it was just given.
+        refreshed = await browser.post(f"{hosts['api']}/auth/refresh")
+
+    path, query = _location(done)
+    assert path == "/login"
+    assert {name: query[name] for name in callback} == callback
+    assert refreshed.status_code == refresh, refreshed.text
 
 
 async def test_a_flow_completes_only_at_the_provider_it_started_at(browser, idp, sso, store):
