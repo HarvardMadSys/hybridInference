@@ -65,7 +65,7 @@ to who may sign in do.
 
 | Field | Default | Meaning |
 |---|---|---|
-| `id` | required | Short name: lower-case letters, digits and hyphens. It is part of the redirect URI, so changing it means changing the redirect URI at the provider too |
+| `id` | required | Short name: lower-case letters, digits and hyphens. It is part of the redirect URI, so changing it means changing the redirect URI at the provider too. Keep the provider's `domains` when you change its `id`, and its links follow it |
 | `type` | required | The protocol. Only `oidc` is accepted |
 | `display_name` | required | The name users see when they link or confirm with this provider |
 | `enabled` | `true` | Set `false` to stop offering the provider. Existing links are kept |
@@ -196,10 +196,10 @@ then use **Forgot password** to set a password, which needs outgoing email to
 be configured. Without outgoing email, set passwords for those accounts before
 you disable the provider.
 
-Do not remove the provider from `SSO_PROVIDERS` to keep its members out. A link
-whose provider `id` is no longer in `SSO_PROVIDERS` is served by another
-provider with the same issuer, which is what keeps links working when you
-change an `id`.
+Removing the provider from `SSO_PROVIDERS` keeps its members out too. Their
+links stay. A provider with the same issuer takes a link over only when its
+`domains` cover the email the link was made with, which is how links follow a
+provider whose `id` you change.
 
 Changing a provider's `issuer` breaks every existing link to it, because links
 are recorded against the issuer.

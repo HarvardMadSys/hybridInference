@@ -602,27 +602,52 @@ async def test_a_provider_that_is_switched_off_is_not_replaced_by_one_with_its_i
     assert refused.status_code == 409
 
 
-async def test_a_confirmation_is_refused_when_the_identitys_provider_is_back_and_switched_off(
+async def test_after_its_id_changes_a_provider_still_confirms_its_own_members(
     browser, idp, sso, store, members_sign_straight_in
 ):
     headers = await _sso_session(browser, idp)
-    # The document has lost the id the identity was linked through, so the
-    # provider with its issuer stands in, and the confirmation starts there.
-    sso.providers = _beside(sso)
-    params = await _reauth_start(browser, headers, "delete_account")
-    assert params["redirect_uri"] == ["http://test/auth/sso/personal/callback"]
+    # The provider's id changed. The one beside it comes first in the document
+    # and requires no claim, but only the provider that answers for the
+    # link's email takes the link over.
+    renamed = sso.provider(id="renamed", display_name="Renamed University")
+    sso.providers = [*_beside(sso), renamed]
 
-    # Meanwhile the id is back, switched off.
-    sso.providers = _beside(sso, enabled=False)
+    me = (await browser.get("/user/me", headers=headers)).json()
+    assert me["sso_reauth_provider"] == {"id": "renamed", "name": "Renamed University"}
+    (identity,) = (await browser.get("/auth/sso/identities", headers=headers)).json()["identities"]
+    assert (identity["provider_id"], identity["available"]) == ("renamed", True)
+    params = await _reauth_start(browser, headers, "delete_account")
+    assert params["redirect_uri"] == ["http://test/auth/sso/renamed/callback"]
+
+    # Meanwhile the earlier id is back in the document, switched off: the link
+    # is that provider's again, and the confirmation under way is refused.
+    sso.providers = [sso.provider(enabled=False, domains=["former.example.edu"]), renamed]
     idp.id_token = sign_id_token(id_token_claims(params["nonce"][0], auth_time=int(time.time())))
     back = await browser.get(
-        "/auth/sso/personal/callback", params={"code": "code-1", "state": params["state"][0]}
+        "/auth/sso/renamed/callback", params={"code": "code-1", "state": params["state"][0]}
     )
 
     assert location(back) == (SETTINGS, {"sso_error": ["failed"]})
     refused = await browser.post("/auth/delete-account", json={"confirm": EMAIL}, headers=headers)
     assert refused.status_code == 400
     assert (await store.get_user_by_email(EMAIL))["status"] == "active"
+
+
+async def test_a_removed_provider_is_not_replaced_by_one_with_its_issuer(
+    browser, idp, sso, members_sign_straight_in
+):
+    headers = await _sso_session(browser, idp)
+
+    sso.providers = _beside(sso)
+
+    (identity,) = (await browser.get("/auth/sso/identities", headers=headers)).json()["identities"]
+    assert (identity["provider_id"], identity["available"]) == ("example-univ", False)
+    refused = await browser.post(
+        "/auth/sso/reauth/start",
+        json={"purpose": "delete_account", "return_to": SETTINGS},
+        headers=headers,
+    )
+    assert refused.status_code == 409
 
 
 # -- an administrator removes a link ---------------------------------------------------

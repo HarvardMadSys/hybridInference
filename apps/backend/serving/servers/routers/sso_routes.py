@@ -564,7 +564,7 @@ async def _finish_reauth(
     if linked is None or linked["user_id"] != flow["user_id"]:
         # Someone else's identity, however valid, confirms nothing for this account.
         return _flow_error(flow, "failed")
-    if not sso_config.serves_identity(provider, linked["provider_id"], linked["issuer"]):
+    if not sso_accounts.serves(provider, linked):
         # As for a sign-in: only the provider the identity was linked through.
         return _flow_error(flow, "failed")
     earliest = flow["created_at"] - timedelta(seconds=oidc.CLOCK_SKEW_SECONDS)

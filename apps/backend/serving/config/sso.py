@@ -202,8 +202,13 @@ def provider_for_email(email: str | None) -> SsoProvider | None:
     return next((p for p in enabled_providers() if p.answers_for(email)), None)
 
 
-def serves_identity(provider: SsoProvider, provider_id: str, issuer: str) -> bool:
+def serves_identity(
+    provider: SsoProvider, provider_id: str, issuer: str, email: str | None
+) -> bool:
     """Whether a linked identity signs in through *provider*.
+
+    *provider_id*, *issuer* and *email* are the link's: the provider it was
+    made through, and the issuer and the email it was made with.
 
     An identity signs in through the provider it was linked through, and
     through no other while the document still has that provider for the
@@ -213,26 +218,32 @@ def serves_identity(provider: SsoProvider, provider_id: str, issuer: str) -> boo
     one: a provider that is switched off, or that requires a claim, would
     otherwise be passed by a sign-in through its neighbour.
 
-    Only when no provider has that id for the issuer any more does another
-    provider with the issuer serve the identity: an identity belongs to its
-    issuer, and so outlives a change of its provider's id.
+    When no provider has that id for the issuer any more, the id was changed
+    or the provider removed. The link then goes to the provider with the
+    issuer that answers for the link's email, and to no other. Two providers
+    never answer for one domain, so a changed id has one successor, and a
+    removed provider has none unless another took its domains.
     """
     if provider.issuer != issuer:
         return False
     if provider.id == provider_id:
         return True
-    return not any(
+    if any(
         entry.id == provider_id and entry.issuer == issuer for entry in get_sso_document().providers
-    )
+    ):
+        return False
+    return provider.answers_for(email)
 
 
-def provider_for_identity(provider_id: str, issuer: str) -> SsoProvider | None:
+def provider_for_identity(provider_id: str, issuer: str, email: str | None) -> SsoProvider | None:
     """Find the enabled provider a linked identity signs in through, if any.
 
     None while the provider it was linked through is switched off; see
     :func:`serves_identity`.
     """
-    return next((p for p in enabled_providers() if serves_identity(p, provider_id, issuer)), None)
+    return next(
+        (p for p in enabled_providers() if serves_identity(p, provider_id, issuer, email)), None
+    )
 
 
 def client_secret(provider: SsoProvider) -> str | None:

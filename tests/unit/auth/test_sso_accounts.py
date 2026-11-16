@@ -72,6 +72,7 @@ class Store:
             "issuer": issuer,
             "subject": subject,
             "provider_id": "example-univ",
+            "email": "alice@example.edu",
         }
         self.identities.append(row)
         return row
@@ -157,32 +158,43 @@ async def test_a_linked_account_that_is_not_active_is_refused_by_its_status(stor
 
 
 @pytest.mark.parametrize(
-    ("own", "signs_in"),
+    "own",
     [
-        pytest.param({}, False, id="its own provider is offered"),
-        pytest.param({"enabled": False}, False, id="its own provider is switched off"),
-        pytest.param(None, True, id="its own provider's id is gone"),
+        pytest.param([{}], id="its own provider is offered"),
+        pytest.param([{"enabled": False}], id="its own provider is switched off"),
+        pytest.param([{"id": "univ-2"}], id="its own provider's id has changed"),
+        pytest.param([], id="its own provider is removed"),
     ],
 )
-async def test_a_linked_identity_signs_in_only_through_its_own_provider(
-    store, monkeypatch, own, signs_in
+async def test_a_linked_identity_never_signs_in_through_the_provider_beside_its_own(
+    store, monkeypatch, own
 ):
     # Two providers at one issuer, as for two Google Workspace organizations.
     # The identity was linked through "example-univ" and comes back through
     # "personal", which requires no claim.
     personal = _provider(id="personal", domains=["gmail.com"])
-    entries = [personal] if own is None else [_provider(**own), personal]
+    entries = [personal, *(_provider(**fields) for fields in own)]
     document = sso_accounts.sso_config.SsoProvidersDocument(providers=entries)
     monkeypatch.setattr(sso_accounts.sso_config, "get_sso_document", lambda: document)
-    user = store.add_user("u-1", "alice@example.edu")
+    store.add_user("u-1", "alice@example.edu")
     store.add_identity("u-1")
 
     resolution = await _resolve(store, personal)
 
-    if signs_in:
-        assert resolution.user == user
-    else:
-        assert resolution.refused == "failed" and resolution.user is None
+    assert resolution.refused == "failed" and resolution.user is None
+
+
+async def test_a_linked_identity_follows_its_provider_to_a_changed_id(store, monkeypatch):
+    # The provider that answers for the link's email took the link over.
+    renamed = _provider(id="univ-2")
+    document = sso_accounts.sso_config.SsoProvidersDocument(
+        providers=[_provider(id="personal", domains=["gmail.com"]), renamed]
+    )
+    monkeypatch.setattr(sso_accounts.sso_config, "get_sso_document", lambda: document)
+    user = store.add_user("u-1", "alice@example.edu")
+    store.add_identity("u-1")
+
+    assert (await _resolve(store, renamed)).user == user
 
 
 # -- 2. the email must be trusted -------------------------------------------------
@@ -444,7 +456,9 @@ async def test_an_accounts_provider_is_the_offered_one_it_last_signed_in_through
 
     offered = {"https://new.example.edu": _provider(id="new", issuer="https://new.example.edu")}
     monkeypatch.setattr(
-        sso_accounts.sso_config, "provider_for_identity", lambda _id, issuer: offered.get(issuer)
+        sso_accounts.sso_config,
+        "provider_for_identity",
+        lambda _id, issuer, _email: offered.get(issuer),
     )
     rows = [
         {
@@ -486,7 +500,7 @@ def test_an_identity_is_described_with_its_provider_as_configured_now(monkeypatc
         "last_login_at": None,
     }
     monkeypatch.setattr(
-        sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer: _provider()
+        sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer, _email: _provider()
     )
 
     summary = sso_accounts.identity_summary(row)
@@ -494,7 +508,9 @@ def test_an_identity_is_described_with_its_provider_as_configured_now(monkeypatc
     assert summary.available is True
 
     # A provider that is no longer offered keeps the id it was linked under.
-    monkeypatch.setattr(sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer: None)
+    monkeypatch.setattr(
+        sso_accounts.sso_config, "provider_for_identity", lambda _id, _issuer, _email: None
+    )
     summary = sso_accounts.identity_summary(row)
     assert (summary.provider_id, summary.provider_name) == ("old-id", "old-id")
     assert summary.available is False

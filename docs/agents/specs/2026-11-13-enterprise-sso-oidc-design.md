@@ -658,9 +658,12 @@ Notes:
   (`provider_id`), while the document still has an IdP with that id and the link's issuer, enabled or not. Only
   that IdP signs the link in, shows it as available and confirms through it (§9). A sign-in that arrives through
   another IdP with the same issuer is refused with `failed`: otherwise an IdP that is disabled, or that has
-  `required_claims`, could be passed through the IdP beside it. Only when no IdP has that id for the issuer any
-  more (the id was changed) does an enabled IdP with the issuer serve the link. So an operator disables an IdP
-  to keep its members out, and does not delete it.
+  `required_claims`, could be passed through the IdP beside it. When no IdP has that id for the issuer any more
+  (the id was changed, or the IdP removed), the link goes only to the IdP with the same issuer whose `domains`
+  cover the email the link was made with. Domains never overlap between IdPs, so a changed id has one
+  successor, and a removed IdP has none unless another took its domains. Taking any IdP with the issuer would
+  let the members of a renamed or removed IdP in through the IdP beside it. A link made without an email, or
+  with an email outside those domains, has no successor and is made again.
 - `provider_id` and `issuer` record which organization an account came from, which later serves usage figures
   by organization directly.
 

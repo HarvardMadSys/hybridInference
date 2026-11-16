@@ -112,9 +112,20 @@ async def may_auto_link(provider: SsoProvider, user: dict[str, Any]) -> bool:
     )
 
 
+def serves(provider: SsoProvider, link: dict[str, Any]) -> bool:
+    """Whether the linked identity *link* signs in and confirms through *provider*."""
+    return sso_config.serves_identity(
+        provider, link["provider_id"], link["issuer"], link.get("email")
+    )
+
+
+def _provider_of(link: dict[str, Any]) -> SsoProvider | None:
+    return sso_config.provider_for_identity(link["provider_id"], link["issuer"], link.get("email"))
+
+
 def identity_summary(row: dict[str, Any]) -> SsoIdentity:
     """Describe a linked identity, naming its provider as it is configured now."""
-    provider = sso_config.provider_for_identity(row["provider_id"], row["issuer"])
+    provider = _provider_of(row)
     return SsoIdentity(
         id=row["id"],
         provider_id=provider.id if provider else row["provider_id"],
@@ -154,7 +165,7 @@ async def account_provider(op_store: Any, user_id: str) -> SsoProvider | None:
         return None
     identities.sort(key=lambda row: row.get("last_login_at") or row["created_at"], reverse=True)
     for identity in identities:
-        provider = sso_config.provider_for_identity(identity["provider_id"], identity["issuer"])
+        provider = _provider_of(identity)
         if provider is not None:
             return provider
     return None
@@ -182,7 +193,7 @@ async def _resolve(
 ) -> Resolution | None:
     linked = await op_store.get_user_identity(identity.issuer, identity.subject)
     if linked is not None:
-        if not sso_config.serves_identity(provider, linked["provider_id"], linked["issuer"]):
+        if not serves(provider, linked):
             # Linked through another provider with the same issuer. That one's
             # required claims and its switch decide for this identity, and a
             # sign-in through this provider answers to neither.

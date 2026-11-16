@@ -230,54 +230,80 @@ def test_a_provider_is_found_by_email_domain_and_id(stored):
     assert sso.provider_by_id("missing") is None
 
 
+GOOGLE = "https://accounts.google.com"
+MEMBER = "alice@example.edu"
+
+
 def test_an_identitys_provider_is_the_one_it_was_linked_through(stored):
-    google = "https://accounts.google.com"
     stored(
-        _provider(id="univ", issuer=google),
-        _provider(id="company", domains=["example.com"], issuer=google),
+        _provider(id="univ", issuer=GOOGLE),
+        _provider(id="company", domains=["example.com"], issuer=GOOGLE),
     )
 
     # Two organizations at one issuer: the issuer alone does not say which.
-    assert sso.provider_for_identity("univ", google).id == "univ"
-    assert sso.provider_for_identity("company", google).id == "company"
-    # An identity linked under an id that has since changed is found by its issuer.
-    assert sso.provider_for_identity("an-earlier-id", google).id == "univ"
+    assert sso.provider_for_identity("univ", GOOGLE, MEMBER).id == "univ"
+    assert sso.provider_for_identity("company", GOOGLE, "bob@example.com").id == "company"
+    # The link's email does not move it while its provider is in the document.
+    assert sso.provider_for_identity("company", GOOGLE, MEMBER).id == "company"
     # An id that names a provider at another issuer is not the identity's provider.
-    assert sso.provider_for_identity("company", "https://unknown.example.com") is None
+    assert sso.provider_for_identity("company", "https://unknown.example.com", MEMBER) is None
 
     # Each provider serves the identities linked through it, and not the other's.
     univ, company = sso.provider_by_id("univ"), sso.provider_by_id("company")
-    assert sso.serves_identity(univ, "univ", google)
-    assert not sso.serves_identity(company, "univ", google)
-    assert not sso.serves_identity(univ, "univ", "https://unknown.example.com")
+    assert sso.serves_identity(univ, "univ", GOOGLE, MEMBER)
+    assert not sso.serves_identity(company, "univ", GOOGLE, MEMBER)
+    assert not sso.serves_identity(univ, "univ", "https://unknown.example.com", MEMBER)
 
 
 def test_a_provider_that_is_switched_off_is_not_replaced_by_one_with_its_issuer(stored):
-    google = "https://accounts.google.com"
     stored(
-        _provider(id="univ", issuer=google, enabled=False, required_claims={"hd": "example.edu"}),
-        _provider(id="personal", domains=["gmail.com"], issuer=google),
+        _provider(id="univ", issuer=GOOGLE, enabled=False, required_claims={"hd": "example.edu"}),
+        _provider(id="personal", domains=["mail.example.org"], issuer=GOOGLE),
     )
     personal = sso.provider_by_id("personal")
+    in_its_domain = "alice@mail.example.org"
 
-    # Linked through the provider that is switched off: no other one serves it.
-    assert sso.provider_for_identity("univ", google) is None
-    assert not sso.serves_identity(personal, "univ", google)
-    # Its own identities, and one whose provider's id the document no longer has.
-    assert sso.serves_identity(personal, "personal", google)
-    assert sso.serves_identity(personal, "an-earlier-id", google)
-    assert sso.provider_for_identity("an-earlier-id", google).id == "personal"
+    # Linked through the provider that is switched off: no other one serves it,
+    # whatever email the link was made with.
+    assert sso.provider_for_identity("univ", GOOGLE, MEMBER) is None
+    assert not sso.serves_identity(personal, "univ", GOOGLE, MEMBER)
+    assert not sso.serves_identity(personal, "univ", GOOGLE, in_its_domain)
+    assert sso.serves_identity(personal, "personal", GOOGLE, in_its_domain)
+
+
+def test_a_changed_id_passes_its_links_to_the_provider_that_answers_for_their_email(stored):
+    # The provider that requires no claim comes first: the order decides nothing.
+    stored(
+        _provider(id="personal", domains=["gmail.com"], issuer=GOOGLE),
+        _provider(id="univ-2", issuer=GOOGLE, required_claims={"hd": "example.edu"}),
+    )
+    personal, renamed = sso.provider_by_id("personal"), sso.provider_by_id("univ-2")
+
+    # Linked through "univ", an id no provider has any more.
+    assert sso.provider_for_identity("univ", GOOGLE, MEMBER).id == "univ-2"
+    assert sso.serves_identity(renamed, "univ", GOOGLE, MEMBER)
+    assert not sso.serves_identity(personal, "univ", GOOGLE, MEMBER)
+    # A link made without an email, or with one no provider answers for, has
+    # no successor.
+    for email in (None, "alice@elsewhere.org"):
+        assert sso.provider_for_identity("univ", GOOGLE, email) is None
+
+
+def test_a_removed_provider_leaves_its_links_to_no_other(stored):
+    stored(_provider(id="personal", domains=["gmail.com"], issuer=GOOGLE))
+
+    assert sso.provider_for_identity("univ", GOOGLE, MEMBER) is None
+    assert not sso.serves_identity(sso.provider_by_id("personal"), "univ", GOOGLE, MEMBER)
 
 
 def test_an_id_that_now_names_a_provider_at_another_issuer_is_a_changed_id(stored):
-    google = "https://accounts.google.com"
     stored(
-        _provider(id="univ"),
-        _provider(id="personal", domains=["gmail.com"], issuer=google),
+        _provider(id="univ", domains=["other.example.org"]),
+        _provider(id="univ-2", issuer=GOOGLE),
     )
 
     # The identity was linked through "univ" when that id had Google's issuer.
-    assert sso.provider_for_identity("univ", google).id == "personal"
+    assert sso.provider_for_identity("univ", GOOGLE, MEMBER).id == "univ-2"
 
 
 def test_a_disabled_provider_is_not_offered(stored):

@@ -323,6 +323,30 @@ async def test_switching_a_provider_off_keeps_its_members_out(browser, idp, sso)
     assert "refresh_token=" not in beside.headers.get("set-cookie", "")
 
 
+@pytest.mark.parametrize("change", ["its id changes", "it is removed"])
+async def test_a_provider_that_changes_does_not_open_the_one_beside_it(browser, idp, sso, change):
+    _two_providers_at_one_issuer(sso)
+    assert _location(await _sign_in(browser, idp, hd="example.edu"))[1]["sso"] == ["complete"]
+
+    if change == "its id changes":
+        sso.providers[0]["id"] = "renamed"
+    else:
+        del sso.providers[0]
+
+    # The provider beside it requires no claim, and does not answer for the
+    # email the member was linked with: the link is not its to take over.
+    beside = await _sign_in_through(browser, idp, "personal", hd="example.edu")
+    assert _location(beside) == ("/login", {"sso_error": ["failed"]})
+    assert "refresh_token=" not in beside.headers.get("set-cookie", "")
+
+    if change == "its id changes":
+        # Under its new id the provider still requires its claim of its members.
+        without_claim = await _sign_in_through(browser, idp, "renamed")
+        assert _location(without_claim) == ("/login", {"sso_error": ["failed"]})
+        member = await _sign_in_through(browser, idp, "renamed", hd="example.edu")
+        assert _location(member)[1]["sso"] == ["complete"]
+
+
 async def test_an_identity_outlives_a_change_of_its_providers_id(browser, idp, sso, store):
     sso.configure(auto_create=True, require_approval=False)
     assert _location(await _sign_in(browser, idp))[1]["sso"] == ["complete"]
