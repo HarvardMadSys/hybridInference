@@ -827,6 +827,46 @@ settings on the **Settings** tab. A `SIGNUP_ENABLED` or
 at startup while it has no value of its own, and the stored value wins
 afterwards.
 
+### Requiring two-factor authentication of administrators
+
+An account can add an authenticator app (any that reads a standard TOTP QR
+code: Duo Mobile, Google Authenticator, 1Password) and from then on confirms
+with a six-digit code instead of its password before a change that outlasts its
+session: raising a role, minting a key for another account, exporting secret
+values, changing who may use a model.
+
+`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes it a condition of
+administrator access. It is off by default, and read from the environment
+only, so a session that holds administrator access cannot switch it off. With
+it on:
+
+- a console session reaches the Admin API only after giving a code from the
+  account's authenticator, and is asked again when it turns up in a different
+  kind of client (a browser's session presented by a script, for example);
+- an administrator who has no authenticator yet has no administrator access
+  until they add one (`POST /auth/two-factor/setup`, then `/confirm`);
+- an account is given the `admin` role only once it has an authenticator;
+- `ADMIN_TOKEN` is answered for reads only. Move any automation that writes
+  with the token before turning this on.
+
+Turn it on after the administrators have enrolled, not before: until an
+administrator account has an authenticator, someone who has its password can
+add their own.
+
+```{warning}
+An administrator who loses the device and the recovery codes cannot reach the
+Admin API. Another administrator removes the lost authenticator with
+`POST /admin/users/{user_id}/two-factor/reset`. If there is no other
+administrator, remove it in the database and let the account add a new one with
+its password:
+
+    DELETE FROM user_two_factor WHERE user_id = '<the account id>';
+```
+
+`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
+those changes before the console asks for a new one. The design is in
+[the design record](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-11-15-admin-two-factor-design.md).
+
 ## Database
 
 PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume
