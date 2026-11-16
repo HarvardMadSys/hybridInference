@@ -1,6 +1,6 @@
 # A second factor for administrators (2026-11-15)
 
-Status: backend implemented; the console pages are a separate change.
+Status: implemented, backend and console.
 Code: `apps/backend/serving/auth/two_factor.py` (codes, policy),
 `apps/backend/serving/storage/two_factor.py` (rows),
 `apps/backend/serving/servers/routers/two_factor_routes.py` (the account's
@@ -90,6 +90,36 @@ The console answers `TWO_FACTOR_REQUIRED` by asking for six digits, calling
 `POST /auth/two-factor/verify`, and retrying. There is no code field on any
 other request.
 
+### The console
+
+Code: `apps/frontend/src/components/features/twoFactor/`,
+`apps/frontend/src/components/providers/TwoFactorProvider.tsx`, and the
+retry in `fetchWithAuth` (`apps/frontend/src/lib/api/client.ts`).
+
+- **One place answers the refusal.** `fetchWithAuth` sees a 403
+  `TWO_FACTOR_REQUIRED`, asks the installed prompt for a code, and sends the
+  request once more. Every admin page gets this without knowing about it, and
+  a model-visibility change (which has no confirmation of its own) is covered
+  the same way as a role change. Requests refused together share one dialog.
+  A request to `/auth/two-factor/verify` is never asked about, and a request
+  made for one session is not retried as another.
+- **Administration is not mounted for a session that owes a code.** The admin
+  layout reads `GET /auth/two-factor` first and shows the code form, or the way
+  to Settings for an account with no authenticator, instead of pages that would
+  load into refusals. If the status cannot be read (a gateway older than the
+  console), the pages open as before and the gateway decides.
+- **The password field gives way to the code.** A confirmation that asked for
+  the administrator's password says a code confirms it when the account has an
+  authenticator, and sends no password.
+- **The Settings section is an administrator's.** Sign-in does not ask for a
+  code, so showing every user a "two-factor authentication" switch would
+  promise a protection their account does not get. Other accounts see the
+  section once they have an authenticator, or at
+  `/dashboard/settings#two-factor`: an account must add one before it can be
+  made an administrator, and the refusal of that promotion names the page.
+- The status is read only on the pages that need it (Settings,
+  administration), never on the rest of the console.
+
 Changes that outlast the session: raising a role, minting a key for another
 account, exporting secret values, restoring or changing security settings,
 removing another account's authenticator, and (new) changing who may use a
@@ -177,7 +207,8 @@ administrator access cannot switch its own second factor off.
 
 1. Deploy. Nothing changes: the setting is off, and no account has an
    authenticator.
-2. Ship the console pages; administrators add an authenticator.
+2. Administrators add an authenticator in Settings. **Admin → Users** shows
+   `Two-factor: on` in the details of each account that has.
 3. Set `ADMIN_TWO_FACTOR_REQUIRED=true` and restart. An administrator who has
    not enrolled is sent to do so on their next visit.
 

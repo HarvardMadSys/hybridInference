@@ -4360,5 +4360,145 @@
   "dashboard.keys.default_project_limits": {
     "source": "Set limits for Default",
     "text": "为 Default 设置限额"
+  },
+  "two_factor.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "two_factor.code.hint": {
+    "source": "Six digits from your authenticator app. Without your device, enter one of your recovery codes.",
+    "text": "验证器应用中的 6 位数字。设备不在身边时，可以输入一个恢复码。"
+  },
+  "two_factor.code.label": {
+    "source": "Authentication code",
+    "text": "验证码"
+  },
+  "two_factor.codes.copied": {
+    "source": "Copied",
+    "text": "已复制"
+  },
+  "two_factor.codes.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "two_factor.codes.done": {
+    "source": "I have saved them",
+    "text": "我已保存"
+  },
+  "two_factor.codes.keep": {
+    "source": "Save these recovery codes somewhere safe, away from your phone. Each one works once in place of a code from the app, and they are not shown again.",
+    "text": "请把这些恢复码保存在安全的地方，不要只存在手机里。每个恢复码可以代替验证器的验证码使用一次，之后不会再显示。"
+  },
+  "two_factor.codes.label": {
+    "source": "Recovery codes",
+    "text": "恢复码"
+  },
+  "two_factor.prompt.environment_changed": {
+    "source": "This session was verified in a different browser or app. Enter a code to keep using it here.",
+    "text": "这个登录状态是在另一个浏览器或应用中验证的。请输入验证码，才能在这里继续使用。"
+  },
+  "two_factor.prompt.stale": {
+    "source": "This change needs a code from the last few minutes. Enter one to continue.",
+    "text": "这项更改需要最近几分钟内输入过的验证码。请输入验证码以继续。"
+  },
+  "two_factor.prompt.title": {
+    "source": "Two-factor authentication",
+    "text": "两步验证"
+  },
+  "two_factor.prompt.unverified": {
+    "source": "Enter a code from your authenticator app to continue.",
+    "text": "请输入验证器应用中的验证码以继续。"
+  },
+  "two_factor.remove.body": {
+    "source": "The authenticator app and every recovery code stop working for this account.",
+    "text": "此账户的验证器应用和所有恢复码都将失效。"
+  },
+  "two_factor.remove.busy": {
+    "source": "Turning off…",
+    "text": "关闭中…"
+  },
+  "two_factor.remove.confirm": {
+    "source": "Turn off",
+    "text": "关闭"
+  },
+  "two_factor.remove.keep": {
+    "source": "Keep it on",
+    "text": "保持开启"
+  },
+  "two_factor.remove.title": {
+    "source": "Turn off two-factor authentication?",
+    "text": "关闭两步验证？"
+  },
+  "two_factor.settings.begin": {
+    "source": "Add authenticator app",
+    "text": "添加验证器应用"
+  },
+  "two_factor.settings.description": {
+    "source": "A code from an authenticator app on your phone, asked for before administrator access. A copied session or password is not enough without it.",
+    "text": "使用管理员权限前，需要输入手机上验证器应用的验证码。没有它，仅凭被复制的登录状态或密码无法使用管理员权限。"
+  },
+  "two_factor.settings.few_codes": {
+    "source": "Few recovery codes are left. Make a new set, so that losing your device does not lock you out.",
+    "text": "恢复码所剩不多。请生成一组新的，以免丢失设备后无法登录管理后台。"
+  },
+  "two_factor.settings.needs_password": {
+    "source": "Adding an authenticator app is confirmed with your password, and this account has none. Set a password first.",
+    "text": "添加验证器应用需要用密码确认，而此账户还没有密码。请先设置密码。"
+  },
+  "two_factor.settings.new_codes": {
+    "source": "New recovery codes",
+    "text": "生成新的恢复码"
+  },
+  "two_factor.settings.on": {
+    "source": "Authenticator app added. Recovery codes left: {count}",
+    "text": "已添加验证器应用。剩余恢复码：{count}"
+  },
+  "two_factor.settings.on_badge": {
+    "source": "On",
+    "text": "已开启"
+  },
+  "two_factor.settings.password": {
+    "source": "Your password",
+    "text": "你的密码"
+  },
+  "two_factor.settings.remove": {
+    "source": "Turn off",
+    "text": "关闭"
+  },
+  "two_factor.settings.replace": {
+    "source": "Change authenticator app",
+    "text": "更换验证器应用"
+  },
+  "two_factor.settings.required": {
+    "source": "Administrator access is off for this account until it has an authenticator app.",
+    "text": "此账户添加验证器应用之前，无法使用管理员权限。"
+  },
+  "two_factor.settings.title": {
+    "source": "Two-Factor Authentication",
+    "text": "两步验证"
+  },
+  "two_factor.setup.confirm": {
+    "source": "Turn on",
+    "text": "开启"
+  },
+  "two_factor.setup.manual": {
+    "source": "Cannot scan it? Enter this key in the app:",
+    "text": "无法扫描？请在应用中手动输入此密钥："
+  },
+  "two_factor.setup.qr_title": {
+    "source": "QR code for your authenticator app",
+    "text": "用于验证器应用的二维码"
+  },
+  "two_factor.setup.scan": {
+    "source": "Scan this code with an authenticator app, such as Duo Mobile, Google Authenticator or 1Password. Then enter the six digits the app shows.",
+    "text": "用验证器应用（如 Duo Mobile、Google Authenticator 或 1Password）扫描此二维码，然后输入应用显示的 6 位数字。"
+  },
+  "two_factor.verify": {
+    "source": "Verify",
+    "text": "验证"
+  },
+  "two_factor.verifying": {
+    "source": "Verifying…",
+    "text": "验证中…"
   }
 }

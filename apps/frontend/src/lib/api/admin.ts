@@ -1,4 +1,5 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
+import { readJson } from './detail';
 import { config } from '@/config/env';
 import type {
   CostHistoryPoint,
@@ -217,6 +218,8 @@ export interface UserDetail {
   email_verified: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** The account has an authenticator app. Absent from a gateway older than the feature. */
+  two_factor_enabled?: boolean;
   has_key: boolean;
   key_prefix: string | null;
   quota_daily_usd: number | null;
@@ -234,6 +237,28 @@ export interface UserDetail {
   avg_turns: number | null;
   avg_user_turns: number | null;
   ask_question_fraction: number | null;
+}
+
+/**
+ * Remove another account's authenticator app and recovery codes, for someone
+ * who lost their device. Confirmed like any guarded change: by a recent code,
+ * or by `password` when the administrator's own account has no authenticator.
+ * 409 for the administrator's own account.
+ */
+export async function resetUserTwoFactor(
+  userId: string,
+  password?: string,
+): Promise<{ user_id: string; removed: boolean }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/two-factor/reset`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return readJson(resp);
 }
 
 export async function getUserDetail(
@@ -387,7 +412,10 @@ export async function updateUser(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return jsonOrThrow<{ user_id: string; updated_fields: string[]; message: string }>(resp);
+  // The gateway's own reason for a refusal ("Cannot demote your own admin
+  // role.", an account with no authenticator): the shared mapping would read
+  // these 409s as a signup conflict.
+  return readJson<{ user_id: string; updated_fields: string[]; message: string }>(resp);
 }
 
 export async function deleteUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
