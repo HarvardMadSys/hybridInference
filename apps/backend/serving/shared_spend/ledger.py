@@ -299,8 +299,15 @@ class SharedSpendLedger:
         # What the counters refused, kept counted here and reported.
         self._set_aside: list[CostLine] = []
         # Reservations whose costs the counters refused, until their rows are
-        # known to be marked quarantined: (member, the day it ended, why).
+        # known to be marked quarantined: (member, the day it ended, why). And,
+        # after a mark failed: when the next may be tried and the delay that
+        # led there, since when marks have been failing, and whether that was
+        # reported (monotonic clock).
         self._marking: list[tuple[Member, str, str]] = []
+        self._mark_after = 0.0
+        self._mark_delay = 0.0
+        self._mark_failing_since: float | None = None
+        self._mark_failure_reported = False
         # Reservations past settlement that still hold a liability: quarantined
         # in the database (the counters refused their costs), or no longer held
         # as recorded (unaccounted, counted here in full). One counts against
@@ -912,7 +919,7 @@ class SharedSpendLedger:
         await self._mark_refused()
         batch, source = self._next_batch()
         if batch is None:
-            if self._abandoned:
+            if self._abandoned or self._marking:
                 self._schedule_retry()
             return
         self._writing = batch
@@ -1037,12 +1044,22 @@ class SharedSpendLedger:
         - ``retired``: another batch retired it first (an operator's
           reconciliation of this process). Its costs go nowhere, and that is
           said (:meth:`_report_duplicates`).
+        - ``erased``: the account was hard-deleted meanwhile. Dropped, as a
+          settlement drops it.
         - ``missing``: no row and no receipt. Nothing in the database counts
           it, so this process does, in full (unaccounted).
+
+        Marks have a back-off of their own. A mark that keeps failing must
+        not pace the settlements, which go on being written at their own
+        rate, and it goes to the back of the list, so the marks behind it are
+        tried as well.
         """
         from serving.spend_ledger import _send_alert
 
-        while self._marking:
+        if not self._marking or time.monotonic() < self._mark_after:
+            return
+        failure: Exception | None = None
+        for _ in range(len(self._marking)):
             member, day, note = self._marking[0]
             try:
                 outcome = await self._backend.quarantine(
@@ -1050,12 +1067,10 @@ class SharedSpendLedger:
                 )
             except asyncio.CancelledError:
                 raise
-            except Exception:
-                logger.warning(
-                    "Marking a refused reservation failed; it is tried again", exc_info=True
-                )
-                self._schedule_retry()
-                return
+            except Exception as exc:
+                self._marking.append(self._marking.pop(0))
+                failure = exc
+                continue
             self._marking.pop(0)
             if outcome == "quarantined":
                 reservation = self._keep_liability(member, "quarantined")
@@ -1073,11 +1088,12 @@ class SharedSpendLedger:
                                 )
                             ]
                         )
-            elif outcome == "retired":
+            elif outcome in ("retired", "erased"):
                 reservation = self._queued_reservations.pop(member.reservation_id, None)
                 if reservation is not None:
                     reservation.state = "retired"
-                self._report_duplicates([member], batch_id=None)
+                if outcome == "retired":
+                    self._report_duplicates([member], batch_id=None)
             else:
                 self._keep_liability(member, "unaccounted")
                 self._stats.members_unaccounted += 1
@@ -1102,6 +1118,36 @@ class SharedSpendLedger:
                         cooldown_sec=3600,
                     )
                 )
+        now = time.monotonic()
+        if failure is None:
+            self._mark_after = self._mark_delay = 0.0
+            self._mark_failing_since = None
+            self._mark_failure_reported = False
+            return
+        self._mark_delay = min(_RETRY_MAX_SECONDS, max(_RETRY_FIRST_SECONDS, self._mark_delay * 2))
+        self._mark_after = now + self._mark_delay
+        if self._mark_failing_since is None:
+            self._mark_failing_since = now
+        failing_for = now - self._mark_failing_since
+        if failing_for >= SETTLEMENT_STALLED_SECONDS and not self._mark_failure_reported:
+            # Once, and at ERROR: the refusal itself was alerted when it
+            # happened, and until its mark lands the reservation stays held
+            # as an active row, which only this process knows the cost of.
+            self._mark_failure_reported = True
+            logger.error(
+                "Refused reservations cannot be marked quarantined; they stay held as active",
+                extra={
+                    "event": "spend_quarantine_mark_failing",
+                    "failing_for_seconds": round(failing_for, 1),
+                    "error_type": type(failure).__name__,
+                    "reservations": [member.reservation_id for member, _, _ in self._marking],
+                },
+            )
+        else:
+            logger.warning(
+                "Marking a refused reservation failed; it is tried again",
+                exc_info=failure,
+            )
 
     def _report_duplicates(self, dropped: list[Member], *, batch_id: str | None) -> None:
         """Say that reservations another batch retired first had costs, which were not added.
@@ -1315,6 +1361,7 @@ class SharedSpendLedger:
             if self._retry is not None:
                 self._retry.cancel()
                 self._retry = None
+                self._mark_after = 0.0
                 await asyncio.sleep(min(_RETRY_FIRST_SECONDS, remaining))
                 continue
             if self._start_write() is None:

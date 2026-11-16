@@ -252,10 +252,15 @@ for: they leave the set every check reads and stay in what the process reports
   write of its own, and nothing is assumed before that write is answered:
   until then its row is active at its estimate, so the reservation stays a
   waiting one in its process (its cost above the estimate counted there), and
-  a mark that fails is sent again with the writer's back-off (it is harmless
-  to repeat). The answer says which it is: the row is quarantined; another
-  batch retired it first (a duplicate, below); or there is neither a row nor
-  a receipt, and the process then counts it as unaccounted.
+  a mark that fails is sent again (it is harmless to repeat) with a back-off
+  of its own, so that it does not pace the settlements, and goes behind the
+  other marks waiting. The answer says which it is: the row is quarantined;
+  another batch retired it first (a duplicate, below); the account was
+  hard-deleted, and it is dropped as a settlement drops it; or there is
+  neither a row nor a receipt, and the process then counts it as unaccounted.
+  What became of a row that was not marked is read by a second statement,
+  after the mark returned: a mark that waited for a reconciliation to retire
+  the row must see the receipt that commit left.
 - A settlement that finds a member another batch retired first (`duplicate`:
   an operator reconciled this process while it was running, section 6b) adds
   none of its costs. They are then in no counter, and the settlement says so
@@ -520,8 +525,11 @@ Merging this change activates nothing. Before any deployment switches the row:
   refused stays counted while its row is being marked (it cost the whole
   limit, and the next request is refused throughout); a mark that failed, or
   whose answer was lost, is sent again and nothing is counted twice, in the
-  process that holds it or in another. Unit: what the process holds until the
-  mark is answered, and what it does with each answer.
+  process that holds it or in another; a mark that waited for a
+  reconciliation of the same reservation answers that it was retired; one for
+  a hard-deleted account says so. Unit: what the process holds until the mark
+  is answered, and what it does with each answer; a mark that keeps failing
+  neither paces the settlements nor holds up the marks behind it.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

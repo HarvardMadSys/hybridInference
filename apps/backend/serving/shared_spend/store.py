@@ -734,21 +734,27 @@ class SharedSpendStore:
         - ``quarantined``: the row is marked (now, or already);
         - ``retired``: there is no such row and a settlement receipt names the
           reservation, so another batch retired it;
-        - ``missing``: neither.
+        - ``erased``: neither, and the account was hard-deleted (told by the
+          erasure fence, as in :meth:`settle`);
+        - ``missing``: none of these.
+
+        What became of a row that was not marked is read by a statement of its
+        own, after the UPDATE has returned. The UPDATE may have waited for
+        another transaction to retire the row (an operator's reconciliation
+        deletes it and records the receipt in one commit): its own snapshot
+        predates that commit, so read in the same statement the receipt would
+        not be there and the reservation would be called missing.
         """
         async with self.pool.acquire() as conn:
-            row = await conn.fetchrow(
-                "WITH marked AS ("
-                "  UPDATE spend_reservations SET state = 'quarantined', "
-                "    liability_day = COALESCE(liability_day, $6), cost_usd = $7, note = $8, "
-                "    updated_at = NOW() "
-                "  WHERE reservation_id = $1 AND instance_id = $2 "
-                "    AND state IN ('active', 'quarantined') "
-                "    AND user_id = $3 AND api_key_id IS NOT DISTINCT FROM $4 "
-                "    AND project_id IS NOT DISTINCT FROM $5 "
-                "  RETURNING 1) "
-                "SELECT EXISTS (SELECT 1 FROM marked) AS marked, EXISTS ("
-                "  SELECT 1 FROM spend_settlement_members WHERE reservation_id = $1) AS retired",
+            marked = await conn.fetchval(
+                "UPDATE spend_reservations SET state = 'quarantined', "
+                "liability_day = COALESCE(liability_day, $6), cost_usd = $7, note = $8, "
+                "updated_at = NOW() "
+                "WHERE reservation_id = $1 AND instance_id = $2 "
+                "AND state IN ('active', 'quarantined') "
+                "AND user_id = $3 AND api_key_id IS NOT DISTINCT FROM $4 "
+                "AND project_id IS NOT DISTINCT FROM $5 "
+                "RETURNING TRUE",
                 member.reservation_id,
                 instance_id,
                 member.user_id,
@@ -758,9 +764,19 @@ class SharedSpendStore:
                 member.cost_usd(),
                 note[:200],
             )
-        if row["marked"]:
-            return "quarantined"
-        return "retired" if row["retired"] else "missing"
+            if marked:
+                return "quarantined"
+            found = await conn.fetchrow(
+                "SELECT EXISTS (SELECT 1 FROM spend_settlement_members "
+                "WHERE reservation_id = $1) AS retired, "
+                f"($2::text IS NOT NULL AND EXISTS (SELECT 1 FROM {ERASURE_FENCE_TABLE} "
+                "WHERE account_digest = $2)) AS erased",
+                member.reservation_id,
+                self.fence_digest(member.user_id),
+            )
+        if found["retired"]:
+            return "retired"
+        return "erased" if found["erased"] else "missing"
 
     # -- closures and receipt retention --------------------------------------
 

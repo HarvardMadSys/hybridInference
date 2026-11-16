@@ -783,6 +783,72 @@ async def test_a_mark_that_got_no_answer_is_sent_again_and_counts_nothing_twice(
         ledger._retry.cancel()
 
 
+async def test_a_mark_that_waited_for_a_reconciliation_learns_the_row_was_retired(db):
+    """A mark and an operator's reconciliation of the same reservation, at the same moment.
+
+    The reconciliation deletes the row and records its receipt in one commit.
+    A mark sent meanwhile waits for it on the row, then finds no row -- and
+    has to see the receipt that commit left, which its own statement's
+    snapshot predates. Read in the same statement, the receipt was not there:
+    the reservation was called missing, and its process went on counting, for
+    the rest of the day, a cost the reconciliation had already charged.
+    """
+    user = PREFIX + "mark-race"
+    reservation, _ = await db.a.admit(check(db.a, user), 0.30)
+    member = Member(reservation.reservation_id, user, "settle")
+
+    other = await db.pool.acquire()
+    try:
+        retiring = other.transaction()
+        await retiring.start()
+        # What a reconciliation's settlement does for this member, left open.
+        await other.execute(
+            "DELETE FROM spend_reservations WHERE reservation_id = $1", member.reservation_id
+        )
+        await other.execute(
+            "INSERT INTO spend_settlement_members (reservation_id, batch_id, outcome) "
+            "VALUES ($1, 'op_race', 'settled')",
+            member.reservation_id,
+        )
+        marking = asyncio.create_task(
+            db.a._backend.quarantine(member, "inst-a", day=utc_day(), note="refused")
+        )
+
+        async def waiting_on_the_row() -> bool:
+            async with db.pool.acquire() as conn:
+                return bool(
+                    await conn.fetchval(
+                        "SELECT count(*) FROM pg_locks "
+                        "WHERE locktype = 'transactionid' AND NOT granted"
+                    )
+                )
+
+        await _until(waiting_on_the_row)
+        await retiring.commit()
+    finally:
+        await db.pool.release(other)
+    assert await marking == "retired"
+    db.a._active.pop(reservation.reservation_id)  # retired by the "operator": nothing to settle
+
+
+async def test_a_mark_for_a_hard_deleted_account_says_so(db):
+    user = PREFIX + "mark-erased"
+    reservation, _ = await db.a.admit(check(db.a, user), 0.30)
+    member = Member(reservation.reservation_id, user, "settle")
+    digest = fence_account_digest(user, postgres.FENCE_SECRET)
+    db.erased.append(digest)
+    async with db.pool.acquire() as conn:
+        # As a hard delete leaves it: the tombstone, and the account's rows gone.
+        await conn.execute("INSERT INTO erasure_fence (account_digest) VALUES ($1)", digest)
+        await conn.execute("DELETE FROM spend_reservations WHERE user_id = $1", user)
+    backend = db.a._backend
+    assert await backend.quarantine(member, "inst-a", day=utc_day(), note="refused") == "erased"
+    # A reservation nothing accounts for is still told apart.
+    stray = Member("sr_never_admitted", PREFIX + "mark-stray", "settle")
+    assert await backend.quarantine(stray, "inst-a", day=utc_day(), note="refused") == "missing"
+    db.a._active.pop(reservation.reservation_id)
+
+
 async def test_a_request_that_ended_holds_nothing_whatever_it_was_charged(db):
     """What a request is charged is what its billing point recorded; the rest is given back.
 

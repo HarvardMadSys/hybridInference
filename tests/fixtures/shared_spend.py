@@ -40,6 +40,10 @@ class FakeSharedBackend:
         self.fail_quarantine: BaseException | None = None
         self.quarantine_answer = "quarantined"
         self.quarantine_calls = 0
+        # Reservations whose mark always fails (all of them when this is empty
+        # and ``fail_quarantine`` is set), and those that were marked, in order.
+        self.unmarkable: set[str] = set()
+        self.quarantined: list[str] = []
         self.settle_gate: asyncio.Event | None = None
         self.settling = asyncio.Event()
         self._xid = 1000
@@ -114,8 +118,11 @@ class FakeSharedBackend:
 
     async def quarantine(self, member, instance_id, *, day, note):
         self.quarantine_calls += 1
-        if self.fail_quarantine is not None:
-            raise self.fail_quarantine
+        if member.reservation_id in self.unmarkable or (
+            self.fail_quarantine is not None and not self.unmarkable
+        ):
+            raise self.fail_quarantine or ConnectionRefusedError("the mark failed")
+        self.quarantined.append(member.reservation_id)
         return self.quarantine_answer
 
     # -- closure, receipt retention and the survey: what was asked, and canned answers --
