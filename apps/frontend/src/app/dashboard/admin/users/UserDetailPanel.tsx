@@ -2,11 +2,14 @@
 
 import { useRef, useState, type ReactNode } from 'react';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
-import { ReauthPassword } from '@/components/features/admin/confirm/ReauthPassword';
+import {
+  ReauthPassword,
+  useConfirmsByCode,
+} from '@/components/features/admin/confirm/ReauthPassword';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Select } from '@/components/ui/Select';
-import { getUserDetail } from '@/lib/api/admin';
+import { getUserDetail, resetUserTwoFactor } from '@/lib/api/admin';
 import type {
   AdminModelVisibilityItem,
   AdminUser,
@@ -246,6 +249,8 @@ function AccountSettings({
   const [saveError, setSaveError] = useState<string | null>(null);
   // A higher role is confirmed with the administrator's password.
   const password = useRef('');
+  // An administrator with an authenticator app confirms with its code instead.
+  const byCode = useConfirmsByCode();
   const busy = confirmation.busy;
   const current: AccountDraft = { ...savedAccount(detail), ...draft };
   const patch = accountPatch(detail, current);
@@ -307,16 +312,16 @@ function AccountSettings({
             <p>
               {raisedRole === 'admin'
                 ? 'An administrator can change every setting and every account, and keeps that access until the role is taken away.'
-                : `The ${raisedRole} role reaches more models and the provider keys reserved for it.`}{' '}
-              Confirm with your password.
+                : `The ${raisedRole} role reaches more models and the provider keys reserved for it.`}
+              {byCode ? null : ' Confirm with your password.'}
             </p>
             <ReauthPassword valueRef={password} label="Your password" />
           </div>
         ),
         run: async () => {
           const given = password.current;
-          if (!given) throw new Error('Enter your password to raise this role.');
-          await onSave({ ...pendingPatch, password: given });
+          if (!given && !byCode) throw new Error('Enter your password to raise this role.');
+          await onSave({ ...pendingPatch, ...(given ? { password: given } : {}) });
           password.current = '';
           setDraft({});
         },
@@ -583,10 +588,12 @@ function SingleSignOn({
 }: {
   detail: UserDetail;
   confirmation: ConfirmAction;
-  onUnlink: (identityId: string, password: string) => Promise<void>;
+  onUnlink: (identityId: string, password?: string) => Promise<void>;
 }) {
-  // Unlinking is confirmed with the administrator's password, like a higher role.
+  // Unlinking is confirmed like a higher role: with the administrator's
+  // password, or with a code when they have an authenticator app.
   const password = useRef('');
+  const byCode = useConfirmsByCode();
   const identities = detail.sso_identities ?? [];
   if (identities.length === 0) return null;
   const account = detail.email || detail.login_name || detail.phone || detail.id;
@@ -609,14 +616,14 @@ function SingleSignOn({
           <p>
             An account with no password will have no way to sign in until it resets its password.
           </p>
-          <p>Confirm with your password.</p>
+          {byCode ? null : <p>Confirm with your password.</p>}
           <ReauthPassword valueRef={password} label="Your password" />
         </div>
       ),
       run: async () => {
         const given = password.current;
-        if (!given) throw new Error('Enter your password to unlink this identity.');
-        await onUnlink(identity.id, given);
+        if (!given && !byCode) throw new Error('Enter your password to unlink this identity.');
+        await onUnlink(identity.id, given || undefined);
         password.current = '';
       },
     });
@@ -666,13 +673,78 @@ interface UserDetailPanelProps {
   /** Write a change to this user, then show the saved values. Throws on failure. */
   onUpdate: (patch: UpdateUserData) => Promise<void>;
   /** Unlink one single sign-on identity, then show what is left. Throws on failure. */
-  onUnlinkSsoIdentity: (identityId: string, password: string) => Promise<void>;
+  onUnlinkSsoIdentity: (identityId: string, password?: string) => Promise<void>;
   // Lifecycle actions: Suspend and the deletes ask first; Reactivate and Resume act at once.
   onSuspend: (user: AdminUser) => void;
   onReactivate: (user: AdminUser) => void;
   onResume: (user: AdminUser) => void;
   onRequestDelete: (user: AdminUser) => void;
   onRequestHardDelete: (user: AdminUser) => void;
+}
+
+/**
+ * The way back in for someone who lost the device their authenticator app is
+ * on: another administrator removes it, and the account adds one again.
+ */
+function TwoFactorReset({
+  detail,
+  confirmation,
+}: {
+  detail: UserDetail;
+  confirmation: ConfirmAction;
+}) {
+  const [removed, setRemoved] = useState(false);
+  const password = useRef('');
+  const byCode = useConfirmsByCode();
+  if (removed) return null;
+  const account = detail.email || detail.login_name || detail.phone || detail.id;
+
+  const request = () => {
+    password.current = '';
+    confirmation.request({
+      title: `Remove the authenticator app of ${account}?`,
+      confirmLabel: 'Remove',
+      busyLabel: 'Removing…',
+      tone: 'danger',
+      body: (
+        <div className="space-y-2">
+          <p>
+            Its codes and recovery codes stop working. The account signs in with its password and
+            adds an authenticator app again in Settings; where administrators must have one, an
+            administrator has no administrator access until then.
+            {byCode ? null : ' Confirm with your password.'}
+          </p>
+          <ReauthPassword valueRef={password} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const given = password.current;
+        if (!given && !byCode) throw new Error('Enter your password to remove the authenticator.');
+        await resetUserTwoFactor(detail.id, given || undefined);
+        password.current = '';
+        setRemoved(true);
+      },
+    });
+  };
+
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-gray-200 bg-white px-4 py-3">
+      <div>
+        <div className="text-[13px] font-medium text-gray-900">Two-factor authentication</div>
+        <p className="text-[12px] text-gray-400">
+          This account has an authenticator app. Remove it if they lost the device.
+        </p>
+      </div>
+      <button
+        type="button"
+        onClick={request}
+        disabled={confirmation.busy}
+        className={BUTTON_DANGER}
+      >
+        Remove authenticator
+      </button>
+    </div>
+  );
 }
 
 export function UserDetailPanel(props: UserDetailPanelProps) {
@@ -698,6 +770,12 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     ['Last login', relTime(detail.last_login_at)],
     ['API key', detail.has_key ? (detail.key_prefix ? `${detail.key_prefix}…` : 'yes') : 'none'],
     ['Email', detail.email ? (detail.email_verified ? 'verified' : 'unverified') : '—'],
+    // A gateway older than two-factor authentication says nothing about it.
+    ...(detail.two_factor_enabled === undefined
+      ? []
+      : ([['Two-factor', detail.two_factor_enabled ? 'on' : 'off']] satisfies Array<
+          [string, string]
+        >)),
   ];
 
   return (
@@ -804,6 +882,10 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             confirmation={confirmation}
             onUnlink={onUnlinkSsoIdentity}
           />
+
+          {detail.two_factor_enabled && (
+            <TwoFactorReset key={detail.id} detail={detail} confirmation={confirmation} />
+          )}
 
           {/* Account lifecycle actions, kept apart from the everyday settings. */}
           {u.status === 'active' && (

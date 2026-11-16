@@ -21,6 +21,11 @@ import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 import { ssoErrorMessage } from '@/components/auth/ssoMessages';
 import { DangerZone } from '@/components/features/auth/DeleteAccount';
+import {
+  TWO_FACTOR_ANCHOR,
+  TwoFactorSettings,
+  useShowTwoFactorSettings,
+} from '@/components/features/twoFactor/TwoFactorSettings';
 import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
 import { SsoIdentitiesPanel, useSsoIdentities } from '@/components/features/auth/SsoIdentities';
 import {
@@ -148,6 +153,7 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
   const passwordReauth = useSsoReauth('set_password');
   const ssoIdentities = useSsoIdentities(state.user?.id ?? null);
   const [ssoError, setSsoError] = useState(ssoReturn.error);
+  const showTwoFactor = useShowTwoFactorSettings();
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
@@ -581,6 +587,20 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
             </div>
           </form>
         </SettingsSection>
+      )}
+
+      {showTwoFactor && (
+        <div id={TWO_FACTOR_ANCHOR} className="scroll-mt-24">
+          <SettingsSection
+            title={t('two_factor.settings.title', 'Two-Factor Authentication')}
+            description={t(
+              'two_factor.settings.description',
+              'A code from an authenticator app on your phone, asked for before administrator access. A copied session or password is not enough without it.',
+            )}
+          >
+            <TwoFactorSettings />
+          </SettingsSection>
+        </div>
       )}
 
       <SettingsSection

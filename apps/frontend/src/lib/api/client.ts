@@ -336,7 +336,73 @@ function sessionGoneError(): APIError {
   return accountChangedError();
 }
 
+/**
+ * A request the gateway refused until this session gives a code from the
+ * account's authenticator app (403 `TWO_FACTOR_REQUIRED`).
+ */
+export interface TwoFactorChallenge {
+  /** Why a code is owed: `unverified`, `environment_changed` or `stale`. */
+  reason: string;
+}
+
+/** Asks the person for a code and resolves to whether the session is now verified. */
+type TwoFactorChallenger = (challenge: TwoFactorChallenge) => Promise<boolean>;
+
+let twoFactorChallenger: TwoFactorChallenger | null = null;
+
+/**
+ * Install what answers a `TWO_FACTOR_REQUIRED` refusal -- the console's code
+ * prompt -- or remove it with `null`. With none installed the refusal reaches
+ * the caller as any other error.
+ */
+export function setTwoFactorChallenger(challenger: TwoFactorChallenger | null): void {
+  twoFactorChallenger = challenger;
+}
+
+/** The path that gives the code: a refusal there is the answer, not another question. */
+const TWO_FACTOR_VERIFY_PATH = '/auth/two-factor/verify';
+
+async function twoFactorChallenge(
+  resp: Response,
+  input: string,
+): Promise<TwoFactorChallenge | null> {
+  if (resp.status !== 403 || input.startsWith(TWO_FACTOR_VERIFY_PATH)) return null;
+  if (!(resp.headers.get('content-type') ?? '').includes('json')) return null;
+  try {
+    const data: unknown = await resp.clone().json();
+    if (!data || typeof data !== 'object') return null;
+    const { error_code: code, reason } = data as Record<string, unknown>;
+    if (code !== 'TWO_FACTOR_REQUIRED') return null;
+    return { reason: typeof reason === 'string' ? reason : 'unverified' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A request as this tab's session. One refused for want of an authenticator
+ * code is sent once more after the person gives one; if they do not, the
+ * refusal is returned as it came.
+ */
 export async function fetchWithAuth(
+  apiBase: string,
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const generation = sessionGeneration;
+  const resp = await sendWithSession(apiBase, input, init);
+  if (!twoFactorChallenger) return resp;
+  const challenge = await twoFactorChallenge(resp, input);
+  if (!challenge) return resp;
+  const verified = await twoFactorChallenger(challenge);
+  if (!verified) return resp;
+  // The code was given by whoever holds the session now; a request made for
+  // an earlier one must not run again as them.
+  if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
+  return sendWithSession(apiBase, input, init);
+}
+
+async function sendWithSession(
   apiBase: string,
   input: string,
   init: RequestInit = {},
@@ -594,7 +660,11 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'INVALID_CREDENTIALS';
       }
       // If no specific pattern matched, use the detail message directly
-      // Don't force it into a predefined error code
+      // Don't force it into a predefined error code -- unless the body names
+      // its own (the two-factor refusals carry `detail` and `error_code`).
+      if (errorCode === 'UNKNOWN_ERROR' && typeof data.error_code === 'string') {
+        errorCode = data.error_code;
+      }
     } else if (data.error_code && typeof data.error_code === 'string') {
       // Legacy format
       errorCode = data.error_code;

@@ -299,7 +299,7 @@ export function UserTable(props: UserTableProps) {
 
   // Unlinking a single sign-on identity from the open row. It changes nothing
   // the list shows, so only the detail is read again.
-  const unlinkSsoIdentity = async (identityId: string, password: string) => {
+  const unlinkSsoIdentity = async (identityId: string, password?: string) => {
     if (!expandedId || !detail) return;
     const userId = expandedId;
     ensureListed(userId, userAccountLabel(detail) || userId);

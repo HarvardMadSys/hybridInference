@@ -410,6 +410,19 @@ describe('admin user client', () => {
     expect(JSON.parse(init.body as string)).toEqual({ password: 'Admin-pw-1' });
   });
 
+  it('unlinkUserSsoIdentity sends no password for an administrator who confirms by code', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'Single sign-on identity unlinked.' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await unlinkUserSsoIdentity('user-1', 'idn_1');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({});
+  });
+
   it('unlinkUserSsoIdentity keeps the gateway’s reason for a refusal', async () => {
     fetchMock.mockResolvedValueOnce(
       new Response(

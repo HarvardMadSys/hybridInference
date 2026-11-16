@@ -10,10 +10,17 @@ import type { UserRow } from './types';
 /**
  * The "Single sign-on" block of the user detail panel: the identities that can
  * sign in to the account, and the one thing an administrator does to one --
- * unlink it, confirmed with the administrator's own password.
+ * unlink it, confirmed with the administrator's own password, or with a code
+ * when the administrator has an authenticator app.
  */
 
+// The signed-in administrator's own second factor, as the provider reports it.
+const twoFactor = vi.hoisted(() => ({ status: undefined as { enabled: boolean } | undefined }));
+
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+vi.mock('@/components/providers/TwoFactorProvider', () => ({
+  useTwoFactor: () => ({ status: twoFactor.status, isPending: false, refresh: async () => {} }),
+}));
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
   listModelVisibility: vi.fn(),
@@ -136,6 +143,7 @@ const block = () => screen.queryByRole('region', { name: 'Single sign-on' });
 
 beforeEach(() => {
   vi.clearAllMocks();
+  twoFactor.status = undefined;
   vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
   vi.mocked(unlinkUserSsoIdentity).mockResolvedValue({ message: 'Unlinked.' });
 });
@@ -236,6 +244,27 @@ describe('the single sign-on block of the user detail panel', () => {
     expect(getUserDetail).toHaveBeenCalledTimes(2);
     await waitFor(() => expect(block()).toBeNull());
     expect(toast.success).toHaveBeenCalledWith('Single sign-on identity unlinked.');
+  });
+
+  it('asks an administrator who has an authenticator app for no password', async () => {
+    twoFactor.status = { enabled: true };
+    vi.mocked(getUserDetail)
+      .mockResolvedValueOnce(detail({ sso_identities: [identity()] }))
+      .mockResolvedValueOnce(detail({ sso_identities: [] }));
+    renderTable();
+    await expand();
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink Example University' }));
+    const dialog = screen.getByRole('dialog');
+
+    // The gateway takes a code from this account, and the console's own prompt asks for it.
+    expect(dialog).toHaveTextContent('A code from your authenticator app confirms this.');
+    expect(dialog).not.toHaveTextContent('Confirm with your password.');
+    expect(within(dialog).queryByLabelText('Your password')).toBeNull();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(unlinkUserSsoIdentity).mock.calls).toEqual([['user-1', 'idn_1', undefined]]);
+    await waitFor(() => expect(block()).toBeNull());
   });
 
   it('keeps the confirmation open, with the reason, when the gateway refuses', async () => {
