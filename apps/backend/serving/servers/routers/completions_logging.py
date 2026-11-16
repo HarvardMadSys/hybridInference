@@ -14,8 +14,8 @@ byte-for-byte — admin/recent-requests UI, billing reports, and the Slack
 alert rules from PR #372 all read these rows and must keep working — except
 that a refused request's large fields are stored as a bounded summary (see
 ``CompletionsLogger.schedule_log``), and that in the shared spend accounting
-mode the row's metadata names the reservation the request ran under
-(``_with_spend_reservation``).
+mode the row's metadata names the reservation the request ran under and what
+was charged to it (``_with_spend_reservation``).
 """
 
 from __future__ import annotations
@@ -57,21 +57,30 @@ _LOG_DROP_WARN_INTERVAL_S = 60.0
 
 
 def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
-    """*log_data*, its metadata naming the shared spend reservation the request ran under.
+    """*log_data*, its metadata naming the request's shared spend reservation and its charge.
 
-    Only in the shared accounting mode, where the request context holds one
-    (``req_ctx.SPEND_RESERVATION``). The row then says which reservation its
-    ``cost_usd`` belongs to, so if the process dies before settling that
-    reservation, an operator's reconciliation can charge it what the request
-    cost instead of giving it back whole
-    (:mod:`serving.shared_spend.reconcile`). Nothing else reads the field.
+    Only in the shared accounting mode, where the request's context holds its
+    reservation (``req_ctx.SPEND_RESERVATION``). Called as the row is written,
+    in the row's own context, it adds ``spend_reservation`` (the reservation's
+    id) and ``spend_charged_usd``: what the billing points have recorded under
+    that reservation by now, which is what its settlement will add to the
+    counters. Should the process die before that settlement, an operator's
+    reconciliation charges the reservation this amount instead of giving it
+    back whole (:mod:`serving.shared_spend.reconcile`).
+
+    It is the ledger's own record, not the row's ``cost_usd``: a failed
+    request's row can carry a cost its billing point never charged. Nothing
+    else reads either field.
     """
-    reservation_id = getattr(
-        (req_ctx.get() or {}).get(req_ctx.SPEND_RESERVATION), "reservation_id", None
-    )
+    reservation = (req_ctx.get() or {}).get(req_ctx.SPEND_RESERVATION)
+    reservation_id = getattr(reservation, "reservation_id", None)
     if not isinstance(reservation_id, str):
         return log_data
-    metadata = {**(log_data.get("metadata") or {}), "spend_reservation": reservation_id}
+    metadata = {
+        **(log_data.get("metadata") or {}),
+        "spend_reservation": reservation_id,
+        "spend_charged_usd": str(reservation.cost()),
+    }
     return {**log_data, "metadata": metadata}
 
 
@@ -235,11 +244,7 @@ class CompletionsLogger:
 
         # The producer's context, as a per-request task would have copied it:
         # the write and its log lines are attributed to this row's request.
-        item = (
-            request_id,
-            bound_log_payload(_with_spend_reservation(log_data)),
-            contextvars.copy_context(),
-        )
+        item = (request_id, bound_log_payload(log_data), contextvars.copy_context())
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:
@@ -333,7 +338,9 @@ class CompletionsLogger:
 
     async def _log_to_db(self, request_id: str, log_data: dict[str, Any]) -> None:
         try:
-            await self._log_store.log_request(**log_data)
+            # In the row's own context (see _drain_loop): the request's
+            # reservation, and what was charged to it by now.
+            await self._log_store.log_request(**_with_spend_reservation(log_data))
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as exc:
             logger.error(

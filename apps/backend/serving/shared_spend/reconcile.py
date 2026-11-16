@@ -13,15 +13,22 @@ runs by itself: an operator who has checked says so, by name and with a
 reason, and that statement is recorded. An instance the registry hears from is
 refused; it retires its own.
 
-**What a reservation is charged.** What the request log says its request
-cost. A request's log row names the reservation it ran under and carries a
-cost computed from the same usage and price as the charge its billing point
-recorded, so a request that ended, and was logged before its process died, is
-charged exactly that. A reservation with no log row -- its request was cut off
-by the process dying, or its row was never written -- is charged nothing and
-its whole estimate is given back, which is what a process dying mid-request
-costs a caller in the per-process accounting too. The estimate itself is never
-charged.
+**What a reservation is charged.** What its billing points had recorded
+under it when its request was logged. A request's log row names the
+reservation it ran under and that amount (``metadata.spend_reservation``,
+``metadata.spend_charged_usd``): the ledger's own record of what the
+reservation's settlement would have added to the counters. So a request that
+ended, and was logged before its process died, is charged exactly what it
+would have been. The row's own ``cost_usd`` is shown beside it and not used: a
+failed request's row can carry a cost that no billing point charged. When a
+reservation has several rows, each carries the total recorded when it was
+written, and the largest is the charge.
+
+A reservation with no log row, or whose rows record no charge -- its request
+was cut off by the process dying, was charged nothing, or its row was never
+written -- is charged nothing and its whole estimate is given back, which is
+what a process dying mid-request costs a caller in the per-process accounting
+too. The estimate itself is never charged.
 
 **What is recorded.** Each reservation retired gets a row in
 ``spend_reconciliations`` in the transaction that retires it: what it held,
@@ -42,7 +49,7 @@ gone.
 
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
 from serving.shared_spend.store import (
@@ -73,47 +80,63 @@ class UnknownInstance(LookupError):
         self.instance_id = instance_id
 
 
+def _recorded_charge(value: Any) -> Decimal | None:
+    """The charge a log row records (``metadata.spend_charged_usd``), or None if it has none."""
+    if value is None:
+        return None
+    try:
+        charge = usd(Decimal(str(value)))
+    except (InvalidOperation, ValueError):
+        return None
+    return charge if charge >= 0 else None
+
+
 async def plan(
     backend: SharedSpendStore, instance_id: str, *, limit: int = CHUNK
 ) -> list[Reconciliation]:
     """What reconciling *instance_id*'s oldest active reservations would do, at most *limit*.
 
     Reads only. Each reservation is paired with the request-log rows written
-    under it; a row with a cost becomes a charge on the UTC day the row was
-    written, capped as every recorded cost is.
+    under it. Each row records what the billing points had charged the
+    reservation when it was written; the largest of those is the charge,
+    counted on the UTC day that row was written.
     """
-    from serving.spend_ledger import MAX_REQUEST_COST_USD
-
     reservations = await backend.reservations_of(instance_id, limit=limit)
     logged = await backend.request_log_rows(reservations)
-    ceiling = usd(MAX_REQUEST_COST_USD)
     planned = []
     for row in reservations:
-        costs: list[CostLine] = []
         evidence: list[dict[str, Any]] = []
+        recorded: list[tuple[Decimal, str]] = []
         for found in logged.get(row["reservation_id"], []):
-            cost = usd(Decimal(found["cost_usd"] or 0))
-            charged = min(cost, ceiling)
+            charge = _recorded_charge(found["charged_usd"])
             evidence.append(
                 {
                     "request_id": found["request_id"],
                     "day": found["day"],
                     "status_code": found["status_code"],
-                    "cost_usd": str(cost),
-                    "charged_usd": str(charged),
+                    "charged_usd": str(charge) if charge is not None else None,
+                    # The row's own price for the request, beside it for an
+                    # operator to compare; not what is charged.
+                    "cost_usd": str(found["cost_usd"]) if found["cost_usd"] is not None else None,
                 }
             )
-            if charged > 0:
-                costs.append(
-                    CostLine(
-                        user_id=row["user_id"],
-                        day=found["day"],
-                        api_key_id=row["api_key_id"],
-                        cost_usd=charged,
-                        requests=1,
-                        project_id=row["project_id"],
-                    )
-                )
+            if charge is not None:
+                recorded.append((charge, found["day"]))
+        charge, day = max(recorded, default=(Decimal(0), ""))
+        costs = (
+            (
+                CostLine(
+                    user_id=row["user_id"],
+                    day=day,
+                    api_key_id=row["api_key_id"],
+                    cost_usd=charge,
+                    requests=1,
+                    project_id=row["project_id"],
+                ),
+            )
+            if charge > 0
+            else ()
+        )
         planned.append(
             Reconciliation(
                 reservation_id=row["reservation_id"],
@@ -126,7 +149,7 @@ async def plan(
                     kind="settle",
                     api_key_id=row["api_key_id"],
                     project_id=row["project_id"],
-                    costs=tuple(costs),
+                    costs=costs,
                 ),
                 evidence=tuple(evidence),
             )
@@ -175,7 +198,7 @@ async def preview(
         "reconcilable": known and owner in OWNER_GONE,
         "applied": False,
         **totals(planned),
-        "active_in_all": held.get("active", 0),
+        "active_total": held.get("active", 0),
         "quarantined_left": held.get("quarantined", 0),
         "plan": [describe(entry) for entry in planned],
     }

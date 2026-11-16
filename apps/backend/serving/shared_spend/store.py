@@ -341,10 +341,11 @@ WHERE c.closed_by = 'shutdown'
   AND NOT EXISTS (SELECT 1 FROM spend_reservations r WHERE r.instance_id = c.instance_id)
 """
 
-# The UTC day a log row was written on is the day its cost is counted on, as
-# the day its billing point ran on would have been.
+# The UTC day a log row was written on is the day its charge is counted on,
+# as the day its billing point ran on would have been.
 _REQUEST_LOG_SQL = """
 SELECT r.reservation_id, l.request_id, l.cost_usd, l.status_code,
+       l.metadata->>'spend_charged_usd' AS charged_usd,
        to_char(l.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day
 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS r(reservation_id, user_id, since)
 JOIN api_logs l
@@ -870,13 +871,13 @@ class SharedSpendStore:
         """The request-log rows written under each of *reservations*, by reservation id.
 
         A request's log row names the reservation it ran under
-        (``metadata.spend_reservation``, set where the row is queued:
-        ``CompletionsLogger.schedule_log``), and its ``cost_usd`` is computed
-        from the same usage and price as the charge its billing point
-        recorded. Rows are looked up by the reservation's account from its
-        admission on, which the log's own index serves. A reservation with no
-        row is absent from the result: its request never got as far as being
-        logged, or the row was dropped or not written.
+        (``metadata.spend_reservation``) and what the billing points had
+        recorded under it when the row was written
+        (``metadata.spend_charged_usd``); both are set as the row is written,
+        by ``CompletionsLogger``. Rows are looked up by the reservation's
+        account from its admission on, which the log's own index serves. A
+        reservation with no row is absent from the result: its request never
+        got as far as being logged, or the row was dropped or not written.
         """
         if not reservations:
             return {}
@@ -894,6 +895,7 @@ class SharedSpendStore:
                     "request_id": row["request_id"],
                     "day": row["day"],
                     "cost_usd": row["cost_usd"],
+                    "charged_usd": row["charged_usd"],
                     "status_code": row["status_code"],
                 }
             )
@@ -1201,10 +1203,10 @@ class SettlementResult:
 class Reconciliation:
     """What an operator's reconciliation does with one reservation, and on what evidence.
 
-    ``member`` is how the reservation is retired: with the costs of the
-    request-log rows found for it (``evidence``, one entry a row), or with
-    none when there was no row -- then nothing is charged and its whole
-    estimate is given back.
+    ``member`` is how the reservation is retired: with the charge its
+    request-log rows record (``evidence``, one entry a row), or with none when
+    no row records one -- then nothing is charged and its whole estimate is
+    given back.
     """
 
     reservation_id: str

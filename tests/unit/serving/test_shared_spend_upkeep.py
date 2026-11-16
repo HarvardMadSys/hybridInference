@@ -472,7 +472,10 @@ async def test_a_request_log_row_names_the_reservation_its_request_ran_under():
     reservation, _ = await ledger.admit(_check(ledger), 0.30)
     row = {"request_id": "req_1", "status_code": 200, "metadata": {"user_id": USER}}
     with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        # The Anthropic surface queues its row and then, without yielding,
+        # records the charge: the row is written after both, and carries it.
         logger.schedule_log("req_1", row)
+        ledger.record(USER, 0.12)
     logger.schedule_log("req_2", {**row, "request_id": "req_2"})  # no reservation: as before
     await logger.stop()
 
@@ -480,6 +483,21 @@ async def test_a_request_log_row_names_the_reservation_its_request_ran_under():
     assert by_id["req_1"]["metadata"] == {
         "user_id": USER,
         "spend_reservation": reservation.reservation_id,
+        "spend_charged_usd": "0.120000",
     }
     assert by_id["req_2"]["metadata"] == {"user_id": USER}
     assert row["metadata"] == {"user_id": USER}  # the caller's dict is not modified
+
+
+async def test_a_row_for_a_request_that_was_charged_nothing_says_so():
+    from serving.servers.routers.completions_logging import _with_spend_reservation
+
+    ledger, _ = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    row = {"request_id": "req_1", "status_code": 502}
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        assert _with_spend_reservation(row)["metadata"] == {
+            "spend_reservation": reservation.reservation_id,
+            "spend_charged_usd": "0",
+        }
+    assert _with_spend_reservation(row) is row  # outside a request with a reservation

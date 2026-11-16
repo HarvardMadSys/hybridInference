@@ -5,8 +5,8 @@ covers what is left when a process stops:
 
 - **Reconciliation.** A process that was killed leaves its reservations
   counted. An operator retires them (``python -m serving.shared_spend
-  reconcile``): one whose request was logged is charged what the log says it
-  cost, one that was not is given back whole, and each gets an audit row. A
+  reconcile``): one whose request-log row records a charge is charged that,
+  one with none is given back whole, and each gets an audit row. A
   process the registry still hears from is refused, and a process wrongly
   declared gone charges nothing twice when it settles after all.
 - **Closure.** A process that sent everything records that it will send
@@ -15,9 +15,9 @@ covers what is left when a process stops:
   send its batch again: by its own process once the batch was answered, by any
   process a week after its maker closed. Age alone never deletes one.
 
-Request-log rows are written through the real logger and log store, so the
-link the reconciliation relies on (the row names its reservation) is the one
-production writes.
+Request-log rows are written through the real logger and log store, so what
+the reconciliation relies on (the row names its reservation, and what was
+charged to it) is what production writes.
 """
 
 from __future__ import annotations
@@ -176,11 +176,12 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     logged, _ = await crashed.admit(check(crashed, user), 0.30)
     failed, _ = await crashed.admit(check(crashed, user), 0.30)
     cut_off, _ = await crashed.admit(check(crashed, user), 0.30)
-    # One request ended and was logged with what it cost; one ended in an
-    # upstream failure, logged with no cost; one was still running.
+    # One request ended, was charged by its billing point and logged. One
+    # failed upstream after it had used tokens: its row prices them, and its
+    # billing point charged nothing. One was still running.
+    _charge(crashed, logged, 0.002)
     request_id = await _log_request(db.pool, logged, user)
-    await _log_request(db.pool, failed, user, tokens=0, status=502)
-    _charge(crashed, logged, 0.002)  # what its billing point recorded: the process's alone
+    await _log_request(db.pool, failed, user, status=502)
     del crashed  # killed: nothing settles these, nothing expires them
 
     held, _ = await db.b.admit(check(db.b, user), 1.0)
@@ -196,8 +197,12 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     by_id = {entry["reservation_id"]: entry for entry in plan["plan"]}
     assert by_id[logged.reservation_id]["would"] == "charge"
     assert by_id[logged.reservation_id]["request_log"][0]["request_id"] == request_id
+    assert by_id[logged.reservation_id]["request_log"][0]["charged_usd"] == "0.002000"
+    # The failed request's row carries a price; what was charged is what counts.
     assert by_id[failed.reservation_id]["would"] == "release"
-    assert by_id[failed.reservation_id]["request_log"][0]["status_code"] == 502
+    failed_row = by_id[failed.reservation_id]["request_log"][0]
+    assert (failed_row["status_code"], failed_row["charged_usd"]) == (502, "0.000000")
+    assert Decimal(failed_row["cost_usd"]) == Decimal("0.002")
     assert by_id[cut_off.reservation_id]["request_log"] == []
     assert user not in json.dumps(plan, default=str)  # no account is named
     assert len(await _rows(db.pool, user)) == 3  # showing the plan changes nothing
@@ -304,11 +309,36 @@ async def test_an_instance_nothing_names_is_refused_and_leaves_no_closure(db):
     assert done["closed_now"] is True and (done["charged"], done["released"]) == (0, 0)
 
 
+async def test_a_reservation_with_several_log_rows_is_charged_its_latest_total_once(db):
+    user = PREFIX + "rows"
+    gone = SharedSpendLedger(db.a._backend, instance_id="inst-rows")
+    reservation, _ = await gone.admit(check(gone, user), 0.30)
+    # Two billed calls under one reservation, each logged after its charge:
+    # the rows record $0.002, then the total, $0.005.
+    _charge(gone, reservation, 0.002)
+    await _log_request(db.pool, reservation, user)
+    _charge(gone, reservation, 0.003)
+    latest = await _log_request(db.pool, reservation, user)
+    del gone
+
+    plan = await _reconcile(db.b._backend, "inst-rows")
+    (entry,) = plan["plan"]
+    assert [row["charged_usd"] for row in entry["request_log"]] == ["0.002000", "0.005000"]
+    assert entry["charge_usd"] == "0.005000"
+    done = await _reconcile(
+        db.b._backend, "inst-rows", apply=True, operator="alice", reason="process gone"
+    )
+    assert (done["charged"], done["charge_usd"]) == (1, "0.005000")
+    assert await _account(db.pool, user) == Decimal("0.005")  # the total, once
+    (audit,) = (await _audit(db.pool)).values()
+    assert [e["request_id"] for e in json.loads(audit["evidence"])][-1] == latest
+
+
 async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_settles(db):
     user = PREFIX + "wrong"
     reservation, _ = await db.a.admit(check(db.a, user), 0.30)
     _charge(db.a, reservation, 0.002)  # its billing point...
-    await _log_request(db.pool, reservation, user)  # ...and its request-log row: the same cost
+    await _log_request(db.pool, reservation, user)  # ...and its request-log row, recording it
     # An operator, wrongly: these test ledgers never register, so nothing stops them.
     done = await _reconcile(
         db.b._backend, "inst-a", apply=True, operator="bob", reason="mistaken for a dead one"

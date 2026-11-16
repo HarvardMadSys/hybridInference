@@ -300,16 +300,20 @@ changes nothing. With `--apply --operator NAME --reason TEXT`:
    every chunk checks again), and for an instance id that no reservation,
    receipt, registration or closure names: a mistyped id records no closure.
 2. The instance's active reservations are taken oldest first, 256 at a time,
-   each paired with the request-log rows written under it. A row names its
-   reservation in `metadata.spend_reservation` (set where the row is queued,
-   `CompletionsLogger.schedule_log`, and only in the shared mode), and its
-   `cost_usd` is computed from the same usage and price as the charge its
-   billing point recorded. Rows are looked up by the reservation's account
-   from its admission on, which the log's existing index serves.
-3. A reservation with a logged cost is settled with it, on the UTC day the row
-   was written, capped at the per-request ceiling. One with no row, or rows
-   without a cost, is settled with none: its whole estimate is given back.
-   The estimate itself is never charged.
+   each paired with the request-log rows written under it. As a row is
+   written, in the shared mode only, `CompletionsLogger` puts in its metadata
+   the reservation the request ran under (`spend_reservation`) and what the
+   billing points had recorded under that reservation by then
+   (`spend_charged_usd`): the ledger's own record of what the reservation's
+   settlement would add. Rows are looked up by the reservation's account from
+   its admission on, which the log's existing index serves.
+3. A reservation whose rows record a charge is settled with it, on the UTC
+   day the row was written; with several rows, each carries the total when it
+   was written and the largest is used. One with no row, or rows recording no
+   charge, is settled with none: its whole estimate is given back. The row's
+   own `cost_usd` is shown beside the charge and never used -- a failed
+   request's row can carry a cost no billing point charged -- and the
+   estimate itself is never charged.
 4. Each chunk is one transaction: a settlement made in the gone process's
    name (the statements, fence and receipts of section 4; batch id `op_...`)
    and one `spend_reconciliations` row for each reservation it retired -- what
@@ -319,14 +323,15 @@ changes nothing. With `--apply --operator NAME --reason TEXT`:
 5. The instance is recorded `closed_by = 'operator'` with the name and the
    reason. A `shutdown` closure already there stands.
 
-*Why a reservation with no log row is given back, not kept.* A request cut off
-by its process dying never reached its billing point; in the per-process mode
-it is charged nothing. Keeping it would hold an account's budget on no
-evidence, with no end. What this gives up: a request that ended, was billed in
-memory and whose log row was lost with the process is not charged. The row is
-queued when the request ends and written by a small pool, so that is the last
-moments of traffic (longer while log writes are failing), and never more than
-the requests the process had in flight or just ended.
+*Why a reservation with no recorded charge is given back, not kept.* A request
+cut off by its process dying never reached its billing point; in the
+per-process mode it is charged nothing. Keeping it would hold an account's
+budget on no evidence, with no end. What this gives up: a request that ended,
+was billed in memory and whose log row was lost with the process (or was
+written before a later charge of the same request) is not charged for that.
+The row is queued when the request ends and written by a small pool, so that
+is the last moments of traffic (longer while log writes are failing), and
+never more than the requests the process had in flight or just ended.
 
 *Why a wrong "it is gone" cannot charge twice.* The retirements are recorded
 like any settlement's. If the process is alive and settles the same
