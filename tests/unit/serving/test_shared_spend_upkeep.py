@@ -512,6 +512,8 @@ async def test_a_request_log_row_names_the_reservation_its_request_ran_under():
         "user_id": USER,
         "spend_reservation": reservation.reservation_id,
         "spend_charged_usd": "0.120000",
+        # And the day the charge was recorded on, which its settlement counts it on.
+        "spend_charged_days": [{"day": spend_ledger.utc_day(), "usd": "0.120000", "requests": 1}],
     }
     assert by_id["req_2"]["metadata"] == {"user_id": USER}
     assert row["metadata"] == {"user_id": USER}  # the caller's dict is not modified
@@ -527,5 +529,32 @@ async def test_a_row_for_a_request_that_was_charged_nothing_says_so():
         assert _with_spend_reservation(row)["metadata"] == {
             "spend_reservation": reservation.reservation_id,
             "spend_charged_usd": "0",
+            "spend_charged_days": [],
         }
     assert _with_spend_reservation(row) is row  # outside a request with a reservation
+
+
+async def test_a_row_says_on_which_day_each_part_of_its_charge_was_recorded(monkeypatch):
+    # A request billed on both sides of midnight: its settlement counts each
+    # part on its own day, and the row written afterwards says which.
+    from serving.servers.routers.completions_logging import _with_spend_reservation
+
+    ledger, _ = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        monkeypatch.setattr(spend_ledger, "utc_day", lambda now=None: "2031-03-31")
+        ledger.record(USER, 0.10)
+        ledger.record(USER, 0.02)
+        monkeypatch.setattr(spend_ledger, "utc_day", lambda now=None: "2031-04-01")
+        ledger.record(USER, 0.05)
+        metadata = _with_spend_reservation({"request_id": "req_1"})["metadata"]
+    assert reservation.charged_by_day() == [
+        ("2031-03-31", Decimal("0.120000"), 2),
+        ("2031-04-01", Decimal("0.050000"), 1),
+    ]
+    assert metadata["spend_charged_usd"] == "0.170000"
+    assert metadata["spend_charged_days"] == [
+        {"day": "2031-03-31", "usd": "0.120000", "requests": 2},
+        {"day": "2031-04-01", "usd": "0.050000", "requests": 1},
+    ]
+    json.dumps(metadata)  # what the log store does with it

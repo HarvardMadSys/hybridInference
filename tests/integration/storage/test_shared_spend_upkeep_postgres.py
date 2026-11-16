@@ -24,12 +24,14 @@ from __future__ import annotations
 
 import json
 import uuid
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from types import SimpleNamespace
 
 import asyncpg
 import pytest
 
+from serving import spend_ledger
 from serving.config.instances import STALE_AFTER_SECONDS
 from serving.servers.routers.completions_logging import CompletionsLogger
 from serving.shared_spend import reconcile
@@ -263,6 +265,71 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     assert Decimal(str(status["reconciled"]["cost_usd"])) == Decimal("0.002")
     assert status["closures"] == {"operator": 1}
     assert "inst-crashed" not in status["stranded"]["instances"]
+
+
+async def test_a_cost_recorded_before_midnight_is_restored_to_the_day_it_was_recorded_on(
+    db, monkeypatch
+):
+    """A cost recorded on one UTC day, its request logged on the next, its process then killed.
+
+    The process's own settlement counts a cost on the day its billing point
+    recorded it. The reconciliation counted it on the day the request's log
+    row was written: the same total, taken from the next day's budget -- and
+    from the next month's, on a month's last day. The row now says on which
+    days the charge was recorded, and the reconciliation restores it there.
+    """
+    user = PREFIX + "midnight"
+    today = spend_ledger.utc_day()
+    yesterday = spend_ledger.utc_day(datetime.now(UTC) - timedelta(days=1))
+
+    def charge_yesterday(ledger, reservation, cost: float) -> None:
+        with monkeypatch.context() as at:
+            at.setattr(spend_ledger, "utc_day", lambda now=None: yesterday)
+            _charge(ledger, reservation, cost)
+
+    # What a process does itself with such a request: charged yesterday,
+    # logged and settled today.
+    own, _ = await db.a.admit(check(db.a, user), 0.30)
+    charge_yesterday(db.a, own, 0.20)
+    await _log_request(db.pool, own, user)
+    own.release()
+    assert await db.a.flush(5)
+    assert await _account(db.pool, user, yesterday) == Decimal("0.2")
+    assert await _account(db.pool, user, today) == 0
+
+    # The same request left by a process that was killed before settling it,
+    # and one billed on both sides of midnight.
+    crashed = SharedSpendLedger(db.a._backend, instance_id="inst-crashed")
+    left, _ = await crashed.admit(check(crashed, user), 0.30)
+    charge_yesterday(crashed, left, 0.20)
+    await _log_request(db.pool, left, user)
+    both, _ = await crashed.admit(check(crashed, user), 0.30)
+    charge_yesterday(crashed, both, 0.10)
+    _charge(crashed, both, 0.05)
+    await _log_request(db.pool, both, user)
+    del crashed
+
+    backend = db.b._backend
+    plan = await _reconcile(backend, "inst-crashed")
+    by_id = {entry["reservation_id"]: entry for entry in plan["plan"]}
+    assert by_id[left.reservation_id]["request_log"][0]["day"] == today  # the row is today's
+    assert by_id[left.reservation_id]["charge_days"] == {yesterday: "0.200000"}
+    assert by_id[both.reservation_id]["charge_days"] == {
+        yesterday: "0.100000",
+        today: "0.050000",
+    }
+
+    done = await _reconcile(
+        backend, "inst-crashed", apply=True, operator="alice", reason="killed at midnight"
+    )
+    assert (done["charged"], done["charge_usd"]) == (2, "0.350000")
+    # Where the process's own settlement would have put them.
+    assert await _account(db.pool, user, yesterday) == Decimal("0.5")
+    assert await _account(db.pool, user, today) == Decimal("0.05")
+    audit = await _audit(db.pool)
+    evidence = json.loads(audit[left.reservation_id]["evidence"])
+    assert evidence[0]["charged_days"] == {yesterday: "0.200000"}
+    assert audit[both.reservation_id]["cost_usd"] == Decimal("0.15")
 
 
 async def test_a_process_the_registry_hears_from_is_refused(db):

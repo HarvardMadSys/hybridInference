@@ -348,11 +348,13 @@ WHERE c.closed_by = 'shutdown'
   AND NOT EXISTS (SELECT 1 FROM spend_reservations r WHERE r.instance_id = c.instance_id)
 """
 
-# The UTC day a log row was written on is the day its charge is counted on,
-# as the day its billing point ran on would have been.
+# ``charged_days`` are the UTC days the row says its charge was recorded on,
+# which is where it is counted. ``day`` is the day the row itself was written,
+# later than that: used for a row that does not say.
 _REQUEST_LOG_SQL = """
 SELECT r.reservation_id, l.request_id, l.cost_usd, l.status_code,
        l.metadata->>'spend_charged_usd' AS charged_usd,
+       l.metadata->'spend_charged_days' AS charged_days,
        to_char(l.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day
 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS r(reservation_id, user_id, since)
 JOIN api_logs l
@@ -367,6 +369,16 @@ INSERT INTO spend_reconciliations
      cost_usd, evidence, owner_state, operator, reason)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
 """
+
+
+def _json(value: Any) -> Any:
+    """A ``jsonb`` value as the driver hands it over (its text), decoded; None if it is not JSON."""
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except ValueError:
+        return None
 
 
 def _count(value: Any) -> int | None:
@@ -928,8 +940,10 @@ class SharedSpendStore:
         A request's log row names the reservation it ran under
         (``metadata.spend_reservation``) and what the billing points had
         recorded under it when the row was written
-        (``metadata.spend_charged_usd``); both are set as the row is written,
-        by ``CompletionsLogger``. Rows are looked up by the reservation's
+        (``metadata.spend_charged_usd``, and ``metadata.spend_charged_days``
+        for the day each part was recorded on); all are set as the row is
+        written, by ``CompletionsLogger``. ``day`` is the day the row itself
+        was written. Rows are looked up by the reservation's
         account from its admission on, which the log's own index serves. A
         reservation with no row is absent from the result: its request never
         got as far as being logged, or the row was dropped or not written.
@@ -951,6 +965,7 @@ class SharedSpendStore:
                     "day": row["day"],
                     "cost_usd": row["cost_usd"],
                     "charged_usd": row["charged_usd"],
+                    "charged_days": _json(row["charged_days"]),
                     "status_code": row["status_code"],
                 }
             )

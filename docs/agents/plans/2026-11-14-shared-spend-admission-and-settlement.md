@@ -351,12 +351,21 @@ changes nothing. With `--apply --operator NAME --reason TEXT`:
    written, in the shared mode only, `CompletionsLogger` puts in its metadata
    the reservation the request ran under (`spend_reservation`) and what the
    billing points had recorded under that reservation by then
-   (`spend_charged_usd`): the ledger's own record of what the reservation's
-   settlement would add. Rows are looked up by the reservation's account from
-   its admission on, which the log's existing index serves.
-3. A reservation whose rows record a charge is settled with it, on the UTC
-   day the row was written; with several rows, each carries the total when it
-   was written and the largest is used. One with no row, or rows recording no
+   (`spend_charged_usd`), with the UTC day each part of it was recorded on
+   (`spend_charged_days`): the ledger's own record of what the reservation's
+   settlement would add, and to which days. Rows are looked up by the
+   reservation's account from its admission on, which the log's existing
+   index serves.
+3. A reservation whose rows record a charge is settled with it, on the days
+   the row says it was recorded on, with the requests they counted: where its
+   own settlement would have put it. The day the row was written is not that
+   day -- the row is written after the charge is recorded, on the next day
+   for a charge recorded just before midnight, which would take it from the
+   next day's budget and, at a month's end, the next month's. It is used only
+   for a row that does not say, or says what cannot be (costs that do not add
+   up to its charge, a day outside the reservation's life), as one request.
+   With several rows, each carries the total when it was written and the
+   largest is used. One with no row, or rows recording no
    charge, is settled with none: its whole estimate is given back. The row's
    own `cost_usd` is shown beside the charge and never used -- a failed
    request's row can carry a cost no billing point charged -- and the

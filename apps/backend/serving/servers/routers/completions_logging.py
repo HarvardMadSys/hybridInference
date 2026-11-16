@@ -62,11 +62,15 @@ def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
     Only in the shared accounting mode, where the request's context holds its
     reservation (``req_ctx.SPEND_RESERVATION``). Called as the row is written,
     in the row's own context, it adds ``spend_reservation`` (the reservation's
-    id) and ``spend_charged_usd``: what the billing points have recorded under
+    id), ``spend_charged_usd`` (what the billing points have recorded under
     that reservation by now, which is what its settlement will add to the
-    counters. Should the process die before that settlement, an operator's
-    reconciliation charges the reservation this amount instead of giving it
-    back whole (:mod:`serving.shared_spend.reconcile`).
+    counters) and ``spend_charged_days`` (that amount by the UTC day each part
+    was recorded on, which is the day its settlement will count it on). Should
+    the process die before that settlement, an operator's reconciliation
+    charges the reservation this amount, on those days, instead of giving it
+    back whole (:mod:`serving.shared_spend.reconcile`). The row is written
+    after the charge is recorded -- on the next day, for a charge recorded
+    just before midnight -- so the row's own date is not the charge's.
 
     It is the ledger's own record, not the row's ``cost_usd``: a failed
     request's row can carry a cost its billing point never charged. Nothing
@@ -80,6 +84,10 @@ def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
         **(log_data.get("metadata") or {}),
         "spend_reservation": reservation_id,
         "spend_charged_usd": str(reservation.cost()),
+        "spend_charged_days": [
+            {"day": day, "usd": str(cost), "requests": requests}
+            for day, cost, requests in reservation.charged_by_day()
+        ],
     }
     return {**log_data, "metadata": metadata}
 

@@ -24,6 +24,13 @@ failed request's row can carry a cost that no billing point charged. When a
 reservation has several rows, each carries the total recorded when it was
 written, and the largest is the charge.
 
+**On which day.** The days its billing points recorded it on, which the row
+carries too (``metadata.spend_charged_days``): the days its own settlement
+would have counted it on. Not the day the row was written, which is later --
+the next day, and at a month's end the next month, for a charge recorded just
+before midnight. A row that does not carry them, or carries days that cannot
+be its charge's, is counted on the day it was written.
+
 A reservation with no log row, or whose rows record no charge -- its request
 was cut off by the process dying, was charged nothing, or its row was never
 written -- is charged nothing and its whole estimate is given back, which is
@@ -49,6 +56,7 @@ gone.
 
 from __future__ import annotations
 
+from datetime import UTC, date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
@@ -93,6 +101,43 @@ def _recorded_charge(value: Any) -> Decimal | None:
     return charge if charge >= 0 else None
 
 
+def _recorded_days(
+    value: Any, charge: Decimal, *, admitted: date, written: date
+) -> list[tuple[str, Decimal, int]] | None:
+    """The days a log row says its charge was recorded on, as (day, cost, requests); else None.
+
+    ``metadata.spend_charged_days``. None for a row that carries none, and for
+    days that cannot be its charge's: costs that do not add up to it, a day
+    that is not one or is there twice, or one outside the reservation's life,
+    from its admission to the writing of the row (a day either side, for
+    clocks that disagree).
+    """
+    if not isinstance(value, list) or not value:
+        return None
+    days: list[tuple[str, Decimal, int]] = []
+    for entry in value:
+        if not isinstance(entry, dict):
+            return None
+        day, requests = entry.get("day"), entry.get("requests")
+        cost = _recorded_charge(entry.get("usd"))
+        if not isinstance(day, str) or not cost or type(requests) is not int or requests < 0:
+            return None
+        try:
+            on = date.fromisoformat(day)
+        except ValueError:
+            return None
+        if on.isoformat() != day or not (
+            admitted - timedelta(days=1) <= on <= written + timedelta(days=1)
+        ):
+            return None
+        days.append((day, cost, requests))
+    if len({day for day, _, _ in days}) != len(days):
+        return None
+    if sum((cost for _, cost, _ in days), Decimal(0)) != charge:
+        return None
+    return days
+
+
 async def plan(
     backend: SharedSpendStore,
     instance_id: str,
@@ -104,43 +149,57 @@ async def plan(
 
     Reads only. Each reservation is paired with the request-log rows written
     under it. Each row records what the billing points had charged the
-    reservation when it was written; the largest of those is the charge,
-    counted on the UTC day that row was written. One request is counted per
-    reservation charged, where its own settlement would have counted one per
-    charge. Reservations in *exclude* are left out.
+    reservation when it was written, and on which UTC days; the largest of
+    those is the charge (of equal ones, the row written last), counted on
+    its days with the requests they counted: what the reservation's own
+    settlement would have added. A row that does not say on which days is
+    counted on the day it was written, as one request. Reservations in
+    *exclude* are left out.
     """
     reservations = await backend.reservations_of(instance_id, limit=limit, exclude=exclude)
     logged = await backend.request_log_rows(reservations)
     planned = []
     for row in reservations:
+        admitted = row["created_at"].astimezone(UTC).date()
         evidence: list[dict[str, Any]] = []
-        recorded: list[tuple[Decimal, str]] = []
+        charge, lines = Decimal(0), []
         for found in logged.get(row["reservation_id"], []):
-            charge = _recorded_charge(found["charged_usd"])
+            recorded = _recorded_charge(found["charged_usd"])
+            days = None
+            if recorded:
+                days = _recorded_days(
+                    found.get("charged_days"),
+                    recorded,
+                    admitted=admitted,
+                    written=date.fromisoformat(found["day"]),
+                )
             evidence.append(
                 {
                     "request_id": found["request_id"],
                     "day": found["day"],
                     "status_code": found["status_code"],
-                    "charged_usd": str(charge) if charge is not None else None,
+                    "charged_usd": str(recorded) if recorded is not None else None,
+                    # The days the row says the charge was recorded on, which
+                    # it is counted on; None where it does not say.
+                    "charged_days": {day: str(cost) for day, cost, _ in days} if days else None,
                     # The row's own price for the request, beside it for an
                     # operator to compare; not what is charged.
                     "cost_usd": str(found["cost_usd"]) if found["cost_usd"] is not None else None,
                 }
             )
-            if charge is not None:
-                recorded.append((charge, found["day"]))
-        charge, day = max(recorded, default=(Decimal(0), ""))
+            if recorded is not None and recorded >= charge:
+                charge, lines = recorded, days or [(found["day"], recorded, 1)]
         costs = (
-            (
+            tuple(
                 CostLine(
                     user_id=row["user_id"],
                     day=day,
                     api_key_id=row["api_key_id"],
-                    cost_usd=charge,
-                    requests=1,
+                    cost_usd=cost,
+                    requests=requests,
                     project_id=row["project_id"],
-                ),
+                )
+                for day, cost, requests in lines
             )
             if charge > 0
             else ()
@@ -175,6 +234,7 @@ def describe(entry: Reconciliation) -> dict[str, Any]:
         "admitted_at": entry.admitted_at,
         "would": "charge" if cost else "release",
         "charge_usd": str(cost),
+        "charge_days": {line.day: str(line.cost_usd) for line in entry.member.costs},
         "request_log": list(entry.evidence),
     }
 

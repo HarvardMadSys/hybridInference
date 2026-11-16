@@ -256,6 +256,19 @@ class SharedReservation:
         """What the costs recorded under it add up to."""
         return sum((line.cost_usd for line in self.charges), Decimal(0))
 
+    def charged_by_day(self) -> list[tuple[str, Decimal, int]]:
+        """Its recorded costs by the UTC day each was recorded on: (day, cost, requests).
+
+        What its settlement adds to the counters, day by day: a cost counts
+        on the day its billing point recorded it, whenever it is written. A
+        request billed on both sides of midnight has two days.
+        """
+        days: dict[str, tuple[Decimal, int]] = {}
+        for line in self.charges:
+            cost, requests = days.get(line.day, (Decimal(0), 0))
+            days[line.day] = (cost + line.cost_usd, requests + line.requests)
+        return [(day, cost, requests) for day, (cost, requests) in days.items()]
+
     def member(self) -> Member:
         """The settlement member this reservation is retired by."""
         return Member(
