@@ -24,6 +24,7 @@ import time
 from decimal import Decimal
 from types import SimpleNamespace
 
+import asyncpg
 import pytest
 import pytest_asyncio
 
@@ -618,6 +619,70 @@ async def test_a_locked_scope_fails_in_bounded_time_and_other_scopes_proceed(
     assert await _rows(db.pool, hot) == []
     assert db.a.holdings()["abandoned"] == db.b.holdings()["abandoned"] == 0
     assert (await db.a.admit(limits(db.a, hot), 0.30))[0].amount == D("0.3")
+
+
+async def test_an_admission_stalled_between_two_statements_does_not_hold_its_account(db, clock):
+    """A process that stops with an admission's locks held must not keep the account from others.
+
+    An admission is several round trips, its scopes' locks held from the
+    first. A process that stalls between two of them -- a blocked event loop,
+    a stopped container, a dead network path -- would leave its session idle
+    in its transaction, holding the locks, for as long as the stall lasts:
+    every other process's admission for that account would wait out its
+    budget and answer 503. The lock and statement timeouts do not cover time
+    spent between statements; the transaction bounds that too, so the server
+    ends the session and the lock is free.
+    """
+    user = PREFIX + "stalled"
+    backend = db.a._backend
+    stalled, resume = asyncio.Event(), asyncio.Event()
+
+    async def stall(step: str) -> None:
+        if step == "locked":
+            stalled.set()
+            await resume.wait()  # far longer than its budget: the process is stuck
+
+    request = AdmissionRequest(
+        reservation_id="sr_stalled",
+        instance_id="inst-a",
+        user_id=user,
+        api_key_id=None,
+        project_id=None,
+        requested_usd=usd(0.30),
+        check_day=clock.day,
+        operation="request",
+    )
+
+    async def stuck_admission():
+        async with request_connection(backend.request_pool, timeout=5) as conn:
+            return await backend.admit_on(
+                conn,
+                request,
+                lambda snapshot: usd(0.30),
+                budget_ms=300,
+                on_xid=lambda xid: None,
+                pause=stall,
+            )
+
+    stuck = asyncio.create_task(stuck_admission())
+    try:
+        await asyncio.wait_for(stalled.wait(), 5)
+        # Another process admits the same account while the first is stuck: it
+        # waits for the lock only until the server has ended the idle session.
+        started = time.monotonic()
+        admitted, refusal = await db.b.admit(limits(db.b, user), 0.30)
+        assert refusal is None and admitted.amount == D("0.3")
+        assert time.monotonic() - started < shared_ledger.ADMISSION_BUDGET_SECONDS - 1
+    finally:
+        resume.set()
+    # The stuck one finds its session gone when it comes back, and wrote nothing.
+    with pytest.raises((asyncpg.PostgresError, asyncpg.InterfaceError, OSError)):
+        await stuck
+    assert [row["reservation_id"] for row in await _rows(db.pool, user)] == [
+        admitted.reservation_id
+    ]
+    admitted.release()
+    assert await db.b.flush(5)
 
 
 @pytest_asyncio.fixture

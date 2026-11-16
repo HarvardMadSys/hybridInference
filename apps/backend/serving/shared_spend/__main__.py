@@ -28,6 +28,9 @@ accountings. Quarantined reservations stay counted: the counters refused their
 costs, which no command here settles.
 
 Reads the same ``DB_*`` settings as the gateway; never prints a secret.
+``reconcile --apply`` writes counters, so it also loads the deployment's
+stored configuration for the erasure-fence secret, and refuses to run with a
+secret whose fingerprint is not the one the database pinned.
 """
 
 from __future__ import annotations
@@ -157,8 +160,17 @@ async def _main(args: argparse.Namespace) -> list[str]:
     from serving.config.settings import get_settings
     from serving.shared_spend.store import SharedSpendStore
 
+    writes = args.command == "reconcile" and args.apply
+    if writes:
+        # The deployment's configuration as it is stored, which is where its
+        # secrets live once the gateway has imported them: the erasure fence
+        # has to be derived here exactly as the gateway derives it.
+        from serving.config import app_config
+
+        async with app_config.command_line_session():
+            pass
     settings = get_settings()
-    fence_secret = _fence_secret(args)
+    fence_secret = _fence_secret() if writes else None
     pool = await asyncpg.create_pool(
         host=settings.db_host,
         port=settings.db_port,
@@ -169,30 +181,55 @@ async def _main(args: argparse.Namespace) -> list[str]:
         max_size=2,
     )
     try:
+        if fence_secret is not None:
+            await require_pinned_secret(pool, fence_secret)
         return await run(args, SharedSpendStore(pool, fence_secret=fence_secret))
     finally:
         await pool.close()
 
 
-def _fence_secret(args: argparse.Namespace) -> str | None:
-    """The erasure fence's secret for a command that writes; None for one that only reads.
+def _fence_secret() -> str:
+    """The erasure fence's secret, for the command that writes.
 
     A reconciliation adds costs to the counters, so it runs under the fence
     exactly as the gateway's own settlements do (it must not write a counter
-    for an account being hard-deleted), and is refused where the secret is not
+    for an account being hard-deleted), and is refused where no secret is
     configured.
     """
-    if args.command != "reconcile" or not args.apply:
-        return None
     from serving.storage.erasure_fence import ErasureFenceUnavailable, resolve_fence_secret
 
     try:
         return resolve_fence_secret(None)
     except ErasureFenceUnavailable as exc:
         raise Refused(
-            "reconcile --apply needs the gateway's erasure-fence secret "
-            "(ERASURE_FENCE_SECRET, or API_KEY_SECRET) in its environment"
+            "reconcile --apply needs the gateway's erasure-fence secret: run it where the "
+            "gateway runs, with its configuration"
         ) from exc
+
+
+async def require_pinned_secret(pool: Any, secret: str) -> None:
+    """Refuse a fence secret that is not the one this database's fence was made with.
+
+    The gateway pins its secret's fingerprint in the database when it starts
+    and refuses to start on any other. A secret that differs derives other
+    digests: the fence's lock and its tombstone check would then guard
+    nothing, and a reconciliation racing an account's hard delete could write
+    a counter for the erased account. Checked, never pinned, here.
+
+    Raises:
+        Refused: The fingerprint differs, or none is pinned (no gateway has
+            started on this database).
+    """
+    from serving.storage.erasure_fence import fingerprint_secret, get_pinned_fingerprint
+
+    async with pool.acquire() as conn:
+        pinned = await get_pinned_fingerprint(conn)
+    if pinned != fingerprint_secret(secret):
+        raise Refused(
+            "the erasure-fence secret configured here is not the one this database's fence "
+            "was made with (or none is pinned yet): run this where the gateway runs, with its "
+            "configuration"
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> int:

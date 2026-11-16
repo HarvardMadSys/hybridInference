@@ -267,6 +267,17 @@ async def test_a_process_with_something_unsent_is_not_recorded_as_closed(monkeyp
     assert ledger.holdings()["queued"] == 1
 
 
+async def test_a_process_with_a_request_still_running_is_not_recorded_as_closed():
+    # Closed, it sends nothing more: the running request's settlement would
+    # never be written, under an instance that says it left nothing behind.
+    ledger, backend = _ledger()
+    running, _ = await ledger.admit(_check(ledger), 0.30)
+    assert await ledger.flush(1)  # nothing is waiting to be sent
+    assert await ledger.close() is False
+    assert backend.closures == {}
+    assert ledger.holdings()["active"] == 1 and running.state == "active"
+
+
 async def test_a_closure_the_database_cannot_record_is_reported_as_not_closed():
     ledger, backend = _ledger()
     backend.fail_close = ConnectionRefusedError("the database is down")
@@ -314,6 +325,23 @@ async def test_the_upkeep_keeps_the_receipts_of_batches_not_answered_yet_and_run
 
     backend.settle_gate.set()
     assert await ledger.flush(5)
+
+
+async def test_an_upkeep_that_could_not_delete_everything_comes_again_within_a_minute():
+    # A busy process makes a receipt for nearly every request: one run deletes
+    # so many and no more, so when it stopped with more to go, the next is not
+    # an hour away. And its survey does not count the receipt tables row by row.
+    ledger, backend = _ledger()
+    backend.purge_answers = [(PURGE_BATCHES, PURGE_BATCHES)] * shared_ledger._UPKEEP_ROUNDS
+    await _run_upkeep(ledger)
+    assert len(backend.purges) == shared_ledger._UPKEEP_ROUNDS
+    due_in = ledger._upkeep_at - time.monotonic()
+    assert 0 < due_in <= shared_ledger._UPKEEP_CATCH_UP_SECONDS
+    assert ledger.stats()["receipts_purged"] == PURGE_BATCHES * shared_ledger._UPKEEP_ROUNDS
+    assert backend.summaries == [False]  # estimated counts
+
+    await _run_upkeep(ledger)  # this one finds little left: back to the hourly pace
+    assert ledger._upkeep_at - time.monotonic() > shared_ledger._UPKEEP_CATCH_UP_SECONDS
 
 
 async def test_the_first_upkeep_falls_at_a_random_point_within_the_hour():

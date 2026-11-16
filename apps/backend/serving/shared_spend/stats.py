@@ -92,6 +92,9 @@ class LedgerStats:
     entries_refused: int = 0
     #: Reservations a settlement did not find held as recorded.
     members_unaccounted: int = 0
+    #: Reservations with costs that another batch had retired first (an
+    #: operator's reconciliation of this process while it ran): costs dropped.
+    members_duplicate: int = 0
     #: Batch receipts this process's upkeep deleted.
     receipts_purged: int = 0
 

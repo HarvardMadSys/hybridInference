@@ -15,14 +15,25 @@ from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 from fastapi import Response
 from fastapi.encoders import jsonable_encoder
 
+from serving.servers.routers import health
 from serving.servers.routers.health import deep_health
 from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
 from serving.shared_spend.ledger import SharedSpendLedger
 from serving.spend_ledger import SpendCheck
+from serving.utils.single_flight import SingleFlightCache
 from tests.fixtures.shared_spend import FakeSharedBackend
+
+
+@pytest.fixture(autouse=True)
+def _own_probe_cache(monkeypatch):
+    """The health endpoints share one store probe for two seconds: not another test's."""
+    monkeypatch.setattr(
+        health, "_HEALTH_PROBES", SingleFlightCache(health.HEALTH_PROBE_TTL_SEC, max_entries=1)
+    )
 
 
 class _StubRouter:

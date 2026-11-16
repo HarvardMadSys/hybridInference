@@ -37,6 +37,7 @@ class FakeSharedBackend:
         self.batches: list[Any] = []
         self.fail_admit: BaseException | None = None
         self.fail_settle: BaseException | None = None
+        self.fail_quarantine: BaseException | None = None
         self.settle_gate: asyncio.Event | None = None
         self.settling = asyncio.Event()
         self._xid = 1000
@@ -49,11 +50,16 @@ class FakeSharedBackend:
         self.purge_answers: list[tuple[int, int]] = []
         self.open_rows: list[dict[str, Any]] = []
         self.fail_summary: BaseException | None = None
+        self.summaries: list[bool] = []
+        # Raised by the next admissions, one each, before anything is done.
+        self.fail_admits: list[BaseException] = []
 
     def held(self, user_id: str) -> Decimal:
         return sum((a for r, a in self.rows.values() if r.user_id == user_id), Decimal(0))
 
     async def admit_on(self, conn, request, decide, *, budget_ms, on_xid, pause=None):
+        if self.fail_admits:
+            raise self.fail_admits.pop(0)
         if self.fail_admit is not None:
             raise self.fail_admit
         self._xid += 1
@@ -105,6 +111,8 @@ class FakeSharedBackend:
         return result
 
     async def quarantine(self, member, instance_id, *, day, note):
+        if self.fail_quarantine is not None:
+            raise self.fail_quarantine
         return True
 
     # -- closure, receipt retention and the survey: what was asked, and canned answers --
@@ -123,7 +131,8 @@ class FakeSharedBackend:
     async def purge_closures(self, **kwargs):
         return 0
 
-    async def summary(self):
+    async def summary(self, *, exact=True):
+        self.summaries.append(exact)
         if self.fail_summary is not None:
             raise self.fail_summary
         return {"reservations": list(self.open_rows), "receipts": {"batches": 0, "members": 0}}

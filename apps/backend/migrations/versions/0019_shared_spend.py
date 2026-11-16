@@ -34,7 +34,20 @@ delete purges.
 write made outside the shared settlement (which marks its own transaction), so
 a gateway that does not take part -- an older build, say -- is seen. It never
 refuses the write. While the mode is ``local`` the trigger reads one row and
-records nothing.
+records nothing. It runs with the privileges of whoever writes the counters, so
+that role needs to read ``spend_accounting`` (and, in the shared mode, to
+insert into ``spend_unidentified_writes``), as it already needs to use every
+table a revision adds.
+
+Creating a trigger takes a SHARE ROW EXCLUSIVE lock on its table, so writes to
+each counter table wait a moment while its trigger is created (reads do not).
+The three tables are taken in the order the cost writer itself writes them,
+and each wait is bounded by the migration's lock timeout: a transaction that
+holds a counter table for longer fails this revision, which rolls back whole
+and is run again. An account hard delete writes the same tables in another
+order, so one running at that very moment can deadlock with this revision;
+PostgreSQL then fails one of the two, nothing is half done, and it is run
+again.
 
 Revision ID: 0019_shared_spend
 Revises: 0018_projects_owned_by_accounts

@@ -241,11 +241,25 @@ _STRUCTURED_LOG_KEYS = (
 #: request log cuts its own values shorter; this bounds every other line.
 MAX_LOGGED_FIELD_CHARS = 2048
 
+#: The most items a list in a structured field keeps. The spend ledgers log one
+#: entry for each cost a write left unconfirmed, and after a database outage
+#: that can be every account with traffic: a line of any length is one a log
+#: pipeline may cut or drop whole. A settlement batch's reservations (at most
+#: 256) always fit; what is cut is counted on the line.
+MAX_LOGGED_FIELD_ITEMS = 300
+
 
 def _bounded_field(value: Any) -> Any:
-    """*value*, or the start of it when it is text longer than :data:`MAX_LOGGED_FIELD_CHARS`."""
+    """*value* within its bound: the start of a long text, the first items of a long list.
+
+    Text is cut at :data:`MAX_LOGGED_FIELD_CHARS`. A list or tuple keeps its
+    first :data:`MAX_LOGGED_FIELD_ITEMS` items and says how many it left out.
+    """
     if isinstance(value, str) and len(value) > MAX_LOGGED_FIELD_CHARS:
         return value[:MAX_LOGGED_FIELD_CHARS] + "…"
+    if isinstance(value, list | tuple) and len(value) > MAX_LOGGED_FIELD_ITEMS:
+        left_out = len(value) - MAX_LOGGED_FIELD_ITEMS
+        return [*value[:MAX_LOGGED_FIELD_ITEMS], f"… and {left_out} more"]
     return value
 
 

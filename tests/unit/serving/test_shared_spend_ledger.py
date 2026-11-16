@@ -254,6 +254,124 @@ async def test_a_defect_in_the_writer_is_retried_after_a_back_off_not_at_once_an
     assert ledger.fully_settled()
 
 
+async def test_a_defect_while_building_a_batch_loses_nothing_it_had_taken(monkeypatch):
+    # The writer takes what is queued to build a batch. Should building it fail
+    # (a defect, the case the back-off above exists for), the next attempt has
+    # to find the same reservations and costs: dropped, a plain cost would be
+    # in no counter and counted nowhere, and a reservation would stay held in
+    # the database with nothing left to settle it.
+    import types
+
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.01)
+    ledger, backend = _ledger()
+    built: list[int] = []
+
+    def defective_once(*args, **kwargs):
+        built.append(len(built))
+        if len(built) == 1:
+            raise RuntimeError("a defect while building the batch")
+        return SettlementBatch.make(*args, **kwargs)
+
+    monkeypatch.setattr(
+        shared_ledger, "SettlementBatch", types.SimpleNamespace(make=defective_once)
+    )
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.12)
+    ledger.record(USER, 0.05)  # a plain cost, under no reservation
+    reservation.release()
+
+    assert await ledger.flush(5)
+    assert len(built) >= 2  # the first attempt failed, a later one went out
+    assert backend.rows == {}
+    assert backend.counters == {USER: Decimal("0.17")}
+    assert ledger.fully_settled()
+    (batch,) = backend.batches
+    assert [m.reservation_id for m in batch.members] == [reservation.reservation_id]
+    assert sum(line.cost_usd for line in batch.increments) == Decimal("0.05")
+
+
+async def test_an_admission_whose_connection_failed_is_tried_again_and_admitted():
+    # What a lost COMMIT answer, a failover or a reaped idle connection looks
+    # like: asyncpg's connection errors carry a class 08 SQLSTATE. The same
+    # admission is sent again within its budget instead of answering 503.
+    ledger, backend = _ledger()
+    backend.fail_admits = [
+        asyncpg.exceptions.ConnectionDoesNotExistError("connection was closed"),
+        asyncpg.exceptions.ConnectionFailureError("connection failure"),
+    ]
+    reservation, refusal = await ledger.admit(_check(ledger), 0.30)
+    assert refusal is None and reservation.amount == Decimal("0.300000")
+    assert backend.fail_admits == [] and len(backend.rows) == 1
+    assert ledger.stats()["admissions"] == {"admitted": 1}
+
+
+@pytest.mark.parametrize(
+    ("error", "again"),
+    [
+        (asyncpg.exceptions.ConnectionDoesNotExistError("closed"), True),
+        (asyncpg.exceptions.ConnectionFailureError("failed"), True),
+        (asyncpg.exceptions.UniqueViolationError("the id's row appeared"), True),
+        (asyncpg.exceptions.SerializationError("serialization"), True),
+        (asyncpg.exceptions.InterfaceError("connection is closed"), True),
+        (ConnectionResetError("reset by peer"), True),
+        # Final answers: the budget ran out, or the database said no.
+        (asyncpg.exceptions.QueryCanceledError("statement timeout"), False),
+        (asyncpg.exceptions.LockNotAvailableError("lock timeout"), False),
+        (asyncpg.exceptions.IdleInTransactionSessionTimeoutError("idle"), False),
+        (asyncpg.exceptions.NumericValueOutOfRangeError("overflow"), False),
+        (TimeoutError(), False),
+    ],
+)
+async def test_which_admission_failures_are_tried_again_with_the_same_id(error, again):
+    assert shared_ledger._retryable(error) is again
+
+
+async def test_what_a_settlement_moved_into_the_counters_stays_known_for_a_moment(monkeypatch):
+    # For an admission whose read predates that settlement's commit: see the
+    # PostgreSQL test of the race. Here, what is kept and for how long.
+    ledger, backend = _ledger()
+    before = time.monotonic()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 1.00)  # $0.70 above its estimate
+    ledger.record(USER, 0.05)  # a plain cost in the same batch
+    reservation.release()
+    assert await ledger.flush(5)
+    assert backend.counters == {USER: Decimal("1.05")}
+
+    def extra(read_from):
+        return ledger._local_extra(USER, None, None, reserved=False, read_from=read_from)[0]
+
+    assert extra(None) == 0  # nothing is held here any more
+    assert extra(before) == pytest.approx(0.75)  # a read made before the answer needs both
+    assert extra(time.monotonic() + 1) == 0  # one made after it has them in the counters
+
+    # Kept only for as long as an admission can run.
+    monkeypatch.setattr(shared_ledger, "_LANDED_SECONDS", 0.0)
+    await asyncio.sleep(0.01)
+    ledger.record(USER, 0.01)
+    assert await ledger.flush(5)
+    assert len(ledger._landed) == 1 and extra(before) == pytest.approx(0.01)
+
+
+async def test_a_refused_reservation_whose_row_could_not_be_marked_is_counted_here_in_full():
+    # Quarantined, its row holds its cost on its day and an admission reads it
+    # there. If the row could not be marked, nothing in the database does: the
+    # process counts it itself, as it does any liability it alone knows.
+    ledger, backend = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.50)
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    backend.fail_quarantine = ConnectionRefusedError("the database went away")
+    reservation.release()
+    assert await ledger.flush(5)
+    assert reservation.state == "unaccounted"
+    assert ledger.holdings()["unaccounted"] == 1 and ledger.holdings()["quarantined"] == 0
+    assert ledger._local_extra(USER, None, None, reserved=False)[0] == pytest.approx(0.50)
+
+
 def test_a_batch_names_each_reservation_once_with_its_own_costs():
     line = CostLine(USER, utc_day(), None, usd(0.1))
     member = Member("sr_1", USER, "settle", costs=(line,))

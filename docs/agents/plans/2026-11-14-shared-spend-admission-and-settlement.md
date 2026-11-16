@@ -112,12 +112,18 @@ Bounds: a per-process `asyncio.Lock` per scope key (taken in the same order)
 keeps one admission per scope per process in the database, so a hot account
 cannot hold the request pool; the whole operation, retries included, runs
 under one deadline (`REQUEST_ACQUIRE_TIMEOUT_SEC`, the existing request-path
-bound), which also bounds pool acquisition, `lock_timeout` and
-`statement_timeout`. Overload or an unavailable database raises the existing
-`DatabaseBusyError` (503 with `Retry-After`); batch work is handed back for a
-later attempt. A lost COMMIT answer is retried with the same id within the
-deadline. If the outcome is still unknown, or the admitting coroutine is
-cancelled after the id was used, the request is not dispatched and a
+bound), which also bounds pool acquisition, `lock_timeout`,
+`statement_timeout` and `idle_in_transaction_session_timeout`. The last one is
+for the time *between* the transaction's statements, which the other two do
+not cover: a process that stalls there (a blocked event loop, a stopped
+container) would hold its scopes' locks, and every other process's admission
+for them, until it came back; the server ends its session instead. Overload or
+an unavailable database raises the existing `DatabaseBusyError` (503 with
+`Retry-After`); batch work is handed back for a later attempt. A lost COMMIT
+answer, or a connection that failed otherwise (SQLSTATE class 08), is retried
+with the same id within the deadline. If the outcome is still unknown, or the
+admitting coroutine is cancelled after the id was used, the request is not
+dispatched and a
 release-not-dispatched is queued carrying the attempts' transaction ids; the
 writer only releases once `txid_status` reports each attempt final.
 
@@ -153,7 +159,9 @@ what a failure costs the caller (four requests of $0.30 the upstream answered
 502 used up a $1.00 quota with nothing spent, and nothing released them) and it
 accumulated without bound. Whether an upstream charged the operator for a call
 it failed is a question for the pricing policy and its billing points, not for
-the accounting that records them.
+the accounting that records them. The trade-off is deliberate, and worth
+saying plainly: like the per-process mode, the shared mode gives the operator
+no protection against an upstream that charged for work whose answer was lost.
 
 A batch attempt whose charge could not be told is recorded as such by the batch
 itself (`batch_attempts.cost_status = 'unknown'`), as before; its reservation is
@@ -239,7 +247,13 @@ for: they leave the set every check reads and stay in what the process reports
   an *unaccounted* liability: counted in this process's checks at the larger
   of its estimate and its known cost, on the day it ended, reported by
   `holdings`/`unwritten`, logged and alerted. A `quarantined` member stays in
-  the database (and in `holdings`).
+  the database (and in `holdings`); if its row could not be marked, the
+  process counts it as unaccounted instead.
+- A settlement that finds a member another batch retired first (`duplicate`:
+  an operator reconciled this process while it was running, section 6b) adds
+  none of its costs. They are then in no counter, and the settlement says so
+  (`spend_settlement_duplicate`, with the reservations and the amount): the
+  operator's audit rows say what was charged instead.
 - Nothing expires a reservation or forgives a liability: no TTL and no
   heartbeat retires one. Settlement receipts are deleted under the retention
   rule of section 6b, never by age alone.
@@ -264,6 +278,18 @@ estimate (several charges included) are added to every later check at once;
 other processes see the actual cost when the settlement commits. Late costs
 (after the request ended) are plain increments of the next batch.
 
+An admission adds what only its process knows to what it read from the
+database, and the two are not taken at one instant: the process's own
+settlement can commit after the read and be answered before the decision. The
+read then has the request at its estimate and the counters without its cost,
+and by the decision the process no longer holds it. So what a settlement
+moved into the counters -- its plain costs, and the part of each request's
+cost above its estimate -- stays known to the process for a few seconds (as
+long as an admission can run), and an admission adds whatever was answered
+since its read was made. A settlement that committed just before the read and
+was answered just after is counted twice for that one admission, which errs
+towards refusing.
+
 A request that has ended keeps its estimate in the database until its
 settlement commits, normally milliseconds later. An admission made in that
 interval counts the estimate rather than the (usually smaller) cost, so a
@@ -284,8 +310,9 @@ process gone (a stale heartbeat may be a process cut off from the database),
 so nothing below acts on the registry's word alone.
 
 **Closure.** At shutdown, after the final flush, a ledger with nothing left to
-send and no batch unanswered records `closed_by = 'shutdown'` for its instance
-id and sends nothing after that (`SharedSpendLedger.close`). The registry's
+send, no batch unanswered and no request still running records
+`closed_by = 'shutdown'` for its instance id and sends nothing after that
+(`SharedSpendLedger.close`). The registry's
 own `stopped` cannot serve as this record: it is reported earlier in shutdown,
 before that flush, and its row is pruned after a week. A process that leaves
 something unsent, or cannot reach the database, is not closed
@@ -322,6 +349,16 @@ changes nothing. With `--apply --operator NAME --reason TEXT`:
    there; the request ids lead to the log.
 5. The instance is recorded `closed_by = 'operator'` with the name and the
    reason. A `shutdown` closure already there stands.
+
+A chunk the counters refuse for a charge's own values is retired one
+reservation at a time; a reservation refused alone is left as it is and named
+in the command's result, and the instance is then not recorded closed. One
+charge the counters cannot take does not keep the rest held.
+
+The command derives the erasure fence as the gateway does: it loads the
+deployment's stored configuration for the secret, and refuses a secret whose
+fingerprint is not the one pinned in the database. A wrong secret would make
+the fence's lock and tombstone check guard nothing.
 
 *Why a reservation with no recorded charge is given back, not kept.* A request
 cut off by its process dying never reached its billing point; in the
@@ -365,7 +402,11 @@ increments would be added a second time.
 hour, the first time at a random point within the hour, in its own tracked
 task: off the request path and apart from the settlement writer. Only a
 process that is admitting or settling runs it. A run deletes at most 20
-chunks of 500 batches.
+chunks of 500 batches; one that stopped there with more to delete is followed
+by the next within a minute, not an hour, so a busy process (which makes a
+receipt for nearly every request) cannot fall behind for good. The survey
+takes the planner's estimates for the receipt counts rather than counting the
+tables.
 
 ## 6c. What a process reports
 
@@ -410,6 +451,18 @@ Merging this change activates nothing. Before any deployment switches the row:
 4. Who runs `reconcile`, and how they establish that a process is gone, in
    the deployment's runbook: the command records the statement, it cannot
    make it.
+5. The cost of a check at scale. `_local_extra` walks every reservation the
+   process holds and every cost not yet settled, for every gate check and
+   again inside every admission while its locks are held. That is fine for
+   hundreds of requests in flight and not for thousands at hundreds of
+   requests a second: keep running totals per account, key and project, as
+   the per-process ledger does, and measure, before a deployment of that size
+   switches.
+6. What a batch owner sees while budget is held by stranded reservations. The
+   batch scheduler takes a refusal that the counters alone do not explain to
+   be requests in flight and probes again every 30 s; with reservations left
+   by a killed process that lasts until they are reconciled, and the batch
+   looks in progress meanwhile. The stranded alert is what tells an operator.
 
 ## 7. Verification plan
 
@@ -441,6 +494,17 @@ Merging this change activates nothing. Before any deployment switches the row:
   answer and is sent again after an upkeep; closures deleted only when
   nothing is left under them. Each safeguard was checked by removing it and
   seeing a test fail.
+- After three reviews of `9847718`. `dbtest`: a settlement that commits
+  between an admission's read and its decision is still counted (the request
+  that cost the whole limit no longer lets the next one in); an admission
+  stalled between two statements is ended by the server and another process
+  admits the account; a charge the counters refuse does not keep the rest of
+  a reconciliation from being retired; the command refuses a fence secret the
+  database was not pinned to; a duplicate's dropped cost is logged. Unit: a
+  defect while building a batch loses nothing it had taken; a failed
+  connection is retried, a cancelled statement is not; no closure with a
+  request still running; an upkeep that stopped short comes again within a
+  minute; a list in a log line is bounded. Each again checked by removal.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

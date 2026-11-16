@@ -334,7 +334,7 @@ async def test_a_reservation_with_several_log_rows_is_charged_its_latest_total_o
     assert [e["request_id"] for e in json.loads(audit["evidence"])][-1] == latest
 
 
-async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_settles(db):
+async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_settles(db, caplog):
     user = PREFIX + "wrong"
     reservation, _ = await db.a.admit(check(db.a, user), 0.30)
     _charge(db.a, reservation, 0.002)  # its billing point...
@@ -352,6 +352,76 @@ async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_set
     assert await _account(db.pool, user) == Decimal("0.002")  # once
     assert reservation.state == "retired"
     assert db.a.holdings()["unaccounted"] == 0 and db.a.fully_settled()
+    # What the process had recorded was not added, and it says so: the one
+    # place that tells how much went uncharged if the two ever differ.
+    assert db.a.stats()["settlement"]["members_duplicate"] == 1
+    (dropped,) = [
+        r for r in caplog.records if getattr(r, "event", None) == "spend_settlement_duplicate"
+    ]
+    assert dropped.reservations == [reservation.reservation_id]
+    assert dropped.cost_usd == "0.002000"
+
+
+class RefusesChargeOf:
+    """The real backend, whose counters refuse the charge of one reservation (as an overflow does)."""
+
+    def __init__(self, backend, reservation_id: str) -> None:
+        self._backend = backend
+        self._refused = reservation_id
+
+    def __getattr__(self, name):
+        return getattr(self._backend, name)
+
+    async def reconcile(self, instance_id, plan, **kwargs):
+        if any(e.reservation_id == self._refused and e.member.costs for e in plan):
+            raise asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+        return await self._backend.reconcile(instance_id, plan, **kwargs)
+
+
+async def test_a_charge_the_counters_refuse_does_not_keep_the_rest_from_being_retired(db):
+    user = PREFIX + "refused"
+    gone = SharedSpendLedger(db.a._backend, instance_id="inst-refused")
+    fine, _ = await gone.admit(check(gone, user), 0.20)
+    bad, _ = await gone.admit(check(gone, user), 0.20)
+    cut_off, _ = await gone.admit(check(gone, user), 0.20)
+    for reservation in (fine, bad):
+        _charge(gone, reservation, 0.002)
+        await _log_request(db.pool, reservation, user)
+    del gone
+
+    backend = RefusesChargeOf(db.b._backend, bad.reservation_id)
+    done = await _reconcile(
+        backend, "inst-refused", apply=True, operator="alice", reason="process gone"
+    )
+    # The other two are retired, one charged and one given back; the refused
+    # one is left as it was and named, and the instance is not called closed.
+    assert (done["charged"], done["released"]) == (1, 1)
+    assert done["not_retired"] == {"refused": [bad.reservation_id]}
+    assert "refused the charge of 1" in done["stopped"] and "closed_now" not in done
+    assert (done["active_left"], done["quarantined_left"]) == (1, 0)
+    (left,) = await _rows(db.pool, user)
+    assert (left["reservation_id"], left["state"]) == (bad.reservation_id, "active")
+    assert set(await _audit(db.pool)) == {fine.reservation_id, cut_off.reservation_id}
+    assert await _account(db.pool, user) == Decimal("0.002")
+    assert await _closures(db.pool) == {}
+    # Once the counters take it, a second run finishes the job.
+    done = await _reconcile(
+        db.b._backend, "inst-refused", apply=True, operator="alice", reason="process gone"
+    )
+    assert (done["charged"], done["closed_now"]) == (1, True)
+    assert await _account(db.pool, user) == Decimal("0.004")
+
+
+async def test_the_command_refuses_a_fence_secret_the_database_was_not_pinned_to(db):
+    from serving.shared_spend.__main__ import require_pinned_secret
+    from serving.storage.erasure_fence import validate_or_init_fingerprint
+
+    async with db.pool.acquire() as conn:
+        # As a gateway's start does: the test database's one secret.
+        await validate_or_init_fingerprint(conn, secret=postgres.FENCE_SECRET)
+    await require_pinned_secret(db.pool, postgres.FENCE_SECRET)
+    with pytest.raises(Refused, match="not the one this database's fence was made with"):
+        await require_pinned_secret(db.pool, "another-secret-from-some-shell")
 
 
 async def test_a_quarantined_reservation_is_left_to_its_own_resolution(db):

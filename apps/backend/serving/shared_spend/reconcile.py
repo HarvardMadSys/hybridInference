@@ -62,6 +62,8 @@ from serving.shared_spend.store import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from serving.shared_spend.store import SharedSpendStore
 
 #: Reservations planned and retired in one transaction (a settlement batch's bound).
@@ -92,16 +94,22 @@ def _recorded_charge(value: Any) -> Decimal | None:
 
 
 async def plan(
-    backend: SharedSpendStore, instance_id: str, *, limit: int = CHUNK
+    backend: SharedSpendStore,
+    instance_id: str,
+    *,
+    limit: int = CHUNK,
+    exclude: Sequence[str] = (),
 ) -> list[Reconciliation]:
     """What reconciling *instance_id*'s oldest active reservations would do, at most *limit*.
 
     Reads only. Each reservation is paired with the request-log rows written
     under it. Each row records what the billing points had charged the
     reservation when it was written; the largest of those is the charge,
-    counted on the UTC day that row was written.
+    counted on the UTC day that row was written. One request is counted per
+    reservation charged, where its own settlement would have counted one per
+    charge. Reservations in *exclude* are left out.
     """
-    reservations = await backend.reservations_of(instance_id, limit=limit)
+    reservations = await backend.reservations_of(instance_id, limit=limit, exclude=exclude)
     logged = await backend.request_log_rows(reservations)
     planned = []
     for row in reservations:
@@ -211,9 +219,13 @@ async def apply(
 
     In chunks of :data:`CHUNK`, each planned from the request log and retired
     in one transaction with its audit rows
-    (:meth:`~serving.shared_spend.store.SharedSpendStore.reconcile`). Stops,
-    without closing the instance, when a chunk retires nothing: what is left
-    is no longer held as planned and wants a look.
+    (:meth:`~serving.shared_spend.store.SharedSpendStore.reconcile`). A chunk
+    the counters refuse for a charge's own values is retired one reservation
+    at a time, and a reservation refused alone is left as it is and reported
+    (``not_retired["refused"]``): one charge the counters cannot take must not
+    keep every other reservation of the instance held. The instance is then
+    not recorded closed, and neither when a chunk retires nothing at all: what
+    is left wants a look.
 
     Raises:
         OwnerHeardFrom: The registry hears from the instance; nothing is done.
@@ -236,25 +248,58 @@ async def apply(
         "not_retired": {},
         "batches": [],
     }
+    from serving.spend_ledger import _refused
+
+    refused: list[str] = []
     while True:
-        planned = await plan(backend, instance_id)
+        planned = await plan(backend, instance_id, exclude=refused)
         if not planned:
             break
-        result, _ = await backend.reconcile(instance_id, planned, operator=operator, reason=reason)
+        results = []
+        refused_before = len(refused)
+        try:
+            results.append(
+                await backend.reconcile(instance_id, planned, operator=operator, reason=reason)
+            )
+        except Exception as exc:
+            if not _refused(exc):
+                raise
+            # The counters refused a charge, which rolled the chunk back whole.
+            for entry in planned:
+                try:
+                    results.append(
+                        await backend.reconcile(
+                            instance_id, [entry], operator=operator, reason=reason
+                        )
+                    )
+                except Exception as alone:
+                    if not _refused(alone):
+                        raise
+                    refused.append(entry.reservation_id)
         by_id = {entry.reservation_id: entry for entry in planned}
-        done["batches"].append(result.batch_id)
-        for rid in result.members.get("settled", []):
-            done["charged"] += 1
-            done["charge_usd"] += by_id[rid].member.cost_usd()
-        for rid in result.members.get("released", []):
-            done["released"] += 1
-            done["released_usd"] += by_id[rid].amount_usd
-        for outcome, ids in result.members.items():
-            if outcome not in ("settled", "released"):
-                done["not_retired"].setdefault(outcome, []).extend(ids)
-        if not (result.members.get("settled") or result.members.get("released")):
+        retired = 0
+        for result, _ in results:
+            done["batches"].append(result.batch_id)
+            for rid in result.members.get("settled", []):
+                done["charged"] += 1
+                done["charge_usd"] += by_id[rid].member.cost_usd()
+                retired += 1
+            for rid in result.members.get("released", []):
+                done["released"] += 1
+                done["released_usd"] += by_id[rid].amount_usd
+                retired += 1
+            for outcome, ids in result.members.items():
+                if outcome not in ("settled", "released"):
+                    done["not_retired"].setdefault(outcome, []).extend(ids)
+        if not retired and len(refused) == refused_before:
             done["stopped"] = "a chunk retired nothing; the instance was not closed"
             break
+    if refused:
+        done["not_retired"]["refused"] = refused
+        done["stopped"] = (
+            f"the counters refused the charge of {len(refused)} reservation(s), which stay "
+            "held; the instance was not closed"
+        )
     held = await backend.held_by(instance_id)
     done["quarantined_left"] = held.get("quarantined", 0)
     done["active_left"] = held.get("active", 0)

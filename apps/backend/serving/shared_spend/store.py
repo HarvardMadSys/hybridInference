@@ -277,11 +277,18 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 
 def _timeouts_sql(budget_ms: int) -> str:
     # Integers only, so formatting them in is safe; one round trip with BEGIN.
+    # The third bound is for the time *between* statements, which the other
+    # two do not cover: the transaction holds its scopes' locks across several
+    # round trips, and a process that stalls between two of them (a blocked
+    # event loop, a stopped container, a dead network path) would hold them,
+    # and every other process's admission for those scopes, until it came
+    # back. The server ends such a session instead, which releases the locks.
     budget_ms = max(1, int(budget_ms))
     return (
         "BEGIN ISOLATION LEVEL READ COMMITTED; "
         f"SET LOCAL lock_timeout = '{budget_ms}ms'; "
-        f"SET LOCAL statement_timeout = '{budget_ms}ms'"
+        f"SET LOCAL statement_timeout = '{budget_ms}ms'; "
+        f"SET LOCAL idle_in_transaction_session_timeout = '{budget_ms}ms'"
     )
 
 
@@ -360,6 +367,11 @@ INSERT INTO spend_reconciliations
      cost_usd, evidence, owner_state, operator, reason)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
 """
+
+
+def _count(value: Any) -> int | None:
+    """A row count, or None where the planner has no estimate yet."""
+    return int(value) if value is not None else None
 
 
 def owner_state(instance: dict[str, Any] | None, closed_by: str | None) -> str:
@@ -825,16 +837,24 @@ class SharedSpendStore:
 
     # -- reconciling what a process that is gone left --------------------------
 
-    async def reservations_of(self, instance_id: str, *, limit: int) -> list[dict[str, Any]]:
-        """The active reservations *instance_id* holds, oldest first (at most *limit*)."""
+    async def reservations_of(
+        self, instance_id: str, *, limit: int, exclude: Sequence[str] = ()
+    ) -> list[dict[str, Any]]:
+        """The active reservations *instance_id* holds, oldest first (at most *limit*).
+
+        Without those in *exclude*: the ones a reconciliation found it cannot
+        retire, so that it goes on to the rest.
+        """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT reservation_id, user_id, api_key_id, project_id, amount_usd, operation, "
                 "created_at, EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds "
                 "FROM spend_reservations WHERE instance_id = $1 AND state = 'active' "
+                "AND NOT (reservation_id = ANY($3::text[])) "
                 "ORDER BY created_at, reservation_id LIMIT $2",
                 instance_id,
                 limit,
+                list(exclude),
             )
         return [dict(row) for row in rows]
 
@@ -989,13 +1009,19 @@ class SharedSpendStore:
             {**dict(row), "owner": owners.get(row["instance_id"], "not registered")} for row in rows
         ]
 
-    async def summary(self) -> dict[str, Any]:
+    async def summary(self, *, exact: bool = True) -> dict[str, Any]:
         """Counts for the status report and the hourly survey, every process's included.
 
         Open reservations by instance and state, each with how its owner is
         known (:func:`owner_state`); the receipts kept and the oldest one's
         age; closures by kind; what operators reconciled; and the evidence of
         counter writes made outside the shared settlement.
+
+        The receipts are counted, and the oldest found, by reading both
+        receipt tables whole: fine for a command an operator runs, not for
+        every process every hour. With *exact* false they are the planner's
+        estimates (None before the tables were first analyzed) and the oldest
+        age is left out.
         """
         async with self.pool.acquire() as conn:
             by_state = await conn.fetch(
@@ -1012,6 +1038,13 @@ class SharedSpendStore:
                 "(SELECT COUNT(*) FROM spend_settlement_members) AS members, "
                 "(SELECT EXTRACT(EPOCH FROM (NOW() - MIN(settled_at))) FROM spend_settlements) "
                 "AS oldest_age_seconds"
+                if exact
+                else "SELECT "
+                "(SELECT NULLIF(reltuples, -1)::bigint FROM pg_class "
+                " WHERE oid = 'spend_settlements'::regclass) AS batches, "
+                "(SELECT NULLIF(reltuples, -1)::bigint FROM pg_class "
+                " WHERE oid = 'spend_settlement_members'::regclass) AS members, "
+                "NULL::float8 AS oldest_age_seconds"
             )
             closures = await conn.fetch(
                 "SELECT closed_by, COUNT(*) AS n FROM spend_instance_closures GROUP BY closed_by"
@@ -1034,11 +1067,12 @@ class SharedSpendStore:
             "unidentified_writes": int(unidentified["n"] or 0),
             "last_unidentified_write": unidentified["last"],
             "receipts": {
-                "batches": int(receipts["batches"]),
-                "members": int(receipts["members"]),
+                "batches": _count(receipts["batches"]),
+                "members": _count(receipts["members"]),
                 "oldest_age_seconds": (
                     round(float(oldest_receipt), 1) if oldest_receipt is not None else None
                 ),
+                "estimated": not exact,
             },
             "closures": {row["closed_by"]: int(row["n"]) for row in closures},
             "reconciled": {

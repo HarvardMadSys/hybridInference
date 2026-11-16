@@ -61,6 +61,7 @@ give:
 from __future__ import annotations
 
 import asyncio
+import collections
 import contextlib
 import dataclasses
 import random
@@ -110,6 +111,12 @@ MAX_BATCH_MEMBERS = 256
 _RETRY_FIRST_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 30.0
 
+#: How long what a settlement just added to the counters stays known to this
+#: process, for an admission whose read may predate it (see
+#: :meth:`SharedSpendLedger._local_extra`): as long as an admission can run,
+#: and a second.
+_LANDED_SECONDS = ADMISSION_BUDGET_SECONDS + 1.0
+
 #: Settlement writes failing for this long are reported and alerted, once a stall.
 SETTLEMENT_STALLED_SECONDS = 60.0
 
@@ -120,6 +127,11 @@ UPKEEP_SECONDS = 3600.0
 
 #: The most purge statements one upkeep runs.
 _UPKEEP_ROUNDS = 20
+
+#: When an upkeep stopped at that many with more to delete, the next one comes
+#: this soon rather than in an hour: a busy process makes a receipt for nearly
+#: every request, and its deletion must not fall behind for good.
+_UPKEEP_CATCH_UP_SECONDS = 60.0
 
 #: Stranded reservations are alerted on once the oldest is this old: a request
 #: may run for minutes, and a live owner may miss its heartbeats for a moment.
@@ -134,6 +146,7 @@ _UNAVAILABLE_ALERT_SECONDS = 60.0
 
 #: SQLSTATEs an admission retries with the same reservation id: another
 #: attempt's row just became visible (23505), a serialization failure (40).
+#: A failed connection (class 08) is retried too (:func:`_retryable`).
 _RETRY_ADMISSION_SQLSTATES = frozenset({"23505", "40001", "40P01"})
 
 #: Settlement outcomes after which a member's liability is no longer held
@@ -294,6 +307,12 @@ class SharedSpendLedger:
         # process.
         self._liabilities: dict[str, SharedReservation] = {}
         self._past_liabilities: dict[str, SharedReservation] = {}
+        # What settlements answered in the last few seconds moved out of this
+        # process's keeping and into the counters, each with when its answer
+        # was handled: (account, key, project, day or None for today, amount).
+        self._landed: collections.deque[tuple[float, tuple[tuple[Any, ...], ...]]] = (
+            collections.deque()
+        )
         self._writer: asyncio.Task[None] | None = None
         self._retry: asyncio.TimerHandle | None = None
         self._retry_delay = 0.0
@@ -335,6 +354,7 @@ class SharedSpendLedger:
         project_id: str | None,
         *,
         reserved: bool,
+        read_from: float | None = None,
     ) -> tuple[float, float, float, float, float, float]:
         """What to add, for this process, to the account's, key's and project's day and month.
 
@@ -351,6 +371,18 @@ class SharedSpendLedger:
         does. A liability counts against the day it ended on and that day's
         month, never against a later one: the database counts a quarantined
         row the same way, so this process's gate and every other's agree.
+
+        *read_from* is for an admission, which adds this to what it read from
+        the database: the moment (monotonic) from which its read was made.
+        One of this process's settlements can commit after that read and be
+        answered before the admission decides; the read then has the request
+        at its estimate and the counters without its cost, and by the decision
+        the process no longer holds it. So what settlements answered since
+        *read_from* moved into the counters -- the part of a request's cost
+        above its estimate, and the batch's plain costs -- is added too. A
+        settlement that committed before the read and was answered after
+        *read_from* is counted twice for that one admission, which errs
+        towards refusing.
         """
         from serving.spend_ledger import utc_day
 
@@ -407,6 +439,11 @@ class SharedSpendLedger:
                 reservation.ended_day or today,
                 max(reservation.amount, reservation.cost()),
             )
+        if read_from is not None:
+            for answered_at, moved in self._landed:
+                if answered_at >= read_from:
+                    for line_user, line_key, line_project, day, cost in moved:
+                        add(line_user, line_key, line_project, day or today, cost)
         return totals[0], totals[1], totals[2], totals[3], totals[4], totals[5]
 
     def _current_liabilities(self, month: str) -> list[SharedReservation]:
@@ -513,9 +550,23 @@ class SharedSpendLedger:
             ),
         )
         refused: list[quota.BudgetRefusal] = []
+        xids: list[int] = []
+        # From when each attempt's read is made: its locks are granted (the
+        # store hands over the transaction id then) and the read follows.
+        read_from = [time.monotonic()]
+
+        def locked(xid: int) -> None:
+            xids.append(xid)
+            read_from[0] = time.monotonic()
 
         def decide(snapshot: SpendSnapshot) -> Decimal | None:
-            local = self._local_extra(check.user_id, check.key_id, check.project_id, reserved=False)
+            local = self._local_extra(
+                check.user_id,
+                check.key_id,
+                check.project_id,
+                reserved=False,
+                read_from=read_from[0],
+            )
             read = dataclasses.replace(
                 check,
                 ledger=None,
@@ -552,7 +603,6 @@ class SharedSpendLedger:
 
         from serving.storage.pools import request_connection
 
-        xids: list[int] = []
         ambiguous = False
         loop = asyncio.get_running_loop()
         deadline = loop.time() + ADMISSION_BUDGET_SECONDS
@@ -571,7 +621,7 @@ class SharedSpendLedger:
                                 request,
                                 decide,
                                 budget_ms=int((deadline - loop.time()) * 1000),
-                                on_xid=xids.append,
+                                on_xid=locked,
                                 pause=self.pause,
                             )
                         break
@@ -814,10 +864,24 @@ class SharedSpendLedger:
             return self._solo[0], "solo"
         if not self._queued and not self._increments:
             return None, "none"
-        increments = _coalesce(self._increments)
+        # Built from what is queued, which stays queued until the batch exists
+        # and is kept for replay: a defect while building it (the writer then
+        # backs off and tries again) finds everything still there. Taken out
+        # first, a plain cost would be in no counter and counted nowhere, and
+        # a reservation would stay held with nothing left to settle it.
+        taken = list(self._queued)[:MAX_BATCH_MEMBERS]
+        batch = SettlementBatch.make(
+            self._instance_id,
+            [self._queued[rid] for rid in taken],
+            _coalesce(self._increments),
+        )
+        # Sent until it gets an answer, unchanged: a repeat of a batch that
+        # did commit is recognised by its id.
+        self._replay.append(batch)
         self._increments = []
-        members = [self._queued.pop(rid) for rid in list(self._queued)[:MAX_BATCH_MEMBERS]]
-        return SettlementBatch.make(self._instance_id, members, increments), "new"
+        for rid in taken:
+            del self._queued[rid]
+        return batch, "new"
 
     async def _write_once(self) -> None:
         try:
@@ -842,10 +906,6 @@ class SharedSpendLedger:
             if self._abandoned:
                 self._schedule_retry()
             return
-        if source == "new":
-            # Sent until it gets an answer, unchanged: a repeat of a batch
-            # that did commit is recognised by its id.
-            self._replay.append(batch)
         self._writing = batch
         try:
             result = await self._backend.settle(batch, pause=self.settle_pause)
@@ -923,14 +983,21 @@ class SharedSpendLedger:
             reservation = self._keep_liability(member, "quarantined")
             ended = reservation.ended_day if reservation is not None else None
             try:
-                await self._backend.quarantine(
+                marked = await self._backend.quarantine(
                     member,
                     self._instance_id,
                     day=ended or utc_day(),
                     note=f"settlement refused: {sqlstate}",
                 )
             except Exception:
+                marked = False
                 logger.warning("Marking a refused reservation failed", exc_info=True)
+            if not marked and reservation is not None:
+                # Its row was not marked (the write failed, or the row is not
+                # held as recorded): nothing in the database counts its cost on
+                # its day, so this process does, in full, as for any liability
+                # no longer held where it was recorded.
+                reservation.state = "unaccounted"
         logger.error(
             "The counters refused a settlement entry; set aside and kept counted",
             extra={
@@ -977,7 +1044,15 @@ class SharedSpendLedger:
                 },
             )
             return
+        # What this batch moved out of this process's keeping and into the
+        # counters: its plain costs, and the part of each request's cost above
+        # the estimate its row held (see _local_extra's read_from).
+        moved: list[tuple[Any, ...]] = [
+            (line.user_id, line.api_key_id, line.project_id, line.day, line.cost_usd)
+            for line in batch.increments
+        ]
         unaccounted: list[Member] = []
+        dropped: list[Member] = []
         for member in batch.members:
             what = result.outcome_of(member.reservation_id)
             if member.kind == "release":
@@ -986,10 +1061,40 @@ class SharedSpendLedger:
                 reservation = self._queued_reservations.pop(member.reservation_id, None)
                 if reservation is not None:
                     reservation.state = "retired"
+                    over = reservation.cost() - reservation.amount
+                    if what == "settled" and over > 0:
+                        moved.append(
+                            (
+                                reservation.user_id,
+                                reservation.key_id,
+                                reservation.project_id,
+                                None,
+                                over,
+                            )
+                        )
+                if what == "duplicate" and member.costs:
+                    dropped.append(member)
             else:
                 # missing or mismatch: nothing holds it as recorded here.
                 self._keep_liability(member, "unaccounted")
                 unaccounted.append(member)
+        self._land(moved)
+        if dropped:
+            # Another batch retired them first, so their costs were not added:
+            # an operator reconciled this process while it was running (their
+            # audit rows say what was charged instead), or a defect. Either
+            # way the charge recorded here is in no counter, and this line is
+            # the only place that says how much.
+            self._stats.members_duplicate += len(dropped)
+            logger.error(
+                "Reservations were already retired by another batch; their costs were not added",
+                extra={
+                    "event": "spend_settlement_duplicate",
+                    "batch_id": batch.batch_id,
+                    "reservations": [m.reservation_id for m in dropped],
+                    "cost_usd": str(sum((m.cost_usd() for m in dropped), Decimal(0))),
+                },
+            )
         if unaccounted:
             self._stats.members_unaccounted += len(unaccounted)
             logger.error(
@@ -1016,6 +1121,19 @@ class SharedSpendLedger:
                     cooldown_sec=3600,
                 )
             )
+
+    def _land(self, moved: list[tuple[Any, ...]]) -> None:
+        """Keep what an answered settlement moved into the counters, for a few seconds.
+
+        For the admissions whose read may predate that settlement's commit
+        (:meth:`_local_extra`); none can still be running after
+        :data:`_LANDED_SECONDS`.
+        """
+        now = time.monotonic()
+        while self._landed and self._landed[0][0] < now - _LANDED_SECONDS:
+            self._landed.popleft()
+        if moved:
+            self._landed.append((now, tuple(moved)))
 
     def _schedule_retry(self) -> None:
         if self._retry is not None or self._closed:
@@ -1120,12 +1238,12 @@ class SharedSpendLedger:
 
         Shutdown's, after its :meth:`flush`. From here on this ledger sends
         nothing. The closure is recorded only with everything sent and
-        answered: it is what lets other processes delete this one's receipts
-        once they are old enough, and a batch still unanswered would need its
-        own. A process that leaves something unsent, or cannot reach the
-        database, is not closed: its receipts, and whatever it still holds,
-        stay until an operator says it is gone (``python -m
-        serving.shared_spend reconcile``).
+        answered and no request still running: it is what lets other processes
+        delete this one's receipts once they are old enough, and a batch still
+        unanswered would need its own. A process that leaves something unsent
+        or a request running, or cannot reach the database, is not closed: its
+        receipts, and whatever it still holds, stay until an operator says it
+        is gone (``python -m serving.shared_spend reconcile``).
         """
         self._closed = True
         if self._retry is not None:
@@ -1133,7 +1251,7 @@ class SharedSpendLedger:
             self._retry = None
         if self._upkeep is not None:
             self._upkeep.cancel()
-        if self._writer is not None or self._has_work():
+        if self._writer is not None or self._has_work() or self._active:
             return False
         try:
             async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
@@ -1172,13 +1290,19 @@ class SharedSpendLedger:
             # The batches this process may still send again keep their receipts;
             # one it makes from here on is younger than anything deleted.
             unanswered = [batch.batch_id for batch in self._unsettled_batches()]
+            caught_up = False
             for _ in range(_UPKEEP_ROUNDS):
                 batches, _ = await self._backend.purge_receipts(self._instance_id, unanswered)
                 self._stats.receipts_purged += batches
                 if batches < PURGE_BATCHES:
+                    caught_up = True
                     break
+            if not caught_up:
+                self._upkeep_at = time.monotonic() + _UPKEEP_CATCH_UP_SECONDS
             await self._backend.purge_closures()
-            found = survey(await self._backend.summary())
+            # Estimated receipt counts: an exact count reads both tables whole,
+            # every hour, from every process.
+            found = survey(await self._backend.summary(exact=False))
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -1265,6 +1389,7 @@ class SharedSpendLedger:
                 "write_failures": self._stats.write_failures,
                 "entries_refused": self._stats.entries_refused,
                 "members_unaccounted": self._stats.members_unaccounted,
+                "members_duplicate": self._stats.members_duplicate,
                 "failing_for_seconds": round(now - failing, 1) if failing is not None else None,
                 "last_error": self._last_error,
                 "unwritten_usd": round(cost, 6),
@@ -1353,7 +1478,11 @@ def _retryable(exc: Exception) -> bool:
 
     sqlstate = getattr(exc, "sqlstate", None)
     if isinstance(sqlstate, str):
-        return sqlstate in _RETRY_ADMISSION_SQLSTATES
+        # The connection itself failing (class 08) is asyncpg's
+        # ConnectionDoesNotExistError and ConnectionFailureError: what a lost
+        # COMMIT answer looks like. Any other answer of the database's is
+        # final, a cancelled statement (the budget ran out) included.
+        return sqlstate in _RETRY_ADMISSION_SQLSTATES or sqlstate.startswith("08")
     if isinstance(exc, TimeoutError):
         return False
     return _unavailable(exc) or _connection_error(exc)

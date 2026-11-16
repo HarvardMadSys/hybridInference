@@ -356,6 +356,49 @@ async def test_the_admission_read_sees_a_settlement_wholly_or_not_at_all(db):
     assert (after.account_day, after.reserved_account_day) == (Decimal("0.5"), Decimal(0))
 
 
+async def test_a_cost_settled_between_an_admissions_read_and_its_decision_is_still_counted(db):
+    """An admission adds to what it read what only this process knows -- at its decision.
+
+    Between its read and its decision this process's own settlement can commit
+    and be answered: the read was taken before the commit, so it has the
+    reservation at its estimate and the counters without the cost; and by the
+    decision the process no longer holds the request, so the part of its cost
+    above the estimate, and any plain cost of the batch, were in neither. A
+    request that cost the whole $1.00 limit then let the next one in.
+    """
+    user = PREFIX + "landed"
+    first, _ = await db.a.admit(check(db.a, user), 0.30)
+    _charge(db.a, first, 1.00)  # it cost the whole limit: $0.70 above its estimate
+    db.a.record(user, 0.05)  # and a plain cost, under no reservation, in the same batch
+
+    settling = Gate("before_commit")
+    db.a.settle_pause = settling
+    first.release()
+    await asyncio.wait_for(settling.reached.wait(), 5)  # written, not committed
+
+    reading = Gate("read")
+    db.a.pause = reading
+    second = asyncio.create_task(db.a.admit(check(db.a, user), 0.30))
+    await asyncio.wait_for(reading.reached.wait(), 5)  # it has read: $0.30 held, nothing spent
+
+    settling.go.set()  # the settlement commits, and its answer is handled first
+    assert await db.a.flush(5)
+    assert first.state == "retired"
+    assert await _account(db.pool, user) == Decimal("1.05")
+
+    reading.go.set()
+    admitted, refusal = await second
+    assert admitted is None and refusal is not None  # the limit is spent
+
+    # Once nothing races, the counters alone say so, and nothing is counted twice:
+    # a larger limit has exactly what is left of it.
+    db.a.pause = db.a.settle_pause = None
+    later, _ = await db.a.admit(check(db.a, user, daily=2.0), 5.0)
+    assert later.amount == Decimal("0.950000")
+    later.release()
+    assert await db.a.flush(5)
+
+
 # -- settlement receipts --------------------------------------------------------
 
 
