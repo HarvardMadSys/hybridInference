@@ -1,24 +1,31 @@
-"""Inspect the shared spend accounting: ``python -m serving.shared_spend status | list``.
+"""Inspect and reconcile the shared spend accounting: ``python -m serving.shared_spend COMMAND``.
 
-Read-only. ``status`` shows the stored mode, which registered processes report
-which mode, the reservations still open (by instance and state: active or
-quarantined, with how the registry knows their owner) and how many counter
-writes were made outside the shared settlement while the mode was ``shared``.
-Its ``stranded`` entry adds up the active reservations whose owner the registry
-no longer hears from (stopped, stale, or not registered): a process that was
-killed leaves these, and they keep counting against their account's day and
-month until someone retires them. The registry cannot prove a process gone, so
-this is what to look at, not a verdict. ``list`` shows the open reservations
-themselves, oldest first, without account names.
+``status`` shows the stored mode, which registered processes report which
+mode, the reservations still open (by instance and state: active or
+quarantined, with how their owner is known), the settlement receipts kept and
+how old the oldest is, the closures recorded, what operators have reconciled,
+and how many counter writes were made outside the shared settlement while the
+mode was ``shared``. Its ``stranded`` entry adds up the active reservations
+whose owner may never settle them (closed, stopped, stale, or not registered):
+a process that was killed leaves these, and they keep counting against their
+account's day and month until they are reconciled. ``list`` shows the open
+reservations themselves, oldest first. Neither names an account.
 
-There is deliberately no command that changes the mode or retires a
-reservation. Activating or deactivating the shared mode is a controlled,
-offline transition that still needs its own reviewed procedure (see the
-implementation plan): processes cache the mode at startup, so changing it
-while they run would mix the two accountings. A reservation is retired only by
-its owner's settlement; a stranded or quarantined one stays counted until a
-separately reviewed reconciliation, with evidence of its actual charge,
-exists.
+``reconcile INSTANCE_ID`` retires the active reservations a process that is
+gone left behind (:mod:`serving.shared_spend.reconcile`). Without ``--apply``
+it only shows what it would do: for each reservation, the request-log rows
+found for it and what it would be charged, or that it would be given back
+whole. With ``--apply --operator NAME --reason TEXT`` it does it, one audit
+row per reservation, and records the instance closed. It refuses an instance
+the registry still hears from. The registry cannot prove a process gone:
+running this is the operator's statement that they checked.
+
+There is deliberately no command that changes the mode. Activating or
+deactivating the shared mode is a controlled, offline transition that still
+needs its own reviewed procedure (see the implementation plan): processes
+cache the mode at startup, so changing it while they run would mix the two
+accountings. Quarantined reservations stay counted: the counters refused their
+costs, which no command here settles.
 
 Reads the same ``DB_*`` settings as the gateway; never prints a secret.
 """
@@ -31,7 +38,10 @@ import json
 import sys
 from typing import TYPE_CHECKING, Any
 
+from serving.shared_spend import reconcile
 from serving.shared_spend.mode import CAPABILITY, PROTOCOL_VERSION
+from serving.shared_spend.stats import stranded
+from serving.shared_spend.store import OwnerHeardFrom
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -64,64 +74,54 @@ def participation(instances: list[dict[str, Any]], stored_mode: str) -> dict[str
     }
 
 
-#: How the registry knows an owner that may no longer settle what it holds.
-NOT_HEARD_FROM = frozenset({"not registered", "stale", "stopped"})
-
-
-def owner_state(owner: dict[str, Any] | None) -> str:
-    """How the registry knows a reservation's owner: its lifecycle, ``stale`` or ``not registered``."""
-    if owner is None:
-        return "not registered"
-    return "stale" if owner["stale"] else str(owner["lifecycle"])
-
-
-def stranded(reservations: list[dict[str, Any]]) -> dict[str, Any]:
-    """The active reservations whose owner the registry no longer hears from, added up.
-
-    Nothing settles these until their owner does, and a process that was
-    killed never will: they count against their account's current day and
-    month for as long as they stay. Not hearing from an owner does not prove it
-    stopped (it may be cut off from the database), so this is what an operator
-    looks at first, not a verdict.
-    """
-    rows = [
-        row for row in reservations if row["state"] == "active" and row["owner"] in NOT_HEARD_FROM
-    ]
-    return {
-        "reservations": sum(int(row["n"]) for row in rows),
-        "amount_usd": sum((row["amount_usd"] or 0 for row in rows), 0),
-        "oldest_age_seconds": max((row["oldest_age_seconds"] or 0 for row in rows), default=None),
-        "instances": sorted({row["instance_id"] for row in rows}),
-    }
+class Refused(Exception):
+    """The command was asked for something it will not do; the message says what."""
 
 
 async def run(args: argparse.Namespace, backend: SharedSpendStore) -> list[str]:
-    """Run one parsed command; return the lines to print."""
-    from serving.config.instances import fetch_instances
+    """Run one parsed command; return the lines to print.
 
-    async with backend.pool.acquire() as conn:
-        instances = await fetch_instances(conn)
-    by_id = {i["instance_id"]: i for i in instances}
+    Raises:
+        Refused: ``reconcile --apply`` named an instance the registry hears
+            from, or one nothing names, or came without who and why.
+    """
     if args.command == "status":
+        from serving.config.instances import fetch_instances
+
+        async with backend.pool.acquire() as conn:
+            instances = await fetch_instances(conn)
         stored = await backend.read_mode()
         summary = await backend.summary()
-        reservations = [
-            {**row, "owner": owner_state(by_id.get(row["instance_id"]))}
-            for row in summary["reservations"]
-        ]
         body = {
             "mode": stored,
             **participation(instances, stored),
-            "open_reservations": reservations,
-            "stranded": stranded(reservations),
+            "open_reservations": summary["reservations"],
+            "stranded": stranded(summary["reservations"]),
+            "receipts": summary["receipts"],
+            "closures": summary["closures"],
+            "reconciled": summary["reconciled"],
             "unidentified_writes": summary["unidentified_writes"],
             "last_unidentified_write": summary["last_unidentified_write"],
         }
         return [json.dumps(body, default=str, indent=2)]
-    lines = []
-    for row in await backend.open_reservations(limit=args.limit):
-        row["owner"] = owner_state(by_id.get(row["instance_id"]))
-        lines.append(json.dumps(row, default=str))
+    if args.command == "reconcile":
+        if not args.apply:
+            body = await reconcile.preview(backend, args.instance_id, limit=args.limit)
+            return [json.dumps(body, default=str, indent=2)]
+        operator = (args.operator or "").strip()
+        reason = (args.reason or "").strip()
+        if not operator or not reason:
+            raise Refused("--apply needs --operator NAME and --reason TEXT: both are recorded")
+        try:
+            body = await reconcile.apply(
+                backend, args.instance_id, operator=operator[:200], reason=reason[:1000]
+            )
+        except (OwnerHeardFrom, reconcile.UnknownInstance) as exc:
+            raise Refused(str(exc)) from exc
+        return [json.dumps(body, default=str, indent=2)]
+    lines = [
+        json.dumps(row, default=str) for row in await backend.open_reservations(limit=args.limit)
+    ]
     return lines or ["No open reservations."]
 
 
@@ -129,12 +129,25 @@ def build_parser() -> argparse.ArgumentParser:
     """Return the command-line parser."""
     parser = argparse.ArgumentParser(
         prog="python -m serving.shared_spend",
-        description="Inspect the shared spend accounting (read-only).",
+        description="Inspect the shared spend accounting, and reconcile what a gone process left.",
     )
     commands = parser.add_subparsers(dest="command", required=True, metavar="COMMAND")
     commands.add_parser("status", help="mode, participating processes, open reservations")
     listing = commands.add_parser("list", help="list open reservations")
     listing.add_argument("--limit", type=int, default=200)
+    reconciling = commands.add_parser(
+        "reconcile",
+        help="retire the reservations a process that is gone left (shows the plan unless --apply)",
+    )
+    reconciling.add_argument("instance_id", metavar="INSTANCE_ID")
+    reconciling.add_argument(
+        "--apply", action="store_true", help="do it; without this only the plan is shown"
+    )
+    reconciling.add_argument("--operator", help="who says the process is gone (recorded)")
+    reconciling.add_argument("--reason", help="how they know, and why now (recorded)")
+    reconciling.add_argument(
+        "--limit", type=int, default=1000, help="reservations the plan shows at most"
+    )
     return parser
 
 
@@ -145,6 +158,7 @@ async def _main(args: argparse.Namespace) -> list[str]:
     from serving.shared_spend.store import SharedSpendStore
 
     settings = get_settings()
+    fence_secret = _fence_secret(args)
     pool = await asyncpg.create_pool(
         host=settings.db_host,
         port=settings.db_port,
@@ -155,16 +169,40 @@ async def _main(args: argparse.Namespace) -> list[str]:
         max_size=2,
     )
     try:
-        return await run(args, SharedSpendStore(pool))
+        return await run(args, SharedSpendStore(pool, fence_secret=fence_secret))
     finally:
         await pool.close()
 
 
+def _fence_secret(args: argparse.Namespace) -> str | None:
+    """The erasure fence's secret for a command that writes; None for one that only reads.
+
+    A reconciliation adds costs to the counters, so it runs under the fence
+    exactly as the gateway's own settlements do (it must not write a counter
+    for an account being hard-deleted), and is refused where the secret is not
+    configured.
+    """
+    if args.command != "reconcile" or not args.apply:
+        return None
+    from serving.storage.erasure_fence import ErasureFenceUnavailable, resolve_fence_secret
+
+    try:
+        return resolve_fence_secret(None)
+    except ErasureFenceUnavailable as exc:
+        raise Refused(
+            "reconcile --apply needs the gateway's erasure-fence secret "
+            "(ERASURE_FENCE_SECRET, or API_KEY_SECRET) in its environment"
+        ) from exc
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    """Run the command named on the command line; 0 on success, 1 when it failed."""
+    """Run the command named on the command line; 0 on success, 1 when it failed or refused."""
     args = build_parser().parse_args(argv)
     try:
         lines = asyncio.run(_main(args))
+    except Refused as exc:
+        print(f"Refused: {exc}", file=sys.stderr)
+        return 1
     except (OSError, ConnectionError) as exc:
         print(f"Could not use the database: {type(exc).__name__}", file=sys.stderr)
         return 1

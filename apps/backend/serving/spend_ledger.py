@@ -959,7 +959,9 @@ def ledger_for(store: Any) -> Any:
 async def flush_all(timeout: float = 10.0) -> None:
     """Write every store's recorded costs before shutdown; report what could not be.
 
-    Called by the application's shutdown while the stores can still write.
+    Called by the application's shutdown while the stores can still write. A
+    shared ledger that sent everything then records that this process will
+    send nothing more (:meth:`serving.shared_spend.ledger.SharedSpendLedger.close`).
     """
     from serving.shared_spend import ledger as shared_ledger
 
@@ -988,5 +990,14 @@ async def flush_all(timeout: float = 10.0) -> None:
             # the database, for an operator (python -m serving.shared_spend).
             logger.error(
                 "Shutting down with shared spend reservations not settled",
-                extra={"event": "spend_reservations_unsettled_at_shutdown", **held},
+                extra={"event": "spend_reservations_unsettled_at_shutdown", "held": held},
+            )
+        close = getattr(ledger, "close", None)
+        if close is not None and not await close():
+            # Not recorded as closed: its settlement receipts are kept, and
+            # what it still holds stays counted, until an operator says this
+            # process is gone (python -m serving.shared_spend reconcile).
+            logger.error(
+                "Shutting down without recording this process's spend closure",
+                extra={"event": "spend_instance_not_closed"},
             )

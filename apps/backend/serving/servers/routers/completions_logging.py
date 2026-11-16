@@ -13,7 +13,9 @@ The DB log payload (kwargs to ``LogStore.log_request``) is preserved
 byte-for-byte — admin/recent-requests UI, billing reports, and the Slack
 alert rules from PR #372 all read these rows and must keep working — except
 that a refused request's large fields are stored as a bounded summary (see
-``CompletionsLogger.schedule_log``).
+``CompletionsLogger.schedule_log``), and that in the shared spend accounting
+mode the row's metadata names the reservation the request ran under
+(``_with_spend_reservation``).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
 from serving.storage.bounded_log import bound_log_payload
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +54,25 @@ _LOG_DROP_WARN_EVERY = 100
 # This adds at most one time-based warning per interval; the first-drop and
 # every-100th warnings still fire independently.
 _LOG_DROP_WARN_INTERVAL_S = 60.0
+
+
+def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
+    """*log_data*, its metadata naming the shared spend reservation the request ran under.
+
+    Only in the shared accounting mode, where the request context holds one
+    (``req_ctx.SPEND_RESERVATION``). The row then says which reservation its
+    ``cost_usd`` belongs to, so if the process dies before settling that
+    reservation, an operator's reconciliation can charge it what the request
+    cost instead of giving it back whole
+    (:mod:`serving.shared_spend.reconcile`). Nothing else reads the field.
+    """
+    reservation_id = getattr(
+        (req_ctx.get() or {}).get(req_ctx.SPEND_RESERVATION), "reservation_id", None
+    )
+    if not isinstance(reservation_id, str):
+        return log_data
+    metadata = {**(log_data.get("metadata") or {}), "spend_reservation": reservation_id}
+    return {**log_data, "metadata": metadata}
 
 
 class _Lifecycle(enum.Enum):
@@ -213,7 +235,11 @@ class CompletionsLogger:
 
         # The producer's context, as a per-request task would have copied it:
         # the write and its log lines are attributed to this row's request.
-        item = (request_id, bound_log_payload(log_data), contextvars.copy_context())
+        item = (
+            request_id,
+            bound_log_payload(_with_spend_reservation(log_data)),
+            contextvars.copy_context(),
+        )
         try:
             self._queue.put_nowait(item)
         except asyncio.QueueFull:

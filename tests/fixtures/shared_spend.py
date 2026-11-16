@@ -40,6 +40,15 @@ class FakeSharedBackend:
         self.settle_gate: asyncio.Event | None = None
         self.settling = asyncio.Event()
         self._xid = 1000
+        # Closures recorded (instance id -> by whom), each purge asked for
+        # (instance id, the batch ids it kept), the answers the next purges
+        # give, and the rows the survey reads.
+        self.closures: dict[str, str] = {}
+        self.fail_close: BaseException | None = None
+        self.purges: list[tuple[str, list[str]]] = []
+        self.purge_answers: list[tuple[int, int]] = []
+        self.open_rows: list[dict[str, Any]] = []
+        self.fail_summary: BaseException | None = None
 
     def held(self, user_id: str) -> Decimal:
         return sum((a for r, a in self.rows.values() if r.user_id == user_id), Decimal(0))
@@ -97,3 +106,24 @@ class FakeSharedBackend:
 
     async def quarantine(self, member, instance_id, *, day, note):
         return True
+
+    # -- closure, receipt retention and the survey: what was asked, and canned answers --
+
+    async def close_instance(self, instance_id, *, closed_by, operator=None, reason=None):
+        if self.fail_close is not None:
+            raise self.fail_close
+        new = instance_id not in self.closures
+        self.closures.setdefault(instance_id, closed_by)
+        return new
+
+    async def purge_receipts(self, instance_id, unanswered, **kwargs):
+        self.purges.append((instance_id, sorted(unanswered)))
+        return self.purge_answers.pop(0) if self.purge_answers else (0, 0)
+
+    async def purge_closures(self, **kwargs):
+        return 0
+
+    async def summary(self):
+        if self.fail_summary is not None:
+            raise self.fail_summary
+        return {"reservations": list(self.open_rows), "receipts": {"batches": 0, "members": 0}}

@@ -24,9 +24,19 @@ settlement commit between them and drop its cost from both.
 
 **Receipts.** A settlement records its batch (id and payload digest) and,
 for each reservation it retires, a member row keyed by the reservation id.
-Nothing here deletes either: they are what makes a repeated batch harmless and
-a retired reservation id unusable, and nothing bounds how late a repeat can
-come. Nothing here retires a reservation except its owner's settlement.
+They are what makes a repeated batch harmless and a retired reservation id
+unusable, so one may go only when nothing can send its batch again -- and a
+batch is only ever sent again by the process that made it, until that process
+has its answer. :meth:`SharedSpendStore.purge_receipts` deletes receipts older
+than :data:`RECEIPT_RETENTION_SECONDS` under exactly that rule: a process's
+own, except those of batches it has not been answered for, and those of a
+process ``spend_instance_closures`` says closed that long ago. Age alone never
+deletes one.
+
+**Retirement.** Nothing here retires a reservation except its owner's
+settlement and, for a process that is gone, an operator's reconciliation
+(:meth:`SharedSpendStore.reconcile`), which is a settlement made in that
+process's name with an audit row for every reservation it retires.
 """
 
 from __future__ import annotations
@@ -61,6 +71,18 @@ WRITER_SETTING = "hybridinference.spend_writer"
 #: More accounts than this in one settlement check the fence in the counter
 #: statement alone rather than lock each, as the cost writer does.
 FENCE_LOCKS_MAX = 512
+
+#: How long a settlement receipt is kept once nothing can send its batch again,
+#: and how long after a process closed its receipts are kept.
+RECEIPT_RETENTION_SECONDS = 7 * 24 * 3600.0
+
+#: The most batch receipts one purge statement deletes (with their members).
+PURGE_BATCHES = 500
+
+#: How the registry or a closure knows a reservation's owner when that owner
+#: may never settle what it holds: closed (it said so, or an operator did),
+#: stopped, not heard from for too long, or no longer registered at all.
+OWNER_GONE = frozenset({"closed", "stopped", "stale", "not registered"})
 
 _MICRO = Decimal("0.000001")
 
@@ -263,6 +285,110 @@ def _timeouts_sql(budget_ms: int) -> str:
     )
 
 
+_CLOSE_SQL = (
+    "INSERT INTO spend_instance_closures (instance_id, closed_by, operator, reason) "
+    "VALUES ($1, $2, $3, $4) ON CONFLICT (instance_id) DO NOTHING RETURNING TRUE"
+)
+
+# A batch receipt goes with its member receipts, in one statement. SKIP LOCKED:
+# two processes purging at once take different batches instead of waiting.
+_PURGE_DELETE = """
+, members AS (
+    DELETE FROM spend_settlement_members m USING doomed d WHERE m.batch_id = d.batch_id
+    RETURNING 1
+), batches AS (
+    DELETE FROM spend_settlements s USING doomed d WHERE s.batch_id = d.batch_id
+    RETURNING 1
+)
+SELECT (SELECT count(*) FROM batches) AS batches, (SELECT count(*) FROM members) AS members
+"""
+
+_PURGE_OWN_SQL = f"""
+WITH doomed AS (
+    SELECT batch_id FROM spend_settlements
+    WHERE instance_id = $1
+      AND settled_at < NOW() - make_interval(secs => $2)
+      AND NOT (batch_id = ANY($3::text[]))
+    ORDER BY settled_at
+    LIMIT $4
+    FOR UPDATE SKIP LOCKED
+){_PURGE_DELETE}
+"""
+
+_PURGE_CLOSED_SQL = f"""
+WITH doomed AS (
+    SELECT s.batch_id
+    FROM spend_instance_closures c
+    JOIN spend_settlements s ON s.instance_id = c.instance_id
+    WHERE c.closed_at < NOW() - make_interval(secs => $1)
+      AND s.settled_at < NOW() - make_interval(secs => $1)
+      AND NOT EXISTS (
+          SELECT 1 FROM config_instances i
+          WHERE i.instance_id = c.instance_id AND i.lifecycle <> 'stopped'
+            AND i.heartbeat_at > NOW() - make_interval(secs => $3)
+      )
+    ORDER BY s.settled_at
+    LIMIT $2
+    FOR UPDATE OF s SKIP LOCKED
+){_PURGE_DELETE}
+"""
+
+_PURGE_CLOSURES_SQL = """
+DELETE FROM spend_instance_closures c
+WHERE c.closed_by = 'shutdown'
+  AND c.closed_at < NOW() - make_interval(secs => $1)
+  AND NOT EXISTS (SELECT 1 FROM spend_settlements s WHERE s.instance_id = c.instance_id)
+  AND NOT EXISTS (SELECT 1 FROM spend_reservations r WHERE r.instance_id = c.instance_id)
+"""
+
+# The UTC day a log row was written on is the day its cost is counted on, as
+# the day its billing point ran on would have been.
+_REQUEST_LOG_SQL = """
+SELECT r.reservation_id, l.request_id, l.cost_usd, l.status_code,
+       to_char(l.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day
+FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS r(reservation_id, user_id, since)
+JOIN api_logs l
+  ON l.user_id = r.user_id AND l.timestamp >= r.since
+ AND l.metadata->>'spend_reservation' = r.reservation_id
+ORDER BY l.timestamp, l.request_id
+"""
+
+_AUDIT_SQL = """
+INSERT INTO spend_reconciliations
+    (reservation_id, instance_id, batch_id, amount_usd, operation, admitted_at, outcome,
+     cost_usd, evidence, owner_state, operator, reason)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
+"""
+
+
+def owner_state(instance: dict[str, Any] | None, closed_by: str | None) -> str:
+    """How a reservation's owner is known: by its closure, or by what the registry says of it.
+
+    ``closed`` when the process recorded its own shutdown, or when an operator
+    recorded it gone and the registry does not hear from it. Otherwise the
+    registry's word: ``not registered``, ``stale`` (no heartbeat for too long;
+    it may be cut off from the database rather than gone), or its lifecycle.
+    An instance an operator closed and that is heard from again is alive: its
+    lifecycle is what is returned.
+    """
+    heard = instance is not None and not instance["stale"] and instance["lifecycle"] != "stopped"
+    if closed_by == "shutdown" or (closed_by is not None and not heard):
+        return "closed"
+    if instance is None:
+        return "not registered"
+    return "stale" if instance["stale"] else str(instance["lifecycle"])
+
+
+class OwnerHeardFrom(RuntimeError):
+    """A reconciliation named an instance the registry still hears from."""
+
+    def __init__(self, instance_id: str, state: str) -> None:
+        """Keep the instance and how the registry knows it."""
+        super().__init__(f"instance {instance_id} is {state}: it retires its own reservations")
+        self.instance_id = instance_id
+        self.state = state
+
+
 class SharedSpendStore:
     """The shared accounting's statements, on an operational store's pools.
 
@@ -424,148 +550,157 @@ class SharedSpendStore:
         *pause*, for tests only, is awaited (``before_commit``) with everything
         written and nothing committed.
         """
-        from serving.storage.postgres_operational import (
-            COST_INCREMENTS_FENCED_SQL,
-            COST_INCREMENTS_SQL,
-        )
-
         problem = batch.inconsistency()
         if problem is not None:
             return SettlementResult(batch.batch_id, "invalid", {"invalid": [problem]})
 
         async with self.pool.acquire() as conn, conn.transaction():
-            await conn.execute(f"SELECT set_config('{WRITER_SETTING}', 'shared', true)")
-            inserted = await conn.fetchval(
-                "INSERT INTO spend_settlements (batch_id, instance_id, payload_digest) "
-                "VALUES ($1, $2, $3) ON CONFLICT (batch_id) DO NOTHING RETURNING TRUE",
+            result = await self._settle_in(conn, batch)
+            if pause is not None and result.outcome == "applied":
+                await pause("before_commit")
+        return result
+
+    async def _settle_in(self, conn: Any, batch: SettlementBatch) -> SettlementResult:
+        """The statements of one settlement, in the caller's transaction on *conn*.
+
+        *batch* is consistent (:meth:`SettlementBatch.inconsistency`). The
+        caller commits, or rolls everything back by raising.
+        """
+        from serving.storage.postgres_operational import (
+            COST_INCREMENTS_FENCED_SQL,
+            COST_INCREMENTS_SQL,
+        )
+
+        await conn.execute(f"SELECT set_config('{WRITER_SETTING}', 'shared', true)")
+        inserted = await conn.fetchval(
+            "INSERT INTO spend_settlements (batch_id, instance_id, payload_digest) "
+            "VALUES ($1, $2, $3) ON CONFLICT (batch_id) DO NOTHING RETURNING TRUE",
+            batch.batch_id,
+            batch.instance_id,
+            batch.digest,
+        )
+        if not inserted:
+            row = await conn.fetchrow(
+                "SELECT payload_digest, result FROM spend_settlements WHERE batch_id = $1",
                 batch.batch_id,
-                batch.instance_id,
-                batch.digest,
             )
-            if not inserted:
-                row = await conn.fetchrow(
-                    "SELECT payload_digest, result FROM spend_settlements WHERE batch_id = $1",
-                    batch.batch_id,
-                )
-                if row is None or row["payload_digest"] != batch.digest:
-                    return SettlementResult(batch.batch_id, "conflict")
-                return SettlementResult.from_stored(batch.batch_id, row["result"])
+            if row is None or row["payload_digest"] != batch.digest:
+                return SettlementResult(batch.batch_id, "conflict")
+            return SettlementResult.from_stored(batch.batch_id, row["result"])
 
-            users = sorted({line.user_id for line in batch.all_costs()} | batch.member_users())
-            fence_keys = (
-                sorted({self.fence_digest(user) for user in users}) if self.fence_secret else []
-            )
-            if fence_keys and len(fence_keys) <= FENCE_LOCKS_MAX:
-                await lock_fence_keys_shared(conn, fence_keys)
-            erased_digests: set[str] = set()
-            if fence_keys:
-                erased_digests = {
-                    row["account_digest"]
-                    for row in await conn.fetch(
-                        f"SELECT account_digest FROM {ERASURE_FENCE_TABLE} "
-                        "WHERE account_digest = ANY($1::text[])",
-                        fence_keys,
-                    )
-                }
-
-            def owned(members: list[Member]) -> tuple[list[Any], ...]:
-                return (
-                    [m.reservation_id for m in members],
-                    [m.user_id for m in members],
-                    [m.api_key_id for m in members],
-                    [m.project_id for m in members],
-                )
-
-            retired = {
-                row["reservation_id"]
+        users = sorted({line.user_id for line in batch.all_costs()} | batch.member_users())
+        fence_keys = (
+            sorted({self.fence_digest(user) for user in users}) if self.fence_secret else []
+        )
+        if fence_keys and len(fence_keys) <= FENCE_LOCKS_MAX:
+            await lock_fence_keys_shared(conn, fence_keys)
+        erased_digests: set[str] = set()
+        if fence_keys:
+            erased_digests = {
+                row["account_digest"]
                 for row in await conn.fetch(
-                    "DELETE FROM spend_reservations AS r "
-                    "USING unnest($1::text[], $2::text[], $3::bigint[], $4::text[]) "
-                    "  AS m(id, user_id, key_id, project_id) "
-                    "WHERE r.reservation_id = m.id AND r.instance_id = $5 "
-                    "  AND r.state = 'active' AND r.user_id = m.user_id "
-                    "  AND r.api_key_id IS NOT DISTINCT FROM m.key_id "
-                    "  AND r.project_id IS NOT DISTINCT FROM m.project_id "
-                    "RETURNING r.reservation_id",
-                    *owned(list(batch.members)),
-                    batch.instance_id,
+                    f"SELECT account_digest FROM {ERASURE_FENCE_TABLE} "
+                    "WHERE account_digest = ANY($1::text[])",
+                    fence_keys,
                 )
             }
-            absent = [m.reservation_id for m in batch.members if m.reservation_id not in retired]
-            duplicates: set[str] = set()
-            still_held: set[str] = set()
-            if absent:
-                duplicates = {
-                    row["reservation_id"]
-                    for row in await conn.fetch(
-                        "SELECT reservation_id FROM spend_settlement_members "
-                        "WHERE reservation_id = ANY($1::text[])",
-                        absent,
-                    )
-                }
-                still_held = {
-                    row["reservation_id"]
-                    for row in await conn.fetch(
-                        "SELECT reservation_id FROM spend_reservations "
-                        "WHERE reservation_id = ANY($1::text[])",
-                        absent,
-                    )
-                }
 
-            result = SettlementResult(batch.batch_id, "applied")
-            costs: list[CostLine] = list(batch.increments)
-            for member in batch.members:
-                rid = member.reservation_id
-                if rid in retired:
-                    result.add("settled" if member.costs else "released", rid)
-                    costs.extend(member.costs)
-                elif rid in duplicates:
-                    result.add("duplicate", rid)
-                elif rid in still_held:
-                    result.add("mismatch", rid)
-                elif self.fence_secret and self.fence_digest(member.user_id) in erased_digests:
-                    result.add("erased", rid)
-                else:
-                    result.add("missing", rid)
-
-            if costs:
-                args = (
-                    [c.user_id for c in costs],
-                    [c.day for c in costs],
-                    [c.api_key_id for c in costs],
-                    [c.cost_usd for c in costs],
-                    [c.requests for c in costs],
-                    [c.project_id for c in costs],
-                )
-                if self.fence_secret:
-                    await conn.fetchval(
-                        COST_INCREMENTS_FENCED_SQL,
-                        *args,
-                        [self.fence_digest(c.user_id) for c in costs],
-                    )
-                else:
-                    await conn.fetchval(COST_INCREMENTS_SQL, *args)
-
-            recorded = [
-                (rid, outcome)
-                for outcome in ("settled", "released")
-                for rid in result.members.get(outcome, [])
-            ]
-            if recorded:
-                await conn.execute(
-                    "INSERT INTO spend_settlement_members (reservation_id, batch_id, outcome) "
-                    "SELECT id, $3, outcome FROM unnest($1::text[], $2::text[]) AS m(id, outcome)",
-                    [rid for rid, _ in recorded],
-                    [outcome for _, outcome in recorded],
-                    batch.batch_id,
-                )
-            await conn.execute(
-                "UPDATE spend_settlements SET result = $2::jsonb WHERE batch_id = $1",
-                batch.batch_id,
-                json.dumps(result.members, sort_keys=True),
+        def owned(members: list[Member]) -> tuple[list[Any], ...]:
+            return (
+                [m.reservation_id for m in members],
+                [m.user_id for m in members],
+                [m.api_key_id for m in members],
+                [m.project_id for m in members],
             )
-            if pause is not None:
-                await pause("before_commit")
+
+        retired = {
+            row["reservation_id"]
+            for row in await conn.fetch(
+                "DELETE FROM spend_reservations AS r "
+                "USING unnest($1::text[], $2::text[], $3::bigint[], $4::text[]) "
+                "  AS m(id, user_id, key_id, project_id) "
+                "WHERE r.reservation_id = m.id AND r.instance_id = $5 "
+                "  AND r.state = 'active' AND r.user_id = m.user_id "
+                "  AND r.api_key_id IS NOT DISTINCT FROM m.key_id "
+                "  AND r.project_id IS NOT DISTINCT FROM m.project_id "
+                "RETURNING r.reservation_id",
+                *owned(list(batch.members)),
+                batch.instance_id,
+            )
+        }
+        absent = [m.reservation_id for m in batch.members if m.reservation_id not in retired]
+        duplicates: set[str] = set()
+        still_held: set[str] = set()
+        if absent:
+            duplicates = {
+                row["reservation_id"]
+                for row in await conn.fetch(
+                    "SELECT reservation_id FROM spend_settlement_members "
+                    "WHERE reservation_id = ANY($1::text[])",
+                    absent,
+                )
+            }
+            still_held = {
+                row["reservation_id"]
+                for row in await conn.fetch(
+                    "SELECT reservation_id FROM spend_reservations "
+                    "WHERE reservation_id = ANY($1::text[])",
+                    absent,
+                )
+            }
+
+        result = SettlementResult(batch.batch_id, "applied")
+        costs: list[CostLine] = list(batch.increments)
+        for member in batch.members:
+            rid = member.reservation_id
+            if rid in retired:
+                result.add("settled" if member.costs else "released", rid)
+                costs.extend(member.costs)
+            elif rid in duplicates:
+                result.add("duplicate", rid)
+            elif rid in still_held:
+                result.add("mismatch", rid)
+            elif self.fence_secret and self.fence_digest(member.user_id) in erased_digests:
+                result.add("erased", rid)
+            else:
+                result.add("missing", rid)
+
+        if costs:
+            args = (
+                [c.user_id for c in costs],
+                [c.day for c in costs],
+                [c.api_key_id for c in costs],
+                [c.cost_usd for c in costs],
+                [c.requests for c in costs],
+                [c.project_id for c in costs],
+            )
+            if self.fence_secret:
+                await conn.fetchval(
+                    COST_INCREMENTS_FENCED_SQL,
+                    *args,
+                    [self.fence_digest(c.user_id) for c in costs],
+                )
+            else:
+                await conn.fetchval(COST_INCREMENTS_SQL, *args)
+
+        recorded = [
+            (rid, outcome)
+            for outcome in ("settled", "released")
+            for rid in result.members.get(outcome, [])
+        ]
+        if recorded:
+            await conn.execute(
+                "INSERT INTO spend_settlement_members (reservation_id, batch_id, outcome) "
+                "SELECT id, $3, outcome FROM unnest($1::text[], $2::text[]) AS m(id, outcome)",
+                [rid for rid, _ in recorded],
+                [outcome for _, outcome in recorded],
+                batch.batch_id,
+            )
+        await conn.execute(
+            "UPDATE spend_settlements SET result = $2::jsonb WHERE batch_id = $1",
+            batch.batch_id,
+            json.dumps(result.members, sort_keys=True),
+        )
         return result
 
     async def quarantine(
@@ -595,6 +730,241 @@ class SharedSpendStore:
             )
         return status.endswith(" 1")
 
+    # -- closures and receipt retention --------------------------------------
+
+    async def close_instance(
+        self,
+        instance_id: str,
+        *,
+        closed_by: str,
+        operator: str | None = None,
+        reason: str | None = None,
+    ) -> bool:
+        """Record that *instance_id* will send no settlement again; False if it was recorded.
+
+        ``shutdown``: the process says so itself, with every batch it sent
+        answered. ``operator``: someone who checked that the process no longer
+        exists says so, by name and with a reason. The first record stands.
+        """
+        async with self.pool.acquire() as conn:
+            return bool(await conn.fetchval(_CLOSE_SQL, instance_id, closed_by, operator, reason))
+
+    async def owner_states(self, conn: Any = None) -> dict[str, str]:
+        """How every instance the registry or a closure names is known (:func:`owner_state`).
+
+        An instance in neither is ``not registered``: the caller's default.
+        """
+        from serving.config.instances import fetch_instances
+
+        async def read(conn: Any) -> dict[str, str]:
+            instances = {i["instance_id"]: i for i in await fetch_instances(conn)}
+            closures = {
+                row["instance_id"]: row["closed_by"]
+                for row in await conn.fetch(
+                    "SELECT instance_id, closed_by FROM spend_instance_closures"
+                )
+            }
+            return {
+                instance_id: owner_state(instances.get(instance_id), closures.get(instance_id))
+                for instance_id in instances.keys() | closures.keys()
+            }
+
+        if conn is not None:
+            return await read(conn)
+        async with self.pool.acquire() as conn:
+            return await read(conn)
+
+    async def purge_receipts(
+        self,
+        instance_id: str,
+        unanswered: Sequence[str],
+        *,
+        retention_seconds: float = RECEIPT_RETENTION_SECONDS,
+        limit: int = PURGE_BATCHES,
+    ) -> tuple[int, int]:
+        """Delete receipts nothing can need again; return (batches, member rows) deleted.
+
+        Two kinds, each at most *limit* batches a call, oldest first, and none
+        younger than *retention_seconds*:
+
+        - *instance_id*'s own, except the batches in *unanswered*: those it
+          may still send again, which only their receipt makes harmless. The
+          caller is that process, so it knows them exactly.
+        - Those of a process whose closure is that old, and which the registry
+          does not hear from now (a process an operator closed by mistake
+          keeps its receipts, and deletes its own as above).
+
+        A receipt of a process that is neither -- it stopped without closing,
+        and no operator has said it is gone -- stays, whatever its age.
+        """
+        from serving.config.instances import STALE_AFTER_SECONDS
+
+        async with self.pool.acquire() as conn:
+            own = await conn.fetchrow(
+                _PURGE_OWN_SQL, instance_id, retention_seconds, list(unanswered), limit
+            )
+            closed = await conn.fetchrow(
+                _PURGE_CLOSED_SQL, retention_seconds, limit, STALE_AFTER_SECONDS
+            )
+        return (
+            int(own["batches"]) + int(closed["batches"]),
+            int(own["members"]) + int(closed["members"]),
+        )
+
+    async def purge_closures(self, *, retention_seconds: float = RECEIPT_RETENTION_SECONDS) -> int:
+        """Delete the closures of processes that left nothing behind; return how many.
+
+        Only one a process recorded itself (an operator's is part of the audit
+        record), that old, and with no receipt and no reservation left under
+        its instance id.
+        """
+        async with self.pool.acquire() as conn:
+            status = await conn.execute(_PURGE_CLOSURES_SQL, retention_seconds)
+        return int(status.rsplit(" ", 1)[-1])
+
+    # -- reconciling what a process that is gone left --------------------------
+
+    async def reservations_of(self, instance_id: str, *, limit: int) -> list[dict[str, Any]]:
+        """The active reservations *instance_id* holds, oldest first (at most *limit*)."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT reservation_id, user_id, api_key_id, project_id, amount_usd, operation, "
+                "created_at, EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds "
+                "FROM spend_reservations WHERE instance_id = $1 AND state = 'active' "
+                "ORDER BY created_at, reservation_id LIMIT $2",
+                instance_id,
+                limit,
+            )
+        return [dict(row) for row in rows]
+
+    async def instance_known(self, instance_id: str) -> bool:
+        """Whether anything names *instance_id*: a reservation, a receipt, a registration, a closure.
+
+        An id nothing names is a mistyped one, or a process that left nothing
+        behind; either way there is nothing to reconcile and nothing to close.
+        """
+        async with self.pool.acquire() as conn:
+            return bool(
+                await conn.fetchval(
+                    "SELECT EXISTS (SELECT 1 FROM spend_reservations WHERE instance_id = $1) "
+                    "OR EXISTS (SELECT 1 FROM spend_settlements WHERE instance_id = $1) "
+                    "OR EXISTS (SELECT 1 FROM config_instances WHERE instance_id = $1) "
+                    "OR EXISTS (SELECT 1 FROM spend_instance_closures WHERE instance_id = $1)",
+                    instance_id,
+                )
+            )
+
+    async def held_by(self, instance_id: str) -> dict[str, int]:
+        """How many reservations *instance_id* holds, by state."""
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT state, COUNT(*) AS n FROM spend_reservations "
+                "WHERE instance_id = $1 GROUP BY state",
+                instance_id,
+            )
+        return {row["state"]: int(row["n"]) for row in rows}
+
+    async def request_log_rows(
+        self, reservations: Sequence[dict[str, Any]]
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The request-log rows written under each of *reservations*, by reservation id.
+
+        A request's log row names the reservation it ran under
+        (``metadata.spend_reservation``, set where the row is queued:
+        ``CompletionsLogger.schedule_log``), and its ``cost_usd`` is computed
+        from the same usage and price as the charge its billing point
+        recorded. Rows are looked up by the reservation's account from its
+        admission on, which the log's own index serves. A reservation with no
+        row is absent from the result: its request never got as far as being
+        logged, or the row was dropped or not written.
+        """
+        if not reservations:
+            return {}
+        async with self.pool.acquire() as conn:
+            rows = await conn.fetch(
+                _REQUEST_LOG_SQL,
+                [r["reservation_id"] for r in reservations],
+                [r["user_id"] for r in reservations],
+                [r["created_at"] for r in reservations],
+            )
+        found: dict[str, list[dict[str, Any]]] = {}
+        for row in rows:
+            found.setdefault(row["reservation_id"], []).append(
+                {
+                    "request_id": row["request_id"],
+                    "day": row["day"],
+                    "cost_usd": row["cost_usd"],
+                    "status_code": row["status_code"],
+                }
+            )
+        return found
+
+    async def reconcile(
+        self,
+        instance_id: str,
+        plan: Sequence[Reconciliation],
+        *,
+        operator: str,
+        reason: str,
+    ) -> tuple[SettlementResult, str]:
+        """Retire, for a process that is gone, the reservations *plan* names; audit each.
+
+        One transaction. The owner must be known as gone *now*
+        (:data:`OWNER_GONE`): a process the registry hears from retires its own
+        reservations, and this refuses (:class:`OwnerHeardFrom`). Then the plan
+        is applied as a settlement made in that process's name
+        (:meth:`settle`): its rows are retired, the costs the plan found are
+        added to the counters, and each retirement is recorded -- so a
+        settlement that process turns out to send after all finds its
+        reservations ``duplicate`` and adds nothing. Every reservation retired
+        here gets its row in ``spend_reconciliations``. One the batch did not
+        retire (already retired, erased, or no longer held as planned) is
+        reported in the result and not audited: nothing was done to it.
+
+        Returns the settlement's result and how the owner was known.
+        """
+        import uuid
+
+        batch = SettlementBatch.make(
+            instance_id, [entry.member for entry in plan], [], batch_id=f"op_{uuid.uuid4().hex}"
+        )
+        problem = batch.inconsistency()
+        if problem is not None:
+            raise ValueError(f"inconsistent reconciliation plan: {problem}")
+        by_id = {entry.reservation_id: entry for entry in plan}
+        async with self.pool.acquire() as conn, conn.transaction():
+            state = (await self.owner_states(conn)).get(instance_id, "not registered")
+            if state not in OWNER_GONE:
+                raise OwnerHeardFrom(instance_id, state)
+            result = await self._settle_in(conn, batch)
+            retired = [
+                (by_id[rid], outcome)
+                for outcome in ("settled", "released")
+                for rid in result.members.get(outcome, [])
+            ]
+            if retired:
+                await conn.executemany(
+                    _AUDIT_SQL,
+                    [
+                        (
+                            entry.reservation_id,
+                            instance_id,
+                            batch.batch_id,
+                            entry.amount_usd,
+                            entry.operation,
+                            entry.admitted_at,
+                            outcome,
+                            entry.member.cost_usd(),
+                            json.dumps(list(entry.evidence), default=str),
+                            state,
+                            operator,
+                            reason,
+                        )
+                        for entry, outcome in retired
+                    ],
+                )
+        return result, state
+
     # -- the read-only status view -------------------------------------------
 
     async def read_mode(self) -> str:
@@ -612,10 +982,19 @@ class SharedSpendStore:
                 "FROM spend_reservations ORDER BY created_at LIMIT $1",
                 limit,
             )
-        return [dict(row) for row in rows]
+            owners = await self.owner_states(conn)
+        return [
+            {**dict(row), "owner": owners.get(row["instance_id"], "not registered")} for row in rows
+        ]
 
     async def summary(self) -> dict[str, Any]:
-        """Counts for the status report: open reservations by instance and state, and evidence."""
+        """Counts for the status report and the hourly survey, every process's included.
+
+        Open reservations by instance and state, each with how its owner is
+        known (:func:`owner_state`); the receipts kept and the oldest one's
+        age; closures by kind; what operators reconciled; and the evidence of
+        counter writes made outside the shared settlement.
+        """
         async with self.pool.acquire() as conn:
             by_state = await conn.fetch(
                 "SELECT instance_id, state, COUNT(*) AS n, SUM(amount_usd) AS amount_usd, "
@@ -626,13 +1005,45 @@ class SharedSpendStore:
             unidentified = await conn.fetchrow(
                 "SELECT COUNT(*) AS n, MAX(written_at) AS last FROM spend_unidentified_writes"
             )
+            receipts = await conn.fetchrow(
+                "SELECT (SELECT COUNT(*) FROM spend_settlements) AS batches, "
+                "(SELECT COUNT(*) FROM spend_settlement_members) AS members, "
+                "(SELECT EXTRACT(EPOCH FROM (NOW() - MIN(settled_at))) FROM spend_settlements) "
+                "AS oldest_age_seconds"
+            )
+            closures = await conn.fetch(
+                "SELECT closed_by, COUNT(*) AS n FROM spend_instance_closures GROUP BY closed_by"
+            )
+            reconciled = await conn.fetchrow(
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+                "MAX(reconciled_at) AS last FROM spend_reconciliations"
+            )
+            owners = await self.owner_states(conn)
+        oldest_receipt = receipts["oldest_age_seconds"]
         return {
             "reservations": [
-                {**dict(row), "oldest_age_seconds": round(float(row["oldest_age_seconds"]), 1)}
+                {
+                    **dict(row),
+                    "oldest_age_seconds": round(float(row["oldest_age_seconds"]), 1),
+                    "owner": owners.get(row["instance_id"], "not registered"),
+                }
                 for row in by_state
             ],
             "unidentified_writes": int(unidentified["n"] or 0),
             "last_unidentified_write": unidentified["last"],
+            "receipts": {
+                "batches": int(receipts["batches"]),
+                "members": int(receipts["members"]),
+                "oldest_age_seconds": (
+                    round(float(oldest_receipt), 1) if oldest_receipt is not None else None
+                ),
+            },
+            "closures": {row["closed_by"]: int(row["n"]) for row in closures},
+            "reconciled": {
+                "reservations": int(reconciled["n"]),
+                "cost_usd": reconciled["cost_usd"],
+                "last": reconciled["last"],
+            },
         }
 
 
@@ -784,6 +1195,24 @@ class SettlementResult:
             if reservation_id in ids:
                 return what
         return None
+
+
+@dataclass(frozen=True, slots=True)
+class Reconciliation:
+    """What an operator's reconciliation does with one reservation, and on what evidence.
+
+    ``member`` is how the reservation is retired: with the costs of the
+    request-log rows found for it (``evidence``, one entry a row), or with
+    none when there was no row -- then nothing is charged and its whole
+    estimate is given back.
+    """
+
+    reservation_id: str
+    amount_usd: Decimal
+    operation: str
+    admitted_at: Any
+    member: Member
+    evidence: tuple[dict[str, Any], ...] = ()
 
 
 def fence_advisory_key(user_id: str, secret: str) -> int:

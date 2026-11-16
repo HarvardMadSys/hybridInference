@@ -2,7 +2,9 @@
 
 Status: implementation contract, 2026-11-14; revised 2026-11-15 after review
 (what a finished request holds, section 4; the day a liability counts against,
-section 5; what activation still needs, section 6b). Base: `dev` at `b98678a42`.
+section 5) and 2026-11-16 (what a stopped process leaves and who cleans it up,
+section 6b; what a process reports, section 6c; what activation still needs,
+section 6d). Base: `dev` at `b98678a42`.
 Scope: the shared-accounting preparation layer for the backend release
 handoff. It does not implement Pod handoff, drain, ingress control or a
 deployment controller, and it does not activate anything: the new mode is
@@ -54,7 +56,11 @@ off by default and nothing in this change turns it on.
 - `python -m serving.shared_spend status | list` is read-only: stored mode,
   registered processes and their reported mode (`participation_proven` is
   always false: an older build never registers), open reservations by
-  instance and state, and counter writes made outside the shared settlement.
+  instance and state with how their owner is known, the receipts kept, the
+  closures and reconciliations recorded, and counter writes made outside the
+  shared settlement. `reconcile INSTANCE_ID` retires what a process that is
+  gone left (section 6b); it shows its plan and changes nothing unless
+  `--apply` is given. No command changes the mode.
 - A statement-level trigger on the counter tables records any counter write
   made outside the shared settlement while the mode is `shared`
   (`spend_unidentified_writes`). It is evidence after the fact, not
@@ -218,14 +224,12 @@ for: they leave the set every check reads and stay in what the process reports
 - Writer cancelled or failing: the same batch (id and payload) is sent again
   until it gets an answer; on shutdown `flush_all` sends what it can and
   reports the rest (`holdings`, `unwritten`).
-- Process crash: its `active` rows stay counted in the current day and month;
-  `status`/`list` show them with their owner's registration state.
-- Process crash, continued: such rows count against every later day and month
-  as well, for as long as they stay (an active row counts against the current
-  one). `status` adds them up under `stranded` -- the active reservations whose
-  owner the registry no longer hears from -- with their oldest age; the
-  registry cannot prove a process gone, so that is where an operator looks, not
-  a verdict. Retiring them is section 6b's.
+- Process crash: its `active` rows stay counted against the current day and
+  month, and against every later one for as long as they stay (an active row
+  counts against the current one). `status`/`list` show them with how their
+  owner is known, `status` adds them up under `stranded`, and every process's
+  hourly survey alerts on them (section 6c). Nothing expires them: an operator
+  reconciles them (section 6b).
 - A defect in the writer's own bookkeeping (not a failed write) is tried again
   after the usual back-off: not at once, where a defect that persists would
   spin the writer, and not never, which would leave what is queued waiting for
@@ -236,17 +240,18 @@ for: they leave the set every check reads and stay in what the process reports
   of its estimate and its known cost, on the day it ended, reported by
   `holdings`/`unwritten`, logged and alerted. A `quarantined` member stays in
   the database (and in `holdings`).
-- Nothing expires: no TTL, heartbeat or retention retires a reservation,
-  forgives a liability or deletes a settlement receipt (`spend_settlements`,
-  `spend_settlement_members` grow with traffic; a retention rule needs a
-  replay horizon that a later review would have to establish).
-- No reconciliation command is shipped. Retiring a quarantined or stranded
-  reservation needs explicit evidence of its actual charge and a separately
-  reviewed tool; an estimate is never charged as if it were the cost.
+- Nothing expires a reservation or forgives a liability: no TTL and no
+  heartbeat retires one. Settlement receipts are deleted under the retention
+  rule of section 6b, never by age alone.
+- A `quarantined` reservation is not reconciled by the command of section 6b.
+  The counters refused its costs for their own values, which is a defect to
+  look into, not a question of who is gone; it stays counted on its day and
+  month until that is decided (section 6d).
 - Hard delete: the account's reservations are purged in the hard-delete
   transaction; admission checks the tombstone under the fence lock, so no row
   is written for an erased account; a settlement for one finds its rows gone
-  and, as today, writes no counter.
+  and, as today, writes no counter. The closure, reconciliation and receipt
+  tables name no account.
 
 ## 6a. The accounting guarantee, precisely
 
@@ -265,28 +270,141 @@ interval counts the estimate rather than the (usually smaller) cost, so a
 caller within one estimate of a limit can be refused then and admitted a moment
 later: conservative, never the reverse.
 
-## 6b. Required before the shared mode is activated (not in this change)
+## 6b. When a process stops: closure, reconciliation, receipt retention
+
+Besides the reservations and the receipts of section 4, two tables:
+`spend_instance_closures` (the processes that will send nothing more) and
+`spend_reconciliations` (the audit record of what an operator retired).
+
+**How an owner is known** (`store.owner_state`), from its closure and the
+instance registry (`config_instances`): `closed`, `stopped`, `stale` or `not
+registered` -- these four mean it may never settle what it holds -- or its
+lifecycle while the registry hears from it. The registry cannot prove a
+process gone (a stale heartbeat may be a process cut off from the database),
+so nothing below acts on the registry's word alone.
+
+**Closure.** At shutdown, after the final flush, a ledger with nothing left to
+send and no batch unanswered records `closed_by = 'shutdown'` for its instance
+id and sends nothing after that (`SharedSpendLedger.close`). The registry's
+own `stopped` cannot serve as this record: it is reported earlier in shutdown,
+before that flush, and its row is pruned after a week. A process that leaves
+something unsent, or cannot reach the database, is not closed
+(`spend_instance_not_closed` is logged) and is then in the position of a
+killed one.
+
+**Reconciliation** (`python -m serving.shared_spend reconcile INSTANCE_ID`),
+for an instance known as gone. Without `--apply` it prints its plan and
+changes nothing. With `--apply --operator NAME --reason TEXT`:
+
+1. It is refused for an instance the registry hears from (the transaction of
+   every chunk checks again), and for an instance id that no reservation,
+   receipt, registration or closure names: a mistyped id records no closure.
+2. The instance's active reservations are taken oldest first, 256 at a time,
+   each paired with the request-log rows written under it. A row names its
+   reservation in `metadata.spend_reservation` (set where the row is queued,
+   `CompletionsLogger.schedule_log`, and only in the shared mode), and its
+   `cost_usd` is computed from the same usage and price as the charge its
+   billing point recorded. Rows are looked up by the reservation's account
+   from its admission on, which the log's existing index serves.
+3. A reservation with a logged cost is settled with it, on the UTC day the row
+   was written, capped at the per-request ceiling. One with no row, or rows
+   without a cost, is settled with none: its whole estimate is given back.
+   The estimate itself is never charged.
+4. Each chunk is one transaction: a settlement made in the gone process's
+   name (the statements, fence and receipts of section 4; batch id `op_...`)
+   and one `spend_reconciliations` row for each reservation it retired -- what
+   it held, the outcome, the charge, the request-log rows (`evidence`), how
+   its owner was known, the operator and the reason. No account is named
+   there; the request ids lead to the log.
+5. The instance is recorded `closed_by = 'operator'` with the name and the
+   reason. A `shutdown` closure already there stands.
+
+*Why a reservation with no log row is given back, not kept.* A request cut off
+by its process dying never reached its billing point; in the per-process mode
+it is charged nothing. Keeping it would hold an account's budget on no
+evidence, with no end. What this gives up: a request that ended, was billed in
+memory and whose log row was lost with the process is not charged. The row is
+queued when the request ends and written by a small pool, so that is the last
+moments of traffic (longer while log writes are failing), and never more than
+the requests the process had in flight or just ended.
+
+*Why a wrong "it is gone" cannot charge twice.* The retirements are recorded
+like any settlement's. If the process is alive and settles the same
+reservation later, its settlement finds it `duplicate` and adds nothing. The
+mistake can leave a request uncharged (released here, its real cost then
+dropped as a duplicate); it cannot count one twice.
+
+**Receipt retention** (`SharedSpendStore.purge_receipts`;
+`RECEIPT_RETENTION_SECONDS` is seven days). A receipt is what makes a repeated
+batch harmless, and a batch is only ever sent again by the process that made
+it, until that process has its answer. So a receipt older than the retention
+is deleted
+
+- by its own process, unless it is of a batch that process has not been
+  answered for (it knows those exactly: its replay queue); and
+- by any process, once its maker's closure is that old and the registry does
+  not hear from that maker now.
+
+Age alone never deletes one: the receipts of a process that stopped without
+closing stay until an operator reconciles it. A `shutdown` closure is deleted
+once it is that old and its instance has no receipt and no reservation left.
+An operator's closure, and every reconciliation row, is kept.
+
+*Residual risk.* A process an operator wrongly closed, then cut off from the
+database for more than a week while holding an unanswered batch, would on its
+return send a batch whose receipt is gone. Its members would be reported
+missing -- not charged again, kept as unaccounted and alerted -- and its plain
+increments would be added a second time.
+
+**Upkeep.** Each ledger runs the purge and a survey (section 6c) about once an
+hour, the first time at a random point within the hour, in its own tracked
+task: off the request path and apart from the settlement writer. Only a
+process that is admitting or settling runs it. A run deletes at most 20
+chunks of 500 batches.
+
+## 6c. What a process reports
+
+The gateway has no metrics endpoint; its established surfaces are used.
+
+- `SharedSpendLedger.stats()`, shown by `/health/deep` to an administrator
+  under `spend_accounting.ledgers` (anyone is shown the mode). Since the
+  process started: admissions by outcome (`admitted`, `refused`,
+  `unavailable`, ...) and a latency histogram with p50/p95/p99 as bucket upper
+  bounds; what it holds now -- running requests, and ended ones awaiting
+  settlement, each with its amount and how long the oldest has been so --
+  plus quarantined and unaccounted; settlement counters (batches answered,
+  write failures, entries refused, members unaccounted), how long writes have
+  been failing and the last error; receipts purged; and its last hourly survey
+  of the database: every process's active and quarantined totals, what is
+  stranded, the receipts kept. None of it changes `status`.
+- `python -m serving.shared_spend status`: the database-wide view on demand,
+  with closures and reconciliations.
+- Alerts, on the gateway's own path, each a catalogued type:
+  `spend_admission_unavailable` (an admission the database did not answer;
+  every such request is answered 503 and logged `DATABASE_BUSY`),
+  `spend_settlement_stalled` (no settlement written for 60 s, so ended
+  requests keep their estimates held; once per stall) and
+  `spend_reservations_stranded` (active reservations of an owner known as
+  gone, the oldest at least 15 minutes old; 6 h cooldown), besides
+  `spend_settlement_refused` and `spend_settlement_unaccounted`. With several
+  processes, each one that observes a condition alerts once per cooldown.
+- Log lines. The structured fields of the spend ledgers' lines (`entries`,
+  `reservations`, `cost_usd`, `batch_id`, ...) are now among those the log
+  formatters emit. They were dropped at format time before, the per-process
+  ledger's included, so a line an alert pointed to carried its event name
+  only.
+
+## 6d. Required before the shared mode is activated (not in this change)
 
 Merging this change activates nothing. Before any deployment switches the row:
 
 1. The offline transition and its rollback (section 2).
-2. **Retiring what a dead process left.** A killed gateway's `active` rows
-   lower their accounts' headroom on every later day and month until someone
-   removes them by hand. This needs an operator path with evidence and an
-   audit record, and two decisions it depends on: what evidence is enough (the
-   reservation row does not yet reference the request's `api_logs` row, which
-   is where its actual charge would be found), and whether anything may be
-   released on the registry's word that the owner is gone.
-3. **A retention rule for the receipts** (`spend_settlements`,
-   `spend_settlement_members`: about 0.25-0.8 kB per request, never deleted)
-   that keeps the replay guarantee. A batch is only ever sent again by the
-   process that made it, so the rule has to be stated in terms of that
-   process being gone, not of age alone.
-4. **Monitoring.** There is none yet: admission latency and its refusals for
-   an unavailable database, the amount and age of what is held (queued,
-   stranded, quarantined), and settlement failures.
-5. Sizing the request pool for the admission's round trips, measured on the
+2. Sizing the request pool for the admission's round trips, measured on the
    deployment's own database (section 7's benchmark is a loopback exercise).
+3. A decision on what resolves a `quarantined` reservation (section 6).
+4. Who runs `reconcile`, and how they establish that a process is gone, in
+   the deployment's runbook: the command records the statement, it cannot
+   make it.
 
 ## 7. Verification plan
 
@@ -306,6 +424,18 @@ Merging this change activates nothing. Before any deployment switches the row:
   key's gate, then the admission) on one database: what one answers a caller
   the other answers too, after upstream failures and across midnight with a
   quarantined liability.
+- Sections 6b and 6c. Unit: the numbers a ledger reports, each alert (once a
+  stall, at most once a minute for an unavailable admission, not at once for
+  an owner that missed a heartbeat), closure only with everything sent, the
+  upkeep's schedule and what it keeps. `dbtest`: a killed process's
+  reservations charged from request-log rows written through the real logger
+  and log store, or given back, each with its audit row; an instance the
+  registry hears from refused, by the command and by the statement; a process
+  wrongly declared gone settling afterwards without a second charge; own and
+  closed-process receipt deletion, including a batch that committed, lost its
+  answer and is sent again after an upkeep; closures deleted only when
+  nothing is left under them. Each safeguard was checked by removing it and
+  seeing a test fail.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

@@ -39,7 +39,18 @@ async def test_the_shared_tables_arrive_in_the_local_mode_and_old_writes_are_unc
             "spend_settlements",
             "spend_settlement_members",
             "spend_unidentified_writes",
+            "spend_instance_closures",
+            "spend_reconciliations",
         } <= tables
+        # The receipts are found by their maker and age, and a batch's members
+        # by the batch: what the retention rule deletes by.
+        indexes = {
+            row["indexname"]
+            for row in await conn.fetch(
+                "SELECT indexname FROM pg_indexes WHERE tablename LIKE 'spend_settlement%'"
+            )
+        }
+        assert {"idx_spend_settlements_instance", "idx_spend_settlement_members_batch"} <= indexes
         # What the previous release writes, exactly as before: an upsert on the
         # counters, which the trigger only watches -- and, locally, ignores.
         await conn.execute(

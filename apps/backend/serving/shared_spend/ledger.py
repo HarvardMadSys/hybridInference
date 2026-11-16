@@ -34,8 +34,28 @@ request's recorded cost above its reservation, and settlements whose outcome
 left a liability unaccounted -- is added to every check made here and
 reported by :meth:`SharedSpendLedger.holdings`. Nothing here expires a
 reservation: one whose process died before settling it stays counted in the
-database (``python -m serving.shared_spend status`` lists it), and one whose
-costs the counters refused stays there quarantined.
+database until an operator reconciles it (``python -m serving.shared_spend
+reconcile``), and one whose costs the counters refused stays there
+quarantined.
+
+Three things keep this accounting from needing attention nobody knows to
+give:
+
+- **Closure.** A process that shuts down with everything it sent answered
+  records that it will send nothing more (:meth:`SharedSpendLedger.close`).
+  That, or an operator's word for a process that was killed, is what lets its
+  settlement receipts be deleted.
+- **Upkeep.** About once an hour a process that is doing work deletes the
+  receipts nothing can need again (its own answered ones, and those of
+  processes closed long enough ago; see
+  :meth:`~serving.shared_spend.store.SharedSpendStore.purge_receipts`) and
+  surveys what every process holds, alerting when reservations are held by a
+  process no longer heard from.
+- **Numbers.** :meth:`SharedSpendLedger.stats` reports this process's
+  admission latency and outcomes, what it holds and for how long, and how its
+  settlements are going; a settlement failing for
+  :data:`SETTLEMENT_STALLED_SECONDS`, and an admission the database did not
+  answer, are alerted.
 """
 
 from __future__ import annotations
@@ -43,13 +63,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import dataclasses
+import random
+import time
 import uuid
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
 from serving.observability.tracked_tasks import tracked_task
+from serving.shared_spend.stats import LedgerStats, survey
 from serving.shared_spend.store import (
+    PURGE_BATCHES,
     AdmissionRequest,
     CostLine,
     Member,
@@ -86,6 +110,28 @@ MAX_BATCH_MEMBERS = 256
 _RETRY_FIRST_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 30.0
 
+#: Settlement writes failing for this long are reported and alerted, once a stall.
+SETTLEMENT_STALLED_SECONDS = 60.0
+
+#: How often a process deletes the receipts nothing can need again and surveys
+#: what every process holds; the first time at a random point within it, so
+#: the processes a deploy starts together do not all do it at once.
+UPKEEP_SECONDS = 3600.0
+
+#: The most purge statements one upkeep runs.
+_UPKEEP_ROUNDS = 20
+
+#: Stranded reservations are alerted on once the oldest is this old: a request
+#: may run for minutes, and a live owner may miss its heartbeats for a moment.
+STRANDED_ALERT_SECONDS = 900.0
+
+#: The longest recording this process's closure may hold up shutdown.
+_CLOSE_TIMEOUT_SECONDS = 3.0
+
+#: This process asks for the unavailable-admission alert at most this often
+#: (the alert's own cooldown is longer).
+_UNAVAILABLE_ALERT_SECONDS = 60.0
+
 #: SQLSTATEs an admission retries with the same reservation id: another
 #: attempt's row just became visible (23505), a serialization failure (40).
 _RETRY_ADMISSION_SQLSTATES = frozenset({"23505", "40001", "40P01"})
@@ -115,14 +161,18 @@ class SharedReservation:
     retired it), ``quarantined`` (the counters refused its costs) or
     ``unaccounted`` (its settlement found it no longer held as recorded here).
     ``ended_day`` is the UTC day the request ended on: the day a reservation
-    that outlives its settlement keeps counting against.
+    that outlives its settlement keeps counting against. ``admitted_at`` and
+    ``ended_at`` are this process's monotonic clock, for how long it has been
+    held.
     """
 
     __slots__ = (
         "_ledger",
+        "admitted_at",
         "amount",
         "charges",
         "check_day",
+        "ended_at",
         "ended_day",
         "key_id",
         "operation",
@@ -156,6 +206,8 @@ class SharedReservation:
         self.state = "active"
         self.charges: list[CostLine] = []
         self.ended_day: str | None = None
+        self.admitted_at = time.monotonic()
+        self.ended_at: float | None = None
 
     def owns(self, user_id: str, api_key_id: int | None, project_id: str | None) -> bool:
         """Whether a cost so attributed is this reservation's."""
@@ -247,6 +299,23 @@ class SharedSpendLedger:
         self._retry_delay = 0.0
         # Per scope key: the lock, and how many admissions use it now.
         self._locks: dict[tuple[int, int], list[Any]] = {}
+        # What this process observed (stats), on its monotonic clock.
+        self._stats = LedgerStats()
+        self._started = time.monotonic()
+        # Since when no settlement write was answered, until one is; whether
+        # that stall was reported; and what the last failure was.
+        self._failing_since: float | None = None
+        self._stall_reported = False
+        self._last_error: str | None = None
+        self._unavailable_alert_at: float | None = None
+        # Set by close(): this process sends nothing after it.
+        self._closed = False
+        # The upkeep: its task while it runs, when it is next due, and what
+        # its last survey of the database found, and when.
+        self._upkeep: asyncio.Task[None] | None = None
+        self._upkeep_at = self._started + random.uniform(0, UPKEEP_SECONDS)
+        self._survey: dict[str, Any] | None = None
+        self._surveyed_at: float | None = None
         #: For tests only: awaited between the steps of an admission transaction,
         #: and before a settlement's COMMIT.
         self.pause: Callable[[str], Any] | None = None
@@ -399,6 +468,29 @@ class SharedSpendLedger:
             AccountErased: The account was hard-deleted meanwhile.
             ReservationConflict: The id was already used otherwise (a defect).
         """
+        started = time.monotonic()
+        outcome = "failed"
+        try:
+            reservation, refusal = await self._admit(check, amount, operation=operation)
+            outcome = "admitted" if reservation is not None else "refused"
+            return reservation, refusal
+        except SpendAdmissionUnavailable as exc:
+            outcome = "unavailable"
+            self._admission_unavailable(exc)
+            raise
+        except AccountErased:
+            outcome = "erased"
+            raise
+        except asyncio.CancelledError:
+            outcome = "cancelled"
+            raise
+        finally:
+            self._stats.admitted(outcome, time.monotonic() - started)
+            self._start_upkeep()
+
+    async def _admit(
+        self, check: SpendCheck, amount: float, *, operation: str
+    ) -> tuple[SharedReservation | None, quota.BudgetRefusal | None]:
         from serving.spend_ledger import decide_admission, utc_day
 
         request = AdmissionRequest(
@@ -579,6 +671,35 @@ class SharedSpendLedger:
         )
         self._start_write()
 
+    def _admission_unavailable(self, exc: Exception) -> None:
+        """Ask for the alert that admissions are refused for the database's sake.
+
+        Every such request is answered 503 and logged where it is answered
+        (``DATABASE_BUSY``); this adds the page, asked for at most once a
+        minute by this process and sent at most once per cooldown.
+        """
+        from serving.spend_ledger import _send_alert
+
+        now = time.monotonic()
+        last = self._unavailable_alert_at
+        if last is not None and now - last < _UNAVAILABLE_ALERT_SECONDS:
+            return
+        self._unavailable_alert_at = now
+        context = {
+            "error": str(exc),
+            "refused_since_start": self._stats.admissions.get("unavailable", 0) + 1,
+            "logs": "error_code DATABASE_BUSY marks each request answered 503",
+        }
+        _send_alert(
+            lambda alerts: alerts.alert_slack(
+                alerts.AlertSeverity.ERROR,
+                "Spend admission unavailable",
+                context,
+                dedupe_key="spend_admission_unavailable",
+                cooldown_sec=3600,
+            )
+        )
+
     # -- recording ------------------------------------------------------------
 
     def record(
@@ -624,6 +745,7 @@ class SharedSpendLedger:
         self._active.pop(reservation.reservation_id, None)
         reservation.state = "queued"
         reservation.ended_day = utc_day()
+        reservation.ended_at = time.monotonic()
         self._queued[reservation.reservation_id] = reservation.member()
         self._queued_reservations[reservation.reservation_id] = reservation
         self._start_write()
@@ -638,7 +760,7 @@ class SharedSpendLedger:
     def _start_write(self) -> asyncio.Task[None] | None:
         if self._writer is not None:
             return self._writer
-        if self._retry is not None or not self._has_work():
+        if self._closed or self._retry is not None or not self._has_work():
             return None
         try:
             asyncio.get_running_loop()
@@ -656,6 +778,7 @@ class SharedSpendLedger:
         # The next batch, unless a retry is waiting out its back-off (the
         # tracked task has swallowed and reported whatever the writer raised).
         self._start_write()
+        self._start_upkeep()
 
     async def _resolve_abandoned(self) -> None:
         """Turn admissions known to have ended into release members; keep the rest waiting."""
@@ -701,13 +824,14 @@ class SharedSpendLedger:
             await self._write_batch()
         except asyncio.CancelledError:
             raise
-        except Exception:
+        except Exception as exc:
             # Not a failed write (those are answered in _write_batch, and the
             # batch sent again): a defect in this writer. It is tried again
             # after the usual back-off: not at once, where a defect that
             # persists would spin, and not never, which would leave what is
             # queued waiting for the next request to wake the writer.
             self._writing = None
+            self._write_failed(exc)
             self._schedule_retry()
             raise
 
@@ -736,6 +860,7 @@ class SharedSpendLedger:
         self._writing = None
         self._done(batch, source, result)
         self._retry_delay = 0.0
+        self._answered()
 
     async def _failed(self, batch: SettlementBatch, source: str, exc: Exception) -> None:
         from serving.spend_ledger import _refused, _unavailable
@@ -744,6 +869,7 @@ class SharedSpendLedger:
         if _refused(exc):
             # The database answered: the batch did not commit, and sent again
             # it would fail again. Split it; a lone entry refused is kept out.
+            self._answered()
             self._drop_from_queue(batch, source)
             if entries > 1:
                 self._solo.extend(_split(batch))
@@ -769,6 +895,7 @@ class SharedSpendLedger:
                 "entries": entries,
             },
         )
+        self._write_failed(exc)
         self._schedule_retry()
 
     def _drop_from_queue(self, batch: SettlementBatch, source: str) -> None:
@@ -788,6 +915,7 @@ class SharedSpendLedger:
         from serving.spend_ledger import _send_alert, utc_day
 
         sqlstate = getattr(exc, "sqlstate", None) or type(exc).__name__
+        self._stats.entries_refused += len(batch.increments) + len(batch.members)
         self._set_aside.extend(batch.increments)
         for member in batch.members:
             if member.kind == "release":
@@ -835,6 +963,7 @@ class SharedSpendLedger:
         if result.outcome in ("conflict", "invalid"):
             # Never expected: ids are random and payloads built here. Nothing
             # was written; everything stays counted here and is reported.
+            self._stats.members_unaccounted += len(batch.members)
             self._set_aside.extend(batch.increments)
             for member in batch.members:
                 self._keep_liability(member, "unaccounted")
@@ -862,6 +991,7 @@ class SharedSpendLedger:
                 self._keep_liability(member, "unaccounted")
                 unaccounted.append(member)
         if unaccounted:
+            self._stats.members_unaccounted += len(unaccounted)
             logger.error(
                 "Settled reservations were not held as recorded; kept counted here",
                 extra={
@@ -888,7 +1018,7 @@ class SharedSpendLedger:
             )
 
     def _schedule_retry(self) -> None:
-        if self._retry is not None:
+        if self._retry is not None or self._closed:
             return
         self._retry_delay = min(
             _RETRY_MAX_SECONDS, max(_RETRY_FIRST_SECONDS, self._retry_delay * 2)
@@ -902,6 +1032,60 @@ class SharedSpendLedger:
     def _retry_now(self) -> None:
         self._retry = None
         self._start_write()
+
+    def _answered(self) -> None:
+        """The database answered a batch: settlements are being written."""
+        self._stats.batches_answered += 1
+        self._failing_since = None
+        self._stall_reported = False
+        self._last_error = None
+
+    def _write_failed(self, exc: BaseException) -> None:
+        """A settlement write got no answer: count it, and report a stall that has lasted.
+
+        While no write is answered, every request that ended keeps its whole
+        estimate held in the database, so callers near a limit are refused for
+        budget they have. Reported and alerted once per stall, when it has
+        lasted :data:`SETTLEMENT_STALLED_SECONDS`.
+        """
+        from serving.spend_ledger import _send_alert
+
+        now = time.monotonic()
+        self._stats.write_failures += 1
+        self._last_error = type(exc).__name__
+        if self._failing_since is None:
+            self._failing_since = now
+        failing_for = now - self._failing_since
+        if self._stall_reported or failing_for < SETTLEMENT_STALLED_SECONDS:
+            return
+        self._stall_reported = True
+        waiting = _held(self._queued_reservations.values(), "ended_at", now)
+        logger.error(
+            "Spend settlements have not been written for a while; ended requests stay held",
+            extra={
+                "event": "spend_settlement_stalled",
+                "failing_for_seconds": round(failing_for, 1),
+                "error_type": self._last_error,
+                "reservations": waiting["reservations"],
+                "amount_usd": str(waiting["amount_usd"]),
+            },
+        )
+        context = {
+            "failing_for_seconds": round(failing_for),
+            "error": self._last_error,
+            "reservations_waiting": waiting["reservations"],
+            "amount_held_usd": str(waiting["amount_usd"]),
+            "logs": "event spend_settlement_failed has each attempt",
+        }
+        _send_alert(
+            lambda alerts: alerts.alert_slack(
+                alerts.AlertSeverity.ERROR,
+                "Spend settlement is failing",
+                context,
+                dedupe_key="spend_settlement_stalled",
+                cooldown_sec=3600,
+            )
+        )
 
     async def flush(self, timeout: float = 10.0) -> bool:
         """Send everything queued so far; True once nothing is left to send.
@@ -930,6 +1114,165 @@ class SharedSpendLedger:
                 continue
             if self._start_write() is None:
                 await asyncio.sleep(min(_RETRY_FIRST_SECONDS, remaining))
+
+    async def close(self) -> bool:
+        """Record that this process will send no settlement again; True once recorded.
+
+        Shutdown's, after its :meth:`flush`. From here on this ledger sends
+        nothing. The closure is recorded only with everything sent and
+        answered: it is what lets other processes delete this one's receipts
+        once they are old enough, and a batch still unanswered would need its
+        own. A process that leaves something unsent, or cannot reach the
+        database, is not closed: its receipts, and whatever it still holds,
+        stay until an operator says it is gone (``python -m
+        serving.shared_spend reconcile``).
+        """
+        self._closed = True
+        if self._retry is not None:
+            self._retry.cancel()
+            self._retry = None
+        if self._upkeep is not None:
+            self._upkeep.cancel()
+        if self._writer is not None or self._has_work():
+            return False
+        try:
+            async with asyncio.timeout(_CLOSE_TIMEOUT_SECONDS):
+                await self._backend.close_instance(self._instance_id, closed_by="shutdown")
+        except Exception:
+            logger.warning("Recording this process's spend closure failed", exc_info=True)
+            return False
+        return True
+
+    # -- upkeep -----------------------------------------------------------------
+
+    def _start_upkeep(self) -> None:
+        """Start the upkeep when it is due, unless it runs or this process is closing."""
+        now = time.monotonic()
+        if self._closed or self._upkeep is not None or now < self._upkeep_at:
+            return
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._upkeep_at = now + UPKEEP_SECONDS
+        task = tracked_task(self._keep_up(), name="spend_upkeep")
+        self._upkeep = task
+        task.add_done_callback(self._upkeep_finished)
+
+    def _upkeep_finished(self, task: asyncio.Task[None]) -> None:
+        self._upkeep = None
+
+    async def _keep_up(self) -> None:
+        """Delete the receipts nothing can need again; survey what every process holds.
+
+        Best effort, off the request path and apart from the settlement
+        writer: a failure is logged, and the next upkeep tries again.
+        """
+        try:
+            # The batches this process may still send again keep their receipts;
+            # one it makes from here on is younger than anything deleted.
+            unanswered = [batch.batch_id for batch in self._unsettled_batches()]
+            for _ in range(_UPKEEP_ROUNDS):
+                batches, _ = await self._backend.purge_receipts(self._instance_id, unanswered)
+                self._stats.receipts_purged += batches
+                if batches < PURGE_BATCHES:
+                    break
+            await self._backend.purge_closures()
+            found = survey(await self._backend.summary())
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning(
+                "The shared spend upkeep failed; the next one tries again", exc_info=True
+            )
+            return
+        self._survey = found
+        self._surveyed_at = time.monotonic()
+        self._report_stranded(found["stranded"])
+
+    def _report_stranded(self, found: dict[str, Any]) -> None:
+        """Report and alert reservations held by processes no longer heard from.
+
+        Only once the oldest is :data:`STRANDED_ALERT_SECONDS` old. The
+        registry cannot prove a process gone, so this asks an operator to
+        look; it retires nothing.
+        """
+        from serving.spend_ledger import _send_alert
+
+        oldest = found["oldest_age_seconds"]
+        if not found["reservations"] or oldest is None or oldest < STRANDED_ALERT_SECONDS:
+            return
+        logger.error(
+            "Reservations are held by processes no longer heard from; they stay counted",
+            extra={
+                "event": "spend_reservations_stranded",
+                "reservations": found["reservations"],
+                "amount_usd": str(found["amount_usd"]),
+                "oldest_age_seconds": oldest,
+                "instances": found["instances"],
+            },
+        )
+        context = {
+            "reservations": found["reservations"],
+            "amount_held_usd": str(found["amount_usd"]),
+            "oldest_hours": round(oldest / 3600, 1),
+            "instances": ", ".join(found["instances"][:5]),
+            "next": "python -m serving.shared_spend status, then reconcile INSTANCE_ID",
+        }
+        _send_alert(
+            lambda alerts: alerts.alert_slack(
+                alerts.AlertSeverity.ERROR,
+                "Spend reservations held by a process no longer heard from",
+                context,
+                dedupe_key="spend_reservations_stranded",
+                cooldown_sec=6 * 3600,
+            )
+        )
+
+    # -- reporting --------------------------------------------------------------
+
+    def stats(self) -> dict[str, Any]:
+        """What this process observed and holds, for ``/health/deep``; no account is named.
+
+        Since the process started: admissions by outcome and how long they
+        took, what it holds now (running requests, and ended ones waiting for
+        their settlement, each with how long the oldest has), how its
+        settlements went, and what its last hourly survey found in the
+        database for every process (``database``, with its age).
+        """
+        now = time.monotonic()
+        liabilities: dict[str, list[SharedReservation]] = {}
+        for reservation in self._every_liability():
+            liabilities.setdefault(reservation.state, []).append(reservation)
+        failing = self._failing_since
+        cost, records = self.unwritten()
+        database = None
+        if self._survey is not None and self._surveyed_at is not None:
+            database = {"age_seconds": round(now - self._surveyed_at, 1), **self._survey}
+        return {
+            "instance_id": self._instance_id,
+            "uptime_seconds": round(now - self._started, 1),
+            "admissions": dict(self._stats.admissions),
+            "admission_latency": self._stats.admission.snapshot(),
+            "held": {
+                "active": _held(self._active.values(), "admitted_at", now),
+                "awaiting_settlement": _held(self._queued_reservations.values(), "ended_at", now),
+                "quarantined": _held(liabilities.get("quarantined", ()), "ended_at", now),
+                "unaccounted": _held(liabilities.get("unaccounted", ()), "ended_at", now),
+            },
+            "settlement": {
+                "batches_answered": self._stats.batches_answered,
+                "write_failures": self._stats.write_failures,
+                "entries_refused": self._stats.entries_refused,
+                "members_unaccounted": self._stats.members_unaccounted,
+                "failing_for_seconds": round(now - failing, 1) if failing is not None else None,
+                "last_error": self._last_error,
+                "unwritten_usd": round(cost, 6),
+                "unwritten_records": records,
+            },
+            "receipts_purged": self._stats.receipts_purged,
+            "database": database,
+        }
 
     def unwritten(self) -> tuple[float, int]:
         """Costs recorded and not known added to the counters (dollars, cost records)."""
@@ -966,6 +1309,21 @@ class SharedSpendLedger:
     def fully_settled(self) -> bool:
         """Whether nothing this process admitted or recorded is unsettled or a liability."""
         return not any(self.holdings().values()) and self.unwritten()[1] == 0
+
+
+def _held(reservations: Any, since: str, now: float) -> dict[str, Any]:
+    """How many of *reservations* there are, what they hold, and how long the oldest has.
+
+    Each holds the larger of its estimate and its recorded cost; *since* names
+    the monotonic time it has been in this state from.
+    """
+    reservations = list(reservations)
+    starts = [start for r in reservations if (start := getattr(r, since)) is not None]
+    return {
+        "reservations": len(reservations),
+        "amount_usd": float(sum((max(r.amount, r.cost()) for r in reservations), Decimal(0))),
+        "oldest_seconds": round(now - min(starts), 1) if starts else None,
+    }
 
 
 def _coalesce(lines: list[CostLine]) -> list[CostLine]:

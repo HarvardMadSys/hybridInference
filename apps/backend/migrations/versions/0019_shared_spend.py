@@ -12,9 +12,22 @@ its actual cost to the counters in the same transaction. ``spend_settlements``
 records each batch by its id and payload digest, so a batch sent again after
 its COMMIT's answer was lost is recognised rather than counted twice, and
 ``spend_settlement_members`` records which batch retired each reservation (its
-primary key allows one). Both are receipts and are never deleted by the
-gateway. None of these three name an account except ``spend_reservations``,
-which the hard delete purges.
+primary key allows one). Both are receipts. One is needed for as long as the
+process that made its batch may send that batch again, and no longer: it is
+deleted, never before it is a week old, by its own process once the batch was
+answered, and by any process once its maker is known to be gone
+(:data:`serving.shared_spend.store.RECEIPT_RETENTION_SECONDS`).
+
+``spend_instance_closures`` names the processes that will send nothing more.
+One that shuts down with everything sent records itself; one that was killed
+is recorded by an operator (``python -m serving.shared_spend reconcile``), and
+that command retires what it left, each reservation with a row of
+``spend_reconciliations``: what it held, what it was charged and on which
+request-log rows, who said the process was gone and why. Those rows are an
+audit record and are never deleted.
+
+None of these name an account except ``spend_reservations``, which the hard
+delete purges.
 
 ``spend_unidentified_writes`` is evidence, not enforcement: while the mode is
 ``shared``, a statement-level trigger on the three counter tables records any
@@ -90,7 +103,10 @@ STATEMENTS = (
         settled_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_spend_settlements_settled_at ON spend_settlements(settled_at)",
+    # By maker and age: what the retention rule deletes, and what it asks of a
+    # closure (does this instance still have receipts?).
+    "CREATE INDEX IF NOT EXISTS idx_spend_settlements_instance "
+    "ON spend_settlements(instance_id, settled_at)",
     """
     CREATE TABLE IF NOT EXISTS spend_settlement_members (
         reservation_id TEXT PRIMARY KEY,
@@ -99,8 +115,36 @@ STATEMENTS = (
         settled_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
     """,
-    "CREATE INDEX IF NOT EXISTS idx_spend_settlement_members_settled_at "
-    "ON spend_settlement_members(settled_at)",
+    # By batch: a batch's member receipts are deleted with it.
+    "CREATE INDEX IF NOT EXISTS idx_spend_settlement_members_batch "
+    "ON spend_settlement_members(batch_id)",
+    """
+    CREATE TABLE IF NOT EXISTS spend_instance_closures (
+        instance_id TEXT PRIMARY KEY,
+        closed_by   TEXT NOT NULL CHECK (closed_by IN ('shutdown', 'operator')),
+        operator    TEXT,
+        reason      TEXT,
+        closed_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (closed_by = 'shutdown' OR (operator IS NOT NULL AND reason IS NOT NULL))
+    )
+    """,
+    """
+    CREATE TABLE IF NOT EXISTS spend_reconciliations (
+        reservation_id TEXT PRIMARY KEY,
+        instance_id    TEXT NOT NULL,
+        batch_id       TEXT NOT NULL,
+        amount_usd     DECIMAL(14, 6) NOT NULL,
+        operation      TEXT NOT NULL,
+        admitted_at    TIMESTAMPTZ NOT NULL,
+        outcome        TEXT NOT NULL CHECK (outcome IN ('settled', 'released')),
+        cost_usd       DECIMAL(14, 6) NOT NULL DEFAULT 0 CHECK (cost_usd >= 0),
+        evidence       JSONB NOT NULL DEFAULT '[]'::jsonb,
+        owner_state    TEXT NOT NULL,
+        operator       TEXT NOT NULL,
+        reason         TEXT NOT NULL,
+        reconciled_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+    """,
     """
     CREATE TABLE IF NOT EXISTS spend_unidentified_writes (
         id               BIGSERIAL PRIMARY KEY,

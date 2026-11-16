@@ -56,8 +56,13 @@ async def _wipe(pool) -> None:
             "spend_settlements",
             "spend_settlement_members",
             "spend_unidentified_writes",
+            "spend_instance_closures",
+            "spend_reconciliations",
         ):
             await conn.execute(f"DELETE FROM {table}")
+        # Request-log rows and registrations the reconciliation tests make.
+        await conn.execute("DELETE FROM api_logs WHERE user_id LIKE 'u-ss-%'")
+        await conn.execute("DELETE FROM config_instances WHERE instance_id LIKE 'inst-%'")
         await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-ss-%'")
         await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id LIKE 'u-ss-%'")
         await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'p-ss-%'")

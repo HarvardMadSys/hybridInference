@@ -524,7 +524,29 @@ async def deep_health(
         "providers": provider_status,
         "route_exclusions": route_exclusions,
         "config_groups": config_groups,
+        "spend_accounting": _spend_accounting(admin is True),
     }
+
+
+def _spend_accounting(admin: bool) -> dict[str, Any]:
+    """The spend accounting mode this process runs in and, for an administrator, its numbers.
+
+    In the shared mode each ledger of this process reports what it observed
+    since it started and what it holds
+    (:meth:`serving.shared_spend.ledger.SharedSpendLedger.stats`): admission
+    latency and outcomes, what is held and for how long, how settlements are
+    going, and its last hourly survey of what every process holds. They name
+    no account, but they are operating figures, so only an administrator is
+    shown them. Like the route exclusions, they do not feed ``status``: a
+    stalled settlement is alerted on its own and is not a reason to take a
+    serving gateway out of a load balancer.
+    """
+    from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
+
+    report: dict[str, Any] = {"mode": spend_mode.current()}
+    if admin and spend_mode.is_shared():
+        report["ledgers"] = [ledger.stats() for ledger in shared_ledger.all_ledgers()]
+    return report
 
 
 @router.get("/health/model-activity")
