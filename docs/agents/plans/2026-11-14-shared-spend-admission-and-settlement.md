@@ -247,8 +247,15 @@ for: they leave the set every check reads and stay in what the process reports
   an *unaccounted* liability: counted in this process's checks at the larger
   of its estimate and its known cost, on the day it ended, reported by
   `holdings`/`unwritten`, logged and alerted. A `quarantined` member stays in
-  the database (and in `holdings`); if its row could not be marked, the
-  process counts it as unaccounted instead.
+  the database (and in `holdings`).
+- A member the counters refused is marked `quarantined` in the database by a
+  write of its own, and nothing is assumed before that write is answered:
+  until then its row is active at its estimate, so the reservation stays a
+  waiting one in its process (its cost above the estimate counted there), and
+  a mark that fails is sent again with the writer's back-off (it is harmless
+  to repeat). The answer says which it is: the row is quarantined; another
+  batch retired it first (a duplicate, below); or there is neither a row nor
+  a receipt, and the process then counts it as unaccounted.
 - A settlement that finds a member another batch retired first (`duplicate`:
   an operator reconciled this process while it was running, section 6b) adds
   none of its costs. They are then in no counter, and the settlement says so
@@ -434,11 +441,15 @@ The gateway has no metrics endpoint; its established surfaces are used.
   gone, the oldest at least 15 minutes old; 6 h cooldown), besides
   `spend_settlement_refused` and `spend_settlement_unaccounted`. With several
   processes, each one that observes a condition alerts once per cooldown.
-- Log lines. The structured fields of the spend ledgers' lines (`entries`,
-  `reservations`, `cost_usd`, `batch_id`, ...) are now among those the log
-  formatters emit. They were dropped at format time before, the per-process
-  ledger's included, so a line an alert pointed to carried its event name
-  only.
+- Log lines. The log formatters emit only the structured fields they are
+  told of, and none of the shared ledger's were among them, so a line an
+  alert pointed to would have carried its event name only. Its fields
+  (`reservations`, `increments`, `amount_usd`, `batch_id`, `sqlstate`, ...)
+  are added, under names no other line uses. The per-process ledger's lines
+  have the same gap on `dev` (`entries`, `cost_usd`, `requests`); they are
+  left exactly as they are here, since a list of every pending cost wants
+  writing in several lines rather than one, and that is a change to the
+  default mode's output for a change of its own.
 
 ## 6d. Required before the shared mode is activated (not in this change)
 
@@ -504,7 +515,13 @@ Merging this change activates nothing. Before any deployment switches the row:
   defect while building a batch loses nothing it had taken; a failed
   connection is retried, a cancelled statement is not; no closure with a
   request still running; an upkeep that stopped short comes again within a
-  minute; a list in a log line is bounded. Each again checked by removal.
+  minute. Each again checked by removal.
+- After a check of those fixes. `dbtest`: a request whose cost the counters
+  refused stays counted while its row is being marked (it cost the whole
+  limit, and the next request is refused throughout); a mark that failed, or
+  whose answer was lost, is sent again and nothing is counted twice, in the
+  process that holds it or in another. Unit: what the process holds until the
+  mark is answered, and what it does with each answer.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

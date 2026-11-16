@@ -359,7 +359,7 @@ async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_set
         r for r in caplog.records if getattr(r, "event", None) == "spend_settlement_duplicate"
     ]
     assert dropped.reservations == [reservation.reservation_id]
-    assert dropped.cost_usd == "0.002000"
+    assert dropped.amount_usd == "0.002000"
 
 
 class RefusesChargeOf:
@@ -593,6 +593,9 @@ async def test_a_batch_not_answered_keeps_its_receipt_through_the_upkeep_and_is_
         stats = ledger.stats()
         assert stats["receipts_purged"] == 1
         assert stats["database"]["stranded"]["reservations"] == 0
-        assert stats["database"]["receipts"]["batches"] == 0
+        # The survey's receipt counts are the planner's estimates (none at all
+        # on a table never analyzed); the status command counts.
+        assert stats["database"]["receipts"]["estimated"] is True
+        assert (await real.summary())["receipts"]["batches"] == 0
     finally:
         ledger._backend = real

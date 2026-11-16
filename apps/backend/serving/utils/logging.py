@@ -198,34 +198,27 @@ _STRUCTURED_LOG_KEYS = (
     # (``route_capability_override_orphaned``, servers/routers/admin/
     # provider_routes.py). Next to ``model_id`` it says which row to look at.
     "route_id",
-    # The spend ledgers' evidence (serving/spend_ledger.py, serving/shared_spend/
-    # ledger.py). Their alerts say "the log lists each entry to reconcile", and
-    # for a cost that was set aside, or whose write nobody could confirm, the
-    # line is the only record of how much and for whom: ``entries`` /
-    # ``increments`` / ``reservations`` are those lists, ``cost_usd`` /
-    # ``requests`` / ``amount_usd`` the sums, ``batch_id`` / ``reservation_id``
-    # / ``xid`` / ``sqlstate`` what to look them up by, and ``applied`` /
-    # ``failed`` / ``unknown`` / ``refused`` / ``unavailable`` how a write
+    # The shared spend accounting's evidence (serving/shared_spend/ledger.py,
+    # and the shutdown report of its ledgers in serving/spend_ledger.py). Its
+    # alerts say "the log lists each entry to reconcile", and for a cost that
+    # was set aside, dropped as a duplicate or left unaccounted the line is the
+    # only record of how much: ``increments`` and ``reservations`` are those
+    # lists (a settlement batch's, so at most a few hundred short items),
+    # ``amount_usd`` the sum, ``batch_id`` / ``reservation_id`` / ``sqlstate``
+    # what to look them up by, ``entry_count`` and ``unavailable`` how a write
     # ended. ``held`` is what a process still held when it shut down;
     # ``failing_for_seconds``, ``oldest_age_seconds`` and ``instances`` are
     # what a stalled settlement and stranded reservations are reported with.
-    # None of these names is used by any other log line.
-    "entries",
+    # None of these names is used by any other log line: the per-process
+    # ledger's own fields (``entries``, ``cost_usd``, ...) are not among them
+    # and are written as before.
     "increments",
     "reservations",
-    "cost_usd",
-    "requests",
     "amount_usd",
-    "ceiling_usd",
-    "api_key_id",
     "batch_id",
     "reservation_id",
-    "xid",
     "sqlstate",
-    "applied",
-    "failed",
-    "unknown",
-    "refused",
+    "entry_count",
     "unavailable",
     "held",
     "failing_for_seconds",
@@ -241,25 +234,11 @@ _STRUCTURED_LOG_KEYS = (
 #: request log cuts its own values shorter; this bounds every other line.
 MAX_LOGGED_FIELD_CHARS = 2048
 
-#: The most items a list in a structured field keeps. The spend ledgers log one
-#: entry for each cost a write left unconfirmed, and after a database outage
-#: that can be every account with traffic: a line of any length is one a log
-#: pipeline may cut or drop whole. A settlement batch's reservations (at most
-#: 256) always fit; what is cut is counted on the line.
-MAX_LOGGED_FIELD_ITEMS = 300
-
 
 def _bounded_field(value: Any) -> Any:
-    """*value* within its bound: the start of a long text, the first items of a long list.
-
-    Text is cut at :data:`MAX_LOGGED_FIELD_CHARS`. A list or tuple keeps its
-    first :data:`MAX_LOGGED_FIELD_ITEMS` items and says how many it left out.
-    """
+    """*value*, or the start of it when it is text longer than :data:`MAX_LOGGED_FIELD_CHARS`."""
     if isinstance(value, str) and len(value) > MAX_LOGGED_FIELD_CHARS:
         return value[:MAX_LOGGED_FIELD_CHARS] + "…"
-    if isinstance(value, list | tuple) and len(value) > MAX_LOGGED_FIELD_ITEMS:
-        left_out = len(value) - MAX_LOGGED_FIELD_ITEMS
-        return [*value[:MAX_LOGGED_FIELD_ITEMS], f"… and {left_out} more"]
     return value
 
 

@@ -990,7 +990,11 @@ async def flush_all(timeout: float = 10.0) -> None:
             # the database, for an operator (python -m serving.shared_spend).
             logger.error(
                 "Shutting down with shared spend reservations not settled",
-                extra={"event": "spend_reservations_unsettled_at_shutdown", "held": held},
+                extra={
+                    "event": "spend_reservations_unsettled_at_shutdown",
+                    "held": held,
+                    "amount_usd": round(cost, 6),
+                },
             )
         close = getattr(ledger, "close", None)
         if close is not None and not await close():

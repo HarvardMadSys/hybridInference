@@ -548,7 +548,8 @@ async def test_an_admission_identity_cannot_be_reused_once_retired_or_for_anothe
     held = dataclasses.replace(base, reservation_id="sr_ident_2")
     assert (await admit(held)).result == "admitted"
     quarantined = Member(held.reservation_id, user, "settle")
-    assert await backend.quarantine(quarantined, "inst-a", day=utc_day(), note="refused")
+    marked = await backend.quarantine(quarantined, "inst-a", day=utc_day(), note="refused")
+    assert marked == "quarantined"
     assert (await admit(held)).result == "retired"
 
 
@@ -688,6 +689,98 @@ async def test_a_refused_entry_is_split_out_and_kept_counted(db):
     assert db.a.holdings()["quarantined"] == 1
     assert db.a.unwritten() == (pytest.approx(0.5), 1)
     assert not db.a.fully_settled()
+
+
+class MarksLate(RefusesCosts):
+    """The real backend, refusing costs, whose quarantine mark is held up, fails, or loses its answer."""
+
+    def __init__(self, backend, how: str) -> None:
+        super().__init__(backend)
+        self.how = how
+        self.reached = asyncio.Event()
+        self.go = asyncio.Event()
+        self.calls = 0
+
+    async def quarantine(self, member, instance_id, **kwargs):
+        self.calls += 1
+        if self.how == "held":
+            self.reached.set()
+            await self.go.wait()
+        elif self.how == "fails" and self.calls == 1:
+            raise ConnectionResetError("lost before the mark was written")
+        elif self.how == "answer lost" and self.calls == 1:
+            await self._backend.quarantine(member, instance_id, **kwargs)
+            raise ConnectionResetError("the mark was written, its answer lost")
+        return await self._backend.quarantine(member, instance_id, **kwargs)
+
+
+async def test_a_refused_request_stays_counted_while_its_row_is_being_marked(db):
+    """The counters refused a request's cost; its row is being marked quarantined.
+
+    Until the mark commits the row is active at its estimate, so the part of
+    the cost above the estimate is known to this process alone -- which must
+    go on counting it, not take the row to hold it already. Counted as
+    quarantined at once, a request that cost the whole $1.00 limit let the
+    next one in while its mark was under way.
+    """
+    user = PREFIX + "marking"
+    backend = MarksLate(db.a._backend, "held")
+    ledger = SharedSpendLedger(backend, instance_id="inst-marking")
+    first, _ = await ledger.admit(check(ledger, user), 0.30)
+    _charge(ledger, first, 1.00)
+    first.release()
+    flushing = asyncio.create_task(ledger.flush(10))
+    await asyncio.wait_for(backend.reached.wait(), 5)
+
+    assert [(r["state"], r["amount_usd"]) for r in await _rows(db.pool, user)] == [
+        ("active", Decimal("0.3"))
+    ]
+    second, refusal = await ledger.admit(check(ledger, user), 0.30)
+    assert second is None and refusal is not None  # the limit is spent
+
+    backend.go.set()
+    assert await flushing
+    assert first.state == "quarantined"
+    third, refusal = await ledger.admit(check(ledger, user), 0.30)
+    assert third is None and refusal is not None  # and stays spent, on its row now
+    # Nothing is counted twice once the mark is in: a larger limit has what is left.
+    later, _ = await db.b.admit(check(db.b, user, daily=2.0), 5.0)
+    assert later.amount == Decimal("1.000000")
+    later.release()
+    assert await db.b.flush(5)
+
+
+@pytest.mark.parametrize("how", ["fails", "answer lost"])
+async def test_a_mark_that_got_no_answer_is_sent_again_and_counts_nothing_twice(
+    db, monkeypatch, how
+):
+    # Whether the mark was written before its answer was lost or not written
+    # at all, the process cannot tell: it sends it again (the mark is harmless
+    # to repeat) instead of guessing. Guessing "not marked" and counting the
+    # cost itself held it twice for the rest of the day.
+    from serving.shared_spend import ledger as shared_ledger
+
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.01)
+    user = PREFIX + "mark-" + how.replace(" ", "-")
+    backend = MarksLate(db.a._backend, how)
+    ledger = SharedSpendLedger(backend, instance_id="inst-marking")
+    first, _ = await ledger.admit(check(ledger, user), 0.30)
+    _charge(ledger, first, 0.50)  # $0.50 of the $1.00 limit
+    first.release()
+    assert await ledger.flush(10)
+
+    assert backend.calls == 2 and first.state == "quarantined"
+    assert [(r["state"], r["cost_usd"]) for r in await _rows(db.pool, user)] == [
+        ("quarantined", Decimal("0.5"))
+    ]
+    assert ledger.holdings()["quarantined"] == 1 and ledger.holdings()["unaccounted"] == 0
+    for asking in (ledger, db.b):  # the process that holds it, and another
+        later, _ = await asking.admit(check(asking, user), 5.0)
+        assert later.amount == Decimal("0.500000")  # exactly what is left
+        later.release()
+        assert await asking.flush(5)
+    if ledger._retry is not None:
+        ledger._retry.cancel()
 
 
 async def test_a_request_that_ended_holds_nothing_whatever_it_was_charged(db):

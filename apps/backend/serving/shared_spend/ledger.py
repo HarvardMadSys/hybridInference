@@ -298,6 +298,9 @@ class SharedSpendLedger:
         self._solo: list[SettlementBatch] = []
         # What the counters refused, kept counted here and reported.
         self._set_aside: list[CostLine] = []
+        # Reservations whose costs the counters refused, until their rows are
+        # known to be marked quarantined: (member, the day it ended, why).
+        self._marking: list[tuple[Member, str, str]] = []
         # Reservations past settlement that still hold a liability: quarantined
         # in the database (the counters refused their costs), or no longer held
         # as recorded (unaccounted, counted here in full). One counts against
@@ -804,7 +807,12 @@ class SharedSpendLedger:
 
     def _has_work(self) -> bool:
         return bool(
-            self._replay or self._solo or self._queued or self._increments or self._abandoned
+            self._replay
+            or self._solo
+            or self._queued
+            or self._increments
+            or self._abandoned
+            or self._marking
         )
 
     def _start_write(self) -> asyncio.Task[None] | None:
@@ -901,6 +909,7 @@ class SharedSpendLedger:
 
     async def _write_batch(self) -> None:
         await self._resolve_abandoned()
+        await self._mark_refused()
         batch, source = self._next_batch()
         if batch is None:
             if self._abandoned:
@@ -937,7 +946,7 @@ class SharedSpendLedger:
                     "A settlement batch was refused; writing its entries one by one",
                     extra={
                         "event": "spend_settlement_split",
-                        "entries": entries,
+                        "entry_count": entries,
                         "sqlstate": getattr(exc, "sqlstate", None),
                     },
                 )
@@ -952,7 +961,7 @@ class SharedSpendLedger:
                 "batch_id": batch.batch_id,
                 "error_type": type(exc).__name__,
                 "unavailable": _unavailable(exc),
-                "entries": entries,
+                "entry_count": entries,
             },
         )
         self._write_failed(exc)
@@ -980,24 +989,12 @@ class SharedSpendLedger:
         for member in batch.members:
             if member.kind == "release":
                 continue
-            reservation = self._keep_liability(member, "quarantined")
+            reservation = self._queued_reservations.get(member.reservation_id)
             ended = reservation.ended_day if reservation is not None else None
-            try:
-                marked = await self._backend.quarantine(
-                    member,
-                    self._instance_id,
-                    day=ended or utc_day(),
-                    note=f"settlement refused: {sqlstate}",
-                )
-            except Exception:
-                marked = False
-                logger.warning("Marking a refused reservation failed", exc_info=True)
-            if not marked and reservation is not None:
-                # Its row was not marked (the write failed, or the row is not
-                # held as recorded): nothing in the database counts its cost on
-                # its day, so this process does, in full, as for any liability
-                # no longer held where it was recorded.
-                reservation.state = "unaccounted"
+            # Marked below. Until that is answered its row is active at its
+            # estimate, exactly as while it waited for this settlement, so it
+            # stays here as one waiting: its cost above the estimate counted.
+            self._marking.append((member, ended or utc_day(), f"settlement refused: {sqlstate}"))
         logger.error(
             "The counters refused a settlement entry; set aside and kept counted",
             extra={
@@ -1021,6 +1018,111 @@ class SharedSpendLedger:
                 dedupe_key="spend_settlement_refused",
                 cooldown_sec=3600,
             )
+        )
+        await self._mark_refused()
+
+    async def _mark_refused(self) -> None:
+        """Mark quarantined, in the database, the reservations whose costs the counters refused.
+
+        What the mark's answer says decides what this process holds from then
+        on, so nothing is assumed before it comes: a mark that fails is tried
+        again with the writer's back-off (it is harmless to repeat), and the
+        reservation stays a waiting one meanwhile.
+
+        - ``quarantined``: its row now counts the larger of its estimate and
+          its cost, on the day it ended. The part of the cost above the
+          estimate, which only this process held, is kept a moment longer for
+          an admission that read the row while it was still active
+          (:meth:`_land`).
+        - ``retired``: another batch retired it first (an operator's
+          reconciliation of this process). Its costs go nowhere, and that is
+          said (:meth:`_report_duplicates`).
+        - ``missing``: no row and no receipt. Nothing in the database counts
+          it, so this process does, in full (unaccounted).
+        """
+        from serving.spend_ledger import _send_alert
+
+        while self._marking:
+            member, day, note = self._marking[0]
+            try:
+                outcome = await self._backend.quarantine(
+                    member, self._instance_id, day=day, note=note
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.warning(
+                    "Marking a refused reservation failed; it is tried again", exc_info=True
+                )
+                self._schedule_retry()
+                return
+            self._marking.pop(0)
+            if outcome == "quarantined":
+                reservation = self._keep_liability(member, "quarantined")
+                if reservation is not None:
+                    over = reservation.cost() - reservation.amount
+                    if over > 0:
+                        self._land(
+                            [
+                                (
+                                    reservation.user_id,
+                                    reservation.key_id,
+                                    reservation.project_id,
+                                    None,
+                                    over,
+                                )
+                            ]
+                        )
+            elif outcome == "retired":
+                reservation = self._queued_reservations.pop(member.reservation_id, None)
+                if reservation is not None:
+                    reservation.state = "retired"
+                self._report_duplicates([member], batch_id=None)
+            else:
+                self._keep_liability(member, "unaccounted")
+                self._stats.members_unaccounted += 1
+                logger.error(
+                    "A refused reservation is no longer held as recorded; kept counted here",
+                    extra={
+                        "event": "spend_settlement_unaccounted",
+                        "reservations": [(member.reservation_id, outcome)],
+                        "amount_usd": str(member.cost_usd()),
+                    },
+                )
+                context = {
+                    "reservations": 1,
+                    "logs": "event spend_settlement_unaccounted lists each reservation",
+                }
+                _send_alert(
+                    lambda alerts, context=context: alerts.alert_slack(
+                        alerts.AlertSeverity.ERROR,
+                        "Spend settlement found reservations not held as recorded",
+                        context,
+                        dedupe_key="spend_settlement_unaccounted",
+                        cooldown_sec=3600,
+                    )
+                )
+
+    def _report_duplicates(self, dropped: list[Member], *, batch_id: str | None) -> None:
+        """Say that reservations another batch retired first had costs, which were not added.
+
+        An operator reconciled this process while it was running (their audit
+        rows say what was charged instead), or a defect. Either way the charge
+        recorded here is in no counter, and this line is the only place that
+        says how much.
+        """
+        dropped = [member for member in dropped if member.costs]
+        if not dropped:
+            return
+        self._stats.members_duplicate += len(dropped)
+        logger.error(
+            "Reservations were already retired by another batch; their costs were not added",
+            extra={
+                "event": "spend_settlement_duplicate",
+                "batch_id": batch_id,
+                "reservations": [m.reservation_id for m in dropped],
+                "amount_usd": str(sum((m.cost_usd() for m in dropped), Decimal(0))),
+            },
         )
 
     def _done(self, batch: SettlementBatch, source: str, result: SettlementResult) -> None:
@@ -1072,29 +1174,14 @@ class SharedSpendLedger:
                                 over,
                             )
                         )
-                if what == "duplicate" and member.costs:
+                if what == "duplicate":
                     dropped.append(member)
             else:
                 # missing or mismatch: nothing holds it as recorded here.
                 self._keep_liability(member, "unaccounted")
                 unaccounted.append(member)
         self._land(moved)
-        if dropped:
-            # Another batch retired them first, so their costs were not added:
-            # an operator reconciled this process while it was running (their
-            # audit rows say what was charged instead), or a defect. Either
-            # way the charge recorded here is in no counter, and this line is
-            # the only place that says how much.
-            self._stats.members_duplicate += len(dropped)
-            logger.error(
-                "Reservations were already retired by another batch; their costs were not added",
-                extra={
-                    "event": "spend_settlement_duplicate",
-                    "batch_id": batch.batch_id,
-                    "reservations": [m.reservation_id for m in dropped],
-                    "cost_usd": str(sum((m.cost_usd() for m in dropped), Decimal(0))),
-                },
-            )
+        self._report_duplicates(dropped, batch_id=batch.batch_id)
         if unaccounted:
             self._stats.members_unaccounted += len(unaccounted)
             logger.error(
@@ -1105,7 +1192,7 @@ class SharedSpendLedger:
                     "reservations": [
                         (m.reservation_id, result.outcome_of(m.reservation_id)) for m in unaccounted
                     ],
-                    "cost_usd": str(sum((m.cost_usd() for m in unaccounted), Decimal(0))),
+                    "amount_usd": str(sum((m.cost_usd() for m in unaccounted), Decimal(0))),
                 },
             )
             context = {
@@ -1409,6 +1496,8 @@ class SharedSpendLedger:
         for rid, member in self._queued.items():
             if rid not in queued_in_batches:
                 lines.extend(member.costs)
+        for member, _, _ in self._marking:
+            lines.extend(member.costs)
         for reservation in self._every_liability():
             lines.extend(reservation.charges)
         return float(sum((line.cost_usd for line in lines), Decimal(0))), len(lines)
@@ -1423,9 +1512,10 @@ class SharedSpendLedger:
         states: dict[str, int] = {}
         for reservation in self._every_liability():
             states[reservation.state] = states.get(reservation.state, 0) + 1
+        marking = {member.reservation_id for member, _, _ in self._marking}
         return {
             "active": len(self._active),
-            "queued": len(set(self._queued) | in_batches),
+            "queued": len(set(self._queued) | in_batches | marking),
             "abandoned": len(self._abandoned),
             "quarantined": states.get("quarantined", 0),
             "unaccounted": states.get("unaccounted", 0),

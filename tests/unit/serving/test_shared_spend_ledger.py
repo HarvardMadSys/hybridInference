@@ -355,10 +355,13 @@ async def test_what_a_settlement_moved_into_the_counters_stays_known_for_a_momen
     assert len(ledger._landed) == 1 and extra(before) == pytest.approx(0.01)
 
 
-async def test_a_refused_reservation_whose_row_could_not_be_marked_is_counted_here_in_full():
-    # Quarantined, its row holds its cost on its day and an admission reads it
-    # there. If the row could not be marked, nothing in the database does: the
-    # process counts it itself, as it does any liability it alone knows.
+async def test_a_refused_reservation_stays_a_waiting_one_until_its_mark_is_answered(monkeypatch):
+    # The counters refused its cost, so its row is to be marked quarantined.
+    # Until that mark is answered the row is active at its estimate, and what
+    # the process holds must not assume otherwise: it goes on counting the part
+    # of the cost above the estimate, as while the reservation waited, and it
+    # sends the mark again until it gets an answer.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.01)
     ledger, backend = _ledger()
     reservation, _ = await ledger.admit(_check(ledger), 0.30)
     with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
@@ -366,10 +369,51 @@ async def test_a_refused_reservation_whose_row_could_not_be_marked_is_counted_he
     backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
     backend.fail_quarantine = ConnectionRefusedError("the database went away")
     reservation.release()
+    assert not await ledger.flush(0.1)  # the mark is still owed
+
+    assert reservation.state == "queued" and backend.quarantine_calls >= 2
+    assert ledger.holdings()["queued"] == 1 and ledger.holdings()["quarantined"] == 0
+    assert ledger._local_extra(USER, None, None, reserved=False)[0] == pytest.approx(0.20)
+    assert ledger._local_extra(USER, None, None, reserved=True)[0] == pytest.approx(0.50)
+    assert ledger.unwritten() == (pytest.approx(0.50), 1)
+    assert await ledger.close() is False  # not everything is sent
+
+    backend.fail_quarantine = None
+    ledger._closed = False
     assert await ledger.flush(5)
-    assert reservation.state == "unaccounted"
-    assert ledger.holdings()["unaccounted"] == 1 and ledger.holdings()["quarantined"] == 0
-    assert ledger._local_extra(USER, None, None, reserved=False)[0] == pytest.approx(0.50)
+    assert reservation.state == "quarantined"
+    assert ledger.holdings()["quarantined"] == 1 and ledger.holdings()["queued"] == 0
+    # Its row holds it now; an admission that read the row still active gets
+    # the difference for a moment more.
+    assert ledger._local_extra(USER, None, None, reserved=False)[0] == 0
+    assert ledger._local_extra(USER, None, None, reserved=False, read_from=0.0)[0] == pytest.approx(
+        0.20
+    )
+
+
+@pytest.mark.parametrize(
+    ("answer", "state", "held", "duplicates"),
+    [
+        # Another batch retired it first: its cost goes nowhere, and that is said.
+        ("retired", "retired", 0.0, 1),
+        # Neither a row nor a receipt: nothing in the database counts it.
+        ("missing", "unaccounted", 0.50, 0),
+    ],
+)
+async def test_a_refused_reservation_no_longer_held_is_dropped_or_counted_here(
+    answer, state, held, duplicates
+):
+    ledger, backend = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.50)
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    backend.quarantine_answer = answer
+    reservation.release()
+    assert await ledger.flush(5)
+    assert reservation.state == state
+    assert ledger._local_extra(USER, None, None, reserved=False)[0] == pytest.approx(held)
+    assert ledger.stats()["settlement"]["members_duplicate"] == duplicates
 
 
 def test_a_batch_names_each_reservation_once_with_its_own_costs():

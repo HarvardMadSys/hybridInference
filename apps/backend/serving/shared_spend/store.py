@@ -723,15 +723,32 @@ class SharedSpendStore:
         *,
         day: str,
         note: str,
-    ) -> bool:
-        """Keep a reservation whose settlement the counters refused, counted, for an operator."""
+    ) -> str:
+        """Keep a reservation whose settlement the counters refused, counted, for an operator.
+
+        Marks its row ``quarantined`` with its known cost and the day it ended.
+        Repeating it is harmless: a row this instance already quarantined is
+        left on its day and answers the same, so a mark whose answer was lost
+        can simply be sent again. Returns what was found:
+
+        - ``quarantined``: the row is marked (now, or already);
+        - ``retired``: there is no such row and a settlement receipt names the
+          reservation, so another batch retired it;
+        - ``missing``: neither.
+        """
         async with self.pool.acquire() as conn:
-            status = await conn.execute(
-                "UPDATE spend_reservations SET state = 'quarantined', liability_day = $6, "
-                "cost_usd = $7, note = $8, updated_at = NOW() "
-                "WHERE reservation_id = $1 AND instance_id = $2 AND state = 'active' "
-                "AND user_id = $3 AND api_key_id IS NOT DISTINCT FROM $4 "
-                "AND project_id IS NOT DISTINCT FROM $5",
+            row = await conn.fetchrow(
+                "WITH marked AS ("
+                "  UPDATE spend_reservations SET state = 'quarantined', "
+                "    liability_day = COALESCE(liability_day, $6), cost_usd = $7, note = $8, "
+                "    updated_at = NOW() "
+                "  WHERE reservation_id = $1 AND instance_id = $2 "
+                "    AND state IN ('active', 'quarantined') "
+                "    AND user_id = $3 AND api_key_id IS NOT DISTINCT FROM $4 "
+                "    AND project_id IS NOT DISTINCT FROM $5 "
+                "  RETURNING 1) "
+                "SELECT EXISTS (SELECT 1 FROM marked) AS marked, EXISTS ("
+                "  SELECT 1 FROM spend_settlement_members WHERE reservation_id = $1) AS retired",
                 member.reservation_id,
                 instance_id,
                 member.user_id,
@@ -741,7 +758,9 @@ class SharedSpendStore:
                 member.cost_usd(),
                 note[:200],
             )
-        return status.endswith(" 1")
+        if row["marked"]:
+            return "quarantined"
+        return "retired" if row["retired"] else "missing"
 
     # -- closures and receipt retention --------------------------------------
 

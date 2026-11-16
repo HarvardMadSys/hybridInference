@@ -38,6 +38,8 @@ class FakeSharedBackend:
         self.fail_admit: BaseException | None = None
         self.fail_settle: BaseException | None = None
         self.fail_quarantine: BaseException | None = None
+        self.quarantine_answer = "quarantined"
+        self.quarantine_calls = 0
         self.settle_gate: asyncio.Event | None = None
         self.settling = asyncio.Event()
         self._xid = 1000
@@ -111,9 +113,10 @@ class FakeSharedBackend:
         return result
 
     async def quarantine(self, member, instance_id, *, day, note):
+        self.quarantine_calls += 1
         if self.fail_quarantine is not None:
             raise self.fail_quarantine
-        return True
+        return self.quarantine_answer
 
     # -- closure, receipt retention and the survey: what was asked, and canned answers --
 
