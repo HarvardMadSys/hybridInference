@@ -844,10 +844,23 @@ it on:
   account's authenticator, and is asked again when it turns up in a different
   kind of client (a browser's session presented by a script, for example);
 - an administrator who has no authenticator yet has no administrator access
-  until they add one (`POST /auth/two-factor/setup`, then `/confirm`);
+  until they add one;
 - an account is given the `admin` role only once it has an authenticator;
 - `ADMIN_TOKEN` is answered for reads only. Move any automation that writes
   with the token before turning this on.
+
+In the console:
+
+- **Settings → Two-Factor Authentication** adds the authenticator: the
+  account's password, a QR code to scan, the first code, then ten recovery
+  codes that are shown once. Administrators see the section. An account that is
+  about to be made an administrator opens it at
+  `/dashboard/settings#two-factor`.
+- **Admin** asks a session that owes a code before it opens, and a dialog asks
+  again when a change needs a more recent one.
+- **Admin → Users** shows in an account's details whether it has an
+  authenticator (`Two-factor: on`), and removes one for someone who lost the
+  device.
 
 Turn it on after the administrators have enrolled, not before: until an
 administrator account has an authenticator, someone who has its password can
@@ -855,10 +868,10 @@ add their own.
 
 ```{warning}
 An administrator who loses the device and the recovery codes cannot reach the
-Admin API. Another administrator removes the lost authenticator with
-`POST /admin/users/{user_id}/two-factor/reset`. If there is no other
-administrator, remove it in the database and let the account add a new one with
-its password:
+Admin API. Another administrator removes the lost authenticator in
+**Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If there is
+no other administrator, remove it in the database and let the account add a new
+one with its password:
 
     DELETE FROM user_two_factor WHERE user_id = '<the account id>';
 ```

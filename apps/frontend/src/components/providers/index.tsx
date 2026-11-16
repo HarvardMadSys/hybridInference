@@ -7,6 +7,7 @@ import { LocaleAccountSync } from './LocaleAccountSync';
 import { QueryProvider } from './QueryProvider';
 import { ToastProvider } from './ToastProvider';
 import { SiteConfigProvider } from './SiteConfigProvider';
+import { TwoFactorProvider } from './TwoFactorProvider';
 import { SetupGate } from '@/components/features/setup/SetupGate';
 import type { RuntimeSiteConfig } from '@/config/site-config';
 import { SOURCE_LOCALE, type Locale } from '@/lib/i18n/locales';
@@ -37,7 +38,9 @@ export function Providers({
               <LocaleAccountSync />
               {/* Above every route, including those a Site UI module renders, so
                 a deployment without an administrator opens on /setup. */}
-              <SetupGate>{children}</SetupGate>
+              <TwoFactorProvider>
+                <SetupGate>{children}</SetupGate>
+              </TwoFactorProvider>
               <ToastProvider />
             </AuthProvider>
           </QueryProvider>
