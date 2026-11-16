@@ -512,6 +512,24 @@ class UserDetailResponse(BaseModel):
     ask_question_fraction: float | None = None
 
 
+class ResetUserTwoFactorRequest(BaseModel):
+    """Remove another account's authenticator."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The signed-in administrator's password, when their own account has "
+        "no authenticator to confirm with",
+    )
+
+
+class ResetUserTwoFactorResponse(BaseModel):
+    """What removing the authenticator did."""
+
+    user_id: str
+    removed: bool = Field(description="False when the account had none")
+
+
 class UpdateUserRequest(BaseModel):
     """Request payload for updating user/key settings."""
 

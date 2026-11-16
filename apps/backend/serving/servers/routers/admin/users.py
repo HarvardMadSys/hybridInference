@@ -10,6 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from serving.audit import AuditActor, AuditTarget
+from serving.auth.two_factor import admin_two_factor_required, has_authenticator
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
 from serving.exceptions import HardDeleteStateChanged
@@ -42,6 +43,8 @@ from serving.schemas_admin import (
     ListUsersResponse,
     RejectUserRequest,
     RejectUserResponse,
+    ResetUserTwoFactorRequest,
+    ResetUserTwoFactorResponse,
     ResumeUserRequest,
     ResumeUserResponse,
     StatusCounts,
@@ -916,6 +919,21 @@ async def update_user(
     # keys and, as admin, everything: an account whose password a caller knows,
     # raised by a stolen session or the admin token, would otherwise keep it.
     current_role = user_row.get("role") or "free"
+    # Administrator access here needs a second factor, so an account is given
+    # the role only once it has one: otherwise the role would be waiting for
+    # whoever signs in to that account and adds a device first.
+    if (
+        new_role == "admin"
+        and current_role != "admin"
+        and admin_two_factor_required()
+        and not has_authenticator(await op_store.get_two_factor(user_id))
+    ):
+        raise HTTPException(
+            409,
+            f"{_user_label(user_row)} has not set up two-factor authentication. "
+            "Administrators need it here: ask them to add an authenticator app in "
+            "Settings first.",
+        )
     if new_role is not None and ROLE_RANK.get(new_role, 0) > ROLE_RANK.get(current_role, 0):
         await confirm_administrator(
             request,
@@ -1005,6 +1023,54 @@ async def update_user(
         updated_fields=updated,
         message=f"Updated {', '.join(updated)} for user {user_id}.",
     )
+
+
+@router.post("/users/{user_id}/two-factor/reset", response_model=ResetUserTwoFactorResponse)
+async def reset_user_two_factor(
+    request: Request,
+    user_id: str,
+    payload: ResetUserTwoFactorRequest | None = None,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> ResetUserTwoFactorResponse:
+    """Remove another account's authenticator and recovery codes, for an owner who lost both.
+
+    The account signs in with its password and adds a device again; until
+    then, where the deployment requires a second factor of administrators, an
+    administrator account has no administrator access. Taking away somebody's
+    second factor is how an attacker would get past it, so this asks the
+    administrator doing it to confirm (a recent code, or the password of an
+    account without an authenticator) and is refused for the admin token.
+
+    Your own authenticator is changed from Settings, with a code from it: 409
+    here.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    if user_id == get_admin_user_id(request):
+        raise HTTPException(
+            409, "Change your own authenticator from Settings, with a code from it."
+        )
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+
+    await confirm_administrator(
+        request,
+        op_store,
+        payload.password if payload else None,
+        action=f"Removing the authenticator of {_user_label(user_row)}",
+    )
+    removed = await op_store.delete_two_factor(user_id)
+    await log_admin_action(
+        op_store,
+        action="two_factor.reset",
+        details={"removed": removed},
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
+    return ResetUserTwoFactorResponse(user_id=user_id, removed=removed)
 
 
 @router.get("/audit-log/actions", response_model=ListAuditActionsResponse)
