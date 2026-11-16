@@ -1403,8 +1403,8 @@ class SharedSpendLedger:
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
-        # Marks waiting out a back-off are tried now, and from here on at the
-        # shortest one.
+        # Marks waiting out a back-off are tried now, and again after each
+        # pause below that found nothing else to write.
         self._mark_after = 0.0
         while True:
             remaining = deadline - loop.time()

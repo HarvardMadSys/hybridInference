@@ -799,6 +799,7 @@ async def test_a_mark_that_waited_for_a_reconciliation_learns_the_row_was_retire
 
     other = await db.pool.acquire()
     try:
+        retiring_pid = await other.fetchval("SELECT pg_backend_pid()")
         retiring = other.transaction()
         await retiring.start()
         # What a reconciliation's settlement does for this member, left open.
@@ -815,11 +816,16 @@ async def test_a_mark_that_waited_for_a_reconciliation_learns_the_row_was_retire
         )
 
         async def waiting_on_the_row() -> bool:
+            # The mark's own session, held up by this transaction: any other
+            # wait on the server (the suite's other databases share it) would
+            # let the commit through before the mark had started, and a mark
+            # that starts after the commit sees the receipt whatever it reads.
             async with db.pool.acquire() as conn:
                 return bool(
                     await conn.fetchval(
-                        "SELECT count(*) FROM pg_locks "
-                        "WHERE locktype = 'transactionid' AND NOT granted"
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE $1 = ANY(pg_blocking_pids(pid))",
+                        retiring_pid,
                     )
                 )
 
