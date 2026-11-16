@@ -16,14 +16,14 @@ from unittest.mock import AsyncMock
 STORE_METHODS = (
     "get_two_factor",
     "set_pending_two_factor",
+    "begin_two_factor_setup_attempt",
+    "cancel_pending_two_factor",
     "confirm_two_factor",
     "begin_two_factor_attempt",
-    "use_two_factor_step",
-    "use_recovery_code",
+    "verify_session_two_factor",
     "replace_recovery_codes",
     "delete_two_factor",
     "get_session_two_factor",
-    "mark_session_two_factor",
 )
 
 
@@ -46,26 +46,77 @@ class TwoFactorFake:
         row = self.factors.get(user_id)
         return bool(row and row["confirmed_at"] is not None)
 
+    def _pending_live(self, row: dict[str, Any]) -> bool:
+        return (
+            row["pending_secret_encrypted"] is not None
+            and row["pending_expires_at"] > datetime.now(UTC)
+            and row["pending_attempts_left"] > 0
+        )
+
     async def get_two_factor(self, user_id: str) -> dict[str, Any] | None:
         row = self.factors.get(user_id)
         if row is None:
             return None
         left = sum(1 for used in self.recovery.get(user_id, {}).values() if not used)
-        return {**row, "recovery_codes_left": left}
+        public = {key: value for key, value in row.items() if not key.startswith("pending_")}
+        return {
+            **public,
+            "pending_session_id": row["pending_session_id"] if self._pending_live(row) else None,
+            "recovery_codes_left": left,
+        }
 
-    async def set_pending_two_factor(self, user_id: str, pending_secret_encrypted: str) -> None:
+    async def set_pending_two_factor(
+        self,
+        user_id: str,
+        pending_secret_encrypted: str,
+        *,
+        sid: str,
+        ttl_seconds: int,
+        attempts: int,
+    ) -> None:
         row = self.factors.setdefault(
             user_id,
             {
                 "secret_encrypted": None,
-                "pending_secret_encrypted": None,
                 "confirmed_at": None,
                 "last_used_step": None,
                 "failed_attempts": 0,
                 "locked_until": None,
             },
         )
-        row["pending_secret_encrypted"] = pending_secret_encrypted
+        row.update(
+            pending_secret_encrypted=pending_secret_encrypted,
+            pending_session_id=sid,
+            pending_expires_at=datetime.now(UTC) + timedelta(seconds=ttl_seconds),
+            pending_attempts_left=attempts,
+        )
+
+    async def begin_two_factor_setup_attempt(self, user_id: str, sid: str) -> str | None:
+        row = self.factors.get(user_id)
+        if row is None or not self._pending_live(row) or row["pending_session_id"] != sid:
+            return None
+        row["pending_attempts_left"] -= 1
+        return row["pending_secret_encrypted"]
+
+    async def cancel_pending_two_factor(self, user_id: str, sid: str) -> bool:
+        row = self.factors.get(user_id)
+        if (
+            row is None
+            or row["pending_secret_encrypted"] is None
+            or row["pending_session_id"] != sid
+        ):
+            return False
+        self._clear_pending(row)
+        return True
+
+    @staticmethod
+    def _clear_pending(row: dict[str, Any]) -> None:
+        row.update(
+            pending_secret_encrypted=None,
+            pending_session_id=None,
+            pending_expires_at=None,
+            pending_attempts_left=0,
+        )
 
     async def confirm_two_factor(
         self,
@@ -74,20 +125,23 @@ class TwoFactorFake:
         pending_secret_encrypted: str,
         step: int,
         recovery_code_hashes: Any,
+        sid: str,
+        environment: str,
     ) -> bool:
         row = self.factors.get(user_id)
         if row is None or row["pending_secret_encrypted"] != pending_secret_encrypted:
             return False
         row.update(
             secret_encrypted=pending_secret_encrypted,
-            pending_secret_encrypted=None,
             confirmed_at=datetime.now(UTC),
             last_used_step=step,
             failed_attempts=0,
             locked_until=None,
         )
+        self._clear_pending(row)
         self.recovery[user_id] = dict.fromkeys(recovery_code_hashes, False)
         self._forget_sessions(user_id)
+        self._mark(user_id, sid, environment)
         return True
 
     async def begin_two_factor_attempt(
@@ -108,22 +162,37 @@ class TwoFactorFake:
             )
         return None
 
-    async def use_two_factor_step(self, user_id: str, step: int) -> bool:
+    async def verify_session_two_factor(
+        self,
+        user_id: str,
+        sid: str,
+        environment: str,
+        *,
+        secret_encrypted: str | None = None,
+        step: int | None = None,
+        recovery_code_hash: str | None = None,
+    ) -> str:
         if not self._confirmed(user_id):
-            return False
+            return "rejected"
         row = self.factors[user_id]
-        if row["last_used_step"] is not None and row["last_used_step"] >= step:
-            return False
-        row.update(last_used_step=step, failed_attempts=0, locked_until=None)
-        return True
-
-    async def use_recovery_code(self, user_id: str, code_hash: str) -> bool:
         codes = self.recovery.get(user_id, {})
-        if not self._confirmed(user_id) or codes.get(code_hash) is not False:
-            return False
-        codes[code_hash] = True
-        self.factors[user_id].update(failed_attempts=0, locked_until=None)
-        return True
+        if recovery_code_hash is not None:
+            if codes.get(recovery_code_hash) is not False:
+                return "rejected"
+        elif (
+            step is None
+            or row["secret_encrypted"] != secret_encrypted
+            or (row["last_used_step"] is not None and row["last_used_step"] >= step)
+        ):
+            return "rejected"
+        if not self._mark(user_id, sid, environment):
+            return "session_ended"
+        if recovery_code_hash is not None:
+            codes[recovery_code_hash] = True
+        else:
+            row["last_used_step"] = step
+        row.update(failed_attempts=0, locked_until=None)
+        return "verified"
 
     async def replace_recovery_codes(self, user_id: str, code_hashes: Any) -> bool:
         if not self._confirmed(user_id):
@@ -142,7 +211,7 @@ class TwoFactorFake:
             return None
         return {**session, "enrolled": self._confirmed(user_id)}
 
-    async def mark_session_two_factor(self, user_id: str, sid: str, environment: str) -> bool:
+    def _mark(self, user_id: str, sid: str, environment: str) -> bool:
         session = self.sessions.get((user_id, sid))
         if session is None:
             return False

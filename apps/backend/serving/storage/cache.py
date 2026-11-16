@@ -929,9 +929,27 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_two_factor(user_id)
 
-    async def set_pending_two_factor(self, user_id: str, pending_secret_encrypted: str) -> None:
+    async def set_pending_two_factor(
+        self,
+        user_id: str,
+        pending_secret_encrypted: str,
+        *,
+        sid: str,
+        ttl_seconds: int,
+        attempts: int,
+    ) -> None:
         """Delegate to wrapped store."""
-        return await self._store.set_pending_two_factor(user_id, pending_secret_encrypted)
+        return await self._store.set_pending_two_factor(
+            user_id, pending_secret_encrypted, sid=sid, ttl_seconds=ttl_seconds, attempts=attempts
+        )
+
+    async def begin_two_factor_setup_attempt(self, user_id: str, sid: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.begin_two_factor_setup_attempt(user_id, sid)
+
+    async def cancel_pending_two_factor(self, user_id: str, sid: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.cancel_pending_two_factor(user_id, sid)
 
     async def confirm_two_factor(
         self,
@@ -940,6 +958,8 @@ class CachedOperationalStore(OperationalStore):
         pending_secret_encrypted: str,
         step: int,
         recovery_code_hashes: Sequence[str],
+        sid: str,
+        environment: str,
     ) -> bool:
         """Delegate to wrapped store."""
         return await self._store.confirm_two_factor(
@@ -947,6 +967,8 @@ class CachedOperationalStore(OperationalStore):
             pending_secret_encrypted=pending_secret_encrypted,
             step=step,
             recovery_code_hashes=recovery_code_hashes,
+            sid=sid,
+            environment=environment,
         )
 
     async def begin_two_factor_attempt(
@@ -960,13 +982,25 @@ class CachedOperationalStore(OperationalStore):
             max_lock_seconds=max_lock_seconds,
         )
 
-    async def use_two_factor_step(self, user_id: str, step: int) -> bool:
+    async def verify_session_two_factor(
+        self,
+        user_id: str,
+        sid: str,
+        environment: str,
+        *,
+        secret_encrypted: str | None = None,
+        step: int | None = None,
+        recovery_code_hash: str | None = None,
+    ) -> str:
         """Delegate to wrapped store."""
-        return await self._store.use_two_factor_step(user_id, step)
-
-    async def use_recovery_code(self, user_id: str, code_hash: str) -> bool:
-        """Delegate to wrapped store."""
-        return await self._store.use_recovery_code(user_id, code_hash)
+        return await self._store.verify_session_two_factor(
+            user_id,
+            sid,
+            environment,
+            secret_encrypted=secret_encrypted,
+            step=step,
+            recovery_code_hash=recovery_code_hash,
+        )
 
     async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
         """Delegate to wrapped store."""
@@ -979,10 +1013,6 @@ class CachedOperationalStore(OperationalStore):
     async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
         """Delegate to wrapped store."""
         return await self._store.get_session_two_factor(user_id, sid)
-
-    async def mark_session_two_factor(self, user_id: str, sid: str, environment: str) -> bool:
-        """Delegate to wrapped store."""
-        return await self._store.mark_session_two_factor(user_id, sid, environment)
 
     # -- browser sessions (pass-through) -------------------------------------
 

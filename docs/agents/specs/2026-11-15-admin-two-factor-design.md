@@ -53,7 +53,7 @@ adding them as a second kind of proof for the same session flag.
 
 | Where | What |
 |---|---|
-| `user_two_factor` | One row per account: `secret_encrypted`, `pending_secret_encrypted`, `confirmed_at`, `last_used_step`, `failed_attempts`, `locked_until` |
+| `user_two_factor` | One row per account: `secret_encrypted`, `confirmed_at`, `last_used_step`, `failed_attempts`, `locked_until`; and a setup in progress: `pending_secret_encrypted`, `pending_session_id`, `pending_expires_at`, `pending_attempts_left` |
 | `two_factor_recovery_codes` | SHA-256 of each one-time code, and `used_at` |
 | `auth_sessions.two_factor_verified_at`, `.two_factor_environment` | When this session last gave a code, and from what kind of client |
 
@@ -61,8 +61,16 @@ The shared secret is encrypted with a key derived from `API_KEY_SECRET` under
 its own label (it cannot be hashed: the gateway needs it to compute the code).
 A pending secret becomes the account's only when its first code is given, so
 replacing a device never leaves the account without a working one.
-`last_used_step` makes a code good once: the comparison and the write are one
-`UPDATE`.
+`last_used_step` makes a code good once.
+
+Accepting a code and recording what the session proved are one transaction
+(`verify_session_two_factor`), under the row lock of `user_two_factor` that
+every change of authenticator also takes. Done as two steps, a request could
+have its code for the old device accepted, lose the processor while the device
+was replaced and every session's proof forgotten, and then mark its own session
+verified anyway. For the same reason the transaction is told which stored
+secret the code was checked against, and accepts nothing if the row now holds
+another.
 
 The migration is expand-only. The previous release reads neither table and
 names its `auth_sessions` columns in every statement.
@@ -136,6 +144,20 @@ session that is about 180 guesses, one chance in two thousand.
 Someone holding a session can therefore keep the owner's authenticator held
 off. A right recovery code is accepted during a hold and ends it: fifty bits
 cannot be guessed, so there is nothing to protect them from.
+
+The first code of a new authenticator is a guess too, and a more valuable one:
+whoever gives it receives the recovery codes and a verified session, and the
+old device stops working. An earlier draft of this design left it unlimited on
+the grounds that only the person shown the secret would be confirming it. That
+is not so. The pending secret belongs to the account, so any other holder of a
+session of it could have guessed at a setup the owner started, for as long as
+it was left waiting. A setup therefore belongs to the session that started it
+(`pending_session_id`), waits ten minutes (`SETUP_SECONDS`), and has five tries
+(`SETUP_ATTEMPTS`), each taken before the code is looked at. After that it is
+started again, which costs the password or a fresh code. Cancelling in the
+console drops it (`DELETE /auth/two-factor/setup`). A copy of the very session
+that started the setup shares its five tries and no more: fifteen chances in a
+million per setup.
 
 ### Environment
 
