@@ -68,6 +68,14 @@ LOCK_EVERY_ATTEMPTS = 5
 LOCK_SECONDS = 15 * 60
 MAX_LOCK_SECONDS = 24 * 60 * 60
 
+#: How long a secret that was shown waits for its first code, and how many
+#: codes may be tried at it. Confirming a setup hands over the account's second
+#: factor and its recovery codes, so the same arithmetic applies as above: a
+#: setup that could be guessed at without limit would be worth waiting for.
+#: Every new setup costs the password or a fresh code, and buys five tries.
+SETUP_SECONDS = 10 * 60
+SETUP_ATTEMPTS = 5
+
 RECOVERY_CODE_COUNT = 10
 #: Two groups of five base32 characters: 50 bits each, which a hash protects
 #: without a salt or a slow function, since there is nothing to guess from.

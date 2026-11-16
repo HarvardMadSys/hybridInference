@@ -4,7 +4,11 @@
 or is in the middle of adding one. ``pending_secret_encrypted`` is a secret the
 account has been shown but has not yet proved it can produce codes from; it
 becomes ``secret_encrypted`` when the first code is given, so replacing a
-device never leaves the account without a working one. ``last_used_step`` is
+device never leaves the account without a working one. A pending secret is the
+business of the session that was shown it (``pending_session_id``), for a short
+while (``pending_expires_at``) and a few tries (``pending_attempts_left``):
+confirming it hands over the account's second factor, so it must not be
+something another holder of the account's session can guess at. ``last_used_step`` is
 the newest time step a code was accepted for, which is what makes a code good
 once. ``failed_attempts`` and ``locked_until`` count wrong codes in a row and
 hold the account's codes off for a while after too many: six digits are only
@@ -45,6 +49,9 @@ STATEMENTS = (
         user_id                  TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
         secret_encrypted         TEXT,
         pending_secret_encrypted TEXT,
+        pending_session_id       TEXT,
+        pending_expires_at       TIMESTAMPTZ,
+        pending_attempts_left    INTEGER NOT NULL DEFAULT 0,
         confirmed_at             TIMESTAMPTZ,
         last_used_step           BIGINT,
         failed_attempts          INTEGER NOT NULL DEFAULT 0,

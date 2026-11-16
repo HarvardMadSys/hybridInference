@@ -256,13 +256,99 @@ async def test_adding_an_authenticator_takes_the_password_then_a_first_code(gate
         "session_verified": True,
         "recovery_codes_left": tf.RECOVERY_CODE_COUNT,
     }
-    [row] = gateway.audit("two_factor.enable")
+    # The wrong first code is on record too: guesses at a setup should show.
+    wrong_row, row = gateway.audit("two_factor.enable")
+    assert (wrong_row["success"], row["success"]) == (False, True)
     assert row["details"] == {
         "sid": f"sess_{ADMIN}",
         "environment": "chrome/macos",
         "replaced": False,
     }
     assert (row["actor"].type, row["actor"].id) == ("user", ADMIN)
+
+
+@pytest.mark.asyncio
+async def test_a_setup_is_not_a_place_to_guess_the_first_code(gateway):
+    """Confirming hands over recovery codes and a verified session: five tries, then start again."""
+    headers = gateway.sign_in(ADMIN)
+    setup = await gateway.client.post(
+        "/auth/two-factor/setup", headers=headers, json={"password": PASSWORD}
+    )
+    right = tf.totp_at(setup.json()["secret"], tf.current_step())
+
+    for _ in range(tf.SETUP_ATTEMPTS):
+        wrong = await gateway.client.post(
+            "/auth/two-factor/confirm", headers=headers, json={"code": "000000"}
+        )
+        assert wrong.status_code == 400
+    # Out of tries: the right code is too late, and nothing waits any more.
+    late = await gateway.client.post(
+        "/auth/two-factor/confirm", headers=headers, json={"code": right}
+    )
+    assert late.status_code == 409
+    assert "Start again" in late.json()["detail"]
+    status = (await gateway.client.get("/auth/two-factor", headers=headers)).json()
+    assert (status["enabled"], status["pending"]) == (False, False)
+    assert len(gateway.audit("two_factor.enable")) == tf.SETUP_ATTEMPTS
+
+    # Starting again costs the password again, and works.
+    assert await gateway.enroll(ADMIN, headers)
+
+
+@pytest.mark.asyncio
+async def test_only_the_session_that_started_a_setup_confirms_it(gateway):
+    """Another session of the account, however it came by one, cannot finish somebody's setup."""
+    owner = gateway.sign_in(ADMIN, sid="owner")
+    other = gateway.sign_in(ADMIN, sid="other", agent=CURL)
+    setup = await gateway.client.post(
+        "/auth/two-factor/setup", headers=owner, json={"password": PASSWORD}
+    )
+    right = tf.totp_at(setup.json()["secret"], tf.current_step())
+
+    for _ in range(tf.SETUP_ATTEMPTS + 1):
+        refused = await gateway.client.post(
+            "/auth/two-factor/confirm", headers=other, json={"code": right}
+        )
+        assert refused.status_code == 409
+    assert (await gateway.client.get("/auth/two-factor", headers=other)).json()["pending"] is False
+    assert gateway.fake.factors[ADMIN]["confirmed_at"] is None
+    # It cannot cancel it or use up its tries either.
+    assert (await gateway.client.delete("/auth/two-factor/setup", headers=other)).status_code == 204
+
+    confirmed = await gateway.client.post(
+        "/auth/two-factor/confirm", headers=owner, json={"code": right}
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    assert gateway.fake.sessions[(ADMIN, "owner")]["verified_at"] is not None
+    assert gateway.fake.sessions[(ADMIN, "other")]["verified_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_setup_left_waiting_runs_out_and_a_cancelled_one_is_gone(gateway):
+    headers = gateway.sign_in(ADMIN)
+    setup = await gateway.client.post(
+        "/auth/two-factor/setup", headers=headers, json={"password": PASSWORD}
+    )
+    right = tf.totp_at(setup.json()["secret"], tf.current_step())
+    gateway.fake.factors[ADMIN]["pending_expires_at"] = datetime.now(UTC) - timedelta(seconds=1)
+
+    expired = await gateway.client.post(
+        "/auth/two-factor/confirm", headers=headers, json={"code": right}
+    )
+    assert expired.status_code == 409
+
+    setup = await gateway.client.post(
+        "/auth/two-factor/setup", headers=headers, json={"password": PASSWORD}
+    )
+    cancelled = await gateway.client.delete("/auth/two-factor/setup", headers=headers)
+    assert cancelled.status_code == 204
+    gone = await gateway.client.post(
+        "/auth/two-factor/confirm",
+        headers=headers,
+        json={"code": tf.totp_at(setup.json()["secret"], tf.current_step())},
+    )
+    assert gone.status_code == 409
+    assert gateway.fake.factors[ADMIN]["confirmed_at"] is None
 
 
 @pytest.mark.asyncio
@@ -603,6 +689,40 @@ async def test_an_account_gets_the_admin_role_only_once_it_has_an_authenticator(
 
 
 # --- changing and removing the authenticator ----------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_code_checked_before_the_device_was_replaced_verifies_nothing(gateway):
+    """Reading the device and accepting its code are not one step; a replacement can fall between."""
+    headers = gateway.sign_in(ADMIN)
+    await gateway.enroll(ADMIN, headers)
+    laptop = gateway.sign_in(ADMIN, sid="sess_laptop")
+    old_code = gateway.code(ADMIN)
+    setup = await gateway.client.post("/auth/two-factor/setup", headers=headers, json={})
+    new_secret = setup.json()["secret"]
+
+    # The laptop's request has read the old device; before its code is
+    # accepted, the other session confirms the new one.
+    count_attempt = gateway.store.begin_two_factor_attempt.side_effect
+
+    async def replace_then_count(*args, **kwargs):
+        confirmed = await gateway.client.post(
+            "/auth/two-factor/confirm",
+            headers=headers,
+            json={"code": tf.totp_at(new_secret, tf.current_step())},
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        return await count_attempt(*args, **kwargs)
+
+    gateway.store.begin_two_factor_attempt.side_effect = replace_then_count
+
+    late = await gateway.client.post(
+        "/auth/two-factor/verify", headers=laptop, json={"code": old_code}
+    )
+
+    assert late.status_code == 400
+    assert gateway.fake.sessions[(ADMIN, "sess_laptop")]["verified_at"] is None
+    assert tf.decrypt_secret(gateway.fake.factors[ADMIN]["secret_encrypted"]) == new_secret
 
 
 @pytest.mark.asyncio

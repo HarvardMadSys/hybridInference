@@ -16,6 +16,11 @@ What each step asks for:
 - **Giving a code** asks for nothing else. Wrong codes in a row hold the
   account's codes off, for longer each time, so it is never a place to guess
   six digits; a recovery code, which cannot be guessed, still works then.
+- **The first code of a new authenticator** is asked of the session that
+  started the setup, within a few minutes, and a few times at most. Whoever
+  gives it receives the recovery codes and a verified session, so it is no
+  more a place to guess than the others: a setup that ran out is started
+  again, which costs the password or a fresh code each time.
 
 The arithmetic and the policy are in ``serving.auth.two_factor``.
 """
@@ -33,6 +38,8 @@ from serving.auth.two_factor import (
     LOCK_EVERY_ATTEMPTS,
     LOCK_SECONDS,
     MAX_LOCK_SECONDS,
+    SETUP_ATTEMPTS,
+    SETUP_SECONDS,
     admin_two_factor_required,
     decrypt_secret,
     encrypt_secret,
@@ -69,6 +76,11 @@ router = APIRouter(prefix="/auth/two-factor", tags=["Authentication"])
 
 _NOT_SET_UP = "Two-factor authentication is not set up for this account."
 _WRONG_CODE = "That code is not valid. Enter the current code from your authenticator app."
+_NO_SETUP = (
+    "There is no authenticator waiting to be confirmed in this session: none was started, "
+    "or it ran out of time or of tries. Start again."
+)
+_SESSION_ENDED = "This session has ended. Please login again."
 
 
 def _store(op_store: Any) -> Any:
@@ -102,40 +114,67 @@ async def _begin_attempt(op_store: Any, user_id: str) -> datetime | None:
     )
 
 
-async def _spend_code(op_store: Any, user_id: str, row: dict[str, Any], raw: str) -> str | None:
-    """Spend *raw* against the account's authenticator; return how it matched, or None.
+def _session_id(current_user: dict[str, Any]) -> str:
+    """The session behind this request, which what it proves is recorded on."""
+    sid = current_user.get("sid")
+    if not sid:
+        raise HTTPException(status_code=401, detail=_SESSION_ENDED)
+    return str(sid)
+
+
+async def _verify_code(
+    request: Request, op_store: Any, current_user: dict[str, Any], row: dict[str, Any], raw: str
+) -> str | None:
+    """Accept *raw* for this session; return how it matched, or None for a wrong code.
 
     ``"totp"`` for a code from the app, ``"recovery_code"`` for one of the
-    one-time codes. Either is spent by the statement that accepts it, so the
-    same code given twice at once is good once. Every attempt is counted
-    before it is looked at; a right code ends the count.
+    one-time codes. Accepting the code and marking the session are one
+    transaction (``verify_session_two_factor``), so a code is good once and a
+    code for an authenticator that is replaced or removed meanwhile verifies
+    nothing. Every attempt is counted before it is looked at; a right code
+    ends the count.
 
     Raises:
         HTTPException: 429 while too many wrong codes in a row hold the
             account's codes off. A right recovery code is accepted even then:
             it cannot be guessed, and it is how the owner gets past a hold
-            that somebody else's guesses caused.
+            that somebody else's guesses caused. 401 when the session ended
+            meanwhile; the code is then not spent.
     """
+    user_id = current_user["user_id"]
+    sid = _session_id(current_user)
+    environment = request_environment(request)
     code = normalize_code(raw)
+
     if not looks_like_totp(code):
-        if await op_store.use_recovery_code(user_id, hash_recovery_code(code)):
-            return "recovery_code"
+        outcome = await op_store.verify_session_two_factor(
+            user_id, sid, environment, recovery_code_hash=hash_recovery_code(code)
+        )
+        method = "recovery_code"
+        if outcome == "rejected":
+            held_until = await _begin_attempt(op_store, user_id)
+            if held_until is not None:
+                raise _held_off(held_until)
+    else:
         held_until = await _begin_attempt(op_store, user_id)
         if held_until is not None:
             raise _held_off(held_until)
-        return None
+        stored = row["secret_encrypted"] or ""
+        secret = decrypt_secret(stored)
+        if secret is None:
+            logger.error("two_factor: stored secret of %s cannot be decrypted", user_id)
+            return None
+        step = matching_step(secret, code, after_step=row["last_used_step"])
+        if step is None:
+            return None
+        outcome = await op_store.verify_session_two_factor(
+            user_id, sid, environment, secret_encrypted=stored, step=step
+        )
+        method = "totp"
 
-    held_until = await _begin_attempt(op_store, user_id)
-    if held_until is not None:
-        raise _held_off(held_until)
-    secret = decrypt_secret(row["secret_encrypted"] or "")
-    if secret is None:
-        logger.error("two_factor: stored secret of %s cannot be decrypted", user_id)
-        return None
-    step = matching_step(secret, code, after_step=row["last_used_step"])
-    if step is not None and await op_store.use_two_factor_step(user_id, step):
-        return "totp"
-    return None
+    if outcome == "session_ended":
+        raise HTTPException(status_code=401, detail=_SESSION_ENDED)
+    return method if outcome == "verified" else None
 
 
 async def _audit(
@@ -175,7 +214,7 @@ async def two_factor_status(
     state = await read_session_two_factor(op_store, user_id, current_user.get("sid"))
     return TwoFactorStatusResponse(
         enabled=enabled,
-        pending=bool(row and row.get("pending_secret_encrypted")),
+        pending=bool(row and row.get("pending_session_id") == current_user.get("sid")),
         required=bool(current_user["is_admin"]) and admin_two_factor_required(),
         session_verified=state.refusal(request_environment(request)) is None,
         recovery_codes_left=int(row["recovery_codes_left"]) if enabled else 0,
@@ -194,10 +233,12 @@ async def start_two_factor_setup(
     A first authenticator needs the account's password (400 when wrong or
     missing). Replacing one needs a recent code from the current one (403
     ``TWO_FACTOR_REQUIRED``), which keeps working until the new one is
-    confirmed.
+    confirmed. The secret waits for its first code from this session, for
+    ``SETUP_SECONDS`` and ``SETUP_ATTEMPTS`` tries.
     """
     op_store = _store(op_store)
     user_id = current_user["user_id"]
+    sid = _session_id(current_user)
     user_row = await _account(op_store, current_user)
     row = await op_store.get_two_factor(user_id)
 
@@ -227,7 +268,13 @@ async def start_two_factor_setup(
         )
 
     secret = generate_secret()
-    await op_store.set_pending_two_factor(user_id, encrypt_secret(secret))
+    await op_store.set_pending_two_factor(
+        user_id,
+        encrypt_secret(secret),
+        sid=sid,
+        ttl_seconds=SETUP_SECONDS,
+        attempts=SETUP_ATTEMPTS,
+    )
     return TwoFactorSetupResponse(
         secret=secret,
         otpauth_uri=provisioning_uri(
@@ -235,6 +282,17 @@ async def start_two_factor_setup(
             account=account_identifier(user_row) or user_id,
             issuer=get_site_identity().name,
         ),
+    )
+
+
+@router.delete("/setup", status_code=204)
+async def cancel_two_factor_setup(
+    current_user=Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> None:
+    """Drop the setup this session started and did not confirm; nothing else changes."""
+    await _store(op_store).cancel_pending_two_factor(
+        current_user["user_id"], _session_id(current_user)
     )
 
 
@@ -250,20 +308,24 @@ async def confirm_two_factor_setup(
     From here the account's codes come from this device; an earlier device's
     stop, and so does what other sessions proved with it. This session counts
     as verified.
+
+    Only the session that started the setup can confirm it, and each try is
+    taken from the few the setup has before the code is looked at: 409 when
+    this session has no setup waiting (none started, timed out, out of tries,
+    or replaced by a newer one), 400 for a wrong code.
     """
     op_store = _store(op_store)
     user_id = current_user["user_id"]
+    sid = _session_id(current_user)
     row = await op_store.get_two_factor(user_id)
-    pending = row.get("pending_secret_encrypted") if row else None
+    pending = await op_store.begin_two_factor_setup_attempt(user_id, sid)
     if not pending:
-        raise HTTPException(
-            status_code=409, detail="There is no authenticator waiting to be confirmed."
-        )
+        raise HTTPException(status_code=409, detail=_NO_SETUP)
 
-    # Nothing to guess here: whoever started this setup was shown the secret.
     secret = decrypt_secret(pending)
     step = matching_step(secret, normalize_code(body.code)) if secret else None
     if step is None:
+        await _audit(request, op_store, current_user, "two_factor.enable", success=False)
         raise HTTPException(status_code=400, detail=_WRONG_CODE)
 
     recovery_codes = generate_recovery_codes()
@@ -272,15 +334,14 @@ async def confirm_two_factor_setup(
         pending_secret_encrypted=pending,
         step=step,
         recovery_code_hashes=[hash_recovery_code(code) for code in recovery_codes],
+        sid=sid,
+        environment=request_environment(request),
     )
     if not confirmed:
         # Another request confirmed it, or started setup again, in between.
         raise HTTPException(
             status_code=409, detail="This setup was replaced by a newer one. Start again."
         )
-    await op_store.mark_session_two_factor(
-        user_id, current_user.get("sid") or "", request_environment(request)
-    )
     await _audit(
         request, op_store, current_user, "two_factor.enable", replaced=has_authenticator(row)
     )
@@ -306,17 +367,11 @@ async def verify_two_factor(
     if not has_authenticator(row):
         raise HTTPException(status_code=409, detail=_NOT_SET_UP)
 
-    method = await _spend_code(op_store, user_id, row, body.code)
+    method = await _verify_code(request, op_store, current_user, row, body.code)
     if method is None:
         await _audit(request, op_store, current_user, "two_factor.verify", success=False)
         raise HTTPException(status_code=400, detail=_WRONG_CODE)
 
-    marked = await op_store.mark_session_two_factor(
-        user_id, current_user.get("sid") or "", request_environment(request)
-    )
-    if not marked:
-        # The session ended between the token check and here.
-        raise HTTPException(status_code=401, detail="This session has ended. Please login again.")
     await _audit(request, op_store, current_user, "two_factor.verify", method=method)
     left = int(row["recovery_codes_left"]) - (1 if method == "recovery_code" else 0)
     return TwoFactorVerifyResponse(recovery_codes_left=max(left, 0))
