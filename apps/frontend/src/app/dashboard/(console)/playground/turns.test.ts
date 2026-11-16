@@ -87,3 +87,30 @@ describe('finishNote', () => {
     expect(finishNote(reply('done', { finishReason: 'stop' }))).toBeNull();
   });
 });
+
+describe('tool calls in history', () => {
+  const call = {
+    id: 'call-1',
+    name: 'search',
+    arguments: '{"q":"x"}',
+    status: 'done' as const,
+    result: 'found it',
+  };
+
+  it('keeps a reply that only called a tool', () => {
+    expect(requestHistory([user('q'), reply('', { toolCalls: [call] })])).toEqual([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', toolCalls: [call] },
+    ]);
+  });
+
+  it('drops the tool call when the turn failed', () => {
+    expect(
+      requestHistory([
+        user('q1'),
+        reply('', { toolCalls: [call], status: 'error', error: 'HTTP 502' }),
+        user('q2'),
+      ]),
+    ).toEqual([{ role: 'user', content: 'q2' }]);
+  });
+});

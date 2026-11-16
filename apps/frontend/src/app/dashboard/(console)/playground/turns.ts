@@ -15,10 +15,33 @@ export interface RoutingInfo {
   failedAttempts?: RoutingAttempt[];
 }
 
+/** One tool the model asked to call, and the result once the playground ran it. */
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** The tool's own name, before the wire-safe alias the model saw. */
+  mcpName?: string;
+  /** Arguments as the model streamed them: a JSON string, possibly partial. */
+  arguments: string;
+  serverUrl?: string;
+  serverHeaders?: Record<string, string>;
+  status?: 'running' | 'done' | 'error';
+  result?: string;
+  error?: string;
+}
+
+/** The conversation in the shape every API format can be built from. */
+export interface HistoryMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  toolCalls?: ToolCall[];
+}
+
 export interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
+  toolCalls?: ToolCall[];
   reasoningContent?: string;
   durationMs?: number;
   /** Time to the first streamed token, reasoning or answer. */
@@ -34,10 +57,12 @@ export interface Message {
   routing?: RoutingInfo;
 }
 
-/** A reply worth sending back as context: it finished and said something. */
+/** A reply worth sending back as context: it finished and produced something. */
 export function isUsableReply(message: Message | undefined): boolean {
   return (
-    message?.role === 'assistant' && message.status !== 'error' && message.content.trim() !== ''
+    message?.role === 'assistant' &&
+    message.status !== 'error' &&
+    (message.content.trim() !== '' || (message.toolCalls?.length ?? 0) > 0)
   );
 }
 
@@ -46,8 +71,8 @@ export function isUsableReply(message: Message | undefined): boolean {
  * dropped together with the question that produced it, so an error string is
  * never replayed to the model as something it said.
  */
-export function requestHistory(messages: Message[]): { role: Message['role']; content: string }[] {
-  const history: { role: Message['role']; content: string }[] = [];
+export function requestHistory(messages: Message[]): HistoryMessage[] {
+  const history: HistoryMessage[] = [];
   for (let i = 0; i < messages.length; i++) {
     const message = messages[i];
     if (message.role !== 'user') continue;
@@ -55,7 +80,11 @@ export function requestHistory(messages: Message[]): { role: Message['role']; co
     if (reply?.role === 'assistant') {
       if (isUsableReply(reply)) {
         history.push({ role: 'user', content: message.content });
-        history.push({ role: 'assistant', content: reply.content });
+        history.push({
+          role: 'assistant',
+          content: reply.content,
+          ...(reply.toolCalls?.length ? { toolCalls: reply.toolCalls } : {}),
+        });
       }
       i++;
     } else {

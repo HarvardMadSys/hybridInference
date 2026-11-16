@@ -388,10 +388,12 @@ class PlaygroundChatRequest(BaseModel):
 
     model: str
     system_prompt: str = ""
-    messages: list[dict[str, str]]
+    messages: list[dict[str, Any]]
     temperature: float = Field(default=0.7, ge=0.0, le=2.0)
     max_tokens: int = Field(default=4096, ge=1, le=32768)
     reasoning_effort: str | None = None
+    tools: list[dict[str, Any]] | None = None
+    tool_choice: str | dict[str, Any] | None = None
     provider: str | None = None
 
 
@@ -534,6 +536,10 @@ def _public_chat_request(body: PlaygroundChatRequest) -> dict[str, Any]:
     }
     if body.reasoning_effort is not None:
         payload["reasoning_effort"] = body.reasoning_effort
+    if body.tools:
+        payload["tools"] = body.tools
+    if body.tool_choice is not None:
+        payload["tool_choice"] = body.tool_choice
     return payload
 
 
