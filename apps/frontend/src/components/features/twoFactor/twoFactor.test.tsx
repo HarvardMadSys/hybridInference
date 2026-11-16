@@ -6,10 +6,12 @@ import { useRef, type ReactNode } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { TwoFactorChallenge } from '@/lib/api/client';
 import type { TwoFactorStatus } from '@/lib/api/twoFactor';
+import { APIError } from '@/lib/utils/errors';
 
 const api = vi.hoisted(() => ({
   status: vi.fn(),
   setup: vi.fn(),
+  cancel: vi.fn(),
   confirm: vi.fn(),
   verify: vi.fn(),
   codes: vi.fn(),
@@ -19,6 +21,7 @@ vi.mock('@/lib/api/twoFactor', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/api/twoFactor')>()),
   getTwoFactorStatus: api.status,
   startTwoFactorSetup: api.setup,
+  cancelTwoFactorSetup: api.cancel,
   confirmTwoFactor: api.confirm,
   verifyTwoFactor: api.verify,
   newRecoveryCodes: api.codes,
@@ -79,6 +82,7 @@ const type = (field: HTMLElement, value: string) => fireEvent.change(field, { ta
 beforeEach(() => {
   Object.values(api).forEach((mock) => mock.mockReset());
   api.status.mockResolvedValue(OFF);
+  api.cancel.mockResolvedValue(undefined);
   user = { id: 'admin-1', is_admin: true, has_password: true };
   challenger = null;
   window.location.hash = '';
@@ -253,6 +257,41 @@ describe('the settings section', () => {
 
     expect(await screen.findByRole('alert')).toHaveTextContent('Current password is incorrect');
     expect(screen.queryByTitle('QR code for your authenticator app')).not.toBeInTheDocument();
+  });
+
+  it('tells the gateway when a shown secret is not going to be used', async () => {
+    api.setup.mockResolvedValue(SETUP);
+    mount(<Section />);
+    type(await screen.findByLabelText('Your password'), 'Hunter2hunter2');
+    fireEvent.click(screen.getByRole('button', { name: 'Add authenticator app' }));
+    await screen.findByText(SECRET);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(
+      await screen.findByRole('button', { name: 'Add authenticator app' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+    expect(api.cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('goes back to the start when a setup ran out of time or of tries', async () => {
+    api.setup.mockResolvedValue(SETUP);
+    api.confirm.mockRejectedValue(
+      new APIError('HTTP_409', 'It ran out of time or of tries. Start again.', 409),
+    );
+    mount(<Section />);
+    type(await screen.findByLabelText('Your password'), 'Hunter2hunter2');
+    fireEvent.click(screen.getByRole('button', { name: 'Add authenticator app' }));
+    type(await screen.findByLabelText(/Authentication code/), '123456');
+    fireEvent.click(screen.getByRole('button', { name: 'Turn on' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Start again.');
+    // The old secret is worthless now, so it is not left on the page.
+    expect(screen.queryByText(SECRET)).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Your password')).toBeInTheDocument();
+    // Nothing to cancel: the gateway already dropped it.
+    expect(api.cancel).not.toHaveBeenCalled();
   });
 
   it('changes the app and makes new recovery codes without the password', async () => {

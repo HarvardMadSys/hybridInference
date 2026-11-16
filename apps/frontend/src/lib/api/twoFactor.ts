@@ -68,7 +68,18 @@ export async function startTwoFactorSetup(password?: string): Promise<TwoFactorS
   return read(resp);
 }
 
-/** Turn the shown secret on with its first code; answers with the recovery codes, once. */
+/** Drop the setup this session started and did not confirm. */
+export async function cancelTwoFactorSetup(): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, '/auth/two-factor/setup', { method: 'DELETE' });
+  if (!resp.ok) throw await apiErrorFromResponse(resp);
+}
+
+/**
+ * Turn the shown secret on with its first code; answers with the recovery
+ * codes, once. The gateway takes the code only from the session that started
+ * the setup, for a few minutes and a few tries: after that it answers 409 and
+ * the setup is started again.
+ */
 export async function confirmTwoFactor(code: string): Promise<TwoFactorRecoveryCodes> {
   const resp = await fetchWithAuth(API_BASE, '/auth/two-factor/confirm', {
     method: 'POST',

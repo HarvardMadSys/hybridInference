@@ -9,6 +9,7 @@ import { useT } from '@/components/providers/useT';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import {
+  cancelTwoFactorSetup,
   confirmTwoFactor,
   isCompleteTwoFactorCode,
   newRecoveryCodes,
@@ -16,7 +17,7 @@ import {
   startTwoFactorSetup,
   type TwoFactorSetup,
 } from '@/lib/api/twoFactor';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { TwoFactorCodeInput } from './TwoFactorCode';
 
@@ -134,7 +135,16 @@ export function TwoFactorSettings() {
     return (
       <ConfirmAuthenticator
         setup={setup}
-        onCancel={() => setSetup(null)}
+        onCancel={() => {
+          setSetup(null);
+          // The secret was shown; tell the gateway nobody is going to use it.
+          // It runs out by itself if this does not arrive.
+          void cancelTwoFactorSetup().catch(() => undefined);
+        }}
+        onGone={(reason) => {
+          setSetup(null);
+          setError(reason);
+        }}
         onConfirmed={async (recoveryCodes) => {
           setSetup(null);
           setCodes(recoveryCodes);
@@ -269,10 +279,13 @@ export function TwoFactorSettings() {
 function ConfirmAuthenticator({
   setup,
   onCancel,
+  onGone,
   onConfirmed,
 }: {
   setup: TwoFactorSetup;
   onCancel: () => void;
+  /** The setup ran out of time or of tries, or was replaced: it is started again. */
+  onGone: (reason: string) => void;
   onConfirmed: (recoveryCodes: string[]) => Promise<void>;
 }) {
   const t = useT();
@@ -289,6 +302,10 @@ function ConfirmAuthenticator({
       const { recovery_codes: recoveryCodes } = await confirmTwoFactor(code.trim());
       await onConfirmed(recoveryCodes);
     } catch (e) {
+      if (e instanceof APIError && e.statusCode === 409) {
+        onGone(getErrorMessage(e));
+        return;
+      }
       setError(getErrorMessage(e));
       setBusy(false);
     }
