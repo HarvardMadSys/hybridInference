@@ -675,9 +675,23 @@ async def test_an_admission_stalled_between_two_statements_does_not_hold_its_acc
         assert time.monotonic() - started < shared_ledger.ADMISSION_BUDGET_SECONDS - 1
     finally:
         resume.set()
-    # The stuck one finds its session gone when it comes back, and wrote nothing.
-    with pytest.raises((asyncpg.PostgresError, asyncpg.InterfaceError, OSError)):
+        await asyncio.wait({stuck}, timeout=5)
+    # The stuck one finds its session gone when it comes back, and wrote
+    # nothing. Which error it meets depends on how far the client had got in
+    # reading the server's goodbye: the last is the driver giving the
+    # connection up, a statement sent after the goodbye was read and before
+    # the socket was seen to close.
+    with pytest.raises(
+        (
+            asyncpg.PostgresError,
+            asyncpg.InterfaceError,
+            asyncpg.exceptions.InternalClientError,
+            OSError,
+        )
+    ):
         await stuck
+    # Whichever it was, its connection's place in the pool is free again.
+    await _base.every_place_is_free(backend.request_pool)
     assert [row["reservation_id"] for row in await _rows(db.pool, user)] == [
         admitted.reservation_id
     ]

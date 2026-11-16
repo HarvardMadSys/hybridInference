@@ -20,6 +20,7 @@ admission reads.
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import weakref
 from decimal import Decimal
@@ -96,10 +97,13 @@ async def gateways(monkeypatch):
                     await gateway.ledger._writer
             if gateway.ledger._retry is not None:
                 gateway.ledger._retry.cancel()
-        if made:
-            await _base._wipe(made[0].pool)
-        for gateway in made:
-            await gateway.pool.close()
+        try:
+            if made:
+                async with asyncio.timeout(30):
+                    await _base._wipe(made[0].pool)
+        finally:
+            for gateway in made:
+                await _base.close_pool(gateway.pool)
 
 
 def _routes(app, store) -> None:

@@ -121,7 +121,18 @@ for them, until it came back; the server ends its session instead. Overload or
 an unavailable database raises the existing `DatabaseBusyError` (503 with
 `Retry-After`); batch work is handed back for a later attempt. A lost COMMIT
 answer, or a connection that failed otherwise (SQLSTATE class 08), is retried
-with the same id within the deadline. If the outcome is still unknown, or the
+with the same id within the deadline.
+
+A session the server ended must give its connection's place in the request
+pool back, and one path in asyncpg does not: a statement sent when the client
+has read the server's goodbye and not yet seen the socket close fails with
+`InternalClientError`, the driver aborts the connection without cleaning it
+up, and the pool takes a closed connection to have been cleaned up. That place
+was never free again; the request pool has four. `request_connection` now
+cleans up a connection that was closed while it was out (`free_if_closed`),
+for every request-path use, and the admission counts that error as the
+connection failing: retried within the deadline, else a 503. If the outcome
+is still unknown, or the
 admitting coroutine is cancelled after the id was used, the request is not
 dispatched and a
 release-not-dispatched is queued carrying the attempts' transaction ids; the
@@ -551,6 +562,16 @@ Merging this change activates nothing. Before any deployment switches the row:
   a request that ends meanwhile from being settled at once, nor keeps the
   writer running; a pass stops after a few failures; a flush tries the marks
   at once and then at the shortest back-off.
+- After a second outside review and a CI run that hung. `dbtest`: a cost
+  recorded on one day and logged on the next is restored to the first, as its
+  own settlement puts it, and one billed on both sides of midnight to both; a
+  connection the server ended gives its place in the pool back whenever it
+  is next used, the moment the driver gives it up included; the stalled
+  admission's place is free afterwards. Unit: which days a log row carries,
+  and which a reconciliation believes; the clean-up before release. The
+  hang was that place: the stalled-admission test met the driver's error
+  about once in ten runs on two cores, failed, and its fixture then waited
+  for the place for ever. Fixtures now end their pools after a bounded wait.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

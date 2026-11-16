@@ -1706,10 +1706,14 @@ def _connection_error(exc: Exception) -> bool:
         import asyncpg
     except ImportError:  # pragma: no cover
         return False
+    # InternalClientError is what a statement gets on a connection whose
+    # session the server has just ended, sent before the client saw the
+    # socket close; the driver gives that connection up.
     return isinstance(
         exc,
         asyncpg.exceptions.ConnectionDoesNotExistError
         | asyncpg.exceptions.InterfaceError
+        | asyncpg.exceptions.InternalClientError
         | asyncpg.exceptions.ConnectionFailureError,
     )
 

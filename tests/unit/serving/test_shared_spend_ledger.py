@@ -314,6 +314,9 @@ async def test_an_admission_whose_connection_failed_is_tried_again_and_admitted(
         (asyncpg.exceptions.UniqueViolationError("the id's row appeared"), True),
         (asyncpg.exceptions.SerializationError("serialization"), True),
         (asyncpg.exceptions.InterfaceError("connection is closed"), True),
+        # What a statement gets on a connection whose session the server has
+        # just ended, sent before the client saw the socket close.
+        (asyncpg.exceptions.InternalClientError("another operation is in progress"), True),
         (ConnectionResetError("reset by peer"), True),
         # Final answers: the budget ran out, or the database said no.
         (asyncpg.exceptions.QueryCanceledError("statement timeout"), False),

@@ -90,6 +90,57 @@ async def test_an_exhausted_pool_fails_fast_with_a_busy_error():
         assert pool.held == 1
 
 
+class _Conn:
+    """A connection that says whether it is closed and counts its clean-ups."""
+
+    def __init__(self, *, closed: bool) -> None:
+        self.closed = closed
+        self.terminated = 0
+
+    def is_closed(self) -> bool:
+        return self.closed
+
+    def terminate(self) -> None:
+        self.terminated += 1
+
+
+async def test_a_connection_closed_while_it_was_out_is_cleaned_up_before_it_is_released():
+    # asyncpg frees a pooled connection's place when the connection is cleaned
+    # up, and on release takes a closed one to have been. Where it was not
+    # (see pools.free_if_closed), the place was never free again.
+    pool = _Pool("request", size=1)
+    pool.conn = closed = _Conn(closed=True)
+    with pytest.raises(RuntimeError, match="the statement failed"):
+        async with request_connection(pool):
+            raise RuntimeError("the statement failed")
+    assert closed.terminated == 1 and pool.held == 0
+
+    # A connection still open is given back as it is.
+    pool.conn = still_open = _Conn(closed=False)
+    async with request_connection(pool):
+        pass
+    assert still_open.terminated == 0 and pool.held == 0
+
+
+async def test_cleaning_up_never_fails_the_caller():
+    class Released:
+        """A pool's proxy whose connection has already been given back: every use raises."""
+
+        def is_closed(self) -> bool:
+            raise AttributeError("released back to the pool")
+
+    class CannotTerminate(_Conn):
+        def terminate(self) -> None:
+            raise OSError("already gone")
+
+    pool = _Pool("request", size=1)
+    for conn in (Released(), CannotTerminate(closed=True)):
+        pool.conn = conn
+        async with request_connection(pool) as handed:
+            assert handed is conn
+        assert pool.held == 0
+
+
 async def test_the_default_wait_is_the_module_bound(monkeypatch):
     monkeypatch.setattr(pools, "REQUEST_ACQUIRE_TIMEOUT_SEC", 0.05)
     pool = _Pool("request", size=1)

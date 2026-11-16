@@ -87,19 +87,43 @@ async def db():
     try:
         yield ns
     finally:
-        for ledger in (ns.a, ns.b):
-            if ledger._writer is not None:
-                ledger._writer.cancel()
-                with contextlib.suppress(BaseException):
-                    await ledger._writer
-            if ledger._retry is not None:
-                ledger._retry.cancel()
-        async with pool_a.acquire() as conn:
-            for digest in erased:
-                await conn.execute("DELETE FROM erasure_fence WHERE account_digest = $1", digest)
-        await _wipe(pool_a)
-        await pool_a.close()
-        await pool_b.close()
+        # Bounded, and the pools ended whatever happens: a test that failed
+        # with a connection out, or a transaction open, fails here and does
+        # not hang the run (a pool's close() waits for every connection).
+        try:
+            async with asyncio.timeout(30):
+                for ledger in (ns.a, ns.b):
+                    if ledger._writer is not None:
+                        ledger._writer.cancel()
+                        with contextlib.suppress(BaseException):
+                            await ledger._writer
+                    for timer in (ledger._retry, ledger._mark_retry):
+                        if timer is not None:
+                            timer.cancel()
+                async with pool_a.acquire() as conn:
+                    for digest in erased:
+                        await conn.execute(
+                            "DELETE FROM erasure_fence WHERE account_digest = $1", digest
+                        )
+                await _wipe(pool_a)
+        finally:
+            await close_pool(pool_a)
+            await close_pool(pool_b)
+
+
+async def close_pool(pool) -> None:
+    """Close *pool*; end it where a connection is still out after a few seconds."""
+    try:
+        await asyncio.wait_for(pool.close(), 5)
+    except TimeoutError:
+        pool.terminate()
+
+
+async def every_place_is_free(pool) -> None:
+    """Take every connection *pool* can hold at once: none of its places has been lost."""
+    async with asyncio.timeout(5), contextlib.AsyncExitStack() as stack:
+        for _ in range(pool.get_max_size()):
+            await stack.enter_async_context(pool.acquire())
 
 
 def check(
