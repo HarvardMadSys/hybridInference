@@ -1,7 +1,7 @@
 """The SQL of shared spend accounting: admission, settlement, and a read-only status view.
 
 Every statement here runs on tables the schema migrations create
-(``0019_shared_spend``); nothing issues DDL. See
+(``0020_shared_spend``); nothing issues DDL. See
 ``docs/agents/plans/2026-11-14-shared-spend-admission-and-settlement.md`` for
 the protocol; the invariants each function keeps are stated where it keeps
 them.
@@ -65,7 +65,7 @@ LOCK_CLASS_KEY = 0x53500002
 LOCK_CLASS_PROJECT = 0x53500003
 
 #: The setting a shared settlement marks its transaction with, so the counter
-#: tables' trigger knows the write as one of its own (``0019_shared_spend``).
+#: tables' trigger knows the write as one of its own (``0020_shared_spend``).
 WRITER_SETTING = "hybridinference.spend_writer"
 
 #: More accounts than this in one settlement check the fence in the counter

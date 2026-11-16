@@ -49,8 +49,8 @@ order, so one running at that very moment can deadlock with this revision;
 PostgreSQL then fails one of the two, nothing is half done, and it is run
 again.
 
-Revision ID: 0019_shared_spend
-Revises: 0018_projects_owned_by_accounts
+Revision ID: 0020_shared_spend
+Revises: 0019_two_factor
 Create Date: 2026-11-14
 """
 
@@ -58,8 +58,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0019_shared_spend"
-down_revision = "0018_projects_owned_by_accounts"
+revision = "0020_shared_spend"
+down_revision = "0019_two_factor"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

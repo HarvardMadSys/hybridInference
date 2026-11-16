@@ -1,4 +1,4 @@
-"""``0019_shared_spend``: expand-only, ``local`` by default, inert for older code."""
+"""``0020_shared_spend``: expand-only, ``local`` by default, inert for older code."""
 
 from __future__ import annotations
 
@@ -16,14 +16,14 @@ async def scratch():
 
 
 async def test_the_shared_tables_arrive_in_the_local_mode_and_old_writes_are_unchanged(scratch):
-    await mig.upgrade(scratch, "0018_projects_owned_by_accounts")
+    await mig.upgrade(scratch, "0019_two_factor")
     async with mig.connected(scratch) as conn:
         await conn.execute(
             "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests) "
             "VALUES ('u-1', '2026-11-14', 1.5, 2)"
         )
 
-    await mig.upgrade(scratch, "0019_shared_spend")
+    await mig.upgrade(scratch, "0020_shared_spend")
 
     async with mig.connected(scratch) as conn:
         assert await conn.fetchval("SELECT mode FROM spend_accounting") == "local"
@@ -82,7 +82,7 @@ async def test_a_second_upgrade_changes_nothing(scratch):
     # Re-running the revision's statements keeps the stored mode.
     from importlib import import_module
 
-    revision = import_module("migrations.versions.0019_shared_spend")
+    revision = import_module("migrations.versions.0020_shared_spend")
     async with mig.connected(scratch) as conn:
         for statement in (*revision.STATEMENTS, *revision.TRIGGER_STATEMENTS):
             await conn.execute(statement)
