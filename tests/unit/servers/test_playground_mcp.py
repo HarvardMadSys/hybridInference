@@ -212,7 +212,7 @@ async def test_an_unreachable_server_is_a_bad_gateway() -> None:
         mcp_client.list_tools = original  # type: ignore[assignment]
 
     assert response.status_code == 502
-    assert "Could not reach" in response.json()["detail"]
+    assert response.json()["detail"] == "The MCP server request failed."
 
 
 @pytest.mark.asyncio

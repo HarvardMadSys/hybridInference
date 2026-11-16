@@ -10,6 +10,9 @@ from pydantic import BaseModel, Field
 from serving import mcp_client
 from serving.servers.deps import require_role
 from serving.servers.request_body import json_body_after, json_body_schema
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 router = APIRouter(prefix="/internal/playground/mcp", tags=["Playground"])
 
@@ -35,7 +38,9 @@ _call_body = json_body_after(_require_internal, McpCallBody)
 
 
 def _refuse(exc: mcp_client.McpError) -> HTTPException:
-    return HTTPException(502, str(exc))
+    """Log the MCP failure and return the fixed message a client may see."""
+    logger.warning("Playground MCP request failed", exc_info=exc)
+    return HTTPException(502, "The MCP server request failed.")
 
 
 @router.post(
