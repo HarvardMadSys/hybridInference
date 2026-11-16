@@ -83,6 +83,7 @@ from serving.batch.schemas import (
     BatchResult,
     BatchResultResponse,
     BatchResultsPage,
+    BatchRetryFailed,
     BatchUsage,
 )
 from serving.batch.targets import TARGET_URLS, AdmissionContext, check_item
@@ -102,6 +103,7 @@ from serving.servers.routers.files import content_disposition, jsonl_download
 from serving.storage.batch_store import (
     PHASE_SEALED,
     PHASE_VALIDATING,
+    RETRYABLE_ITEM_ERROR_CODES,
     SURFACE_OPENAI_FILE,
     SURFACE_OPENAI_INLINE,
     TARGET_MESSAGES,
@@ -699,6 +701,73 @@ async def cancel_batch(
     if row is None:
         raise _not_found(batch_id)
     return batch_object(row, config)
+
+
+@router.post("/v1/batches/{batch_id}/retry-failed", response_model=BatchRetryFailed)
+async def retry_failed_batch(
+    request: Request,
+    batch_id: str,
+    user_ctx: dict = Depends(verify_batch_management_identity),
+    store=Depends(get_batch_store),
+    services=Depends(get_services),
+) -> BatchRetryFailed:
+    """Retry a finished batch's requests that failed for a transient reason.
+
+    A new batch holds only those requests, with their original ``custom_id`` and
+    body; its metadata names the source in ``retried_from``. Completed requests
+    are neither rerun nor billed again, and the source batch is unchanged.
+    """
+    store, config = _surface(store)
+    _may_create(request, user_ctx, config)
+    owner = _owner(user_ctx)
+    source = await store.get_batch(batch_id, user_id=owner)
+    if source is None:
+        raise _not_found(batch_id)
+    if source["status"] not in TERMINAL_BATCH_STATUSES:
+        raise HTTPException(
+            409,
+            f"Batch '{batch_id}' is {source['status']}; only a finished batch can be retried",
+        )
+    items, skipped = await store.retryable_failed_items(batch_id, RETRYABLE_ITEM_ERROR_CODES)
+    if not items:
+        raise HTTPException(
+            409,
+            f"Batch '{batch_id}' has no failed requests that may pass on a new attempt",
+        )
+    metadata = dict(source.get("metadata") or {})
+    metadata["retried_from"] = batch_id
+    row = await admission.create(
+        store,
+        batch_id=f"batch_{uuid.uuid4().hex}",
+        user_id=owner,
+        key_hash=user_ctx.get("auth_key_hash"),
+        endpoint=source["endpoint"],
+        model_ids=sorted({item["model_id"] for item in items}),
+        items=items,
+        metadata=metadata,
+        completion_window_seconds=config.completion_window_seconds,
+        api_surface=SURFACE_OPENAI_INLINE,
+        target=source["target"],
+        protocol_profile=source["protocol_profile"],
+        retention_seconds=config.retention_seconds,
+        max_active=config.max_active_per_user,
+        max_queued=config.max_queued_per_user,
+    )
+    logger.info(
+        "Batch %s retried from %s: %d request(s) retried, %d skipped",
+        row["id"],
+        batch_id,
+        len(items),
+        skipped,
+        extra={"user_id": owner},
+    )
+    admission.wake_worker(services)
+    return BatchRetryFailed(
+        id=row["id"],
+        source_batch_id=batch_id,
+        retried=len(items),
+        skipped=skipped,
+    )
 
 
 @router.delete("/v1/batches/{batch_id}", response_model=BatchDeleted)

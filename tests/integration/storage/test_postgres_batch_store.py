@@ -2099,6 +2099,47 @@ async def test_batch_summary_and_labels_name_each_owner(pool, store):
     assert await store.user_labels([]) == {}
 
 
+# -- retry failed ---------------------------------------------------------------
+
+
+async def test_retryable_failed_items_selects_transient_failures_in_order(store):
+    model = _model()
+    created = await _create(store, _items(model, 4))
+    done, timed_out, timed_out_again, invalid = await _claim(store, model)
+    assert await _complete(store, done, cost=0.5)
+    timeout = {"code": "timeout", "message": "slow", "status": 504}
+    assert await _complete(store, timed_out, error=timeout)
+    assert await _complete(store, timed_out_again, error=timeout)
+    assert await _complete(
+        store, invalid, error={"code": "invalid_request", "message": "bad", "status": 400}
+    )
+
+    items, skipped = await store.retryable_failed_items(
+        created["id"], batch_store.RETRYABLE_ITEM_ERROR_CODES
+    )
+
+    assert [item["custom_id"] for item in items] == ["req-1", "req-2"]
+    assert items[0]["request"] == {
+        "model": model,
+        "messages": [{"role": "user", "content": "q1 ✓"}],
+    }
+    assert skipped == 1
+
+
+async def test_retryable_failed_items_reads_nothing_from_a_clean_batch(store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    first, second = await _claim(store, model)
+    assert await _complete(store, first)
+    assert await _complete(store, second)
+
+    items, skipped = await store.retryable_failed_items(
+        created["id"], batch_store.RETRYABLE_ITEM_ERROR_CODES
+    )
+
+    assert (items, skipped) == ([], 0)
+
+
 # -- schema ----------------------------------------------------------------------
 
 

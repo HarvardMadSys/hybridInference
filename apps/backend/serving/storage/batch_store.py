@@ -195,6 +195,13 @@ TERMINAL_BATCH_STATUSES: frozenset[str] = frozenset({"completed", "failed", "exp
 #: Batches in these statuses count toward a user's cap on active batches.
 ACTIVE_BATCH_STATUSES: frozenset[str] = frozenset({"validating", "in_progress", "cancelling"})
 
+#: Item error codes that may pass when the request is sent again. The rest
+#: (``invalid_request``, ``forbidden``, ``model_not_found``, ``batch_failed``,
+#: ``batch_expired``) would fail the same way, or never ran at all.
+RETRYABLE_ITEM_ERROR_CODES: frozenset[str] = frozenset(
+    {"timeout", "upstream_error", "service_unavailable", "rate_limited"}
+)
+
 #: How long an idempotency record outlives the batch's end (or its deletion).
 IDEMPOTENCY_RETENTION_SECONDS = 24 * 3600
 
@@ -613,6 +620,24 @@ _HAS_OPEN_ITEMS_SQL = (
     "SELECT EXISTS (SELECT 1 FROM batch_items "
     "WHERE batch_id = $1 AND status IN ('queued', 'running'))"
 )
+
+# A failed item whose error may pass on a new attempt. ``error`` is always an
+# object on a failed item; COALESCE keeps an unexpected NULL out of the
+# comparison.
+_RETRYABLE_FAILURE_SQL = "COALESCE(error->>'code', '') = ANY($2::text[])"
+
+_RETRYABLE_ITEMS_SQL = f"""
+    SELECT custom_id, model_id, request
+    FROM batch_items
+    WHERE batch_id = $1 AND status = 'failed' AND {_RETRYABLE_FAILURE_SQL}
+    ORDER BY id
+"""
+
+_NON_RETRYABLE_FAILED_COUNT_SQL = f"""
+    SELECT count(*)
+    FROM batch_items
+    WHERE batch_id = $1 AND status = 'failed' AND NOT ({_RETRYABLE_FAILURE_SQL})
+"""
 
 # The final status of a batch once no open item is left, by its current status.
 _FINAL_STATUS: dict[str, str] = {
@@ -1754,6 +1779,40 @@ class BatchStore:
                 limit,
             )
         return [_result_row(row) for row in rows]
+
+    async def retryable_failed_items(
+        self, batch_id: str, codes: frozenset[str]
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return a batch's failed requests a new attempt may pass, in order.
+
+        A request whose error code is in *codes* is retryable; every other
+        failed request is skipped, because it would fail the same way or never
+        ran (:mod:`serving.batch.dispatch`).
+
+        Args:
+            batch_id: The source batch.
+            codes: The item error codes worth another attempt.
+
+        Returns:
+            ``(items, skipped)``: the retryable items as
+            ``{"custom_id", "model_id", "request"}`` in submission order, and
+            how many of the batch's failed items are not among them.
+        """
+        error_codes = sorted(codes)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(_RETRYABLE_ITEMS_SQL, batch_id, error_codes)
+            skipped = await conn.fetchval(_NON_RETRYABLE_FAILED_COUNT_SQL, batch_id, error_codes)
+        return (
+            [
+                {
+                    "custom_id": row["custom_id"],
+                    "model_id": row["model_id"],
+                    "request": _load_json(row["request"]),
+                }
+                for row in rows
+            ],
+            skipped or 0,
+        )
 
     async def result_page(
         self,
@@ -3732,6 +3791,7 @@ def _load_json_envelope(value: list[Any] | tuple[Any, ...]) -> Any:
 
 __all__ = [
     "ACTIVE_BATCH_STATUSES",
+    "RETRYABLE_ITEM_ERROR_CODES",
     "SUPPORTED_JOB_KINDS",
     "TERMINAL_BATCH_STATUSES",
     "BatchDeleteInProgress",
