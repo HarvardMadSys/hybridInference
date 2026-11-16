@@ -253,8 +253,16 @@ for: they leave the set every check reads and stay in what the process reports
   until then its row is active at its estimate, so the reservation stays a
   waiting one in its process (its cost above the estimate counted there), and
   a mark that fails is sent again (it is harmless to repeat) with a back-off
-  of its own, so that it does not pace the settlements, and goes behind the
-  other marks waiting. The answer says which it is: the row is quarantined;
+  and a timer of its own. The writer's back-off holds every write back until
+  it has run out, which is right for a database that does not answer and
+  wrong for one mark it refuses: settlements go on being written as they
+  come, a mark that failed goes behind the other marks waiting, and a pass
+  over them stops after a few failures, or at the first that is the
+  database's own (the others would wait as long for the same answer, with
+  the writer waiting on them: a mark that hangs holds the writer for as long
+  as a statement may run, as a settlement that hangs does). Marks failing for
+  a minute are reported once, at ERROR. The answer says which it is: the row
+  is quarantined;
   another batch retired it first (a duplicate, below); the account was
   hard-deleted, and it is dropped as a settlement drops it; or there is
   neither a row nor a receipt, and the process then counts it as unaccounted.
@@ -431,8 +439,9 @@ The gateway has no metrics endpoint; its established surfaces are used.
   bounds; what it holds now -- running requests, and ended ones awaiting
   settlement, each with its amount and how long the oldest has been so --
   plus quarantined and unaccounted; settlement counters (batches answered,
-  write failures, entries refused, members unaccounted), how long writes have
-  been failing and the last error; receipts purged; and its last hourly survey
+  write failures, entries refused, members unaccounted, refused reservations
+  still awaiting their mark), how long writes have been failing and the last
+  error; receipts purged; and its last hourly survey
   of the database: every process's active and quarantined totals, what is
   stranded, the receipts kept. None of it changes `status`.
 - `python -m serving.shared_spend status`: the database-wide view on demand,
@@ -529,7 +538,10 @@ Merging this change activates nothing. Before any deployment switches the row:
   reconciliation of the same reservation answers that it was retired; one for
   a hard-deleted account says so. Unit: what the process holds until the mark
   is answered, and what it does with each answer; a mark that keeps failing
-  neither paces the settlements nor holds up the marks behind it.
+  neither paces the settlements, nor holds up the marks behind it, nor keeps
+  a request that ends meanwhile from being settled at once, nor keeps the
+  writer running; a pass stops after a few failures; a flush tries the marks
+  at once and then at the shortest back-off.
 - A local fake-upstream exercise with two gateway processes on a task-owned
   database: real admission, response/cancel/tail settlement, cross-instance
   visibility. A narrow latency benchmark, local vs shared, on a task-owned

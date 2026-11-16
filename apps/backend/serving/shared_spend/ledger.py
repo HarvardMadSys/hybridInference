@@ -111,6 +111,11 @@ MAX_BATCH_MEMBERS = 256
 _RETRY_FIRST_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 30.0
 
+#: The most marks that may fail in one pass over the reservations waiting to
+#: be marked quarantined, before the rest wait for the next pass: what a
+#: database that refuses every mark costs each time.
+_MARK_FAILURES_PER_PASS = 8
+
 #: How long what a settlement just added to the counters stays known to this
 #: process, for an admission whose read may predate it (see
 #: :meth:`SharedSpendLedger._local_extra`): as long as an admission can run,
@@ -300,12 +305,13 @@ class SharedSpendLedger:
         self._set_aside: list[CostLine] = []
         # Reservations whose costs the counters refused, until their rows are
         # known to be marked quarantined: (member, the day it ended, why). And,
-        # after a mark failed: when the next may be tried and the delay that
-        # led there, since when marks have been failing, and whether that was
-        # reported (monotonic clock).
+        # after a mark failed: when the next may be tried, the delay that led
+        # there and the timer that wakes the writer for it, since when marks
+        # have been failing, and whether that was reported (monotonic clock).
         self._marking: list[tuple[Member, str, str]] = []
         self._mark_after = 0.0
         self._mark_delay = 0.0
+        self._mark_retry: asyncio.TimerHandle | None = None
         self._mark_failing_since: float | None = None
         self._mark_failure_reported = False
         # Reservations past settlement that still hold a liability: quarantined
@@ -822,10 +828,25 @@ class SharedSpendLedger:
             or self._marking
         )
 
+    def _can_write(self) -> bool:
+        """Whether a writer started now would have something to do.
+
+        A mark waiting out its back-off is owed (:meth:`_has_work`) and is
+        nothing to do yet: its own timer starts the writer for it.
+        """
+        return bool(
+            self._replay
+            or self._solo
+            or self._queued
+            or self._increments
+            or self._abandoned
+            or (self._marking and time.monotonic() >= self._mark_after)
+        )
+
     def _start_write(self) -> asyncio.Task[None] | None:
         if self._writer is not None:
             return self._writer
-        if self._closed or self._retry is not None or not self._has_work():
+        if self._closed or self._retry is not None or not self._can_write():
             return None
         try:
             asyncio.get_running_loop()
@@ -919,7 +940,7 @@ class SharedSpendLedger:
         await self._mark_refused()
         batch, source = self._next_batch()
         if batch is None:
-            if self._abandoned or self._marking:
+            if self._abandoned:
                 self._schedule_retry()
             return
         self._writing = batch
@@ -1033,8 +1054,8 @@ class SharedSpendLedger:
 
         What the mark's answer says decides what this process holds from then
         on, so nothing is assumed before it comes: a mark that fails is tried
-        again with the writer's back-off (it is harmless to repeat), and the
-        reservation stays a waiting one meanwhile.
+        again (it is harmless to repeat), and the reservation stays a waiting
+        one meanwhile.
 
         - ``quarantined``: its row now counts the larger of its estimate and
           its cost, on the day it ended. The part of the cost above the
@@ -1049,17 +1070,27 @@ class SharedSpendLedger:
         - ``missing``: no row and no receipt. Nothing in the database counts
           it, so this process does, in full (unaccounted).
 
-        Marks have a back-off of their own. A mark that keeps failing must
-        not pace the settlements, which go on being written at their own
-        rate, and it goes to the back of the list, so the marks behind it are
-        tried as well.
+        Marks have a back-off and a timer of their own (:meth:`_schedule_mark`).
+        The writer's back-off holds every write back until it has run out; a
+        mark that keeps failing must not do that to the settlements, which go
+        on being written as they come. A mark that failed goes to the back of
+        the list, so the ones behind it are tried as well. A pass stops after
+        :data:`_MARK_FAILURES_PER_PASS` failures, and at the first one that
+        is the database's own (no answer, no connection): the others would
+        wait as long for the same, with the writer waiting on them.
         """
-        from serving.spend_ledger import _send_alert
+        from serving.spend_ledger import _send_alert, _unavailable
 
-        if not self._marking or time.monotonic() < self._mark_after:
+        if not self._marking:
+            return
+        if time.monotonic() < self._mark_after:
+            self._schedule_mark()
             return
         failure: Exception | None = None
+        failures = 0
         for _ in range(len(self._marking)):
+            if failures >= _MARK_FAILURES_PER_PASS:
+                break
             member, day, note = self._marking[0]
             try:
                 outcome = await self._backend.quarantine(
@@ -1070,6 +1101,9 @@ class SharedSpendLedger:
             except Exception as exc:
                 self._marking.append(self._marking.pop(0))
                 failure = exc
+                failures += 1
+                if _unavailable(exc):
+                    break
                 continue
             self._marking.pop(0)
             if outcome == "quarantined":
@@ -1119,6 +1153,9 @@ class SharedSpendLedger:
                     )
                 )
         now = time.monotonic()
+        if self._mark_retry is not None:
+            self._mark_retry.cancel()
+            self._mark_retry = None
         if failure is None:
             self._mark_after = self._mark_delay = 0.0
             self._mark_failing_since = None
@@ -1126,6 +1163,7 @@ class SharedSpendLedger:
             return
         self._mark_delay = min(_RETRY_MAX_SECONDS, max(_RETRY_FIRST_SECONDS, self._mark_delay * 2))
         self._mark_after = now + self._mark_delay
+        self._schedule_mark()
         if self._mark_failing_since is None:
             self._mark_failing_since = now
         failing_for = now - self._mark_failing_since
@@ -1284,6 +1322,24 @@ class SharedSpendLedger:
         self._retry = None
         self._start_write()
 
+    def _schedule_mark(self) -> None:
+        """Wake the writer when the marks that failed may be tried again."""
+        if self._mark_retry is not None or self._closed:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        self._mark_retry = loop.call_later(
+            max(0.0, self._mark_after - time.monotonic()), self._mark_now
+        )
+
+    def _mark_now(self) -> None:
+        # Due by the timer's word, whatever the clocks make of the last instant.
+        self._mark_retry = None
+        self._mark_after = 0.0
+        self._start_write()
+
     def _answered(self) -> None:
         """The database answered a batch: settlements are being written."""
         self._stats.batches_answered += 1
@@ -1347,6 +1403,9 @@ class SharedSpendLedger:
         """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
+        # Marks waiting out a back-off are tried now, and from here on at the
+        # shortest one.
+        self._mark_after = 0.0
         while True:
             remaining = deadline - loop.time()
             if self._writer is not None:
@@ -1361,11 +1420,11 @@ class SharedSpendLedger:
             if self._retry is not None:
                 self._retry.cancel()
                 self._retry = None
-                self._mark_after = 0.0
                 await asyncio.sleep(min(_RETRY_FIRST_SECONDS, remaining))
                 continue
             if self._start_write() is None:
                 await asyncio.sleep(min(_RETRY_FIRST_SECONDS, remaining))
+                self._mark_after = 0.0
 
     async def close(self) -> bool:
         """Record that this process will send no settlement again; True once recorded.
@@ -1383,6 +1442,9 @@ class SharedSpendLedger:
         if self._retry is not None:
             self._retry.cancel()
             self._retry = None
+        if self._mark_retry is not None:
+            self._mark_retry.cancel()
+            self._mark_retry = None
         if self._upkeep is not None:
             self._upkeep.cancel()
         if self._writer is not None or self._has_work() or self._active:
@@ -1524,6 +1586,7 @@ class SharedSpendLedger:
                 "entries_refused": self._stats.entries_refused,
                 "members_unaccounted": self._stats.members_unaccounted,
                 "members_duplicate": self._stats.members_duplicate,
+                "refused_awaiting_mark": len(self._marking),
                 "failing_for_seconds": round(now - failing, 1) if failing is not None else None,
                 "last_error": self._last_error,
                 "unwritten_usd": round(cost, 6),

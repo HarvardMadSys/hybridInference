@@ -439,20 +439,28 @@ async def _refused(ledger, backend, user: str, cost: float):
         ledger.record(user, cost)
     backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
     reservation.release()
-    while reservation.reservation_id not in {m.reservation_id for m, _, _ in ledger._marking}:
-        if reservation.state != "queued":
-            break
-        await asyncio.sleep(0.005)
+    async with asyncio.timeout(5):
+        while reservation.reservation_id not in {m.reservation_id for m, _, _ in ledger._marking}:
+            if reservation.state != "queued":
+                break
+            await asyncio.sleep(0.005)
     backend.fail_settle = None
     return reservation
+
+
+async def _idle(ledger) -> None:
+    """Wait until the settlement writer has nothing more to do."""
+    async with asyncio.timeout(2):
+        while ledger._writer is not None:
+            await asyncio.sleep(0.005)
 
 
 async def test_a_mark_that_keeps_failing_does_not_pace_the_settlements(monkeypatch, caplog):
     # Marks have a back-off of their own. Sharing the writer's, one mark that
     # kept failing let a single batch through per back-off: requests that had
     # ended stayed held, more of them the busier the process was. Here that
-    # would be a second a batch, five batches.
-    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 1.0)
+    # would be ten seconds a batch, five batches.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 10.0)
     ledger, backend = _ledger()
     backend.fail_quarantine = asyncpg.exceptions.InsufficientPrivilegeError("no UPDATE here")
     stuck = await _refused(ledger, backend, "u-stuck", 0.50)
@@ -476,11 +484,10 @@ async def test_a_mark_that_keeps_failing_does_not_pace_the_settlements(monkeypat
     for reservation in ended:
         reservation.release()
     while not all(r.state == "retired" for r in ended):
-        assert time.monotonic() - started < 3.0, "the settlements are being paced by the mark"
+        assert time.monotonic() - started < 5.0, "the settlements are waiting for the mark"
         await asyncio.sleep(0.005)
-    # All written inside one back-off of the mark, which was not retried in a loop.
-    assert time.monotonic() - started < 1.0
-    assert backend.quarantine_calls <= 2
+    # And the mark was not tried again meanwhile.
+    assert backend.quarantine_calls == 1
     assert stuck.state == "queued" and ledger.holdings()["queued"] == 1
 
     # Failing for a minute, it is reported once, at ERROR, with what is held up.
@@ -499,10 +506,130 @@ async def test_a_mark_that_keeps_failing_does_not_pace_the_settlements(monkeypat
     assert stuck.state == "quarantined" and ledger._mark_failing_since is None
 
 
-async def test_a_mark_that_cannot_be_made_does_not_hold_up_the_ones_behind_it(monkeypatch):
-    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.01)
+async def test_a_request_that_ends_is_settled_while_a_mark_waits_out_its_back_off(monkeypatch):
+    # The mark's wait is its own. Waited out on the writer's timer, which
+    # holds every write back until it has run out, it kept a request that
+    # ended meanwhile from being settled: for up to half a minute, where a
+    # mark kept failing and little else happened.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 30.0)
+    ledger, backend = _ledger()
+    backend.fail_quarantine = asyncpg.exceptions.InsufficientPrivilegeError("no UPDATE here")
+    stuck = await _refused(ledger, backend, "u-stuck", 0.50)
+
+    async def settled_at_once() -> None:
+        await _idle(ledger)
+        assert ledger._marking and ledger._retry is None and ledger._mark_retry is not None
+        reservation, _ = await ledger.admit(_check(ledger), 0.01)
+        reservation.release()
+        async with asyncio.timeout(2):
+            while reservation.state != "retired":
+                await asyncio.sleep(0.005)
+        assert stuck.state == "queued"
+
+    # After the mark failed where it was refused...
+    await settled_at_once()
+    assert backend.quarantine_calls == 1
+    assert ledger.stats()["settlement"]["refused_awaiting_mark"] == 1
+    # ...and after its timer went off and it failed again, with nothing else to write.
+    ledger._mark_retry.cancel()
+    ledger._mark_now()
+    await settled_at_once()
+    assert backend.quarantine_calls == 2
+
+    # Owing a mark, the process is not recorded as having sent everything.
+    assert not await ledger.close()
+    assert ledger._mark_retry is None and backend.closures == {}
+
+
+async def test_a_flush_tries_the_marks_at_once_and_then_at_the_shortest_back_off(monkeypatch):
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 30.0)
     ledger, backend = _ledger()
     backend.fail_quarantine = ConnectionRefusedError("the database is away")
+    first = await _refused(ledger, backend, "u-first", 0.50)
+    await _idle(ledger)
+    # Half a minute to wait, and a shutdown that has a second: tried now.
+    backend.fail_quarantine = None
+    assert await ledger.flush(1)
+    assert first.state == "quarantined"
+
+    # One that fails once more during the flush is tried again after a short
+    # pause, not when its own back-off (half a minute by now) is over.
+    backend.fail_quarantine = ConnectionRefusedError("the database is away")
+    second = await _refused(ledger, backend, "u-second", 0.50)
+    await _idle(ledger)
+    mark, calls = backend.quarantine, 0
+
+    async def fails_once_more(member, instance_id, *, day, note):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise ConnectionRefusedError("still away")
+        return await mark(member, instance_id, day=day, note=note)
+
+    backend.fail_quarantine = None
+    monkeypatch.setattr(backend, "quarantine", fails_once_more)
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.01)
+    assert await ledger.flush(2)
+    assert second.state == "quarantined" and calls == 2
+
+
+async def test_a_mark_that_keeps_failing_starts_the_writer_only_when_it_is_due(monkeypatch):
+    # Owed and not yet due is nothing to write. Taken for something to write,
+    # it started the writer again the moment it finished, for as long as the
+    # mark kept failing.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 0.05)
+    ledger, backend = _ledger()
+    runs = 0
+    write_batch = ledger._write_batch
+
+    async def counted() -> None:
+        nonlocal runs
+        runs += 1
+        await write_batch()
+
+    monkeypatch.setattr(ledger, "_write_batch", counted)
+    backend.fail_quarantine = ConnectionRefusedError("the database is away")
+    stuck = await _refused(ledger, backend, "u-stuck", 0.50)
+    await asyncio.sleep(0.5)
+    # Tried when it was refused, then 0.05, 0.15 and 0.35 s later: the delay doubles.
+    assert 2 <= backend.quarantine_calls <= 5
+    assert runs <= backend.quarantine_calls + 2
+    assert stuck.state == "queued"
+    assert not await ledger.close()
+
+
+async def test_a_pass_over_the_marks_stops_after_a_few_failures(monkeypatch):
+    # What a database that refuses every mark costs each time: a few calls,
+    # not one for every reservation waiting.
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 30.0)
+    ledger, backend = _ledger()
+    backend.fail_quarantine = asyncpg.exceptions.InsufficientPrivilegeError("no UPDATE here")
+    refused = [await _refused(ledger, backend, f"u-many-{i}", 0.50) for i in range(12)]
+    # The first was tried when it was refused; the others found it backing off.
+    assert len(ledger._marking) == 12 and backend.quarantine_calls == 1
+
+    ledger._mark_after = 0.0
+    await ledger._mark_refused()
+    assert backend.quarantine_calls == 1 + shared_ledger._MARK_FAILURES_PER_PASS
+    assert len(ledger._marking) == 12 and all(r.state == "queued" for r in refused)
+
+    # And at the first failure that is the database's own: every other mark
+    # would wait as long for the same answer, and the writer with them.
+    backend.fail_quarantine = TimeoutError("no answer in a minute")
+    ledger._mark_after = 0.0
+    await ledger._mark_refused()
+    assert backend.quarantine_calls == 2 + shared_ledger._MARK_FAILURES_PER_PASS
+    assert len(ledger._marking) == 12
+
+    backend.fail_quarantine = None
+    assert await ledger.flush(5)
+    assert all(r.state == "quarantined" for r in refused) and ledger._mark_retry is None
+
+
+async def test_a_mark_that_cannot_be_made_does_not_hold_up_the_ones_behind_it(monkeypatch):
+    monkeypatch.setattr(shared_ledger, "_RETRY_FIRST_SECONDS", 30.0)
+    ledger, backend = _ledger()
+    backend.fail_quarantine = asyncpg.exceptions.NumericValueOutOfRangeError("too large")
     first = await _refused(ledger, backend, "u-first", 0.50)
     second = await _refused(ledger, backend, "u-second", 0.50)
     assert [m.reservation_id for m, _, _ in ledger._marking] == [
