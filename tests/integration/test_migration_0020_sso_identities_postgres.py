@@ -1,4 +1,4 @@
-"""``0019_sso_identities``: linked identities, sign-in flows and pending links."""
+"""``0020_sso_identities``: linked identities, sign-in flows and pending links."""
 
 from __future__ import annotations
 
@@ -26,7 +26,7 @@ async def _columns(conn, table: str) -> set[str]:
 
 
 async def test_the_tables_arrive_empty_and_existing_accounts_are_untouched(scratch):
-    await mig.upgrade(scratch, "0018_projects_owned_by_accounts")
+    await mig.upgrade(scratch, "0019_two_factor")
     async with mig.connected(scratch) as conn:
         await conn.execute("INSERT INTO users (id, email) VALUES ('u-old', 'old@example.edu')")
 

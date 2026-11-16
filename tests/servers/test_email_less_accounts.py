@@ -95,6 +95,9 @@ def op_store(users: dict[str, dict[str, Any]]) -> MagicMock:
     store.set_user_avatar = AsyncMock()
     store.create_session = AsyncMock()
     store.rotate_session = AsyncMock()
+    # No account here has an authenticator app, so each confirms by password.
+    store.get_session_two_factor = AsyncMock(return_value=None)
+    store.get_two_factor = AsyncMock(return_value=None)
     store.get_active_key_by_account = AsyncMock(return_value=None)
     store.list_user_identities = AsyncMock(return_value=[])
     store.approve_user = AsyncMock()

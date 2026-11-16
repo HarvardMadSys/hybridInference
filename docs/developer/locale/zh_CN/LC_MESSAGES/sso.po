@@ -58,8 +58,8 @@ msgstr "身份提供方一保存，登录页就会出现 **Log in with SSO**。�
 msgid "Later changes to `SSO_PROVIDERS` apply without a restart. A changed client secret needs one."
 msgstr "之后再修改 `SSO_PROVIDERS` 不需要重启。修改 client secret 需要重启。"
 
-msgid "Saving either setting asks for the administrator's password, as other changes to who may sign in do."
-msgstr "保存这两个设置时都会要求输入管理员密码，和其他涉及谁可以登录的修改一样。"
+msgid "Saving either setting asks the administrator to confirm, as other changes to who may sign in do: with a code from the account's authenticator app, or with its password when it has none."
+msgstr "保存这两个设置时都会要求管理员确认，和其他涉及谁可以登录的修改一样：账号有验证器应用时用其中的验证码，没有时用密码。"
 
 msgid "Provider fields"
 msgstr "身份提供方的字段"
@@ -274,8 +274,8 @@ msgstr "确认敏感操作"
 msgid "An account created by single sign-on has no password. When its owner deletes the account, sets a password or changes the sign-in email, the console sends them to the provider to sign in again instead of asking for a password."
 msgstr "通过单点登录创建的账号没有密码。当账号主人删除账号、设置密码或修改登录邮箱时，控制台会让他回到身份提供方重新登录一次，而不是要求输入密码。"
 
-msgid "An administrator's own confirmations always ask for a password. An account that signs in only through a provider and is made an administrator sets a password first, under **Settings**."
-msgstr "管理员自己的确认始终要求输入密码。只通过身份提供方登录的账号被设为管理员后，要先在 **Settings** 下设置密码。"
+msgid "An administrator's changes in **Admin** are never confirmed at the provider. They ask for a code from the account's authenticator app, or for its password when it has none. An account that signs in only through a provider and is made an administrator sets a password first, under **Settings**: adding an authenticator app asks for it too."
+msgstr "管理员在 **Admin** 中的修改从不通过身份提供方确认：账号有验证器应用时要求输入其中的验证码，没有时要求输入密码。只通过身份提供方登录的账号被设为管理员后，要先在 **Settings** 下设置密码：添加验证器应用也需要这个密码。"
 
 msgid "When a member leaves the organization"
 msgstr "成员离开机构时"

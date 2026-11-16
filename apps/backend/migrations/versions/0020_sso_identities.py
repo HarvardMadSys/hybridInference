@@ -17,8 +17,8 @@
 
 All three are expand-only: the new tables are invisible to earlier code.
 
-Revision ID: 0019_sso_identities
-Revises: 0018_projects_owned_by_accounts
+Revision ID: 0020_sso_identities
+Revises: 0019_two_factor
 Create Date: 2026-11-13
 """
 
@@ -26,8 +26,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0019_sso_identities"
-down_revision = "0018_projects_owned_by_accounts"
+revision = "0020_sso_identities"
+down_revision = "0019_two_factor"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

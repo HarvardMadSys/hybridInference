@@ -58,8 +58,9 @@ page does not list which organizations are connected.
 Later changes to `SSO_PROVIDERS` apply without a restart. A changed client
 secret needs one.
 
-Saving either setting asks for the administrator's password, as other changes
-to who may sign in do.
+Saving either setting asks the administrator to confirm, as other changes to
+who may sign in do: with a code from the account's authenticator app, or with
+its password when it has none.
 
 ## Provider fields
 
@@ -179,9 +180,11 @@ An account created by single sign-on has no password. When its owner deletes
 the account, sets a password or changes the sign-in email, the console sends
 them to the provider to sign in again instead of asking for a password.
 
-An administrator's own confirmations always ask for a password. An account
-that signs in only through a provider and is made an administrator sets a
-password first, under **Settings**.
+An administrator's changes in **Admin** are never confirmed at the provider.
+They ask for a code from the account's authenticator app, or for its password
+when it has none. An account that signs in only through a provider and is made
+an administrator sets a password first, under **Settings**: adding an
+authenticator app asks for it too.
 
 ## When a member leaves the organization
 

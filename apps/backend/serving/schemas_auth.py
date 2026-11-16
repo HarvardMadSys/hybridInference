@@ -830,3 +830,57 @@ class SsoUnlinkIdentityRequest(BaseModel):
     """Remove an identity from the signed-in account, confirmed by its owner."""
 
     password: str | None = Field(default=None, max_length=1024)
+
+
+# -- second factor (serving.auth.two_factor) ----------------------------------
+
+
+class TwoFactorStatusResponse(BaseModel):
+    """An account's second factor, and what the asking session has proved."""
+
+    enabled: bool = Field(description="The account has an authenticator app")
+    pending: bool = Field(description="A secret was shown and awaits its first code")
+    required: bool = Field(
+        description="This account has administrator access only from a verified session"
+    )
+    session_verified: bool = Field(
+        description="This session has given a code, from the client it is used from now"
+    )
+    recovery_codes_left: int = Field(description="Unspent recovery codes")
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """Start adding an authenticator app."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The account's password; not needed to replace an authenticator, "
+        "which a recent code confirms instead",
+    )
+
+
+class TwoFactorSetupResponse(BaseModel):
+    """The secret to put into an authenticator app, shown once."""
+
+    secret: str = Field(description="Base32 secret, for typing in by hand")
+    otpauth_uri: str = Field(description="The same as a link, for a QR code")
+
+
+class TwoFactorCodeRequest(BaseModel):
+    """A code from the authenticator app, or a recovery code."""
+
+    code: str = Field(min_length=6, max_length=32)
+
+
+class TwoFactorRecoveryCodesResponse(BaseModel):
+    """A new set of recovery codes, shown once; every earlier one stops working."""
+
+    recovery_codes: list[str]
+
+
+class TwoFactorVerifyResponse(BaseModel):
+    """The session is verified."""
+
+    verified: bool = True
+    recovery_codes_left: int

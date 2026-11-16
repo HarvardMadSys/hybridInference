@@ -94,7 +94,8 @@ It is added the way the other documents are: `"sso": "SSO_PROVIDERS"` in `DOCUME
 `serving/config/documents.py`, registered in `app_config_registry.py` under the `application` category with
 `restart_required=False`. The model and its validation are in a new module, `serving/config/sso.py`. The document
 therefore gets validation before saving, conditional writes, audit, backup and restore. Every setting in the
-`application` category is security-related, so changing it asks the administrator for their password.
+`application` category is security-related, so changing it asks the administrator to confirm
+(`confirm_administrator`).
 
 ```json
 {
@@ -497,7 +498,7 @@ The user detail in Admin lists the identities linked to the account (IdP name, t
 linking, when it was linked, the last SSO sign-in), each with "Disconnect". It is for two cases: a wrong link,
 and `identity_conflict`.
 
-- Unlinking asks the administrator for their password (`confirm_administrator`), like promoting a role. Each
+- Unlinking asks the administrator to confirm (`confirm_administrator`), like promoting a role. Each
   one is audited. When the link was removed by another request meanwhile, the answer is 404 and nothing is
   audited.
 - Unlinking removes the link only and leaves the account's sessions and API keys alone. To cut off access,
@@ -580,12 +581,15 @@ The purposes are a closed table: `set_password`, `delete_account`, `bind_email`,
 `unlink_sso` from §7.2. The order of precedence does not change: an account with a password still types it,
 then the phone, and SSO last.
 
-**An administrator's sensitive actions do not change and still accept a password only.** An account that uses
+**An administrator's sensitive actions do not change and never accept SSO confirmation.**
+`confirm_administrator` takes the account's password, or a recent code from its authenticator app when it has
+one (the second factor for administrators, `2026-11-15-admin-two-factor-design.md`). An account that uses
 SSO only can become an administrator: another administrator can promote its role to `admin` in Admin. For an
 administrator with no password the existing rule (`confirm_administrator`) refuses the action and says to set
 a password in Settings first; administrators who registered by phone are already handled that way. SSO
 accounts follow the same rule: `set_password` above lets them confirm at the IdP and set a password, and
-administrator actions after that are confirmed with the password.
+administrator actions after that are confirmed with the password. Adding an authenticator app asks for the
+password too, so the order is the same where a second factor is required of administrators.
 
 Most of the console work is here: the dialogs for deleting the account, binding an email and setting a
 password each gain a "confirm at the IdP" branch and must return to the same step afterwards.
@@ -618,7 +622,7 @@ password each gain a "confirm at the IdP" branch and must return to the same ste
 
 One expand-only migration, written like the other expand-only revisions (`op.execute`, `IF NOT EXISTS`,
 `compatibility = "expand"`, with a migration test). Its number is the next free one when the pull request is
-opened, `0019` now. The previous release never reads the new tables.
+opened, `0020` now. The previous release never reads the new tables.
 
 ```sql
 CREATE TABLE user_identities (          -- long-lived: which account here an IdP identity signs in to
@@ -793,7 +797,7 @@ the two together and passed `make up`, `make smoke`, `make demo` and `make demo-
 | What happens to an existing account | Merge by default when the emails match | Matching emails do not prove it is the same person (§6.2). Guided linking is the default, and automatic linking is an option with conditions |
 | How the console learns SSO is on | A key in `features` | `features` is parsed strictly, and one extra key makes an older console reject the whole document |
 | How an account that uses SSO only confirms an action | Require such an account to set a password first | Setting the first password itself needs confirmation, which such an account cannot give |
-| Whether an administrator's sensitive actions accept SSO confirmation | Accept it | The existing rule is that an administrator with no password sets one first. An SSO account can do that too, and keeping the rule leaves "administrators confirm with a password only" as it is |
+| Whether an administrator's sensitive actions accept SSO confirmation | Accept it | The existing rule is that an administrator with no password sets one first. An SSO account can do that too, and keeping the rule leaves `confirm_administrator` as it is |
 
 ## 17. Open question for review
 

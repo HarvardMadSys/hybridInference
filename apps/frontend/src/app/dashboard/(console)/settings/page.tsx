@@ -20,6 +20,11 @@ import { useT, type Translate } from '@/components/providers/useT';
 import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 import { DangerZone } from '@/components/features/auth/DeleteAccount';
+import {
+  TWO_FACTOR_ANCHOR,
+  TwoFactorSettings,
+  useShowTwoFactorSettings,
+} from '@/components/features/twoFactor/TwoFactorSettings';
 import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
 
 function createPasswordSchema(requireOldPassword: boolean, t: Translate) {
@@ -103,6 +108,7 @@ function SettingsContent() {
   const { branding, features } = useSiteConfig();
   const t = useT();
   const hasPassword = state.user?.has_password !== false;
+  const showTwoFactor = useShowTwoFactorSettings();
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
@@ -479,6 +485,20 @@ function SettingsContent() {
             </div>
           </form>
         </SettingsSection>
+      )}
+
+      {showTwoFactor && (
+        <div id={TWO_FACTOR_ANCHOR} className="scroll-mt-24">
+          <SettingsSection
+            title={t('two_factor.settings.title', 'Two-Factor Authentication')}
+            description={t(
+              'two_factor.settings.description',
+              'A code from an authenticator app on your phone, asked for before administrator access. A copied session or password is not enough without it.',
+            )}
+          >
+            <TwoFactorSettings />
+          </SettingsSection>
+        </div>
       )}
 
       <SettingsSection
