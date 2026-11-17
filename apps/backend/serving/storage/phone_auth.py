@@ -231,8 +231,10 @@ class PostgresPhoneAuthMixin:
                 FROM phone_auth_attempts WHERE kind = 'verify' AND created_at > NOW() - INTERVAL '1 hour'
                     AND (phone = $1 OR ip = $2)
                 """,
+                # None matches no row: an unresolved request is not counted
+                # per address, so nothing is scanned to count it.
                 phone,
-                ip_key,
+                ip,
             )
             if stats["phone_count"] >= phone_limit or (
                 ip is not None and stats["ip_count"] >= ip_limit

@@ -16,7 +16,7 @@ from fastapi import HTTPException, Request
 from serving.config.settings import settings
 from serving.servers.routers import reauth
 from serving.utils import login_rate_limit, password as password_utils
-from serving.utils.login_rate_limit import check_and_record_login, record_login_failure
+from serving.utils.login_rate_limit import check_and_record_login
 
 PASSWORD = "Str0ngPassword"
 
@@ -45,9 +45,6 @@ def _limits(monkeypatch):
         ("login_rate_limit_per_15min", 5),
         ("login_account_rate_limit_per_15min", 50),
         ("login_rate_limit_per_hour_per_ip", 20),
-        ("unresolved_login_failure_block_threshold", 10),
-        ("unresolved_login_failure_block_window_sec", 300),
-        ("unresolved_login_failure_block_duration_sec", 300),
     ):
         monkeypatch.setattr(settings, name, value)
 
@@ -60,7 +57,7 @@ def _limits(monkeypatch):
     login_rate_limit.reset_login_rate_limit_state()
 
 
-async def _confirm(password: str, request: Request | None = None) -> None:
+async def _confirm(password: str, request: Request | None = None, sid: str = "sid-1") -> None:
     await reauth.confirm_account_owner(
         request or _request(),
         None,
@@ -68,21 +65,23 @@ async def _confirm(password: str, request: Request | None = None) -> None:
         password=password,
         phone_code=None,
         purpose="delete_account",
+        sid=sid,
     )
 
 
-async def test_strangers_sign_in_attempts_do_not_refuse_the_owner():
-    """Twenty-plus attempts and a tripped breaker from "unknown": the owner still confirms."""
+async def test_anonymous_guesses_at_the_owners_name_do_not_refuse_the_owner():
+    """Review regression: five guesses at the name from "unknown" no longer block re-authentication."""
     for n in range(30):
         await check_and_record_login(f"stranger-{n}@example.com", "unknown")
-    for _ in range(10):
-        record_login_failure("unknown")
-    assert await check_and_record_login("someone@example.com", "unknown") == (False, "unresolved")
+    for _ in range(5):
+        await check_and_record_login("alice@example.edu", "unknown")
+    assert await check_and_record_login("alice@example.edu", "unknown") == (False, "email")
 
     await _confirm(PASSWORD)
 
 
-async def test_guesses_at_the_owners_password_are_still_bounded():
+async def test_guesses_through_the_session_are_still_bounded():
+    """Whoever holds a stolen session still gets five a window."""
     for _ in range(5):
         with pytest.raises(HTTPException) as wrong:
             await _confirm("guess")

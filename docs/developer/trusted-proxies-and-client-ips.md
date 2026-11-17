@@ -384,16 +384,13 @@ twenty per address in an hour. An `"unknown"` one has no address to count by,
 and one window shared by every such browser would let anyone's wrong
 passwords lock everyone else out. So an unresolved sign-in is counted per
 account only: five per username in 15 minutes from all unresolved browsers
-together, plus the account-wide window. Password re-authentication uses the
-same windows. What the per-address window bounded, one source guessing across
-many accounts, is bounded by one coarse breaker instead. When wrong passwords
-and unknown names from unresolved browsers without a device cookie reach
-`UNRESOLVED_LOGIN_FAILURE_BLOCK_THRESHOLD` (default 50) within
-`UNRESOLVED_LOGIN_FAILURE_BLOCK_WINDOW_SEC` (300), such sign-ins are refused
-for `UNRESOLVED_LOGIN_FAILURE_BLOCK_DURATION_SEC` (300). Correct passwords
-never count toward it. A browser that has signed in to the account before,
-with its device cookie, is never refused by it; neither is a signed-in owner
-confirming a change. See
+together, plus the account-wide window. A signed-in user confirming a change
+with their password is counted under their own session instead, which
+someone else's guesses at the name cannot reach. Nothing refuses a sign-in
+for what other unresolved browsers did, so one source spreading single
+guesses over many accounts is bounded only per account and by the password
+hashing capacity. A browser that has signed in to the account before, with
+its device cookie, keeps attempts of its own; see
 [The first admin account](deployment.md#the-first-admin-account).
 
 Phone codes follow the same rule. Codes sent to unresolved clients share a

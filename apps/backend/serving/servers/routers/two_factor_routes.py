@@ -265,6 +265,7 @@ async def start_two_factor_setup(
             password=body.password,
             phone_code=None,
             purpose="set_password",
+            sid=sid,
         )
 
     secret = generate_secret()

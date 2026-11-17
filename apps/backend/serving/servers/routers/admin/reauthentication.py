@@ -140,4 +140,5 @@ async def confirm_administrator(
         password=password,
         phone_code=None,
         purpose="config_backup",
+        sid=get_admin_session_id(request),
     )

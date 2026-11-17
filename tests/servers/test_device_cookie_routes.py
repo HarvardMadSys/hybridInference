@@ -340,40 +340,43 @@ async def test_entries_kept_from_before_a_password_reset_cannot_lock_out_the_own
 # One such client must not lock the rest out; each account stays guarded.
 
 
-@pytest.fixture
-def _breaker(monkeypatch):
-    for name, value in (
-        ("unresolved_login_failure_block_threshold", 10),
-        ("unresolved_login_failure_block_window_sec", 300),
-        ("unresolved_login_failure_block_duration_sec", 300),
-    ):
-        monkeypatch.setattr(settings, name, value)
-
-
 async def test_one_unresolved_client_cannot_lock_out_the_others(app, op_store, monkeypatch):
-    """The reported case: 20 sign-ins from "unknown" refused everyone behind the proxy."""
-    monkeypatch.setattr(settings, "unresolved_login_failure_block_threshold", 100)
-    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
-    # A stranger with no device cookie, behind the same proxy, over many names.
-    for n in range(30):
-        assert (await _login(app, "guess", login_name=f"nobody-{n}")).status_code == 401
+    """The reported case, and the review's: invented names from "unknown", then the owner.
 
-    # The administrator, behind it too and without a cookie, still signs in.
+    Behind an untrusted proxy every browser reads "unknown". The owner signs
+    in; a stranger with no device cookie tries one wrong password at each of
+    fifty invented names; the owner, from a fresh browser, still signs in --
+    and the password is actually checked.
+    """
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    checked: list[str] = []
+    monkeypatch.setattr(
+        password_utils,
+        "verify_password",
+        lambda plain, _hash: checked.append(plain) or plain == PASSWORD,
+    )
+    assert (await _login(app)).status_code == 200
+
+    for n in range(50):
+        assert (await _login(app, "guess", login_name=f"invented-{n}")).status_code == 401
+
+    checked.clear()
     resp = await _login(app)
     assert resp.status_code == 200, resp.text
+    assert checked == [PASSWORD]
 
 
-async def test_unresolved_failures_trip_a_brief_breaker(app, op_store, _breaker):
+async def test_guesses_at_one_name_are_still_bounded_for_that_name(app, op_store):
+    """Per account, from every unresolved browser together: five a window."""
     op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
-    device = _device(await _login(app))
-    for n in range(10):
-        assert (await _login(app, "guess", login_name=f"nobody-{n}")).status_code == 401
+    op_store.users["u-ops"] = _account("u-ops", "ops")
+    for _ in range(5):
+        assert (await _login(app, "guess")).status_code == 401
 
-    refused = await _login(app)
-    assert refused.status_code == 429
-    assert 1 <= int(refused.headers["Retry-After"]) <= 301
-    # A browser that signed in before, and any resolved client, still sign in.
-    assert (await _login(app, device=device)).status_code == 200
+    limited = await _login(app)
+    assert (limited.status_code, limited.headers["Retry-After"]) == (429, "900")
+    # Another account, and the same one from a resolved address, are untouched.
+    assert (await _login(app, login_name="ops")).status_code == 200
     assert (await _login(app, client_ip="5.6.7.8")).status_code == 200
 
 

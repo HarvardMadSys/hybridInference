@@ -181,16 +181,6 @@ class Settings(BaseSettings):
     login_rate_limit_per_15min: int = 5
     login_account_rate_limit_per_15min: int = Field(default=50, ge=1)
     login_rate_limit_per_hour_per_ip: int = 20
-    # A sign-in whose client address could not be resolved (no trusted proxy
-    # settings in front of the gateway: every browser reads "unknown") is not
-    # counted per address -- one shared window would let any one client lock
-    # every other one out. Its account windows still apply. Instead, wrong
-    # passwords and unknown names from such clients without a device cookie
-    # feed one coarse breaker: this many within the window refuse further such
-    # sign-ins for the duration. 0 turns the breaker off.
-    unresolved_login_failure_block_threshold: int = Field(default=50, ge=0)
-    unresolved_login_failure_block_window_sec: int = Field(default=300, ge=1)
-    unresolved_login_failure_block_duration_sec: int = Field(default=300, ge=1)
     # Auto-block a source IP at the API-key auth layer after repeated auth
     # failures. Once an IP (IPv6 bucketed to /64) reaches
     # auth_failure_block_threshold failures within auth_failure_block_window_sec,

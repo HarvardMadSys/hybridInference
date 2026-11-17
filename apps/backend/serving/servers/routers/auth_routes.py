@@ -84,12 +84,7 @@ from serving.utils.jwt import (
     get_refresh_token_expire_days,
 )
 from serving.utils.logging import get_logger
-from serving.utils.login_rate_limit import (
-    check_and_record_login,
-    record_login_failure,
-    refusal_worth_recording,
-    unresolved_retry_after,
-)
+from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
 from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip_info
@@ -417,7 +412,7 @@ async def login(
     earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead,
     and the account's recognized browsers to 50 per 15 minutes together.
     A client whose address could not be resolved is counted per account only,
-    and its failures feed a coarse breaker instead of a per-IP window (see
+    never as one address with every other such client (see
     :mod:`serving.utils.login_rate_limit`).
     """
     if not op_store:
@@ -468,14 +463,8 @@ async def login(
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this
-        # browser) are 15-minute windows; "unresolved" is the breaker for
-        # clients with no resolved address, which says how long it holds.
-        if reason == "ip":
-            retry_after = "3600"
-        elif reason == "unresolved":
-            retry_after = str(unresolved_retry_after())
-        else:
-            retry_after = "900"
+        # browser) are 15-minute windows.
+        retry_after = "3600" if reason == "ip" else "900"
         # One row a minute per address and window, not one per attempt: a
         # source that keeps trying past a limit costs no database write each.
         if refusal_worth_recording(client_ip, reason or ""):
@@ -501,10 +490,6 @@ async def login(
         shed=device is None,
     )
 
-    # A browser that signed in before is not who floods; its failures do not
-    # feed the breaker for unresolved clients.
-    if (not user_row or not password_matches) and device is None:
-        record_login_failure(client)
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
         raise HTTPException(status_code=401, detail="Invalid email or password")
