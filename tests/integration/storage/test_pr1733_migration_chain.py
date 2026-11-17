@@ -63,9 +63,7 @@ def test_a_database_at_the_previous_revision_is_refused_by_this_code():
 
 
 def test_a_database_at_the_merged_revision_is_current():
-    verdict = judge(
-        SchemaState(revision="0022_hard_delete_merge", floor=None), code_chain()
-    )
+    verdict = judge(SchemaState(revision="0022_hard_delete_merge", floor=None), code_chain())
     assert verdict is Verdict.CURRENT
 
 
