@@ -2,6 +2,7 @@
 
 import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { Select } from '@/components/ui/Select';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -78,6 +79,7 @@ const TEST_SEND = 'test send';
  * Confirm sends or cancels anything.
  */
 export function BroadcastsTab() {
+  const money = useMoney();
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const { state: authState } = useAuth();
@@ -123,7 +125,7 @@ export function BroadcastsTab() {
   const [bcTargetRoles, setBcTargetRoles] = useState<string[]>([...BROADCAST_ROLES]);
   const [bcTargetStatuses, setBcTargetStatuses] = useState<string[]>(['active']);
   // Optional spend gate: only email users who have spent more than this many
-  // USD today (UTC). Empty string means no spend filter.
+  // accounting currency today (UTC). Empty string means no spend filter.
   const [bcMinSpendToday, setBcMinSpendToday] = useState('');
 
   // Parsed spend threshold sent to the API: null when blank/invalid (no filter).
@@ -149,7 +151,9 @@ export function BroadcastsTab() {
     body_text: '',
     target_roles: bcTargetRoles,
     target_statuses: bcTargetStatuses,
-    min_spend_today_usd: parsedMinSpend,
+    // The threshold is a native amount in the runtime's accounting currency.
+    min_spend_today: parsedMinSpend,
+    currency: money.currency,
   };
   const previewKey = JSON.stringify(previewRequest);
   // A count is shown and confirmed only for the content and filters it was computed for.
@@ -200,8 +204,13 @@ export function BroadcastsTab() {
         label: 'Statuses',
         after: request.target_statuses.map((s) => s.replace('_', ' ')).join(', ') || '(none)',
       },
-      ...(request.min_spend_today_usd !== null && request.min_spend_today_usd !== undefined
-        ? [{ label: 'Spend today (UTC)', after: `More than $${request.min_spend_today_usd}` }]
+      ...(request.min_spend_today !== null && request.min_spend_today !== undefined
+        ? [
+            {
+              label: 'Spend today (UTC)',
+              after: `More than ${money.symbol}${request.min_spend_today}`,
+            },
+          ]
         : []),
     ];
   }
@@ -481,7 +490,7 @@ export function BroadcastsTab() {
                     <input
                       id={fieldId('new-quota')}
                       className={TEXT_FIELD}
-                      placeholder="e.g. $50/day"
+                      placeholder={`e.g. ${money.symbol}50/day`}
                       value={bcTemplateVars['new_quota'] ?? ''}
                       onChange={(e) =>
                         setBcTemplateVars((v) => ({ ...v, new_quota: e.target.value }))
@@ -590,7 +599,7 @@ export function BroadcastsTab() {
                 {/* Spend filter */}
                 <div>
                   <label htmlFor={fieldId('min-spend')} className={FORM_LABEL}>
-                    Minimum spend today (USD)
+                    Minimum spend today ({money.currency})
                   </label>
                   <input
                     id={fieldId('min-spend')}
@@ -598,7 +607,7 @@ export function BroadcastsTab() {
                     min="0"
                     step="0.01"
                     className={isSpendInvalid ? `${TEXT_FIELD} ${FIELD_INVALID}` : TEXT_FIELD}
-                    placeholder="e.g. 5 — only users who spent more than $5 today"
+                    placeholder={`e.g. 5 — only users who spent more than ${money.symbol}5 today`}
                     value={bcMinSpendToday}
                     aria-invalid={isSpendInvalid || undefined}
                     aria-describedby={`${isSpendInvalid ? `${fieldId('min-spend-error')} ` : ''}${fieldId('min-spend-hint')}`}

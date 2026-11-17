@@ -1,11 +1,15 @@
+import { useMoney } from '@/lib/hooks/useMoney';
+import type { Currency } from '@/lib/utils/money';
 import { useCallback, useEffect, useState } from 'react';
 import type { SavedView } from '../types';
 
 export const STORAGE_KEY = 'admin.users.savedViews';
+const storageKey = (currency: Currency) =>
+  currency === 'USD' ? STORAGE_KEY : `${STORAGE_KEY}.${currency}`;
 
-export function loadCustomViews(): SavedView[] {
+export function loadCustomViews(currency: Currency = 'USD'): SavedView[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(storageKey(currency));
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
@@ -18,37 +22,44 @@ export function loadCustomViews(): SavedView[] {
   }
 }
 
-export function saveCustomView(view: SavedView): void {
+export function saveCustomView(view: SavedView, currency: Currency = 'USD'): void {
   if (view.builtin) {
     throw new Error('Cannot save a built-in view');
   }
-  const existing = loadCustomViews();
+  const existing = loadCustomViews(currency);
   const next = [...existing.filter((v) => v.id !== view.id), view];
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  localStorage.setItem(storageKey(currency), JSON.stringify(next));
 }
 
-export function deleteCustomView(id: string): void {
-  const existing = loadCustomViews();
+export function deleteCustomView(id: string, currency: Currency = 'USD'): void {
+  const existing = loadCustomViews(currency);
   const next = existing.filter((v) => v.id !== id);
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+  localStorage.setItem(storageKey(currency), JSON.stringify(next));
 }
 
 export function useSavedViews() {
+  const { currency } = useMoney();
   const [views, setViews] = useState<SavedView[]>([]);
 
   useEffect(() => {
-    setViews(loadCustomViews());
-  }, []);
+    setViews(loadCustomViews(currency));
+  }, [currency]);
 
-  const save = useCallback((view: SavedView) => {
-    saveCustomView(view);
-    setViews(loadCustomViews());
-  }, []);
+  const save = useCallback(
+    (view: SavedView) => {
+      saveCustomView(view, currency);
+      setViews(loadCustomViews(currency));
+    },
+    [currency],
+  );
 
-  const remove = useCallback((id: string) => {
-    deleteCustomView(id);
-    setViews(loadCustomViews());
-  }, []);
+  const remove = useCallback(
+    (id: string) => {
+      deleteCustomView(id, currency);
+      setViews(loadCustomViews(currency));
+    },
+    [currency],
+  );
 
   return { views, save, remove };
 }

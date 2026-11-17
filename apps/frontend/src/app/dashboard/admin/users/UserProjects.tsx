@@ -5,13 +5,31 @@ import { getUserProjects, type AdminUserProjects } from '@/lib/api/admin';
 import type { ApiKeyListItem, Project } from '@/lib/api/user';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
+import { useMoney } from '@/lib/hooks/useMoney';
 
-function usd(value: number): string {
-  return value < 0.01 && value > 0 ? `$${value.toFixed(4)}` : `$${value.toFixed(2)}`;
+type Money = ReturnType<typeof useMoney>;
+
+/**
+ * One of a project's or key's money fields in its own ledger currency: the
+ * native amount with the record's `currency` when it has them, else USD.
+ * Cents, or four places below one cent.
+ */
+function amount(money: Money, source: object, field: string): string {
+  const value = money.amount(source, field) ?? 0;
+  const digits = value < 0.01 && value > 0 ? 4 : 2;
+  return money.format(
+    value,
+    { minimumFractionDigits: digits, maximumFractionDigits: digits, useGrouping: false },
+    money.sourceCurrency(source),
+  );
 }
 
-function spend(spent: number, budget: number | null | undefined, window: string): string {
-  return budget == null ? `${usd(spent)} ${window}` : `${usd(spent)} of ${usd(budget)} ${window}`;
+function spend(money: Money, project: Project, field: 'today' | 'month', window: string): string {
+  const spent = amount(money, project, `spent_${field}`);
+  const budgetField = field === 'today' ? 'budget_daily' : 'budget_monthly';
+  return money.amount(project, budgetField) == null
+    ? `${spent} ${window}`
+    : `${spent} of ${amount(money, project, budgetField)} ${window}`;
 }
 
 /** What a project limits beyond its spend, in a few words. */
@@ -25,9 +43,14 @@ function projectLimits(project: Project): string[] {
 }
 
 function KeyLine({ apiKey }: { apiKey: ApiKeyListItem }) {
+  const money = useMoney();
   const limits = [
-    apiKey.budget_daily_usd != null ? `daily ${usd(apiKey.budget_daily_usd)}` : null,
-    apiKey.budget_monthly_usd != null ? `monthly ${usd(apiKey.budget_monthly_usd)}` : null,
+    money.amount(apiKey, 'budget_daily') != null
+      ? `daily ${amount(money, apiKey, 'budget_daily')}`
+      : null,
+    money.amount(apiKey, 'budget_monthly') != null
+      ? `monthly ${amount(money, apiKey, 'budget_monthly')}`
+      : null,
     apiKey.allowed_models != null ? `${apiKey.allowed_models.length} model(s)` : null,
   ].filter(Boolean);
   return (
@@ -42,7 +65,7 @@ function KeyLine({ apiKey }: { apiKey: ApiKeyListItem }) {
         )}
       </span>
       <span className="tabular-nums text-gray-500">
-        {usd(apiKey.spent_today_usd ?? 0)} today
+        {amount(money, apiKey, 'spent_today')} today
         {limits.length > 0 && ` · ${limits.join(' · ')}`}
       </span>
     </li>
@@ -66,6 +89,7 @@ function KeyList({ keys }: { keys: ApiKeyListItem[] }) {
  * manages them, and the account quota is set in the account settings above.
  */
 export function UserProjects({ userId }: { userId: string }) {
+  const money = useMoney();
   const [data, setData] = useState<AdminUserProjects | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -108,9 +132,9 @@ export function UserProjects({ userId }: { userId: string }) {
                 )}
               </span>
               <span className="text-[12px] tabular-nums text-gray-500">
-                {spend(project.spent_today_usd, project.budget_daily_usd, 'today')}
+                {spend(money, project, 'today', 'today')}
                 {' · '}
-                {spend(project.spent_month_usd, project.budget_monthly_usd, 'this month')}
+                {spend(money, project, 'month', 'this month')}
                 {limits.length > 0 && ` · ${limits.join(' · ')}`}
               </span>
             </div>

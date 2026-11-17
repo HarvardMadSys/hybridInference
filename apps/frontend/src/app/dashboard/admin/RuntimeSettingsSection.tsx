@@ -7,6 +7,7 @@ import { CONTROL, PANEL } from '@/components/features/admin/adminStyles';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
+import { moneyCurrency } from '@/lib/utils/money';
 
 import { validateNumericSettingInput } from './numericSettingValidation';
 import { useReportUnsaved } from './useReportUnsaved';
@@ -23,9 +24,48 @@ function settingLabel(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const QUOTA_KEY_PREFIX = 'user_daily_quota_';
+
+const isQuotaSetting = (setting: RuntimeSettingItem) => setting.key.startsWith(QUOTA_KEY_PREFIX);
+
+/**
+ * A role quota is edited as its native amount, in the setting's currency. The
+ * legacy `value` is a USD figure, so it stands in only when that currency is USD.
+ */
+function settingValue(setting: RuntimeSettingItem): unknown {
+  if (!isQuotaSetting(setting)) return setting.value;
+  return setting.amount ?? (moneyCurrency(setting) === 'USD' ? setting.value : null);
+}
+
+function settingDefault(setting: RuntimeSettingItem): unknown {
+  if (!isQuotaSetting(setting)) return setting.default_value;
+  return (
+    setting.default_amount ?? (moneyCurrency(setting) === 'USD' ? setting.default_value : null)
+  );
+}
+
+function settingBound(
+  setting: RuntimeSettingItem,
+  bound: 'min' | 'max',
+): number | null | undefined {
+  if (!isQuotaSetting(setting)) return setting[bound];
+  return (
+    setting[`${bound}_amount`] ?? (moneyCurrency(setting) === 'USD' ? setting[bound] : undefined)
+  );
+}
+
+/** A role quota in another currency than USD, whose registered description speaks of USD. */
+const isNativeQuota = (setting: RuntimeSettingItem) =>
+  isQuotaSetting(setting) && moneyCurrency(setting) !== 'USD';
+
+/** The row's description; a non-USD role quota names the currency its amount is in. */
+function settingDescription(setting: RuntimeSettingItem): string {
+  return isNativeQuota(setting) ? `Daily quota (${moneyCurrency(setting)})` : setting.description;
+}
+
 function rangeHint(setting: RuntimeSettingItem): string | null {
-  const lo = setting.min;
-  const hi = setting.max;
+  const lo = settingBound(setting, 'min');
+  const hi = settingBound(setting, 'max');
   if (lo != null && hi != null) return `${lo}–${hi}`;
   if (lo != null) return `≥ ${lo}`;
   if (hi != null) return `≤ ${hi}`;
@@ -34,8 +74,8 @@ function rangeHint(setting: RuntimeSettingItem): string | null {
 
 function validateNumeric(setting: RuntimeSettingItem, draft: string) {
   return validateNumericSettingInput(draft, {
-    min: setting.min,
-    max: setting.max,
+    min: settingBound(setting, 'min'),
+    max: settingBound(setting, 'max'),
     integer: setting.value_type === 'int',
   });
 }
@@ -92,7 +132,7 @@ export function RuntimeSettingsSection({
   const [saveError, setSaveError] = useState<string | null>(null);
 
   const savedDraft = (setting: RuntimeSettingItem) =>
-    isFlag(setting) ? !!setting.value : String(setting.value ?? '');
+    isFlag(setting) ? !!setting.value : String(settingValue(setting) ?? '');
   const draftOf = (setting: RuntimeSettingItem) => drafts[setting.key] ?? savedDraft(setting);
 
   // A value set back to what is saved is no draft, so a later refresh of the
@@ -113,7 +153,7 @@ export function RuntimeSettingsSection({
       return draft === !!setting.value ? [] : [{ setting, value: draft as boolean }];
     }
     const validated = validateNumeric(setting, String(draft));
-    if (!validated.ok || validated.value === setting.value) return [];
+    if (!validated.ok || validated.value === settingValue(setting)) return [];
     return [{ setting, value: validated.value as number }];
   });
   const invalid = settings.filter(
@@ -151,7 +191,10 @@ export function RuntimeSettingsSection({
           pending,
           ({ setting }) => setting.key,
           async ({ setting, value }) => {
-            const updated = await updateRuntimeSetting(setting.key, value);
+            // A role quota is sent with the currency its amount was read in.
+            const updated = isQuotaSetting(setting)
+              ? await updateRuntimeSetting(setting.key, value, moneyCurrency(setting))
+              : await updateRuntimeSetting(setting.key, value);
             wrote = true;
             onSaved(updated);
             setDrafts((prev) => {
@@ -187,7 +230,7 @@ export function RuntimeSettingsSection({
         >
           {settings.map((setting) => {
             const flag = isFlag(setting);
-            const isDefault = setting.value === setting.default_value;
+            const isDefault = settingValue(setting) === settingDefault(setting);
             const draft = draftOf(setting);
             const validated = flag ? null : validateNumeric(setting, String(draft));
             const hint = flag ? null : rangeHint(setting);
@@ -211,11 +254,11 @@ export function RuntimeSettingsSection({
                     )}
                   </div>
                   <p className="mt-0.5 max-w-3xl text-[12px] text-gray-500">
-                    {setting.description}
+                    {settingDescription(setting)}
                     {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
                     {!flag ? (
                       <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
+                        Default: {String(settingDefault(setting) ?? '—')}
                       </span>
                     ) : null}
                   </p>
@@ -248,8 +291,8 @@ export function RuntimeSettingsSection({
                     <input
                       type="number"
                       step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
+                      min={settingBound(setting, 'min') ?? undefined}
+                      max={settingBound(setting, 'max') ?? undefined}
                       value={String(draft)}
                       disabled={writes.busy}
                       onChange={(e) => changeDraft(setting, e.target.value)}

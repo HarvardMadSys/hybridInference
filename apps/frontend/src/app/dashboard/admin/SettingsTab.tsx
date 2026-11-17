@@ -8,6 +8,7 @@ import {
   applyRoleQuota,
   previewRoleQuotaApply,
   Role,
+  RoleQuotaApplyResult,
   RoleQuotaPreview,
 } from '@/lib/api/admin';
 import {
@@ -27,7 +28,9 @@ import {
   useConfigurationEditor,
 } from '@/components/features/admin/ConfigurationEditor';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { moneyCurrency } from '@/lib/utils/money';
 
 import { AlertMutesSection } from './AlertMutesSection';
 import { AlertSnoozeSection } from './AlertSnoozeSection';
@@ -59,6 +62,11 @@ const panelId = (key: SettingsTabKey) => `admin-settings-${key}-panel`;
 /** The key of a section that is not a configuration category. */
 function blockKey(block: Extract<SettingsBlock, { kind: 'runtime' | 'panel' }>): string {
   return block.kind === 'runtime' ? `runtime-${block.group}` : `panel-${block.panel}`;
+}
+
+/** A role quota's amount as the reader sees it, in the currency it was given in. */
+function quotaAmount(source: RoleQuotaPreview | RoleQuotaApplyResult): number | null {
+  return source.amount ?? (moneyCurrency(source) === 'USD' ? source.quota : null);
 }
 
 /** Sections that edit the configuration, and so have nothing to show without it. */
@@ -114,6 +122,7 @@ export function SettingsTab({
   initialTab?: SettingsTabKey;
   initialMissingOnly?: boolean;
 }) {
+  const money = useMoney();
   const router = useRouter();
   const pathname = usePathname();
   const editor = useConfigurationEditor({ initialMissingOnly });
@@ -224,6 +233,8 @@ export function SettingsTab({
     } finally {
       setQuotaLoadingRole(null);
     }
+    // The amount is the preview's own, in the currency the preview was given in.
+    const currency = moneyCurrency(preview);
     confirmation.request({
       title: `Apply the ${preview.role} quota to existing keys?`,
       confirmLabel: 'Apply quota',
@@ -231,15 +242,18 @@ export function SettingsTab({
       tone: 'danger',
       body: (
         <p>
-          This sets <code>quota_daily_cost_usd = ${preview.quota.toString()}</code> on{' '}
+          This sets the daily quota to{' '}
+          <strong>{money.format(quotaAmount(preview), undefined, currency)}</strong> on{' '}
           <strong>{preview.keys_affected}</strong> active API keys belonging to{' '}
           <strong>{preview.users_affected}</strong> users with role <code>{preview.role}</code>.
           Custom per-key overrides will be lost.
         </p>
       ),
       run: async () => {
-        const res = await applyRoleQuota(preview.role);
-        flashToast(`Updated ${res.keys_updated} keys for role ${preview.role} to $${res.quota}`);
+        // The native amount, applied in the currency the preview was given in.
+        const res = await applyRoleQuota(preview.role, currency);
+        const applied = money.format(quotaAmount(res), undefined, moneyCurrency(res));
+        flashToast(`Updated ${res.keys_updated} keys for role ${preview.role} to ${applied}`);
       },
     });
   };

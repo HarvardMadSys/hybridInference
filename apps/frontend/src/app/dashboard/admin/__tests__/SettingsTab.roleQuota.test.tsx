@@ -5,6 +5,23 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { EMPTY_CONFIG, openSettingsTab, renderSettings } from './settingsTabHarness';
 
+/**
+ * The harness supplies the page's providers; the accounting currency is the
+ * one thing these tests vary, so `useSiteConfig` reports it from here.
+ */
+const siteConfigState = vi.hoisted(() => ({ accountingCurrency: 'USD' as 'USD' | 'CNY' }));
+
+vi.mock('@/components/providers/SiteConfigProvider', async (importOriginal) => {
+  const { buildTimeSiteConfig } = await import('@/config/site-config');
+  return {
+    ...(await importOriginal<typeof import('@/components/providers/SiteConfigProvider')>()),
+    useSiteConfig: () => ({
+      ...buildTimeSiteConfig,
+      accounting: { currency: siteConfigState.accountingCurrency },
+    }),
+  };
+});
+
 vi.mock('next/navigation', () => ({
   usePathname: () => '/dashboard/admin/settings',
   useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
@@ -68,9 +85,36 @@ vi.mock('@/lib/api/config', async (importOriginal) => ({
 }));
 
 afterEach(() => {
+  siteConfigState.accountingCurrency = 'USD';
   cleanup();
   vi.clearAllMocks();
 });
+
+/**
+ * A CNY role quota: the native amounts (100, default 70) are what an admin
+ * reads and edits; `value` (15) and `default_value` (10) are the legacy USD
+ * figures and must not appear.
+ */
+const cnyQuotaSetting = {
+  key: 'user_daily_quota_pro',
+  currency: 'CNY' as const,
+  value: 15,
+  amount: 100,
+  value_type: 'float',
+  default_value: 10,
+  default_amount: 70,
+  description: 'Default daily USD spend quota seeded onto a pro user.',
+  min: 0,
+  min_amount: 0,
+  max: null,
+  max_amount: null,
+};
+
+/** The harness renders the page; the runtime's accounting unit comes from the state above. */
+function renderCnySettings() {
+  siteConfigState.accountingCurrency = 'CNY';
+  return renderSettings('Common');
+}
 
 describe('SettingsTab role quota', () => {
   it('renders Apply button only on quota settings and runs the confirm flow', async () => {
@@ -86,10 +130,11 @@ describe('SettingsTab role quota', () => {
     });
     expect(dialog).toHaveTextContent('42');
     expect(dialog).toHaveTextContent(/pro/i);
-    expect(api.applyRoleQuota).not.toHaveBeenCalled();
+    // The community runtime stays USD: the preview's quota, sent with its currency.
+    expect(dialog).toHaveTextContent('$250.00');
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Apply quota' }));
-    await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro'));
+    await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro', 'USD'));
     expect(api.applyRoleQuota).toHaveBeenCalledTimes(1);
   });
 
@@ -166,5 +211,97 @@ describe('SettingsTab role quota', () => {
       await screen.findByRole('dialog', { name: 'Apply the pro quota to existing keys?' }),
     ).toBeInTheDocument();
     expect(api.applyRoleQuota).not.toHaveBeenCalled();
+  });
+});
+
+describe('SettingsTab CNY role quota', () => {
+  // The extracted RuntimeSettingsSection edits in place: the native amount is
+  // the field's value, and Save writes it with the setting's currency. Quota
+  // rows sit in the "Daily Quotas" runtime group, whose title names its bar.
+  it('saves the native amount with its currency', async () => {
+    const api = await import('@/lib/api/admin');
+    vi.mocked(api.listRuntimeSettings).mockResolvedValueOnce({ settings: [cnyQuotaSetting] });
+    vi.mocked(api.updateRuntimeSetting).mockResolvedValueOnce({
+      ...cnyQuotaSetting,
+      value: 18,
+      amount: 120,
+    });
+    renderCnySettings();
+
+    // The native amount, default and currency, never the USD figures.
+    const field = await screen.findByLabelText('user_daily_quota_pro value');
+    expect(field).toHaveValue(100);
+    expect(screen.getByText('Daily quota (CNY)')).toBeInTheDocument();
+    expect(screen.getByText('Default: 70')).toBeInTheDocument();
+    // Nothing to save until the native amount changes.
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to Daily Quotas' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.change(field, { target: { value: '120' } });
+    expect(api.updateRuntimeSetting).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to Daily Quotas' }));
+
+    await waitFor(() =>
+      expect(api.updateRuntimeSetting).toHaveBeenCalledWith('user_daily_quota_pro', 120, 'CNY'),
+    );
+    expect(api.updateRuntimeSetting).toHaveBeenCalledTimes(1);
+    // The native amount is what is sent; the legacy USD value is never written.
+    expect(vi.mocked(api.updateRuntimeSetting).mock.calls[0][1]).toBe(120);
+    // The saved row shows the native amount the server returned, not its USD value.
+    await waitFor(() =>
+      expect(screen.getByLabelText('user_daily_quota_pro value')).toHaveValue(120),
+    );
+    expect(await screen.findByText('user_daily_quota_pro set to 120')).toBeInTheDocument();
+  });
+
+  it('keeps the native draft until Discard, which restores the saved amount', async () => {
+    const api = await import('@/lib/api/admin');
+    vi.mocked(api.listRuntimeSettings).mockResolvedValueOnce({ settings: [cnyQuotaSetting] });
+    renderCnySettings();
+
+    const field = await screen.findByLabelText('user_daily_quota_pro value');
+    fireEvent.change(field, { target: { value: '130' } });
+    expect(field).toHaveValue(130);
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Daily Quotas' }));
+    expect(screen.getByLabelText('user_daily_quota_pro value')).toHaveValue(100);
+    expect(
+      screen.queryByRole('button', { name: 'Save changes to Daily Quotas' }),
+    ).not.toBeInTheDocument();
+    expect(api.updateRuntimeSetting).not.toHaveBeenCalled();
+  });
+
+  it('applies the role quota in the currency the preview gave', async () => {
+    const api = await import('@/lib/api/admin');
+    vi.mocked(api.listRuntimeSettings).mockResolvedValueOnce({ settings: [cnyQuotaSetting] });
+    vi.mocked(api.previewRoleQuotaApply).mockResolvedValueOnce({
+      role: 'pro',
+      currency: 'CNY',
+      quota: 15,
+      amount: 100,
+      keys_affected: 42,
+      users_affected: 38,
+    });
+    vi.mocked(api.applyRoleQuota).mockResolvedValueOnce({
+      role: 'pro',
+      currency: 'CNY',
+      quota: 15,
+      amount: 100,
+      keys_updated: 42,
+    });
+    renderCnySettings();
+
+    fireEvent.click(await screen.findByRole('button', { name: /apply to existing users/i }));
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Apply the pro quota to existing keys?',
+    });
+    expect(dialog).toHaveTextContent('¥100.00');
+    expect(dialog).not.toHaveTextContent('$');
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Apply quota' }));
+    await waitFor(() => expect(api.applyRoleQuota).toHaveBeenCalledWith('pro', 'CNY'));
+    expect(await screen.findByText('Updated 42 keys for role pro to ¥100.00')).toBeInTheDocument();
   });
 });

@@ -3,6 +3,8 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import { ProviderRoutesTab } from './ProviderRoutesTab';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ refresh: vi.fn() }) }));
@@ -160,6 +162,8 @@ const discoveredOpenRouterProviderOptions = [
   { provider: 'chutes', label: 'Chutes' },
   { provider: 'parasail', label: 'Parasail' },
 ];
+
+const CNY_ACCOUNTING = { currency: 'CNY' as const };
 
 function fillRuntimeModelPricing() {
   fireEvent.change(screen.getByLabelText('Prompt $/M'), { target: { value: '0.14' } });
@@ -2324,7 +2328,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },
@@ -2423,7 +2428,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: 2,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },
@@ -2499,7 +2505,8 @@ describe('ProviderRoutesTab', () => {
         quota_limit: null,
         concurrency_limit: null,
         weight: 1,
-        pricing: {
+        currency: 'USD',
+        prices: {
           prompt: '0.14',
           completion: '0.28',
         },
@@ -2508,6 +2515,73 @@ describe('ProviderRoutesTab', () => {
     });
     expect(createProviderRouteModel).not.toHaveBeenCalled();
     expect(await screen.findByRole('button', { name: 'Verified' })).toHaveClass('bg-emerald-600');
+  });
+
+  it('creates a runtime model with native CNY prices, sent in CNY', async () => {
+    vi.mocked(listProviderRoutes).mockResolvedValue({
+      provider_options: providerOptions,
+      openrouter_provider_options: openRouterProviderOptions,
+      routes: [route],
+    });
+    vi.mocked(listProviderKeys).mockResolvedValue({ provider: 'openrouter', keys: [] });
+    vi.mocked(createProviderRouteModel).mockResolvedValue({
+      ...route,
+      model_id: 'deepseek-v4-flash',
+      strategy: 'fixed',
+      route_id: 'deepseek-v4-flash:openrouter-api',
+      route_type: 'on_demand',
+      provider: 'openrouter',
+      upstream_provider: 'openrouter',
+      key_provider: 'openrouter',
+      base_url: 'https://openrouter.ai/api/v1',
+      provider_model_id: 'deepseek/deepseek-v4-flash',
+      endpoint_id: 'deepseek-v4-flash:openrouter-api',
+      source: 'runtime' as const,
+    });
+
+    render(
+      <SiteConfigProvider initialConfig={{ ...buildTimeSiteConfig, accounting: CNY_ACCOUNTING }}>
+        <ProviderRoutesTab />
+      </SiteConfigProvider>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Create model' }));
+    fireEvent.change(screen.getByLabelText('Model ID'), {
+      target: { value: 'deepseek-v4-flash' },
+    });
+    fireEvent.change(screen.getByLabelText('Provider model ID'), {
+      target: { value: 'deepseek/deepseek-v4-flash' },
+    });
+    // The runtime is CNY, so the form asks for native prices, not USD ones.
+    expect(screen.queryByLabelText('Prompt $/M')).not.toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText('Prompt ¥/M'), { target: { value: '1' } });
+    fireEvent.change(screen.getByLabelText('Completion ¥/M'), { target: { value: '4' } });
+    fireEvent.change(screen.getByLabelText('Cache read ¥/M'), { target: { value: '0.02' } });
+    fillRuntimeModelCapabilities();
+
+    // Typing writes nothing; the create form writes in place on Create, with
+    // no separate review dialog stacked over it.
+    expect(createProviderRouteModel).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole('dialog', { name: 'Create model deepseek-v4-flash?' }),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }));
+
+    await waitFor(() => expect(createProviderRouteModel).toHaveBeenCalledTimes(1));
+    const payload = vi.mocked(createProviderRouteModel).mock.calls[0][0];
+    expect(payload).toMatchObject({
+      model_id: 'deepseek-v4-flash',
+      currency: 'CNY',
+      prices: { prompt: '1', completion: '4', input_cache_reads: '0.02' },
+      capabilities: RUNTIME_MODEL_CAPABILITIES,
+    });
+    // The native prices are what is sent: no legacy USD tariff is derived from them.
+    expect(payload).not.toHaveProperty('pricing');
+    // The form closes on success, and the new model is routed.
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Create model' })).not.toBeInTheDocument(),
+    );
+    expect(await screen.findByText('deepseek-v4-flash')).toBeInTheDocument();
   });
 
   it('threads create-model visibility into the payload', async () => {
@@ -3847,10 +3921,15 @@ describe('ProviderRoutesTab', () => {
         expect.objectContaining({
           model_id: 'deepseek-v4-flash',
           required_role: 'admin',
-          pricing: { prompt: '0.14', completion: '0.28' },
+          // A USD runtime sends its native prices with their currency: the
+          // backend derives the legacy USD tariff itself.
+          currency: 'USD',
+          prices: { prompt: '0.14', completion: '0.28' },
           capabilities: RUNTIME_MODEL_CAPABILITIES,
         }),
       );
+      // The native amount is sent once, never both native and legacy fields.
+      expect(vi.mocked(createProviderRouteModel).mock.calls[0][0]).not.toHaveProperty('pricing');
       expect(screen.getByLabelText('Model ID')).toHaveValue('deepseek-v4-flash');
       expect(screen.getByLabelText('Provider model ID')).toHaveValue('deepseek/deepseek-v4-flash');
 

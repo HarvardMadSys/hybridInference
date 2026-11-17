@@ -27,6 +27,8 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => ({ appName: 'Test App' }),
+  // No accounting section: the console's USD default.
+  useSiteConfig: () => ({}),
 }));
 
 vi.mock('react-hot-toast', () => ({

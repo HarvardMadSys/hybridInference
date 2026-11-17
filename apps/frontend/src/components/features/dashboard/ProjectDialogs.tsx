@@ -9,7 +9,8 @@ import { InputField } from '@/components/ui/InputField';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { ModelPicker } from './ModelPicker';
 import { useT } from '@/components/providers/useT';
-import { formatUsd } from '@/lib/utils/currency';
+import { useMoney } from '@/lib/hooks/useMoney';
+import { formatMoney, moneyAmount, moneyCurrency } from '@/lib/utils/money';
 import { fill } from '@/lib/utils/interpolate';
 
 /** Which project dialog is open: a new project, one project's limits, or archiving one. */
@@ -19,36 +20,47 @@ export type ProjectDialog =
   | { mode: 'archive'; project: Project };
 
 type Translate = ReturnType<typeof useT>;
+/** Formats one of a project's money fields; `useMoney` provides the console's. */
+type Money = Pick<ReturnType<typeof useMoney>, 'value'>;
 
 /** Whether a project limits anything: a budget, a concurrency cap or a model allowlist. */
 export function projectHasLimits(project: Project): boolean {
   return (
-    project.budget_daily_usd != null ||
-    project.budget_monthly_usd != null ||
+    moneyAmount(project, 'budget_daily') != null ||
+    moneyAmount(project, 'budget_monthly') != null ||
     project.max_concurrent_requests != null ||
     project.allowed_models != null
   );
 }
 
-/** One line on what a project spent against its budgets, and what else it limits. */
-export function projectSummary(project: Project, t: Translate): string {
+/**
+ * One line on what a project spent against its budgets, and what else it limits.
+ *
+ * Amounts are the project's own: its native ledger amounts with its `currency`
+ * when it has them, else its USD fields. `money` adds the console's locale.
+ */
+export function projectSummary(project: Project, t: Translate, money?: Money): string {
+  const amount = (field: string) =>
+    money
+      ? money.value(project, field)
+      : formatMoney(moneyAmount(project, field), moneyCurrency(project));
   const today =
-    project.budget_daily_usd == null
+    moneyAmount(project, 'budget_daily') == null
       ? fill(t('dashboard.projects.spend_today', '{amount} today'), {
-          amount: formatUsd(project.spent_today_usd),
+          amount: amount('spent_today'),
         })
       : fill(t('dashboard.projects.spend_today_of', '{amount} of {budget} today'), {
-          amount: formatUsd(project.spent_today_usd),
-          budget: formatUsd(project.budget_daily_usd),
+          amount: amount('spent_today'),
+          budget: amount('budget_daily'),
         });
   const month =
-    project.budget_monthly_usd == null
+    moneyAmount(project, 'budget_monthly') == null
       ? fill(t('dashboard.projects.spend_month', '{amount} this month'), {
-          amount: formatUsd(project.spent_month_usd),
+          amount: amount('spent_month'),
         })
       : fill(t('dashboard.projects.spend_month_of', '{amount} of {budget} this month'), {
-          amount: formatUsd(project.spent_month_usd),
-          budget: formatUsd(project.budget_monthly_usd),
+          amount: amount('spent_month'),
+          budget: amount('budget_monthly'),
         });
   const parts = [today, month];
   if (project.allowed_models != null) {
@@ -75,11 +87,16 @@ function parseBudget(value: string): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
+function budgetText(value: number | null): string {
+  return value == null ? '' : String(value);
+}
+
+/** The form a dialog opens with: budgets in the project's own (ledger) currency. */
 function initialForm(project: Project | null) {
   return {
     name: project?.name ?? '',
-    daily: project?.budget_daily_usd == null ? '' : String(project.budget_daily_usd),
-    monthly: project?.budget_monthly_usd == null ? '' : String(project.budget_monthly_usd),
+    daily: budgetText(moneyAmount(project, 'budget_daily')),
+    monthly: budgetText(moneyAmount(project, 'budget_monthly')),
     concurrency:
       project?.max_concurrent_requests == null ? '' : String(project.max_concurrent_requests),
     models: (project?.allowed_models ?? null) as string[] | null,
@@ -94,6 +111,9 @@ function ProjectEditDialog({
   onClose: () => void;
 }): JSX.Element {
   const t = useT();
+  const money = useMoney();
+  // The ledger's own currency, as the deployment reports it (/site-config).
+  const native = money.currency !== 'USD';
   const toast = useAccountToast();
   const createMutation = useCreateProject();
   const updateMutation = useUpdateProject();
@@ -132,10 +152,22 @@ function ProjectEditDialog({
       );
       return;
     }
+    // Budgets are typed and sent in the ledger currency: the native amount,
+    // with its currency so the server refuses a stale page, on a non-USD
+    // ledger; the `*_usd` field on a USD one.
+    const budgets: ProjectUpdate = native
+      ? {
+          budget_daily: parseBudget(form.daily),
+          budget_monthly: parseBudget(form.monthly),
+          currency: money.currency,
+        }
+      : {
+          budget_daily_usd: parseBudget(form.daily),
+          budget_monthly_usd: parseBudget(form.monthly),
+        };
     const changes: ProjectUpdate = {
       name,
-      budget_daily_usd: parseBudget(form.daily),
-      budget_monthly_usd: parseBudget(form.monthly),
+      ...budgets,
       max_concurrent_requests: concurrency,
       allowed_models: form.models === null ? null : [...form.models].sort(),
     };
@@ -202,7 +234,9 @@ function ProjectEditDialog({
         />
         <div className="grid grid-cols-2 gap-3">
           <InputField
-            label={t('dashboard.projects.daily_label', 'Daily budget (USD)')}
+            label={fill(t('dashboard.projects.daily_label', 'Daily budget ({currency})'), {
+              currency: money.currency,
+            })}
             value={form.daily}
             onChange={(event) => setForm({ ...form, daily: event.target.value })}
             inputMode="decimal"
@@ -210,7 +244,9 @@ function ProjectEditDialog({
             disabled={busy}
           />
           <InputField
-            label={t('dashboard.projects.monthly_label', 'Monthly budget (USD)')}
+            label={fill(t('dashboard.projects.monthly_label', 'Monthly budget ({currency})'), {
+              currency: money.currency,
+            })}
             value={form.monthly}
             onChange={(event) => setForm({ ...form, monthly: event.target.value })}
             inputMode="decimal"

@@ -30,6 +30,7 @@ import {
   updateProviderRoute,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
+  updateRuntimeSetting,
   verifyProviderRoute,
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
@@ -101,6 +102,39 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+
+  it('applyRoleQuota sends the currency of a native amount', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ role: 'pro', currency: 'CNY', quota: 15, amount: 100, keys_updated: 5 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    await applyRoleQuota('pro', 'CNY');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({ role: 'pro', currency: 'CNY' });
+  });
+});
+
+describe('runtime setting client', () => {
+  it('updateRuntimeSetting sends only the value unless a currency is given', async () => {
+    const answer = () =>
+      new Response(JSON.stringify({ key: 'user_daily_quota_pro', value: 15 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    fetchMock.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
+
+    await updateRuntimeSetting('max_concurrent_requests_per_user', 5);
+    await updateRuntimeSetting('user_daily_quota_pro', 120, 'CNY');
+
+    const [firstUrl, first] = fetchMock.mock.calls[0];
+    expect(String(firstUrl)).toContain('/admin/settings/max_concurrent_requests_per_user');
+    expect(first.method).toBe('PATCH');
+    expect(JSON.parse(first.body as string)).toEqual({ value: 5 });
+    const [, second] = fetchMock.mock.calls[1];
+    expect(JSON.parse(second.body as string)).toEqual({ value: 120, currency: 'CNY' });
   });
 });
 

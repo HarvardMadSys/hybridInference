@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useCallback, useEffect, useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
@@ -47,6 +48,7 @@ function listLabels(labels: string[]): string {
 }
 
 export default function UsersTab() {
+  const { currency } = useMoney();
   const toast = useAccountToast();
   // Filter state — initialized from URL on mount so reload + shared links
   // preserve filters. `applyFilterState` (below) keeps state and URL in sync.
@@ -54,7 +56,7 @@ export default function UsersTab() {
   const pathname = usePathname();
   const searchParams = useSearchParams();
   const [filterState, setFilterState] = useState<FilterState>(() =>
-    filterStateFromUrl(searchParams),
+    filterStateFromUrl(searchParams, currency),
   );
   const [density, setDensity] = useState<Density>('comfortable');
 
@@ -69,20 +71,20 @@ export default function UsersTab() {
   // the URL even when the user navigates history without going through
   // applyFilterState.
   useEffect(() => {
-    setFilterState(filterStateFromUrl(searchParams));
+    setFilterState(filterStateFromUrl(searchParams, currency));
     // Filters changed (incl. browser back/forward) — return to the first page
     // so the user isn't stranded on an out-of-range offset.
     setPage(0);
-  }, [searchParams]);
+  }, [searchParams, currency]);
 
   const applyFilterState = useCallback(
     (next: FilterState) => {
       setFilterState(next);
       setPage(0);
-      const qs = filterStateToUrl(next);
+      const qs = filterStateToUrl(next, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
-    [pathname, router],
+    [pathname, router, currency],
   );
 
   // Persisted density
