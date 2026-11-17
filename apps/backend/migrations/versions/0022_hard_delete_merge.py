@@ -15,6 +15,7 @@ revision = "0022_hard_delete_merge"
 down_revision = ("0016_hard_delete_claim_lease", "0021_sso_identities")
 branch_labels = None
 depends_on = None
+compatibility = "expand"
 
 
 def upgrade() -> None:
