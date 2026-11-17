@@ -43,6 +43,7 @@ from serving.config.settings import (
     get_settings,
     parse_provider_route_types,
 )
+from serving.http import UpstreamRedirectRefused, probe_session
 from serving.model_effort_capabilities import adapter_effort_domain
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -86,7 +87,7 @@ from serving.servers.routewise_compat import (
 from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
-from serving.utils.admin_upstreams import upstream_refusal
+from serving.utils.admin_upstreams import admin_upstream_socket, upstream_refusal
 from serving.utils.ip_classification import parse_ip
 from serving.utils.logging import get_logger
 from serving.utils.metadata_addresses import is_metadata_hostname
@@ -3909,6 +3910,13 @@ def _verification_error_detail(exc: BaseException, *, api_key: str | None = None
     prefix = "Provider verification failed"
     if isinstance(exc, asyncio.TimeoutError):
         return f"Provider verification timed out after {VERIFY_TIMEOUT_SEC:.0f}s"
+    if isinstance(exc, UpstreamRedirectRefused):
+        # Not followed, and where it points is not shown: it may name an
+        # internal address the administrator never typed.
+        return (
+            f"Provider answered with a redirect (HTTP {exc.status}), which verification does "
+            "not follow. Use the Base URL it redirects to."
+        )
     if isinstance(exc, aiohttp.ClientResponseError):
         message = error_message(getattr(exc, "error_body", ""), secret=api_key)
         return f"{prefix} with HTTP {exc.status}" + (f": {message}" if message else "")
@@ -3920,16 +3928,27 @@ def _verification_error_detail(exc: BaseException, *, api_key: str | None = None
 
 
 async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCandidate) -> None:
-    """Send a minimal upstream request before accepting a route target change."""
+    """Send a minimal upstream request before accepting a route target change.
+
+    The request runs in a probe session of its own (:func:`serving.http.probe_session`):
+    each socket is opened through :func:`admin_upstream_socket`, so a name that
+    passed ``_validate_base_url`` and now resolves to a refused address --
+    metadata always, private or loopback under
+    ``ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`` -- is refused when it connects;
+    no pooled connection is reused; and a redirect is reported, not followed,
+    so a validated host cannot send the probe somewhere it was never checked.
+    Inference to saved routes keeps the shared session.
+    """
     try:
-        await asyncio.wait_for(
-            update.adapter.chat_completion(
-                [{"role": "user", "content": "ping"}],
-                max_tokens=1,
-                temperature=0,
-            ),
-            timeout=VERIFY_TIMEOUT_SEC,
-        )
+        async with probe_session(admin_upstream_socket):
+            await asyncio.wait_for(
+                update.adapter.chat_completion(
+                    [{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0,
+                ),
+                timeout=VERIFY_TIMEOUT_SEC,
+            )
     except Exception as exc:
         api_key = getattr(getattr(update.adapter, "config", None), "api_key", None)
         detail = _verification_error_detail(
