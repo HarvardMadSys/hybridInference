@@ -22,6 +22,7 @@ from routing.streaming import (
 )
 from routing.telemetry import failed_attempt, routing_chunk
 from serving.adapters.base import BaseAdapter
+from serving.observability import detached_tasks
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
@@ -258,6 +259,7 @@ class HedgedAdapter(BaseAdapter):
                 release()
 
         task = asyncio.create_task(_close_then_release())
+        detached_tasks.track(task, name="hedge_cleanup")
         self._stream_primary_cleanup_task = task
         task.add_done_callback(_consume_task_result)
 
@@ -315,6 +317,7 @@ class HedgedAdapter(BaseAdapter):
                 close_generator=close_generator,
             )
         )
+        detached_tasks.track(task, name="hedge_cleanup")
         self._stream_backup_cleanup_task = task
         task.add_done_callback(_consume_task_result)
 
@@ -866,7 +869,7 @@ async def _safe_aclose(gen: AsyncGenerator[Any, None]) -> None:
     must not abort the winning stream.  A cancellation delivered to this
     task, however, remains observable to the caller.
     """
-    close_task = asyncio.ensure_future(gen.aclose())
+    close_task = detached_tasks.track(asyncio.ensure_future(gen.aclose()), name="hedge_cleanup")
     try:
         await asyncio.shield(close_task)
     except asyncio.CancelledError:

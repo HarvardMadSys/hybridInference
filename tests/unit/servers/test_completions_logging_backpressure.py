@@ -705,3 +705,18 @@ async def test_messages_stream_log_survives_shutdown_before_store_cleanup():
     assert store.log_request.await_count == 0
     await cl.stop()
     assert store.log_request.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_row_whose_write_failed_is_counted_for_the_handoff():
+    """Never written and never retried: the release handoff must not see it as done."""
+    store = MagicMock()
+    store.log_request = AsyncMock(side_effect=[RuntimeError("db down"), None])
+    cl = CompletionsLogger(log_store=store)
+
+    cl.schedule_log("req-1", {"request_id": "req-1"})
+    cl.schedule_log("req-2", {"request_id": "req-2"})
+    await _wait_for_writes(store, 2)
+    await cl.stop()
+
+    assert cl.pending() == {"queued": 0, "writing": 0, "dropped": 0, "failed": 1, "finished": True}

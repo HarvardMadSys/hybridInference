@@ -232,7 +232,7 @@ async def test_streaming_lease_is_taken_when_the_generator_runs(
     that is idle. Pinned by construction time: no lease may exist yet when the
     response object is built.
     """
-    from fastapi import responses as fastapi_responses
+    from serving.servers import streaming_response
 
     tracker = anthropic_compat_router.prefill_load
     endpoint_id = endpoint_id_for_adapter(_adapter(anthropic_compat_router))
@@ -246,14 +246,14 @@ async def test_streaming_lease_is_taken_when_the_generator_runs(
     monkeypatch.setattr(tracker, "acquire", spy_acquire)
 
     at_construction: dict = {}
-    real_cls = fastapi_responses.StreamingResponse
+    real_cls = streaming_response.ClosingStreamingResponse
 
     class _Recording(real_cls):
         def __init__(self, content, **kwargs):
             at_construction["leases"] = len(calls)
             super().__init__(content, **kwargs)
 
-    monkeypatch.setattr(fastapi_responses, "StreamingResponse", _Recording)
+    monkeypatch.setattr(streaming_response, "ClosingStreamingResponse", _Recording)
 
     async def fake_stream(self, body, request_id, usage_sink=None, extra_headers=None):
         yield b'event: message_start\ndata: {"type":"message_start"}\n\n'

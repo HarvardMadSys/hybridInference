@@ -712,3 +712,63 @@ def test_a_store_that_cannot_keep_the_shared_accounting_fails_closed(monkeypatch
     # The local mode is unaffected by the protocol.
     monkeypatch.setattr(spend_mode, "_mode", "local")
     assert isinstance(ledger_for(plain), SpendLedger)
+
+
+# -- what a release handoff reads ---------------------------------------------------
+
+
+async def test_a_handoff_sees_a_request_charged_nothing_as_settled():
+    ledger, _ = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    assert ledger.handoff_report()["finished"] is False  # still running
+    reservation.release()
+    assert await ledger.flush(5)
+
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"], report["unconfirmed_usd"]) == (True, True, 0)
+
+
+async def test_a_handoff_sees_a_quarantined_reservation_as_unconfirmed():
+    ledger, backend = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.50)
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    reservation.release()
+    assert await ledger.flush(5)
+    assert reservation.state == "quarantined"
+
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"]) == (True, False)
+    assert (report["unconfirmed_reservations"], report["unconfirmed_usd"]) == (1, 0.5)
+
+
+@pytest.mark.parametrize(
+    ("answer", "confirmed"),
+    [("retired", True), ("erased", True), ("missing", False)],
+)
+async def test_a_handoff_sees_an_unaccounted_reservation_as_unconfirmed(answer, confirmed):
+    ledger, backend = _ledger()
+    reservation, _ = await ledger.admit(_check(ledger), 0.30)
+    with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
+        ledger.record(USER, 0.50)
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    backend.quarantine_answer = answer
+    reservation.release()
+    assert await ledger.flush(5)
+
+    report = ledger.handoff_report()
+    assert report["finished"] is True
+    assert report["confirmed"] is confirmed
+
+
+async def test_a_handoff_sees_a_refused_plain_increment_as_unconfirmed():
+    ledger, backend = _ledger()
+    ledger.record(USER, 0.40)  # no reservation: a plain increment
+    backend.fail_settle = asyncpg.exceptions.NumericValueOutOfRangeError("numeric field overflow")
+    assert await ledger.flush(5)
+    backend.fail_settle = None
+
+    report = ledger.handoff_report()
+    assert report["unconfirmed_increments"] == 1
+    assert (report["finished"], report["confirmed"]) == (True, False)

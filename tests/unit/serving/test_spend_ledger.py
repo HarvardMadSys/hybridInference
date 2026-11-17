@@ -669,3 +669,43 @@ async def test_project_headroom_caps_a_large_reservation():
         == "project"
     )
     reservation.release()
+
+
+# -- what a release handoff reads ---------------------------------------------------
+
+
+async def test_a_handoff_sees_written_costs_as_confirmed_and_nothing_charged_as_nothing():
+    ledger = SpendLedger(_AtomicStore())
+    assert ledger.record("u1", 0.0) is None  # a request that cost nothing
+    assert ledger.handoff_report()["confirmed"] is True
+
+    ledger.record("u1", 0.5)
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"], report["owed_requests"]) == (False, True, 1)
+    assert await ledger.flush()
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"]) == (True, True)
+
+
+async def test_a_handoff_sees_an_unknown_outcome_as_unconfirmed_for_good():
+    store = _AtomicStore()
+    store.fail_next = [CostWriteOutcomeUnknown(42)]
+    ledger = SpendLedger(store)
+    await asyncio.wait({ledger.record("u1", 0.5)})
+    assert await ledger.flush()
+
+    report = ledger.handoff_report()
+    assert report["finished"] is True  # nothing left to write: waiting changes nothing
+    assert report["confirmed"] is False
+    assert (report["unconfirmed_requests"], report["unconfirmed_usd"]) == (1, 0.5)
+
+
+async def test_a_handoff_sees_a_refused_cost_as_unconfirmed(alerts):
+    store = _Counters()
+    store.counters[("full", utc_day())] = _COUNTER_MAX
+    ledger = SpendLedger(store)
+    await asyncio.wait({ledger.record("full", 0.25)})
+
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"]) == (True, False)
+    assert (report["refused_requests"], report["unconfirmed_usd"]) == (1, 0.25)

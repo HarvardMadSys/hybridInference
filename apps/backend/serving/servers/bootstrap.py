@@ -2020,6 +2020,12 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Where a release handoff stood, for its record: a process sealed before
+    # its stop has nothing in flight (serving/servers/handoff.py).
+    from serving.servers import handoff
+
+    handoff.log_at_shutdown()
+
     # The batch worker first: its in-flight requests run through the whole
     # serving stack (router, pricing, stores), so it stops before any of that
     # is torn down.

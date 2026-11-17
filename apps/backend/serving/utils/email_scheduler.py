@@ -21,6 +21,8 @@ logger = get_logger(__name__)
 _scheduler: AsyncIOScheduler | None = None
 _db_pool: asyncpg.Pool | None = None
 _background_tasks: set[asyncio.Task] = set()
+#: Whether :func:`pause_jobs` paused the scheduler.
+_paused = False
 
 BATCH_SIZE = 50
 BATCH_DELAY_SECONDS = 1.0
@@ -28,9 +30,12 @@ BATCH_DELAY_SECONDS = 1.0
 
 def _spawn_background(coro) -> None:
     """Create an asyncio task and hold a reference until done."""
+    from serving.observability.detached_tasks import track
+
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+    track(task, name="broadcast")
 
 
 def start_scheduler(db_pool: asyncpg.Pool) -> None:
@@ -47,11 +52,55 @@ def start_scheduler(db_pool: asyncpg.Pool) -> None:
 
 def stop_scheduler() -> None:
     """Shut down APScheduler gracefully."""
-    global _scheduler
+    global _scheduler, _paused
     if _scheduler and _scheduler.running:
         _scheduler.shutdown(wait=False)
         logger.info("Broadcast email scheduler stopped")
     _scheduler = None
+    _paused = False
+
+
+def pause_jobs() -> None:
+    """Run no scheduled job in this process until :func:`resume_jobs`.
+
+    The jobs on this scheduler alert on and roll up the whole deployment, so
+    while another process runs them (a release handoff), this one must not
+    send the same alerts. A job already running goes on to its end
+    (:func:`running_jobs` counts it).
+    """
+    global _paused
+    if _scheduler is not None and _scheduler.running and not _paused:
+        _scheduler.pause()
+        _paused = True
+        logger.info("Scheduled jobs paused in this process")
+
+
+def resume_jobs() -> None:
+    """Run scheduled jobs again after :func:`pause_jobs`.
+
+    A broadcast that fell due during the pause would be skipped as missed, so
+    the scheduled ones are looked up again, and a due one is sent now (its
+    claim makes sure only one process sends it).
+    """
+    global _paused
+    if _scheduler is None or not _paused:
+        return
+    _paused = False
+    _scheduler.resume()
+    logger.info("Scheduled jobs resumed in this process")
+    if _db_pool is not None:
+        _spawn_background(rehydrate_scheduled_broadcasts())
+
+
+def running_jobs() -> int:
+    """Scheduled jobs and broadcasts running in this process now."""
+    count = sum(1 for task in _background_tasks if not task.done())
+    scheduler = _scheduler
+    if scheduler is not None:
+        for executor in (getattr(scheduler, "_executors", None) or {}).values():
+            pending = getattr(executor, "_pending_futures", None) or ()
+            count += sum(1 for future in pending if not future.done())
+    return count
 
 
 def get_scheduler() -> AsyncIOScheduler | None:

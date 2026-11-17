@@ -52,6 +52,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
+from serving.observability import detached_tasks
 from serving.observability.tracked_tasks import tracked_task
 from serving.storage.base import CostIncrement, CostWriteOutcomeUnknown
 from serving.utils import context as req_ctx
@@ -709,6 +710,34 @@ class SpendLedger:
                 continue
             self._start_write()
 
+    def handoff_report(self) -> dict[str, Any]:
+        """What this ledger still has to write, and what it never will, for a release handoff.
+
+        ``owed`` is recorded and not yet written, or being written: it is
+        written within seconds while the counters take writes (``finished``
+        when none is left). A write whose outcome is unknown is never retried
+        and a refused entry never written again: neither is confirmed in the
+        counters, and neither resolves by waiting. They make the ledger
+        unconfirmed (``confirmed`` false) for as long as this process lives,
+        which is what keeps it from being sealed and stopped as if its books
+        were complete. Only costs that were recorded count: a request that
+        cost nothing was never recorded, and stays out of all of this.
+        """
+        owed = [*self._pending.values(), *self._writing.values()]
+        unconfirmed = [amount for _, amount in [*self._unknown, *self._refused]]
+        return {
+            "mode": "local",
+            "owed_usd": round(sum(a.cost for a in owed), 6),
+            "owed_requests": sum(a.requests for a in owed),
+            "writing": self._writer is not None,
+            "unknown_requests": sum(a.requests for _, a in self._unknown),
+            "refused_requests": sum(a.requests for _, a in self._refused),
+            "unconfirmed_usd": round(sum(a.cost for a in unconfirmed), 6),
+            "unconfirmed_requests": sum(a.requests for a in unconfirmed),
+            "finished": not owed and self._writer is None,
+            "confirmed": not unconfirmed,
+        }
+
     def unwritten(self) -> tuple[float, int]:
         """Costs recorded and not known written (dollars, requests), for shutdown's report.
 
@@ -917,6 +946,7 @@ def _send_alert(send: Callable[[Any], Awaitable[Any]]) -> None:
     task = loop.create_task(run())
     _ALERTS.add(task)
     task.add_done_callback(_ALERTS.discard)
+    detached_tasks.track(task, name="alert_send")
 
 
 # Per store, weakly: a store that goes away (tests make many) takes its
@@ -954,6 +984,18 @@ def ledger_for(store: Any) -> Any:
         if pinned is None or pinned[0] is not store:
             pinned = _PINNED[id(store)] = (store, SpendLedger(store))
         return pinned[1]
+
+
+def handoff_report() -> list[dict[str, Any]]:
+    """Every ledger's :meth:`SpendLedger.handoff_report` (or the shared ledger's), now."""
+    from serving.shared_spend import ledger as shared_ledger
+
+    ledgers = [
+        *_LEDGERS.values(),
+        *(ledger for _, ledger in _PINNED.values()),
+        *shared_ledger.all_ledgers(),
+    ]
+    return [ledger.handoff_report() for ledger in ledgers]
 
 
 async def flush_all(timeout: float = 10.0) -> None:
