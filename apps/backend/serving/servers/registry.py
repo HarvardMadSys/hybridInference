@@ -675,7 +675,7 @@ def _build_adapter(kind: str, cfg: dict[str, Any]):
             cfg = {**cfg, "provider_profile": "kimi"}
         elif kind == "minimax":
             cfg = {**cfg, "provider_profile": "minimax"}
-    elif kind == "vllm":
+    if kind == "vllm":
         cfg = {**cfg, "vllm_structured_outputs": True}
 
     # Request upstream usage in the stream so cached tokens, and completion

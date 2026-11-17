@@ -7,6 +7,7 @@ import pytest
 from routing.routers import FixedRouter
 from routing.routewise.router import ProviderType, RouteWiseRouter
 from serving.servers.registry import (
+    _build_adapter,
     _endpoint_identity_publishable,
     _make_adapter,
     _make_provider_id,
@@ -132,6 +133,65 @@ def test_minimax_routes_request_stream_usage() -> None:
 
     assert adapter.config.include_usage_in_stream is True
     assert adapter.config.provider_profile == "minimax"
+
+
+@pytest.mark.parametrize("provider_profile", [None, "custom"])
+def test_vllm_structured_outputs_default_is_independent_of_provider_profile(provider_profile):
+    cfg = {
+        "id": "local-model",
+        "name": "Local model",
+        "provider": "vllm",
+        "base_url": "http://localhost:8000/v1",
+    }
+    if provider_profile is not None:
+        cfg["provider_profile"] = provider_profile
+
+    adapter = _make_adapter("vllm", cfg)
+
+    assert adapter.config.vllm_structured_outputs is True
+
+
+def test_dedicated_adapter_profile_defaults_are_preserved():
+    zai = _make_adapter(
+        "zai",
+        {"id": "glm", "name": "GLM", "provider": "zai", "base_url": "https://api.z.ai/v4"},
+    )
+    openrouter = _make_adapter(
+        "openrouter",
+        {
+            "id": "routed-model",
+            "name": "Routed model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+
+    assert zai.config.provider_profile == "zai"
+    assert zai.config.chat_path == "/chat/completions"
+    assert openrouter.config.provider_profile == "openrouter"
+
+
+def test_registered_adapter_factory_takes_precedence(monkeypatch):
+    from serving.servers import registry
+
+    expected = object()
+    calls = []
+
+    def factory(config):
+        calls.append(config)
+        return expected
+
+    monkeypatch.setitem(registry.ADAPTER_FACTORIES, "vllm", factory)
+
+    result = _build_adapter(
+        "vllm",
+        {"id": "local-model", "provider": "vllm", "base_url": "http://localhost:8000/v1"},
+    )
+
+    assert result is expected
+    assert calls == [
+        {"id": "local-model", "provider": "vllm", "base_url": "http://localhost:8000/v1"}
+    ]
 
 
 @pytest.mark.parametrize(
