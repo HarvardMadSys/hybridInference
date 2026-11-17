@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import math
 import re
@@ -87,8 +86,9 @@ from serving.servers.routewise_compat import (
 from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
+from serving.utils.ip_classification import parse_ip
 from serving.utils.logging import get_logger
-from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
+from serving.utils.metadata_addresses import is_metadata_address, is_metadata_hostname
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -1700,17 +1700,18 @@ async def _validate_base_url(base_url: str) -> str:
         raise HTTPException(status_code=422, detail="base_url must use http or https")
 
     # Admins are trusted to point a route at any upstream, plain-http and
-    # private hosts included (self-hosted engines, on-prem gateways). Only cloud
-    # instance metadata endpoints are refused: no inference upstream lives there,
-    # and they hand out the host's own credentials. This check gives the admin a
-    # clear error; the connection itself is guarded again at connect time (see
-    # serving.utils.metadata_addresses), since the name may resolve differently.
+    # private hosts included (self-hosted engines, on-prem gateways). Cloud
+    # instance metadata endpoints are refused in every spelling, IPv4 carried
+    # in IPv6 included: no inference upstream lives there, and they hand out
+    # the host's own credentials. This check gives the admin a clear
+    # error; the connection itself is guarded again at connect time, since the
+    # name may resolve differently.
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in METADATA_HOSTNAMES:
+    if is_metadata_hostname(hostname):
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
 
     try:
-        ip = ipaddress.ip_address(hostname)
+        addresses = [str(parse_ip(hostname))]
     except ValueError:
         try:
             resolved = await asyncio.wait_for(
@@ -1732,25 +1733,18 @@ async def _validate_base_url(base_url: str) -> str:
                 status_code=422,
                 detail="base_url host could not be resolved",
             ) from exc
+        addresses = [str(result[4][0]) for result in resolved]
 
-        for result in resolved:
-            address = result[4][0]
-            try:
-                resolved_ip = ipaddress.ip_address(address)
-            except ValueError:
-                raise HTTPException(
-                    status_code=422,
-                    detail="base_url host resolved to an invalid address",
-                ) from None
-            if is_metadata_address(resolved_ip):
-                raise HTTPException(
-                    status_code=422,
-                    detail="base_url host is not allowed",
-                ) from None
-        return cleaned
-
-    if is_metadata_address(ip):
-        raise HTTPException(status_code=422, detail="base_url host is not allowed")
+    for address in addresses:
+        try:
+            refused = is_metadata_address(address)
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host resolved to an invalid address",
+            ) from None
+        if refused:
+            raise HTTPException(status_code=422, detail="base_url host is not allowed")
     return cleaned
 
 

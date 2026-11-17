@@ -48,6 +48,17 @@ async def _refused(url: str) -> str:
         "http://[fe80::1]/v1",
         "http://[::ffff:169.254.169.254]/latest",  # IPv4-mapped
         "http://2852039166/latest",  # 169.254.169.254 as one integer
+        # IPv4 carried in IPv6 that Python calls global and does not "map".
+        "http://[::169.254.169.254]/latest",  # IPv4-compatible
+        "http://[::a9fe:a9fe]/latest",
+        "http://[::ffff:0:169.254.169.254]/latest",  # IPv4-translated
+        "http://[64:ff9b::169.254.169.254]/latest",  # NAT64 well-known prefix
+        "http://[64:ff9b::169.254.0.23]/meta-data",  # NAT64 to Tencent Cloud
+        "http://[64:ff9b:1::a9fe:a9fe]/latest",  # RFC 8215 local-use NAT64, /96
+        "http://[64:ff9b:1:a9fe:a9:fe00::]/latest",  # local-use NAT64, /48 layout
+        "http://[2002:a9fe:a9fe::1]/latest",  # 6to4
+        "http://[64:ff9b::6464:64c8]/latest",  # NAT64 to Alibaba's 100.100.100.200
+        "http://[::169.254.169.254%25eth0]/latest",  # with a zone
     ],
 )
 async def test_a_metadata_address_is_refused_in_every_spelling(url):
@@ -173,3 +184,28 @@ async def test_a_resolver_answer_that_is_not_an_address_is_refused(monkeypatch):
         await _refused("https://odd.example.com/v1")
         == "base_url host resolved to an invalid address"
     )
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["::169.254.169.254", "64:ff9b::169.254.169.254", "2002:a9fe:a9fe::", "64:ff9b::a9fe:17"],
+)
+async def test_a_name_resolving_to_embedded_metadata_is_refused(monkeypatch, address):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, port or 443, 0, 0))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert await _refused("https://rebind.example/v1") == "base_url host is not allowed"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://[2606:4700::6810:84e5]/v1",  # public IPv6
+        "https://[64:ff9b::808:808]/v1",  # NAT64 to a public IPv4
+        "https://[2002:808:808::1]/v1",  # 6to4 of a public IPv4
+    ],
+)
+async def test_a_public_ipv6_upstream_is_accepted(url):
+    assert await provider_routes._validate_base_url(url) == url
