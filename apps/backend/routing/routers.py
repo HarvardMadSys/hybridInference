@@ -32,7 +32,11 @@ from routing.endpoint_health import (
     failed_handling_request,
     failure_may_lose_prefix_cache,
 )
-from routing.endpoints import endpoint_id_for_adapter, route_id_for_adapter
+from routing.endpoints import (
+    endpoint_id_for_adapter,
+    endpoint_publishable_for_adapter,
+    route_id_for_adapter,
+)
 from routing.engine_wait import EngineWaitExpired, FirstTokenWatch
 from routing.offload import (
     OFFLOAD_LAST_RESORT,
@@ -2850,6 +2854,13 @@ class FixedRouter:
                 }
             # Always inject endpoint_id so observation keys match latency profiles.
             resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(primary))
+            # The serving surface reads publishability from the routing
+            # contract, so every surface answers the same question the same
+            # way instead of re-deriving it from provider and base URL.
+            resp["_routing"].setdefault(
+                "endpoint_publishable",
+                endpoint_publishable_for_adapter(primary),
+            )
             if "pricing" not in resp["_routing"]:
                 resp["_routing"]["pricing"] = adapter_pricing_snapshot(execution)
             if primary_plan.reason is not None:
@@ -2999,6 +3010,10 @@ class FixedRouter:
                             "fallback": True,
                         }
                     resp["_routing"].setdefault("endpoint_id", endpoint_id_for_adapter(adapter))
+                    resp["_routing"].setdefault(
+                        "endpoint_publishable",
+                        endpoint_publishable_for_adapter(adapter),
+                    )
                     if "pricing" not in resp["_routing"]:
                         resp["_routing"]["pricing"] = adapter_pricing_snapshot(execution)
                     resp["_routing"].setdefault("failed_attempts", failed_attempts)

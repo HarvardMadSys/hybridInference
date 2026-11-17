@@ -6,7 +6,12 @@ import pytest
 
 from routing.routers import FixedRouter
 from routing.routewise.router import ProviderType, RouteWiseRouter
-from serving.servers.registry import _make_adapter, _make_provider_id, register_from_models_yaml
+from serving.servers.registry import (
+    _endpoint_identity_publishable,
+    _make_adapter,
+    _make_provider_id,
+    register_from_models_yaml,
+)
 
 # ---------------------------------------------------------------------------
 # Local endpoints — must include port to avoid collisions
@@ -36,6 +41,11 @@ def test_local_without_port_fallback() -> None:
     assert _make_provider_id("m", "sglang", "http://localhost") == "m:local"
 
 
+@pytest.mark.parametrize("kind", ["openai_compat", "staging", "vllm", "sglang", "kimi"])
+def test_generic_route_identity_is_not_publishable(kind: str) -> None:
+    assert _endpoint_identity_publishable(kind) is False
+
+
 # ---------------------------------------------------------------------------
 # Remote endpoints — unchanged behavior
 # ---------------------------------------------------------------------------
@@ -44,6 +54,32 @@ def test_local_without_port_fallback() -> None:
 def test_zai_api() -> None:
 
     assert _make_provider_id("glm-4.6", "zai", "https://api.z.ai/v4/") == "glm-4.6:zai-api"
+
+
+def test_yaml_registration_retains_publishability_metadata(tmp_path) -> None:
+    path = tmp_path / "models.yaml"
+    private_host = "gpu" + "7" + ".cluster." + "internal"
+    path.write_text(
+        f"""
+models:
+  - id: generic-model
+    name: Generic
+    provider: openai_compat
+    base_url: http://{private_host}:8000/v1
+  - id: direct-model
+    name: Direct
+    provider: zai
+    base_url: https://api.z.ai/v4/
+"""
+    )
+    fixed = FixedRouter()
+    register_from_models_yaml(fixed, path)
+
+    generic = fixed.routes["generic-model"].adapters[0][0].config
+    direct = fixed.routes["direct-model"].adapters[0][0].config
+    assert generic.endpoint_id == f"generic-model:{private_host.split('.')[0]}-api"
+    assert generic.endpoint_identity_publishable is False
+    assert direct.endpoint_identity_publishable is True
 
 
 def test_chutes_api() -> None:
