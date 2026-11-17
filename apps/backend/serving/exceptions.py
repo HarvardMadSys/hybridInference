@@ -43,6 +43,19 @@ class HardDeleteStateChanged(Exception):
     pass
 
 
+class HardDeleteAccountIneligible(HardDeleteStateChanged):
+    """The account ceased to be eligible before a hard-delete claim began."""
+
+
+class HardDeleteRecoveryAvailable(HardDeleteStateChanged):
+    """A pending hard-delete claim passed its grace and recovery is possible.
+
+    The claim's lease is older than the recovery grace period, so the server
+    may take it over — but only through an explicit operator recovery (or a
+    verified erasure fence), never as part of an ordinary retry.
+    """
+
+
 class UserFacingError(HybridInferenceError):
     """Marker base for exceptions whose message is safe to surface verbatim.
 

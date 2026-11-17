@@ -910,7 +910,9 @@ async def test_a_hard_delete_erases_the_accounts_key_counters(keys):
     )
     await store.delete_user(uid)
 
-    wiped = await store.hard_delete_user(uid, claim_token=await store.begin_hard_delete_user(uid))
+    wiped = await store.hard_delete_user(
+        uid, claim_token=(await store.begin_hard_delete_user(uid)).token
+    )
 
     assert wiped["api_key_daily_cost"] == 1
     assert (await _counters(pool, uid))[1] == []

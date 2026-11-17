@@ -89,7 +89,7 @@ async def test_lifecycle_rolls_back_when_audit_insert_fails(store, operation):
     )
     kwargs = {"actor": _ADMIN}
     if operation == "hard_delete_user":
-        kwargs["claim_token"] = await op_store.begin_hard_delete_user(_USER_ID)
+        kwargs["claim_token"] = (await op_store.begin_hard_delete_user(_USER_ID)).token
     before = await _account_state(pool)
     await _reject_audit_inserts(pool)
 
