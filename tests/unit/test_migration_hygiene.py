@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 import pytest
+from alembic.script import ScriptDirectory
 
 from migrations import MIGRATIONS_DIR
 from migrations.compat import code_chain
@@ -92,12 +93,39 @@ def compatibility_problem(source: str) -> str | None:
     return None
 
 
-def test_the_revisions_form_one_numbered_line():
+def test_the_revisions_form_one_numbered_graph():
     chain = code_chain()
     assert chain[0] == "0001_baseline"
-    assert [int(r.split("_", 1)[0]) for r in chain] == list(range(1, len(chain) + 1))
+    assert len(chain) == len(set(chain))
     assert all(re.fullmatch(r"\d{4}_[a-z0-9_]+", r) for r in chain)
     assert sorted(p.stem for p in _revision_files()) == sorted(chain)
+
+    numbers = {revision: int(revision.split("_", 1)[0]) for revision in chain}
+    assert set(numbers.values()) == set(range(1, max(numbers.values()) + 1))
+    repeated = {number for number in numbers.values() if list(numbers.values()).count(number) > 1}
+    assert repeated == {16}
+
+    script = ScriptDirectory(str(MIGRATIONS_DIR))
+    assert script.get_heads() == [chain[-1]]
+    assert script.get_revision("0016_hard_delete_claim_lease").down_revision == (
+        "0016_agent_provisioning"
+    )
+    assert script.get_revision("0022_hard_delete_merge").down_revision == (
+        "0016_hard_delete_claim_lease",
+        "0021_sso_identities",
+    )
+    if "0023_alert_preload_indexes" in chain:
+        assert script.get_revision("0023_alert_preload_indexes").down_revision == (
+            "0022_hard_delete_merge"
+        )
+
+    for revision in chain:
+        parents = script.get_revision(revision).down_revision
+        if parents is None or revision == "0016_hard_delete_claim_lease":
+            continue
+        if isinstance(parents, str):
+            parents = (parents,)
+        assert all(numbers[parent] < numbers[revision] for parent in parents)
 
 
 def test_every_revision_id_fits_the_version_table():
