@@ -10,7 +10,9 @@ release's own hard-delete statements against a 0016 database.
 
 **New code, old schema** (the unsupported direction). The claim path reads
 ``hard_delete_claimed_at``, which exists only from 0016, so on a 0015
-database it raises ``asyncpg.UndefinedColumnError``. That combination is not
+database it raises ``asyncpg.UndefinedColumnError``. After the merge with
+current ``dev``, a database stopped at 0016 is also behind: the gateway now
+requires the merged current-dev and lease history. That combination is not
 reachable in a deployment, and this test records why:
 
 - the gateway refuses to start on a database behind its own chain
@@ -22,8 +24,9 @@ reachable in a deployment, and this test records why:
   ``update_user_fields``, which reads only ``hard_delete_pending`` — a
   baseline column — so the CLI keeps working on a 0015 database.
 
-The supported direction is the one the boot guard leaves open: a database
-already at 0016 with the previous release still serving.
+The supported mixed-version direction is the previous release running on a
+database upgraded through the expand-only lease revision. The current merged
+code starts only after both migration histories reach the mergepoint.
 """
 
 from __future__ import annotations
@@ -109,12 +112,12 @@ async def test_the_claim_path_requires_the_lease_columns(scratch):
 
 
 async def test_the_boot_guard_refuses_a_database_behind_this_code():
-    """The reason the combination above is unreachable in a deployment."""
+    """The merged code refuses databases missing either migration branch."""
     chain = code_chain()
     assert judge(SchemaState(revision="0015_projects", floor=None), chain) is Verdict.BEHIND
     assert (
         judge(SchemaState(revision="0016_hard_delete_claim_lease", floor=None), chain)
-        is Verdict.CURRENT
+        is Verdict.BEHIND
     )
 
 
