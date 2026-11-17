@@ -622,19 +622,9 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.count_project_keys(project_id)
 
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Delegate, then invalidate auth caches."""
-        row = await self._store.update_org(org_id, changes)
-        await self.invalidate_auth_caches()
-        return row
-
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Delegate to wrapped store."""
         return await self._store.get_account_budgets(user_id)
-
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Delegate to wrapped store."""
-        return await self._store.get_personal_org_status(user_id)
 
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
@@ -928,6 +918,102 @@ class CachedOperationalStore(OperationalStore):
         await self._forget_sessions(user_id)
         return revoked
 
+    # -- second factor (pass-through) ------------------------------------------
+    #
+    # Nothing here is cached. What a session has proved is asked on every
+    # administrator request and must be true at that moment: a code just
+    # given, or an authenticator just removed, counts on the next request in
+    # every process, which a cache entry in this one could not promise.
+
+    async def get_two_factor(self, user_id: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_two_factor(user_id)
+
+    async def set_pending_two_factor(
+        self,
+        user_id: str,
+        pending_secret_encrypted: str,
+        *,
+        sid: str,
+        ttl_seconds: int,
+        attempts: int,
+    ) -> None:
+        """Delegate to wrapped store."""
+        return await self._store.set_pending_two_factor(
+            user_id, pending_secret_encrypted, sid=sid, ttl_seconds=ttl_seconds, attempts=attempts
+        )
+
+    async def begin_two_factor_setup_attempt(self, user_id: str, sid: str) -> str | None:
+        """Delegate to wrapped store."""
+        return await self._store.begin_two_factor_setup_attempt(user_id, sid)
+
+    async def cancel_pending_two_factor(self, user_id: str, sid: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.cancel_pending_two_factor(user_id, sid)
+
+    async def confirm_two_factor(
+        self,
+        user_id: str,
+        *,
+        pending_secret_encrypted: str,
+        step: int,
+        recovery_code_hashes: Sequence[str],
+        sid: str,
+        environment: str,
+    ) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.confirm_two_factor(
+            user_id,
+            pending_secret_encrypted=pending_secret_encrypted,
+            step=step,
+            recovery_code_hashes=recovery_code_hashes,
+            sid=sid,
+            environment=environment,
+        )
+
+    async def begin_two_factor_attempt(
+        self, user_id: str, *, lock_every: int, lock_seconds: int, max_lock_seconds: int
+    ) -> datetime | None:
+        """Delegate to wrapped store."""
+        return await self._store.begin_two_factor_attempt(
+            user_id,
+            lock_every=lock_every,
+            lock_seconds=lock_seconds,
+            max_lock_seconds=max_lock_seconds,
+        )
+
+    async def verify_session_two_factor(
+        self,
+        user_id: str,
+        sid: str,
+        environment: str,
+        *,
+        secret_encrypted: str | None = None,
+        step: int | None = None,
+        recovery_code_hash: str | None = None,
+    ) -> str:
+        """Delegate to wrapped store."""
+        return await self._store.verify_session_two_factor(
+            user_id,
+            sid,
+            environment,
+            secret_encrypted=secret_encrypted,
+            step=step,
+            recovery_code_hash=recovery_code_hash,
+        )
+
+    async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.replace_recovery_codes(user_id, code_hashes)
+
+    async def delete_two_factor(self, user_id: str) -> bool:
+        """Delegate to wrapped store."""
+        return await self._store.delete_two_factor(user_id)
+
+    async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
+        """Delegate to wrapped store."""
+        return await self._store.get_session_two_factor(user_id, sid)
+
     # -- browser sessions (pass-through) -------------------------------------
 
     async def create_browser_session(
@@ -1051,6 +1137,64 @@ class CachedOperationalStore(OperationalStore):
     async def record_phone_login_event(self, **fields: Any) -> None:
         """Record phone login outcomes without fabricating an email."""
         await self._store.record_phone_login_event(**fields)
+
+    # -- single sign-on (never cached) ----------------------------------------
+
+    async def get_user_identity(self, issuer: str, subject: str) -> Row | None:
+        """Fetch the identity an identity provider vouches for, if it is linked."""
+        return await self._store.get_user_identity(issuer, subject)
+
+    async def list_user_identities(self, user_id: str) -> list[Row]:
+        """List an account's linked identities, oldest first."""
+        return await self._store.list_user_identities(user_id)
+
+    async def link_user_identity(self, **fields: Any) -> str:
+        """Link an identity to an active account; say why not when it cannot be."""
+        return await self._store.link_user_identity(**fields)
+
+    async def touch_user_identity(self, identity_id: str) -> None:
+        """Record that an identity just signed in."""
+        return await self._store.touch_user_identity(identity_id)
+
+    async def unlink_user_identity(self, **fields: Any) -> str:
+        """Remove one of an account's identities, optionally keeping its last way in."""
+        return await self._store.unlink_user_identity(**fields)
+
+    async def create_sso_user(self, **fields: Any) -> bool:
+        """Create an account for a first single sign-on and link the identity to it."""
+        return await self._store.create_sso_user(**fields)
+
+    async def create_sso_flow(self, **fields: Any) -> None:
+        """Record one redirect to an identity provider."""
+        return await self._store.create_sso_flow(**fields)
+
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
+        return await self._store.consume_sso_flow(state_hash, **fields)
+
+    async def mark_sso_reauth_verified(self, state_hash: str) -> None:
+        """Record that a claimed re-authentication flow ended in a fresh sign-in."""
+        return await self._store.mark_sso_reauth_verified(state_hash)
+
+    async def consume_sso_reauth_proof(self, **fields: Any) -> bool:
+        """Spend a recent re-authentication for one account, session and purpose."""
+        return await self._store.consume_sso_reauth_proof(**fields)
+
+    async def create_sso_pending_link(self, **fields: Any) -> None:
+        """Hold an identity until the owner of the account it matched accepts it."""
+        return await self._store.create_sso_pending_link(**fields)
+
+    async def get_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Read a pending link that is still waiting, without claiming it."""
+        return await self._store.get_sso_pending_link(token_hash)
+
+    async def consume_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Atomically claim a pending link."""
+        return await self._store.consume_sso_pending_link(token_hash)
+
+    async def delete_sso_pending_link(self, token_hash: str) -> None:
+        """Drop a pending link its browser declined."""
+        return await self._store.delete_sso_pending_link(token_hash)
 
     # -- login events (pass-through) -----------------------------------------
 
@@ -1744,7 +1888,6 @@ class CachedOperationalStore(OperationalStore):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
@@ -1754,9 +1897,18 @@ class CachedOperationalStore(OperationalStore):
             day=day,
             api_key_id=api_key_id,
             requests=requests,
-            org_id=org_id,
             project_id=project_id,
         )
+
+    def shared_spend_root(self) -> Any:
+        """The wrapped store's shared spend root, or None when it has none.
+
+        Explicit rather than a general pass-through: the shared accounting
+        must reach the same store (and ledger) through this proxy as through
+        the store itself, and fail closed when the wrapped store has none.
+        """
+        root_of = getattr(self._store, "shared_spend_root", None)
+        return root_of() if callable(root_of) else None
 
     @property
     def atomic_cost_increments(self) -> bool:  # type: ignore[override]

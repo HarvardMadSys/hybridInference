@@ -12,6 +12,9 @@ from typing import Any, Literal, cast
 from serving.http import AsyncHTTPClient
 from serving.pricing import PricingSchedule
 from serving.stream import make_stream_chunk
+from serving.utils.logging import get_logger
+
+logger = get_logger(__name__)
 
 DeploymentType = Literal["auto", "self_hosted", "provider_api"]
 
@@ -305,6 +308,35 @@ class BaseAdapter(ABC):
         """Whether this route declares image input (``input_modalities``)."""
         return "image" in (getattr(self.config, "input_modalities", None) or ["text"])
 
+    def _anthropic_to_openai(
+        self, body: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        """Translate an Anthropic request for this route, logging one it cannot read.
+
+        ``UntranslatableRequest`` is answered as the client's 400 and kept off
+        the breaker, so a translation bug on a valid body would surface the same
+        way. Each is logged under its own event, with the error's type only (the
+        body is the client's data), so a run of them -- after a deploy, say --
+        stands apart from a client's mistake now and then.
+        """
+        from serving.adapters.anthropic_translator import (
+            UntranslatableRequest,
+            anthropic_request_to_openai,
+        )
+
+        try:
+            return anthropic_request_to_openai(body, tool_images=self._reads_images())
+        except UntranslatableRequest as exc:
+            logger.warning(
+                "untranslatable_request",
+                extra={
+                    "event": "untranslatable_request",
+                    "model_id": self.config.id,
+                    "error_type": type(exc.__cause__).__name__,
+                },
+            )
+            raise
+
     async def messages(
         self,
         body: dict[str, Any],
@@ -325,14 +357,11 @@ class BaseAdapter(ABC):
         """
         from serving.adapters.anthropic_translator import (
             OPENAI_USAGE_SINK_KEY,
-            anthropic_request_to_openai,
             openai_response_to_anthropic,
             openai_usage_record,
         )
 
-        oai_messages, oai_params = anthropic_request_to_openai(
-            body, tool_images=self._reads_images()
-        )
+        oai_messages, oai_params = self._anthropic_to_openai(body)
         oai_resp = await self.chat_completion(oai_messages, **oai_params)
         resp = openai_response_to_anthropic(oai_resp, model=body.get("model", ""))
         upstream_usage = oai_resp.get("usage") if isinstance(oai_resp, dict) else None
@@ -359,13 +388,10 @@ class BaseAdapter(ABC):
             INPUT_SEED_SINK_KEY,
             OPENAI_USAGE_SINK_KEY,
             OpenAIToAnthropicStreamTranslator,
-            anthropic_request_to_openai,
         )
         from serving.utils.tokens import estimate_prompt_tokens_bounded
 
-        oai_messages, oai_params = anthropic_request_to_openai(
-            body, tool_images=self._reads_images()
-        )
+        oai_messages, oai_params = self._anthropic_to_openai(body)
         oai_params["stream"] = True
         # Seed message_start.usage.input_tokens with an estimate: OpenAI streams
         # report prompt tokens only in the final chunk, but Anthropic clients

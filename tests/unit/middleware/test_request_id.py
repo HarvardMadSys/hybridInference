@@ -145,7 +145,9 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "user_role",
         "auth_key_hash",
         "project_id",
-        "org_id",
+        # The shared spend reservation the request's costs are attached to; a
+        # leftover would attach the next request's costs to an ended one.
+        "spend_reservation",
         "affinity_key",
         "client_error_kind",
         "provider",

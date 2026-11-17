@@ -165,9 +165,7 @@ async def test_item_runs_through_the_handler_and_reports_its_response():
 async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
     app, services = _setup(_Upstream())
 
-    result = await _dispatch(
-        app, services, user_ctx={**_owner(), "project_id": "proj_batch", "org_id": "org_batch"}
-    )
+    result = await _dispatch(app, services, user_ctx={**_owner(), "project_id": "proj_batch"})
 
     row = await _logged_row(services)
     # 100 prompt tokens at $1/M plus 50 completion tokens at $2/M.
@@ -192,7 +190,6 @@ async def test_cost_and_request_id_are_captured_and_logged_against_the_batch():
         day=ANY,
         requests=1,
         api_key_id=41,
-        org_id="org_batch",
         project_id="proj_batch",
     )
 

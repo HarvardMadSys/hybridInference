@@ -68,6 +68,7 @@ from serving.servers.routers.responses import (
     ResponsesStream,
     execute_responses,
 )
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.surfaces.context import (
@@ -211,12 +212,13 @@ async def _reserve_playground_spend(
         spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
         read_at=read_at,
     )
-    return _admit_spend(
+    return await _admit_spend(
         request,
         user,
         model=model,
         router=router,
         embedding_adapters=embedding_adapters,
+        operation="playground",
     )
 
 
@@ -486,13 +488,18 @@ def _with_route_frame(
 
     async def frames() -> AsyncIterator[Any]:
         sent = False
-        async for frame in inner:
-            if not sent and _is_done_frame(frame):
-                badge = _route_frame(stream, show_host=show_host)
-                if badge is not None:
-                    yield badge
-                sent = True
-            yield frame
+        try:
+            async for frame in inner:
+                if not sent and _is_done_frame(frame):
+                    badge = _route_frame(stream, show_host=show_host)
+                    if badge is not None:
+                        yield badge
+                    sent = True
+                yield frame
+        finally:
+            # Closed when the response ends (ClosingStreamingResponse); the
+            # stream it wraps is closed with it, not left to the collector.
+            await close_body(inner)
         if not sent:
             badge = _route_frame(stream, show_host=show_host)
             if badge is not None:
@@ -652,7 +659,7 @@ async def playground_responses(
     if isinstance(result, ResponsesStream):
         if result.chat_stream is not None:
             _streams.append(result.chat_stream)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             result.events,
             media_type="text/event-stream",
             headers=_RESPONSES_SSE_HEADERS,

@@ -511,11 +511,15 @@ jobs:
           POSTGRES_DB: hybridinference_test_db
         ports:
           - 5432/tcp
+        # The data directory on tmpfs. postgres:15 declares it a volume, and
+        # the runner removes service containers without their volumes, so on
+        # a self-hosted runner every shard stranded one per run.
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
+          --tmpfs /var/lib/postgresql/data:rw,size=2g
 
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

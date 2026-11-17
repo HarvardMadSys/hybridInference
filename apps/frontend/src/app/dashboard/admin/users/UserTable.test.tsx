@@ -11,11 +11,19 @@ import type { UserRow } from './types';
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
+  // The projects panel loads on its own; these tests are about the rest.
+  getUserProjects: vi.fn(() => new Promise(() => {})),
   listModelVisibility: vi.fn(),
+  resetUserTwoFactor: vi.fn(),
   updateUser: vi.fn(),
 }));
 
-import { getUserDetail, listModelVisibility, updateUser as apiUpdateUser } from '@/lib/api/admin';
+import {
+  getUserDetail,
+  listModelVisibility,
+  resetUserTwoFactor,
+  updateUser as apiUpdateUser,
+} from '@/lib/api/admin';
 import type { UpdateUserData, UserDetail } from '@/lib/api/admin';
 
 const baseUser: UserRow = {
@@ -659,6 +667,56 @@ describe('UserDetailPanel activity stats gating', () => {
     expect(getUserDetail).toHaveBeenLastCalledWith('user-1', { includeActivityStats: true });
     expect(screen.getAllByText('Avg turns')).toHaveLength(2); // header + computed tile
     expect(screen.getByText('50%')).toBeInTheDocument();
+  });
+});
+
+describe('UserDetailPanel two-factor authentication', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('has nothing to remove for an account without an authenticator app', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ two_factor_enabled: false }));
+
+    renderTable(baseUser);
+    await expand();
+
+    expect(screen.getByText('Two-factor').nextSibling).toHaveTextContent('off');
+    expect(screen.queryByRole('button', { name: 'Remove authenticator' })).not.toBeInTheDocument();
+  });
+
+  it('removes a lost device’s authenticator once the administrator confirms', async () => {
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ two_factor_enabled: true }));
+    vi.mocked(resetUserTwoFactor).mockResolvedValue({ user_id: 'user-1', removed: true });
+
+    renderTable(baseUser);
+    await expand();
+    expect(screen.getByText('Two-factor').nextSibling).toHaveTextContent('on');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove authenticator' }));
+
+    expect(dialog()).toHaveTextContent('Remove the authenticator app of user@example.com?');
+    // Without an authenticator of their own, the administrator gives a password.
+    clickInDialog('Remove');
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
+      'Enter your password to remove the authenticator.',
+    );
+    expect(resetUserTwoFactor).not.toHaveBeenCalled();
+    fireEvent.change(within(dialog()).getByLabelText('Your password'), {
+      target: { value: 'Hunter2hunter2' },
+    });
+    clickInDialog('Remove');
+
+    await waitFor(() =>
+      expect(
+        screen.queryByRole('button', { name: 'Remove authenticator' }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(resetUserTwoFactor).toHaveBeenCalledExactlyOnceWith('user-1', 'Hunter2hunter2');
   });
 });
 

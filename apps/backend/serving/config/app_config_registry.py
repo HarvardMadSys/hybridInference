@@ -319,6 +319,15 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
             ),
         )
     ),
+    ConfigEntry(
+        "SSO_PROVIDERS",
+        "application",
+        "Single sign-on identity providers as JSON. Omit to offer no single sign-on. "
+        "Each client secret references a separate secret setting as ${NAME}.",
+        type="text",
+        one_time=True,
+        validator=_document_validator("SSO_PROVIDERS"),
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -890,6 +899,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         restart_required=True,
         minimum=0,
         maximum=1,
+    ),
+    ConfigEntry(
+        "CIRCUIT_CALLER_WINDOW_SECONDS",
+        "routing",
+        "Seconds after one caller's counted failure on an endpoint during which its "
+        "repeat failures there do not count toward opening the circuit, if the "
+        "endpoint has served another caller since. 0 counts every failure.",
+        type="float",
+        default="60",
+        restart_required=True,
+        minimum=0,
     ),
     ConfigEntry(
         "ROUTING_AFFINITY_ENABLED",
@@ -1651,7 +1671,12 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",
     "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
+    "HANDOFF_TOKEN": "process wiring: the release's credential for draining and sealing "
+    "this process",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
+    "ADMIN_TWO_FACTOR_REQUIRED": "security: a session holding administrator access must not "
+    "be able to switch its own second factor off",
+    "TWO_FACTOR_STEP_UP_MINUTES": "security: belongs with ADMIN_TWO_FACTOR_REQUIRED",
     "TRUST_KUBERNETES_PROXY_DISCOVERY": "network wiring: opt-in authenticated proxy discovery",
     "KUBERNETES_PROXY_NAMESPACE": "network wiring: namespace containing the proxy Service",
     "KUBERNETES_PROXY_SERVICE_NAME": "network wiring: exact proxy Service identity",
@@ -1990,6 +2015,8 @@ class DiscoveredReference:
     #: ``api_keys``, any field whose name looks like a credential's), so it is
     #: secret whatever its own name.
     credential: bool = False
+    #: Only the single sign-on providers reference it.
+    single_sign_on: bool = False
 
 
 def _references(value: Any) -> set[str]:
@@ -2049,6 +2076,14 @@ def _load_yaml_text(text: str) -> Any:
         return yaml.safe_load(text)
     except yaml.YAMLError:
         return None
+
+
+def _discovered_description(reference: DiscoveredReference) -> str:
+    if reference.category == "providers":
+        return "Referenced by the model registry."
+    if reference.single_sign_on:
+        return "Referenced by the single sign-on providers."
+    return "Referenced by the alert rules."
 
 
 def _note(
@@ -2130,13 +2165,23 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
         _note(found, key, "alerts")
 
 
-def discover_documents(models: Any, routing: Any, alerts: Any) -> dict[str, DiscoveredReference]:
+def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
+    for key in _references(data):
+        # Read last: a name already found belongs to another document too.
+        if key not in found:
+            _note(found, key, "security").single_sign_on = True
+
+
+def discover_documents(
+    models: Any, routing: Any, alerts: Any, sso: Any = None
+) -> dict[str, DiscoveredReference]:
     """Discover settings referenced by parsed database application documents."""
     found: dict[str, DiscoveredReference] = {}
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
-    for data in (models, routing, alerts):
+    _discover_sso(sso, found)
+    for data in (models, routing, alerts, sso):
         for key in _credential_references(data):
             if key in found:
                 found[key].credential = True
@@ -2261,9 +2306,7 @@ def build_entries(
         entries[key] = ConfigEntry(
             key,
             reference.category,
-            "Referenced by the model registry."
-            if reference.category == "providers"
-            else "Referenced by the alert rules.",
+            _discovered_description(reference),
             secret=reference.credential or is_secret_name(key),
             required=requirement,
             restart_required=True,

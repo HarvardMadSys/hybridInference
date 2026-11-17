@@ -344,3 +344,31 @@ async def test_an_invalid_stored_site_document_serves_the_neutral_document(clien
     assert body["features"]["rag"] is False
     assert body["configuration"]["incomplete"] is True
     assert "models.yaml" not in response.text
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_manifest", [False, True], ids=["neutral", "manifest"])
+async def test_single_sign_on_is_announced_at_the_top_level_and_names_no_provider(
+    client, monkeypatch, tmp_path, with_manifest
+):
+    # ``features`` is parsed strictly by consoles: a console that predates
+    # single sign-on must be able to ignore the announcement, so it is a
+    # top-level key and adds nothing to ``features``.
+    if with_manifest:
+        manifest = tmp_path / "distribution.yaml"
+        manifest.write_text(MANIFEST)
+        seed_site(monkeypatch, manifest)
+        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
+        get_settings.cache_clear()
+        get_distribution_config.cache_clear()
+
+    monkeypatch.setattr(site_config, "enabled_providers", lambda: [])
+    body = (await client.get("/site-config")).json()
+    assert "sso" not in body
+    features = set(body["features"])
+
+    monkeypatch.setattr(site_config, "enabled_providers", lambda: [object()])
+    body = (await client.get("/site-config")).json()
+    # Only that it is offered: not by whom, nor for which email domains.
+    assert body["sso"] == {"enabled": True}
+    assert set(body["features"]) == features

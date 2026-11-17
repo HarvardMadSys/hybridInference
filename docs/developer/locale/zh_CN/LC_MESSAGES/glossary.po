@@ -416,3 +416,24 @@ msgstr "已停用的应用配置文件 `distribution.yaml`。其标识和功能�
 
 msgid "Retired modes of `DISTRIBUTION_CONFIG_MODE`. Saved database settings now determine the site configuration, without a manifest mode switch."
 msgstr "`DISTRIBUTION_CONFIG_MODE` 已停用的模式。站点配置现在由已保存的数据库设置决定，无需清单模式开关。"
+
+msgid "Accounts and sign-in"
+msgstr "账号与登录"
+
+msgid "Single sign-on (SSO)"
+msgstr "单点登录（SSO）"
+
+msgid "Signing in to the console with an account that an organization manages, instead of a password kept by the gateway. [Single Sign-On](sso.md) explains how to set it up."
+msgstr "用机构管理的账号登录控制台，而不是用网关保存的密码。[单点登录](sso.md)说明如何设置。"
+
+msgid "Identity provider"
+msgstr "身份提供方（identity provider）"
+
+msgid "The organization's system that signs its members in and tells the gateway who they are. The gateway connects to identity providers that speak OpenID Connect (OIDC)."
+msgstr "机构用来让成员登录、并告诉网关成员是谁的系统。网关对接使用 OpenID Connect（OIDC）的身份提供方。"
+
+msgid "Link"
+msgstr "关联（link）"
+
+msgid "The record that an identity at an identity provider signs in to one account. An account can hold links to several identity providers."
+msgstr "一条记录，表示某个身份提供方上的身份登录到某个账号。一个账号可以关联多个身份提供方。"

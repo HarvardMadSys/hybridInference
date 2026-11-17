@@ -159,7 +159,7 @@ On the split paths the entry has to meet these conditions:
 | E6 | It overwrites the forwarding header the client sent (`X-Forwarded-For` or `CF-Connecting-IP`) |
 | E7 | The gateway's port is reachable from the entry and the console only |
 | E8 | It does not resend a `POST` once the request has been sent to the gateway. Retrying on another instance when the connection could not be established is fine |
-| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. Not needed yet; the coexisting backend releases the design defers depend on it |
+| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. A release handoff depends on it; see [Handing traffic to a new gateway process](#handing-traffic-to-a-new-gateway-process) |
 
 What clients see on the split paths is the gateway's own answer, the same as
 through the console, with these differences:
@@ -376,6 +376,117 @@ afterwards. For its duration it adds a second database server's CPU and I/O,
 and it needs free disk where Docker keeps volumes, normally the disk of the
 deployment's own database: it refuses to start unless about twice the
 database's size plus 1 GiB is free there.
+
+### Handing traffic to a new gateway process
+
+A release that runs the new gateway process beside the old one can stop the old
+one without cutting a request short or losing a request-log row or a cost. The
+release asks the old process, while it is still alive, whether anything is
+left, and stops it only once nothing is and every cost and row it recorded is
+confirmed written. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five
+seconds and are then cancelled. A process sealed first has none open.
+
+The routes are off until the process has `HANDOFF_TOKEN` in its environment, a
+random value of at least 32 characters. Without it they answer 404. They are
+under `/internal/handoff`, which no public path list includes, so neither the
+console nor an entry forwards them. The release calls each process at its own
+address with `Authorization: Bearer <HANDOFF_TOKEN>`. This token is separate
+from the administrator token, which is read-only for changes wherever
+administrators need a second factor.
+
+| Call | What it does |
+|---|---|
+| `GET /internal/handoff` | The state (`serving`, `draining` or `sealed`), everything still under way, `blocking` (why a seal would fail now) and `idle` |
+| `POST /internal/handoff/drain` | Begins draining |
+| `POST /internal/handoff/seal` | Seals if nothing is left (200); otherwise answers 409 with `blocking`, and the process keeps draining |
+| `POST /internal/handoff/resume` | Serves normally again, from draining or sealed. This is how a release is abandoned |
+
+A release runs in this order:
+
+1. Start the new process and accept it: `/health/ready` answers 200 and it
+   serves the acceptance requests.
+2. Take the old process out of the entry's rotation (E9).
+3. Drain the old process.
+4. Call seal until it answers 200. Poll as often as you like: the calls and
+   the platform's probes are counted apart and never hold a drain open.
+5. Stop the old process.
+
+If the seal does not succeed within the time your deployment expects, keep the
+old process and record the release as unfinished. The longest a request may run
+is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. Do not stop the
+process: `blocking` says what it is waiting for. To abandon the release instead,
+resume the old process and take the new one away.
+
+Three reasons never clear by waiting: `spend_unconfirmed`, `request_log_lost`
+and `stream_close_abandoned`. A process that reports any of them keeps
+draining for as long as it lives. Keep it, record the release as unfinished
+with what the status reports, and reconcile before stopping it. There is no
+way to force a seal, and clearing the records does not count as reconciling.
+
+While a process drains, it still serves every request that reaches it:
+
+- `/health/ready` answers 503 with `"reason": "draining"`. `/health` stays
+  200.
+- Every response carries `Connection: close`. A client or entry holding a
+  kept-alive connection then opens its next request elsewhere.
+- A connection with no request in progress is closed after five seconds,
+  uvicorn's keep-alive limit, even one that was opened and never used. A
+  connection with a request in progress keeps the normal idle limit
+  (`HTTP_IDLE_TIMEOUT_SECONDS`), as it would without a drain: a stream that
+  keeps sending is never cut, and one where nothing moves for that long is
+  closed. If a request begins on a connection after its five seconds started,
+  the normal limit applies instead, counted from its last byte.
+- It claims no new batch items and starts no validation, sealing, webhook
+  delivery or sweep; the other process does them. Items it runs go on, and it
+  keeps their leases.
+- It runs no scheduled job. The alert checks and rollups run in the other
+  process, and the alerts are not sent twice. A job already running goes on.
+
+A seal succeeds only when none of these is left. Each appears in `blocking`
+under its own name:
+
+| `blocking` | What is left |
+|---|---|
+| `requests_in_flight` | A request in progress, streams included. A request lasts until its response, its clean-up and its stream's close are over |
+| `connections_open` | An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it |
+| `background_writes` | Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent |
+| `request_log_unwritten` | Request-log rows queued or being written |
+| `request_log_lost` | A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears |
+| `stream_close_abandoned` | A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears |
+| `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here. An item lasts until its task ends, so one already handed back still counts while its batch is being failed or its owner paused |
+| `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
+| `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |
+| `spend_unconfirmed` | A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives |
+
+An empty `blocking` means more than "nothing is running". It also means that
+every cost this process recorded is confirmed in the counters and every
+request-log row it took was written. Each ledger in `spend` says so in
+`confirmed`, with what is not confirmed in `unconfirmed_requests` and
+`unconfirmed_usd` (or `unconfirmed_reservations` and `unconfirmed_increments`
+in the shared spend mode). A request that cost nothing was never recorded, so
+it never blocks. Nothing here changes what is charged.
+
+The check and the switch to `sealed` are one step, so no request can start
+between them. From then on a request is refused with 503 and the code
+`instance_sealed` before anything is done for it, so it has no upstream call
+and no cost. It is counted in `requests.refused_after_seal`. A release that
+saw any did not hand over cleanly: the entry was still sending to the old
+process.
+
+At its stop, the process logs the state it was in and the requests still in
+flight (event `handoff_state_at_shutdown`). A sealed process stops at once.
+
+A handoff drains one process. With several worker processes behind one port,
+a call reaches whichever worker accepts it, so drain and seal answer 409 there,
+and under gunicorn, whose workers the process cannot count. Run one uvicorn
+worker per instance.
+
+What a handoff does not cover: while the two processes run side by side, each
+still enforces per-user concurrency, login rate limits and authentication
+blocks on its own. A user can have up to twice their concurrent requests in
+flight until the old process's requests end. Budgets are shared between the
+two processes only in the shared spend mode, and that mode is switched on
+with every process stopped, not during a handoff.
 
 ### What a change actually requires
 
@@ -826,6 +937,59 @@ settings on the **Settings** tab. A `SIGNUP_ENABLED` or
 `SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that store
 at startup while it has no value of its own, and the stored value wins
 afterwards.
+
+### Requiring two-factor authentication of administrators
+
+An account can add an authenticator app (any that reads a standard TOTP QR
+code: Duo Mobile, Google Authenticator, 1Password) and from then on confirms
+with a six-digit code instead of its password before a change that outlasts its
+session: raising a role, minting a key for another account, exporting secret
+values, changing who may use a model.
+
+`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes it a condition of
+administrator access. It is off by default, and read from the environment
+only, so a session that holds administrator access cannot switch it off. With
+it on:
+
+- a console session reaches the Admin API only after giving a code from the
+  account's authenticator, and is asked again when it turns up in a different
+  kind of client (a browser's session presented by a script, for example);
+- an administrator who has no authenticator yet has no administrator access
+  until they add one;
+- an account is given the `admin` role only once it has an authenticator;
+- `ADMIN_TOKEN` is answered for reads only. Move any automation that writes
+  with the token before turning this on.
+
+In the console:
+
+- **Settings → Two-Factor Authentication** adds the authenticator: the
+  account's password, a QR code to scan, the first code, then ten recovery
+  codes that are shown once. Administrators see the section. An account that is
+  about to be made an administrator opens it at
+  `/dashboard/settings#two-factor`.
+- **Admin** asks a session that owes a code before it opens, and a dialog asks
+  again when a change needs a more recent one.
+- **Admin → Users** shows in an account's details whether it has an
+  authenticator (`Two-factor: on`), and removes one for someone who lost the
+  device.
+
+Turn it on after the administrators have enrolled, not before: until an
+administrator account has an authenticator, someone who has its password can
+add their own.
+
+```{warning}
+An administrator who loses the device and the recovery codes cannot reach the
+Admin API. Another administrator removes the lost authenticator in
+**Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If there is
+no other administrator, remove it in the database and let the account add a new
+one with its password:
+
+    DELETE FROM user_two_factor WHERE user_id = '<the account id>';
+```
+
+`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
+those changes before the console asks for a new one. The design is in
+[the design record](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-11-15-admin-two-factor-design.md).
 
 ## Database
 

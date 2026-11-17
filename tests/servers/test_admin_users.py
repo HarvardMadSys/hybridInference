@@ -49,6 +49,8 @@ def mock_stores():
     op_store.revoke_user_sessions = AsyncMock(return_value=0)
     op_store.suspend_user = AsyncMock()
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
+    op_store.list_user_identities = AsyncMock(return_value=[])
+    op_store.get_two_factor = AsyncMock(return_value=None)
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})
@@ -860,6 +862,23 @@ async def test_get_user_detail_returns_admin_note(admin_client):
 
     assert response.status_code == 200
     assert response.json()["admin_note"] == "watch this user"
+    assert response.json()["two_factor_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_user_detail_says_whether_the_account_has_an_authenticator(admin_client):
+    """A confirmed authenticator shows; a secret that was only shown does not."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    log_store.get_user_detail_usage = AsyncMock(return_value={})
+
+    op_store.get_two_factor.return_value = {"confirmed_at": None}
+    pending = await client.get("/admin/users/u1/detail", headers=AUTH)
+    op_store.get_two_factor.return_value = {"confirmed_at": datetime.now(UTC)}
+    confirmed = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert pending.json()["two_factor_enabled"] is False
+    assert confirmed.json()["two_factor_enabled"] is True
 
 
 @pytest.mark.asyncio

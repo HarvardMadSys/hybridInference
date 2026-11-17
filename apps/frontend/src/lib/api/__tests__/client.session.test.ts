@@ -332,3 +332,155 @@ describe('refresh refused with 401 or 403', () => {
     });
   });
 });
+
+// A sign-in that ends at an identity provider comes back by navigation: the
+// cookie is the new account's, and no response ever handed this tab a token.
+describe('taking up a session a redirect signed in', () => {
+  it('installs the token of the account the cookie names', async () => {
+    const issued = token('sso-user', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(issued));
+
+    await expect(client.resumeBrowserSession(API)).resolves.toBe('sso-user');
+
+    expect(String(fetchMock.mock.calls[0][0])).toBe(`${API}/auth/refresh`);
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: 'POST', credentials: 'include' });
+    expect(client.getAccessToken()).toBe(issued);
+    expect(sessionStorage.getItem('access_token')).toBe(issued);
+  });
+
+  // An ordinary refresh refuses this as another tab's account change. Here the
+  // change is this tab's own sign-in.
+  it.each([
+    ['a live token', 900],
+    ['an expired token', -60],
+  ])('replaces %s the tab still holds for the account it showed before', async (_name, life) => {
+    client.setAccessToken(token('before', life));
+    const issued = token('sso-user', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(issued));
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+
+    await expect(client.resumeBrowserSession(API)).resolves.toBe('sso-user');
+    await client.fetchWithAuth(API, '/user/me');
+
+    expect(accountChangedEvents).toBe(0);
+    expect(authExpiredEvents).toBe(0);
+    expect(sentAuthorization(1)).toBe(`Bearer ${issued}`);
+  });
+
+  it('lifts the block an account change in another tab left', async () => {
+    client.setAccessToken(token('user-a', -60));
+    fetchMock.mockResolvedValueOnce(refreshAnswer(token('user-b', 900)));
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'ACCOUNT_CHANGED',
+    });
+
+    const issued = token('sso-user', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(issued));
+    await expect(client.resumeBrowserSession(API)).resolves.toBe('sso-user');
+
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+    await client.fetchWithAuth(API, '/user/me');
+    expect(sentAuthorization(2)).toBe(`Bearer ${issued}`);
+  });
+
+  it('shares its request with a refresh the page starts meanwhile', async () => {
+    client.setAccessToken(token('before', -60));
+    const issued = token('sso-user', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(issued));
+    fetchMock.mockResolvedValueOnce(new Response('{}'));
+
+    // The provider's first look for a user, as the page finishes the sign-in.
+    const [userId] = await Promise.all([
+      client.resumeBrowserSession(API),
+      client.fetchWithAuth(API, '/user/me'),
+    ]);
+
+    expect(userId).toBe('sso-user');
+    expect(fetchMock.mock.calls.map(([url]) => String(url))).toEqual([
+      `${API}/auth/refresh`,
+      `${API}/user/me`,
+    ]);
+    expect(sentAuthorization(1)).toBe(`Bearer ${issued}`);
+    expect(accountChangedEvents).toBe(0);
+  });
+
+  it('installs nothing from a refresh that was already under way for the earlier account', async () => {
+    client.setAccessToken(token('before', -60));
+    let answerEarlier: (response: Response) => void = () => undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          answerEarlier = resolve;
+        }),
+    );
+    const earlier = client.fetchWithAuth(API, '/user/me');
+    // Without Web Locks the two are not held apart; the generation is what
+    // keeps the earlier answer out.
+    await Promise.resolve();
+
+    const issued = token('sso-user', 900);
+    fetchMock.mockResolvedValueOnce(refreshAnswer(issued));
+    const resumed = client.resumeBrowserSession(API);
+    answerEarlier(refreshAnswer(token('before', 900)));
+
+    await expect(earlier).rejects.toMatchObject({ code: 'ACCOUNT_CHANGED' });
+    await expect(resumed).resolves.toBe('sso-user');
+    expect(client.getAccessToken()).toBe(issued);
+    expect(accountChangedEvents).toBe(0);
+  });
+
+  it.each([401, 403])(
+    'resolves to nobody when the browser holds no session: %s',
+    async (status) => {
+      client.setAccessToken(token('before', 900));
+      fetchMock.mockResolvedValueOnce(new Response('{}', { status }));
+
+      await expect(client.resumeBrowserSession(API)).resolves.toBeNull();
+
+      // The account the tab showed before is gone either way: the cookie is not its.
+      expect(client.getAccessToken()).toBeNull();
+      expect(authExpiredEvents).toBe(1);
+    },
+  );
+
+  it('throws when the gateway cannot say', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('busy', { status: 503 }));
+
+    await expect(client.resumeBrowserSession(API)).rejects.toMatchObject({ statusCode: 503 });
+
+    expect(client.getAccessToken()).toBeNull();
+    expect(authExpiredEvents).toBe(0);
+  });
+
+  // The page still shows the account it showed before the round trip. Left
+  // without a token, its next refresh would install the cookie's account
+  // under that page, with nothing to compare it against.
+  it('keeps the token the tab held when the gateway cannot say', async () => {
+    const before = token('before', -60);
+    client.setAccessToken(before);
+    fetchMock.mockResolvedValueOnce(new Response('busy', { status: 503 }));
+
+    await expect(client.resumeBrowserSession(API)).rejects.toMatchObject({ statusCode: 503 });
+
+    expect(client.getAccessToken()).toBe(before);
+    expect(sessionStorage.getItem('access_token')).toBe(before);
+
+    fetchMock.mockResolvedValueOnce(refreshAnswer(token('sso-user', 900)));
+    await expect(client.fetchWithAuth(API, '/user/me')).rejects.toMatchObject({
+      code: 'ACCOUNT_CHANGED',
+    });
+    expect(accountChangedEvents).toBe(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts in a new document when this one is kept signed out', async () => {
+    const reload = vi.fn();
+    vi.stubGlobal('location', { ...window.location, reload });
+    client.keepDocumentSignedOut();
+
+    await expect(client.resumeBrowserSession(API)).resolves.toBeNull();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+});

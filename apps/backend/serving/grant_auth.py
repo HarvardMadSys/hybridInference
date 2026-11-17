@@ -147,7 +147,7 @@ async def _quota_check(
     The limits are the account's, stored on each of its API keys, and the
     spend is the user's, so this is two reads (three with a monthly limit)
     that the direct path gets in one — a grant carries no key to join through.
-    A grant uses the organization's Default project, without per-key limits.
+    A grant uses the account's Default project, without per-key limits.
     The check (:meth:`SpendCheck.refusal`) counts the spend ledger's requests
     in flight and costs not yet written on top of what was read, as the
     direct path's does, and the request's admission reserves against it.
@@ -281,11 +281,9 @@ async def authenticate_grant_model_call(
         "agent_job_id": row["external_job_id"],
         "agent_grant_id": row["grant_id"],
         "agent_allowed_models": row.get("allowed_models") or [],
-        "org_id": scope.get("org_id"),
         "project_id": scope.get("project_id"),
         "project_name": scope.get("project_name"),
         "project_max_concurrent_requests": scope.get("project_max_concurrent_requests"),
-        "org_max_concurrent_requests": scope.get("org_max_concurrent_requests"),
         PROJECT_ALLOWED_MODELS_KEY: scope.get("project_allowed_models"),
     }
     if check is not None:

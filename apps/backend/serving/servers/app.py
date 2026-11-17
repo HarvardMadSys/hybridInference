@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap, restart
+from .handoff import HandoffMiddleware
 from .idle_connection import install_idle_connection_timeout
 from .middleware.body_limit import RequestBodyLimitMiddleware
 from .middleware.cors import SettingsCORSMiddleware
@@ -35,6 +36,7 @@ from .routers import (
     completions,
     embeddings,
     files,
+    handoff,
     health,
     identity,
     internal,
@@ -50,6 +52,8 @@ from .routers import (
     setup,
     site_config,
     site_updates,
+    sso_routes,
+    two_factor_routes,
     user_routes,
 )
 from .routers.served_identity import SERVED_IDENTITY_HEADER_NAMES
@@ -150,6 +154,12 @@ def create_app() -> FastAPI:
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
+    # Counts every request for a release handoff, from before anything else
+    # runs for it to after its body has closed, and refuses requests once the
+    # process is sealed (serving/servers/handoff.py). Pure ASGI: it touches the
+    # response start only. Inside NoSniff, so its own refusal gets that header.
+    app.add_middleware(HandoffMiddleware)
+
     # Outermost, so every response gets it, error answers included. It only
     # adds a header to the response start; bodies, streams too, pass untouched.
     app.add_middleware(NoSniffMiddleware)
@@ -162,6 +172,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health.router)
+    app.include_router(handoff.router)
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
@@ -181,6 +192,8 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
+    app.include_router(sso_routes.router)
+    app.include_router(two_factor_routes.router)
     app.include_router(setup.router)
     app.include_router(user_routes.router)
     app.include_router(projects.router)

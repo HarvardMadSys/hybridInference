@@ -207,6 +207,13 @@ class LocalePreferenceUpdate(BaseModel):
     chosen_at: datetime | None = None
 
 
+class SsoProviderRef(BaseModel):
+    """An identity provider, as much of it as an account's own pages may show."""
+
+    id: str
+    name: str
+
+
 class UserInfo(BaseModel):
     """User information (public).
 
@@ -220,6 +227,9 @@ class UserInfo(BaseModel):
     phone: str | None = None
     phone_verified: bool = False
     has_password: bool = True
+    #: The provider an account with no password and no verified phone confirms
+    #: sensitive actions through; None for every other account.
+    sso_reauth_provider: SsoProviderRef | None = None
     user_name: str | None = None
     avatar_url: str | None = None
     role: str = "free"
@@ -248,6 +258,10 @@ class AccountSummary(BaseModel):
     agent_access: bool | None = Field(
         default=None,
         description="Whether it may use the Cloud Agent; None when signed out or unknown.",
+    )
+    sso_provider: SsoProviderRef | None = Field(
+        default=None,
+        description="The provider an account without a password signs in through.",
     )
 
 
@@ -709,7 +723,7 @@ class ProjectResponse(BaseModel):
 
 
 class ProjectCreateRequest(BaseModel):
-    """Create a project under the caller's personal organization."""
+    """Create a project owned by the caller."""
 
     name: str = Field(..., min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -740,3 +754,133 @@ class ProjectUpdateRequest(BaseModel):
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+
+# Single sign-on schemas
+class SsoDiscoverRequest(BaseModel):
+    """Find the identity provider for an email and start a sign-in there."""
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoStartResponse(BaseModel):
+    """Where to send the browser to sign in at an identity provider.
+
+    ``available`` is False, with no URL, when no provider answers for the
+    email. It says nothing about whether an account exists.
+    """
+
+    available: bool = True
+    authorization_url: str | None = None
+
+
+class SsoPendingLinkResponse(BaseModel):
+    """An identity waiting for the owner of the account it matched to accept it."""
+
+    provider_id: str
+    provider_name: str
+    email: str
+
+
+class SsoMessageResponse(BaseModel):
+    """Result of a single sign-on account operation."""
+
+    message: str
+
+
+class SsoReauthStartRequest(BaseModel):
+    """Confirm a sensitive action by signing in at the account's identity provider again."""
+
+    purpose: Literal["set_password", "delete_account", "bind_email", "link_sso", "unlink_sso"]
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoIdentity(BaseModel):
+    """One identity linked to an account."""
+
+    id: str
+    provider_id: str
+    provider_name: str
+    email: str | None = None
+    linked_at: datetime
+    last_login_at: datetime | None = None
+    available: bool = Field(description="False when its provider is no longer offered.")
+
+
+class SsoIdentitiesResponse(BaseModel):
+    """The identities linked to the signed-in account."""
+
+    identities: list[SsoIdentity]
+
+
+class SsoLinkIdentityRequest(BaseModel):
+    """Link an identity to the signed-in account, confirmed by its owner.
+
+    An account with a password confirms with it; one that signs in only
+    through an identity provider confirms there first (purpose ``link_sso``).
+    """
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class SsoUnlinkIdentityRequest(BaseModel):
+    """Remove an identity from the signed-in account, confirmed by its owner."""
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+# -- second factor (serving.auth.two_factor) ----------------------------------
+
+
+class TwoFactorStatusResponse(BaseModel):
+    """An account's second factor, and what the asking session has proved."""
+
+    enabled: bool = Field(description="The account has an authenticator app")
+    pending: bool = Field(description="A secret was shown and awaits its first code")
+    required: bool = Field(
+        description="This account has administrator access only from a verified session"
+    )
+    session_verified: bool = Field(
+        description="This session has given a code, from the client it is used from now"
+    )
+    recovery_codes_left: int = Field(description="Unspent recovery codes")
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """Start adding an authenticator app."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The account's password; not needed to replace an authenticator, "
+        "which a recent code confirms instead",
+    )
+
+
+class TwoFactorSetupResponse(BaseModel):
+    """The secret to put into an authenticator app, shown once."""
+
+    secret: str = Field(description="Base32 secret, for typing in by hand")
+    otpauth_uri: str = Field(description="The same as a link, for a QR code")
+
+
+class TwoFactorCodeRequest(BaseModel):
+    """A code from the authenticator app, or a recovery code."""
+
+    code: str = Field(min_length=6, max_length=32)
+
+
+class TwoFactorRecoveryCodesResponse(BaseModel):
+    """A new set of recovery codes, shown once; every earlier one stops working."""
+
+    recovery_codes: list[str]
+
+
+class TwoFactorVerifyResponse(BaseModel):
+    """The session is verified."""
+
+    verified: bool = True
+    recovery_codes_left: int

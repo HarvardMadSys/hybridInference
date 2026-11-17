@@ -19,8 +19,24 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT, type Translate } from '@/components/providers/useT';
 import { EmailBindForm } from '@/components/auth/EmailBindForm';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
+import { ssoErrorMessage } from '@/components/auth/ssoMessages';
 import { DangerZone } from '@/components/features/auth/DeleteAccount';
+import {
+  TWO_FACTOR_ANCHOR,
+  TwoFactorSettings,
+  useShowTwoFactorSettings,
+} from '@/components/features/twoFactor/TwoFactorSettings';
 import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
+import { SsoIdentitiesPanel, useSsoIdentities } from '@/components/features/auth/SsoIdentities';
+import {
+  SsoReauthConfirm,
+  SsoReauthProvider,
+  ssoReauthRequired,
+  useSsoReauth,
+  useSsoReturn,
+  type SsoReturn,
+} from '@/components/features/auth/SsoReauth';
+import type { SsoReauthPurpose } from '@/lib/api/sso';
 
 function createPasswordSchema(requireOldPassword: boolean, t: Translate) {
   return z
@@ -59,12 +75,26 @@ function createPasswordSchema(requireOldPassword: boolean, t: Translate) {
 
 type ChangePasswordFormData = z.infer<ReturnType<typeof createPasswordSchema>>;
 
+/**
+ * The section each action confirmed at an identity provider lives in, so that
+ * the page it comes back to can be scrolled there. Deleting the account has
+ * none: its dialog opens over the page.
+ */
+const SECTION_OF_PURPOSE: Partial<Record<SsoReauthPurpose, string>> = {
+  bind_email: 'settings-email',
+  set_password: 'settings-password',
+  link_sso: 'settings-sso',
+  unlink_sso: 'settings-sso',
+};
+
 function SettingsSection({
+  id,
   title,
   description,
   tone = 'default',
   children,
 }: {
+  id?: string;
   title: React.ReactNode;
   description: React.ReactNode;
   tone?: 'default' | 'danger';
@@ -72,6 +102,7 @@ function SettingsSection({
 }) {
   return (
     <section
+      id={id}
       className={
         tone === 'danger'
           ? 'rounded-xl border border-red-200/80 bg-white p-4 shadow-sm sm:p-6'
@@ -97,12 +128,32 @@ function SettingsSection({
   );
 }
 
+/**
+ * The page reads how a round trip to an identity provider came back -- an
+ * action confirmed, an identity linked, or a failure -- before it draws the
+ * sections, so that each of them finds its own part of the answer.
+ */
 function SettingsContent() {
+  const { state } = useAuth();
+  const ssoReturn = useSsoReturn(state.user?.id ?? null);
+  return (
+    <SsoReauthProvider value={ssoReturn.reauth}>
+      <SettingsSections ssoReturn={ssoReturn} />
+    </SsoReauthProvider>
+  );
+}
+
+function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
   const toast = useAccountToast();
   const { state, refreshUser } = useAuth();
-  const { branding, features } = useSiteConfig();
+  const { branding, features, sso } = useSiteConfig();
   const t = useT();
   const hasPassword = state.user?.has_password !== false;
+  // An account with no password and no phone confirms at its identity provider.
+  const passwordReauth = useSsoReauth('set_password');
+  const ssoIdentities = useSsoIdentities(state.user?.id ?? null);
+  const [ssoError, setSsoError] = useState(ssoReturn.error);
+  const showTwoFactor = useShowTwoFactorSettings();
   const [profileLoading, setProfileLoading] = useState(false);
   const [profileError, setProfileError] = useState<string | null>(null);
   const [profileSuccess, setProfileSuccess] = useState<string | null>(null);
@@ -135,6 +186,20 @@ function SettingsContent() {
   useEffect(() => {
     setAvatarDraft(state.user?.avatar_url ?? null);
   }, [state.user?.avatar_url]);
+
+  // What the round trip came back with is fixed when the page loads: said
+  // once, and the action it confirmed brought into view.
+  const { linked, reauth: arrival } = ssoReturn;
+  const [arrivedFor] = useState(arrival.confirmed);
+  const arrivalShown = useRef(false);
+  useEffect(() => {
+    if (arrivalShown.current) return;
+    arrivalShown.current = true;
+    if (linked) toast.success(t('settings.sso.connected_toast', 'Single sign-on connected.'));
+    const section = arrivedFor ? SECTION_OF_PURPOSE[arrivedFor] : undefined;
+    // Not every environment scrolls: the page is still right where it is.
+    if (section) document.getElementById(section)?.scrollIntoView?.({ block: 'center' });
+  }, [linked, arrivedFor, toast, t]);
 
   const handleAvatarChange = async (nextAvatar: string | null) => {
     setAvatarDraft(nextAvatar);
@@ -189,7 +254,14 @@ function SettingsContent() {
   };
 
   const onPasswordSubmit = async (data: ChangePasswordFormData) => {
-    if (!hasPassword && !isCompleteCode(setPasswordCode)) {
+    // A first password is confirmed at the identity provider, or with a code.
+    const firstByProvider = hasPassword ? null : passwordReauth;
+    if (firstByProvider) {
+      if (!firstByProvider.confirmed) {
+        setPasswordError(ssoReauthRequired(t, firstByProvider.provider));
+        return;
+      }
+    } else if (!hasPassword && !isCompleteCode(setPasswordCode)) {
       setPasswordError(
         t('settings.password.code_required', 'Enter the verification code sent to your phone.'),
       );
@@ -203,8 +275,10 @@ function SettingsContent() {
       const result = await updatePassword(
         data.oldPassword || '',
         data.newPassword,
-        hasPassword ? undefined : setPasswordCode,
+        // Confirmed at the identity provider, the request carries no code either.
+        hasPassword || firstByProvider ? undefined : setPasswordCode,
       );
+      firstByProvider?.settle();
       setSetPasswordCode('');
       await refreshUser();
       setPasswordSuccess(result.message);
@@ -215,6 +289,7 @@ function SettingsContent() {
       );
       passwordForm.reset();
     } catch (err) {
+      firstByProvider?.settle(err);
       const errorMsg = getErrorMessage(err);
       setPasswordError(errorMsg);
       toast.error(errorMsg);
@@ -247,6 +322,22 @@ function SettingsContent() {
           )}
         </div>
       </div>
+
+      {ssoError && (
+        <div
+          role="alert"
+          className="flex items-start justify-between gap-3 rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
+        >
+          <span>{ssoErrorMessage(t, ssoError)}</span>
+          <button
+            type="button"
+            className="shrink-0 font-medium text-red-700 underline-offset-2 hover:underline"
+            onClick={() => setSsoError(null)}
+          >
+            {t('settings.sso.dismiss_error', 'Dismiss')}
+          </button>
+        </div>
+      )}
 
       <SettingsSection
         title={t('settings.language.title', 'Language')}
@@ -348,6 +439,7 @@ function SettingsContent() {
       </SettingsSection>
 
       <SettingsSection
+        id="settings-email"
         title={t('settings.email.title', 'Email Address')}
         description={
           state.user?.email
@@ -394,8 +486,22 @@ function SettingsContent() {
         </SettingsSection>
       )}
 
-      {(hasPassword || (features.phoneAuth && verifiedPhone)) && (
+      {(ssoIdentities.identities.length > 0 || sso.enabled) && (
         <SettingsSection
+          id="settings-sso"
+          title={t('settings.sso.title', 'Single sign-on')}
+          description={t(
+            'settings.sso.description',
+            'Organization accounts that can sign in to this account.',
+          )}
+        >
+          <SsoIdentitiesPanel {...ssoIdentities} />
+        </SettingsSection>
+      )}
+
+      {(hasPassword || (features.phoneAuth && verifiedPhone) || passwordReauth) && (
+        <SettingsSection
+          id="settings-password"
           title={
             hasPassword
               ? t('settings.password.change_title', 'Change Password')
@@ -438,6 +544,8 @@ function SettingsContent() {
                 error={passwordForm.formState.errors.oldPassword?.message}
                 {...passwordForm.register('oldPassword')}
               />
+            ) : passwordReauth ? (
+              <SsoReauthConfirm reauth={passwordReauth} disabled={passwordLoading} />
             ) : verifiedPhone ? (
               <OwnerPhoneCode
                 phone={verifiedPhone}
@@ -479,6 +587,20 @@ function SettingsContent() {
             </div>
           </form>
         </SettingsSection>
+      )}
+
+      {showTwoFactor && (
+        <div id={TWO_FACTOR_ANCHOR} className="scroll-mt-24">
+          <SettingsSection
+            title={t('two_factor.settings.title', 'Two-Factor Authentication')}
+            description={t(
+              'two_factor.settings.description',
+              'A code from an authenticator app on your phone, asked for before administrator access. A copied session or password is not enough without it.',
+            )}
+          >
+            <TwoFactorSettings />
+          </SettingsSection>
+        </div>
       )}
 
       <SettingsSection

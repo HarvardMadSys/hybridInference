@@ -24,9 +24,10 @@ from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse
 from pydantic import TypeAdapter, ValidationError
 
+from serving.observability import detached_tasks
 from serving.request_limits import responses_limit_problem
 from serving.responses_translator import (
     ResponsesStreamTranslator,
@@ -59,6 +60,7 @@ from serving.servers.routers.completions import (
     execute_chat,
     release_unstarted_chat_streams,
 )
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.responses_store import decode_conversation
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
@@ -91,6 +93,8 @@ def _schedule(coro: Any) -> None:
     task = asyncio.create_task(coro)
     _background_tasks.add(task)
     task.add_done_callback(_background_tasks.discard)
+    # Counted until saved, so a process is not finished while it saves.
+    detached_tasks.track(task, name="responses_save")
 
 
 #: How the chat request schema reads ``stream`` (``ChatCompletionRequest.stream``).
@@ -257,7 +261,7 @@ async def create_response(
         if result.chat_stream is not None:
             # Closed at the end of the request if the response never started.
             _streams.append(result.chat_stream)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             result.events,
             media_type="text/event-stream",
             headers={**_SSE_HEADERS, **result.headers},
@@ -482,6 +486,14 @@ async def _response_events(
         for event in closing:
             yield event.encode()
     finally:
+        # These events own *frames*. Leaving the loop above -- the client gone,
+        # the request cancelled, an error -- does not close it, and its close
+        # is where the chat stream bills what it did and queues its log row.
+        # Closed here, inside the request (shielded, bounded), not whenever the
+        # garbage collector reaches it: a process may be sealed as soon as the
+        # request ends.
+        if frames is not None:
+            await close_body(frames)
         # Early client disconnect / cancellation interrupts the loop before
         # the synchronous persist above runs. Force-finalize and persist
         # best-effort (fire-and-forget — the client is gone) so the partial

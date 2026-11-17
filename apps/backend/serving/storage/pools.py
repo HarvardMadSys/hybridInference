@@ -129,7 +129,31 @@ async def request_connection(pool: Any, *, timeout: float | None = None) -> Asyn
             raise DatabaseBusyError(
                 f"no request-path database connection within {timeout:g}s"
             ) from exc
-        yield conn
+        try:
+            yield conn
+        finally:
+            free_if_closed(conn)
+
+
+def free_if_closed(conn: Any) -> None:
+    """Give a pooled connection that was closed while it was out its place in the pool back.
+
+    The pool frees a connection's place when the connection is cleaned up,
+    and on release takes a closed one to have been. One path in asyncpg
+    closes without cleaning up: a statement sent while the protocol is still
+    reading an error the server sent unasked -- a session the server ended,
+    by an idle-in-transaction timeout or an administrator, a moment before
+    the client saw the socket close. That statement fails with
+    ``InternalClientError``, the protocol aborts itself, and the place is
+    never free again: a pool of four is gone after four of those, and every
+    wait for a connection then times out until the process restarts.
+
+    ``terminate()`` on a closed connection only cleans up, and on one already
+    cleaned up does nothing. Called before the connection is released.
+    """
+    with contextlib.suppress(Exception):
+        if conn.is_closed() is True:
+            conn.terminate()
 
 
 class _LoopSemaphore:

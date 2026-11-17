@@ -688,6 +688,7 @@ def _start_live_config(pool: Any) -> None:
         return
     from serving.config import instances
     from serving.servers import restart
+    from serving.shared_spend import mode as spend_mode
 
     reporter = instances.InstanceReporter(
         pool=pool,
@@ -697,6 +698,7 @@ def _start_live_config(pool: Any) -> None:
             **live_config.COORDINATOR.capabilities(),
             "groups": {**live_config.COORDINATOR.capabilities()["groups"], "routing.runtime": [1]},
             "details": instances.default_details(),
+            spend_mode.CAPABILITY: spend_mode.capability(),
         },
     )
     live_config.COORDINATOR.start(reporter)
@@ -1006,6 +1008,15 @@ async def initialize() -> AppServices:
                 # Checked again on the pool everything else uses: the
                 # configuration load may have run without the database.
                 await require_schema(db_logger.pool)
+                # The spend accounting mode, once, for this process's life.
+                from serving.shared_spend import mode as spend_mode
+
+                await spend_mode.load(db_logger.pool)
+                logger.info(
+                    "Spend accounting mode: %s",
+                    spend_mode.current(),
+                    extra={"event": "spend_accounting_mode", "mode": spend_mode.current()},
+                )
                 logger.info("Database logger initialized successfully")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
@@ -1315,6 +1326,12 @@ async def initialize() -> AppServices:
         )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
+        from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
+
+        if spend_mode.is_shared():
+            # Fail closed at startup: every admission and cost reaches one
+            # ledger through this store, or the process does not start.
+            shared_ledger.ledger_for(operational_store)
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
@@ -1323,17 +1340,20 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
+        from serving.storage.postgres_operational import reconcile_key_quota_copies
         from serving.storage.project_backfill import backfill_projects
 
         async def _run_project_backfill() -> None:
             try:
                 async with db_logger.pool.acquire() as conn:
                     accounts = await backfill_projects(conn)
+                    key_quotas = await reconcile_key_quota_copies(conn)
                 logger.info(
                     "project_backfill_complete",
                     extra={
                         "event": "project_backfill_complete",
                         "accounts": accounts,
+                        "key_quotas_reconciled": key_quotas,
                     },
                 )
             except Exception:
@@ -2000,6 +2020,12 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Where a release handoff stood, for its record: a process sealed before
+    # its stop has nothing in flight (serving/servers/handoff.py).
+    from serving.servers import handoff
+
+    handoff.log_at_shutdown()
+
     # The batch worker first: its in-flight requests run through the whole
     # serving stack (router, pricing, stores), so it stops before any of that
     # is torn down.

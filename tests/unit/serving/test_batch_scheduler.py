@@ -301,10 +301,12 @@ class FakeDispatch:
         attempt=None,
         protocol_profile=None,
         timeout_s=None,
+        **shared,
     ):
         model = body["model"]
         self.calls.append(
             {
+                **shared,
                 "user_ctx": user_ctx,
                 "body": body,
                 "batch_id": batch_id,
@@ -1926,3 +1928,210 @@ async def test_project_cap_is_shared_by_batch_and_interactive_work():
     release()
     assert limiter._slots[slot].in_use == 0
     assert scheduler._role_slots._slots[OWNER].in_use == 0
+
+
+# -- the shared accounting mode -------------------------------------------------
+
+
+def _shared_ledger():
+    from serving.shared_spend.ledger import SharedSpendLedger
+    from tests.fixtures.shared_spend import FakeSharedBackend
+
+    backend = FakeSharedBackend()
+    return SharedSpendLedger(backend, instance_id="inst-batch"), backend
+
+
+async def test_a_shared_reservation_rides_into_the_attempt_and_is_settled(worker, dispatch, auth):
+    ledger, backend = _shared_ledger()
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    scheduler.start()
+    await until(lambda: store.count("completed") == 1)
+    (call,) = dispatch.calls
+    reservation = call["spend_reservation"]
+    assert reservation.state in ("queued", "retired")
+    assert await ledger.flush(5)
+    (batch,) = backend.batches
+    assert [m.kind for m in batch.members] == ["settle"]
+    assert backend.rows == {}
+
+
+async def test_an_attempt_whose_charge_is_unknown_gives_its_reservation_back(
+    worker, dispatch, auth
+):
+    # The batch records the attempt's cost as unknown itself (``cost_status``);
+    # the owner's budget is not held for it, as in the per-process mode.
+    ledger, backend = _shared_ledger()
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    dispatch.results["m1"] = dataclasses.replace(
+        OK,
+        status_code=504,
+        response=None,
+        cost_status="unknown",
+        timed_out=True,
+        error={"code": "timeout", "message": "timed out", "status": 504},
+    )
+    store = FakeStore()
+    store.add(1)
+    scheduler = worker(store)
+    scheduler.start()
+    await until(lambda: len(dispatch.calls) >= 1)
+    await until(lambda: bool(backend.batches))
+    assert await ledger.flush(5)
+    kinds = [m.kind for b in backend.batches for m in b.members]
+    assert kinds[0] == "settle"
+    assert backend.rows == {} and backend.counters == {}
+
+
+async def test_a_shared_admission_that_cannot_be_made_hands_the_item_back(worker, dispatch, auth):
+    ledger, backend = _shared_ledger()
+    backend.fail_admit = OSError("database down")
+    import serving.shared_spend.ledger as shared_ledger_module
+
+    auth.outcome = _owner_ctx(**{SPEND_CHECK_KEY: _spend_check(ledger, quota_usd=1.0)})
+    store = FakeStore()
+    store.add(1)
+    original = shared_ledger_module.ADMISSION_BUDGET_SECONDS
+    shared_ledger_module.ADMISSION_BUDGET_SECONDS = 0.1
+    try:
+        scheduler = worker(store)
+        scheduler.start()
+        await until(lambda: store.calls["release_item"] >= 1)
+    finally:
+        shared_ledger_module.ADMISSION_BUDGET_SECONDS = original
+    assert dispatch.calls == []
+    assert backend.rows == {}
+
+
+# -- a release handoff pauses this worker's claims ------------------------------
+
+
+async def test_a_paused_worker_claims_nothing_and_finishes_what_it_runs(worker, dispatch):
+    store = FakeStore()
+    store.add(1)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, caps={"m1": 5})
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+
+    scheduler.pause_claims()
+    claims, sweeps, rounds = len(store.claims), len(store.sweeps), store.calls["active_models"]
+    store.add(3)
+    scheduler._next_sweep = 0.0  # a sweep falls due
+    scheduler.notify()
+    await asyncio.sleep(0.05)
+
+    # No claim, no sweep, not even a look at what is queued.
+    assert len(store.claims) == claims
+    assert len(store.sweeps) == sweeps
+    assert store.calls["active_models"] == rounds
+    assert scheduler.handoff_report() == {
+        "running": True,
+        "paused": True,
+        "items": 1,
+        "claiming": 0,
+        "jobs": 0,
+        "finished": False,
+    }
+
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert store.count("queued") == 3
+
+    scheduler.resume_claims()
+    await until(lambda: store.count("completed") == 4)
+    assert scheduler.handoff_report()["paused"] is False
+
+
+def _handoff_blocking(scheduler) -> list[str]:
+    from serving.servers import handoff
+
+    services = types.SimpleNamespace(batch_scheduler=scheduler, completions_logger=None)
+    return handoff.blockers(services, handoff.Handoff())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "write"),
+    [
+        # A revoked key: the item is handed back, then its batch is failed.
+        (lambda: StoredKeyRejected("the API key was revoked"), "fail_batch"),
+        # A role that no longer qualifies: handed back, then the owner paused.
+        (lambda: _owner_ctx(role="pro"), "pause_user_batches"),
+        # A spent quota: handed back, then the owner paused until it renews.
+        (
+            lambda: StoredKeyQuotaExceeded(
+                quota_usd=10.0, spent_usd=10.0, reset_at=datetime.now(UTC) + timedelta(hours=3)
+            ),
+            "pause_user_batches",
+        ),
+    ],
+    ids=["revoked_key", "role", "quota"],
+)
+async def test_an_item_handed_back_holds_the_handoff_until_its_last_write_is_done(
+    worker, dispatch, auth, outcome, write
+):
+    """Handed back is not finished: the item's task still has a write to make."""
+    auth.outcome = outcome()
+    store = FakeStore()
+    store.add(1)
+    entered, gate = asyncio.Event(), asyncio.Event()
+    original = getattr(store, write)
+
+    async def slow_write(*args, **kwargs):
+        entered.set()
+        await gate.wait()
+        return await original(*args, **kwargs)
+
+    setattr(store, write, slow_write)
+    scheduler = worker(store)
+    scheduler.start()
+    await asyncio.wait_for(entered.wait(), 2)
+
+    assert store.calls["release_item"] == 1  # handed back already
+    report = scheduler.handoff_report()
+    assert (report["items"], report["finished"]) == (1, False)
+    assert "batch_work_running" in _handoff_blocking(scheduler)
+
+    gate.set()
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert "batch_work_running" not in _handoff_blocking(scheduler)
+    if write == "fail_batch":
+        assert store.batches["b1"]["status"] == "failed"
+    else:
+        assert OWNER in store.paused
+    assert dispatch.calls == []
+
+
+async def test_a_claim_under_way_when_paused_holds_the_handoff_and_hands_its_items_back(
+    worker, dispatch
+):
+    """The claim's items are in the database's hands, not yet in this worker's."""
+
+    class SlowClaimStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = asyncio.Event()
+            self.entered = asyncio.Event()
+
+        async def claim_items(self, **kwargs):
+            self.entered.set()
+            await self.gate.wait()
+            return await super().claim_items(**kwargs)
+
+    store = SlowClaimStore()
+    store.add(2)
+    scheduler = worker(store, caps={"m1": 5})
+    scheduler.start()
+    await asyncio.wait_for(store.entered.wait(), 2)
+
+    scheduler.pause_claims()
+    report = scheduler.handoff_report()
+    assert (report["claiming"], report["finished"]) == (1, False)
+
+    store.gate.set()
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert dispatch.calls == []
+    assert store.count("queued") == 2

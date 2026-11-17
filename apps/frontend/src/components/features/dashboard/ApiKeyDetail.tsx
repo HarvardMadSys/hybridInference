@@ -4,7 +4,7 @@ import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import type { ApiKeyListItem, ApiKeyUpdate } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
-import { useApiKeys, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
+import { useApiKeys, useProjects, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { formatUsd } from '@/lib/utils/currency';
 import { fill } from '@/lib/utils/interpolate';
@@ -14,6 +14,7 @@ import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { limitsSummary, parseBudget } from './keyLimits';
 import { ModelPicker } from './ModelPicker';
+import { projectHasLimits, projectSummary } from './ProjectDialogs';
 
 const CARD = 'rounded-xl bg-white p-4 shadow-sm ring-1 ring-gray-200 sm:p-6';
 
@@ -184,6 +185,8 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
   const toast = useAccountToast();
   const update = useUpdateApiKey();
   const { data: usage } = useUsageStats('today');
+  const { data: projects } = useProjects();
+  const project = projects?.find((candidate) => candidate.id === apiKey.project_id);
 
   const [daily, setDaily] = useState(budgetText(apiKey.budget_daily_usd));
   const [monthly, setMonthly] = useState(budgetText(apiKey.budget_monthly_usd));
@@ -255,6 +258,17 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
             'Limit what this key can spend and which models it can call. Requests over a limit are refused; your other keys are not affected.',
           )}
         </p>
+        {project && projectHasLimits(project) && (
+          <p className="mt-2 rounded-md bg-gray-50 px-3 py-2 text-sm text-gray-600 ring-1 ring-inset ring-gray-200">
+            {fill(
+              t(
+                'dashboard.key_detail.project_limits',
+                'Project {name} limits this key too, together with its other keys: {summary}.',
+              ),
+              { name: project.name, summary: projectSummary(project, t) },
+            )}
+          </p>
+        )}
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">

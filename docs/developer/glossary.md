@@ -90,6 +90,22 @@ Routing file
   local/remote weight split; see [The routing file](configuration.md#the-routing-file)
   for what it does and does not change.
 
+## Accounts and sign-in
+
+Single sign-on (SSO)
+: Signing in to the console with an account that an organization manages,
+  instead of a password kept by the gateway. [Single Sign-On](sso.md) explains
+  how to set it up.
+
+Identity provider
+: The organization's system that signs its members in and tells the gateway
+  who they are. The gateway connects to identity providers that speak OpenID
+  Connect (OIDC).
+
+Link
+: The record that an identity at an identity provider signs in to one account.
+  An account can hold links to several identity providers.
+
 ## Deployments
 
 Distribution

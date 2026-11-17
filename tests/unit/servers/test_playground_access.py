@@ -37,7 +37,7 @@ from serving.stream import done_sentinel
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator
+    from collections.abc import AsyncGenerator, AsyncIterator, Callable
 
 INTERNAL = {"user_id": "u-internal", "role": "internal", "is_admin": False}
 ADMIN = {"user_id": "u-admin", "role": "admin", "is_admin": True}
@@ -186,6 +186,12 @@ async def _chat(client: AsyncClient, model: str, **extra: Any) -> Any:
     return await client.post("/internal/playground/chat", json=body)
 
 
+async def _until(condition: Callable[[], bool]) -> None:
+    """Return once ``condition`` holds; the caller bounds the wait."""
+    while not condition():
+        await asyncio.sleep(0.01)
+
+
 def _route_frames(response: Any) -> list[dict[str, Any]]:
     frames = [
         json.loads(line[6:])
@@ -280,13 +286,15 @@ async def test_a_stream_holds_one_of_the_callers_slots_until_it_ends() -> None:
             assert (await _chat(client, "admin-model")).status_code == 404
 
         first = asyncio.create_task(_chat(client, "open-model"))
-        for _ in range(200):
-            if deployment.lan.roles:
-                break
-            await asyncio.sleep(0)
-        second = await _chat(client, "open-model")
+        # Wait in time, not in loop turns: before it takes its slot the request
+        # resolves its user through a sync dependency, which runs in the thread
+        # pool, and on a busy runner no fixed number of turns covers that. A
+        # second request sent before the first holds its slot takes the slot
+        # itself and waits on the gate this test opens only after it returns.
+        await asyncio.wait_for(_until(lambda: bool(deployment.lan.roles)), timeout=10)
+        second = await asyncio.wait_for(_chat(client, "open-model"), timeout=10)
         deployment.lan.gate.set()
-        first_response = await first
+        first_response = await asyncio.wait_for(first, timeout=10)
         third = await _chat(client, "open-model")
 
     assert second.status_code == 429

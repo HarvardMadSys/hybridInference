@@ -19,6 +19,7 @@ from pydantic import (
 from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
+from serving.schemas_auth import SsoIdentity
 
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -479,6 +480,9 @@ class UserDetailResponse(BaseModel):
     phone_verified: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
+    two_factor_enabled: bool = Field(
+        False, description="The account has an authenticator app (see /auth/two-factor)"
+    )
     # Key info
     has_key: bool = False
     key_prefix: str | None = None
@@ -497,6 +501,8 @@ class UserDetailResponse(BaseModel):
     admin_note: str | None = None
     # Admin-authored message shown to the user on login while suspended.
     suspension_message: str | None = None
+    # The single sign-on identities linked to the account.
+    sso_identities: list[SsoIdentity] = Field(default_factory=list)
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -510,6 +516,24 @@ class UserDetailResponse(BaseModel):
     # user has none (or when activity stats were not requested — see
     # ``avg_turns`` above).
     ask_question_fraction: float | None = None
+
+
+class ResetUserTwoFactorRequest(BaseModel):
+    """Remove another account's authenticator."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The signed-in administrator's password, when their own account has "
+        "no authenticator to confirm with",
+    )
+
+
+class ResetUserTwoFactorResponse(BaseModel):
+    """What removing the authenticator did."""
+
+    user_id: str
+    removed: bool = Field(description="False when the account had none")
 
 
 class UpdateUserRequest(BaseModel):
@@ -3107,3 +3131,19 @@ class ClearAuthBlockResponse(BaseModel):  # type: ignore[no-any-unimported]
             "discarded either way."
         ),
     )
+
+
+class UnlinkSsoIdentityRequest(BaseModel):
+    """Remove a single sign-on identity from a user's account.
+
+    ``password`` is the signed-in administrator's own.
+    """
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class UnlinkSsoIdentityResponse(BaseModel):
+    """Result of removing a single sign-on identity from a user's account."""
+
+    user_id: str
+    message: str

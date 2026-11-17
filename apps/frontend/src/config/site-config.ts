@@ -168,6 +168,10 @@ const configurationStateSchema = z.object({ incomplete: z.boolean() });
 const phoneAuthPolicySchema = z.object({
   default_country_code: z.string().regex(/^(?:[1-9][0-9]{0,2})?$/),
 });
+// Single sign-on. The gateway sends the block only while a provider is
+// enabled, and it names none of them: which organizations sign in here is not
+// public. A top-level sibling of `features` for the reason given above.
+const ssoStateSchema = z.object({ enabled: z.boolean() });
 
 const versionedSiteConfigDocumentSchema = z
   .object({
@@ -183,6 +187,7 @@ const versionedSiteConfigDocumentSchema = z
     configuration: configurationStateSchema.nullish(),
     // Public number-input policy; transport credentials remain server-only.
     phone_auth_policy: phoneAuthPolicySchema.nullish(),
+    sso: ssoStateSchema.nullish(),
   })
   // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
   // with the branding object below is deliberate. This envelope is what a
@@ -233,6 +238,13 @@ export interface RuntimeSiteConfig {
   phoneAuthPolicy?: {
     defaultCountryCode: string;
   };
+  /**
+   * Single sign-on through an organization's identity provider. Off for a
+   * gateway that does not say otherwise, which includes every older one.
+   */
+  sso: {
+    enabled: boolean;
+  };
 }
 
 export const buildTimeSiteConfig: RuntimeSiteConfig = {
@@ -242,6 +254,7 @@ export const buildTimeSiteConfig: RuntimeSiteConfig = {
   features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
   setup: { required: false },
   configuration: { incomplete: false },
+  sso: { enabled: false },
 };
 
 function resolveBranding(input: unknown, displayName: string, supportEmail: string): Branding {
@@ -334,6 +347,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   let setupRequired = false;
   let configurationIncomplete = false;
   let phoneAuthPolicy: RuntimeSiteConfig['phoneAuthPolicy'];
+  let ssoEnabled = false;
   if ('schema_version' in document) {
     branding = resolveBranding(
       document.branding,
@@ -345,6 +359,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     if (document.phone_auth_policy) {
       phoneAuthPolicy = { defaultCountryCode: document.phone_auth_policy.default_country_code };
     }
+    ssoEnabled = document.sso?.enabled === true;
   } else {
     branding = resolveLegacyBranding(
       document.distribution.display_name,
@@ -373,6 +388,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     setup: { required: setupRequired },
     configuration: { incomplete: configurationIncomplete },
     ...(phoneAuthPolicy ? { phoneAuthPolicy } : {}),
+    sso: { enabled: ssoEnabled },
   };
 }
 
