@@ -21,7 +21,7 @@ from serving.schemas_auth import (
     ProjectConcurrencyLimit,
     UserConcurrencyLimit,
 )
-from serving.servers.auth import verify_api_key_for_balance
+from serving.servers.auth import _anonymous_context, verify_api_key_for_balance
 from serving.servers.concurrency import (
     COUNT_TOKENS_USER_CONCURRENCY_LIMIT,
     EXEMPT_MODEL_USER_CONCURRENCY_LIMIT,
@@ -47,7 +47,14 @@ async def get_limits(
     no cap of its own. ``project`` and ``org`` are ``null`` when the key is not
     attributed to one; the API-key auth lookup currently fills in project
     attribution only, so ``org`` is ``null`` for every key today.
+
+    The balance dependency returns a bare identity while user authentication
+    is disabled, so it is normalized here to the anonymous admin context that
+    ``verify_api_key`` gives inference requests on the same deployment.
     """
+    if not user_ctx.get("authenticated"):
+        user_ctx = _anonymous_context()
+
     try:
         rt = get_runtime_settings_instance()
     except RuntimeError:

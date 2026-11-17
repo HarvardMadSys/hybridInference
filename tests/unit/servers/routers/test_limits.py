@@ -25,7 +25,7 @@ def runtime_settings(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_role_cap_is_used_without_an_override(runtime_settings):
-    body = await limits.get_limits({"user_id": "u1", "role": "pro"})
+    body = await limits.get_limits({"user_id": "u1", "role": "pro", "authenticated": True})
 
     runtime_settings.get_int.assert_awaited_once_with("user_concurrency_pro")
     assert body.user.role == "pro"
@@ -37,7 +37,9 @@ async def test_role_cap_is_used_without_an_override(runtime_settings):
 
 @pytest.mark.asyncio
 async def test_override_wins_and_bounds_the_special_budgets(runtime_settings):
-    body = await limits.get_limits({"user_id": "u1", "role": "free", "max_concurrent_requests": 2})
+    body = await limits.get_limits(
+        {"user_id": "u1", "role": "free", "authenticated": True, "max_concurrent_requests": 2}
+    )
 
     runtime_settings.get_int.assert_not_awaited()
     assert body.user.source == "override"
@@ -48,7 +50,9 @@ async def test_override_wins_and_bounds_the_special_budgets(runtime_settings):
 
 @pytest.mark.asyncio
 async def test_zero_means_unlimited_and_does_not_lower_special_budgets(runtime_settings):
-    body = await limits.get_limits({"user_id": "u1", "role": "admin", "max_concurrent_requests": 0})
+    body = await limits.get_limits(
+        {"user_id": "u1", "role": "admin", "authenticated": True, "max_concurrent_requests": 0}
+    )
 
     assert body.user.max_concurrency == 0
     assert body.exempt_models.max_concurrency == 0
@@ -57,7 +61,7 @@ async def test_zero_means_unlimited_and_does_not_lower_special_budgets(runtime_s
 
 @pytest.mark.asyncio
 async def test_default_special_budgets_apply_without_an_override(runtime_settings):
-    body = await limits.get_limits({"user_id": "u1", "role": "free"})
+    body = await limits.get_limits({"user_id": "u1", "role": "free", "authenticated": True})
 
     assert body.exempt_models.max_concurrency == EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
     assert body.count_tokens.max_concurrency == COUNT_TOKENS_USER_CONCURRENCY_LIMIT
@@ -69,6 +73,7 @@ async def test_project_and_org_caps_are_reported_when_present(runtime_settings):
         {
             "user_id": "u1",
             "role": "free",
+            "authenticated": True,
             "project_id": "prj_1",
             "project_name": "Team",
             "project_max_concurrent_requests": 12,
@@ -97,6 +102,7 @@ async def test_route_serves_the_limits_for_the_authenticated_key(monkeypatch):
     app.dependency_overrides[limits.verify_api_key_for_balance] = lambda: {
         "user_id": "u1",
         "role": "free",
+        "authenticated": True,
         "max_concurrent_requests": 5,
     }
 
