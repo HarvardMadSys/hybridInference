@@ -36,6 +36,35 @@ vi.mock('react-hot-toast', () => ({
   default: { success: vi.fn(), error: vi.fn() },
 }));
 
+/** The administrator's single sign-on confirmation; none unless a test sets one. */
+const adminSso = vi.hoisted(() => ({
+  current: null as null | {
+    provider: { id: string; name: string };
+    purpose: 'admin_action';
+    confirmed: boolean;
+    draft: string | null;
+    settle: (error?: unknown) => void;
+    returnTo: string;
+    userId: string;
+  },
+}));
+vi.mock('@/components/features/admin/confirm/adminSsoReauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/features/admin/confirm/adminSsoReauth')>()),
+  useAdminSsoReauth: () => adminSso.current,
+  useSpendAdminSso:
+    () =>
+    async <T,>(write: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await write();
+        adminSso.current?.settle();
+        return result;
+      } catch (error) {
+        adminSso.current?.settle(error);
+        throw error;
+      }
+    },
+}));
+
 import {
   exportConfigBackup,
   getConfig,
@@ -3066,5 +3095,122 @@ describe('security-relevant settings', () => {
       secrets: { MY_REGION: false },
       password: 'admin-password',
     });
+  });
+});
+
+describe('an administrator who confirms through single sign-on', () => {
+  /** Back from the provider, confirmed: no password is asked for. */
+  function confirmedSso() {
+    const settle = vi.fn();
+    adminSso.current = {
+      provider: { id: 'okta', name: 'Okta' },
+      purpose: 'admin_action',
+      confirmed: true,
+      draft: null,
+      settle,
+      returnTo: '/dashboard/admin/settings',
+      userId: 'u-admin',
+    };
+    return settle;
+  }
+
+  function guardedConfig(): ConfigResponse {
+    const base = makeConfig();
+    return {
+      ...base,
+      entries: base.entries.map((item) => ({ ...item, security_relevant: true })),
+    };
+  }
+
+  afterEach(() => {
+    adminSso.current = null;
+  });
+
+  it('spends the confirmation on a guarded save, so the next one asks again', async () => {
+    const settle = confirmedSso();
+    await renderTab(guardedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    save('Email (SMTP)');
+
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).queryByLabelText('Your password')).not.toBeInTheDocument();
+    expect(within(dialog).getByText('Identity confirmed. You can continue.')).toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(patchConfig).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith();
+  });
+
+  it('spends it when the gateway refuses the save too', async () => {
+    const settle = confirmedSso();
+    const refusal = new APIError(
+      'BAD_REQUEST',
+      "Confirm your identity with your organization's sign-in first.",
+      400,
+    );
+    vi.mocked(patchConfig).mockRejectedValueOnce(refusal);
+    await renderTab(guardedConfig());
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    save('Email (SMTP)');
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(settle).toHaveBeenCalledWith(refusal));
+  });
+
+  it('spends it on a backup with secret values, accepted or refused', async () => {
+    const settle = confirmedSso();
+    const refusal = new APIError('BAD_REQUEST', 'Confirm your identity first.', 400);
+    vi.mocked(exportConfigBackup)
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValueOnce({ schema_version: 1, secrets_included: true });
+    await renderTab();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Backup with secrets' }));
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Download backup with secret values?',
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    await waitFor(() => expect(settle).toHaveBeenCalledWith(refusal));
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Download' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(settle).toHaveBeenLastCalledWith();
+    expect(settle).toHaveBeenCalledTimes(2);
+  });
+
+  it('spends it on a restore that changes security settings', async () => {
+    const settle = confirmedSso();
+    vi.mocked(restoreConfigBackup).mockResolvedValueOnce({
+      config: makeConfig(),
+      immutable_keys_preserved: [],
+      security_changes: ['app_config:ADMIN_EMAILS'],
+      secrets_not_restored: [],
+    });
+    vi.mocked(previewConfigRestore).mockResolvedValueOnce({
+      security_changes: ['app_config:ADMIN_EMAILS'],
+      secrets_not_restored: [],
+    });
+    await renderTab();
+    const payload = {
+      schema_version: 1,
+      secrets_included: false,
+      app_config: [{ key: 'ADMIN_EMAILS', value: 'mallory@example.com', source: 'admin' }],
+    };
+    const file = new File([JSON.stringify(payload)], 'backup.json', { type: 'application/json' });
+    Object.defineProperty(file, 'text', { value: async () => JSON.stringify(payload) });
+    fireEvent.change(screen.getByLabelText('Select configuration backup file'), {
+      target: { files: [file] },
+    });
+    const dialog = await screen.findByRole('dialog', {
+      name: 'Restore configuration from backup?',
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore configuration' }));
+
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+    expect(restoreConfigBackup).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith();
   });
 });

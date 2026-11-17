@@ -13,6 +13,7 @@ import {
   ReauthPassword,
   useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
@@ -255,6 +256,7 @@ export function useConfigurationEditor({
   const settingsPassword = useRef('');
   // An administrator with an authenticator app confirms with its code instead.
   const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -545,18 +547,20 @@ export function useConfigurationEditor({
     try {
       if (keys.length > 0 || secrets.length > 0) {
         attempted = [...new Set([...keys, ...secrets])];
-        const next = await patchConfig(
-          {
-            values,
-            ...(secrets.length > 0
-              ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
-              : {}),
-            ...(password !== undefined && keys.some((key) => guarded.includes(key))
-              ? { password }
-              : {}),
-          },
-          ...versioned(base),
-        );
+        const confirms = password !== undefined && keys.some((key) => guarded.includes(key));
+        const write = () =>
+          patchConfig(
+            {
+              values,
+              ...(secrets.length > 0
+                ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
+                : {}),
+              ...(confirms ? { password } : {}),
+            },
+            ...versioned(base),
+          );
+        // A guarded save spends a single sign-on confirmation, accepted or refused.
+        const next = confirms ? await spendSso(write) : await write();
         const committed = committedVersion(next, base);
         chain(base, committed);
         base = committed;
@@ -580,7 +584,9 @@ export function useConfigurationEditor({
         failedReset = key;
         const next =
           password !== undefined && guarded.includes(key)
-            ? await resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password })
+            ? await spendSso(() =>
+                resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password }),
+              )
             : await resetConfigKey(key, ...versioned(base));
         const committed = committedVersion(next, base);
         chain(base, committed);
@@ -773,7 +779,9 @@ export function useConfigurationEditor({
         if (!password && !withoutPassword) {
           throw new Error('Enter your password to include secret values.');
         }
-        downloadBackupJson(await exportConfigBackup({ includeSecrets: true, password }));
+        downloadBackupJson(
+          await spendSso(() => exportConfigBackup({ includeSecrets: true, password })),
+        );
         backupPassword.current = '';
         toast.success(
           'Downloaded configuration backup with secret values. It holds API keys and secrets in plain text: store it securely.',
@@ -896,7 +904,9 @@ export function useConfigurationEditor({
           }
           confirmation = { securityChanges, password };
         }
-        const res = await restoreConfigBackup(parsed, confirmation);
+        const res = confirmation
+          ? await spendSso(() => restoreConfigBackup(parsed, confirmation))
+          : await restoreConfigBackup(parsed, confirmation);
         backupPassword.current = '';
         setConfig(res.config);
         setDrafts({});

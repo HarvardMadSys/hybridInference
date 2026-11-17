@@ -24,7 +24,7 @@ const confirm = vi.hoisted(() => ({
     purpose: 'admin_action';
     confirmed: boolean;
     draft: string | null;
-    settle: ReturnType<typeof vi.fn>;
+    settle: (error?: unknown) => void;
     returnTo: string;
     userId: string;
   },
@@ -39,6 +39,19 @@ vi.mock('@/components/providers/TwoFactorProvider', () => ({
 vi.mock('@/components/features/admin/confirm/adminSsoReauth', () => ({
   ADMIN_REAUTH_PURPOSE: 'admin_action',
   useAdminSsoReauth: () => confirm.sso,
+  // As the real hook: spend the confirmation once the gateway has answered.
+  useSpendAdminSso:
+    () =>
+    async <T,>(write: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await write();
+        confirm.sso?.settle();
+        return result;
+      } catch (error) {
+        confirm.sso?.settle(error);
+        throw error;
+      }
+    },
   AdminSsoReauthScope: ({ children }: { children: unknown }) => children,
 }));
 

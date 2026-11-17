@@ -7,9 +7,9 @@ import { CONTROL, PANEL } from '@/components/features/admin/adminStyles';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import {
   ReauthPassword,
-  useAdminSsoReauth,
   useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 
@@ -113,7 +113,7 @@ export function RuntimeSettingsSection({
   // A guarded save is confirmed in a dialog; the password typed there, if any.
   const password = useRef('');
   const withoutPassword = useConfirmsWithoutPassword();
-  const sso = useAdminSsoReauth();
+  const spendSso = useSpendAdminSso();
 
   const savedDraft = (setting: RuntimeSettingItem) =>
     isFlag(setting) ? !!setting.value : String(setting.value ?? '');
@@ -200,18 +200,13 @@ export function RuntimeSettingsSection({
         if (!given && !withoutPassword) {
           throw new Error('Enter your password to save these settings.');
         }
-        let updated: RuntimeSettingItem[];
-        try {
-          updated = await updateRuntimeSettings(
+        // A refusal (a wrong password, a code owed) stays in the dialog.
+        const updated = await spendSso(() =>
+          updateRuntimeSettings(
             Object.fromEntries(pending.map(({ setting, value }) => [setting.key, value])),
             given || undefined,
-          );
-        } catch (error) {
-          // A refusal (a wrong password, a code owed) stays in the dialog.
-          sso?.settle(error);
-          throw error;
-        }
-        sso?.settle();
+          ),
+        );
         password.current = '';
         for (const item of updated) onSaved(item);
         dropDrafts(pending.map(({ setting }) => setting.key));

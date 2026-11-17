@@ -6,6 +6,7 @@ import {
   ReauthPassword,
   useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Select } from '@/components/ui/Select';
@@ -251,6 +252,7 @@ function AccountSettings({
   const password = useRef('');
   // An administrator with an authenticator app confirms with its code instead.
   const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const busy = confirmation.busy;
   const current: AccountDraft = { ...savedAccount(detail), ...draft };
   const patch = accountPatch(detail, current);
@@ -322,7 +324,7 @@ function AccountSettings({
           const given = password.current;
           if (!given && !withoutPassword)
             throw new Error('Enter your password to raise this role.');
-          await onSave({ ...pendingPatch, ...(given ? { password: given } : {}) });
+          await spendSso(() => onSave({ ...pendingPatch, ...(given ? { password: given } : {}) }));
           password.current = '';
           setDraft({});
         },
@@ -595,6 +597,7 @@ function SingleSignOn({
   // password, or with a code when they have an authenticator app.
   const password = useRef('');
   const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const identities = detail.sso_identities ?? [];
   if (identities.length === 0) return null;
   const account = detail.email || detail.login_name || detail.phone || detail.id;
@@ -625,7 +628,7 @@ function SingleSignOn({
         const given = password.current;
         if (!given && !withoutPassword)
           throw new Error('Enter your password to unlink this identity.');
-        await onUnlink(identity.id, given || undefined);
+        await spendSso(() => onUnlink(identity.id, given || undefined));
         password.current = '';
       },
     });
@@ -698,6 +701,7 @@ function TwoFactorReset({
   const [removed, setRemoved] = useState(false);
   const password = useRef('');
   const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   if (removed) return null;
   const account = detail.email || detail.login_name || detail.phone || detail.id;
 
@@ -723,7 +727,7 @@ function TwoFactorReset({
         const given = password.current;
         if (!given && !withoutPassword)
           throw new Error('Enter your password to remove the authenticator.');
-        await resetUserTwoFactor(detail.id, given || undefined);
+        await spendSso(() => resetUserTwoFactor(detail.id, given || undefined));
         password.current = '';
         setRemoved(true);
       },
