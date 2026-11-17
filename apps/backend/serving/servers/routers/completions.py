@@ -309,11 +309,14 @@ async def _streaming_response_with_keepalive(
             # byte would commit a 200 and downgrade the clean HTTPException
             # (real status code) into a 200-with-error-body.
             error = chunk_json.get("error") if isinstance(chunk_json, dict) else None
-            if isinstance(error, dict):
-                code = error.get("code")
-                status_code = code if isinstance(code, int) else 500
+            frame_error = _pre_commit_error(chunk) if isinstance(error, dict) else None
+            if frame_error is not None:
+                status_code, message = frame_error
                 logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
-                detail = scrub_error_for_user(None, request_id, status_code)
+                # The session already scrubbed the frame's message for the user, and
+                # the streaming path relays it: a "queued, retry later" has to reach
+                # a non-streaming caller too, not a generic server error.
+                detail = message or scrub_error_for_user(None, request_id, status_code)
                 if yielded_any:
                     # A keepalive byte already committed a 200 response --
                     # raising now would abort the connection mid-body with no
