@@ -29,10 +29,12 @@ async def scratch():
         yield name
 
 
-def test_the_chain_has_exactly_one_head_and_the_new_revision_is_its_tip():
+def test_the_chain_has_one_head_and_includes_the_claim_mergepoint():
     chain = code_chain()
     assert len(chain) == len(set(chain)), "a revision appears twice"
-    assert chain[-1] == "0022_hard_delete_merge"
+    # Later additive revisions may follow the claim mergepoint (for example,
+    # #1781's alert preload indexes), so the mergepoint need not be the tip.
+    assert "0022_hard_delete_merge" in chain
     assert "0016_hard_delete_claim_lease" in chain
     # Every revision file is in the graph, which has one merged head.
     files = sorted(p.stem for p in VERSIONS.glob("*.py") if p.stem != "__init__")
@@ -62,9 +64,11 @@ def test_a_database_at_the_previous_revision_is_refused_by_this_code():
     assert verdict is not Verdict.CURRENT
 
 
-def test_a_database_at_the_merged_revision_is_current():
-    verdict = judge(SchemaState(revision="0022_hard_delete_merge", floor=None), code_chain())
-    assert verdict is Verdict.CURRENT
+def test_a_database_at_the_mergepoint_matches_the_current_chain_position():
+    chain = code_chain()
+    verdict = judge(SchemaState(revision="0022_hard_delete_merge", floor=None), chain)
+    expected = Verdict.CURRENT if chain[-1] == "0022_hard_delete_merge" else Verdict.BEHIND
+    assert verdict is expected
 
 
 def test_a_newer_database_is_accepted_as_compatible():
