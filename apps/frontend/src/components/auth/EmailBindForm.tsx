@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { bindEmail } from '@/lib/api/auth';
@@ -11,14 +11,20 @@ import { useT } from '@/components/providers/useT';
 import { NEUTRAL_AUTH_APPEARANCE, useAuthAppearance } from '@/site-ui/appearance';
 import { InputField } from '@/components/ui/InputField';
 import { isCompleteCode, OwnerPhoneCode } from '@/components/features/auth/OwnerPhoneCode';
+import {
+  SsoReauthConfirm,
+  ssoReauthRequired,
+  useSsoReauth,
+} from '@/components/features/auth/SsoReauth';
 import { AuthField, AuthNotice } from './AuthForm';
 
 /**
  * Bind an email to the signed-in account, or change it.
  *
  * The owner confirms the way the account signs in: its current password, or,
- * for an account without one, a code sent to its verified `phone`. The address
- * itself is then proven by a link sent to it.
+ * for an account without one, a code sent to its verified `phone`, or, with
+ * neither, a sign-in at its identity provider. The address itself is then
+ * proven by a link sent to it.
  */
 export function EmailBindForm({
   currentEmail,
@@ -34,15 +40,19 @@ export function EmailBindForm({
   const t = useT();
   const skin = useAuthAppearance();
   const schemas = useMemo(() => createAuthSchemas(t), [t]);
+  // Set for an account that confirms through its identity provider.
+  const reauth = useSsoReauth('bind_email');
   const {
     register,
     handleSubmit,
     reset,
     watch,
+    getValues,
     formState: { errors },
   } = useForm<EmailBindFormData>({
     resolver: zodResolver(schemas.emailBindSchema),
-    defaultValues: { email: currentEmail || '' },
+    // Back from the provider, the address typed before leaving is still here.
+    defaultValues: { email: reauth?.draft ?? currentEmail ?? '' },
   });
   const [password, setPassword] = useState('');
   const [phoneCode, setPhoneCode] = useState('');
@@ -50,7 +60,12 @@ export function EmailBindForm({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
+  // Follow the account's address when it changes, not when the form mounts:
+  // what the field starts with is decided above.
+  const shownFor = useRef(currentEmail);
   useEffect(() => {
+    if (shownFor.current === currentEmail) return;
+    shownFor.current = currentEmail;
     reset({ email: currentEmail || '' });
   }, [currentEmail, reset]);
 
@@ -71,7 +86,12 @@ export function EmailBindForm({
       );
       return;
     }
-    if (hasPassword ? !password : !isCompleteCode(phoneCode)) {
+    if (reauth) {
+      if (!reauth.confirmed) {
+        setError(ssoReauthRequired(t, reauth.provider));
+        return;
+      }
+    } else if (hasPassword ? !password : !isCompleteCode(phoneCode)) {
       setError(
         hasPassword
           ? t(
@@ -87,8 +107,14 @@ export function EmailBindForm({
     setNotice(null);
     try {
       const result = await bindEmail(
-        hasPassword ? { email: trimmed, password } : { email: trimmed, phone_code: phoneCode },
+        // Confirmed at the identity provider: the request carries no proof of its own.
+        reauth
+          ? { email: trimmed }
+          : hasPassword
+            ? { email: trimmed, password }
+            : { email: trimmed, phone_code: phoneCode },
       );
+      reauth?.settle();
       setPassword('');
       setPhoneCode('');
       await onSuccess();
@@ -104,6 +130,7 @@ export function EmailBindForm({
             ),
       );
     } catch (err) {
+      reauth?.settle(err);
       const suspensionMessage =
         err instanceof APIError && err.code === 'ACCOUNT_SUSPENDED'
           ? (err.details?.suspension_message as string | undefined)
@@ -187,7 +214,9 @@ export function EmailBindForm({
           )}
         </div>
       </AuthField>
-      {hasPassword ? (
+      {reauth ? (
+        <SsoReauthConfirm reauth={reauth} draft={() => getValues('email')} disabled={loading} />
+      ) : hasPassword ? (
         <InputField
           label={t('auth.email_bind.current_password', 'Current password')}
           type="password"
