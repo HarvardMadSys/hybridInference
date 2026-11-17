@@ -1,4 +1,4 @@
-"""``0020_sso_identities``: linked identities, sign-in flows and pending links."""
+"""``0021_sso_identities``: linked identities, sign-in flows and pending links."""
 
 from __future__ import annotations
 
