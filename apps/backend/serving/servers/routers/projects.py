@@ -86,7 +86,12 @@ async def project_response(op_store: Any, row: dict[str, Any]) -> ProjectRespons
 
 
 def _native_budgets(payload: BaseModel) -> dict[str, Decimal | None]:
-    """The native budgets a request sent with the accounting ``currency``, to store exactly."""
+    """The native budgets a request sent with the accounting ``currency``, to store exactly.
+
+    Nothing on a USD ledger, whose record is the ``*_usd`` columns.
+    """
+    if not get_accounting_policy().native:
+        return {}
     return {
         f"{name}_amount": getattr(payload, name)
         for name in ("budget_daily", "budget_monthly")

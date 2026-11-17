@@ -184,6 +184,10 @@ def native_only(**fields: Any) -> dict[str, Any]:
 class MoneyInput(BaseModel):
     """Native writes declare their currency; legacy writes remain explicitly USD.
 
+    On a USD ledger a native field is only another name for its ``*_usd``
+    field: its value is passed on unchanged, and validated exactly as the
+    ``*_usd`` field would validate it.
+
     A subclass whose USD field is stored at a fixed scale names it in
     ``usd_places``: the USD equivalent derived from a native amount is rounded
     (half up, as PostgreSQL rounds ``numeric``) to that many places, so it
@@ -214,6 +218,9 @@ class MoneyInput(BaseModel):
             if legacy in result:
                 raise ValueError(f"Specify either {native} or {legacy}, not both")
             raw = result[native]
+            if not policy.native:
+                result[legacy] = raw
+                continue
             usd = None if raw is None else policy.to_usd(raw)
             places = cls.usd_places.get(legacy)
             if usd is not None and places is not None:
@@ -225,12 +232,22 @@ class MoneyInput(BaseModel):
             prices = result["prices"]
             if not isinstance(prices, Mapping):
                 raise ValueError("prices must be a mapping")
-            result["pricing"] = {key: str(policy.to_usd(raw)) for key, raw in prices.items()}
+            result["pricing"] = (
+                {key: str(policy.to_usd(raw)) for key, raw in prices.items()}
+                if policy.native
+                else dict(prices)
+            )
         return result
 
 
 def native_quota_updates(payload: BaseModel) -> dict[str, Any]:
-    """Keep the submitted native precision when storing compatibility USD too."""
+    """Keep the submitted native precision when storing compatibility USD too.
+
+    Nothing on a USD ledger: its record is the ``*_usd`` column, and the
+    trigger derives the native one from what was stored there.
+    """
+    if not get_accounting_policy().native:
+        return {}
     return {
         f"{name}_amount": getattr(payload, name)
         for name in ("quota_daily_cost", "quota_monthly_cost")

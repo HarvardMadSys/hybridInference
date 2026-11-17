@@ -383,3 +383,27 @@ def test_nested_financial_dictionaries_keep_their_usd_shape():
     shown = usage.model_dump()
     for window in ("today", "this_month"):
         assert set(shown[window]) == {"cost_usd", "requests", "quota_remaining_usd"}
+
+
+def test_a_native_write_on_a_usd_ledger_is_only_another_name_for_its_usd_field():
+    """The console may send ``budget_daily`` or ``prices`` with ``currency: USD``."""
+    from pydantic import ValidationError
+
+    from serving.schemas_admin import CreateProviderRouteModelRequest
+    from serving.schemas_auth import APIKeyUpdateRequest
+
+    native = APIKeyUpdateRequest(budget_daily="1.2345", currency="USD")
+    legacy = APIKeyUpdateRequest(budget_daily_usd="1.2345")
+    assert native.budget_daily_usd == legacy.budget_daily_usd == Decimal("1.2345")
+    # Validated exactly as the USD field: five places are refused either way.
+    for payload in (
+        {"budget_daily": "1.23456", "currency": "USD"},
+        {"budget_daily_usd": "1.23456"},
+    ):
+        with pytest.raises(ValidationError):
+            APIKeyUpdateRequest(**payload)
+    # A price is passed on as written, never re-spelled (``1E-7``).
+    normalized = CreateProviderRouteModelRequest.normalize_native_amounts(
+        {"prices": {"prompt": "0.0000001", "completion": "2.50"}, "currency": "USD"}
+    )
+    assert normalized["pricing"] == {"prompt": "0.0000001", "completion": "2.50"}

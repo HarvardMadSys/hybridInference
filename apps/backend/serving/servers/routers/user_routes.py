@@ -910,7 +910,7 @@ async def update_api_key(
         if field in sent:
             changes[field] = getattr(payload, field)
             native = field.removesuffix("_usd")
-            if native in sent:
+            if native in sent and get_accounting_policy().native:
                 # Sent in the accounting currency: store that exact amount, with
                 # its USD equivalent above.
                 changes[f"{native}_amount"] = getattr(payload, native)
