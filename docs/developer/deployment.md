@@ -451,8 +451,8 @@ under its own name:
 | `connections_open` | An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it |
 | `background_writes` | Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent |
 | `request_log_unwritten` | Request-log rows queued or being written |
-| `request_log_lost` | A request-log row dropped by a full queue or whose write failed, since the process started. It is never written, and this never clears |
-| `stream_close_abandoned` | A stream whose close took more than ten seconds and was abandoned. What it still had to bill or log is not known to be done, and this never clears |
+| `request_log_lost` | A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears |
+| `stream_close_abandoned` | A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears |
 | `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here |
 | `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
 | `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |

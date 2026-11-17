@@ -11,7 +11,6 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 
 from routing.endpoint_health import http_status_of
@@ -63,7 +62,7 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
-from serving.servers.streaming_response import ClosingStreamingResponse
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
@@ -200,14 +199,12 @@ _FORCE_STREAMING_KEEPALIVE_S = 15
 
 
 async def _close_stream_quietly(stream: Any) -> None:
-    aclose = getattr(stream, "aclose", None)
-    if not callable(aclose):
+    # Shielded and bounded, like the response's own close around it: a shield
+    # with no deadline here would keep that deadline from ever reaching a hung
+    # upstream close (serving.servers.streaming_response.close_body).
+    if not callable(getattr(stream, "aclose", None)):
         return
-    try:
-        with anyio.CancelScope(shield=True):
-            await aclose()
-    except (Exception, asyncio.CancelledError):
-        pass
+    await close_body(stream, quiet=True)
 
 
 def _pre_commit_error(chunk: str | None) -> tuple[int, str | None] | None:

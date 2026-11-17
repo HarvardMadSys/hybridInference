@@ -2706,16 +2706,16 @@ msgid "`request_log_lost`"
 msgstr "`request_log_lost`"
 
 #: ../developer/deployment.md
-msgid "A request-log row dropped by a full queue or whose write failed, since the process started. It is never written, and this never clears"
-msgstr "进程启动以来，因队列满被丢弃或写入失败的请求日志行。它不会再被写入，这一项也永远不会消失"
+msgid "A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears"
+msgstr "进程启动以来，因队列满被丢弃或写入失败的请求日志行，或没能写入的被拒请求日志行。它不会再被写入，这一项也永远不会消失"
 
 #: ../developer/deployment.md
 msgid "`stream_close_abandoned`"
 msgstr "`stream_close_abandoned`"
 
 #: ../developer/deployment.md
-msgid "A stream whose close took more than ten seconds and was abandoned. What it still had to bill or log is not known to be done, and this never clears"
-msgstr "收尾超过十秒而被放弃的流。它原本还要做的计费或写日志无法确认已完成，这一项永远不会消失"
+msgid "A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears"
+msgstr "自身或其内部上游流的收尾超过十秒而被中断的流。它原本还要做的计费或写日志无法确认已完成，这一项永远不会消失"
 
 #: ../developer/deployment.md
 msgid "`spend_unconfirmed`"

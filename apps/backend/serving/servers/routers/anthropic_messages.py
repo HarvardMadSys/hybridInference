@@ -1223,6 +1223,9 @@ def _schedule_log_store_task(
             try:
                 await log_store.log_request(**bound_rejected_log_payload(log_payload))
             except Exception:
+                from serving.observability.rejection_log import record_lost_row
+
+                record_lost_row()
                 logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
         detached_tasks.detach(_log(), name="request_log_fallback")

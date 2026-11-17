@@ -20,7 +20,7 @@ import pytest
 from fastapi import FastAPI, Response
 from starlette.responses import StreamingResponse
 
-from serving.observability import detached_tasks
+from serving.observability import detached_tasks, rejection_log
 from serving.servers import handoff, idle_connection, streaming_response
 from serving.servers.handoff import Handoff, HandoffMiddleware, State
 from serving.servers.routers import handoff as handoff_routes
@@ -87,6 +87,7 @@ def world(monkeypatch):
     )
     monkeypatch.setattr(detached_tasks, "_PENDING", {})
     monkeypatch.setattr(streaming_response, "_ABANDONED_CLOSES", 0)
+    monkeypatch.setattr(rejection_log, "_LOST_ROWS", 0)
     return state
 
 
@@ -160,6 +161,10 @@ def test_an_idle_draining_process_seals_and_can_resume(world):
         (
             lambda w: setattr(streaming_response, "_ABANDONED_CLOSES", 1),
             "stream_close_abandoned",
+        ),
+        (
+            lambda w: setattr(rejection_log, "_LOST_ROWS", 1),
+            "request_log_lost",
         ),
         # A local cost whose write had an unknown outcome, or that the counters
         # refused; a shared reservation quarantined or unaccounted.
@@ -849,6 +854,146 @@ async def test_responses_events_close_their_chat_stream_however_they_end():
     async for _ in stream:
         pass
     assert finished.finalized
+
+
+# -- a close that hangs is bounded at every level -------------------------------------
+
+
+async def _chat_route(chat_stream):
+    return ClosingStreamingResponse(chat_stream.frames(), media_type="text/event-stream")
+
+
+async def _responses_route(chat_stream):
+    from serving.servers.routers import responses
+
+    events = responses._response_events(
+        chat_stream.frames(),
+        response_store=None,
+        body={"model": "m"},
+        model="m",
+        response_id="resp_1",
+        created_at=1,
+        previous_response_id=None,
+        store=False,
+        convo_messages=[],
+        user_id="u1",
+    )
+    return ClosingStreamingResponse(events, media_type="text/event-stream")
+
+
+@pytest.mark.parametrize("route", [_chat_route, _responses_route])
+async def test_a_hung_upstream_close_inside_a_real_chat_stream_is_cut_at_the_deadline(
+    world, monkeypatch, route
+):
+    """The chat stream's own shielded close must not keep the deadline from reaching it.
+
+    The request ends (bounded), the abandoned close is counted, and the process
+    is never sealed for it.
+    """
+    monkeypatch.setattr(streaming_response, "CLOSE_TIMEOUT_SECONDS", 0.02)
+    session = _Session()  # its close waits for a release that does not come
+    chat_stream = _primed_chat_stream(session)
+
+    async def app(scope, receive, send):
+        await (await route(chat_stream))(scope, receive, send)
+
+    hang_up, receive, send, _ = _blocked_client()
+    _drain(world)
+    call = asyncio.create_task(HandoffMiddleware(app)({**SCOPE}, receive, send))
+    try:
+        await asyncio.sleep(0.02)
+        hang_up.set()
+        await asyncio.wait_for(asyncio.shield(call), 1.0)
+
+        assert not session.finalized
+        assert world.handoff.requests == 0
+        assert streaming_response.abandoned_closes() >= 1
+        assert handoff.seal(world.services, by="test") == ["stream_close_abandoned"]
+        assert world.handoff.state is State.DRAINING
+    finally:
+        session.release.set()
+        await asyncio.wait({call}, timeout=1)
+
+
+async def test_a_close_within_the_deadline_is_not_counted(world):
+    session = _Session()
+    session.release.set()
+    chat_stream = _primed_chat_stream(session)
+    frames = chat_stream.frames()
+    await frames.__anext__()
+
+    assert await streaming_response.close_body(frames) is True
+    assert session.finalized
+    assert streaming_response.abandoned_closes() == 0
+
+
+# -- a refused request's row, written apart from the queue -----------------------------
+
+
+class _Settings:
+    async def get_bool(self, name: str) -> bool:
+        return True
+
+
+class _Store:
+    def __init__(self, fail: bool) -> None:
+        self.fail = fail
+        self.rows = 0
+
+    async def log_request(self, **_row) -> None:
+        if self.fail:
+            raise RuntimeError("database unavailable")
+        self.rows += 1
+
+
+def _rejection(store):
+    source = rejection_log.RejectionSource(
+        route_path="/v1/chat/completions",
+        client_ip=lambda: "203.0.113.7",
+        probe_marker=False,
+        log_store=store,
+        runtime_settings=_Settings(),
+    )
+    return rejection_log.log_rejection_from(
+        source=source,
+        status_code=429,
+        error_code="concurrency_limit_exceeded",
+        reason="too many requests",
+        user={"user_id": "u1", "role": "user", "authenticated": True},
+    )
+
+
+async def test_a_refused_request_s_row_that_failed_blocks_the_seal_after_its_task_ended(world):
+    store = _Store(fail=True)
+    _drain(world)
+
+    await detached_tasks.rejection_log(_rejection(store))
+
+    assert detached_tasks.pending() == {}  # the task is over; its loss is not
+    assert handoff.seal(world.services, by="test") == ["request_log_lost"]
+    assert handoff.status(world.services)["request_log"]["rejected_lost"] == 1
+
+
+async def test_a_refused_request_s_row_that_was_written_lets_the_process_seal(world):
+    store = _Store(fail=False)
+    _drain(world)
+
+    await detached_tasks.rejection_log(_rejection(store))
+
+    assert store.rows == 1
+    assert handoff.seal(world.services, by="test") == []
+
+
+async def test_a_refused_request_s_row_whose_task_failed_before_writing_is_lost(world):
+    async def broken() -> None:
+        raise RuntimeError("before the write")
+
+    _drain(world)
+    task = detached_tasks.rejection_log(broken())
+    with pytest.raises(RuntimeError):
+        await task
+
+    assert handoff.seal(world.services, by="test") == ["request_log_lost"]
 
 
 async def test_a_draining_response_replaces_a_keep_alive_header(world):

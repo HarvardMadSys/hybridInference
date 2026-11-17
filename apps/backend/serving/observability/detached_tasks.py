@@ -47,5 +47,19 @@ def pending() -> dict[str, int]:
 
 
 def rejection_log(coro: Coroutine[Any, Any, Any]) -> asyncio.Task[Any]:
-    """Write a refused request's request-log row in a task of its own, counted as such."""
-    return detach(coro, name="rejection_log")
+    """Write a refused request's request-log row in a task of its own, counted as such.
+
+    The write counts its own failure (:func:`serving.observability.rejection_log.lost_rows`);
+    this also counts a task that ends in an error or is cancelled before it wrote.
+    """
+    return detach(_counting_a_loss(coro), name="rejection_log")
+
+
+async def _counting_a_loss(coro: Coroutine[Any, Any, Any]) -> Any:
+    from serving.observability.rejection_log import record_lost_row
+
+    try:
+        return await coro
+    except BaseException:
+        record_lost_row()
+        raise

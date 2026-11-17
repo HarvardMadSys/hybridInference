@@ -179,11 +179,12 @@ def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
 
     Each part says whether it is finished. Each spend ledger also says whether
     every cost it recorded is confirmed in the counters (``confirmed``), with
-    what is not; the request log counts the rows it dropped or failed to write; ``streams`` counts
+    what is not; the request log counts the rows it dropped or failed to write, refused requests' rows included; ``streams`` counts
     the bodies whose close was abandoned. None of those resolves by waiting,
     and each keeps the process from being sealed (:func:`blockers`).
     """
     from serving.observability.detached_tasks import pending as detached_pending
+    from serving.observability.rejection_log import lost_rows as rejected_lost
     from serving.observability.tracked_tasks import pending_tracked_tasks
     from serving.servers import idle_connection, streaming_response
     from serving.spend_ledger import handoff_report as spend_report
@@ -193,7 +194,8 @@ def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     connections = idle_connection.connection_counts(is_control_path)
     tracked = pending_tracked_tasks()
     owed_tasks = {name: n for name, n in tracked.items() if name not in STANDING_TASKS}
-    logger_report = _request_log(services)
+    # ``rejected_lost``: rows of refused requests, written apart from the queue.
+    logger_report = {**_request_log(services), "rejected_lost": rejected_lost()}
     batch = _batch(services)
     spend = spend_report()
     scheduled = email_scheduler.running_jobs()
@@ -227,7 +229,8 @@ def _blockers(report: dict[str, Any]) -> list[str]:
         found.append("background_writes")
     if not report["request_log"]["finished"]:
         found.append("request_log_unwritten")
-    if report["request_log"]["dropped"] or report["request_log"]["failed"]:
+    log = report["request_log"]
+    if log["dropped"] or log["failed"] or log["rejected_lost"]:
         found.append("request_log_lost")
     if report["streams"]["close_abandoned"]:
         found.append("stream_close_abandoned")
