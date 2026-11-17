@@ -634,12 +634,16 @@ async def test_readiness_fails_while_draining_and_sealed(world):
 
     _drain(world)
     response = Response()
-    body = await health.health_ready(request=None, response=response, op_store=None, log_store=None)
+    body = await health.health_ready(
+        request=None, response=response, op_store=None, log_store=None, admin=True
+    )
     assert (response.status_code, body["reason"]) == (503, "draining")
 
     handoff.seal(world.services, by="test")
     response = Response()
-    body = await health.health_ready(request=None, response=response, op_store=None, log_store=None)
+    body = await health.health_ready(
+        request=None, response=response, op_store=None, log_store=None, admin=True
+    )
     assert (response.status_code, body["reason"]) == (503, "sealed")
 
 

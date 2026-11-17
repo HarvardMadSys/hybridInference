@@ -382,4 +382,24 @@ describe('restart polling', () => {
     fetchMock.mockResolvedValueOnce(json({ status: 'healthy', instance: 'abc123' }));
     await expect(checkBackendHealth()).resolves.toEqual(up('abc123'));
   });
+
+  it("sends the administrator's token, which is what makes /health name its process", async () => {
+    setAccessToken('admin-access-token');
+    fetchMock.mockResolvedValueOnce(json({ status: 'healthy', instance: 'abc123' }));
+
+    await expect(checkBackendHealth()).resolves.toEqual(up('abc123'));
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect((init.headers as Record<string, string>).Authorization).toBe(
+      'Bearer admin-access-token',
+    );
+  });
+
+  it('sends no token when signed out, and an anonymous answer is still up', async () => {
+    setAccessToken(null);
+    fetchMock.mockResolvedValueOnce(json({ status: 'healthy' }));
+
+    await expect(checkBackendHealth()).resolves.toEqual(up());
+    const init = fetchMock.mock.calls[0][1] as RequestInit;
+    expect(init.headers as Record<string, string>).not.toHaveProperty('Authorization');
+  });
 });

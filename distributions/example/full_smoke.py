@@ -284,10 +284,9 @@ def _check_public_surface(base_url: str) -> None:
     _, health = _request_json(base_url, "/health")
     if health.get("status") != "healthy":
         raise SmokeError("health is not healthy")
-    if health.get("database_configured") is not True:
-        raise SmokeError("health does not report a configured database")
-    if health.get("database_connected") is not True:
-        raise SmokeError("health does not report a connected database")
+    # Anyone is told the status alone; the stores are an administrator's to see.
+    if set(health) != {"status"}:
+        raise SmokeError("anonymous health shows more than its status")
 
     _, site = _request_json(base_url, "/site-config")
     if site.get("distribution", {}).get("id") != "example":
@@ -702,6 +701,12 @@ def _completion(base_url: str, api_key: str) -> str:
 
 
 def _check_admin_surfaces(base_url: str, access_token: str) -> None:
+    _, health = _request_json(base_url, "/health", bearer=access_token)
+    if health.get("database_configured") is not True:
+        raise SmokeError("health does not report a configured database")
+    if health.get("database_connected") is not True:
+        raise SmokeError("health does not report a connected database")
+
     _, stats = _request_json(base_url, "/admin/stats", bearer=access_token)
     # The endpoint exposes one row per hourly aggregate; a fresh example has
     # no rows yet, so an empty list is still the valid Admin API contract.

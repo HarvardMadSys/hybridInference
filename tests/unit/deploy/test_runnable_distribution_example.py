@@ -911,11 +911,8 @@ def test_full_smoke_enforces_its_site_config_contract(
         "configuration": {"incomplete": False},
     }
     responses = {
-        "/health": {
-            "status": "healthy",
-            "database_configured": True,
-            "database_connected": True,
-        },
+        # Anyone is told the status alone.
+        "/health": {"status": "healthy"},
         "/site-config": site,
         "/v1/models": {"data": [{"id": full_smoke.EXPECTED_MODEL}]},
     }
@@ -952,7 +949,7 @@ def test_full_smoke_requests_the_setup_page(monkeypatch: pytest.MonkeyPatch) -> 
     full_smoke = _load_module("_runnable_example_full_setup_page", FULL_SMOKE)
     base_url = "http://localhost:23001"
     responses = {
-        "/health": {"status": "healthy", "database_configured": True, "database_connected": True},
+        "/health": {"status": "healthy"},
         "/site-config": {
             "distribution": {"id": "example"},
             "features": {"public_signup": True},
@@ -982,6 +979,8 @@ def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
 ) -> None:
     full_smoke = _load_module("_runnable_example_full_admin_stats", FULL_SMOKE)
     responses = {
+        # An administrator is shown the stores.
+        "/health": {"status": "healthy", "database_configured": True, "database_connected": True},
         "/admin/stats": {"period_hours": 24, "filters": {}, "stats": []},
         "/internal/playground/models": {"models": [{"id": full_smoke.EXPECTED_MODEL}]},
     }
@@ -996,6 +995,17 @@ def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
     responses["/admin/stats"]["stats"] = {}
     with pytest.raises(full_smoke.SmokeError, match="stats API is unavailable"):
         full_smoke._check_admin_surfaces("http://localhost:13001", "jwt")
+
+
+def test_full_smoke_refuses_an_anonymous_health_that_shows_the_stores(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    full_smoke = _load_module("_runnable_example_full_health_disclosure", FULL_SMOKE)
+    leaky = {"status": "healthy", "database_configured": True, "instance": "abc"}
+    monkeypatch.setattr(full_smoke, "_request_json", lambda base_url, path, **kwargs: (200, leaky))
+
+    with pytest.raises(full_smoke.SmokeError, match="more than its status"):
+        full_smoke._check_public_surface("http://localhost:13001")
 
 
 def _setup_log_line(code: str) -> str:

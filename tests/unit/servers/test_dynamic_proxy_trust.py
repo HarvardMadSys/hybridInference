@@ -264,6 +264,8 @@ async def test_readiness_requires_fresh_membership_without_requiring_proxy_pod_r
     inner.include_router(health.router)
     inner.dependency_overrides[health.get_operational_store] = lambda: None
     inner.dependency_overrides[health.get_log_store] = lambda: None
+    # The reason is an administrator's to read; anyone is told the status alone.
+    inner.dependency_overrides[health._admin_caller] = lambda: True
     discovery = _Discovery(_snapshot())
     app = KubernetesProxyTrustMiddleware(inner, discovery_factory=lambda config: discovery)
     async with httpx.AsyncClient(
@@ -304,6 +306,8 @@ def _readiness_app(monkeypatch, settings, discovery, stores_healthy, **middlewar
     inner.include_router(health.router)
     inner.dependency_overrides[health.get_operational_store] = lambda: None
     inner.dependency_overrides[health.get_log_store] = lambda: None
+    # The reason is an administrator's to read; anyone is told the status alone.
+    inner.dependency_overrides[health._admin_caller] = lambda: True
 
     async def identity(request: Request):
         return JSONResponse({"ip": get_client_ip_info(request).client_ip})
