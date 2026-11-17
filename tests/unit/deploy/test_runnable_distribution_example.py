@@ -997,14 +997,20 @@ def test_full_smoke_accepts_the_admin_stats_hourly_row_contract(
         full_smoke._check_admin_surfaces("http://localhost:13001", "jwt")
 
 
-def test_full_smoke_refuses_an_anonymous_health_that_shows_the_stores(
+def test_full_smoke_accepts_the_previous_releases_anonymous_health(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    full_smoke = _load_module("_runnable_example_full_health_disclosure", FULL_SMOKE)
-    leaky = {"status": "healthy", "database_configured": True, "instance": "abc"}
-    monkeypatch.setattr(full_smoke, "_request_json", lambda base_url, path, **kwargs: (200, leaky))
+    """The restore drill runs this smoke against the release before, which shows the stores."""
+    full_smoke = _load_module("_runnable_example_full_health_previous", FULL_SMOKE)
+    older = {"status": "healthy", "database_configured": True, "instance": "abc"}
+    monkeypatch.setattr(
+        full_smoke,
+        "_request_json",
+        lambda base_url, path, **kwargs: (200, {"/health": older}[path]),
+    )
 
-    with pytest.raises(full_smoke.SmokeError, match="more than its status"):
+    with pytest.raises(KeyError):
+        # Past health, the stub has nothing for /site-config: health itself passed.
         full_smoke._check_public_surface("http://localhost:13001")
 
 
