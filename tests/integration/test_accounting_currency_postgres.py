@@ -556,3 +556,32 @@ async def test_migration_preview_matches_each_stored_row_and_repeated_native_tot
             "0.00000001"
         )
         assert Decimal(repeated["tables"]["api_logs"]["cost_amount"]["original_usd_total"]) == 0
+
+
+async def test_a_usd_request_cost_rounds_in_the_log_exactly_as_before():
+    """``1.5e-8`` (binary, just under the half) is stored as 1e-8 by ``DECIMAL(12, 8)``.
+
+    The log store hands PostgreSQL the computed float, as it always has; the
+    trigger copies the stored dollars to the native column.
+    """
+    async with accounting_db() as (name, conn), store_pool(name) as pool:
+        store = PostgresLogStore(pool, store_full_prompts=False)
+        await store.log_request(
+            request_id="half",
+            model_id="m",
+            provider="p",
+            prompt=[{"role": "user", "content": "hi"}],
+            response={"message": "ok"},
+            usage={"prompt_tokens": 1, "completion_tokens": 0},
+            latency_ms=1,
+            status_code=200,
+            metadata={},
+            pricing={"prompt": "0.015", "completion": "0"},
+        )
+        row = await conn.fetchrow(
+            "SELECT cost_usd, cost_amount, accounting_currency FROM api_logs "
+            "WHERE request_id = 'half'"
+        )
+        assert row["cost_usd"] == Decimal("0.00000001")
+        assert row["cost_amount"] == Decimal("0.00000001")
+        assert row["accounting_currency"] == "USD"

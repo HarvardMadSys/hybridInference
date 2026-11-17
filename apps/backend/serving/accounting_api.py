@@ -81,6 +81,16 @@ def monetary_payload(value: Any, *, recursive: bool = True) -> Any:
     return result
 
 
+#: The server-owned financial dictionaries a response may nest.
+_FINANCIAL_DICTIONARIES = ("today", "this_month", "new_values")
+
+
+def _usd_shape(value: Mapping[str, Any]) -> dict[str, Any]:
+    """*value* without the native aliases of its ``*_usd`` entries, nor ``currency``."""
+    aliases = {key.removesuffix("_usd") for key in MONEY_FIELDS.intersection(value)}
+    return {k: v for k, v in value.items() if k not in aliases and k != "currency"}
+
+
 class MoneyResponse(BaseModel):
     """A monetary response with additive native fields and truthful USD aliases.
 
@@ -133,10 +143,15 @@ class MoneyResponse(BaseModel):
                 if native in type(self).model_fields:
                     result.pop(native, None)
             result.pop("currency", None)
+            # The financial dictionaries keep their USD shape too: no native
+            # alias beside a ``*_usd`` entry, and no currency.
+            for key in _FINANCIAL_DICTIONARIES:
+                if isinstance(result.get(key), dict):
+                    result[key] = _usd_shape(result[key])
             return result
         # These fields are server-owned financial dictionaries. Never rewrite
         # arbitrary user metadata, prompts, or provider-native cost objects.
-        for key in ("today", "this_month", "new_values"):
+        for key in _FINANCIAL_DICTIONARIES:
             if key in result:
                 result[key] = monetary_payload(result[key], recursive=False)
         return result

@@ -13,7 +13,7 @@ from typing import Any
 
 import asyncpg
 
-from serving.accounting import get_accounting_policy, money_decimal
+from serving.accounting import get_accounting_policy
 from serving.storage.erasure_fence import (
     api_logs_fence_keys,
     insert_api_logs_row,
@@ -251,8 +251,8 @@ class DatabaseLogger:
         # Calculate cost based on usage and pricing
         calculated_cost = calculate_cost(usage, pricing)
         policy = get_accounting_policy()
-        cost_amount = money_decimal(calculated_cost) if calculated_cost is not None else None
-        cost_usd = policy.to_usd(cost_amount) if cost_amount is not None else None
+        # On a USD ledger the float itself, as before; natively, both exactly.
+        cost_usd, cost_amount = policy.usd_and_native(calculated_cost)
         # Conversation shape is derived metadata (like token counts), so it is
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.

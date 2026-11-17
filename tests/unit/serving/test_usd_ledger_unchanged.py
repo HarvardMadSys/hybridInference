@@ -357,3 +357,29 @@ def test_the_default_policy_is_usd_at_the_identity_rate():
     assert policy.quantum == _MICRO
     assert policy.in_ledger(0.01) == 0.01 and type(policy.in_ledger(0.01)) is float
     assert policy.as_usd(0.1 + 0.2) == 0.1 + 0.2
+
+
+def test_nested_financial_dictionaries_keep_their_usd_shape():
+    from serving.schemas_admin import APIKeyDetailUsage
+
+    usage = APIKeyDetailUsage(
+        today={
+            "cost_usd": 1.0,
+            "cost": Decimal(1),
+            "requests": 2,
+            "quota_remaining_usd": 9.0,
+            "quota_remaining": Decimal(9),
+        },
+        this_month={
+            "cost_usd": 3.0,
+            "cost": Decimal(3),
+            "requests": 5,
+            "quota_remaining_usd": None,
+            "quota_remaining": None,
+            "currency": "USD",
+        },
+        models_used=[],
+    )
+    shown = usage.model_dump()
+    for window in ("today", "this_month"):
+        assert set(shown[window]) == {"cost_usd", "requests", "quota_remaining_usd"}

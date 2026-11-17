@@ -9,9 +9,8 @@ write ``metadata["batch_job_id"]`` into its own column, exactly as they write
 ``args[N]``: ``agent_job_id`` is ``$36`` and ``batch_job_id`` ``$37``. Native
 accounting appends two more parameters, so batch attribution is no longer last:
 ``cost_amount`` is ``$38`` and ``accounting_currency`` ``$39``. Under the
-USD policy the conversion rate is the identity, so the appended native amount
-equals ``cost_usd`` and the currency tag is ``"USD"``. The tests price the
-request so that amount is not ``None``.
+USD policy ``cost_usd`` is the computed float itself and the native amount is
+left to the trigger (``None``); the currency tag is ``"USD"``.
 
 The SQL is compared after whitespace normalization because the column list is
 split across source lines; the raw string contains a newline between
@@ -122,12 +121,45 @@ async def test_a_batch_rows_job_lands_in_its_own_column(make_writer):
     assert len(args) == currency_arg + 1
     assert args[AGENT_JOB_ARG] == "job-1"
     assert args[BATCH_JOB_ARG] == "batch_1"
-    # Native accounting follows batch attribution. Under the identity USD
-    # policy ``cost_amount`` is the same exact decimal as the ``cost_usd``
-    # compatibility value, and it is explicitly tagged USD.
-    assert args[amount_arg] is not None
-    assert args[amount_arg] == args[COST_USD_ARG]
+    # Native accounting follows batch attribution. A USD ledger writes the
+    # computed float as ``cost_usd``, exactly as before, and leaves
+    # ``cost_amount`` to the trigger; the row is tagged USD.
+    assert args[amount_arg] is None
+    assert type(args[COST_USD_ARG]) is float and args[COST_USD_ARG] == pytest.approx(2e-6)
     assert args[currency_arg] == "USD"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("make_writer", [_postgres_log_store, _database_logger])
+async def test_a_usd_cost_is_written_as_the_float_it_was_computed_as(make_writer):
+    """``1.5e-8`` is just under half of 1e-8 in binary: ``DECIMAL(12, 8)`` keeps it at 1e-8.
+
+    Through ``Decimal(str(...))`` it would become exactly half and round up to
+    2e-8, changing the logged cost of a USD deployment.
+    """
+    from serving.storage.utils import calculate_cost
+
+    writer, conn = make_writer()
+    usage = {"prompt_tokens": 1, "completion_tokens": 0}
+    pricing = {"prompt": "0.015", "completion": "0"}
+    await writer.log_request(  # type: ignore[attr-defined]
+        request_id="req-half",
+        model_id="m",
+        provider="p",
+        prompt=[{"role": "user", "content": "hi"}],
+        response={"message": "ok"},
+        usage=usage,
+        latency_ms=10,
+        status_code=200,
+        metadata={"user_id": "u-1"},
+        pricing=pricing,
+    )
+    args = conn.execute.await_args.args
+    _columns, _values, amount_arg, _currency_arg = _native_positions(make_writer)
+    expected = calculate_cost(usage, pricing)
+    assert expected == 1.5e-8
+    assert type(args[COST_USD_ARG]) is float and args[COST_USD_ARG] == expected
+    assert args[amount_arg] is None
 
 
 @pytest.mark.asyncio
@@ -141,7 +173,7 @@ async def test_ordinary_traffic_leaves_the_column_null(make_writer):
     _columns, _values, amount_arg, currency_arg = _native_positions(make_writer)
     assert len(args) == currency_arg + 1
     assert args[BATCH_JOB_ARG] is None
-    # The accounting columns are still written for ordinary traffic.
-    assert args[amount_arg] is not None
-    assert args[amount_arg] == args[COST_USD_ARG]
+    # Ordinary traffic is tagged too; on USD the trigger fills ``cost_amount``.
+    assert args[amount_arg] is None
+    assert args[COST_USD_ARG] is not None
     assert args[currency_arg] == "USD"

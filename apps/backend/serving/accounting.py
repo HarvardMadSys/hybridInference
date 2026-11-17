@@ -165,6 +165,21 @@ class AccountingPolicy:
             return amount
         return money_decimal(amount) / self.usd_to_currency_rate
 
+    def usd_and_native(self, amount: Any) -> tuple[Any, Decimal | None]:
+        """A computed ledger *amount* as the ``*_usd`` and ``*_amount`` columns take it.
+
+        A USD ledger writes exactly the value it computed (a float stays the
+        same float, so ``numeric`` rounds its binary value as it always has)
+        and leaves the native column to the triggers. A native ledger writes
+        the exact native amount and its USD equivalent. None stays None.
+        """
+        if amount is None:
+            return None, None
+        if not self.native:
+            return amount, None
+        native = money_decimal(amount)
+        return self.to_usd(native), native
+
     def usd_value(self, amount: Any) -> float:
         """A ledger amount's USD equivalent as a float, for a float USD contract.
 
