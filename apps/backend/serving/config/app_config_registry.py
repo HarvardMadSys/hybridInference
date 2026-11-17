@@ -319,6 +319,15 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
             ),
         )
     ),
+    ConfigEntry(
+        "SSO_PROVIDERS",
+        "application",
+        "Single sign-on identity providers as JSON. Omit to offer no single sign-on. "
+        "Each client secret references a separate secret setting as ${NAME}.",
+        type="text",
+        one_time=True,
+        validator=_document_validator("SSO_PROVIDERS"),
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",
@@ -2004,6 +2013,8 @@ class DiscoveredReference:
     #: ``api_keys``, any field whose name looks like a credential's), so it is
     #: secret whatever its own name.
     credential: bool = False
+    #: Only the single sign-on providers reference it.
+    single_sign_on: bool = False
 
 
 def _references(value: Any) -> set[str]:
@@ -2063,6 +2074,14 @@ def _load_yaml_text(text: str) -> Any:
         return yaml.safe_load(text)
     except yaml.YAMLError:
         return None
+
+
+def _discovered_description(reference: DiscoveredReference) -> str:
+    if reference.category == "providers":
+        return "Referenced by the model registry."
+    if reference.single_sign_on:
+        return "Referenced by the single sign-on providers."
+    return "Referenced by the alert rules."
 
 
 def _note(
@@ -2144,13 +2163,23 @@ def _discover_alerts(data: Any, found: dict[str, DiscoveredReference]) -> None:
         _note(found, key, "alerts")
 
 
-def discover_documents(models: Any, routing: Any, alerts: Any) -> dict[str, DiscoveredReference]:
+def _discover_sso(data: Any, found: dict[str, DiscoveredReference]) -> None:
+    for key in _references(data):
+        # Read last: a name already found belongs to another document too.
+        if key not in found:
+            _note(found, key, "security").single_sign_on = True
+
+
+def discover_documents(
+    models: Any, routing: Any, alerts: Any, sso: Any = None
+) -> dict[str, DiscoveredReference]:
     """Discover settings referenced by parsed database application documents."""
     found: dict[str, DiscoveredReference] = {}
     _discover_models(models, found)
     _discover_routing(routing, found)
     _discover_alerts(alerts, found)
-    for data in (models, routing, alerts):
+    _discover_sso(sso, found)
+    for data in (models, routing, alerts, sso):
         for key in _credential_references(data):
             if key in found:
                 found[key].credential = True
@@ -2275,9 +2304,7 @@ def build_entries(
         entries[key] = ConfigEntry(
             key,
             reference.category,
-            "Referenced by the model registry."
-            if reference.category == "providers"
-            else "Referenced by the alert rules.",
+            _discovered_description(reference),
             secret=reference.credential or is_secret_name(key),
             required=requirement,
             restart_required=True,

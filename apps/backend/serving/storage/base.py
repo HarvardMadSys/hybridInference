@@ -213,6 +213,64 @@ class OperationalStore(ABC):
         """Record phone login outcomes without fabricating an email."""
         raise RuntimeError("Phone authentication is unavailable in this store")
 
+    # -- single sign-on (optional for legacy store implementations) ----------
+
+    async def get_user_identity(self, issuer: str, subject: str) -> Row | None:
+        """Fetch the identity an identity provider vouches for, if it is linked."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def list_user_identities(self, user_id: str) -> list[Row]:
+        """List an account's linked identities, oldest first."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def link_user_identity(self, **fields: Any) -> str:
+        """Link an identity to an active account; say why not when it cannot be."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def touch_user_identity(self, identity_id: str) -> None:
+        """Record that an identity just signed in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def unlink_user_identity(self, **fields: Any) -> str:
+        """Remove one of an account's identities, optionally keeping its last way in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_user(self, **fields: Any) -> bool:
+        """Create an account for a first single sign-on and link the identity to it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_flow(self, **fields: Any) -> None:
+        """Record one redirect to an identity provider."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def mark_sso_reauth_verified(self, state_hash: str) -> None:
+        """Record that a claimed re-authentication flow ended in a fresh sign-in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_reauth_proof(self, **fields: Any) -> bool:
+        """Spend a recent re-authentication for one account, session and purpose."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_pending_link(self, **fields: Any) -> None:
+        """Hold an identity until the owner of the account it matched accepts it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def get_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Read a pending link that is still waiting, without claiming it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Atomically claim a pending link."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def delete_sso_pending_link(self, token_hash: str) -> None:
+        """Drop a pending link its browser declined."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
     # -- users ---------------------------------------------------------------
 
     @abstractmethod

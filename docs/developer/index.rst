@@ -70,6 +70,8 @@ Where to start
        console*
    * - Change how an endpoint gets chosen, or write your own strategy
      - :doc:`routing`
+   * - Let an organization's members sign in with its own accounts
+     - :doc:`sso`
    * - Send a patch
      - :doc:`contributing`
    * - Identify a version or plan an upgrade
@@ -126,6 +128,7 @@ explains how to configure and extend an overlay.
    claude-code-setup
    batches
    rag-chat
+   sso
 
 .. toctree::
    :maxdepth: 2
