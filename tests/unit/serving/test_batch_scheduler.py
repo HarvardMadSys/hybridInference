@@ -2003,3 +2003,43 @@ async def test_a_shared_admission_that_cannot_be_made_hands_the_item_back(worker
         shared_ledger_module.ADMISSION_BUDGET_SECONDS = original
     assert dispatch.calls == []
     assert backend.rows == {}
+
+
+# -- a release handoff pauses this worker's claims ------------------------------
+
+
+async def test_a_paused_worker_claims_nothing_and_finishes_what_it_runs(worker, dispatch):
+    store = FakeStore()
+    store.add(1)
+    gate = dispatch.hold("m1")
+    scheduler = worker(store, caps={"m1": 5})
+    scheduler.start()
+    await until(lambda: dispatch.running["m1"] == 1)
+
+    scheduler.pause_claims()
+    claims, sweeps, rounds = len(store.claims), len(store.sweeps), store.calls["active_models"]
+    store.add(3)
+    scheduler._next_sweep = 0.0  # a sweep falls due
+    scheduler.notify()
+    await asyncio.sleep(0.05)
+
+    # No claim, no sweep, not even a look at what is queued.
+    assert len(store.claims) == claims
+    assert len(store.sweeps) == sweeps
+    assert store.calls["active_models"] == rounds
+    assert scheduler.handoff_report() == {
+        "running": True,
+        "paused": True,
+        "items": 1,
+        "jobs": 0,
+        "finished": False,
+    }
+
+    gate.set()
+    await until(lambda: store.count("completed") == 1)
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert store.count("queued") == 3
+
+    scheduler.resume_claims()
+    await until(lambda: store.count("completed") == 4)
+    assert scheduler.handoff_report()["paused"] is False

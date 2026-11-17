@@ -83,6 +83,7 @@ from serving.config.batch_routes import (
     batch_route_available,
     batch_route_refusal,
 )
+from serving.observability import detached_tasks
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
@@ -327,6 +328,9 @@ class BatchScheduler:
         self._next_webhooks = 0.0
         self._enabled: bool | None = None
         self._shared_unavailable = False
+        # This process claims nothing while paused (a release handoff drains
+        # it); what it runs goes on, its leases kept.
+        self._paused = False
 
     @property
     def worker_id(self) -> str:
@@ -355,6 +359,47 @@ class BatchScheduler:
     def notify(self) -> None:
         """Wake the loop now, e.g. because a batch was just created."""
         self._wake.set()
+
+    def pause_claims(self) -> None:
+        """Claim nothing more, and start no validation, sealing, delivery or sweep, until resumed.
+
+        Only this process. Items it runs go on to their end, their leases kept
+        by the heartbeat; a round under way claims for no further model. The
+        other processes' workers take what is queued.
+        """
+        if not self._paused:
+            self._paused = True
+            logger.info(
+                "batch worker %s paused: claims nothing until resumed",
+                self._worker_id,
+                extra={"event": "batch_worker_paused"},
+            )
+
+    def resume_claims(self) -> None:
+        """Claim again after :meth:`pause_claims`."""
+        if self._paused:
+            self._paused = False
+            logger.info(
+                "batch worker %s resumed", self._worker_id, extra={"event": "batch_worker_resumed"}
+            )
+            self._wake.set()
+
+    def handoff_report(self) -> dict[str, Any]:
+        """What this worker still runs, for a release handoff (:mod:`serving.servers.handoff`).
+
+        ``items`` are claimed items not yet handed back; ``jobs`` the
+        validation, sealing, delivery and sweep tasks running. Finished when
+        both are none.
+        """
+        items = sum(1 for entry in self._in_flight.values() if not entry.settled)
+        jobs = sum(1 for task in self._background.values() if not task.done())
+        return {
+            "running": self._task is not None and not self._task.done(),
+            "paused": self._paused,
+            "items": items,
+            "jobs": jobs,
+            "finished": items == 0 and jobs == 0,
+        }
 
     async def stop(self) -> None:
         """Stop claiming, let running items finish briefly, release the rest.
@@ -482,7 +527,7 @@ class BatchScheduler:
         """Claim what every model has room for; return how long to wait next."""
         cfg = batch_config()
         self._note_enabled(cfg.enabled)
-        if not cfg.enabled:
+        if not cfg.enabled or self._paused:
             return self._timings.idle_poll_seconds
         now = self._clock()
         sweep = now >= self._next_sweep
@@ -511,7 +556,7 @@ class BatchScheduler:
                 )
             self._shared_unavailable = False
         for model_id in models:
-            if self._stopping:
+            if self._stopping or self._paused:
                 break
             try:
                 await self._top_up(model_id, cfg, now, interactive)
@@ -980,6 +1025,7 @@ class BatchScheduler:
         )
         self._alerts.add(task)
         task.add_done_callback(self._alerts.discard)
+        detached_tasks.track(task, name="alert_send")
 
     def _backoff(self, attempt: int) -> float:
         ceiling = min(

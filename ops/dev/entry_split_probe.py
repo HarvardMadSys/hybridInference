@@ -91,6 +91,8 @@ UNPUBLISHED_GATEWAY_PATHS = (
     "/health/ready",
     "/health/model-activity",
     "/internal/entry-split-probe",
+    # The release's handoff calls (serving/servers/routers/handoff.py).
+    "/internal/handoff",
 )
 
 #: Sent as the wrong key. Not a key of any deployment.

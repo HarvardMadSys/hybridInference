@@ -71,6 +71,7 @@ from serving.exceptions import (
 )
 from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
 from serving.pricing import effective_pricing, require_source_pricing
 from serving.request_limits import messages_limit_problem
@@ -1224,7 +1225,7 @@ def _schedule_log_store_task(
             except Exception:
                 logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
-        asyncio.create_task(_log())  # noqa: RUF006
+        detached_tasks.detach(_log(), name="request_log_fallback")
 
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
@@ -1986,9 +1987,9 @@ def render_messages_http(outcome: MessagesOutcome) -> JSONResponse | StreamingRe
     """The HTTP response the Messages routes answer *outcome* with."""
     if isinstance(outcome, MessagesStream):
         # Looked up on use, as the handler always did, not bound at import.
-        from fastapi.responses import StreamingResponse
+        from serving.servers import streaming_response
 
-        return StreamingResponse(
+        return streaming_response.ClosingStreamingResponse(
             outcome.frames, media_type="text/event-stream", headers=outcome.headers
         )
     if isinstance(outcome, MessagesError):
@@ -2191,7 +2192,7 @@ async def execute_messages(
                 ),
             )
         except AutoModelUnavailable as exc:
-            asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            detached_tasks.rejection_log(  # its row is written after the 4xx is sent
                 log_rejection_from(
                     source=_rejection_source(ctx, services),
                     status_code=exc.status_code,
@@ -2233,7 +2234,7 @@ async def execute_messages(
             batch_routes_only=constraints.batch_routes_only,
         )
     except HTTPException as exc:
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection_from(
                 source=_rejection_source(ctx, services),
                 status_code=exc.status_code,

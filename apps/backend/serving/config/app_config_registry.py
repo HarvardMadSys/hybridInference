@@ -1671,6 +1671,8 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",
     "SUPERVISOR_RESTARTS_BACKEND": "process wiring: declares the supervisor's restart policy",
+    "HANDOFF_TOKEN": "process wiring: the release's credential for draining and sealing "
+    "this process",
     "REFRESH_TOKEN_COOKIE_NAME": "process wiring: the console container reads the same name",
     "ADMIN_TWO_FACTOR_REQUIRED": "security: a session holding administrator access must not "
     "be able to switch its own second factor off",

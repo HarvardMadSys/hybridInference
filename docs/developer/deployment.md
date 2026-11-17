@@ -159,7 +159,7 @@ On the split paths the entry has to meet these conditions:
 | E6 | It overwrites the forwarding header the client sent (`X-Forwarded-For` or `CF-Connecting-IP`) |
 | E7 | The gateway's port is reachable from the entry and the console only |
 | E8 | It does not resend a `POST` once the request has been sent to the gateway. Retrying on another instance when the connection could not be established is fine |
-| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. Not needed yet; the coexisting backend releases the design defers depend on it |
+| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. A release handoff depends on it; see [Handing traffic to a new gateway process](#handing-traffic-to-a-new-gateway-process) |
 
 What clients see on the split paths is the gateway's own answer, the same as
 through the console, with these differences:
@@ -376,6 +376,100 @@ afterwards. For its duration it adds a second database server's CPU and I/O,
 and it needs free disk where Docker keeps volumes, normally the disk of the
 deployment's own database: it refuses to start unless about twice the
 database's size plus 1 GiB is free there.
+
+### Handing traffic to a new gateway process
+
+A release that runs the new gateway process beside the old one can stop the old
+one without cutting a request short or losing a request-log row or a cost. The
+release asks the old process, while it is still alive, whether anything is
+left, and stops it only once nothing is. It never decides by waiting a fixed
+time. Stopping a process with a signal is unchanged: open requests get five
+seconds and are then cancelled. A process sealed first has none open.
+
+The routes are off until the process has `HANDOFF_TOKEN` in its environment, a
+random value of at least 32 characters. Without it they answer 404. They are
+under `/internal/handoff`, which no public path list includes, so neither the
+console nor an entry forwards them. The release calls each process at its own
+address with `Authorization: Bearer <HANDOFF_TOKEN>`. This token is separate
+from the administrator token, which is read-only for changes wherever
+administrators need a second factor.
+
+| Call | What it does |
+|---|---|
+| `GET /internal/handoff` | The state (`serving`, `draining` or `sealed`), everything still under way, `blocking` (why a seal would fail now) and `idle` |
+| `POST /internal/handoff/drain` | Begins draining |
+| `POST /internal/handoff/seal` | Seals if nothing is left (200); otherwise answers 409 with `blocking`, and the process keeps draining |
+| `POST /internal/handoff/resume` | Serves normally again, from draining or sealed. This is how a release is abandoned |
+
+A release runs in this order:
+
+1. Start the new process and accept it: `/health/ready` answers 200 and it
+   serves the acceptance requests.
+2. Take the old process out of the entry's rotation (E9).
+3. Drain the old process.
+4. Call seal until it answers 200. Poll as often as you like: the calls and
+   the platform's probes are counted apart and never hold a drain open.
+5. Stop the old process.
+
+If the seal does not succeed within the time your deployment expects, keep the
+old process and record the release as unfinished. The longest a request may run
+is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. Do not stop the
+process: `blocking` says what it is waiting for. To abandon the release instead,
+resume the old process and take the new one away.
+
+While a process drains, it still serves every request that reaches it:
+
+- `/health/ready` answers 503 with `"reason": "draining"`. `/health` stays
+  200.
+- Every response carries `Connection: close`. A client or entry holding a
+  kept-alive connection then opens its next request elsewhere.
+- A connection with no request in progress is closed after five seconds,
+  uvicorn's keep-alive limit, even one that was opened and never used. A
+  connection with a request in progress is not, however quiet its stream.
+- It claims no new batch items and starts no validation, sealing, webhook
+  delivery or sweep; the other process does them. Items it runs go on, and it
+  keeps their leases.
+- It runs no scheduled job. The alert checks and rollups run in the other
+  process, and the alerts are not sent twice. A job already running goes on.
+
+A seal succeeds only when none of these is left. Each appears in `blocking`
+under its own name:
+
+| `blocking` | What is left |
+|---|---|
+| `requests_in_flight` | A request in progress, streams included. A request lasts until its response, its clean-up and its stream's close are over |
+| `connections_open` | An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it |
+| `background_writes` | Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent |
+| `request_log_unwritten` | Request-log rows queued or being written |
+| `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here |
+| `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
+| `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |
+
+Some things never finish by waiting. They are reported and do not block a seal:
+costs the counters refused, cost writes whose outcome is unknown, shared
+reservations an operator has to resolve, and request-log rows dropped by a full
+queue. Copy them into the release record.
+
+The check and the switch to `sealed` are one step, so no request can start
+between them. From then on a request is refused with 503 and the code
+`instance_sealed` before anything is done for it, so it has no upstream call
+and no cost. It is counted in `requests.refused_after_seal`. A release that
+saw any did not hand over cleanly: the entry was still sending to the old
+process.
+
+At its stop, the process logs the state it was in and the requests still in
+flight (event `handoff_state_at_shutdown`). A sealed process stops at once.
+
+A handoff drains one process. With several worker processes behind one port,
+a call reaches whichever worker accepts it, so drain and seal answer 409 there.
+Run one worker per instance.
+
+What a handoff does not cover: while the two processes run side by side, each
+still enforces per-user concurrency, login rate limits and authentication
+blocks on its own. A user can have up to twice their concurrent requests in
+flight until the old process's requests end. Budgets are shared between the
+two processes only in the shared spend mode, and that mode is switched on
+with every process stopped, not during a handoff.
 
 ### What a change actually requires
 

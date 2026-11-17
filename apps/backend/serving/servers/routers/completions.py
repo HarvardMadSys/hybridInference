@@ -13,7 +13,6 @@ from typing import TYPE_CHECKING, Any
 
 import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
 
 from routing.endpoint_health import http_status_of
 from routing.endpoints import endpoint_id_for_adapter
@@ -64,6 +63,7 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.servers.streaming_response import ClosingStreamingResponse
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
@@ -86,6 +86,8 @@ from serving.utils.tokens import estimate_prompt_tokens_bounded
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+
+    from fastapi.responses import StreamingResponse
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -901,7 +903,7 @@ async def _render_chat_stream(
             streaming_headers["X-Provider"] = stream.provider_header
 
         stream.adopt(first_chunk, keepalive_gen)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             stream.frames(),
             media_type="application/json",
             headers=streaming_headers or None,
@@ -916,7 +918,7 @@ async def _render_chat_stream(
     }
     if stream.provider_header:
         response_headers["X-Provider"] = stream.provider_header
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         stream.frames(),
         media_type="text/event-stream",
         headers=response_headers,

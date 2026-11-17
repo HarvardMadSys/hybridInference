@@ -248,3 +248,73 @@ async def test_response_bytes_postpone_the_close_and_lost_cancels_it():
     protocol.connection_lost(None)
     await asyncio.sleep(0.15)
     assert not transport.closed
+
+
+# -- a release handoff winds connections down -------------------------------------
+
+
+@pytest.fixture
+def draining():
+    from serving.servers import idle_connection
+
+    idle_connection.set_draining(True)
+    yield
+    idle_connection.set_draining(False)
+
+
+@pytest.mark.asyncio
+async def test_while_draining_an_idle_connection_gets_the_keep_alive_limit(monkeypatch, draining):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.05)
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 600.0, lambda: "peer", lambda: False)
+    watch.touch()
+
+    await asyncio.sleep(0.15)
+    assert transport.closed
+
+
+@pytest.mark.asyncio
+async def test_while_draining_a_connection_with_a_request_keeps_the_normal_limit(
+    monkeypatch, draining
+):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.05)
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 600.0, lambda: "peer", lambda: True)
+    watch.touch()
+
+    await asyncio.sleep(0.15)
+    assert not transport.closed
+    watch.cancel()
+
+
+@pytest.mark.asyncio
+async def test_a_request_begun_after_the_short_limit_was_armed_is_not_cut(monkeypatch, draining):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.05)
+    busy = [False]
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 600.0, lambda: "peer", lambda: busy[0])
+    watch.touch()  # idle: the short limit
+    busy[0] = True  # headers arrived, a quiet stream follows
+
+    await asyncio.sleep(0.15)
+    assert not transport.closed
+    watch.cancel()
+
+
+@pytest.mark.asyncio
+async def test_draining_applies_even_when_the_idle_timeout_is_disabled(monkeypatch, draining):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.05)
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0, lambda: "peer", lambda: False)
+    watch.touch()
+
+    await asyncio.sleep(0.15)
+    assert transport.closed

@@ -1644,6 +1644,32 @@ class SharedSpendLedger:
             "unaccounted": states.get("unaccounted", 0),
         }
 
+    def handoff_report(self) -> dict[str, Any]:
+        """What this ledger still has to send, and what it holds, for a release handoff.
+
+        Unfinished while a request it admitted runs, a settlement is queued,
+        being written or waiting to be retried, or an abandoned admission is
+        unresolved: each ends on its own while the database takes writes.
+        Quarantined and unaccounted reservations wait for an operator
+        (``python -m serving.shared_spend``); they are reported and do not
+        make the ledger unfinished.
+        """
+        held = self.holdings()
+        cost, records = self.unwritten()
+        return {
+            "mode": "shared",
+            "holdings": held,
+            "not_settled_usd": round(cost, 6),
+            "not_settled_records": records,
+            "writing": self._writer is not None,
+            "finished": (
+                self._writer is None
+                and not self._has_work()
+                and not held["active"]
+                and not held["abandoned"]
+            ),
+        }
+
     def fully_settled(self) -> bool:
         """Whether nothing this process admitted or recorded is unsettled or a liability."""
         return not any(self.holdings().values()) and self.unwritten()[1] == 0

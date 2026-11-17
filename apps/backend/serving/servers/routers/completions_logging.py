@@ -357,6 +357,21 @@ class CompletionsLogger:
             )
             raise  # let tracked_task record the failure
 
+    def pending(self) -> dict[str, Any]:
+        """Rows still to be written, for the release handoff (:mod:`serving.servers.handoff`).
+
+        ``queued`` rows wait for a worker, ``writing`` ones are being written;
+        ``dropped`` counts every row lost to a full queue since the process
+        started. ``finished`` is true when nothing is queued or being written.
+        """
+        queued = self._queue.qsize() if self._queue is not None else 0
+        return {
+            "queued": queued,
+            "writing": self._in_flight,
+            "dropped": self._dropped_count,
+            "finished": queued == 0 and self._in_flight == 0,
+        }
+
     async def stop(self, *, timeout: float = _LOG_DRAIN_TIMEOUT_S) -> None:
         """Drain queued log rows, then end the worker pool.
 

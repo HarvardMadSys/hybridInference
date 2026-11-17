@@ -224,6 +224,12 @@ _STRUCTURED_LOG_KEYS = (
     "failing_for_seconds",
     "oldest_age_seconds",
     "instances",
+    # Where a release handoff stood (serving/servers/handoff.py): its state,
+    # the requests in flight and those refused after the seal. A release
+    # record is built from these lines; no other line uses the names.
+    "handoff_state",
+    "handoff_in_flight",
+    "handoff_refused_after_seal",
 )
 
 

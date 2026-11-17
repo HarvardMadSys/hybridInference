@@ -52,6 +52,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
+from serving.observability import detached_tasks
 from serving.observability.tracked_tasks import tracked_task
 from serving.storage.base import CostIncrement, CostWriteOutcomeUnknown
 from serving.utils import context as req_ctx
@@ -709,6 +710,26 @@ class SpendLedger:
                 continue
             self._start_write()
 
+    def handoff_report(self) -> dict[str, Any]:
+        """What this ledger still has to write, and what it never will, for a release handoff.
+
+        ``owed`` is recorded and not yet written, or being written: it is
+        written within seconds while the counters take writes, and it is what
+        a process must not stop with. A write whose outcome is unknown is never
+        retried and a refused entry never written again; they are reported, by
+        requests, and do not make the ledger unfinished.
+        """
+        owed = [*self._pending.values(), *self._writing.values()]
+        return {
+            "mode": "local",
+            "owed_usd": round(sum(a.cost for a in owed), 6),
+            "owed_requests": sum(a.requests for a in owed),
+            "writing": self._writer is not None,
+            "unknown_requests": sum(a.requests for _, a in self._unknown),
+            "refused_requests": sum(a.requests for _, a in self._refused),
+            "finished": not owed and self._writer is None,
+        }
+
     def unwritten(self) -> tuple[float, int]:
         """Costs recorded and not known written (dollars, requests), for shutdown's report.
 
@@ -917,6 +938,7 @@ def _send_alert(send: Callable[[Any], Awaitable[Any]]) -> None:
     task = loop.create_task(run())
     _ALERTS.add(task)
     task.add_done_callback(_ALERTS.discard)
+    detached_tasks.track(task, name="alert_send")
 
 
 # Per store, weakly: a store that goes away (tests make many) takes its
@@ -954,6 +976,18 @@ def ledger_for(store: Any) -> Any:
         if pinned is None or pinned[0] is not store:
             pinned = _PINNED[id(store)] = (store, SpendLedger(store))
         return pinned[1]
+
+
+def handoff_report() -> list[dict[str, Any]]:
+    """Every ledger's :meth:`SpendLedger.handoff_report` (or the shared ledger's), now."""
+    from serving.shared_spend import ledger as shared_ledger
+
+    ledgers = [
+        *_LEDGERS.values(),
+        *(ledger for _, ledger in _PINNED.values()),
+        *shared_ledger.all_ledgers(),
+    ]
+    return [ledger.handoff_report() for ledger in ledgers]
 
 
 async def flush_all(timeout: float = 10.0) -> None:
