@@ -4,14 +4,14 @@ The claim-lease revision was authored from the 0016 schema. Current dev
 continued through 0021_sso_identities independently, so this no-op merge
 revision records that both histories are present before later migrations run.
 
-Revision ID: 0022_merge_hard_delete_and_current_dev
+Revision ID: 0022_hard_delete_merge
 Revises: 0016_hard_delete_claim_lease, 0021_sso_identities
 Create Date: 2026-11-17
 """
 
 from __future__ import annotations
 
-revision = "0022_merge_hard_delete_and_current_dev"
+revision = "0022_hard_delete_merge"
 down_revision = ("0016_hard_delete_claim_lease", "0021_sso_identities")
 branch_labels = None
 depends_on = None

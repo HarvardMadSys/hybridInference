@@ -32,7 +32,7 @@ async def scratch():
 def test_the_chain_has_exactly_one_head_and_the_new_revision_is_its_tip():
     chain = code_chain()
     assert len(chain) == len(set(chain)), "a revision appears twice"
-    assert chain[-1] == "0022_merge_hard_delete_and_current_dev"
+    assert chain[-1] == "0022_hard_delete_merge"
     assert "0016_hard_delete_claim_lease" in chain
     # Every revision file is in the graph, which has one merged head.
     files = sorted(p.stem for p in VERSIONS.glob("*.py") if p.stem != "__init__")
@@ -64,7 +64,7 @@ def test_a_database_at_the_previous_revision_is_refused_by_this_code():
 
 def test_a_database_at_the_merged_revision_is_current():
     verdict = judge(
-        SchemaState(revision="0022_merge_hard_delete_and_current_dev", floor=None), code_chain()
+        SchemaState(revision="0022_hard_delete_merge", floor=None), code_chain()
     )
     assert verdict is Verdict.CURRENT
 
