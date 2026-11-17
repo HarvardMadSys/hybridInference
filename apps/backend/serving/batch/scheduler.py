@@ -298,6 +298,10 @@ class BatchScheduler:
         self._background: dict[str, asyncio.Task[Any]] = {}
         self._stopping = False
         self._in_flight: dict[int, _InFlight] = {}
+        # Every item's task until it ends, whether or not its item has been
+        # handed back: what it does after the hand-back (failing the batch,
+        # pausing the owner) is still this process's work (handoff_report).
+        self._item_tasks: set[asyncio.Task[None]] = set()
         self._running: Counter[str] = Counter()
         # Per owner: their items in flight here, the batch quota slots those
         # hold, and the role they last authenticated with, which says what
@@ -390,11 +394,19 @@ class BatchScheduler:
     def handoff_report(self) -> dict[str, Any]:
         """What this worker still runs, for a release handoff (:mod:`serving.servers.handoff`).
 
-        ``items`` are claimed items not yet handed back; ``jobs`` the
-        validation, sealing, delivery and sweep tasks running. Finished when
-        both are none.
+        ``items`` are the item tasks still running, however far along -- an
+        item handed back may still have its batch to fail or its owner to
+        pause -- plus claimed items not yet handed back that have no task
+        running. ``jobs`` are the validation, sealing, delivery and sweep tasks
+        running. Finished when all are none.
         """
-        items = sum(1 for entry in self._in_flight.values() if not entry.settled)
+        running = {task for task in self._item_tasks if not task.done()}
+        waiting = sum(
+            1
+            for entry in self._in_flight.values()
+            if not entry.settled and (entry.task is None or entry.task not in running)
+        )
+        items = len(running) + waiting
         jobs = sum(1 for task in self._background.values() if not task.done())
         return {
             "running": self._task is not None and not self._task.done(),
@@ -767,6 +779,8 @@ class BatchScheduler:
                 context=contextvars.Context(),
             )
             entry.task.add_done_callback(lambda _task, entry=entry: self._forget(entry))
+            self._item_tasks.add(entry.task)
+            entry.task.add_done_callback(self._item_tasks.discard)
 
     async def _adopt(self, entry: _InFlight, item: dict[str, Any]) -> None:
         """Take over a new claim of an item this process is still running.

@@ -2046,6 +2046,65 @@ async def test_a_paused_worker_claims_nothing_and_finishes_what_it_runs(worker, 
     assert scheduler.handoff_report()["paused"] is False
 
 
+def _handoff_blocking(scheduler) -> list[str]:
+    from serving.servers import handoff
+
+    services = types.SimpleNamespace(batch_scheduler=scheduler, completions_logger=None)
+    return handoff.blockers(services, handoff.Handoff())
+
+
+@pytest.mark.parametrize(
+    ("outcome", "write"),
+    [
+        # A revoked key: the item is handed back, then its batch is failed.
+        (lambda: StoredKeyRejected("the API key was revoked"), "fail_batch"),
+        # A role that no longer qualifies: handed back, then the owner paused.
+        (lambda: _owner_ctx(role="pro"), "pause_user_batches"),
+        # A spent quota: handed back, then the owner paused until it renews.
+        (
+            lambda: StoredKeyQuotaExceeded(
+                quota_usd=10.0, spent_usd=10.0, reset_at=datetime.now(UTC) + timedelta(hours=3)
+            ),
+            "pause_user_batches",
+        ),
+    ],
+    ids=["revoked_key", "role", "quota"],
+)
+async def test_an_item_handed_back_holds_the_handoff_until_its_last_write_is_done(
+    worker, dispatch, auth, outcome, write
+):
+    """Handed back is not finished: the item's task still has a write to make."""
+    auth.outcome = outcome()
+    store = FakeStore()
+    store.add(1)
+    entered, gate = asyncio.Event(), asyncio.Event()
+    original = getattr(store, write)
+
+    async def slow_write(*args, **kwargs):
+        entered.set()
+        await gate.wait()
+        return await original(*args, **kwargs)
+
+    setattr(store, write, slow_write)
+    scheduler = worker(store)
+    scheduler.start()
+    await asyncio.wait_for(entered.wait(), 2)
+
+    assert store.calls["release_item"] == 1  # handed back already
+    report = scheduler.handoff_report()
+    assert (report["items"], report["finished"]) == (1, False)
+    assert "batch_work_running" in _handoff_blocking(scheduler)
+
+    gate.set()
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert "batch_work_running" not in _handoff_blocking(scheduler)
+    if write == "fail_batch":
+        assert store.batches["b1"]["status"] == "failed"
+    else:
+        assert OWNER in store.paused
+    assert dispatch.calls == []
+
+
 async def test_a_claim_under_way_when_paused_holds_the_handoff_and_hands_its_items_back(
     worker, dispatch
 ):

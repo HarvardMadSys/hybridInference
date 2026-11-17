@@ -453,7 +453,7 @@ under its own name:
 | `request_log_unwritten` | Request-log rows queued or being written |
 | `request_log_lost` | A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears |
 | `stream_close_abandoned` | A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears |
-| `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here |
+| `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here. An item lasts until its task ends, so one already handed back still counts while its batch is being failed or its owner paused |
 | `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
 | `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |
 | `spend_unconfirmed` | A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives |

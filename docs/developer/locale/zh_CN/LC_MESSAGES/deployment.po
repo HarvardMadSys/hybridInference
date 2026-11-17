@@ -2658,8 +2658,8 @@ msgid "`batch_work_running`"
 msgstr "`batch_work_running`"
 
 #: ../developer/deployment.md
-msgid "A batch item, or a batch validation, sealing, delivery or sweep, still running here"
-msgstr "本进程里仍在运行的批处理条目，或批处理的校验、封装、投递、清理"
+msgid "A batch item, or a batch validation, sealing, delivery or sweep, still running here. An item lasts until its task ends, so one already handed back still counts while its batch is being failed or its owner paused"
+msgstr "本进程里仍在运行的批处理条目，或批处理的校验、封装、投递、清理。条目要等它的任务结束才算完成：已经归还的条目，在它的批次还在写失败状态、或它的用户还在被暂停时，仍然计入"
 
 #: ../developer/deployment.md
 msgid "`scheduled_jobs_running`"
