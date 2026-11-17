@@ -177,7 +177,7 @@ docker compose -f deploy/docker/docker-compose.yml --env-file .env up -d postgre
 
 For a local gateway without accounts or a database, set both `DB_ENABLED=false`
 and `USER_AUTH_ENABLED=false` in `.env`. It still routes requests, and `/health`
-reports `"database_configured": false`. Accounts, API keys, request history
+reports `"database_configured": false` to a caller with `ADMIN_TOKEN`. Accounts, API keys, request history
 and the settings stored in the database all need the database.
 
 ## Configuration
