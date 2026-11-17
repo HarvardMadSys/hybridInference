@@ -188,8 +188,9 @@ async def test_a_recognized_browser_signs_in_while_its_shared_address_is_locked_
     device = _device(await _login(app))  # the administrator, earlier, on this browser
     assert device
 
-    # A stranger behind the same proxy guesses until the address windows are
-    # spent, and from ten addresses of their own, the account-wide one.
+    # A stranger behind the same proxy guesses until the account's window for
+    # unresolved clients is spent, and from ten addresses of their own, the
+    # account-wide one.
     for _ in range(25):
         assert (await _login(app, "guess")).status_code in (401, 429)
     for n in range(10):
@@ -198,7 +199,7 @@ async def test_a_recognized_browser_signs_in_while_its_shared_address_is_locked_
 
     # Without the cookie the right password is refused here and anywhere else.
     shared = await _login(app)
-    assert (shared.status_code, shared.headers["Retry-After"]) == (429, "3600")
+    assert (shared.status_code, shared.headers["Retry-After"]) == (429, "900")
     elsewhere = await _login(app, client_ip="5.6.7.8")
     assert (elsewhere.status_code, elsewhere.headers["Retry-After"]) == (429, "900")
 
@@ -251,7 +252,7 @@ async def test_no_exemption_without_a_valid_entry_for_the_account(app, op_store,
 
     for value in (_tampered(admin_device), ops_device, "not-an-entry"):
         resp = await _login(app, device=value)
-        assert (resp.status_code, resp.headers["Retry-After"]) == (429, "3600")
+        assert (resp.status_code, resp.headers["Retry-After"]) == (429, "900")
 
     issued_at = device_cookie._now()
     monkeypatch.setattr(device_cookie, "_now", lambda: issued_at + LIFETIME_SECONDS + 1)
@@ -331,3 +332,97 @@ async def test_entries_kept_from_before_a_password_reset_cannot_lock_out_the_own
     # windows: signed in, not refused.
     resp = await _login(app, device=kept, client_ip="9.9.9.9")
     assert resp.status_code == 200, resp.text
+
+
+# -- clients whose address cannot be resolved ---------------------------------------
+#
+# Loopback is unresolved here, as every browser behind an untrusted proxy is.
+# One such client must not lock the rest out; each account stays guarded.
+
+
+@pytest.fixture
+def _breaker(monkeypatch):
+    for name, value in (
+        ("unresolved_login_failure_block_threshold", 10),
+        ("unresolved_login_failure_block_window_sec", 300),
+        ("unresolved_login_failure_block_duration_sec", 300),
+    ):
+        monkeypatch.setattr(settings, name, value)
+
+
+async def test_one_unresolved_client_cannot_lock_out_the_others(app, op_store, monkeypatch):
+    """The reported case: 20 sign-ins from "unknown" refused everyone behind the proxy."""
+    monkeypatch.setattr(settings, "unresolved_login_failure_block_threshold", 100)
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    # A stranger with no device cookie, behind the same proxy, over many names.
+    for n in range(30):
+        assert (await _login(app, "guess", login_name=f"nobody-{n}")).status_code == 401
+
+    # The administrator, behind it too and without a cookie, still signs in.
+    resp = await _login(app)
+    assert resp.status_code == 200, resp.text
+
+
+async def test_unresolved_failures_trip_a_brief_breaker(app, op_store, _breaker):
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    device = _device(await _login(app))
+    for n in range(10):
+        assert (await _login(app, "guess", login_name=f"nobody-{n}")).status_code == 401
+
+    refused = await _login(app)
+    assert refused.status_code == 429
+    assert 1 <= int(refused.headers["Retry-After"]) <= 301
+    # A browser that signed in before, and any resolved client, still sign in.
+    assert (await _login(app, device=device)).status_code == 200
+    assert (await _login(app, client_ip="5.6.7.8")).status_code == 200
+
+
+async def test_a_resolved_public_client_keeps_its_hourly_window(app, op_store):
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    for n in range(20):
+        resp = await _login(app, "guess", login_name=f"nobody-{n}", client_ip="8.8.8.8")
+        assert resp.status_code == 401
+    blocked = await _login(app, client_ip="8.8.8.8")
+    assert (blocked.status_code, blocked.headers["Retry-After"]) == (429, "3600")
+    assert (await _login(app, client_ip="8.8.4.4")).status_code == 200
+
+
+async def test_a_resolved_ipv6_client_is_counted_by_its_64(app, op_store):
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    for n in range(20):
+        resp = await _login(
+            app, "guess", login_name=f"nobody-{n}", client_ip=f"2606:4700:10:20::{n + 1:x}"
+        )
+        assert resp.status_code == 401
+    rotated = await _login(app, client_ip="2606:4700:10:20:ffff::1")
+    assert (rotated.status_code, rotated.headers["Retry-After"]) == (429, "3600")
+    assert (await _login(app, client_ip="2606:4700:10:21::1")).status_code == 200
+
+
+async def test_a_trusted_proxys_forwarded_client_is_counted_by_its_own_address(
+    app, op_store, monkeypatch
+):
+    """Behind a trusted proxy each browser has its own windows again."""
+    from unittest.mock import patch as mock_patch
+
+    from serving.config.settings import Settings
+
+    op_store.users[ADMIN_ID] = _account(ADMIN_ID, "admin")
+    trusted = Settings(trust_proxy_headers=True, trusted_proxies="127.0.0.1/32")
+
+    async def _via_proxy(password: str, forwarded_for: str, login_name: str = "admin"):
+        with mock_patch("serving.utils.request_ip.get_settings", return_value=trusted):
+            return await _send(
+                app,
+                "POST",
+                "/auth/login",
+                headers={"X-Forwarded-For": forwarded_for},
+                json={"email": login_name, "password": password},
+            )
+
+    for n in range(20):
+        assert (await _via_proxy("guess", "93.184.216.34", f"nobody-{n}")).status_code == 401
+    blocked = await _via_proxy(PASSWORD, "93.184.216.34")
+    assert (blocked.status_code, blocked.headers["Retry-After"]) == (429, "3600")
+    # The owner, forwarded by the same proxy from another address, signs in.
+    assert (await _via_proxy(PASSWORD, "1.1.1.1")).status_code == 200

@@ -181,6 +181,16 @@ class Settings(BaseSettings):
     login_rate_limit_per_15min: int = 5
     login_account_rate_limit_per_15min: int = Field(default=50, ge=1)
     login_rate_limit_per_hour_per_ip: int = 20
+    # A sign-in whose client address could not be resolved (no trusted proxy
+    # settings in front of the gateway: every browser reads "unknown") is not
+    # counted per address -- one shared window would let any one client lock
+    # every other one out. Its account windows still apply. Instead, wrong
+    # passwords and unknown names from such clients without a device cookie
+    # feed one coarse breaker: this many within the window refuse further such
+    # sign-ins for the duration. 0 turns the breaker off.
+    unresolved_login_failure_block_threshold: int = Field(default=50, ge=0)
+    unresolved_login_failure_block_window_sec: int = Field(default=300, ge=1)
+    unresolved_login_failure_block_duration_sec: int = Field(default=300, ge=1)
     # Auto-block a source IP at the API-key auth layer after repeated auth
     # failures. Once an IP (IPv6 bucketed to /64) reaches
     # auth_failure_block_threshold failures within auth_failure_block_window_sec,
@@ -241,6 +251,12 @@ class Settings(BaseSettings):
     sms_otp_send_per_phone_day: int = Field(default=10, ge=1)
     sms_otp_send_per_ip_hour: int = Field(default=20, ge=1)
     sms_otp_send_per_ip_day: int = Field(default=100, ge=1)
+    # Codes sent to clients whose address could not be resolved share one
+    # budget of their own instead of the per-address one, so one such client
+    # cannot use up every other one's allowance; it still caps what an
+    # unresolved flood costs. Each number's own limits apply as ever.
+    sms_otp_send_unresolved_per_hour: int = Field(default=200, ge=1)
+    sms_otp_send_unresolved_per_day: int = Field(default=1000, ge=1)
     sms_otp_max_attempts: int = Field(default=5, ge=1, le=10)
     sms_otp_verify_per_phone_15min: int = Field(default=10, ge=1)
     sms_otp_verify_per_ip_hour: int = Field(default=30, ge=1)

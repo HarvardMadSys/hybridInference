@@ -10,11 +10,12 @@ from serving.config.settings import Settings, settings
 from serving.utils import login_rate_limit
 from serving.utils.device_cookie import RecognizedDevice
 from serving.utils.login_rate_limit import check_and_record_login, reset_login_rate_limit_state
+from serving.utils.request_ip import ClientIpInfo
 
 ATTACKER = "198.51.100.7"
 OWNER = "192.0.2.44"
-# What the backend sees for every browser behind a proxy it does not trust.
-SHARED = "unknown"
+# One resolved address many browsers share: a NAT, a campus or office egress.
+SHARED = "198.51.100.200"
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +140,7 @@ async def test_a_device_is_limited_on_its_own_window():
 
 
 async def test_a_device_signs_in_while_every_window_it_would_share_is_exhausted():
-    """Behind a proxy that hides addresses, the attacker and the admin share one."""
+    """Behind one shared address, the attacker and the admin share its windows."""
     for _ in range(25):
         await check_and_record_login("admin", SHARED)
     for n in range(10):
@@ -371,3 +372,171 @@ async def test_reset_clears_every_login_window():
     assert await check_and_record_login("admin", ATTACKER) == (True, None)
     assert await check_and_record_login("admin", ATTACKER, device="d1") == (True, None)
     assert len(login_rate_limit._account_device_attempts[("admin", "")]) == 1
+
+
+# -- unresolved client addresses ------------------------------------------------------
+#
+# Without trusted-proxy settings every browser behind the console's proxy reads
+# "unknown" (ClientIpInfo.resolved is False). These pin that one such client
+# cannot lock the others out, while each account stays as guarded as before.
+
+
+def _client(address: str, *, resolved: bool) -> ClientIpInfo:
+    return ClientIpInfo(
+        client_ip=address if resolved else "unknown",
+        peer_ip="172.18.0.5",
+        source="socket" if resolved else "unknown",
+        trusted_proxy_headers=False,
+        resolved=resolved,
+    )
+
+
+UNRESOLVED = _client("unknown", resolved=False)
+
+
+@pytest.fixture
+def _breaker(monkeypatch):
+    monkeypatch.setattr(settings, "unresolved_login_failure_block_threshold", 50)
+    monkeypatch.setattr(settings, "unresolved_login_failure_block_window_sec", 300)
+    monkeypatch.setattr(settings, "unresolved_login_failure_block_duration_sec", 300)
+
+
+async def test_unresolved_attempts_are_never_counted_as_one_address(_breaker):
+    """The reported lockout: 20 attempts from "unknown" refused every unresolved sign-in."""
+    for n in range(40):
+        assert await check_and_record_login(f"victim-{n}", UNRESOLVED) == (True, None)
+
+    assert "unknown" not in login_rate_limit._ip_attempts
+    assert login_rate_limit.UNRESOLVED_CLIENT not in login_rate_limit._ip_attempts
+    # Another unresolved user still signs in.
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_the_string_unknown_reads_as_unresolved(_breaker):
+    for n in range(40):
+        assert await check_and_record_login(f"victim-{n}", "unknown") == (True, None)
+    assert login_rate_limit._ip_attempts == {}
+
+
+async def test_an_unresolved_account_keeps_its_own_window(_breaker):
+    """Guessing at one account is bounded exactly as it was."""
+    for _ in range(5):
+        assert await check_and_record_login("admin", UNRESOLVED) == (True, None)
+
+    assert await check_and_record_login("admin", UNRESOLVED) == (False, "email")
+    # Another account is untouched, and so is the same account from a resolved address.
+    assert await check_and_record_login("root@example.com", UNRESOLVED) == (True, None)
+    assert await check_and_record_login("admin", _client(OWNER, resolved=True)) == (True, None)
+
+
+async def test_an_unresolved_account_counts_toward_the_account_wide_window(_breaker):
+    for n in range(10):
+        for _ in range(5):
+            await check_and_record_login("admin", f"203.0.113.{n + 1}")
+
+    assert await check_and_record_login("admin", UNRESOLVED) == (False, "account")
+
+
+async def test_failures_from_unresolved_clients_trip_a_brief_breaker(_breaker, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(login_rate_limit, "_now", lambda: now[0])
+    for _ in range(49):
+        login_rate_limit.record_login_failure(UNRESOLVED)
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+    login_rate_limit.record_login_failure(UNRESOLVED)
+
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (False, "unresolved")
+    assert 1 <= login_rate_limit.unresolved_retry_after() <= 301
+    # A browser with a device cookie, a resolved client, and a signed-in owner
+    # confirming a change are never refused by it.
+    assert await check_and_record_login("owner@example.com", UNRESOLVED, device="d1") == (
+        True,
+        None,
+    )
+    assert await check_and_record_login("owner@example.com", _client(OWNER, resolved=True)) == (
+        True,
+        None,
+    )
+    assert await check_and_record_login("admin", UNRESOLVED, signed_in=True) == (True, None)
+
+    now[0] += 301
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_failures_spread_over_the_window_do_not_trip_it(_breaker, monkeypatch):
+    now = [1_000_000.0]
+    monkeypatch.setattr(login_rate_limit, "_now", lambda: now[0])
+    for _ in range(200):
+        login_rate_limit.record_login_failure(UNRESOLVED)
+        now[0] += 10  # 30 a window, under 50
+
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_resolved_failures_never_feed_the_breaker(_breaker):
+    for _ in range(500):
+        login_rate_limit.record_login_failure(_client(ATTACKER, resolved=True))
+        login_rate_limit.record_login_failure(ATTACKER)
+
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_the_breaker_can_be_turned_off(_breaker, monkeypatch):
+    monkeypatch.setattr(settings, "unresolved_login_failure_block_threshold", 0)
+    for _ in range(500):
+        login_rate_limit.record_login_failure(UNRESOLVED)
+
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_resolved_clients_keep_their_per_ip_window(_breaker):
+    """A public IPv4 client is still refused past its hourly allowance."""
+    client = _client("8.8.8.8", resolved=True)
+    for n in range(20):
+        assert await check_and_record_login(f"user-{n}", client) == (True, None)
+
+    assert await check_and_record_login("user-20", client) == (False, "ip")
+    assert await check_and_record_login("user-21", _client("8.8.4.4", resolved=True)) == (
+        True,
+        None,
+    )
+
+
+async def test_resolved_ipv6_clients_share_their_64(_breaker):
+    for n in range(20):
+        client = _client(f"2001:db8:1:2::{n + 1:x}", resolved=True)
+        assert await check_and_record_login(f"user-{n}", client) == (True, None)
+
+    rotated = _client("2001:db8:1:2:ffff::1", resolved=True)
+    assert await check_and_record_login("user-20", rotated) == (False, "ip")
+    other_prefix = _client("2001:db8:1:3::1", resolved=True)
+    assert await check_and_record_login("user-21", other_prefix) == (True, None)
+
+
+def test_unresolved_breaker_defaults_and_registry_entries():
+    fields = Settings.model_fields
+    assert fields["unresolved_login_failure_block_threshold"].default == 50
+    assert fields["unresolved_login_failure_block_window_sec"].default == 300
+    assert fields["unresolved_login_failure_block_duration_sec"].default == 300
+    for key in (
+        "UNRESOLVED_LOGIN_FAILURE_BLOCK_THRESHOLD",
+        "UNRESOLVED_LOGIN_FAILURE_BLOCK_WINDOW_SEC",
+        "UNRESOLVED_LOGIN_FAILURE_BLOCK_DURATION_SEC",
+    ):
+        entry = registry.static_entry(key)
+        assert entry is not None and entry.category == "security"
+
+
+async def test_a_device_past_its_accounts_shared_window_is_not_refused_by_the_breaker(_breaker):
+    for n in range(50):
+        assert await check_and_record_login("admin", UNRESOLVED, device=f"entry-{n}") == (
+            True,
+            None,
+        )
+    for _ in range(50):
+        login_rate_limit.record_login_failure(UNRESOLVED)
+    assert await check_and_record_login("someone", UNRESOLVED) == (False, "unresolved")
+
+    # Counted like any client's attempt now, but in the account's windows only.
+    assert await check_and_record_login("admin", UNRESOLVED, device="late") == (True, None)

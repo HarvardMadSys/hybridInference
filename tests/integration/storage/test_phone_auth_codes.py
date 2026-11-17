@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 import pytest_asyncio
 
+from serving.storage.phone_auth import UNRESOLVED_IP
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
 from tests.fixtures.migrations import prepare_current_schema
@@ -128,6 +129,49 @@ async def test_verification_ip_quota_limits_unknown_phone_spray(phone_store):
     )
     assert results.count("invalid") == 3
     assert results.count("rate_limited") == 17
+
+
+async def test_unresolved_verifications_are_not_counted_per_address(phone_store):
+    """Every client behind an untrusted proxy is unresolved; one must not lock out the rest."""
+    results = await asyncio.gather(
+        *(
+            _consume(phone_store, phone=f"+86138001380{i:02d}", ip=None, ip_limit=3)
+            for i in range(20)
+        )
+    )
+    assert results.count("rate_limited") == 0
+    assert results.count("invalid") == 20
+    async with phone_store._pool.acquire() as conn:
+        assert (
+            await conn.fetchval(
+                "SELECT count(*) FROM phone_auth_attempts WHERE kind='verify' AND ip=$1",
+                UNRESOLVED_IP,
+            )
+            == 20
+        )
+
+
+async def test_an_unresolved_verification_keeps_the_numbers_own_window(phone_store):
+    results = [await _consume(phone_store, ip=None, phone_limit=3) for _ in range(5)]
+    assert results == ["invalid"] * 3 + ["rate_limited"] * 2
+
+
+async def test_unresolved_sends_share_their_own_budget_apart_from_any_address(phone_store):
+    """Sends counted under UNRESOLVED_IP neither reach a resolved address's quota nor "unknown"'s."""
+    for i in range(3):
+        retry, _ = await _reserve(phone_store, phone=f"+86138001381{i:02d}", ip=UNRESOLVED_IP)
+        assert retry == 0
+    retry, _ = await _reserve(phone_store, phone="+8613800138199", ip=UNRESOLVED_IP, ip_hour=3)
+    assert retry == 3600
+    # A resolved client, and rows an earlier release counted as "unknown", are apart.
+    assert (await _reserve(phone_store, phone="+8613800138198", ip="8.8.8.8", ip_hour=3))[0] == 0
+    async with phone_store._pool.acquire() as conn:
+        await conn.executemany(
+            "INSERT INTO phone_auth_attempts(phone, ip, kind) VALUES ($1, 'unknown', 'send')",
+            [(f"+86138001382{i:02d}",) for i in range(5)],
+        )
+    retry, _ = await _reserve(phone_store, phone="+8613800138197", ip=UNRESOLVED_IP, ip_hour=4)
+    assert retry == 0
 
 
 async def test_code_is_bound_to_purpose_and_authenticated_user(phone_store):

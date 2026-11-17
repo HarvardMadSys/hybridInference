@@ -20,11 +20,26 @@ to the account before is counted in three of them:
 
 The per-address buckets tell clients apart only as well as the client address
 does. A backend that cannot resolve one — every browser reaching it through
-the console's proxy, without trusted-proxy settings, is ``"unknown"`` — puts
-all of them on one address, where the per-account-per-address bucket is per
-account again. A browser that has signed in to the account before presents
-the device cookie that sign-in gave it (:mod:`serving.utils.device_cookie`)
-and is counted in the last two buckets alone:
+the console's proxy, without trusted-proxy settings, is ``"unknown"``
+(``ClientIpInfo.resolved`` is False) — has no address to count by. Such an
+attempt is kept out of the per-IP bucket, which would otherwise be one window
+shared by every unresolved client, there for any one of them to fill and lock
+the rest out of every account. It is counted per account instead, in the
+per-account-per-address bucket under one :data:`UNRESOLVED_CLIENT` key, and
+in the account-wide one, so guessing at one account stays as bounded as it
+was. What the per-IP bucket bounded -- one source spreading guesses over many
+accounts -- is bounded by one coarse breaker (:func:`record_login_failure`):
+wrong passwords and unknown names from unresolved clients without a device
+cookie, past ``settings.unresolved_login_failure_block_threshold`` within its
+window, refuse further such sign-ins for a short while. Correct passwords
+never feed it, a browser with a device cookie is never refused by it, and
+neither is a signed-in owner confirming a change (:mod:`.reauth`). This
+mirrors :mod:`serving.utils.signup_rate_limit` and
+:mod:`serving.utils.mail_rate_limit`; trusted-proxy settings are still what
+tell such clients apart. A browser that has signed in to the account before
+presents the device cookie that sign-in gave it
+(:mod:`serving.utils.device_cookie`) and is counted in the last two buckets
+alone:
 
 * Per device: its own ``settings.login_rate_limit_per_15min`` attempts per
   15 minutes, keyed by the cookie entry's nonce. While the shared window
@@ -76,7 +91,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, TypeVar
 
 from serving.config.settings import settings
-from serving.utils.request_ip import normalize_ip_bucket
+from serving.utils.request_ip import ClientIpInfo, normalize_ip_bucket
 
 if TYPE_CHECKING:
     from serving.utils.device_cookie import RecognizedDevice
@@ -112,6 +127,13 @@ _account_attempts: OrderedDict[str, list[float]] = OrderedDict()
 _ip_attempts: OrderedDict[str, list[float]] = OrderedDict()
 # When a refusal was last recorded, by (address bucket, reason).
 _refusals_recorded: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+#: The address key every attempt from an unresolved client is counted under, per
+#: account. Never a parseable address, so no resolved client shares it.
+UNRESOLVED_CLIENT = "unresolved"
+# Failed sign-ins from unresolved clients, oldest first, and until when such
+# sign-ins are refused once too many have failed.
+_unresolved_failures: deque[float] = deque()
+_unresolved_blocked_until = 0.0
 _setup_attempts: dict[str, deque[float]] = {}
 _lock = asyncio.Lock()
 _setup_sweep_counter = 0
@@ -171,8 +193,59 @@ def _record(bucket: list[float], now: float, keep: int) -> None:
         del bucket[: len(bucket) - keep]
 
 
+def _address_key(client: ClientIpInfo | str) -> str | None:
+    """The bucket a client's address is counted in, or None when it is unresolved.
+
+    A string is an address the caller already resolved; ``"unknown"``, which
+    :func:`serving.utils.request_ip.get_client_ip` answers for an unresolved
+    one, reads as unresolved too.
+    """
+    if isinstance(client, ClientIpInfo):
+        return normalize_ip_bucket(client.client_ip) if client.resolved else None
+    return None if client == "unknown" else normalize_ip_bucket(client)
+
+
+def _unresolved_blocked(now: float) -> bool:
+    return settings.unresolved_login_failure_block_threshold > 0 and now < _unresolved_blocked_until
+
+
+def record_login_failure(client: ClientIpInfo | str) -> None:
+    """Count a wrong password or unknown name from *client* toward the unresolved breaker.
+
+    Only an unresolved client's failures count, and the caller leaves out
+    those that carried a device cookie: once
+    ``settings.unresolved_login_failure_block_threshold`` of them fall within
+    ``unresolved_login_failure_block_window_sec``, every unresolved sign-in
+    without a device cookie is refused for
+    ``unresolved_login_failure_block_duration_sec``. No await, so the event
+    loop runs it without interleaving.
+    """
+    global _unresolved_blocked_until
+
+    threshold = settings.unresolved_login_failure_block_threshold
+    if threshold <= 0 or _address_key(client) is not None:
+        return
+    now = _now()
+    cutoff = now - settings.unresolved_login_failure_block_window_sec
+    while _unresolved_failures and _unresolved_failures[0] < cutoff:
+        _unresolved_failures.popleft()
+    _unresolved_failures.append(now)
+    if len(_unresolved_failures) >= threshold:
+        _unresolved_blocked_until = now + settings.unresolved_login_failure_block_duration_sec
+        _unresolved_failures.clear()
+
+
+def unresolved_retry_after() -> int:
+    """Seconds a sign-in refused by the unresolved breaker should wait (at least 1)."""
+    return max(1, int(_unresolved_blocked_until - _now()) + 1)
+
+
 async def check_and_record_login(
-    email: str, ip: str, *, device: RecognizedDevice | str | None = None
+    email: str,
+    client: ClientIpInfo | str,
+    *,
+    device: RecognizedDevice | str | None = None,
+    signed_in: bool = False,
 ) -> tuple[bool, str | None]:
     """Record a login attempt and return whether it should be allowed.
 
@@ -186,8 +259,14 @@ async def check_and_record_login(
     is full the attempt is counted like one without an entry instead. Returns
     (True, None) if every window has capacity, or (False, reason) naming the
     bucket that tripped: ``"device"`` (this browser), ``"ip"`` (this address,
-    any account), ``"email"`` (this account from this address) or
-    ``"account"`` (this account from every address together).
+    any account), ``"email"`` (this account from this address),
+    ``"account"`` (this account from every address together) or
+    ``"unresolved"`` (the unresolved breaker, :func:`record_login_failure`).
+
+    *client* is the request's :class:`~serving.utils.request_ip.ClientIpInfo`
+    (or an address string). An unresolved one is counted per account only,
+    never in the per-IP bucket. *signed_in* marks a signed-in session
+    confirming its owner, which the unresolved breaker never refuses.
 
     Recording happens on entry, in the same critical section as the check,
     so probing with varied payloads or concurrent requests cannot bypass the
@@ -209,8 +288,8 @@ async def check_and_record_login(
     # Normalize the identifier so case variants share the same bucket.
     account_key = email.strip().lower()
     # Normalize IPv6 to its /64 so rotating within a delegated prefix cannot
-    # reset either per-address window.
-    ip_key = normalize_ip_bucket(ip)
+    # reset either per-address window. None: the address is unresolved.
+    ip_key = _address_key(client)
 
     async with _lock:
         if device is not None:
@@ -237,13 +316,26 @@ async def check_and_record_login(
         # sending a new name each time adds nothing per name. Checked ahead of
         # the 15-minute windows, it also makes Retry-After a realistic wait
         # (telling an hour-blocked client to retry in 15 min would be wrong).
-        ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)
-        ip_count = len(ip_bucket)
-        _record(ip_bucket, now, per_ip)
-        if ip_count >= per_ip:
-            return False, "ip"
+        if ip_key is None:
+            # No address to tell this client from every other unresolved one:
+            # it is counted per account below, and the breaker stands in for
+            # the per-IP bucket (see the module docstring).
+            # A browser with a device entry, here only because its account's
+            # shared window is full, is never refused by the breaker either.
+            if not signed_in and device is None and _unresolved_blocked(now):
+                return False, "unresolved"
+            address_key = UNRESOLVED_CLIENT
+        else:
+            ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)
+            ip_count = len(ip_bucket)
+            _record(ip_bucket, now, per_ip)
+            if ip_count >= per_ip:
+                return False, "ip"
+            address_key = ip_key
 
-        address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
+        address_bucket = _window(
+            _account_address_attempts, (account_key, address_key), window_cutoff
+        )
         address_count = len(address_bucket)
         _record(address_bucket, now, per_account_address)
         if address_count >= per_account_address:
@@ -307,7 +399,9 @@ async def record_failed_setup_attempt(ip: str) -> bool:
 
 def reset_login_rate_limit_state() -> None:
     """Wipe all recorded attempts (login and setup). Test-only helper."""
-    global _setup_sweep_counter
+    global _setup_sweep_counter, _unresolved_blocked_until
+    _unresolved_failures.clear()
+    _unresolved_blocked_until = 0.0
     _device_attempts.clear()
     _account_device_attempts.clear()
     _account_address_attempts.clear()

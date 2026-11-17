@@ -538,6 +538,30 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     _setting(
+        "unresolved_login_failure_block_threshold",
+        "security",
+        "Wrong passwords or unknown names from clients whose address could not be resolved, "
+        "within the window, that briefly refuse further such sign-ins without a device "
+        "cookie. 0 turns this off.",
+        "int",
+        minimum=0,
+    ),
+    _setting(
+        "unresolved_login_failure_block_window_sec",
+        "security",
+        "Seconds over which unresolved sign-in failures are counted.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "unresolved_login_failure_block_duration_sec",
+        "security",
+        "Seconds unresolved sign-ins without a device cookie are refused once the threshold "
+        "is reached.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
         "unresolved_auth_failure_block_threshold",
         "security",
         "Unresolved authentication failures within the window that block unresolved traffic.",
@@ -692,6 +716,20 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "sms_otp_send_per_ip_day",
         "phone",
         "Messages requested by one client address per day.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_send_unresolved_per_hour",
+        "phone",
+        "Messages requested per hour by all clients whose address could not be resolved, together.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_send_unresolved_per_day",
+        "phone",
+        "Messages requested per day by all clients whose address could not be resolved, together.",
         "int",
         minimum=1,
     ),

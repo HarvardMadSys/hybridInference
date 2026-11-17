@@ -16,10 +16,20 @@ if TYPE_CHECKING:
 OWNER_PURPOSES = ("delete_account", "bind_email", "set_password")
 _ACCOUNT_PURPOSES = ("bind", *OWNER_PURPOSES)
 
+#: The ``phone_auth_attempts.ip`` of a request whose client address could not be
+#: resolved. Sends from such clients are counted together under it, against a
+#: budget of their own; verifications are recorded under it and not counted per
+#: address at all. Never a parseable address, so no resolved client shares it --
+#: nor ``"unknown"``, which an earlier release counted as one client's address.
+UNRESOLVED_IP = "unresolved"
 
-async def _lock(conn: Any, phone: str, ip: str, kind: str) -> None:
+
+async def _lock(conn: Any, phone: str, ip: str | None, kind: str) -> None:
     # Global ordering prevents deadlocks when requests share one quota key.
-    for key in sorted((f"phone-auth:{kind}:phone:{phone}", f"phone-auth:{kind}:ip:{ip}")):
+    keys = [f"phone-auth:{kind}:phone:{phone}"]
+    if ip is not None:
+        keys.append(f"phone-auth:{kind}:ip:{ip}")
+    for key in sorted(keys):
         await conn.execute("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", key)
 
 
@@ -189,12 +199,18 @@ class PostgresPhoneAuthMixin:
         purpose: str,
         user_id: str | None,
         code_hash: str,
-        ip: str,
+        ip: str | None,
         max_attempts: int,
         phone_limit: int,
         ip_limit: int,
     ) -> str:
-        """Commit verification attempts even on failure; consume once under a row lock."""
+        """Commit verification attempts even on failure; consume once under a row lock.
+
+        *ip* is the client's address bucket, or None when it could not be
+        resolved: the attempt is then limited by the number's window and the
+        code's attempts alone, and recorded under :data:`UNRESOLVED_IP`.
+        """
+        ip_key = ip if ip is not None else UNRESOLVED_IP
         async with self._pool.acquire() as conn, conn.transaction():
             if user_id:
                 owner = await conn.fetchrow(
@@ -216,14 +232,16 @@ class PostgresPhoneAuthMixin:
                     AND (phone = $1 OR ip = $2)
                 """,
                 phone,
-                ip,
+                ip_key,
             )
-            if stats["phone_count"] >= phone_limit or stats["ip_count"] >= ip_limit:
+            if stats["phone_count"] >= phone_limit or (
+                ip is not None and stats["ip_count"] >= ip_limit
+            ):
                 return "rate_limited"
             await conn.execute(
                 "INSERT INTO phone_auth_attempts(phone, ip, kind) VALUES ($1, $2, 'verify')",
                 phone,
-                ip,
+                ip_key,
             )
             row = await conn.fetchrow(
                 "SELECT *, expires_at > NOW() AS unexpired FROM phone_auth_codes "
