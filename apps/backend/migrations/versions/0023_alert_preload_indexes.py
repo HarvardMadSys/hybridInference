@@ -5,8 +5,8 @@ and the accepted firing for its episode. These partial indexes cover the two
 all-history reads without indexing test events, unrelated event kinds, or
 undelivered history.
 
-Revision ID: 0017_alert_preload_indexes
-Revises: 0016_hard_delete_claim_lease
+Revision ID: 0023_alert_preload_indexes
+Revises: 0022_merge_hard_delete_and_current_dev
 Create Date: 2026-11-13
 """
 
@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlalchemy as sa
 from alembic import op
 
-revision = "0017_alert_preload_indexes"
-down_revision = "0016_hard_delete_claim_lease"
+revision = "0023_alert_preload_indexes"
+down_revision = "0022_merge_hard_delete_and_current_dev"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
