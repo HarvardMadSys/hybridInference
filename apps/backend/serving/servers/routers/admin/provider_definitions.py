@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import re
 import time
@@ -37,7 +38,7 @@ from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
     _validate_base_url,
 )
-from serving.utils.metadata_addresses import refuse_metadata_socket
+from serving.utils.admin_upstreams import admin_upstream_socket
 
 router = APIRouter(prefix="/admin")
 
@@ -372,6 +373,60 @@ def _safe_preview(value: str) -> str:
     return text[:160] if text else ""
 
 
+#: How much of a failed probe's answer is read to look for an error message.
+_MAX_ERROR_BODY_BYTES = 16 * 1024
+
+
+def _upstream_error_message(raw: bytes, *, api_key: str) -> str:
+    """The message of an OpenAI-style error answer, or "" for any other body.
+
+    The probe may reach whatever an administrator typed, so a failed answer
+    can come from a service that is not an inference API at all -- an internal
+    dashboard, a metadata-like agent, a proxy's error page. Its body is never
+    shown. Only the message an OpenAI-compatible server puts in its error
+    envelope (``{"error": {"message": ...}}``, ``{"error": "..."}`` as Ollama
+    answers, or vLLM's older ``{"object": "error", "message": ...}``) is,
+    shortened, with the key it was sent masked should the upstream echo it.
+    """
+    try:
+        body = json.loads(raw.decode("utf-8", errors="replace"))
+    except (json.JSONDecodeError, ValueError):
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    message: Any = None
+    error = body.get("error")
+    if isinstance(error, dict):
+        message = error.get("message")
+    elif isinstance(error, str):
+        message = error
+    elif body.get("object") == "error":
+        message = body.get("message")
+    if not isinstance(message, str):
+        return ""
+    if api_key:
+        message = message.replace(api_key, "***")
+    return _safe_preview(message)
+
+
+def _connection_failure(exc: aiohttp.ClientError) -> str:
+    """What a probe that could not complete says, without the client library's text.
+
+    The library's message names the resolved address and the operating
+    system's error; the administrator learns which of a few things went wrong.
+    """
+    if isinstance(exc, aiohttp.ClientConnectorCertificateError | aiohttp.ClientSSLError):
+        return "Provider probe failed: the provider's TLS certificate could not be verified."
+    if isinstance(exc, aiohttp.ClientConnectorError):
+        if getattr(exc.os_error, "errno", None) == errno.EACCES:
+            return (
+                "Provider probe failed: this deployment does not allow connections to the "
+                "provider's address."
+            )
+        return "Provider probe failed: could not connect to the provider."
+    return f"Provider probe failed ({type(exc).__name__})."
+
+
 def _route_adapters(route: Any) -> list[Any]:
     raw_adapters = getattr(route, "raw_adapters", None)
     if raw_adapters:
@@ -590,8 +645,9 @@ async def _probe_openai_compat(
             aiohttp.ClientSession(
                 timeout=timeout,
                 # The host is resolved again here; refuse it if it now answers
-                # with a cloud metadata address that _validate_base_url never saw.
-                connector=aiohttp.TCPConnector(socket_factory=refuse_metadata_socket),
+                # with an address _validate_base_url would have refused (cloud
+                # metadata, or private while the deployment forbids that).
+                connector=aiohttp.TCPConnector(socket_factory=admin_upstream_socket),
             ) as session,
             session.post(
                 _chat_completions_url(cleaned_base_url),
@@ -606,16 +662,26 @@ async def _probe_openai_compat(
                 allow_redirects=False,
             ) as response,
         ):
+            if 300 <= response.status < 400:
+                # Not followed, and where it points is not shown: it may name
+                # an internal address the administrator never typed.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Provider answered with a redirect (HTTP {response.status}), which "
+                    "the probe does not follow. Use the Base URL it redirects to.",
+                )
             if response.status >= 400:
-                body = _safe_preview(await response.text())
+                message = _upstream_error_message(
+                    await response.content.read(_MAX_ERROR_BODY_BYTES), api_key=key
+                )
                 if response.status in {401, 403}:
                     detail = "Authentication failed. Check the API key."
                 elif response.status == 404:
                     detail = "Endpoint not found. Check that Base URL excludes /chat/completions."
                 else:
-                    detail = f"Provider probe failed with HTTP {response.status}"
-                if body:
-                    detail = f"{detail} {body}"
+                    detail = f"Provider probe failed with HTTP {response.status}."
+                if message:
+                    detail = f"{detail} Provider said: {message}"
                 raise HTTPException(status_code=400, detail=detail)
 
             buffer = b""
@@ -672,7 +738,7 @@ async def _probe_openai_compat(
             detail="Probe timed out. Check provider availability or model id.",
         ) from exc
     except aiohttp.ClientError as exc:
-        raise HTTPException(status_code=400, detail=f"Provider probe failed: {exc}") from exc
+        raise HTTPException(status_code=400, detail=_connection_failure(exc)) from exc
 
 
 @router.get("/provider-definitions", response_model=ListProviderDefinitionsResponse)

@@ -86,9 +86,10 @@ from serving.servers.routewise_compat import (
 from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
+from serving.utils.admin_upstreams import upstream_refusal
 from serving.utils.ip_classification import parse_ip
 from serving.utils.logging import get_logger
-from serving.utils.metadata_addresses import is_metadata_address, is_metadata_hostname
+from serving.utils.metadata_addresses import is_metadata_hostname
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -1703,7 +1704,9 @@ async def _validate_base_url(base_url: str) -> str:
     # private hosts included (self-hosted engines, on-prem gateways). Cloud
     # instance metadata endpoints are refused in every spelling, IPv4 carried
     # in IPv6 included: no inference upstream lives there, and they hand out
-    # the host's own credentials. This check gives the admin a clear
+    # the host's own credentials. A deployment may also refuse private and
+    # loopback hosts (ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0, see
+    # serving.utils.admin_upstreams). This check gives the admin a clear
     # error; the connection itself is guarded again at connect time, since the
     # name may resolve differently.
     hostname = parsed.hostname.rstrip(".").lower()
@@ -1736,15 +1739,20 @@ async def _validate_base_url(base_url: str) -> str:
         addresses = [str(result[4][0]) for result in resolved]
 
     for address in addresses:
-        try:
-            refused = is_metadata_address(address)
-        except ValueError:
+        refusal = upstream_refusal(address)
+        if refusal == "invalid":
             raise HTTPException(
                 status_code=422,
                 detail="base_url host resolved to an invalid address",
-            ) from None
-        if refused:
+            )
+        if refusal == "metadata":
             raise HTTPException(status_code=422, detail="base_url host is not allowed")
+        if refusal == "private":
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host is a private, loopback or link-local address, which this "
+                "deployment does not allow (ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS)",
+            )
     return cleaned
 
 

@@ -1367,6 +1367,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Accept X-Real-IP from trusted proxies. Requires TRUST_PROXY_HEADERS.",
         "bool",
     ),
+    ConfigEntry(
+        "ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS",
+        "network",
+        "Let administrators save and probe provider Base URLs, and the model queue status "
+        "address, on private, loopback and link-local addresses (self-hosted engines). Off "
+        "refuses them when saved or probed and at connect time, for a gateway kept apart "
+        "from its own network; routes saved earlier keep serving. Cloud metadata addresses "
+        "are always refused.",
+        type="bool",
+        default="1",
+        flag=True,
+    ),
     # --- alerts ------------------------------------------------------------
     _setting(
         "alerts_enabled",

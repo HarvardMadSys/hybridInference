@@ -17,7 +17,8 @@ ignored.
 
 The address is fetched with ``MODEL_QUEUE_STATUS_API_KEY`` (``LOCAL_API_KEY``
 when that is empty) as a bearer key. It is an administrator's setting, but the
-request still follows no redirect, refuses cloud metadata addresses and reads
+request still follows no redirect, refuses cloud metadata addresses (and private
+ones under ``ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0``) and reads
 at most ``_MAX_STATUS_BYTES``, and a failure is reported in the response, not
 raised, so the page can say what went wrong.
 """
@@ -36,8 +37,8 @@ from pydantic import ValidationError
 from serving.config.app_config import config_value
 from serving.schemas_admin import ModelQueueResponse
 from serving.servers.deps import get_batch_store, get_services, verify_admin_access
+from serving.utils.admin_upstreams import admin_upstream_socket
 from serving.utils.logging import get_logger
-from serving.utils.metadata_addresses import refuse_metadata_socket
 
 logger = get_logger(__name__)
 
@@ -94,7 +95,7 @@ async def fetch_status(url: str, api_key: str) -> Any:
         async with (
             aiohttp.ClientSession(
                 timeout=aiohttp.ClientTimeout(total=_STATUS_TIMEOUT_SECONDS),
-                connector=aiohttp.TCPConnector(socket_factory=refuse_metadata_socket),
+                connector=aiohttp.TCPConnector(socket_factory=admin_upstream_socket),
             ) as session,
             # A redirect would carry the key to wherever it points.
             session.get(url, headers=headers, allow_redirects=False) as response,
