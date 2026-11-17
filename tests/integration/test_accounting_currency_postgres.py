@@ -22,6 +22,7 @@ from serving.storage.accounting_schema import (
     accounting_schema_problems,
     require_accounting_schema,
 )
+from serving.storage.database import DatabaseLogger
 from serving.storage.postgres_log import PostgresLogStore
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import migrations as mig, postgres
@@ -558,15 +559,26 @@ async def test_migration_preview_matches_each_stored_row_and_repeated_native_tot
         assert Decimal(repeated["tables"]["api_logs"]["cost_amount"]["original_usd_total"]) == 0
 
 
-async def test_a_usd_request_cost_rounds_in_the_log_exactly_as_before():
+def _log_store(pool):
+    return PostgresLogStore(pool, store_full_prompts=False)
+
+
+def _database_logger(pool):
+    logger = DatabaseLogger({}, store_full_prompts=False)
+    logger.pool = pool
+    return logger
+
+
+@pytest.mark.parametrize("make_writer", [_log_store, _database_logger])
+async def test_a_usd_request_cost_rounds_in_the_log_exactly_as_before(make_writer):
     """``1.5e-8`` (binary, just under the half) is stored as 1e-8 by ``DECIMAL(12, 8)``.
 
-    The log store hands PostgreSQL the computed float, as it always has; the
-    trigger copies the stored dollars to the native column.
+    Both request-log writers hand PostgreSQL the computed float, as they always
+    have; the trigger copies the stored dollars to the native column. Through
+    ``Decimal(str(...))`` it would be exactly the half and round up to 2e-8.
     """
     async with accounting_db() as (name, conn), store_pool(name) as pool:
-        store = PostgresLogStore(pool, store_full_prompts=False)
-        await store.log_request(
+        await make_writer(pool).log_request(
             request_id="half",
             model_id="m",
             provider="p",
