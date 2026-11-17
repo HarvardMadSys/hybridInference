@@ -29,8 +29,14 @@ from tests.fixtures.application_documents import seed_models
 
 @pytest.fixture(autouse=True)
 def _schema_is_current(monkeypatch):
-    """These boots run on fake connections; the schema check has tests of its own."""
+    """These boots run on fake connections; the schema check has tests of its own.
+
+    So does the read of the spend accounting mode, which these leave local.
+    """
+    from serving.shared_spend import mode as spend_mode
+
     monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+    monkeypatch.setattr(spend_mode, "load", AsyncMock(return_value="local"))
 
 
 def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:

@@ -36,6 +36,14 @@ USER_ROLE = "user_role"
 # request-scoped.
 PROJECT_ID = "project_id"
 
+# req_ctx key holding the request's shared spend reservation
+# (``serving.shared_spend.ledger.SharedReservation``), published by its
+# admission: the costs the request records are attached to it, so they are
+# settled with it. Only in the shared accounting mode. A leftover value would
+# attach the next request's costs to a reservation that has ended (they would
+# then be written as plain increments), so it is request-scoped.
+SPEND_RESERVATION = "spend_reservation"
+
 # UTC datetime captured once at the HTTP request boundary. Scheduled pricing
 # consumers use it so routing, logs, and quota charging cannot disagree when a
 # long-running request crosses a price-window boundary.
@@ -136,6 +144,7 @@ REQUEST_SCOPED_KEYS = (
     "affinity_key",
     USER_ROLE,
     PROJECT_ID,
+    SPEND_RESERVATION,
     PRICING_TIME,
     PRICING_SNAPSHOT,
     CLIENT_ERROR_KIND,

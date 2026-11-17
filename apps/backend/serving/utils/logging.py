@@ -198,6 +198,32 @@ _STRUCTURED_LOG_KEYS = (
     # (``route_capability_override_orphaned``, servers/routers/admin/
     # provider_routes.py). Next to ``model_id`` it says which row to look at.
     "route_id",
+    # The shared spend accounting's evidence (serving/shared_spend/ledger.py,
+    # and the shutdown report of its ledgers in serving/spend_ledger.py). Its
+    # alerts say "the log lists each entry to reconcile", and for a cost that
+    # was set aside, dropped as a duplicate or left unaccounted the line is the
+    # only record of how much: ``increments`` and ``reservations`` are those
+    # lists (a settlement batch's, so at most a few hundred short items),
+    # ``amount_usd`` the sum, ``batch_id`` / ``reservation_id`` / ``sqlstate``
+    # what to look them up by, ``entry_count`` and ``unavailable`` how a write
+    # ended. ``held`` is what a process still held when it shut down;
+    # ``failing_for_seconds``, ``oldest_age_seconds`` and ``instances`` are
+    # what a stalled settlement and stranded reservations are reported with.
+    # None of these names is used by any other log line: the per-process
+    # ledger's own fields (``entries``, ``cost_usd``, ...) are not among them
+    # and are written as before.
+    "increments",
+    "reservations",
+    "amount_usd",
+    "batch_id",
+    "reservation_id",
+    "sqlstate",
+    "entry_count",
+    "unavailable",
+    "held",
+    "failing_for_seconds",
+    "oldest_age_seconds",
+    "instances",
 )
 
 

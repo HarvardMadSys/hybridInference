@@ -620,6 +620,18 @@ class PostgresOperationalStore(
         """A connection for a request-path lookup: the request pool, a bounded wait."""
         return request_connection(self._request_pool)
 
+    def shared_spend_root(self) -> PostgresOperationalStore:
+        """The store the shared spend accounting is kept for: this one."""
+        return self
+
+    def shared_spend_backend(self) -> Any:
+        """The shared spend accounting's statements on this store's pools (:mod:`serving.shared_spend`)."""
+        from serving.shared_spend.store import SharedSpendStore
+
+        return SharedSpendStore(
+            self._pool, request_pool=self._request_pool, fence_secret=self._fence_secret
+        )
+
     def on_connection(self, connection: Any) -> PostgresOperationalStore:
         """This store on one connection: every call runs on *connection*, in its transaction.
 
@@ -1133,6 +1145,11 @@ class PostgresOperationalStore(
             key_cost_status = await conn.execute(
                 "DELETE FROM api_key_daily_cost WHERE user_id = $1", user_id
             )
+            # Shared spend reservations name the account; admission checks the
+            # erasure fence under its lock, so none is written after this.
+            reservations_status = await conn.execute(
+                "DELETE FROM spend_reservations WHERE user_id = $1", user_id
+            )
             audit_status = await conn.execute(
                 "DELETE FROM admin_audit_log WHERE target_user_id = $1", user_id
             )
@@ -1146,6 +1163,7 @@ class PostgresOperationalStore(
                 "password_reset_tokens": _row_count(reset_status),
                 "user_daily_cost": _row_count(cost_status),
                 "api_key_daily_cost": _row_count(key_cost_status),
+                "spend_reservations": _row_count(reservations_status),
                 "admin_audit_log": _row_count(audit_status),
                 "users": _row_count(user_status),
             }
