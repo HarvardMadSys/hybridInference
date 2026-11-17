@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -105,3 +106,23 @@ async def test_route_serves_the_limits_for_the_authenticated_key(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["user"]["max_concurrency"] == 5
+
+
+@pytest.mark.asyncio
+async def test_auth_disabled_reports_the_unlimited_admin_cap(monkeypatch):
+    """Inference runs as anonymous admin when auth is off, so limits must agree."""
+    from fastapi import FastAPI
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setenv("USER_AUTH_ENABLED", "0")
+    monkeypatch.setattr(limits, "get_runtime_settings_instance", lambda: None)
+
+    app = FastAPI()
+    app.state.services = SimpleNamespace(operational_store=None)
+    app.include_router(limits.router)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/v1/limits")
+
+    assert response.json()["user"] == {"role": "admin", "source": "role", "max_concurrency": 0}

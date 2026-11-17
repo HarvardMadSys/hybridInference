@@ -511,10 +511,12 @@ async def test_optional_verify_api_key_respects_runtime_flag_enabled(
 
 
 @pytest.mark.asyncio
-async def test_balance_auth_disabled_returns_anonymous(monkeypatch, mock_request):
+async def test_balance_auth_disabled_matches_inference_anonymous_context(monkeypatch, mock_request):
+    from serving.servers.auth import _anonymous_context
+
     monkeypatch.setenv("USER_AUTH_ENABLED", "0")
     result = await verify_api_key_for_balance(request=mock_request)
-    assert result == {"user_id": "anonymous", "authenticated": False}
+    assert result == _anonymous_context()
 
 
 @pytest.mark.asyncio

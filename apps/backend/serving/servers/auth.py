@@ -1599,7 +1599,7 @@ async def verify_api_key_for_balance(
     balance is low or zero. Read-only: does not update ``last_used_at``.
     """
     if not is_user_auth_enabled():
-        return {"user_id": "anonymous", "authenticated": False}
+        return _anonymous_context()
 
     user, key_hash, caller_spend = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
