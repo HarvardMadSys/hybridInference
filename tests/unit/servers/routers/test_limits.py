@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
+from serving.schemas_auth import OrgConcurrencyLimit, ProjectConcurrencyLimit
 from serving.servers.concurrency import (
     COUNT_TOKENS_USER_CONCURRENCY_LIMIT,
     EXEMPT_MODEL_USER_CONCURRENCY_LIMIT,
@@ -26,9 +27,11 @@ async def test_role_cap_is_used_without_an_override(runtime_settings):
     body = await limits.get_limits({"user_id": "u1", "role": "pro"})
 
     runtime_settings.get_int.assert_awaited_once_with("user_concurrency_pro")
-    assert body["user"] == {"role": "pro", "source": "role", "max_concurrency": 7}
-    assert body["project"] is None
-    assert body["org"] is None
+    assert body.user.role == "pro"
+    assert body.user.source == "role"
+    assert body.user.max_concurrency == 7
+    assert body.project is None
+    assert body.org is None
 
 
 @pytest.mark.asyncio
@@ -36,26 +39,27 @@ async def test_override_wins_and_bounds_the_special_budgets(runtime_settings):
     body = await limits.get_limits({"user_id": "u1", "role": "free", "max_concurrent_requests": 2})
 
     runtime_settings.get_int.assert_not_awaited()
-    assert body["user"] == {"role": "free", "source": "override", "max_concurrency": 2}
-    assert body["exempt_models"]["max_concurrency"] == 2
-    assert body["count_tokens"]["max_concurrency"] == 2
+    assert body.user.source == "override"
+    assert body.user.max_concurrency == 2
+    assert body.exempt_models.max_concurrency == 2
+    assert body.count_tokens.max_concurrency == 2
 
 
 @pytest.mark.asyncio
 async def test_zero_means_unlimited_and_does_not_lower_special_budgets(runtime_settings):
     body = await limits.get_limits({"user_id": "u1", "role": "admin", "max_concurrent_requests": 0})
 
-    assert body["user"]["max_concurrency"] == 0
-    assert body["exempt_models"]["max_concurrency"] == 0
-    assert body["count_tokens"]["max_concurrency"] == 0
+    assert body.user.max_concurrency == 0
+    assert body.exempt_models.max_concurrency == 0
+    assert body.count_tokens.max_concurrency == 0
 
 
 @pytest.mark.asyncio
 async def test_default_special_budgets_apply_without_an_override(runtime_settings):
     body = await limits.get_limits({"user_id": "u1", "role": "free"})
 
-    assert body["exempt_models"]["max_concurrency"] == EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
-    assert body["count_tokens"]["max_concurrency"] == COUNT_TOKENS_USER_CONCURRENCY_LIMIT
+    assert body.exempt_models.max_concurrency == EXEMPT_MODEL_USER_CONCURRENCY_LIMIT
+    assert body.count_tokens.max_concurrency == COUNT_TOKENS_USER_CONCURRENCY_LIMIT
 
 
 @pytest.mark.asyncio
@@ -72,8 +76,8 @@ async def test_project_and_org_caps_are_reported_when_present(runtime_settings):
         }
     )
 
-    assert body["project"] == {"id": "prj_1", "name": "Team", "max_concurrency": 12}
-    assert body["org"] == {"id": "org_1", "max_concurrency": None}
+    assert body.project == ProjectConcurrencyLimit(id="prj_1", name="Team", max_concurrency=12)
+    assert body.org == OrgConcurrencyLimit(id="org_1", max_concurrency=None)
 
 
 def test_route_is_registered():
