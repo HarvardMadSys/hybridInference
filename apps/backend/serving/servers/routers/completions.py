@@ -254,6 +254,8 @@ async def _streaming_response_with_keepalive(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls = ToolCallAccumulator()
+    # Per-token logprobs, for a request that asked for them.
+    logprob_tokens: list[Any] = []
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     response_id = request_id
@@ -358,6 +360,9 @@ async def _streaming_response_with_keepalive(
                 reasoning_parts.append(reasoning)
             if delta.get("tool_calls"):
                 tool_calls.add(delta["tool_calls"])
+            logprobs = choice.get("logprobs")
+            if isinstance(logprobs, dict) and isinstance(logprobs.get("content"), list):
+                logprob_tokens.extend(logprobs["content"])
     finally:
         reader_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -386,6 +391,8 @@ async def _streaming_response_with_keepalive(
             }
         ],
     }
+    if logprob_tokens:
+        response["choices"][0]["logprobs"] = {"content": logprob_tokens}
     if usage:
         # The client's body only (billing ran in the stream session): give it the
         # totals the response model requires.
@@ -1303,6 +1310,10 @@ async def execute_chat(
         params["frequency_penalty"] = payload.frequency_penalty
     if payload.presence_penalty is not None:
         params["presence_penalty"] = payload.presence_penalty
+    if payload.logprobs is not None:
+        params["logprobs"] = payload.logprobs
+    if payload.top_logprobs is not None:
+        params["top_logprobs"] = payload.top_logprobs
     if payload.reasoning_effort is not None:
         params["reasoning_effort"] = payload.reasoning_effort
     if payload.thinking is not None:
