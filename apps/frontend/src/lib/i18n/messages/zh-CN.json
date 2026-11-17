@@ -827,6 +827,122 @@
     "source": "Nickname",
     "text": "昵称"
   },
+  "auth.sso.back": {
+    "source": "Back to log in",
+    "text": "返回登录"
+  },
+  "auth.sso.button": {
+    "source": "Log in with SSO",
+    "text": "SSO 登录"
+  },
+  "auth.sso.completing": {
+    "source": "Signing you in…",
+    "text": "正在登录…"
+  },
+  "auth.sso.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.sso.divider": {
+    "source": "or",
+    "text": "或"
+  },
+  "auth.sso.email_label": {
+    "source": "Work or school email",
+    "text": "工作或学校邮箱"
+  },
+  "auth.sso.error.browser_full": {
+    "source": "This browser is already signed in to the maximum number of accounts. Sign one of them out first.",
+    "text": "这个浏览器登录的账号数已达上限，请先退出其中一个。"
+  },
+  "auth.sso.error.cancelled": {
+    "source": "Single sign-on was cancelled.",
+    "text": "已取消 SSO 登录。"
+  },
+  "auth.sso.error.email_in_use": {
+    "source": "The email of this organization account already belongs to another account here. Sign in to that account to connect it.",
+    "text": "这个机构账号的邮箱已经属于另一个平台账号。请登录那个账号再关联。"
+  },
+  "auth.sso.error.email_untrusted": {
+    "source": "We could not confirm the email of this organization account. Contact your administrator.",
+    "text": "无法确认这个机构账号的邮箱，请联系管理员。"
+  },
+  "auth.sso.error.expired": {
+    "source": "The sign-in took too long. Start again.",
+    "text": "登录已超时，请重新开始。"
+  },
+  "auth.sso.error.failed": {
+    "source": "Single sign-on failed. Try again later.",
+    "text": "SSO 登录失败，请稍后再试。"
+  },
+  "auth.sso.error.identity_conflict": {
+    "source": "This account is already connected to a different identity from the same organization. Contact your administrator.",
+    "text": "这个账号已经关联了同一机构的另一个身份，请联系管理员。"
+  },
+  "auth.sso.error.identity_in_use": {
+    "source": "This organization account is already connected to another account.",
+    "text": "这个机构账号已经关联了另一个平台账号。"
+  },
+  "auth.sso.error.inactive": {
+    "source": "This account is not active. Please contact support.",
+    "text": "这个账号当前不可用，请联系支持人员。"
+  },
+  "auth.sso.error.no_account": {
+    "source": "This organization account has no account here yet. Contact your administrator.",
+    "text": "这个机构账号还没有对应的平台账号，请联系管理员。"
+  },
+  "auth.sso.error.pending": {
+    "source": "Your registration is pending admin approval.",
+    "text": "注册已提交，正在等待审批。"
+  },
+  "auth.sso.error.rate_limited": {
+    "source": "Too many sign-in attempts. Please try again later.",
+    "text": "登录尝试过于频繁，请稍后再试。"
+  },
+  "auth.sso.error.suspended": {
+    "source": "This account is suspended.",
+    "text": "这个账号已被停用。"
+  },
+  "auth.sso.error.unavailable": {
+    "source": "Single sign-on is unavailable right now. Use another sign-in method.",
+    "text": "SSO 登录暂时不可用，请改用其他方式登录。"
+  },
+  "auth.sso.link_body": {
+    "source": "{email} will be able to sign in to this account through {name}.",
+    "text": "关联后，{email} 可以通过 {name} 登录当前账号。"
+  },
+  "auth.sso.link_cancel": {
+    "source": "Not now",
+    "text": "暂不关联"
+  },
+  "auth.sso.link_confirm": {
+    "source": "Connect",
+    "text": "关联"
+  },
+  "auth.sso.link_keys_hint": {
+    "source": "If you did not create this account yourself, review its API keys after connecting.",
+    "text": "如果这个账号不是你自己创建的，关联后请检查账号下的 API key。"
+  },
+  "auth.sso.link_notice": {
+    "source": "An account already exists for this email. Sign in the way you usually do to connect your {name} account.",
+    "text": "这个邮箱已有账号。请用原来的方式登录一次，完成和 {name} 账号的关联。"
+  },
+  "auth.sso.link_title": {
+    "source": "Connect your {name} account?",
+    "text": "关联 {name} 账号？"
+  },
+  "auth.sso.linked_toast": {
+    "source": "Single sign-on connected.",
+    "text": "SSO 账号已关联。"
+  },
+  "auth.sso.not_available": {
+    "source": "Your organization has not set up single sign-on here. Use another sign-in method.",
+    "text": "你的机构还没有开通 SSO 登录，请改用其他方式登录。"
+  },
+  "auth.sso.subtitle": {
+    "source": "Enter your work or school email. We will send you to your organization to sign in.",
+    "text": "输入工作或学校邮箱，我们会带你去所在机构的登录页。"
+  },
   "auth.validation.combined_max": {
     "source": "Combined use case and discovery response is too long (max 2000 characters)",
     "text": "用途和来源加起来太长了（最多 2000 个字符）"
@@ -2582,6 +2698,66 @@
   "dashboard.keys.more_actions": {
     "source": "Actions for {name}",
     "text": "{name} 的操作"
+  },
+  "settings.reauth.sso_button": {
+    "source": "Confirm with {name}",
+    "text": "去 {name} 确认身份"
+  },
+  "settings.reauth.sso_confirmed": {
+    "source": "Identity confirmed. You can continue.",
+    "text": "身份已确认，可以继续。"
+  },
+  "settings.reauth.sso_required": {
+    "source": "Confirm your identity with {name} to continue.",
+    "text": "请先去 {name} 确认身份，再继续。"
+  },
+  "settings.sso.connect": {
+    "source": "Connect an SSO account",
+    "text": "关联 SSO 账号"
+  },
+  "settings.sso.connected_on": {
+    "source": "Connected {date}",
+    "text": "关联于 {date}"
+  },
+  "settings.sso.connected_toast": {
+    "source": "Single sign-on connected.",
+    "text": "SSO 账号已关联。"
+  },
+  "settings.sso.description": {
+    "source": "Organization accounts that can sign in to this account.",
+    "text": "可以登录当前账号的机构账号。"
+  },
+  "settings.sso.disconnect": {
+    "source": "Disconnect",
+    "text": "解除关联"
+  },
+  "settings.sso.disconnected_toast": {
+    "source": "Single sign-on disconnected.",
+    "text": "已解除 SSO 关联。"
+  },
+  "settings.sso.dismiss_error": {
+    "source": "Dismiss",
+    "text": "关闭"
+  },
+  "settings.sso.empty": {
+    "source": "No organization account is connected.",
+    "text": "还没有关联机构账号。"
+  },
+  "settings.sso.last_method": {
+    "source": "This is the only way to sign in to this account. Set a password before disconnecting it.",
+    "text": "这是当前账号唯一的登录方式。请先设置密码，再解除关联。"
+  },
+  "settings.sso.needs_password": {
+    "source": "Set a password before changing single sign-on.",
+    "text": "请先设置密码，再修改 SSO 关联。"
+  },
+  "settings.sso.title": {
+    "source": "Single sign-on",
+    "text": "SSO 登录"
+  },
+  "settings.sso.unavailable_badge": {
+    "source": "No longer available",
+    "text": "已不可用"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",

@@ -47,6 +47,8 @@ vi.mock('next/script', () => ({
 
 import { verifyEmail } from '@/lib/api/auth';
 import { AUTH_DATA } from '@/components/auth/AuthForm';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import { AuthFieldLayoutProvider } from '@/site-ui/appearance';
 import type { AuthFieldLayoutProps } from '@/site-ui/contract';
 import ForgotPasswordPage from '@/app/forgot-password/page';
@@ -286,6 +288,16 @@ describe('the data-auth hooks', () => {
       '/signup, at the confirmations',
       async () => {
         render(<SignupPage />);
+      },
+    ],
+    [
+      '/login, where single sign-on is offered',
+      async () => {
+        render(
+          <SiteConfigProvider initialConfig={{ ...buildTimeSiteConfig, sso: { enabled: true } }}>
+            <LoginPage />
+          </SiteConfigProvider>,
+        );
       },
     ],
     [

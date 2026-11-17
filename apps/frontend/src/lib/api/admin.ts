@@ -207,6 +207,17 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 // User Detail & Edit
 // ========================================
 
+/** One single sign-on identity linked to a user, as an administrator sees it. */
+export interface UserSsoIdentity {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  /** The email the identity carried when it was linked. */
+  email: string | null;
+  linked_at: string;
+  last_login_at: string | null;
+}
+
 export interface UserDetail {
   id: string;
   email: string | null;
@@ -237,6 +248,8 @@ export interface UserDetail {
   avg_turns: number | null;
   avg_user_turns: number | null;
   ask_question_fraction: number | null;
+  /** The identities that can sign in to the account; absent from an older gateway. */
+  sso_identities?: UserSsoIdentity[];
 }
 
 /**
@@ -286,6 +299,29 @@ export interface AdminUserProjects {
 export async function getUserProjects(userId: string): Promise<AdminUserProjects> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/projects`);
   return jsonOrThrow<AdminUserProjects>(resp);
+}
+
+/**
+ * Remove one single sign-on identity from a user's account. Confirmed like any
+ * guarded change: by a recent code, or by `password` when the administrator's
+ * own account has no authenticator. The admin token cannot stand in for either.
+ * The account's sessions and API keys are untouched.
+ */
+export async function unlinkUserSsoIdentity(
+  userId: string,
+  identityId: string,
+  password?: string,
+): Promise<{ message: string }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/sso-identities/${encodeURIComponent(identityId)}/unlink`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return jsonOrThrow<{ message: string }>(resp);
 }
 
 export interface UserUsageTotals {
