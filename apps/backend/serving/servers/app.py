@@ -50,6 +50,7 @@ from .routers import (
     setup,
     site_config,
     site_updates,
+    sso_routes,
     two_factor_routes,
     user_routes,
 )
@@ -178,6 +179,7 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
+    app.include_router(sso_routes.router)
     app.include_router(two_factor_routes.router)
     app.include_router(setup.router)
     app.include_router(user_routes.router)

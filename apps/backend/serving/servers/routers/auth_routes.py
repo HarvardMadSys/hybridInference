@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditActor, AuditTarget
+from serving.auth import sso_accounts
 from serving.auth.browser_sessions import (
     MAX_ACCOUNTS_PER_BROWSER,
     BrowserSession,
@@ -34,6 +35,7 @@ from serving.config.settings import get_signup_notify_emails, is_admin_email, se
 from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
 from serving.schemas_auth import (
     AccountsResponse,
+    AccountSummary,
     BindEmailRequest,
     BindEmailResponse,
     DeleteAccountRequest,
@@ -706,6 +708,7 @@ async def delete_own_account(
         password=body.password,
         phone_code=body.phone_code,
         purpose="delete_account",
+        sid=current_user.get("sid"),
     )
 
     browser = await resolve_browser_session(op_store, request)
@@ -806,6 +809,27 @@ async def refresh(
     )
 
 
+async def _with_sso_providers(
+    op_store: Any, browser: BrowserSession | None, summaries: list[AccountSummary]
+) -> list[AccountSummary]:
+    """Name the provider each account without a password signs in through.
+
+    The chooser sends such an account to its provider to sign in again,
+    rather than asking for a password it does not have.
+    """
+    if browser is None:
+        return summaries
+    without_password = {
+        account["user_id"] for account in browser.accounts if account.get("has_password") is False
+    }
+    for summary in summaries:
+        if summary.id in without_password:
+            summary.sso_provider = sso_accounts.provider_ref(
+                await sso_accounts.account_provider(op_store, summary.id)
+            )
+    return summaries
+
+
 @router.get("/accounts", response_model=AccountsResponse)
 async def list_accounts(
     request: Request,
@@ -823,8 +847,10 @@ async def list_accounts(
     send_pending_cookie(response, browser)
     return AccountsResponse(
         active_user_id=browser.active_user_id if browser else None,
-        accounts=account_summaries(
-            browser, require_verification=await email_verification_required()
+        accounts=await _with_sso_providers(
+            op_store,
+            browser,
+            account_summaries(browser, require_verification=await email_verification_required()),
         ),
         max_accounts=MAX_ACCOUNTS_PER_BROWSER,
     )
@@ -898,7 +924,11 @@ async def remove_account(
         left = None
     return AccountsResponse(
         active_user_id=left.active_user_id if left else None,
-        accounts=account_summaries(left, require_verification=await email_verification_required()),
+        accounts=await _with_sso_providers(
+            op_store,
+            left,
+            account_summaries(left, require_verification=await email_verification_required()),
+        ),
         max_accounts=MAX_ACCOUNTS_PER_BROWSER,
     )
 
@@ -1218,6 +1248,7 @@ async def bind_email(
         password=body.password,
         phone_code=body.phone_code,
         purpose="bind_email",
+        sid=current_user.get("sid"),
     )
 
     existing_user = await op_store.get_user_by_email(normalized_email)

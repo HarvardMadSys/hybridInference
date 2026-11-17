@@ -42,6 +42,7 @@ from serving.storage.base import (
 from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
+from serving.storage.sso import PostgresSsoMixin
 from serving.storage.two_factor import PostgresTwoFactorMixin
 from serving.utils.logging import get_logger
 
@@ -581,7 +582,9 @@ REQUEST_PATH_READS = (
 )
 
 
-class PostgresOperationalStore(PostgresPhoneAuthMixin, PostgresTwoFactorMixin, OperationalStore):
+class PostgresOperationalStore(
+    PostgresPhoneAuthMixin, PostgresSsoMixin, PostgresTwoFactorMixin, OperationalStore
+):
     """OperationalStore backed by an asyncpg connection pool."""
 
     def __init__(

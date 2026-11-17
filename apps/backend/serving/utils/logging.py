@@ -325,12 +325,35 @@ class _CredentialQueryFilter(logging.Filter):
         return True
 
 
+_SSO_CALLBACK_WITH_QUERY = re.compile(r"(/auth/sso/[^/?]+/callback)\?")
+
+
+class _CallbackQueryFilter(logging.Filter):
+    """Keep a single sign-on callback's query out of uvicorn's access log.
+
+    The identity provider sends the browser back with its one-time
+    authorization code and the flow's state in the query. The line keeps the
+    path, which names the provider and, with the status, says what happened.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Drop the query from a callback's request line; never suppress the line."""
+        # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            callback = _SSO_CALLBACK_WITH_QUERY.match(args[2])
+            if callback:
+                record.args = (*args[:2], callback.group(1), *args[3:])
+        return True
+
+
 def attach_quiet_access_filter() -> None:
     """Attach the gateway's filters to uvicorn's access logger.
 
     The quiet-path filter drops polling paths; set LOG_LEVEL=DEBUG to disable
     that and see all access logs. The credential filter redacts a download
-    link's token, at every level.
+    link's token, and the callback filter leaves a single sign-on callback's
+    query out, at every level.
 
     Must be called after uvicorn's own logging setup (i.e., from the app
     lifespan), otherwise uvicorn's dictConfig will wipe the filters.
@@ -340,6 +363,8 @@ def attach_quiet_access_filter() -> None:
         uvicorn_access.addFilter(_QuietPathFilter())
     if not any(isinstance(f, _CredentialQueryFilter) for f in uvicorn_access.filters):
         uvicorn_access.addFilter(_CredentialQueryFilter())
+    if not any(isinstance(f, _CallbackQueryFilter) for f in uvicorn_access.filters):
+        uvicorn_access.addFilter(_CallbackQueryFilter())
 
 
 # Resolves LOG_LEVEL and LOG_FORMAT: the environment until the database-backed

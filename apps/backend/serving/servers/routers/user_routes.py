@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditTarget
+from serving.auth import sso_accounts
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
@@ -397,6 +398,13 @@ async def get_current_user_info(
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
 
+    # Only an account with neither a password nor a verified phone confirms
+    # sensitive actions at its identity provider, so only it is looked up.
+    reauth_provider = (
+        await sso_accounts.account_provider(op_store, user_row["id"])
+        if sso_accounts.confirms_through_provider(user_row)
+        else None
+    )
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
@@ -404,6 +412,7 @@ async def get_current_user_info(
         phone=user_row.get("phone"),
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
+        sso_reauth_provider=sso_accounts.provider_ref(reauth_provider),
         user_name=user_row["user_name"],
         avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
@@ -1370,6 +1379,7 @@ async def change_password(
         password=body.old_password,
         phone_code=body.phone_code,
         purpose="set_password",
+        sid=current_user.get("sid"),
     )
     if not first_password and body.new_password == body.old_password:
         raise HTTPException(

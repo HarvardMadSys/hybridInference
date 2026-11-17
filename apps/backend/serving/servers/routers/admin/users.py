@@ -10,6 +10,7 @@ from typing import Literal
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from serving.audit import AuditActor, AuditTarget
+from serving.auth import sso_accounts
 from serving.auth.two_factor import admin_two_factor_required, has_authenticator
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
@@ -50,6 +51,8 @@ from serving.schemas_admin import (
     StatusCounts,
     SummaryCard,
     SummaryUserItem,
+    UnlinkSsoIdentityRequest,
+    UnlinkSsoIdentityResponse,
     UpdateUserRequest,
     UpdateUserResponse,
     UserAskQuestionFraction,
@@ -78,6 +81,7 @@ from serving.servers.deps import (
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
 from serving.servers.routers.admin.reauthentication import confirm_administrator
+from serving.storage import sso as sso_store
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -829,9 +833,79 @@ async def get_user_detail(
         max_concurrent_requests=user_row.get("max_concurrent_requests"),
         admin_note=user_row.get("admin_note"),
         suspension_message=user_row.get("suspension_message"),
+        sso_identities=await sso_accounts.identity_summaries(op_store, user_id),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,
+    )
+
+
+@router.post(
+    "/users/{user_id}/sso-identities/{identity_id}/unlink",
+    response_model=UnlinkSsoIdentityResponse,
+)
+async def unlink_user_sso_identity(
+    request: Request,
+    user_id: str,
+    identity_id: str,
+    payload: UnlinkSsoIdentityRequest | None = None,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> UnlinkSsoIdentityResponse:
+    """Remove a single sign-on identity from a user's account.
+
+    For an identity linked to the wrong account, or one that blocks the
+    account from linking its replacement. Only the link goes: the account's
+    sessions and API keys are untouched, so this is not how access is cut
+    off (suspend the account for that). An account left with no password
+    has no way in until it resets its password or links again.
+
+    Asks the administrator to confirm (a recent code, or the password of an
+    account without an authenticator), like the other changes to how an
+    account signs in. There is no endpoint that links an identity for a user:
+    a link is only ever made by the account's owner signing in at the provider.
+
+    Requires: Admin authentication (JWT or ADMIN_TOKEN)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row:
+        raise HTTPException(404, f"User '{user_id}' not found")
+    held = {row["id"]: row for row in await op_store.list_user_identities(user_id)}
+    identity = held.get(identity_id)
+    if identity is None:
+        raise HTTPException(404, "No such single sign-on on this account")
+
+    await confirm_administrator(
+        request,
+        op_store,
+        payload.password if payload else None,
+        action=f"Unlinking single sign-on from {_user_label(user_row)}",
+    )
+    outcome = await op_store.unlink_user_identity(
+        identity_id=identity_id, user_id=user_id, keep_last_sign_in=False
+    )
+    if outcome != sso_store.UNLINKED:
+        # Removed by another request since the lookup above: this one did
+        # nothing, so it records nothing and does not say it did.
+        raise HTTPException(404, "No such single sign-on on this account")
+    await log_admin_action(
+        op_store,
+        action="unlink_sso_identity",
+        details={
+            "email": identity.get("email"),
+            "sso_provider": identity["provider_id"],
+            "issuer": identity["issuer"],
+        },
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
+    return UnlinkSsoIdentityResponse(
+        user_id=user_id,
+        message=f"Single sign-on unlinked from {_user_label(user_row)}.",
     )
 
 
