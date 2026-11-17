@@ -224,6 +224,24 @@ describe('CNY API key budgets', () => {
     );
   });
 
+  it('keeps a migrated budget with more than four places while another limit changes', async () => {
+    setup(cnyKey({ budget_daily: 0.89465 }));
+    renderDetail();
+    expect(screen.getByLabelText(/^Daily budget \(CNY\)/)).toHaveValue('0.89465');
+    fireEvent.click(screen.getByLabelText('Only the models selected below'));
+    fireEvent.click(screen.getByRole('checkbox', { name: /Model A/ }));
+    const save = screen.getByRole('button', { name: 'Save limits' });
+    expect(save).toBeEnabled();
+    fireEvent.click(save);
+    await waitFor(() =>
+      expect(mutateAsync).toHaveBeenCalledWith({
+        keyPrefix: PREFIX,
+        // The stored budget is neither refused nor sent again.
+        changes: { allowed_models: ['model-a'] },
+      }),
+    );
+  });
+
   it('clears a native budget left blank', async () => {
     setup(cnyKey());
     renderDetail();

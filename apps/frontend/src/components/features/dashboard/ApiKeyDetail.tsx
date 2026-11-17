@@ -215,8 +215,12 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
   }, [storedDaily, storedMonthly, apiKey.allowed_models]);
 
   const maxBudget = native ? Infinity : undefined;
-  const dailyValue = parseBudget(daily, maxBudget);
-  const monthlyValue = parseBudget(monthly, maxBudget);
+  // A budget left as stored is kept as stored, unvalidated: a migrated native
+  // budget may carry more decimal places than a new one may be typed with.
+  const dailyValue =
+    daily === budgetText(storedDaily) ? storedDaily : parseBudget(daily, maxBudget);
+  const monthlyValue =
+    monthly === budgetText(storedMonthly) ? storedMonthly : parseBudget(monthly, maxBudget);
   const invalidBudget = fill(
     t(
       'dashboard.key_detail.budget_invalid',

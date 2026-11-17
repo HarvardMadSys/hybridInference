@@ -77,7 +77,9 @@ describe('projects on a CNY ledger', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /Save/ }));
     await waitFor(() => expect(state.update).toHaveBeenCalled());
     const { changes } = state.update.mock.calls[0][0];
-    expect(changes).toMatchObject({ budget_daily: 35.5, budget_monthly: null, currency: 'CNY' });
+    expect(changes).toMatchObject({ budget_daily: 35.5, currency: 'CNY' });
+    // The monthly budget was left as read: not sent again.
+    expect(changes).not.toHaveProperty('budget_monthly');
     expect(changes).not.toHaveProperty('budget_daily_usd');
     expect(changes).not.toHaveProperty('budget_monthly_usd');
   });
@@ -108,6 +110,21 @@ describe('projects on a CNY ledger', () => {
     });
     expect(changes).not.toHaveProperty('budget_daily');
     expect(changes).not.toHaveProperty('currency');
+  });
+
+  it('keeps a migrated native budget with more than four places when another field changes', async () => {
+    const migrated = { ...RESEARCH, budget_daily: 0.89465, budget_monthly: 123.456789 } as Project;
+    renderCny(<ProjectDialogs dialog={{ mode: 'edit', project: migrated }} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByLabelText('Daily budget (CNY)')).toHaveValue('0.89465');
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save/ }));
+    await waitFor(() => expect(state.update).toHaveBeenCalled());
+    const { changes } = state.update.mock.calls[0][0];
+    expect(changes).toMatchObject({ name: 'Renamed' });
+    for (const field of ['budget_daily', 'budget_monthly', 'currency', 'budget_daily_usd']) {
+      expect(changes).not.toHaveProperty(field);
+    }
   });
 
   it('creates a project with a native budget', async () => {

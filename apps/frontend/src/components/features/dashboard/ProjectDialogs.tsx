@@ -133,9 +133,22 @@ function ProjectEditDialog({
       setFormError(t('dashboard.projects.name_required', 'Name is required.'));
       return;
     }
-    const invalidBudget = [form.daily, form.monthly].some(
-      (value) => value.trim() && (!Number.isFinite(Number(value)) || Number(value) < 0),
-    );
+    // On a native ledger a budget left as it was read is neither checked nor
+    // sent again: a migrated native budget may carry more decimal places than
+    // a new one may be typed with, and resending it would be refused. A USD
+    // project sends both budgets, as it always has (they are stored to four
+    // places, so resending one is valid).
+    const initial = initialForm(project);
+    const changed = {
+      daily: creating || !native || form.daily !== initial.daily,
+      monthly: creating || !native || form.monthly !== initial.monthly,
+    };
+    const invalidBudget = (['daily', 'monthly'] as const).some((field) => {
+      const value = form[field];
+      return (
+        changed[field] && value.trim() && (!Number.isFinite(Number(value)) || Number(value) < 0)
+      );
+    });
     const concurrency = form.concurrency.trim() ? Number(form.concurrency) : null;
     if (
       invalidBudget ||
@@ -158,16 +171,13 @@ function ProjectEditDialog({
     // Budgets are typed and sent in the ledger currency: the native amount,
     // with its currency so the server refuses a stale page, on a non-USD
     // ledger; the `*_usd` field on a USD one.
-    const budgets: ProjectUpdate = native
-      ? {
-          budget_daily: parseBudget(form.daily),
-          budget_monthly: parseBudget(form.monthly),
-          currency,
-        }
-      : {
-          budget_daily_usd: parseBudget(form.daily),
-          budget_monthly_usd: parseBudget(form.monthly),
-        };
+    const budgets: ProjectUpdate = {};
+    for (const field of ['daily', 'monthly'] as const) {
+      if (!changed[field]) continue;
+      const key: keyof ProjectUpdate = native ? `budget_${field}` : `budget_${field}_usd`;
+      budgets[key] = parseBudget(form[field]);
+    }
+    if (native && Object.keys(budgets).length > 0) budgets.currency = currency;
     const changes: ProjectUpdate = {
       name,
       ...budgets,
