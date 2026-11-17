@@ -331,6 +331,9 @@ class BatchScheduler:
         # This process claims nothing while paused (a release handoff drains
         # it); what it runs goes on, its leases kept.
         self._paused = False
+        # Claims under way: their items are in the database's hands and not
+        # yet in _in_flight, so a handoff must wait for them too.
+        self._claiming = 0
 
     @property
     def worker_id(self) -> str:
@@ -397,8 +400,9 @@ class BatchScheduler:
             "running": self._task is not None and not self._task.done(),
             "paused": self._paused,
             "items": items,
+            "claiming": self._claiming,
             "jobs": jobs,
-            "finished": items == 0 and jobs == 0,
+            "finished": items == 0 and jobs == 0 and self._claiming == 0,
         }
 
     async def stop(self) -> None:
@@ -558,6 +562,7 @@ class BatchScheduler:
         for model_id in models:
             if self._stopping or self._paused:
                 break
+            self._claiming += 1
             try:
                 await self._top_up(model_id, cfg, now, interactive)
             except Exception:
@@ -567,6 +572,8 @@ class BatchScheduler:
                     extra={"event": "batch_claim_failed", "model": model_id},
                     exc_info=True,
                 )
+            finally:
+                self._claiming -= 1
         return self._timings.poll_seconds
 
     def _note_enabled(self, enabled: bool) -> None:
@@ -672,7 +679,7 @@ class BatchScheduler:
     async def _work_phase(self, phase: str, cfg: BatchConfig) -> None:
         """Validate or seal what is waiting, one batch at a time."""
         for _ in range(10):
-            if self._stopping:
+            if self._stopping or self._paused:
                 return
             leased = await self._store.claim_batch_work(
                 phase=phase,
@@ -748,8 +755,9 @@ class BatchScheduler:
                 await self._adopt(running, item)
                 continue
             entry = self._track(item)
-            if self._stopping:
-                # Stopping while the claim was in flight: hand them straight back.
+            if self._stopping or self._paused:
+                # Stopping, or paused, while the claim was in flight: hand them
+                # straight back, unstarted, for another process to run.
                 await self._release(entry)
                 self._forget(entry)
                 continue

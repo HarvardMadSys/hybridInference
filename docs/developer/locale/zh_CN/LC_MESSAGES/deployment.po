@@ -2690,8 +2690,8 @@ msgid "At its stop, the process logs the state it was in and the requests still 
 msgstr "进程停止时会记录它当时的状态和仍在进行的请求（事件 `handoff_state_at_shutdown`）。已封口的进程会立即停止。"
 
 #: ../developer/deployment.md
-msgid "A handoff drains one process. With several worker processes behind one port, a call reaches whichever worker accepts it, so drain and seal answer 409 there. Run one worker per instance."
-msgstr "一次交接排空一个进程。一个端口后面有多个工作进程时，调用会落到随便哪个接受它的进程上，所以排空和封口在那里返回 409。每个实例只运行一个工作进程。"
+msgid "A handoff drains one process. With several worker processes behind one port, a call reaches whichever worker accepts it, so drain and seal answer 409 there, and under gunicorn, whose workers the process cannot count. Run one uvicorn worker per instance."
+msgstr "一次交接排空一个进程。一个端口后面有多个工作进程时，调用会落到随便哪个接受它的进程上，所以排空和封口在那里返回 409；在 gunicorn 下也一样，因为进程数不清它的工作进程。每个实例只运行一个 uvicorn 工作进程。"
 
 #: ../developer/deployment.md
 msgid "What a handoff does not cover: while the two processes run side by side, each still enforces per-user concurrency, login rate limits and authentication blocks on its own. A user can have up to twice their concurrent requests in flight until the old process's requests end. Budgets are shared between the two processes only in the shared spend mode, and that mode is switched on with every process stopped, not during a handoff."

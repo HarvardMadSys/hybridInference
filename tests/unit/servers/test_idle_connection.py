@@ -318,3 +318,36 @@ async def test_draining_applies_even_when_the_idle_timeout_is_disabled(monkeypat
 
     await asyncio.sleep(0.15)
     assert transport.closed
+
+
+class _Closing(_Transport):
+    def __init__(self) -> None:
+        super().__init__()
+        self.closed = True
+
+
+@pytest.mark.asyncio
+async def test_connections_are_judged_by_the_request_each_carries(monkeypatch):
+    """A probe's connection is control while it carries the probe; a gone one counts nowhere."""
+    from serving.servers import handoff, idle_connection
+
+    def watch(transport, path):
+        return IdleWatch(
+            transport, lambda: 600.0, lambda: "peer", lambda: path is not None, lambda: path
+        )
+
+    watches = {
+        1: watch(_Transport(), "/health/ready"),  # a probe in progress
+        2: watch(_Transport(), "/internal/handoff/seal"),  # the release's call
+        3: watch(_Transport(), "/v1/chat/completions"),  # a request
+        4: watch(_Transport(), None),  # idle, kept alive
+        5: watch(_Closing(), "/health"),  # a probe whose client has gone
+    }
+    monkeypatch.setattr(idle_connection, "_BY_TRANSPORT", watches)
+
+    assert idle_connection.connection_counts(handoff.is_control_path) == {
+        "open": 4,
+        "busy": 3,
+        "control": 2,
+        "other": 2,
+    }

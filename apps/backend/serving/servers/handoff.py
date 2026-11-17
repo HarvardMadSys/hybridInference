@@ -185,7 +185,7 @@ def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     from serving.utils import email_scheduler
 
     handoff = handoff or HANDOFF
-    connections = idle_connection.connection_counts()
+    connections = idle_connection.connection_counts(is_control_path)
     tracked = pending_tracked_tasks()
     owed_tasks = {name: n for name, n in tracked.items() if name not in STANDING_TASKS}
     logger_report = _request_log(services)
@@ -194,12 +194,9 @@ def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     scheduled = email_scheduler.running_jobs()
     return {
         "requests": handoff.counts(),
-        # The connections that could still bring a request: every open one
-        # but those carrying a probe or a release call right now.
-        "connections": {
-            **connections,
-            "other_than_control": max(0, connections["open"] - handoff.control),
-        },
+        # ``other``: the open connections that could still bring a request,
+        # every one but those carrying a probe or a release call right now.
+        "connections": connections,
         "tasks": {"tracked": owed_tasks, "detached": detached_pending()},
         "request_log": logger_report,
         "batch": batch,
@@ -218,7 +215,7 @@ def _blockers(report: dict[str, Any]) -> list[str]:
     found = []
     if report["requests"]["in_flight"]:
         found.append("requests_in_flight")
-    if report["connections"]["other_than_control"]:
+    if report["connections"]["other"]:
         found.append("connections_open")
     if any(report["tasks"]["tracked"].values()) or any(report["tasks"]["detached"].values()):
         found.append("background_writes")
@@ -255,12 +252,19 @@ def refusal_to_drain() -> str | None:
     from serving.utils.workers import configured_worker_count, spawned_by_worker_manager
 
     workers = configured_worker_count()
-    if (workers is not None and workers > 1) or spawned_by_worker_manager():
+    # gunicorn forks its workers, so neither of the checks below sees them.
+    if (workers is not None and workers > 1) or spawned_by_worker_manager() or _under_gunicorn():
         return (
             "Several worker processes serve this port. A handoff drains one process, "
             "and a call reaches whichever worker accepts it; run one worker per instance."
         )
     return None
+
+
+def _under_gunicorn() -> bool:
+    import sys
+
+    return "gunicorn" in sys.modules
 
 
 def drain(services: Any, *, by: str, handoff: Handoff | None = None) -> bool:
@@ -417,6 +421,8 @@ class HandoffMiddleware:
                     streaming = True
                     handoff.streams += 1
                 if handoff.state is not State.SERVING and not _has_connection_close(headers):
+                    # Replaces a ``Connection: keep-alive`` the response set.
+                    headers = [(k, v) for k, v in headers if k.lower() != b"connection"]
                     headers.append((b"connection", b"close"))
                     message = {**message, "headers": headers}
             await send(message)

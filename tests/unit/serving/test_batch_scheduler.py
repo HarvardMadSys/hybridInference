@@ -2031,6 +2031,7 @@ async def test_a_paused_worker_claims_nothing_and_finishes_what_it_runs(worker, 
         "running": True,
         "paused": True,
         "items": 1,
+        "claiming": 0,
         "jobs": 0,
         "finished": False,
     }
@@ -2043,3 +2044,35 @@ async def test_a_paused_worker_claims_nothing_and_finishes_what_it_runs(worker, 
     scheduler.resume_claims()
     await until(lambda: store.count("completed") == 4)
     assert scheduler.handoff_report()["paused"] is False
+
+
+async def test_a_claim_under_way_when_paused_holds_the_handoff_and_hands_its_items_back(
+    worker, dispatch
+):
+    """The claim's items are in the database's hands, not yet in this worker's."""
+
+    class SlowClaimStore(FakeStore):
+        def __init__(self) -> None:
+            super().__init__()
+            self.gate = asyncio.Event()
+            self.entered = asyncio.Event()
+
+        async def claim_items(self, **kwargs):
+            self.entered.set()
+            await self.gate.wait()
+            return await super().claim_items(**kwargs)
+
+    store = SlowClaimStore()
+    store.add(2)
+    scheduler = worker(store, caps={"m1": 5})
+    scheduler.start()
+    await asyncio.wait_for(store.entered.wait(), 2)
+
+    scheduler.pause_claims()
+    report = scheduler.handoff_report()
+    assert (report["claiming"], report["finished"]) == (1, False)
+
+    store.gate.set()
+    await until(lambda: scheduler.handoff_report()["finished"])
+    assert dispatch.calls == []
+    assert store.count("queued") == 2

@@ -28,6 +28,8 @@ from serving.servers.streaming_response import ClosingStreamingResponse
 pytestmark = pytest.mark.unit
 
 TOKEN = "t" * 40
+#: The real connection reading, before the fixture replaces it.
+REAL_CONNECTION_COUNTS = idle_connection.connection_counts
 
 
 class _Logger:
@@ -61,7 +63,7 @@ def world(monkeypatch):
     state = types.SimpleNamespace(
         handoff=Handoff(),
         services=types.SimpleNamespace(completions_logger=_Logger(), batch_scheduler=_Batch()),
-        connections={"open": 0, "busy": 0},
+        connections={"open": 0, "busy": 0, "control": 0, "other": 0},
         tracked={},
         spend=[],
         scheduled=0,
@@ -69,7 +71,7 @@ def world(monkeypatch):
         draining_connections=[],
     )
     monkeypatch.setattr(handoff, "HANDOFF", state.handoff)
-    monkeypatch.setattr(idle_connection, "connection_counts", lambda: dict(state.connections))
+    monkeypatch.setattr(idle_connection, "connection_counts", lambda *_: dict(state.connections))
     monkeypatch.setattr(idle_connection, "set_draining", state.draining_connections.append)
     monkeypatch.setattr(
         "serving.observability.tracked_tasks.pending_tracked_tasks", lambda: dict(state.tracked)
@@ -130,7 +132,7 @@ def test_an_idle_draining_process_seals_and_can_resume(world):
     ("change", "reason"),
     [
         (lambda w: setattr(w.handoff, "requests", 1), "requests_in_flight"),
-        (lambda w: w.connections.update(open=1), "connections_open"),
+        (lambda w: w.connections.update(open=1, other=1), "connections_open"),
         (lambda w: w.tracked.update(cost_increment=1), "background_writes"),
         (
             lambda w: w.services.completions_logger.report.update(queued=2, finished=False),
@@ -307,7 +309,7 @@ async def test_probes_and_release_calls_in_progress_do_not_hold_a_drain(world):
     await asyncio.sleep(0)
     # Two connections are open, the probe's and the seal call's, each with a
     # control call in progress.
-    world.connections.update(open=2, busy=2)
+    world.connections.update(open=2, busy=2, control=2, other=0)
     await _call(HandoffMiddleware(sealing_call), "/internal/handoff/seal")
 
     assert verdicts == [[]]
@@ -325,7 +327,7 @@ async def test_a_connection_beyond_the_release_calls_holds_the_seal(world):
 
     _drain(world)
     # The seal call's connection, and one more that could still bring a request.
-    world.connections.update(open=2, busy=1)
+    world.connections.update(open=2, busy=1, control=1, other=1)
     await _call(HandoffMiddleware(sealing_call), "/internal/handoff/seal")
 
     assert verdicts == [["connections_open"]]
@@ -563,3 +565,47 @@ async def test_the_playground_badge_wrapper_closes_the_stream_it_wraps():
     await wrapped.body_iterator.aclose()
 
     assert closed == ["finalized"]
+
+
+async def test_a_draining_response_replaces_a_keep_alive_header(world):
+    async def app(scope, receive, send):
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"connection", b"keep-alive")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b""})
+
+    _drain(world)
+    sent = await _call(HandoffMiddleware(app))
+
+    assert [v for k, v in sent[0]["headers"] if k == b"connection"] == [b"close"]
+
+
+async def test_the_seal_reads_each_connection_s_own_request(world, monkeypatch):
+    """Through the real reading: the release's own connection does not hold the seal."""
+
+    class _Open:
+        def is_closing(self) -> bool:
+            return False
+
+    def watch(path):
+        return idle_connection.IdleWatch(
+            _Open(), lambda: 600.0, lambda: "peer", lambda: path is not None, lambda: path
+        )
+
+    monkeypatch.setattr(idle_connection, "connection_counts", REAL_CONNECTION_COUNTS)
+    monkeypatch.setattr(idle_connection, "_BY_TRANSPORT", {1: watch("/internal/handoff/seal")})
+    _drain(world)
+    assert handoff.seal(world.services, by="test") == []
+
+    handoff.resume(world.services, by="test")
+    _drain(world)
+    monkeypatch.setattr(
+        idle_connection,
+        "_BY_TRANSPORT",
+        {1: watch("/internal/handoff/seal"), 2: watch(None)},
+    )
+    assert handoff.seal(world.services, by="test") == ["connections_open"]

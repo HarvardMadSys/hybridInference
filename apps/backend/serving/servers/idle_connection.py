@@ -94,11 +94,13 @@ class IdleWatch:
         timeout_s: Callable[[], float],
         peer: Callable[[], str],
         busy: Callable[[], bool] | None = None,
+        path: Callable[[], str | None] | None = None,
     ) -> None:
         self._transport = transport
         self._timeout_s = timeout_s
         self._peer = peer
         self._busy = busy or (lambda: False)
+        self._path = path or (lambda: None)
         self._loop = asyncio.get_running_loop()
         self._handle: asyncio.TimerHandle | None = None
         self._closed = False
@@ -121,6 +123,10 @@ class IdleWatch:
     def busy(self) -> bool:
         """Whether a request is in progress on this connection."""
         return self._busy()
+
+    def path(self) -> str | None:
+        """The path of the request in progress on this connection, if any."""
+        return self._path() if self._busy() else None
 
     def closing(self) -> bool:
         """Whether this connection is closed or being closed."""
@@ -220,7 +226,11 @@ _BY_TRANSPORT: dict[int, IdleWatch] = {}
 
 def _attach(protocol: object, transport: object) -> None:
     watch = IdleWatch(
-        transport, idle_timeout_seconds, lambda: _peer(protocol), lambda: _busy(protocol)
+        transport,
+        idle_timeout_seconds,
+        lambda: _peer(protocol),
+        lambda: _busy(protocol),
+        lambda: _path(protocol),
     )
     protocol._idle_watch = watch  # type: ignore[attr-defined]
     _BY_TRANSPORT[id(transport)] = watch
@@ -254,6 +264,14 @@ def _busy(protocol: object) -> bool:
     return cycle is not None and not getattr(cycle, "response_complete", True)
 
 
+def _path(protocol: object) -> str | None:
+    """The path of *protocol*'s current request, as the application sees it."""
+    cycle = getattr(protocol, "cycle", None)
+    scope = getattr(cycle, "scope", None) or {}
+    path = scope.get("path")
+    return path if isinstance(path, str) else None
+
+
 def set_draining(draining: bool) -> None:
     """Apply, or lift, the drain's idle limit to every connection open now and later."""
     global _draining
@@ -264,19 +282,27 @@ def set_draining(draining: bool) -> None:
         watch.touch()
 
 
-def connection_counts() -> dict[str, int]:
-    """The accepted connections still open, and how many have a request in progress.
+def connection_counts(is_control: Callable[[str], bool] | None = None) -> dict[str, int]:
+    """The accepted connections still open, by what they carry now.
 
-    A connection already closing is not counted: no request can arrive on it.
+    ``busy`` have a request in progress; ``control`` carry one whose path
+    *is_control* accepts (a probe, a release call); ``other`` is every other
+    open connection -- idle, carrying a request, or with a request arriving --
+    on which a request could still come. A connection already closing is not
+    counted at all: no request can arrive on it. Each connection is judged by
+    its own request, so a probe whose client has gone counts nowhere.
     """
-    open_ = busy = 0
+    open_ = busy = control = 0
     for watch in list(_BY_TRANSPORT.values()):
         if watch.closing():
             continue
         open_ += 1
         if watch.busy():
             busy += 1
-    return {"open": open_, "busy": busy}
+            path = watch.path()
+            if is_control is not None and path is not None and is_control(path):
+                control += 1
+    return {"open": open_, "busy": busy, "control": control, "other": open_ - control}
 
 
 def _peer(protocol: object) -> str:

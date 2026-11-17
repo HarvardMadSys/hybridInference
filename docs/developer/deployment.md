@@ -461,8 +461,9 @@ At its stop, the process logs the state it was in and the requests still in
 flight (event `handoff_state_at_shutdown`). A sealed process stops at once.
 
 A handoff drains one process. With several worker processes behind one port,
-a call reaches whichever worker accepts it, so drain and seal answer 409 there.
-Run one worker per instance.
+a call reaches whichever worker accepts it, so drain and seal answer 409 there,
+and under gunicorn, whose workers the process cannot count. Run one uvicorn
+worker per instance.
 
 What a handoff does not cover: while the two processes run side by side, each
 still enforces per-user concurrency, login rate limits and authentication
