@@ -449,7 +449,7 @@ async def test_postgres_key_entitlement_controls_real_chat_response_headers(
             f"/admin/routing/provider-routes/{CHAT_MODEL}/{CHAT_MODEL}:zai-api",
             json={
                 "upstream_provider": target_name,
-                "base_url": "http://gpu7-api.local:8000/v1",
+                "base_url": "http://backend.example.test:8000/v1",
                 "provider_model_id": "test/model",
             },
             headers={"authorization": "Bearer test-admin-token"},
@@ -459,7 +459,7 @@ async def test_postgres_key_entitlement_controls_real_chat_response_headers(
         assert len(persisted) == 1
         assert persisted[0]["provider"] == target_name
         adapter = chat_app.state.services.router.routes[CHAT_MODEL].adapters[0][0]
-        assert adapter.config.base_url == "http://gpu7-api.local:8000/v1"
+        assert adapter.config.base_url == "http://backend.example.test:8000/v1"
         assert adapter.config.endpoint_identity_publishable is False
 
         private = await client.post(

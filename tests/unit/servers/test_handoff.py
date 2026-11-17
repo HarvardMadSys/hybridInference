@@ -706,6 +706,7 @@ def _primed_chat_stream(session: _Session):
             self._head = None
             self._tail = session.stream
             self._frames_started = False
+            self._identity_headers_for_response = lambda: {}
 
         async def prime(self) -> None:
             return None

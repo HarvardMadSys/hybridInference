@@ -397,8 +397,10 @@ def test_restoring_a_route_restores_the_decision_for_its_kind():
 
 
 def test_an_internal_hostname_cannot_reach_an_entitled_caller():
-    """An endpoint id derived from an internal hostname is not published."""
-    endpoint_id = _make_provider_id(MODEL_ID, "openai_compat", "http://gpu7.internal:8000/v1")
+    """An endpoint id derived from a private test hostname is not published."""
+    endpoint_id = _make_provider_id(
+        MODEL_ID, "openai_compat", "http://backend.private.test:8000/v1"
+    )
     headers = served_identity_headers(
         requested_model=MODEL_ID,
         served_model=MODEL_ID,
@@ -407,7 +409,7 @@ def test_an_internal_hostname_cannot_reach_an_entitled_caller():
         endpoint_publishable=False,
     )
     assert "X-FI-Served-Endpoint" not in headers
-    assert "gpu7" not in str(headers)
+    assert "backend" not in str(headers)
 
 
 def test_a_dedicated_endpoint_reaches_an_entitled_caller():
