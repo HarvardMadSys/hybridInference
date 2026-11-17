@@ -31,12 +31,14 @@ the model per request -- nothing is claimed: ``reasoning`` is ``null`` and
 from __future__ import annotations
 
 import time
+from decimal import Decimal
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
 from serving.model_access import model_access_denial
 from serving.model_effort_capabilities import (
@@ -44,7 +46,7 @@ from serving.model_effort_capabilities import (
     model_effort_domain,
     openai_reasoning,
 )
-from serving.pricing import PricingUnavailableError, effective_pricing
+from serving.pricing import PricingUnavailableError, effective_pricing, effective_pricing_usd
 from serving.schemas import ModelItem, ModelList
 from serving.servers.auth import optional_verify_api_key, verify_api_key_for_balance
 from serving.servers.deps import (
@@ -57,9 +59,9 @@ from serving.servers.deps import (
 router = APIRouter()
 
 
-def _catalog_pricing(config: Any) -> dict[str, str]:
+def _catalog_pricing(config: Any, *, usd: bool = False) -> dict[str, str]:
     try:
-        pricing = effective_pricing(config) or {}
+        pricing = (effective_pricing_usd(config) if usd else effective_pricing(config)) or {}
     except PricingUnavailableError:
         # A missing official quote is unknown, never a free rate. Keep the
         # model discoverable while inference fails before creating usage.
@@ -349,7 +351,8 @@ async def _build_model_list_async(
             quantization=primary_cfg.quantization,
             context_length=context_length,
             max_output_length=max_output_length,
-            pricing=_catalog_pricing(primary_cfg),
+            pricing=_catalog_pricing(primary_cfg, usd=True),
+            prices=_catalog_pricing(primary_cfg),
             supported_sampling_parameters=supported_sampling_parameters,
             supported_features=supported_features,
             # Any adapter marking the model on-demand makes the whole model
@@ -397,7 +400,8 @@ async def _build_model_list_async(
                 quantization=cfg.quantization,
                 context_length=cfg.context_length,
                 max_output_length=cfg.max_output_length,
-                pricing=_catalog_pricing(cfg),
+                pricing=_catalog_pricing(cfg, usd=True),
+                prices=_catalog_pricing(cfg),
                 # The catalog lists embedding models beside chat models with
                 # the same modality defaults; this is the one signal a client
                 # has that the model answers /v1/embeddings, not chat.
@@ -436,7 +440,7 @@ async def describe_key(
     project_monthly = user_ctx.get("project_budget_monthly_usd")
     project_month_spent = float(user_ctx.get("project_spent_month_usd") or 0.0)
 
-    return {
+    described: dict[str, Any] = {
         "key_prefix": user_ctx.get("key_prefix"),
         "project": {
             "id": user_ctx.get("project_id"),
@@ -503,3 +507,34 @@ async def describe_key(
             "month": quota.next_utc_month_start().isoformat(),
         },
     }
+    if get_accounting_policy().native:
+        _add_native_budgets(described["budgets"], user_ctx)
+        described["currency"] = get_accounting_policy().currency
+    return described
+
+
+def _add_native_budgets(budgets: dict[str, Any], user_ctx: dict[str, Any]) -> None:
+    """Add ``limit``, ``spent`` and ``remaining`` in the ledger currency to each budget.
+
+    The ``*_usd`` values stay their USD equivalents. The native amounts come
+    from the context (:func:`serving.servers.auth.verify_api_key_for_balance`),
+    exact; a spend the lookup did not carry reads its USD value at the rate.
+    """
+    policy = get_accounting_policy()
+    sources = {
+        ("key", "day"): ("budget_daily", "key_spent_today"),
+        ("key", "month"): ("budget_monthly", "key_spent_month"),
+        ("account", "day"): ("quota_daily_cost", "spent_today"),
+        ("account", "month"): ("quota_monthly_cost", "account_spent_month"),
+        ("project", "day"): ("project_budget_daily", "project_spent_today"),
+        ("project", "month"): ("project_budget_monthly", "project_spent_month"),
+    }
+    for (scope, window), (limit_key, spent_key) in sources.items():
+        entry = budgets[scope][window]
+        if entry is None:
+            continue
+        limit = user_ctx.get(limit_key)
+        limit = policy.from_usd(entry["limit_usd"]) if limit is None else money_decimal(limit)
+        spent = user_ctx.get(spent_key)
+        spent = policy.from_usd(entry["spent_usd"]) if spent is None else money_decimal(spent)
+        entry.update(limit=limit, spent=spent, remaining=max(Decimal(0), limit - spent))

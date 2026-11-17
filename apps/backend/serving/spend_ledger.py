@@ -37,6 +37,13 @@ is protected within each process, not across them; production runs one. The
 shared mode (:mod:`serving.shared_spend`, off unless an operator activates it)
 keeps the same policy with its reservations in PostgreSQL, for every process
 alike; :func:`ledger_for` hands out its ledger when the process runs in it.
+
+Every amount here is in the deployment's accounting currency
+(:mod:`serving.accounting`): the costs recorded are what the request was
+charged (``CostTracker`` prices in that currency), the gate's limits and spends
+are the native columns and counters, and the counters are written in it
+(:attr:`~serving.storage.base.CostIncrement.cost_amount`). On a USD ledger that
+is USD, exactly as before; the ``*_usd`` names here predate other ledgers.
 """
 
 from __future__ import annotations
@@ -48,10 +55,11 @@ import weakref
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
+from serving.accounting import Money, get_accounting_policy
 from serving.observability import detached_tasks
 from serving.observability.tracked_tasks import tracked_task
 from serving.storage.base import CostIncrement, CostWriteOutcomeUnknown
@@ -76,9 +84,6 @@ LANDED_WINDOW_SECONDS = 300.0
 #: Retry delays after a failed write, doubling up to the last.
 _RETRY_FIRST_SECONDS = 0.5
 _RETRY_MAX_SECONDS = 30.0
-
-#: The counters store dollars to six places, rounding each increment.
-_MICRO = Decimal("0.000001")
 
 #: The most one request adds to the counters. No real request comes near it:
 #: $1,000 pays for two million tokens at $500 per million, past the largest
@@ -110,27 +115,39 @@ def utc_day(now: datetime | None = None) -> str:
     return (now or datetime.now(UTC)).strftime("%Y-%m-%d")
 
 
-def counted_amount(cost_usd: float) -> Decimal:
-    """What one increment of *cost_usd* adds to a counter.
+def counted_amount(cost: Money) -> Decimal:
+    """What one increment of *cost* adds to a counter.
 
-    The counters are ``DECIMAL(12, 6)``, and PostgreSQL rounds each increment
-    (half away from zero) as it stores it. A batch written as one addition must
-    add exactly what the separate increments would have, so each cost is
-    rounded on its own before the batch sums them.
+    PostgreSQL rounds each increment (half away from zero) to the counter's
+    scale as it stores it. A batch written as one addition must add exactly
+    what the separate increments would have, so each cost is rounded on its
+    own before the batch sums them: to the ledger's quantum
+    (:attr:`~serving.accounting.AccountingPolicy.quantum`), six places on a USD
+    ledger's ``DECIMAL(12, 6)``, twelve on a native one's ``NUMERIC(24, 12)``.
     """
-    return Decimal(cost_usd).quantize(_MICRO, rounding=ROUND_HALF_UP)
+    return get_accounting_policy().quantize(cost)
+
+
+def max_request_cost() -> Money:
+    """:data:`MAX_REQUEST_COST_USD` in the ledger currency."""
+    return get_accounting_policy().in_ledger(MAX_REQUEST_COST_USD)
+
+
+def _logged_cost(counted: Decimal) -> dict[str, str]:
+    """How a log record states *counted* (:meth:`~serving.accounting.AccountingPolicy.logged`)."""
+    return get_accounting_policy().logged(counted)
 
 
 @dataclass(slots=True)
 class _Amount:
     """Costs recorded for one user, key and day: their sum, and how many."""
 
-    cost: float = 0.0
+    cost: Money = 0.0
     counted: Decimal = Decimal(0)
     requests: int = 0
     project_id: str | None = None
 
-    def add(self, cost: float, counted: Decimal, requests: int) -> None:
+    def add(self, cost: Money, counted: Decimal, requests: int) -> None:
         self.cost += cost
         self.counted += counted
         self.requests += requests
@@ -140,7 +157,7 @@ class _Amount:
 class _Unconfirmed:
     """A user's costs not known to be in the counters, for one key and day."""
 
-    cost: float = 0.0
+    cost: Money = 0.0
     requests: int = 0
     project_id: str | None = None
 
@@ -170,7 +187,7 @@ class Reservation:
         ledger: SpendLedger,
         user_id: str,
         key_id: int | None,
-        amount: float,
+        amount: Money,
         project_id: str | None = None,
     ) -> None:
         """Count *amount* against *user_id* (and *key_id*) until released."""
@@ -197,6 +214,11 @@ class SpendCheck:
     may not be, so the ledger counts those again. ``key_id`` is the key the
     request's cost is attributed to; its budgets are the key's own limits,
     None where the key has none (or the request is not the key's).
+
+    The limits and spends are in the ledger currency: on a non-USD ledger the
+    gate builds the check from the native columns and counters, as exact
+    decimals, and a refusal reports them with their USD equivalents
+    (:func:`serving.quota.first_refusal_amount`).
     """
 
     #: The per-process :class:`SpendLedger`, the shared ledger, or None (no store).
@@ -204,23 +226,23 @@ class SpendCheck:
     user_id: str
     key_id: int | None
     read_at: float
-    account_quota_usd: float
-    account_spent_usd: float
-    account_quota_monthly_usd: float | None = None
-    account_spent_month_usd: float = 0.0
-    key_budget_daily_usd: float | None = None
-    key_budget_monthly_usd: float | None = None
-    key_spent_today_usd: float = 0.0
-    key_spent_month_usd: float = 0.0
+    account_quota_usd: Money
+    account_spent_usd: Money
+    account_quota_monthly_usd: Money | None = None
+    account_spent_month_usd: Money = 0.0
+    key_budget_daily_usd: Money | None = None
+    key_budget_monthly_usd: Money | None = None
+    key_spent_today_usd: Money = 0.0
+    key_spent_month_usd: Money = 0.0
     key_prefix: str | None = None
     key_label: str | None = None
 
     project_id: str | None = None
     project_name: str | None = None
-    project_budget_daily_usd: float | None = None
-    project_budget_monthly_usd: float | None = None
-    project_spent_today_usd: float = 0.0
-    project_spent_month_usd: float = 0.0
+    project_budget_daily_usd: Money | None = None
+    project_budget_monthly_usd: Money | None = None
+    project_spent_today_usd: Money = 0.0
+    project_spent_month_usd: Money = 0.0
 
     def refusal(self) -> quota.BudgetRefusal | None:
         """The narrowest limit this request does not fit under, counting the ledger too."""
@@ -229,12 +251,13 @@ class SpendCheck:
         return self.ledger.refusal(self)
 
     def admit(
-        self, amount: float = quota.ESTIMATED_REQUEST_COST_USD
+        self, amount: Money | None = None
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
         """Check again and reserve up to *amount*, in one step; see :meth:`SpendLedger.admit`.
 
         Without a ledger (no store) there is nothing to reserve in: only checked.
         The per-process ledger only; the shared one admits with :meth:`reserve`.
+        *amount* defaults to the flat minimum (:func:`serving.quota.estimated_request_cost`).
         """
         if self.ledger is None:
             return None, self.refusal()
@@ -243,7 +266,7 @@ class SpendCheck:
         return self.ledger.admit(self, amount)
 
     async def reserve(
-        self, amount: float = quota.ESTIMATED_REQUEST_COST_USD, *, operation: str = "request"
+        self, amount: Money | None = None, *, operation: str = "request"
     ) -> tuple[Any, quota.BudgetRefusal | None]:
         """Admit against this check in whichever mode the process runs.
 
@@ -254,6 +277,8 @@ class SpendCheck:
         *operation* names what is admitted (``request``, ``batch``,
         ``playground``), recorded with a shared reservation.
         """
+        if amount is None:
+            amount = quota.estimated_request_cost()
         if self.ledger is not None and getattr(self.ledger, "shared", False):
             return await self.ledger.admit(self, amount, operation=operation)
         return self.admit(amount)
@@ -261,79 +286,94 @@ class SpendCheck:
 
 def decide_admission(
     check: SpendCheck,
-    amount: float,
-    extra: tuple[float, float, float, float],
-    project_extra: tuple[float, float] = (0.0, 0.0),
-) -> tuple[float | None, quota.BudgetRefusal | None]:
+    amount: Money | None,
+    extra: tuple[Money, Money, Money, Money],
+    project_extra: tuple[Money, Money] = (0.0, 0.0),
+) -> tuple[Money | None, quota.BudgetRefusal | None]:
     """The admission policy: refuse, or what to reserve, given *extra* on top of *check*.
 
     Refused only when not even the flat minimum
-    (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits; otherwise *amount*,
-    but no more than the tightest limit has left and never less than that
-    minimum. Both ledgers apply exactly this.
+    (:func:`~serving.quota.estimated_request_cost`) fits; otherwise *amount*
+    (the minimum when None), but no more than the tightest limit has left and
+    never less than that minimum. Both ledgers apply exactly this, in the
+    ledger's arithmetic (:meth:`~serving.accounting.AccountingPolicy.number`).
     """
     refusal = _refusal(check, extra, project_extra)
     if refusal is not None:
         return None, refusal
-    if amount > quota.ESTIMATED_REQUEST_COST_USD:
-        amount = max(
-            quota.ESTIMATED_REQUEST_COST_USD,
-            min(amount, _headroom(check, extra, project_extra)),
-        )
-    return amount, None
+    number = get_accounting_policy().number
+    minimum = quota.estimated_request_cost()
+    if amount is None or number(amount) <= minimum:
+        return minimum, None
+    return max(minimum, min(number(amount), _headroom(check, extra, project_extra))), None
 
 
 def _refusal(
     check: SpendCheck,
-    extra: tuple[float, float, float, float],
-    project_extra: tuple[float, float] = (0.0, 0.0),
+    extra: tuple[Money, Money, Money, Money],
+    project_extra: tuple[Money, Money] = (0.0, 0.0),
 ) -> quota.BudgetRefusal | None:
     """Apply *check*'s limits to what it read plus *extra* (day, month, key day, key month)."""
-    day, month, key_day, key_month = extra
+    number = get_accounting_policy().number
+    day, month, key_day, key_month = (number(value) for value in extra)
+    project_day, project_month = (number(value) for value in project_extra)
+
+    def spent(value: Money) -> Money:
+        return number(value)
+
     return quota.first_refusal(
         account_quota_usd=check.account_quota_usd,
-        account_spent_usd=check.account_spent_usd + day,
+        account_spent_usd=spent(check.account_spent_usd) + day,
         account_quota_monthly_usd=check.account_quota_monthly_usd,
-        account_spent_month_usd=check.account_spent_month_usd + month,
+        account_spent_month_usd=spent(check.account_spent_month_usd) + month,
         key_budget_daily_usd=check.key_budget_daily_usd,
         key_budget_monthly_usd=check.key_budget_monthly_usd,
-        key_spent_today_usd=check.key_spent_today_usd + key_day,
-        key_spent_month_usd=check.key_spent_month_usd + key_month,
+        key_spent_today_usd=spent(check.key_spent_today_usd) + key_day,
+        key_spent_month_usd=spent(check.key_spent_month_usd) + key_month,
         key_prefix=check.key_prefix,
         key_label=check.key_label,
         project_budget_daily_usd=check.project_budget_daily_usd,
         project_budget_monthly_usd=check.project_budget_monthly_usd,
-        project_spent_today_usd=check.project_spent_today_usd + project_extra[0],
-        project_spent_month_usd=check.project_spent_month_usd + project_extra[1],
+        project_spent_today_usd=spent(check.project_spent_today_usd) + project_day,
+        project_spent_month_usd=spent(check.project_spent_month_usd) + project_month,
         project_name=check.project_name,
     )
 
 
 def _headroom(
     check: SpendCheck,
-    extra: tuple[float, float, float, float],
-    project_extra: tuple[float, float] = (0.0, 0.0),
-) -> float:
+    extra: tuple[Money, Money, Money, Money],
+    project_extra: tuple[Money, Money] = (0.0, 0.0),
+) -> Money:
     """What the tightest of *check*'s limits has left, counting *extra* (see :func:`_refusal`)."""
-    day, month, key_day, key_month = extra
-    left = [float(check.account_quota_usd) - (check.account_spent_usd + day)]
+    number = get_accounting_policy().number
+    day, month, key_day, key_month = (number(value) for value in extra)
+    project_day, project_month = (number(value) for value in project_extra)
+    left = [number(check.account_quota_usd) - (number(check.account_spent_usd) + day)]
     if check.account_quota_monthly_usd is not None:
         left.append(
-            float(check.account_quota_monthly_usd) - (check.account_spent_month_usd + month)
+            number(check.account_quota_monthly_usd)
+            - (number(check.account_spent_month_usd) + month)
         )
     if check.key_budget_daily_usd is not None:
-        left.append(float(check.key_budget_daily_usd) - (check.key_spent_today_usd + key_day))
+        left.append(
+            number(check.key_budget_daily_usd) - (number(check.key_spent_today_usd) + key_day)
+        )
     if check.key_budget_monthly_usd is not None:
-        left.append(float(check.key_budget_monthly_usd) - (check.key_spent_month_usd + key_month))
+        left.append(
+            number(check.key_budget_monthly_usd) - (number(check.key_spent_month_usd) + key_month)
+        )
     if check.project_budget_daily_usd is not None:
         left.append(
-            float(check.project_budget_daily_usd) - check.project_spent_today_usd - project_extra[0]
+            number(check.project_budget_daily_usd)
+            - number(check.project_spent_today_usd)
+            - project_day
         )
     if check.project_budget_monthly_usd is not None:
         left.append(
-            float(check.project_budget_monthly_usd)
-            - check.project_spent_month_usd
-            - project_extra[1]
+            number(check.project_budget_monthly_usd)
+            - number(check.project_spent_month_usd)
+            - project_month
         )
     return min(left)
 
@@ -353,9 +393,9 @@ class SpendLedger:
             self._store: Callable[[], Any] = weakref.ref(store)
         except TypeError:
             self._store = lambda: store
-        self._reserved_projects: dict[str, list[float]] = {}
-        self._reserved_users: dict[str, list[float]] = {}
-        self._reserved_keys: dict[int, list[float]] = {}
+        self._reserved_projects: dict[str, list[Any]] = {}
+        self._reserved_users: dict[str, list[Any]] = {}
+        self._reserved_keys: dict[int, list[Any]] = {}
         # Recorded, not yet handed to a write (or handed back by a failed one).
         self._pending: dict[_Key, _Amount] = {}
         # Handed to the write in flight.
@@ -365,7 +405,7 @@ class SpendLedger:
         self._unconfirmed: dict[str, dict[tuple[int | None, str, str | None], _Unconfirmed]] = {}
         # Writes confirmed: (when, {user: [(key, day, cost), ...]}).
         self._landed: deque[
-            tuple[float, dict[str, list[tuple[int | None, str, float, str | None]]]]
+            tuple[float, dict[str, list[tuple[int | None, str, Money, str | None]]]]
         ] = deque()
         self._unknown: list[tuple[_Key, _Amount]] = []
         # Entries the counters refused for their own values, set aside.
@@ -389,7 +429,7 @@ class SpendLedger:
         )
 
     def admit(
-        self, check: SpendCheck, amount: float = quota.ESTIMATED_REQUEST_COST_USD
+        self, check: SpendCheck, amount: Money | None = None
     ) -> tuple[Reservation | None, quota.BudgetRefusal | None]:
         """Admit a request against *check*: reserve its cost, or say which limit refuses it.
 
@@ -399,7 +439,7 @@ class SpendLedger:
         releases it when the request ends.
 
         The request is refused only when not even the flat minimum
-        (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits, as every gate
+        (:func:`~serving.quota.estimated_request_cost`) fits, as every gate
         refuses. It then reserves *amount*, what it may cost -- but no more than
         its tightest limit has left, and never less than that minimum: a
         request is not refused because its worst case does not fit, yet while
@@ -433,13 +473,14 @@ class SpendLedger:
 
     def _extra(
         self, user_id: str, key_id: int | None, read_at: float, *, project_id: str | None = None
-    ) -> tuple[float, float, float, float]:
+    ) -> tuple[Money, Money, Money, Money]:
         """What to add to the account's day and month, and the key's, for this gate."""
         today = utc_day()
         month = today[:7]
-        totals = [0.0, 0.0, 0.0, 0.0]
+        zero = get_accounting_policy().zero
+        totals = [zero, zero, zero, zero]
 
-        def count(cost_key: int | None, day: str, cost: float, cost_project: str | None) -> None:
+        def count(cost_key: int | None, day: str, cost: Money, cost_project: str | None) -> None:
             if project_id is not None and cost_project != project_id:
                 return
             if day.startswith(month):
@@ -482,7 +523,7 @@ class SpendLedger:
     # -- recording and writing ----------------------------------------------
 
     def record(
-        self, user_id: str, cost_usd: float, *, api_key_id: int | None = None
+        self, user_id: str, cost_usd: Money, *, api_key_id: int | None = None
     ) -> asyncio.Task[None] | None:
         """Record a finished request's cost, to be added to the counters.
 
@@ -494,19 +535,22 @@ class SpendLedger:
 
         A cost above :data:`MAX_REQUEST_COST_USD` cannot be a real request's: it
         is recorded as that ceiling, and logged and alerted for an operator.
+        *cost_usd* is in the ledger currency, as is the ceiling it is held to
+        (:func:`max_request_cost`).
         """
         if not user_id or not cost_usd > 0:
             return None
-        cost_usd = capped_cost(user_id, cost_usd, api_key_id=api_key_id)
+        policy = get_accounting_policy()
+        cost_usd = policy.number(capped_cost(user_id, cost_usd, api_key_id=api_key_id))
         day = utc_day()
         context = req_ctx.get() or {}
         project_id = context.get(req_ctx.PROJECT_ID) or None
         key: _Key = (user_id, api_key_id, day, project_id)
-        self._pending.setdefault(key, _Amount(project_id=project_id)).add(
+        self._pending.setdefault(key, _Amount(cost=policy.zero, project_id=project_id)).add(
             cost_usd, counted_amount(cost_usd), 1
         )
         unconfirmed = self._unconfirmed.setdefault(user_id, {}).setdefault(
-            (api_key_id, day, project_id), _Unconfirmed(project_id=project_id)
+            (api_key_id, day, project_id), _Unconfirmed(cost=policy.zero, project_id=project_id)
         )
         unconfirmed.cost += cost_usd
         unconfirmed.requests += 1
@@ -619,7 +663,7 @@ class SpendLedger:
                         "user_id": key[0],
                         "api_key_id": key[1],
                         "day": key[2],
-                        "cost_usd": str(amount.counted),
+                        **_logged_cost(amount.counted),
                         "requests": amount.requests,
                     }
                     for key, amount in entries
@@ -643,7 +687,7 @@ class SpendLedger:
                         "user_id": key[0],
                         "api_key_id": key[1],
                         "day": key[2],
-                        "cost_usd": str(amount.counted),
+                        **_logged_cost(amount.counted),
                         "requests": amount.requests,
                         "error_type": type(error).__name__,
                         "sqlstate": getattr(error, "sqlstate", None),
@@ -654,7 +698,7 @@ class SpendLedger:
         )
         context = {
             "entries": len(entries),
-            "cost_usd": str(sum((amount.counted for _, amount, _ in entries), Decimal(0))),
+            **_logged_cost(sum((amount.counted for _, amount, _ in entries), Decimal(0))),
             "error": type(entries[0][2]).__name__,
             "logs": "event cost_counter_write_refused lists each entry to reconcile",
         }
@@ -725,21 +769,34 @@ class SpendLedger:
         """
         owed = [*self._pending.values(), *self._writing.values()]
         unconfirmed = [amount for _, amount in [*self._unknown, *self._refused]]
+        policy = get_accounting_policy()
+        owed_cost = sum(a.cost for a in owed)
+        unconfirmed_cost = sum(a.cost for a in unconfirmed)
+        native = (
+            {
+                "owed_amount": str(sum((a.counted for a in owed), Decimal(0))),
+                "unconfirmed_amount": str(sum((a.counted for a in unconfirmed), Decimal(0))),
+                "currency": policy.currency,
+            }
+            if policy.native
+            else {}
+        )
         return {
             "mode": "local",
-            "owed_usd": round(sum(a.cost for a in owed), 6),
+            "owed_usd": round(float(policy.as_usd(owed_cost)), 6),
             "owed_requests": sum(a.requests for a in owed),
             "writing": self._writer is not None,
             "unknown_requests": sum(a.requests for _, a in self._unknown),
             "refused_requests": sum(a.requests for _, a in self._refused),
-            "unconfirmed_usd": round(sum(a.cost for a in unconfirmed), 6),
+            "unconfirmed_usd": round(float(policy.as_usd(unconfirmed_cost)), 6),
             "unconfirmed_requests": sum(a.requests for a in unconfirmed),
             "finished": not owed and self._writer is None,
             "confirmed": not unconfirmed,
+            **native,
         }
 
-    def unwritten(self) -> tuple[float, int]:
-        """Costs recorded and not known written (dollars, requests), for shutdown's report.
+    def unwritten(self) -> tuple[Money, int]:
+        """Costs recorded and not known written (ledger amount, requests), for shutdown's report.
 
         What is pending, what a write still in flight carries, what was
         written with an outcome nobody could tell, and what the counters
@@ -751,23 +808,26 @@ class SpendLedger:
         return sum(a.cost for a in amounts), sum(a.requests for a in amounts)
 
 
-def capped_cost(user_id: str, cost_usd: float, *, api_key_id: int | None = None) -> float:
-    """*cost_usd*, or :data:`MAX_REQUEST_COST_USD` when beyond it -- logged and alerted."""
-    if cost_usd <= MAX_REQUEST_COST_USD:
+def capped_cost(user_id: str, cost_usd: Money, *, api_key_id: int | None = None) -> Money:
+    """*cost_usd*, or :data:`max_request_cost()` when beyond it -- logged and alerted.
+
+    Both are ledger amounts (the name predates other ledgers).
+    """
+    ceiling = max_request_cost()
+    if cost_usd <= ceiling:
         return cost_usd
+    stated = _ceiling_fields(cost_usd, ceiling)
     logger.error(
         "A request's cost is beyond any real request's; recording the ceiling",
         extra={
             "event": "cost_above_request_ceiling",
             "user_id": user_id,
             "api_key_id": api_key_id,
-            "cost_usd": repr(cost_usd),
-            "ceiling_usd": MAX_REQUEST_COST_USD,
+            **stated,
         },
     )
     context = {
-        "cost_usd": repr(cost_usd),
-        "ceiling_usd": MAX_REQUEST_COST_USD,
+        **stated,
         "logs": "event cost_above_request_ceiling names the account",
     }
     _send_alert(
@@ -779,10 +839,18 @@ def capped_cost(user_id: str, cost_usd: float, *, api_key_id: int | None = None)
             cooldown_sec=3600,
         )
     )
-    return MAX_REQUEST_COST_USD
+    return ceiling
 
 
-def _add_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> None:
+def _ceiling_fields(cost: Money, ceiling: Money) -> dict[str, Any]:
+    """How the ceiling alert states a cost: in dollars on USD, natively on another ledger."""
+    policy = get_accounting_policy()
+    if not policy.native:
+        return {"cost_usd": repr(cost), "ceiling_usd": ceiling}
+    return {"cost_amount": str(cost), "ceiling_amount": str(ceiling), "currency": policy.currency}
+
+
+def _add_reserved(table: dict[Any, list[Any]], who: Any, amount: Money) -> None:
     entry = table.get(who)
     if entry is None:
         table[who] = [amount, 1]
@@ -791,7 +859,7 @@ def _add_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> Non
         entry[1] += 1
 
 
-def _remove_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> None:
+def _remove_reserved(table: dict[Any, list[Any]], who: Any, amount: Money) -> None:
     entry = table.get(who)
     if entry is None:
         return
@@ -821,9 +889,15 @@ async def _write(store: Any, batch: dict[_Key, _Amount]) -> _Outcome:
             scopes = {}
             if amount.project_id is not None:
                 scopes["project_id"] = amount.project_id
-            await store.increment_user_cost(
+            # A native ledger writes its own counters with the exact counted
+            # amount; a USD one writes the dollars it always has.
+            if get_accounting_policy().native:
+                increment, value = store.increment_user_cost_amount, amount.counted
+            else:
+                increment, value = store.increment_user_cost, amount.cost
+            await increment(
                 key[0],
-                amount.cost,
+                value,
                 day=key[2],
                 api_key_id=key[1],
                 requests=amount.requests,
@@ -875,13 +949,16 @@ async def _write_each(keys: list[_Key], write_one: Callable[[_Key], Awaitable[No
 
 
 def _increment(key: _Key, amount: _Amount) -> CostIncrement:
+    """One counter entry: the counted amount, and on a native ledger its USD equivalent."""
+    policy = get_accounting_policy()
     return CostIncrement(
         user_id=key[0],
         day=key[2],
         api_key_id=key[1],
-        cost_usd=amount.counted,
+        cost_usd=policy.as_usd(amount.counted),
         requests=amount.requests,
         project_id=amount.project_id,
+        cost_amount=amount.counted if policy.native else None,
     )
 
 
@@ -1016,12 +1093,16 @@ async def flush_all(timeout: float = 10.0) -> None:
         with contextlib.suppress(Exception):
             await ledger.flush(timeout)
         cost, requests = ledger.unwritten()
+        policy = get_accounting_policy()
+        # The ledger amount stated natively too, on a native ledger.
+        native = {"amount": str(cost), "currency": policy.currency} if policy.native else {}
         if requests:
             logger.error(
                 "Shutting down with cost not written to the counters",
                 extra={
                     "event": "cost_counter_unwritten_at_shutdown",
-                    "cost_usd": round(cost, 6),
+                    "cost_usd": round(float(policy.as_usd(cost)), 6),
+                    **native,
                     "requests": requests,
                 },
             )
@@ -1035,7 +1116,8 @@ async def flush_all(timeout: float = 10.0) -> None:
                 extra={
                     "event": "spend_reservations_unsettled_at_shutdown",
                     "held": held,
-                    "amount_usd": round(cost, 6),
+                    "amount_usd": round(float(policy.as_usd(cost)), 6),
+                    **native,
                 },
             )
         close = getattr(ledger, "close", None)

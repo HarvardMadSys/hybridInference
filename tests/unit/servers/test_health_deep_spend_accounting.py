@@ -80,7 +80,7 @@ async def test_an_administrator_sees_what_this_processs_shared_ledger_observed(m
             "instance_id": "inst-dead",
             "state": "active",
             "n": 2,
-            "amount_usd": Decimal("0.60"),
+            "amount": Decimal("0.60"),
             "oldest_age_seconds": 90.0,
             "owner": "stale",
         }

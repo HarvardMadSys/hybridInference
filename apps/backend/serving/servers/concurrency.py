@@ -290,6 +290,10 @@ def _reserved_cost(
 ) -> float:
     """What a request may cost, reserved against its caller's limits while it runs.
 
+    In the ledger currency, as the spend ledger counts: the prices are
+    :func:`~serving.pricing.effective_pricing`'s, and the flat minimum is
+    :func:`serving.quota.estimated_request_cost`.
+
     :func:`serving.quota.estimate_request_cost` of the prompt -- the body's
     size, a token for every four bytes, at most the model's context window --
     and of the output the request allows: its ``max_tokens`` (or
@@ -303,7 +307,7 @@ def _reserved_cost(
     try:
         body = getattr(request, "_body", None)
         if not isinstance(model, str) or not isinstance(body, bytes) or router is None:
-            return quota.ESTIMATED_REQUEST_COST_USD
+            return quota.estimated_request_cost()
         resolved = resolve_anthropic_alias(model)
         route = router.routes.get(resolved)
         if route is not None:
@@ -313,7 +317,7 @@ def _reserved_cost(
             configs = [embedding.config] if embedding is not None else []
         prices = [price for price in map(_prices, configs) if price is not None]
         if not prices:
-            return quota.ESTIMATED_REQUEST_COST_USD
+            return quota.estimated_request_cost()
         context_limit = max(_count(getattr(config, "context_length", 0)) for config in configs)
         output_limit = max(_count(getattr(config, "max_output_length", 0)) for config in configs)
         prompt_tokens = len(body) // 4
@@ -331,7 +335,7 @@ def _reserved_cost(
         )
     except Exception:
         logger.debug("user_concurrency: reservation estimate skipped", exc_info=True)
-        return quota.ESTIMATED_REQUEST_COST_USD
+        return quota.estimated_request_cost()
 
 
 def _prices(config: Any) -> tuple[float, float] | None:

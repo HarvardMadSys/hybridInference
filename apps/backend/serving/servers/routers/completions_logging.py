@@ -80,12 +80,17 @@ def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
     reservation_id = getattr(reservation, "reservation_id", None)
     if not isinstance(reservation_id, str):
         return log_data
+    from serving.accounting import get_accounting_policy
+
+    policy = get_accounting_policy()
     metadata = {
         **(log_data.get("metadata") or {}),
         "spend_reservation": reservation_id,
-        "spend_charged_usd": str(reservation.cost()),
+        "spend_charged_usd": str(policy.to_usd(reservation.cost())),
+        "spend_charged_amount": str(reservation.cost()),
+        "spend_currency": policy.currency,
         "spend_charged_days": [
-            {"day": day, "usd": str(cost), "requests": requests}
+            {"day": day, "amount": str(cost), "usd": str(policy.to_usd(cost)), "requests": requests}
             for day, cost, requests in reservation.charged_by_day()
         ],
     }

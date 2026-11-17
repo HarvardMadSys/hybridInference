@@ -120,7 +120,7 @@ async def test_a_priced_playground_turn_is_settled_with_its_cost():
     (batch,) = store.backend.batches
     (member,) = batch.members
     assert member.kind == "settle"
-    assert sum(line.cost_usd for line in member.costs) == Decimal("0.002")
+    assert sum(line.cost_amount for line in member.costs) == Decimal("0.002")
     assert batch.increments == ()  # attached to the turn's reservation, not loose
     assert ledger.fully_settled()
 

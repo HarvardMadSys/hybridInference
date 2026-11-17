@@ -1038,3 +1038,27 @@ async def test_the_seal_reads_each_connection_s_own_request(world, monkeypatch):
         {1: watch("/internal/handoff/seal"), 2: watch(None)},
     )
     assert handoff.seal(world.services, by="test") == ["connections_open"]
+
+
+def test_status_reports_the_accounting_the_process_reserves_and_settles_in(world, monkeypatch):
+    from decimal import Decimal
+
+    from serving import accounting
+    from serving.shared_spend import mode
+
+    monkeypatch.setattr(
+        accounting,
+        "_policy",
+        accounting.AccountingPolicy("CNY", Decimal("6.7180"), "2026-11-05", "synthetic"),
+    )
+    monkeypatch.setattr(mode, "_mode", "shared")
+    report = handoff.status(world.services)
+    assert report["capabilities"] == {
+        "spend_accounting": {
+            "protocol": 2,
+            "mode": "shared",
+            "currency": "CNY",
+            "native_amounts": 1,
+            "usd_to_currency_rate": "6.7180",
+        }
+    }

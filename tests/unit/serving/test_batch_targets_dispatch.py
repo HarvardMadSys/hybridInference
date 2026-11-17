@@ -8,11 +8,19 @@ the attempt observes exactly that charge, an error an execution answers with
 adapter that would drop one of its parameters, and an embeddings item is held
 to the model's access gate (role, visibility override, the owner's denylist, a
 missing gate) at admission and at dispatch.
+
+The trailing block repeats the through-the-real-dispatch checks under a
+synthetic CNY accounting policy at a deliberately non-1 rate: each target's
+execution charges the ledger once in native currency, the attempt observer sees
+the true USD equivalent of exactly that charge, and the USD-only ledger function
+is never used.
 """
 
 from __future__ import annotations
 
 import asyncio
+import sys
+from decimal import Decimal
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,6 +28,8 @@ import pytest
 from fastapi import FastAPI
 
 from routing.routers import FixedRouter
+from serving import accounting
+from serving.accounting import AccountingPolicy
 from serving.adapters.base import BaseAdapter, ModelConfig, UsageInfo
 from serving.batch import dispatch
 from serving.batch.dispatch import dispatch_item
@@ -36,8 +46,16 @@ PRICING = {
     "image": "0",
     "request": "0",
 }
+# A free model: a real, resolvable price of zero (distinct from unknown).
+ZERO_PRICING = dict.fromkeys(PRICING, "0")
 # 100 prompt + 50 completion tokens at $1/$2 per million.
 CHAT_COST = 100 * 1.00 / 1_000_000 + 50 * 2.00 / 1_000_000
+# 1000 prompt tokens at $1 per million.
+EMBED_COST = 1000 * 1.00 / 1_000_000
+# Synthetic, deliberately non-1 rate: these tests exist to prove the two
+# units are distinct and that the batch observer sees USD.
+CNY_RATE = Decimal("7.25")
+TARGETS = ["chat", "embeddings", "messages", "responses"]
 
 
 class _Upstream(BaseAdapter):
@@ -108,6 +126,10 @@ def _setup(
     log_store.log_request = AsyncMock()
     op_store = MagicMock()
     op_store.increment_user_cost = AsyncMock()
+    # The native ledger function the accounting-aware billing points call on a
+    # non-USD deployment. Configured for every setup so a CNY test never awaits
+    # an unconfigured MagicMock; the USD tests still assert only the USD call.
+    op_store.increment_user_cost_amount = AsyncMock()
     services = AppServices(
         router=router,
         log_store=log_store,
@@ -494,3 +516,331 @@ async def test_a_target_runs_without_a_request_or_a_handler(monkeypatch, target)
     assert result.error is None, result
     assert result.cost_status == "billed"
     assert len(embedder.calls if target == "embeddings" else upstream.calls) == 1
+
+
+# -- CNY accounting: the observer sees USD, the ledger sees native ----------------
+#
+# These tests bind a synthetic CNY policy at a deliberately non-1 rate and run
+# the real dispatch path -- the shared protocol executions every online route
+# also calls -- for every target. They pin the contract a native ledger
+# establishes: the quota ledger is charged once in the configured currency,
+# while the batch attempt's ``cost_usd`` is the true USD equivalent of exactly
+# that charge. The USD tests above stay untouched and run under the USD default.
+
+
+@pytest.fixture
+def cny_policy():
+    """Bind a synthetic CNY policy for one test and restore the previous one.
+
+    ``bind_accounting_policy`` is the production binding function, so this uses
+    the same immutable-policy path the gateway uses at startup rather than
+    poking module state. Restoration is asserted in the teardown.
+    """
+    previous = accounting.get_accounting_policy()
+    policy = AccountingPolicy(
+        currency="CNY",
+        usd_to_currency_rate=CNY_RATE,
+        rate_date="2026-10-24",
+        rate_source="https://example.test/synthetic-rate",
+    )
+    accounting.bind_accounting_policy(policy)
+    try:
+        yield policy
+    finally:
+        accounting.bind_accounting_policy(previous)
+        # Fail loudly if the process-wide binding was not restored: a leaked
+        # CNY policy would silently change every later USD test.
+        assert accounting.get_accounting_policy() == previous
+
+
+#: The modules that hold each target's billing point. Responses delegates to
+#: the chat ``CostTracker``, so its charge is observed through completions_cost.
+_BILLING_MODULES = (
+    "serving.servers.routers.completions_cost",
+    "serving.servers.routers.embeddings",
+    "serving.servers.routers.anthropic_messages",
+)
+
+
+@pytest.fixture
+def observed_charges(monkeypatch: pytest.MonkeyPatch) -> list[Any]:
+    """Record every value a billing point hands to the batch attempt observer.
+
+    ``observe_billing`` is imported into each billing module by name, so the
+    recorder is installed on every loaded module that holds the real function.
+    The real observer still runs, so dispatch's own ``cost_usd``/status
+    bookkeeping is unaffected.
+    """
+    import importlib
+
+    from serving.batch import attempts as batch_attempts
+
+    # Import every execution module before scanning, so none keeps an
+    # unrecorded reference that would make its charge invisible.
+    for name in (
+        *_BILLING_MODULES,
+        "serving.servers.routers.completions",
+        "serving.servers.routers.responses",
+    ):
+        importlib.import_module(name)
+
+    seen: list[Any] = []
+    real = batch_attempts.observe_billing
+
+    def recording(*args: Any, **kwargs: Any) -> Any:
+        seen.append(kwargs["cost_usd"] if "cost_usd" in kwargs else args[0])
+        return real(*args, **kwargs)
+
+    for module in list(sys.modules.values()):
+        if module is None or module is batch_attempts:
+            continue
+        if getattr(module, "observe_billing", None) is real:
+            monkeypatch.setattr(module, "observe_billing", recording)
+    # Every billing point must be among them; a rename there is a real
+    # regression, not a silent skip.
+    for name in _BILLING_MODULES:
+        assert sys.modules[name].observe_billing is recording, name
+    return seen
+
+
+async def _native_increments(services: AppServices) -> list[Any]:
+    """Settle background billing, then return the native ledger charges."""
+    ledger = services.operational_store.increment_user_cost_amount
+    for _ in range(50):
+        if ledger.await_count:
+            break
+        await asyncio.sleep(0.001)
+    # Give a hypothetical second increment time to land before asserting.
+    for _ in range(20):
+        await asyncio.sleep(0.001)
+    charges = [call.args[1] for call in ledger.await_args_list]
+    # The spend ledger writes each charge as the exact amount the native
+    # counters store (twelve places), never a binary float.
+    assert all(isinstance(charge, Decimal) for charge in charges), charges
+    assert all(charge == charge.quantize(Decimal("1e-12")) for charge in charges), charges
+    return [float(charge) for charge in charges]
+
+
+def _set_pricing(
+    *, upstream: _Upstream, embedder: _Embedder, pricing: dict[str, str] | None
+) -> None:
+    """Set the price on both adapters' configs, as a models.yaml edit would."""
+    upstream.config.pricing = pricing
+    embedder.config.pricing = pricing
+
+
+@pytest.mark.parametrize("target", TARGETS)
+async def test_cny_dispatch_charges_native_once_and_reports_the_usd_equivalent(
+    target, cny_policy, observed_charges
+):
+    app, services, upstream, embedder = _setup()
+    expected_usd = EMBED_COST if target == "embeddings" else CHAT_COST
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="batch-cny",
+        target=target,
+        item_id=11,
+        attempt=1,
+        protocol_profile="2023-06-01" if target == "messages" else None,
+    )
+
+    assert result.error is None, result
+    assert len(embedder.calls if target == "embeddings" else upstream.calls) == 1
+    native = await _native_increments(services)
+    assert len(native) == 1, f"{target} was charged natively {len(native)} times"
+    # The charged amount is the USD price converted at the configured rate;
+    # it is not the USD amount itself.
+    assert native[0] == pytest.approx(expected_usd * float(CNY_RATE))
+    assert native[0] != pytest.approx(expected_usd)
+    # The USD-only ledger function must never be used on a CNY deployment.
+    services.operational_store.increment_user_cost.assert_not_awaited()
+    # The billing point handed the observer the USD equivalent of exactly the
+    # native charge above -- once, not the native amount, not a re-priced value.
+    assert observed_charges == [pytest.approx(expected_usd)]
+    assert result.cost_status == "billed"
+    assert result.cost_usd == pytest.approx(float(native[0]) / float(CNY_RATE))
+    assert result.cost_usd == pytest.approx(expected_usd)
+
+    row = await _logged(services)
+    # The api_logs pricing snapshot stays in the ledger currency (native CNY),
+    # while the batch attempt's ``cost_usd`` above is the USD compatibility value.
+    if row.get("pricing") and "prompt" in row["pricing"]:
+        assert Decimal(row["pricing"]["prompt"]) == Decimal("1.00") * CNY_RATE
+    assert row["metadata"]["batch_job_id"] == "batch-cny"
+    assert (row["metadata"]["batch_item_id"], row["metadata"]["batch_attempt"]) == (11, 1)
+    assert result.request_id == row["request_id"]
+
+
+@pytest.mark.parametrize("target", TARGETS)
+async def test_cny_zero_price_is_a_known_zero_and_never_charges(
+    target, cny_policy, observed_charges
+):
+    app, services, upstream, embedder = _setup()
+    _set_pricing(upstream=upstream, embedder=embedder, pricing=ZERO_PRICING)
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="batch-cny-zero",
+        target=target,
+        protocol_profile="2023-06-01" if target == "messages" else None,
+    )
+
+    assert result.error is None, result
+    assert await _native_increments(services) == []
+    services.operational_store.increment_user_cost.assert_not_awaited()
+    # A resolvable price of zero is a known zero, never the unknown marker.
+    assert observed_charges == [0.0]
+    assert (result.cost_status, result.cost_usd) == ("billed", 0.0)
+
+
+@pytest.mark.parametrize("target", TARGETS)
+async def test_cny_unknown_pricing_is_reported_unknown_and_never_charges(
+    target, cny_policy, observed_charges
+):
+    app, services, upstream, embedder = _setup()
+    _set_pricing(upstream=upstream, embedder=embedder, pricing=None)
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="batch-cny-unknown",
+        target=target,
+        protocol_profile="2023-06-01" if target == "messages" else None,
+    )
+
+    assert result.error is None, result
+    assert await _native_increments(services) == []
+    services.operational_store.increment_user_cost.assert_not_awaited()
+    # Unknown pricing is reported as unknown, not coerced to a zero charge.
+    assert observed_charges == [None]
+    assert (result.cost_status, result.cost_usd) == ("unknown", None)
+
+
+async def test_cny_message_error_answer_is_not_billed(monkeypatch, cny_policy, observed_charges):
+    from serving.servers.routers import anthropic_messages
+
+    app, services, _upstream, _embedder = _setup()
+    monkeypatch.setattr(
+        anthropic_messages,
+        "execute_messages",
+        AsyncMock(
+            return_value=anthropic_messages.MessagesError(
+                status=529, message="busy", error_type="overloaded_error"
+            )
+        ),
+    )
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=_owner(),
+        body=_BODIES["messages"],
+        batch_id="batch-cny-error",
+        target="messages",
+    )
+
+    assert (result.status_code, result.retryable) == (529, True)
+    assert result.cost_status == "not_billed"
+    assert await _native_increments(services) == []
+    services.operational_store.increment_user_cost.assert_not_awaited()
+    # Error answers are never billed: the billing point is never reached.
+    assert observed_charges == []
+
+
+async def test_cny_batch_owner_context_carries_native_quota_through_dispatch(
+    cny_policy, observed_charges
+):
+    """A worker context with native Decimal quota amounts runs unchanged.
+
+    ``authenticate_stored_key`` adds the native ``quota_daily_cost`` /
+    ``spent_today`` amounts on a CNY deployment; the shared execution receives
+    the context as a read-only snapshot and must bill natively regardless.
+    """
+    app, services, _upstream, _embedder = _setup()
+    owner = {
+        **_owner(),
+        "quota_daily_cost_usd": float(Decimal("72.5") / CNY_RATE),
+        "spent_today_usd": 0.0,
+        "quota_daily_cost": Decimal("72.5"),
+        "spent_today": Decimal("0"),
+    }
+
+    result = await dispatch_item(
+        app=app,
+        services=services,
+        user_ctx=owner,
+        body=_BODIES["chat"],
+        batch_id="b",
+        target="chat",
+    )
+
+    assert result.error is None, result
+    assert await _native_increments(services) == [pytest.approx(CHAT_COST * float(CNY_RATE))]
+    assert result.cost_usd == pytest.approx(CHAT_COST)
+
+
+_ONLINE_PATHS = {
+    "chat": "/v1/chat/completions",
+    "embeddings": "/v1/embeddings",
+    "messages": "/v1/messages",
+    "responses": "/v1/responses",
+}
+
+
+@pytest.mark.parametrize("target", TARGETS)
+async def test_cny_online_route_and_batch_item_charge_the_same_native_amount(
+    target, cny_policy, observed_charges
+):
+    """One shared execution: the online route and a batch item bill identically.
+
+    The same body is served once through its HTTP route and once as a batch
+    item on fresh services. Both must charge the native ledger once with the
+    same amount and report the same USD equivalent to the observer (which only
+    the batch attempt listens to).
+    """
+    from httpx import ASGITransport, AsyncClient
+
+    from serving.servers.auth import verify_api_key
+    from serving.servers.middleware.error import install_error_handlers
+    from serving.servers.routers import anthropic_messages, completions, embeddings, responses
+
+    app, services, _upstream, _embedder = _setup()
+    install_error_handlers(app)
+    for module in (completions, embeddings, anthropic_messages, responses):
+        app.include_router(module.router)
+    app.dependency_overrides[verify_api_key] = _owner
+    headers = {"anthropic-version": "2023-06-01"} if target == "messages" else {}
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        response = await client.post(_ONLINE_PATHS[target], json=_BODIES[target], headers=headers)
+    assert response.status_code == 200, response.text
+    online = await _native_increments(services)
+
+    batch_app, batch_services, _u, _e = _setup()
+    result = await dispatch_item(
+        app=batch_app,
+        services=batch_services,
+        user_ctx=_owner(),
+        body=_BODIES[target],
+        batch_id="batch-parity",
+        target=target,
+        protocol_profile="2023-06-01" if target == "messages" else None,
+    )
+    assert result.error is None, result
+    batch = await _native_increments(batch_services)
+
+    expected_usd = EMBED_COST if target == "embeddings" else CHAT_COST
+    assert online == batch == [pytest.approx(expected_usd * float(CNY_RATE))]
+    services.operational_store.increment_user_cost.assert_not_awaited()
+    batch_services.operational_store.increment_user_cost.assert_not_awaited()
+    # The online billing point reports too (nothing listens outside a batch);
+    # both reports are the USD equivalent of the identical native charge.
+    assert observed_charges == [pytest.approx(expected_usd)] * 2
+    assert result.cost_usd == pytest.approx(expected_usd)

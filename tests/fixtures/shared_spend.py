@@ -90,7 +90,7 @@ class FakeSharedBackend:
         if amount is None:
             return AdmissionOutcome("refused", snapshot=snapshot)
         self.rows[request.reservation_id] = (request, amount)
-        return AdmissionOutcome("admitted", reserved_usd=amount, snapshot=snapshot)
+        return AdmissionOutcome("admitted", reserved_amount=amount, snapshot=snapshot)
 
     async def transaction_status(self, xids):
         return dict.fromkeys(xids, "aborted")
@@ -111,7 +111,7 @@ class FakeSharedBackend:
             costs.extend(member.costs)
         for line in costs:
             self.counters[line.user_id] = self.counters.get(line.user_id, Decimal(0)) + (
-                line.cost_usd
+                line.cost_amount
             )
         self.batches.append(batch)
         return result

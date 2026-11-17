@@ -13,6 +13,7 @@ from typing import Any
 
 import asyncpg
 
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.storage.erasure_fence import (
     api_logs_fence_keys,
     insert_api_logs_row,
@@ -53,7 +54,8 @@ _LOG_COLUMNS = """
     tools, upstream_cost_usd,
     num_turns, num_user_turns, num_tool_calls,
     last_user_msg_chars, last_user_msg_entropy, last_user_msg_hash,
-    served_model_id, served_endpoint_id, agent_job_id, batch_job_id
+    served_model_id, served_endpoint_id, agent_job_id, batch_job_id,
+    cost_amount, accounting_currency
 """
 _LOG_VALUES = """
     $1, $2, $3,
@@ -66,7 +68,8 @@ _LOG_VALUES = """
     $26::jsonb, $27,
     $28, $29, $30,
     $31, $32, $33,
-    $34, $35, $36, $37
+    $34, $35, $36, $37,
+    $38, $39
 """
 
 
@@ -246,7 +249,10 @@ class DatabaseLogger:
             request_payload_str = None
 
         # Calculate cost based on usage and pricing
-        cost_usd = calculate_cost(usage, pricing)
+        calculated_cost = calculate_cost(usage, pricing)
+        policy = get_accounting_policy()
+        cost_amount = money_decimal(calculated_cost) if calculated_cost is not None else None
+        cost_usd = policy.to_usd(cost_amount) if cost_amount is not None else None
         # Conversation shape is derived metadata (like token counts), so it is
         # always recorded — independent of full-content storage — letting the
         # admin list query read cheap integer columns instead of the payload.
@@ -336,6 +342,9 @@ class DatabaseLogger:
                     (sanitized_metadata or {}).get("agent_job_id"),
                     # Batch inference attribution (/v1/batches)
                     (sanitized_metadata or {}).get("batch_job_id"),
+                    # Native accounting amount + currency (USD compatibility above)
+                    cost_amount,
+                    policy.currency,
                 ),
             )
         if fenced:

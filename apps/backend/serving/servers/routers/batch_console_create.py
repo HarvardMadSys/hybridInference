@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from serving.accounting_api import native_only
 from serving.batch import admission
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.console_prepare import (
@@ -258,6 +259,11 @@ def _scan_error(exc: Exception) -> HTTPException:
 # -- context -----------------------------------------------------------------------------
 
 
+def _ledger_amount(value: Any) -> str | None:
+    """A native ledger amount as an exact decimal string (None when unknown)."""
+    return None if value is None else str(value)
+
+
 @router.get("/user/batch-create/context")
 async def create_context(
     response: Response,
@@ -285,6 +291,12 @@ async def create_context(
             quota = {
                 "daily_usd": ctx.get("quota_daily_cost_usd"),
                 "spent_today_usd": ctx.get("spent_today_usd"),
+                # On a non-USD ledger, its amounts too, as exact decimal
+                # strings; the ``_usd`` values stay USD equivalents.
+                **native_only(
+                    daily=_ledger_amount(ctx.get("quota_daily_cost")),
+                    spent_today=_ledger_amount(ctx.get("spent_today")),
+                ),
             }
         except Exception:
             logger.info("Batch create context: the key's quota could not be read", exc_info=True)

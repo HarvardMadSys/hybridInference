@@ -38,9 +38,11 @@ from __future__ import annotations
 
 import time
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.utils.logging import get_logger
@@ -91,6 +93,8 @@ class AgentQuotaExceeded(AgentModelAuthError):
         self.quota_usd = quota_usd
         self.spent_usd = spent_usd
         self.window = window
+        # The refusal itself, so the HTTP layer answers with its exact native
+        # amounts on a non-USD ledger rather than re-deriving them from USD.
         self.refusal = refusal or quota.BudgetRefusal("account", window, quota_usd, spent_usd)
 
 
@@ -152,6 +156,9 @@ async def _quota_check(
     in flight and costs not yet written on top of what was read, as the
     direct path's does, and the request's admission reserves against it.
 
+    A non-USD ledger compares the native limits and the native counters, as
+    the direct path does (:func:`serving.quota.first_refusal_amount`).
+
     Raises:
         AgentModelAuthError: If the account has no active key, if the store
             returns more than its one quota row, or if either read fails.
@@ -196,6 +203,8 @@ async def _quota_check(
 
     if context is not None:
         context.update(keys[0])
+    if get_accounting_policy().native:
+        return await _native_quota_check(op_store, user_id, keys[0])
     monthly = keys[0].get("quota_monthly_cost_usd")
     read_at = time.monotonic()
     try:
@@ -228,6 +237,54 @@ async def _quota_check(
         project_spent_month_usd=float(keys[0].get("project_spent_month_usd") or 0.0),
         project_id=keys[0].get("project_id"),
         project_name=keys[0].get("project_name"),
+    )
+
+
+async def _native_quota_check(op_store: Any, user_id: str, key: Mapping[str, Any]) -> SpendCheck:
+    """The account's and its Default project's limits, read in the native ledger.
+
+    The same reads and the same ledger as the USD check, from the native
+    columns and counters as exact decimals (see :class:`SpendCheck`). Reads
+    fail closed exactly like the USD reads: an unmeasurable spend refuses with
+    503 rather than letting the call through unmetered.
+    """
+    monthly = quota.native_limit(key, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
+    read_at = time.monotonic()
+    try:
+        limit_amount, spent_amount = await quota.daily_amounts(op_store, user_id, key)
+        spent_month = (
+            await op_store.get_user_cost_month_amount(user_id)
+            if monthly is not None
+            else Decimal(0)
+        )
+    except Exception as exc:
+        logger.warning(
+            "agent_grant_spend_lookup_failed",
+            exc_info=True,
+            extra={"event": "agent_grant_spend_lookup_failed", "user_id": user_id},
+        )
+        raise AgentModelAuthError(
+            "Spending cannot be measured right now.", status_code=503
+        ) from exc
+    return SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=user_id,
+        key_id=None,
+        read_at=read_at,
+        account_quota_usd=limit_amount,
+        account_spent_usd=spent_amount,
+        account_quota_monthly_usd=monthly,
+        account_spent_month_usd=money_decimal(spent_month),
+        project_budget_daily_usd=quota.native_limit(
+            key, "project_budget_daily_amount", "project_budget_daily_usd"
+        ),
+        project_budget_monthly_usd=quota.native_limit(
+            key, "project_budget_monthly_amount", "project_budget_monthly_usd"
+        ),
+        project_spent_today_usd=money_decimal(key.get("project_spent_today_amount") or 0),
+        project_spent_month_usd=money_decimal(key.get("project_spent_month_amount") or 0),
+        project_id=key.get("project_id"),
+        project_name=key.get("project_name"),
     )
 
 

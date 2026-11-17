@@ -37,6 +37,7 @@ from routing.prefill_load import (
     priority_for_prefill,
     prompt_anchor,
 )
+from serving.accounting import Money, get_accounting_policy
 from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
@@ -1072,7 +1073,7 @@ def _schedule_messages_cost_increment(
     pricing: dict[str, str] | None,
     *,
     api_key_id: int | None = None,
-) -> None:
+) -> Money | None:
     """Record the daily quota cost of a billed request in the spend ledger.
 
     The ``/v1/messages`` surface logs ``api_logs.cost_usd`` but that column is
@@ -1088,16 +1089,24 @@ def _schedule_messages_cost_increment(
     increment reuses the exact same ``calculate_cost`` inputs and stays in
     lockstep with the logged ``cost_usd``. No-ops for unauthenticated callers,
     missing stores, or zero-cost (free) models.
+
+    Returns the native charge actually billed (or the computed charge when no
+    counter could be bumped), or ``None`` when pricing is unknown. The caller
+    reports the USD equivalent of exactly this value to the batch observer.
     """
-    if op_store is None or not user_id:
-        return
+    if not pricing:
+        return None
     cost = calculate_cost(usage, pricing)
+    if op_store is None or not user_id:
+        return cost
     if not cost or cost <= 0:
-        return
+        return cost
+    # In the ledger currency, as priced (``effective_pricing``).
     task = ledger_for(op_store).record(user_id, cost, api_key_id=api_key_id)
     if task is not None:
         _cost_increment_tasks.add(task)
         task.add_done_callback(_cost_increment_tasks.discard)
+    return cost
 
 
 def _schedule_log_store_task(
@@ -1234,13 +1243,16 @@ def _schedule_log_store_task(
     # verify_api_key enforces; error rows (status != 200) are logged but never
     # billed, matching the chat/embedding paths.
     if charge if charge is not None else status_code == 200:
-        _schedule_messages_cost_increment(
+        charged = _schedule_messages_cost_increment(
             op_store, user_id, usage_for_cost, pricing, api_key_id=metadata.get("api_key_id")
         )
-        # What this request is charged, for a batch attempt watching it; the
-        # same inputs as the increment above. Unpriced reads as unknown.
+        # What this request is charged, for a batch attempt watching it. The
+        # increment above is native; the observer contract is USD, so report the
+        # USD equivalent of that same charge through the accounting policy.
+        # Unknown pricing (no pricing dict) stays unknown; a legitimately zero
+        # charge stays zero.
         observe_billing(
-            cost_usd=calculate_cost(usage_for_cost, pricing) if pricing else None,
+            cost_usd=(get_accounting_policy().usd_value(charged) if charged is not None else None),
             usage=usage_for_cost,
             request_id=request_id,
         )
@@ -3343,6 +3355,18 @@ def _count_request_tokens(body: dict[str, Any]) -> int:
     )
 
 
+def _ledger_value(user_ctx: dict[str, Any], name: str) -> Any:
+    """The caller's *name* (``quota_daily_cost``, ``spent_today``) in the ledger.
+
+    A native ledger's gate puts the exact native amount in the context; a USD
+    ledger reads the ``*_usd`` value as it always has.
+    """
+    policy = get_accounting_policy()
+    if policy.native and user_ctx.get(name) is not None:
+        return policy.number(user_ctx[name])
+    return policy.in_ledger(user_ctx.get(f"{name}_usd") or 0.0)
+
+
 @router.get("/anthropic/user/balance")
 async def anthropic_user_balance(
     user_ctx: dict = Depends(verify_api_key_for_balance),
@@ -3350,7 +3374,7 @@ async def anthropic_user_balance(
     """Return the caller's remaining daily quota as an Anthropic-surface balance check.
 
     This gateway has no persistent prepaid balance -- quota is a per-user
-    daily USD allowance that resets at UTC midnight. This endpoint exists for
+    daily allowance in the ledger currency that resets at UTC midnight. This endpoint exists for
     Anthropic-compatible clients that, when pointed at a custom
     ``ANTHROPIC_BASE_URL``, probe a conventional ``/user/balance`` path (as
     popularized by DeepSeek's API) for a status display. Deliberately uses
@@ -3358,12 +3382,19 @@ async def anthropic_user_balance(
     that checking a near-zero balance never itself fails with a quota-exceeded
     error.
     """
+    policy = get_accounting_policy()
+    # A native ledger adds its own amounts, exact, beside the USD ones; a USD
+    # ledger answers exactly as it always has.
     if not user_ctx.get("authenticated"):
         # Auth disabled -- no per-user quota is tracked or enforced.
+        native = (
+            {"balance": None, "daily_limit": None, "spent_today": None} if policy.native else {}
+        )
         return JSONResponse(
             content={
                 "is_available": True,
-                "currency": "USD",
+                "currency": policy.currency,
+                **native,
                 "balance_usd": None,
                 "daily_limit_usd": None,
                 "spent_today_usd": None,
@@ -3371,18 +3402,32 @@ async def anthropic_user_balance(
             }
         )
 
-    daily_limit = float(user_ctx.get("quota_daily_cost_usd") or 0.0)
-    spent_today = float(user_ctx.get("spent_today_usd") or 0.0)
-    # Round before comparing so is_available can't say True while balance_usd
+    daily_limit = _ledger_value(user_ctx, "quota_daily_cost")
+    spent_today = _ledger_value(user_ctx, "spent_today")
+    unrounded = max(policy.zero, daily_limit - spent_today)
+    # Round before comparing so is_available can't say True while the balance
     # displays as 0.0 (e.g. a remainder of 0.00001 rounds down to 0.0).
-    remaining = round(max(0.0, daily_limit - spent_today), 4)
+    remaining = round(unrounded, 4)
+    native = (
+        {
+            # Exact decimal strings: a native ledger keeps sub-cent amounts.
+            "balance": str(unrounded),
+            "daily_limit": str(daily_limit),
+            "spent_today": str(spent_today),
+        }
+        if policy.native
+        else {}
+    )
     return JSONResponse(
         content={
-            "is_available": remaining > 0,
-            "currency": "USD",
-            "balance_usd": remaining,
-            "daily_limit_usd": round(daily_limit, 4),
-            "spent_today_usd": round(spent_today, 4),
+            # A native ledger shows its balance exactly, so whatever is left of
+            # it is available even where the USD alias rounds to zero.
+            "is_available": (unrounded if policy.native else remaining) > 0,
+            "currency": policy.currency,
+            **native,
+            "balance_usd": round(policy.usd_value(unrounded), 4) if policy.native else remaining,
+            "daily_limit_usd": round(policy.usd_value(daily_limit), 4),
+            "spent_today_usd": round(policy.usd_value(spent_today), 4),
             "reset_at": _next_utc_midnight().isoformat(),
         }
     )

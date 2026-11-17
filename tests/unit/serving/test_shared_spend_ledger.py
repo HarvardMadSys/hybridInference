@@ -12,7 +12,7 @@ import pytest
 
 from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
 from serving.shared_spend.ledger import SharedSpendLedger
-from serving.shared_spend.store import CostLine, Member, SettlementBatch, usd
+from serving.shared_spend.store import CostLine, Member, SettlementBatch, quantized_amount
 from serving.spend_ledger import SpendCheck, SpendLedger, ledger_for, utc_day
 from serving.utils import context as req_ctx
 from tests.fixtures.shared_spend import FakeSharedBackend
@@ -288,7 +288,7 @@ async def test_a_defect_while_building_a_batch_loses_nothing_it_had_taken(monkey
     assert ledger.fully_settled()
     (batch,) = backend.batches
     assert [m.reservation_id for m in batch.members] == [reservation.reservation_id]
-    assert sum(line.cost_usd for line in batch.increments) == Decimal("0.05")
+    assert sum(line.cost_amount for line in batch.increments) == Decimal("0.05")
 
 
 async def test_an_admission_whose_connection_failed_is_tried_again_and_admitted():
@@ -651,7 +651,7 @@ async def test_a_mark_that_cannot_be_made_does_not_hold_up_the_ones_behind_it(mo
 
 
 def test_a_batch_names_each_reservation_once_with_its_own_costs():
-    line = CostLine(USER, utc_day(), None, usd(0.1))
+    line = CostLine(USER, utc_day(), None, quantized_amount(0.1))
     member = Member("sr_1", USER, "settle", costs=(line,))
     assert SettlementBatch.make("i", [member], []).inconsistency() is None
     assert "more than once" in SettlementBatch.make("i", [member, member], []).inconsistency()
@@ -725,7 +725,11 @@ async def test_a_handoff_sees_a_request_charged_nothing_as_settled():
     assert await ledger.flush(5)
 
     report = ledger.handoff_report()
-    assert (report["finished"], report["confirmed"], report["unconfirmed_usd"]) == (True, True, 0)
+    assert (report["finished"], report["confirmed"], report["unconfirmed_amount"]) == (
+        True,
+        True,
+        0,
+    )
 
 
 async def test_a_handoff_sees_a_quarantined_reservation_as_unconfirmed():
@@ -740,7 +744,7 @@ async def test_a_handoff_sees_a_quarantined_reservation_as_unconfirmed():
 
     report = ledger.handoff_report()
     assert (report["finished"], report["confirmed"]) == (True, False)
-    assert (report["unconfirmed_reservations"], report["unconfirmed_usd"]) == (1, 0.5)
+    assert (report["unconfirmed_reservations"], report["unconfirmed_amount"]) == (1, 0.5)
 
 
 @pytest.mark.parametrize(
