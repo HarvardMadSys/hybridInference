@@ -86,6 +86,58 @@ def static_limits_provider(limits: dict[str, int]) -> LimitsProvider:
     return _provider
 
 
+async def get_user_concurrency_for_role(
+    role: str,
+    runtime_settings: Any | None,
+    *,
+    is_admin: bool = False,
+) -> int:
+    """Return the per-user concurrency cap for ``role``.
+
+    Reads the ``user_concurrency_<role>`` runtime setting if registered.
+    Falls back to ``_FALLBACK_LIMITS`` when runtime settings are unavailable or
+    the role has no registered setting. An unknown role degrades to the
+    ``free`` fallback.
+
+    Mirrors ``UserConcurrencyLimiter._limit_for``: when ``is_admin`` is true,
+    the admin cap is used regardless of ``role`` so callers report what the
+    limiter actually enforces.
+    """
+    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+
+    role_key = "admin" if is_admin else (role or "free").lower()
+    setting_key = f"user_concurrency_{role_key}"
+
+    if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
+        return await runtime_settings.get_int(setting_key)
+
+    if role_key not in _FALLBACK_LIMITS:
+        logger.warning(
+            "No concurrency runtime setting for role %r — falling back to free-tier cap",
+            role,
+        )
+    return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
+
+
+async def effective_user_concurrency(
+    user: dict[str, Any],
+    runtime_settings: Any | None,
+) -> int:
+    """Return the cap ``UserConcurrencyLimiter`` enforces for this account.
+
+    An explicit per-account override wins over the role cap. ``0`` means
+    unlimited.
+    """
+    override = user.get("max_concurrent_requests")
+    if override is not None:
+        return int(override)
+    return await get_user_concurrency_for_role(
+        user.get("role") or "free",
+        runtime_settings,
+        is_admin=bool(user.get("is_admin", False)),
+    )
+
+
 @dataclass
 class _UserSlot:
     """Tiny counter for one user's in-flight requests.

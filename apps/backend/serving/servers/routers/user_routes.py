@@ -65,6 +65,7 @@ from serving.servers.auth import (
     hash_api_key,
     log_admin_action,
 )
+from serving.servers.concurrency import get_user_concurrency_for_role
 from serving.servers.deps import (
     get_current_user,
     get_db_logger,
@@ -343,40 +344,6 @@ async def get_default_daily_quota_for_role(
             role,
         )
     return Decimal(str(get_settings().signup_default_daily_quota_usd))
-
-
-async def get_user_concurrency_for_role(
-    role: str,
-    runtime_settings: "RuntimeSettings | None",
-    *,
-    is_admin: bool = False,
-) -> int:
-    """Return the per-user concurrency cap for ``role``.
-
-    Reads the ``user_concurrency_<role>`` runtime setting if registered.
-    Falls back to ``_FALLBACK_LIMITS`` from ``serving.servers.concurrency``
-    when runtime settings are unavailable or the role has no registered
-    setting. An unknown role degrades to the ``free`` fallback.
-
-    Mirrors ``UserConcurrencyLimiter._limit_for``: when ``is_admin`` is
-    true, the admin cap is used regardless of ``role`` so the dashboard
-    matches what the limiter actually enforces.
-    """
-    from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
-    from serving.servers.concurrency import _FALLBACK_LIMITS
-
-    role_key = "admin" if is_admin else (role or "free").lower()
-    setting_key = f"user_concurrency_{role_key}"
-
-    if runtime_settings is not None and setting_key in RUNTIME_SETTINGS_REGISTRY:
-        return await runtime_settings.get_int(setting_key)
-
-    if role_key not in _FALLBACK_LIMITS:
-        logger.warning(
-            "No concurrency runtime setting for role %r — falling back to free-tier cap",
-            role,
-        )
-    return _FALLBACK_LIMITS.get(role_key, _FALLBACK_LIMITS["free"])
 
 
 def mask_key_prefix(key_prefix: str) -> str:
