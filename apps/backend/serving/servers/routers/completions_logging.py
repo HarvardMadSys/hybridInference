@@ -13,7 +13,9 @@ The DB log payload (kwargs to ``LogStore.log_request``) is preserved
 byte-for-byte — admin/recent-requests UI, billing reports, and the Slack
 alert rules from PR #372 all read these rows and must keep working — except
 that a refused request's large fields are stored as a bounded summary (see
-``CompletionsLogger.schedule_log``).
+``CompletionsLogger.schedule_log``), and that in the shared spend accounting
+mode the row's metadata names the reservation the request ran under and what
+was charged to it (``_with_spend_reservation``).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
 from serving.storage.bounded_log import bound_log_payload
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +54,42 @@ _LOG_DROP_WARN_EVERY = 100
 # This adds at most one time-based warning per interval; the first-drop and
 # every-100th warnings still fire independently.
 _LOG_DROP_WARN_INTERVAL_S = 60.0
+
+
+def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
+    """*log_data*, its metadata naming the request's shared spend reservation and its charge.
+
+    Only in the shared accounting mode, where the request's context holds its
+    reservation (``req_ctx.SPEND_RESERVATION``). Called as the row is written,
+    in the row's own context, it adds ``spend_reservation`` (the reservation's
+    id), ``spend_charged_usd`` (what the billing points have recorded under
+    that reservation by now, which is what its settlement will add to the
+    counters) and ``spend_charged_days`` (that amount by the UTC day each part
+    was recorded on, which is the day its settlement will count it on). Should
+    the process die before that settlement, an operator's reconciliation
+    charges the reservation this amount, on those days, instead of giving it
+    back whole (:mod:`serving.shared_spend.reconcile`). The row is written
+    after the charge is recorded -- on the next day, for a charge recorded
+    just before midnight -- so the row's own date is not the charge's.
+
+    It is the ledger's own record, not the row's ``cost_usd``: a failed
+    request's row can carry a cost its billing point never charged. Nothing
+    else reads either field.
+    """
+    reservation = (req_ctx.get() or {}).get(req_ctx.SPEND_RESERVATION)
+    reservation_id = getattr(reservation, "reservation_id", None)
+    if not isinstance(reservation_id, str):
+        return log_data
+    metadata = {
+        **(log_data.get("metadata") or {}),
+        "spend_reservation": reservation_id,
+        "spend_charged_usd": str(reservation.cost()),
+        "spend_charged_days": [
+            {"day": day, "usd": str(cost), "requests": requests}
+            for day, cost, requests in reservation.charged_by_day()
+        ],
+    }
+    return {**log_data, "metadata": metadata}
 
 
 class _Lifecycle(enum.Enum):
@@ -307,7 +346,9 @@ class CompletionsLogger:
 
     async def _log_to_db(self, request_id: str, log_data: dict[str, Any]) -> None:
         try:
-            await self._log_store.log_request(**log_data)
+            # In the row's own context (see _drain_loop): the request's
+            # reservation, and what was charged to it by now.
+            await self._log_store.log_request(**_with_spend_reservation(log_data))
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as exc:
             logger.error(

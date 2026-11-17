@@ -211,12 +211,13 @@ async def _reserve_playground_spend(
         spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
         read_at=read_at,
     )
-    return _admit_spend(
+    return await _admit_spend(
         request,
         user,
         model=model,
         router=router,
         embedding_adapters=embedding_adapters,
+        operation="playground",
     )
 
 

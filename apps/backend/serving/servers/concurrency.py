@@ -209,8 +209,10 @@ from starlette.requests import ClientDisconnect
 from serving import quota
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
 from serving.pricing import effective_pricing
+from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import Reservation, spend_check_of
 from serving.surfaces.context import InteractiveAdmission
+from serving.utils import context as req_ctx
 
 from .auth import _quota_exceeded, verify_api_key
 from .deps import (
@@ -224,13 +226,14 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
 
 
-def _admit_spend(
+async def _admit_spend(
     request: Request,
     user: dict[str, Any],
     *,
     model: str | None = None,
     router: Any = None,
     embedding_adapters: dict[str, Any] | None = None,
+    operation: str = "request",
 ) -> Reservation | None:
     """Reserve the request's estimated cost against the check its gate made.
 
@@ -243,13 +246,30 @@ def _admit_spend(
     up to what the caller's limits have left. ``None`` for a caller with no
     check (auth disabled, or a gate that a test replaced): nothing to reserve
     against.
+
+    In the shared accounting mode the reservation is made in the database
+    (:meth:`~serving.spend_ledger.SpendCheck.reserve`) and published in the
+    request context (``req_ctx.SPEND_RESERVATION``), where the costs the
+    request records find it; a database that cannot answer in time raises the
+    request path's 503 (:class:`~serving.storage.pools.DatabaseBusyError`).
+    In either mode whoever takes the reservation releases it when the request
+    ends, however it ends: what the request is charged is what its billing
+    point recorded by then.
     """
     check = spend_check_of(user)
     if check is None:
         return None
-    reservation, refusal = check.admit(
-        _reserved_cost(request, model, router=router, embedding_adapters=embedding_adapters)
-    )
+    try:
+        reservation, refusal = await check.reserve(
+            _reserved_cost(request, model, router=router, embedding_adapters=embedding_adapters),
+            operation=operation,
+        )
+    except AccountErased:
+        raise HTTPException(
+            status_code=401, detail="This account is no longer available."
+        ) from None
+    if reservation is not None and getattr(reservation, "charge", None) is not None:
+        req_ctx.update({req_ctx.SPEND_RESERVATION: reservation})
     if refusal is not None:
         raise _quota_exceeded(
             request,
@@ -609,7 +629,7 @@ async def enforce_user_concurrency(
         # remains visible to the batch worker, including a later auto retarget;
         # so is the cost reservation.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        reservation = _admit_spend(
+        reservation = await _admit_spend(
             request, user, model=model, router=router, embedding_adapters=embedding_adapters
         )
         try:
@@ -700,7 +720,7 @@ async def enforce_user_concurrency(
                 request, router=router, embedding_adapters=embedding_adapters
             )
         # After the body is read: what is reserved is estimated from it.
-        reservation = _admit_spend(
+        reservation = await _admit_spend(
             request, user, model=model, router=router, embedding_adapters=embedding_adapters
         )
         with _track_interactive_request(canonical) as tracker:

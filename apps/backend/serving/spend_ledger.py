@@ -33,7 +33,10 @@ limit by much more than one of them costs.
 
 Everything here is per process. With several worker processes each one sees
 only its own requests in flight and its own costs not yet written, so a limit
-is protected within each process, not across them; production runs one.
+is protected within each process, not across them; production runs one. The
+shared mode (:mod:`serving.shared_spend`, off unless an operator activates it)
+keeps the same policy with its reservations in PostgreSQL, for every process
+alike; :func:`ledger_for` hands out its ledger when the process runs in it.
 """
 
 from __future__ import annotations
@@ -195,7 +198,8 @@ class SpendCheck:
     None where the key has none (or the request is not the key's).
     """
 
-    ledger: SpendLedger | None
+    #: The per-process :class:`SpendLedger`, the shared ledger, or None (no store).
+    ledger: Any
     user_id: str
     key_id: int | None
     read_at: float
@@ -229,10 +233,53 @@ class SpendCheck:
         """Check again and reserve up to *amount*, in one step; see :meth:`SpendLedger.admit`.
 
         Without a ledger (no store) there is nothing to reserve in: only checked.
+        The per-process ledger only; the shared one admits with :meth:`reserve`.
         """
         if self.ledger is None:
             return None, self.refusal()
+        if getattr(self.ledger, "shared", False):
+            raise RuntimeError("a shared spend ledger admits asynchronously: use reserve()")
         return self.ledger.admit(self, amount)
+
+    async def reserve(
+        self, amount: float = quota.ESTIMATED_REQUEST_COST_USD, *, operation: str = "request"
+    ) -> tuple[Any, quota.BudgetRefusal | None]:
+        """Admit against this check in whichever mode the process runs.
+
+        The per-process ledger admits as :meth:`admit` does, without suspending.
+        The shared ledger (:meth:`serving.shared_spend.ledger.SharedSpendLedger.admit`)
+        reserves in the database, and raises a
+        :class:`~serving.storage.pools.DatabaseBusyError` when it cannot in time.
+        *operation* names what is admitted (``request``, ``batch``,
+        ``playground``), recorded with a shared reservation.
+        """
+        if self.ledger is not None and getattr(self.ledger, "shared", False):
+            return await self.ledger.admit(self, amount, operation=operation)
+        return self.admit(amount)
+
+
+def decide_admission(
+    check: SpendCheck,
+    amount: float,
+    extra: tuple[float, float, float, float],
+    project_extra: tuple[float, float] = (0.0, 0.0),
+) -> tuple[float | None, quota.BudgetRefusal | None]:
+    """The admission policy: refuse, or what to reserve, given *extra* on top of *check*.
+
+    Refused only when not even the flat minimum
+    (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits; otherwise *amount*,
+    but no more than the tightest limit has left and never less than that
+    minimum. Both ledgers apply exactly this.
+    """
+    refusal = _refusal(check, extra, project_extra)
+    if refusal is not None:
+        return None, refusal
+    if amount > quota.ESTIMATED_REQUEST_COST_USD:
+        amount = max(
+            quota.ESTIMATED_REQUEST_COST_USD,
+            min(amount, _headroom(check, extra, project_extra)),
+        )
+    return amount, None
 
 
 def _refusal(
@@ -364,14 +411,10 @@ class SpendLedger:
             if check.project_id
             else (0.0, 0.0)
         )
-        refusal = _refusal(check, extra, project_extra)
-        if refusal is not None:
+        decided, refusal = decide_admission(check, amount, extra, project_extra)
+        if refusal is not None or decided is None:
             return None, refusal
-        if amount > quota.ESTIMATED_REQUEST_COST_USD:
-            amount = max(
-                quota.ESTIMATED_REQUEST_COST_USD,
-                min(amount, _headroom(check, extra, project_extra)),
-            )
+        amount = decided
         reservation = Reservation(self, check.user_id, check.key_id, amount, check.project_id)
         if check.project_id is not None:
             _add_reserved(self._reserved_projects, check.project_id, amount)
@@ -453,32 +496,7 @@ class SpendLedger:
         """
         if not user_id or not cost_usd > 0:
             return None
-        if cost_usd > MAX_REQUEST_COST_USD:
-            logger.error(
-                "A request's cost is beyond any real request's; recording the ceiling",
-                extra={
-                    "event": "cost_above_request_ceiling",
-                    "user_id": user_id,
-                    "api_key_id": api_key_id,
-                    "cost_usd": repr(cost_usd),
-                    "ceiling_usd": MAX_REQUEST_COST_USD,
-                },
-            )
-            context = {
-                "cost_usd": repr(cost_usd),
-                "ceiling_usd": MAX_REQUEST_COST_USD,
-                "logs": "event cost_above_request_ceiling names the account",
-            }
-            _send_alert(
-                lambda alerts: alerts.alert_slack(
-                    alerts.AlertSeverity.ERROR,
-                    "Request cost above the per-request ceiling",
-                    context,
-                    dedupe_key="cost_above_request_ceiling",
-                    cooldown_sec=3600,
-                )
-            )
-            cost_usd = MAX_REQUEST_COST_USD
+        cost_usd = capped_cost(user_id, cost_usd, api_key_id=api_key_id)
         day = utc_day()
         context = req_ctx.get() or {}
         project_id = context.get(req_ctx.PROJECT_ID) or None
@@ -704,6 +722,37 @@ class SpendLedger:
         return sum(a.cost for a in amounts), sum(a.requests for a in amounts)
 
 
+def capped_cost(user_id: str, cost_usd: float, *, api_key_id: int | None = None) -> float:
+    """*cost_usd*, or :data:`MAX_REQUEST_COST_USD` when beyond it -- logged and alerted."""
+    if cost_usd <= MAX_REQUEST_COST_USD:
+        return cost_usd
+    logger.error(
+        "A request's cost is beyond any real request's; recording the ceiling",
+        extra={
+            "event": "cost_above_request_ceiling",
+            "user_id": user_id,
+            "api_key_id": api_key_id,
+            "cost_usd": repr(cost_usd),
+            "ceiling_usd": MAX_REQUEST_COST_USD,
+        },
+    )
+    context = {
+        "cost_usd": repr(cost_usd),
+        "ceiling_usd": MAX_REQUEST_COST_USD,
+        "logs": "event cost_above_request_ceiling names the account",
+    }
+    _send_alert(
+        lambda alerts: alerts.alert_slack(
+            alerts.AlertSeverity.ERROR,
+            "Request cost above the per-request ceiling",
+            context,
+            dedupe_key="cost_above_request_ceiling",
+            cooldown_sec=3600,
+        )
+    )
+    return MAX_REQUEST_COST_USD
+
+
 def _add_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> None:
     entry = table.get(who)
     if entry is None:
@@ -877,10 +926,24 @@ _LEDGERS: weakref.WeakKeyDictionary[Any, SpendLedger] = weakref.WeakKeyDictionar
 _PINNED: dict[int, tuple[Any, SpendLedger]] = {}
 
 
-def ledger_for(store: Any) -> SpendLedger | None:
-    """The ledger of operational store *store*, made on first use; None without a store."""
+def ledger_for(store: Any) -> Any:
+    """The ledger of operational store *store*, made on first use; None without a store.
+
+    The per-process :class:`SpendLedger`, or -- in a process that runs the
+    shared mode (:mod:`serving.shared_spend.mode`) on a store that supports it
+    -- its :class:`~serving.shared_spend.ledger.SharedSpendLedger`, which
+    records and checks alike.
+    """
     if store is None:
         return None
+    from serving.shared_spend import mode as spend_mode
+
+    if spend_mode.is_shared():
+        # Fails closed on a store that cannot keep it: never the per-process
+        # ledger behind a shared mode's back.
+        from serving.shared_spend import ledger as shared_ledger
+
+        return shared_ledger.ledger_for(store)
     try:
         ledger = _LEDGERS.get(store)
         if ledger is None:
@@ -896,9 +959,17 @@ def ledger_for(store: Any) -> SpendLedger | None:
 async def flush_all(timeout: float = 10.0) -> None:
     """Write every store's recorded costs before shutdown; report what could not be.
 
-    Called by the application's shutdown while the stores can still write.
+    Called by the application's shutdown while the stores can still write. A
+    shared ledger that sent everything then records that this process will
+    send nothing more (:meth:`serving.shared_spend.ledger.SharedSpendLedger.close`).
     """
-    ledgers = [*_LEDGERS.values(), *(ledger for _, ledger in _PINNED.values())]
+    from serving.shared_spend import ledger as shared_ledger
+
+    ledgers = [
+        *_LEDGERS.values(),
+        *(ledger for _, ledger in _PINNED.values()),
+        *shared_ledger.all_ledgers(),
+    ]
     for ledger in ledgers:
         with contextlib.suppress(Exception):
             await ledger.flush(timeout)
@@ -911,4 +982,26 @@ async def flush_all(timeout: float = 10.0) -> None:
                     "cost_usd": round(cost, 6),
                     "requests": requests,
                 },
+            )
+        holdings = getattr(ledger, "holdings", None)
+        held = holdings() if holdings is not None else {}
+        if any(held.values()):
+            # Shared reservations this process could not settle stay counted in
+            # the database, for an operator (python -m serving.shared_spend).
+            logger.error(
+                "Shutting down with shared spend reservations not settled",
+                extra={
+                    "event": "spend_reservations_unsettled_at_shutdown",
+                    "held": held,
+                    "amount_usd": round(cost, 6),
+                },
+            )
+        close = getattr(ledger, "close", None)
+        if close is not None and not await close():
+            # Not recorded as closed: its settlement receipts are kept, and
+            # what it still holds stays counted, until an operator says this
+            # process is gone (python -m serving.shared_spend reconcile).
+            logger.error(
+                "Shutting down without recording this process's spend closure",
+                extra={"event": "spend_instance_not_closed"},
             )
