@@ -49,6 +49,9 @@ ORIGIN_HEADERS: frozenset[str] = frozenset(
         "x-route-pin",
         # The synthetic-probe marker, honoured only for a trusted caller.
         "x-probe",
+        # Per-call intent for served-identity headers; authorization remains
+        # derived from the server-side caller context.
+        "x-fi-served-identity",
     }
 )
 

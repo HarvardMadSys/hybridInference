@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
 from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
@@ -33,6 +33,10 @@ from serving.servers.deps import (
 )
 from serving.servers.model_availability import model_not_found_detail
 from serving.servers.request_body import json_body_after, json_body_schema
+from serving.servers.routers.served_identity import (
+    served_identity_headers,
+    should_include_served_identity_headers,
+)
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import ledger_for
 from serving.storage.utils import calculate_cost
@@ -157,6 +161,7 @@ _embeddings_body = json_body_after(verify_api_key, EmbeddingRequest)
 )
 async def create_embeddings(
     http_request: Request,
+    http_response: Response,
     authorization: str | None = Header(None),
     user_ctx: dict = Depends(verify_api_key),
     embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
@@ -189,7 +194,7 @@ async def create_embeddings(
         raw_body: Any = await http_request.json()
     except Exception:  # pragma: no cover - validation would have rejected it
         raw_body = None
-    return await execute_embeddings(
+    response, identity_headers = await _execute_embeddings(
         request,
         raw_body,
         ExecutionContext(
@@ -209,6 +214,8 @@ async def create_embeddings(
             runtime_settings=runtime_settings,
         ),
     )
+    http_response.headers.update(identity_headers)
+    return response
 
 
 async def execute_embeddings(
@@ -217,6 +224,21 @@ async def execute_embeddings(
     ctx: ExecutionContext,
     services: EmbeddingServices,
 ) -> dict[str, Any]:
+    """Execute an embedding request and return only its API payload.
+
+    This is the shared entry point used by batch execution; HTTP metadata is
+    attached by the route handler, outside the execution boundary.
+    """
+    response, _identity_headers = await _execute_embeddings(request, raw_body, ctx, services)
+    return response
+
+
+async def _execute_embeddings(
+    request: EmbeddingRequest,
+    raw_body: Any,
+    ctx: ExecutionContext,
+    services: EmbeddingServices,
+) -> tuple[dict[str, Any], dict[str, str]]:
     """Serve one embeddings request, online or as a batch item.
 
     Holds the request to the model's access gate, dispatches it to the model's
@@ -461,6 +483,18 @@ async def execute_embeddings(
             provider = getattr(serving_cfg, "provider", None) or provider
             endpoint_id = endpoint_id_for_config(serving_cfg) or endpoint_id
             pricing = effective_pricing(serving_cfg)
+            adapter_config = serving_cfg
+        identity_headers: dict[str, str] = {}
+        if should_include_served_identity_headers(ctx.origin.headers, user_ctx):
+            identity_headers = served_identity_headers(
+                requested_model=model,
+                served_model=getattr(adapter_config, "id", None) or model,
+                endpoint_id=endpoint_id,
+                provider=provider,
+                endpoint_publishable=bool(
+                    getattr(adapter_config, "endpoint_identity_publishable", False)
+                ),
+            )
         # Validate against the response schema *before* recording any success
         # side effects. ``response_model=EmbeddingResponse`` is only enforced
         # after the handler returns, so a malformed (but non-raising) upstream
@@ -512,7 +546,7 @@ async def execute_embeddings(
             usage=usage,
             request_id=request_id,
         )
-        return response
+        return response, identity_headers
     except HTTPException:
         raise
     except UpstreamModelQueued as exc:

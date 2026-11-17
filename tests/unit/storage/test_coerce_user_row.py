@@ -1,4 +1,4 @@
-"""Regression tests for _coerce_user_row — JSONB preferences decoding.
+"""Regression tests for JSONB decoding in the auth row projection.
 
 asyncpg returns JSONB columns as raw JSON strings when no type codec is
 registered. Without coercion, get_disabled_models_from_preferences receives
@@ -62,3 +62,14 @@ def test_coerce_user_row_does_not_mutate_original():
     _coerce_user_row(row)
     # original dict must be untouched
     assert row["preferences"] == prefs_str
+
+
+def test_coerce_user_row_decodes_key_metadata_jsonb():
+    metadata = {"diagnostic_entitlements": ["served_identity"]}
+    result = _coerce_user_row({"key_metadata": json.dumps(metadata)})
+    assert result["key_metadata"] == metadata
+
+
+def test_coerce_user_row_rejects_malformed_or_non_object_key_metadata():
+    for metadata in ("not-json", json.dumps(["served_identity"]), None, 7):
+        assert _coerce_user_row({"key_metadata": metadata})["key_metadata"] is None

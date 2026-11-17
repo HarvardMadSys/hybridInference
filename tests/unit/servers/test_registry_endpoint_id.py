@@ -6,7 +6,13 @@ import pytest
 
 from routing.routers import FixedRouter
 from routing.routewise.router import ProviderType, RouteWiseRouter
-from serving.servers.registry import _make_adapter, _make_provider_id, register_from_models_yaml
+from serving.servers.registry import (
+    _build_adapter,
+    _endpoint_identity_publishable,
+    _make_adapter,
+    _make_provider_id,
+    register_from_models_yaml,
+)
 
 # ---------------------------------------------------------------------------
 # Local endpoints — must include port to avoid collisions
@@ -36,6 +42,11 @@ def test_local_without_port_fallback() -> None:
     assert _make_provider_id("m", "sglang", "http://localhost") == "m:local"
 
 
+@pytest.mark.parametrize("kind", ["openai_compat", "staging", "vllm", "sglang", "kimi"])
+def test_generic_route_identity_is_not_publishable(kind: str) -> None:
+    assert _endpoint_identity_publishable(kind) is False
+
+
 # ---------------------------------------------------------------------------
 # Remote endpoints — unchanged behavior
 # ---------------------------------------------------------------------------
@@ -44,6 +55,32 @@ def test_local_without_port_fallback() -> None:
 def test_zai_api() -> None:
 
     assert _make_provider_id("glm-4.6", "zai", "https://api.z.ai/v4/") == "glm-4.6:zai-api"
+
+
+def test_yaml_registration_retains_publishability_metadata(tmp_path) -> None:
+    path = tmp_path / "models.yaml"
+    private_host = "gpu" + "7" + ".cluster." + "internal"
+    path.write_text(
+        f"""
+models:
+  - id: generic-model
+    name: Generic
+    provider: openai_compat
+    base_url: http://{private_host}:8000/v1
+  - id: direct-model
+    name: Direct
+    provider: zai
+    base_url: https://api.z.ai/v4/
+"""
+    )
+    fixed = FixedRouter()
+    register_from_models_yaml(fixed, path)
+
+    generic = fixed.routes["generic-model"].adapters[0][0].config
+    direct = fixed.routes["direct-model"].adapters[0][0].config
+    assert generic.endpoint_id == f"generic-model:{private_host.split('.')[0]}-api"
+    assert generic.endpoint_identity_publishable is False
+    assert direct.endpoint_identity_publishable is True
 
 
 def test_chutes_api() -> None:
@@ -96,6 +133,81 @@ def test_minimax_routes_request_stream_usage() -> None:
 
     assert adapter.config.include_usage_in_stream is True
     assert adapter.config.provider_profile == "minimax"
+
+
+@pytest.mark.parametrize("provider_profile", [None, "custom"])
+def test_vllm_structured_outputs_default_is_independent_of_provider_profile(provider_profile):
+    cfg = {
+        "id": "local-model",
+        "name": "Local model",
+        "provider": "vllm",
+        "base_url": "http://localhost:8000/v1",
+    }
+    if provider_profile is not None:
+        cfg["provider_profile"] = provider_profile
+
+    adapter = _make_adapter("vllm", cfg)
+
+    assert adapter.config.vllm_structured_outputs is True
+
+
+def test_dedicated_adapter_profile_defaults_are_preserved():
+    zai = _make_adapter(
+        "zai",
+        {"id": "glm", "name": "GLM", "provider": "zai", "base_url": "https://api.z.ai/v4"},
+    )
+    openrouter = _make_adapter(
+        "openrouter",
+        {
+            "id": "routed-model",
+            "name": "Routed model",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+        },
+    )
+
+    assert zai.config.provider_profile == "zai"
+    assert zai.config.chat_path == "/chat/completions"
+    assert openrouter.config.provider_profile == "openrouter"
+
+
+def test_zai_chat_path_is_preserved_when_provider_profile_is_supplied():
+    adapter = _make_adapter(
+        "zai",
+        {
+            "id": "glm",
+            "name": "GLM",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/v4",
+            "provider_profile": "existing-profile",
+        },
+    )
+
+    assert adapter.config.provider_profile == "existing-profile"
+    assert adapter.config.chat_path == "/chat/completions"
+
+
+def test_registered_adapter_factory_takes_precedence(monkeypatch):
+    from serving.servers import registry
+
+    expected = object()
+    calls = []
+
+    def factory(config):
+        calls.append(config)
+        return expected
+
+    monkeypatch.setitem(registry.ADAPTER_FACTORIES, "vllm", factory)
+
+    result = _build_adapter(
+        "vllm",
+        {"id": "local-model", "provider": "vllm", "base_url": "http://localhost:8000/v1"},
+    )
+
+    assert result is expected
+    assert calls == [
+        {"id": "local-model", "provider": "vllm", "base_url": "http://localhost:8000/v1"}
+    ]
 
 
 @pytest.mark.parametrize(

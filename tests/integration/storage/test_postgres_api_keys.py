@@ -1053,6 +1053,34 @@ async def test_the_listing_lookup_carries_the_allowlist(keys):
     assert listed["allowed_models"] == ["m-a"]
 
 
+async def test_auth_context_decodes_key_diagnostic_entitlement_from_jsonb(keys):
+    store, pool = keys
+    uid = "u-admkey-diagnostic"
+    await _user(store, uid)
+    await _key(
+        pool,
+        uid,
+        "diagnostic",
+        "active",
+        json.dumps({"diagnostic_entitlements": ["served_identity"]}),
+    )
+
+    row = await store.get_auth_context_by_key_hash("hash-diagnostic")
+
+    assert row["key_metadata"] == {"diagnostic_entitlements": ["served_identity"]}
+    from serving.servers.auth import _key_diagnostic_entitlements, _user_context
+
+    assert _key_diagnostic_entitlements(row) == frozenset({"served_identity"})
+    context = _user_context(
+        row,
+        key_hash="hash-diagnostic",
+        api_key_id=row["id"],
+        quota_daily_cost_usd=1000.0,
+        spent_today_usd=0.0,
+    )
+    assert context["diagnostic_entitlements"] == frozenset({"served_identity"})
+
+
 async def test_the_cache_drops_cached_contexts_when_a_limit_changes(keys):
     store, pool = keys
     uid = "u-admkey-cache"

@@ -124,6 +124,17 @@ class EmbeddingsPathConfigError(RegistryConfigError):
 
 
 _LOCAL_HOSTS = frozenset(("localhost", "127.0.0.1", "0.0.0.0", "host.docker.internal"))
+_GENERIC_ENDPOINT_ID_KINDS = frozenset(("openai_compat", "staging", "vllm", "sglang", "kimi"))
+
+
+def _endpoint_identity_publishable(kind: str) -> bool:
+    """Whether registry-origin metadata allows publishing this route's location.
+
+    Generic adapter IDs may be minted from an arbitrary DNS name or LAN
+    address, so their generated ``*-api`` suffix is not public identity.
+    Dedicated provider kinds use the configured provider label instead.
+    """
+    return kind not in _GENERIC_ENDPOINT_ID_KINDS
 
 
 def _make_provider_id(model_id: str, kind: str, base_url: str) -> str:
@@ -643,24 +654,32 @@ def _build_adapter(kind: str, cfg: dict[str, Any]):
     if factory is not None:
         return factory(dict(cfg))
 
-    if kind == "openrouter":
-        cfg = {**cfg, "provider_profile": "openrouter"}
+    # The profile is a kind default: it applies only when the config the
+    # caller built does not already carry one, so a same-target edit (which
+    # copies the route's own adapter-specific values) preserves them.
+    if "provider_profile" not in cfg or cfg.get("provider_profile") is None:
+        if kind == "openrouter":
+            cfg = {**cfg, "provider_profile": "openrouter"}
 
-    # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
-    if kind == "deepseek":
-        cfg = {**cfg, "provider_profile": "deepseek"}
-    # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
-    elif kind == "zai":
-        cfg = {
-            **cfg,
-            "provider_profile": "zai",
-            "chat_path": "/chat/completions",
-        }
-    elif kind == "kimi":
-        cfg = {**cfg, "provider_profile": "kimi"}
-    elif kind == "minimax":
-        cfg = {**cfg, "provider_profile": "minimax"}
-    elif kind == "vllm":
+        # DeepSeek routes through OpenAICompatAdapter with DeepSeek usage profile.
+        if kind == "deepseek":
+            cfg = {**cfg, "provider_profile": "deepseek"}
+        # ZAI uses an OpenAI-compatible API with a non-/v1 chat path.
+        elif kind == "zai":
+            cfg = {
+                **cfg,
+                "provider_profile": "zai",
+                "chat_path": "/chat/completions",
+            }
+        elif kind == "kimi":
+            cfg = {**cfg, "provider_profile": "kimi"}
+        elif kind == "minimax":
+            cfg = {**cfg, "provider_profile": "minimax"}
+    if kind == "zai":
+        # The ZAI-compatible API uses its non-v1 chat path even when a
+        # same-target edit carries an existing provider profile.
+        cfg = {**cfg, "chat_path": "/chat/completions"}
+    if kind == "vllm":
         cfg = {**cfg, "vllm_structured_outputs": True}
 
     # Request upstream usage in the stream so cached tokens, and completion
@@ -1229,6 +1248,9 @@ def register_from_models_document(
                 adapter_cfg["provider"] = provider_label
                 # Generate unique endpoint_id for availability tracking and circuit breaker
                 adapter_cfg["endpoint_id"] = _make_provider_id(str(top_cfg["id"]), kind, base_url)
+                # Keep the route-origin decision on the registered adapter.
+                # The derived endpoint_id alone cannot prove publishability.
+                adapter_cfg["endpoint_identity_publishable"] = _endpoint_identity_publishable(kind)
 
                 route_provider_model_id = r.get("provider_model_id")
                 if route_provider_model_id is not None:

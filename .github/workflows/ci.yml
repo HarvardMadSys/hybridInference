@@ -769,12 +769,6 @@ jobs:
           # A full fetch is self-contained and immune to that.
           fetch-depth: 0
 
-      # Into RUNNER_TEMP and onto GITHUB_PATH, not `sudo install` into
-      # /usr/local/bin: the self-hosted runners' accounts have no sudo, and
-      # their machine outlives the job and is shared with other repositories'
-      # CI, whose scan would otherwise run whichever gitleaks was installed
-      # last. Unpacking outside the workspace also keeps the tarball out of
-      # the tree the next step scans.
       - name: Install gitleaks
         run: |
           set -euo pipefail
@@ -819,10 +813,6 @@ jobs:
       - name: Verify secret scanner coverage
         run: uv run --no-project --python "${PYTHON_VERSION}" python ops/ci/check_gitleaks_config.py
 
-      # The requirements go to RUNNER_TEMP, not a fixed name in /tmp: every
-      # runner account on a self-hosted machine shares that sticky directory,
-      # and a file another account left there cannot be replaced
-      # (fs.protected_regular), which fails the export on the next account.
       - name: Security audit
         env:
           REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
