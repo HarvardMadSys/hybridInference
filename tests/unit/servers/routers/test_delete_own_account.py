@@ -78,6 +78,8 @@ class Store:
         self.invalidate_phone_code = AsyncMock()
         self.create_phone_session = AsyncMock(return_value=True)
         self.record_phone_login_event = AsyncMock()
+        # No single sign-on identity either: nothing to confirm through.
+        self.list_user_identities = AsyncMock(return_value=[])
         # No pre-browser-session cookies here: a retired value names nothing.
         self.get_session_by_token_hash = AsyncMock(return_value=None)
         self.browser_sessions = browser_sessions.install(self)

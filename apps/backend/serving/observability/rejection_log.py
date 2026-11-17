@@ -97,6 +97,25 @@ REJECTED_PROMPT_MAX_PENDING_LOGS = 8
 #: :func:`queue_rejection_log` for why that ordering is the whole point.
 _pending_prompt_logs = 0
 
+#: Rejection rows this process was to write and did not, since it started: the
+#: write failed, the task writing it ended in an error or was cancelled, or the
+#: setting that says whether to write it could not be read. Never written
+#: later; a release handoff does not seal a process with any
+#: (:mod:`serving.servers.handoff`). Such a row carries no cost.
+_LOST_ROWS = 0
+
+
+def record_lost_row() -> None:
+    """Count a rejection row that was to be written and was not."""
+    global _LOST_ROWS
+    _LOST_ROWS += 1
+
+
+def lost_rows() -> int:
+    """How many rejection rows were lost since the process started (:data:`_LOST_ROWS`)."""
+    return _LOST_ROWS
+
+
 #: Never queued on: :func:`bounded_enrichment` checks
 #: :meth:`asyncio.Semaphore.locked` and gives up, because waiting for a slot
 #: would rebuild the very backlog the cap exists to prevent. Because it is never
@@ -275,6 +294,8 @@ async def _logging_enabled(
         if not await runtime_settings.get_bool("log_rejected_requests"):
             return False
     except Exception:
+        # Whether a row was due cannot be told: counted as lost.
+        record_lost_row()
         logger.exception(
             "rejection_log_failed",
             extra={"event": "rejection_log_failed", "stage": "toggle_read"},
@@ -291,6 +312,7 @@ async def _logging_enabled(
         try:
             return await runtime_settings.get_bool("log_synthetic_probes")
         except Exception:
+            record_lost_row()
             return False
     return True
 
@@ -587,6 +609,7 @@ async def log_rejection_from(
             metadata=metadata,
         )
     except Exception:
+        record_lost_row()
         logger.exception(
             "rejection_log_failed",
             extra={

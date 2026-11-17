@@ -251,3 +251,59 @@ async def test_audit_log_filters_by_action_and_target_and_pages_newest_first(adm
 
     total, rows = await store.list_audit_log(target_user_id="u-adml-b")
     assert (total, [row["action"] for row in rows]) == (1, ["itest.suspend"])
+
+
+async def test_audit_actions_lists_each_recorded_action_once_sorted(admin_store):
+    store, _pool = admin_store
+    # Only itest.* actions, which the fixture wipes: rows left in the shared
+    # database would show up in other tests' audit queries.
+    for action in ["itest.z.update", "itest.config.update", "itest.z.update", "itest.approve"]:
+        await store.log_admin_action(admin_ip="203.0.113.9", action=action)
+
+    actions = await store.list_audit_actions()
+
+    assert actions == sorted(set(actions))
+    assert {"itest.z.update", "itest.config.update", "itest.approve"} <= set(actions)
+
+
+# --- batch approval -----------------------------------------------------------
+
+
+async def test_approve_users_approves_only_the_users_still_pending(admin_store):
+    store, pool = admin_store
+    first = await _user(store, "bap-1", status="pending_approval")
+    second = await _user(store, "bap-2", status="pending_approval")
+    active = await _user(store, "bap-active")
+    rejected = await _user(store, "bap-rejected", status="rejected")
+
+    rows = await store.approve_users(
+        [first, active, "u-adml-bap-missing", second, rejected],
+        admin_id="itest-admin",
+        note="cohort",
+    )
+
+    assert sorted((row["id"], row["email"]) for row in rows) == [
+        (first, f"bap-1@{_DOMAIN}"),
+        (second, f"bap-2@{_DOMAIN}"),
+    ]
+    async with pool.acquire() as conn:
+        stored = {
+            row["id"]: row
+            for row in await conn.fetch(
+                "SELECT id, status, reviewed_by, approval_note, reviewed_at FROM users "
+                "WHERE id = ANY($1::text[])",
+                [first, second, active, rejected],
+            )
+        }
+    for user_id in (first, second):
+        assert stored[user_id]["status"] == "active"
+        assert stored[user_id]["reviewed_by"] == "itest-admin"
+        assert stored[user_id]["approval_note"] == "cohort"
+        assert stored[user_id]["reviewed_at"] is not None
+    # An account that was not pending keeps its status and gets no review.
+    assert (stored[active]["status"], stored[active]["reviewed_by"]) == ("active", None)
+    assert (stored[rejected]["status"], stored[rejected]["reviewed_by"]) == ("rejected", None)
+
+    # Nobody is pending any more, and an empty list writes nothing.
+    assert await store.approve_users([first, second], admin_id="itest-admin") == []
+    assert await store.approve_users([], admin_id="itest-admin") == []

@@ -10,6 +10,8 @@ from fastapi import FastAPI
 from ..config.settings import get_settings
 from ..utils.logging import attach_quiet_access_filter
 from . import bootstrap, restart
+from .handoff import HandoffMiddleware
+from .idle_connection import install_idle_connection_timeout
 from .middleware.body_limit import RequestBodyLimitMiddleware
 from .middleware.cors import SettingsCORSMiddleware
 from .middleware.error import FallbackErrorMiddleware, install_error_handlers
@@ -23,7 +25,6 @@ from .middleware.trailing_slash import TrailingSlashRedirectMiddleware
 from .routers import (
     admin,
     agent_grants,
-    agent_invitations,
     alert_history_ingest,
     anthropic_messages,
     auth_routes,
@@ -35,6 +36,7 @@ from .routers import (
     completions,
     embeddings,
     files,
+    handoff,
     health,
     identity,
     internal,
@@ -50,6 +52,8 @@ from .routers import (
     setup,
     site_config,
     site_updates,
+    sso_routes,
+    two_factor_routes,
     user_routes,
 )
 
@@ -112,6 +116,10 @@ CORS_OPTIONS: dict[str, Any] = {
 
 def create_app() -> FastAPI:
     """Create and configure a FastAPI app instance with modular routers."""
+    # Before any connection is accepted. Uvicorn's keep-alive timer stops at
+    # the first byte of a request and does not resume until the response
+    # completes, so a client that goes quiet mid-request would hold the socket.
+    install_idle_connection_timeout()
     app = FastAPI(
         title="OpenRouter-Compatible API Server",
         description="Unified API server supporting VLLM, DeepSeek, Gemini models",
@@ -142,6 +150,12 @@ def create_app() -> FastAPI:
     app.add_middleware(FallbackErrorMiddleware)
     app.add_middleware(RequestIdMiddleware)
 
+    # Counts every request for a release handoff, from before anything else
+    # runs for it to after its body has closed, and refuses requests once the
+    # process is sealed (serving/servers/handoff.py). Pure ASGI: it touches the
+    # response start only. Inside NoSniff, so its own refusal gets that header.
+    app.add_middleware(HandoffMiddleware)
+
     # Outermost, so every response gets it, error answers included. It only
     # adds a header to the response start; bodies, streams too, pass untouched.
     app.add_middleware(NoSniffMiddleware)
@@ -154,6 +168,7 @@ def create_app() -> FastAPI:
 
     # Routers
     app.include_router(health.router)
+    app.include_router(handoff.router)
     app.include_router(models.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
@@ -173,6 +188,8 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(admin.router)
     app.include_router(auth_routes.router)
+    app.include_router(sso_routes.router)
+    app.include_router(two_factor_routes.router)
     app.include_router(setup.router)
     app.include_router(user_routes.router)
     app.include_router(projects.router)
@@ -180,8 +197,6 @@ def create_app() -> FastAPI:
     app.include_router(playground.router)
     app.include_router(identity.router)
     app.include_router(agent_grants.router)
-    app.include_router(agent_invitations.router)
-    app.include_router(agent_invitations.internal_router)
     app.include_router(internal_lookups.router)
     app.include_router(alert_history_ingest.router)
 

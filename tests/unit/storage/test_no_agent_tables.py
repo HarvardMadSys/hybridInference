@@ -4,9 +4,11 @@ Eleven tables belonged to the agent job store, which left with the cloud agent.
 What stays is named in ``RETAINED_TABLES``: ``agent_grants``, because this
 gateway mints and verifies the capability a sandbox calls models with,
 ``identity_auth_codes``, because it issues the codes a detached service
-exchanges for an identity, and the two agent-invitation tables, because this
-gateway owns the accounts and the scoped keys invitations create. Execution
-state — jobs, attempts, threads, hosts — stays in the cloud agent's database.
+exchanges for an identity, and the two agent-invitation tables, which revision
+0016 created and a deployed release still reads: the invitations themselves
+are withdrawn and nothing here writes them, and a later contract revision
+removes them. Execution state — jobs, attempts, threads, hosts — stays in the
+cloud agent's database.
 
 Checked by reading the DDL rather than by booting against a database, so it
 runs in the default tier. The `dbtest` tier does not run in CI — a fact this
@@ -51,8 +53,8 @@ DEPARTED_TABLES = (
 RETAINED_TABLES = {
     "agent_grants": "this gateway mints and verifies inference grants (C5)",
     "identity_auth_codes": "this gateway issues identity authorization codes (C2)",
-    "agent_invite_tokens": "this gateway issues agent invitation tokens (0016)",
-    "agent_provisioned_accounts": "this gateway links agent accounts to the scoped keys it issued (0016)",
+    "agent_invite_tokens": "created by 0016 and unused since invitations were withdrawn",
+    "agent_provisioned_accounts": "created by 0016 and unused since invitations were withdrawn",
 }
 
 _CREATE = re.compile(r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)", re.I)

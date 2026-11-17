@@ -24,6 +24,7 @@ DOCUMENT_KEYS = {
     "alerts": "ALERT_RULES",
     "distribution": "SITE_CONFIGURATION",
     "branding": "SITE_BRANDING",
+    "sso": "SSO_PROVIDERS",
 }
 KEY_KINDS = {key: kind for kind, key in DOCUMENT_KEYS.items()}
 _REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
@@ -34,6 +35,7 @@ _TITLES = {
     "alerts": "alert rules document",
     "distribution": "site configuration",
     "branding": "site branding",
+    "sso": "single sign-on providers document",
 }
 
 
@@ -78,6 +80,26 @@ def parse(text: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise DocumentError("must be a JSON object")
     return value
+
+
+def without_model(document: dict[str, Any], model_id: str) -> tuple[dict[str, Any], bool]:
+    """Return *document* without the model whose ``id`` is *model_id*.
+
+    Every matching entry is removed. Any other key — an ``auto`` section, a
+    block carried over from an older catalog — stays. The input is not changed.
+
+    Returns:
+        The catalog to store, and whether *model_id* was in it.
+    """
+    models = document.get("models")
+    if not isinstance(models, list):
+        return document, False
+    kept = [
+        model for model in models if not (isinstance(model, dict) and model.get("id") == model_id)
+    ]
+    if len(kept) == len(models):
+        return document, False
+    return {**document, "models": kept}, True
 
 
 def encode(value: dict[str, Any]) -> str:
@@ -207,6 +229,10 @@ def _check(kind: str, value: dict[str, Any]) -> None:
 
         if value:
             BrandingConfig.model_validate(value)
+    elif kind == "sso":
+        from serving.config.sso import SsoProvidersDocument
+
+        SsoProvidersDocument.model_validate(value)
 
 
 def separate_secrets(

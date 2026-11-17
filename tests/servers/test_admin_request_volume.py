@@ -49,7 +49,15 @@ class _Log:
 
 
 def _classify(row: _Log) -> VolumeCounts:
-    """One row's counts, by the outcome filters' definitions."""
+    """One row's counts, by the outcome filters' definitions.
+
+    A model-queued 503 is a capacity wait: nothing ran, so it counts nowhere.
+    ``format_exception_for_db`` prefixes the class name, and the match is the
+    failed-request alerter's, so a 503 that merely mentions the marker later
+    still counts.
+    """
+    if (row.error or "").startswith("UpstreamModelQueued:"):
+        return VolumeCounts()
     status = row.status_code
     disconnect = status == 499 and row.terminal_state == "client_disconnect"
     failed = row.error is not None or status is None or status < 200 or status >= 400
@@ -189,6 +197,11 @@ def _random_rows(end_time: datetime, count: int, seed: int) -> list[_Log]:
         {"status_code": None, "error": "no response", "latency_ms": None},
         # A 2xx that also recorded an error counts as both.
         {"status_code": 200, "error": "partial"},
+        # A capacity wait counts nowhere. A 503 that is not that wait still does,
+        # including one that only mentions the marker later in its error.
+        {"status_code": 503, "error": "UpstreamModelQueued: waiting", "latency_ms": 9999},
+        {"status_code": 503, "error": "upstream 503"},
+        {"status_code": 500, "error": "note mentions UpstreamModelQueued: later"},
     ]
     rows = []
     for _ in range(count):
@@ -342,6 +355,56 @@ async def test_backfill_counts_again_the_hours_of_another_definition():
     filled = [hour for chunk in db.filled for hour in chunk]
     assert old in filled
     assert current not in filled
+
+
+def test_a_model_queued_wait_counts_nowhere():
+    """The wait is absent from the request, error, latency and batch counts."""
+    at = datetime(2026, 10, 18, 12, 0, tzinfo=UTC)
+    queued = _classify(
+        _Log(
+            timestamp=at,
+            status_code=503,
+            error="UpstreamModelQueued: 503, message='Service Unavailable'",
+            latency_ms=9999,
+            batch_job_id="batch_1",
+        )
+    )
+    interactive = _classify(
+        _Log(timestamp=at, status_code=503, error="UpstreamModelQueued:", latency_ms=50)
+    )
+    other = _classify(
+        _Log(
+            timestamp=at,
+            status_code=503,
+            error="upstream 503",
+            latency_ms=40,
+            batch_job_id="batch_1",
+        )
+    )
+    mentioned = _classify(
+        _Log(
+            timestamp=at,
+            status_code=500,
+            error="note mentions UpstreamModelQueued: later",
+            latency_ms=20,
+            batch_job_id="batch_1",
+        )
+    )
+
+    assert queued == VolumeCounts()
+    assert interactive == VolumeCounts()
+    assert (other.request_count, other.error_count, other.latency_sum_ms) == (1, 1, 40)
+    assert (other.batch_request_count, other.batch_error_count, other.batch_latency_sum_ms) == (
+        1,
+        1,
+        40,
+    )
+    assert mentioned.request_count == 1
+    assert mentioned.batch_error_count == 1
+    # Once per aggregate: the predicate is what DEFINITION hashes, so a stored
+    # hour counted before the exclusion is recounted rather than read back.
+    marker = "l.error IS NULL OR l.error NOT LIKE 'UpstreamModelQueued:%'"
+    assert request_volume._COUNTS_SQL.count(marker) == len(request_volume.COUNT_COLUMNS)
 
 
 def test_the_fingerprint_follows_the_counts():

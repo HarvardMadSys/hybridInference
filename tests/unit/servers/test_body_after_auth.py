@@ -274,7 +274,15 @@ async def test_embeddings_keeps_its_422_for_an_invalid_body(content: bytes, loc:
 
 
 @pytest.mark.asyncio
-async def test_the_playground_reads_no_body_before_the_role_check() -> None:
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/internal/playground/chat",
+        "/internal/playground/responses",
+        "/internal/playground/messages",
+    ],
+)
+async def test_the_playground_reads_no_body_before_the_role_check(path: str) -> None:
     from serving.servers.deps import get_current_user
     from serving.servers.routers import playground
 
@@ -288,7 +296,7 @@ async def test_the_playground_reads_no_body_before_the_role_check() -> None:
     probe = _Probe(8 * MiB)
     response = await _post(
         app,
-        "/internal/playground/chat",
+        path,
         content=probe,
         headers={"content-type": "application/json"},
     )

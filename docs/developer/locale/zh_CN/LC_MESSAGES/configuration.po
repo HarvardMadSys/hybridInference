@@ -2682,8 +2682,8 @@ msgstr "`SITE_BRANDING`"
 msgid "Validated public branding"
 msgstr "经过验证的公共品牌信息"
 
-msgid "Empty routing and alert documents use the built-in policy and thresholds. Empty site documents use neutral branding. An empty model catalog supplies no models; models created in Admin Routing remain available independently."
-msgstr "空的路由和告警文档使用内置策略与阈值。空的站点文档使用中性品牌。空模型目录不提供任何模型；在 Admin Routing 中创建的模型仍可独立使用。"
+msgid "Empty routing and alert documents use the built-in policy and thresholds. Empty site documents use neutral branding. An empty model catalog supplies no models; models created in Admin Routing remain available independently. An empty single sign-on document offers no single sign-on."
+msgstr "空的路由和告警文档使用内置策略与阈值。空的站点文档使用中性品牌。空模型目录不提供任何模型；在 Admin Routing 中创建的模型仍可独立使用。空的单点登录文档表示不提供单点登录。"
 
 msgid "Database settings win over environment seeds, then registered defaults. Stored empty values are deliberate. Application file paths and distribution active/dark modes no longer select runtime configuration."
 msgstr "数据库设置优先于环境种子值，其次为注册默认值。已保存的空值是有意设置。应用文件路径和分发的 active/dark 模式不再选择运行时配置。"
@@ -2851,3 +2851,9 @@ msgstr "来自环境变量、未通过验证的应用文档不会被导入：日
 
 msgid "A restore removes the stored settings the bundle does not name, except the application documents and the `CATALOG_SECRET_*` credentials the upgrade lifted out of the catalog, which a bundle from before the upgrade cannot name: those keep their stored value or reset. Reset one explicitly to remove it."
 msgstr "恢复会删除备份包未列出的已保存设置，但应用文档以及升级时从目录中提取出的 `CATALOG_SECRET_*` 凭据除外——升级前的备份包不可能列出它们：这些设置保留其已保存的值或重置状态。要删除其中某项，请显式重置它。"
+
+msgid "`SSO_PROVIDERS`"
+msgstr "`SSO_PROVIDERS`"
+
+msgid "Identity providers for [single sign-on](sso.md)"
+msgstr "[单点登录](sso.md)的身份提供方"

@@ -8,6 +8,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel } from '@/lib/utils/userLabel';
 import {
   approveUser,
+  batchApproveUsers,
   deleteUser,
   hardDeleteUser,
   rejectUser,
@@ -37,6 +38,13 @@ const DENSITY_KEY = 'admin.users.density';
 const PAGE_SIZE_KEY = 'admin.users.pageSize';
 const HIDDEN_COLUMNS_KEY = 'admin.users.hiddenColumns';
 const DEFAULT_PAGE_SIZE = PAGE_SIZE_OPTIONS[1]; // 100
+
+/** Up to three names, then how many more: "a, b, c and 4 more". */
+function listLabels(labels: string[]): string {
+  return labels.length <= 3
+    ? labels.join(', ')
+    : `${labels.slice(0, 3).join(', ')} and ${labels.length - 3} more`;
+}
 
 export default function UsersTab() {
   const toast = useAccountToast();
@@ -238,6 +246,30 @@ export default function UsersTab() {
       await approveUser(id);
       toast.success(`Approved ${label}`);
       void refreshUsers();
+    },
+    onApproveMany: async (ids: string[]) => {
+      const result = await batchApproveUsers(ids);
+      void refreshUsers();
+      // Users someone else approved, rejected or deleted meanwhile are left
+      // alone by the server and reported here.
+      const skipped = result.skipped.map((s) => labelOf(s.user_id));
+      const approved = result.approved.length;
+      if (approved === 0) {
+        // Nothing was written: say so in the confirmation, as a failed write does.
+        throw new Error(
+          `None of the selected users was approved: ${listLabels(skipped)} ${
+            skipped.length === 1 ? 'is' : 'are'
+          } no longer pending.`,
+        );
+      }
+      toast.success(
+        approved === 1
+          ? `Approved ${labelOf(result.approved[0].user_id)}`
+          : `Approved ${approved} users`,
+      );
+      if (skipped.length > 0) {
+        toast.error(`Not approved, no longer pending: ${listLabels(skipped)}`);
+      }
     },
     onReject: async (id: string, reason: string) => {
       const label = labelOf(id);

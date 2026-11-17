@@ -19,6 +19,7 @@ from pydantic import (
 from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
+from serving.schemas_auth import SsoIdentity
 
 
 class CreateAPIKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
@@ -393,6 +394,56 @@ class ApproveUserResponse(BaseModel):
     message: str
 
 
+#: Most users one batch approval takes: the Users tab's largest page.
+BATCH_APPROVE_MAX_USERS = 500
+
+
+class BatchApproveUsersRequest(BaseModel):
+    """Request payload for approving several pending registrations at once."""
+
+    user_ids: list[str] = Field(
+        ...,
+        min_length=1,
+        max_length=BATCH_APPROVE_MAX_USERS,
+        description="Users to approve, in the order to report them; duplicates are ignored",
+    )
+    note: str | None = Field(None, max_length=500, description="Optional approval note")
+
+    @field_validator("user_ids")
+    @classmethod
+    def _distinct_and_not_blank(cls, user_ids: list[str]) -> list[str]:
+        cleaned = [user_id.strip() for user_id in user_ids]
+        if not all(cleaned):
+            raise ValueError("user_ids must not contain blank IDs")
+        return list(dict.fromkeys(cleaned))
+
+
+class BatchApprovedUser(BaseModel):
+    """One account a batch approval activated."""
+
+    user_id: str
+    email: str | None
+    phone: str | None = None
+
+
+class BatchApproveSkippedUser(BaseModel):
+    """One requested account a batch approval left unchanged, and why."""
+
+    user_id: str
+    reason: Literal["not_found", "not_pending"]
+    status: str | None = Field(
+        None, description="The account's status now; null when there is no such account"
+    )
+
+
+class BatchApproveUsersResponse(BaseModel):
+    """What a batch approval did with each requested user, in request order."""
+
+    approved: list[BatchApprovedUser]
+    skipped: list[BatchApproveSkippedUser]
+    message: str
+
+
 class RejectUserRequest(BaseModel):
     """Request payload for rejecting a user registration."""
 
@@ -429,6 +480,9 @@ class UserDetailResponse(BaseModel):
     phone_verified: bool = False
     created_at: datetime
     last_login_at: datetime | None = None
+    two_factor_enabled: bool = Field(
+        False, description="The account has an authenticator app (see /auth/two-factor)"
+    )
     # Key info
     has_key: bool = False
     key_prefix: str | None = None
@@ -447,6 +501,8 @@ class UserDetailResponse(BaseModel):
     admin_note: str | None = None
     # Admin-authored message shown to the user on login while suspended.
     suspension_message: str | None = None
+    # The single sign-on identities linked to the account.
+    sso_identities: list[SsoIdentity] = Field(default_factory=list)
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -460,6 +516,24 @@ class UserDetailResponse(BaseModel):
     # user has none (or when activity stats were not requested — see
     # ``avg_turns`` above).
     ask_question_fraction: float | None = None
+
+
+class ResetUserTwoFactorRequest(BaseModel):
+    """Remove another account's authenticator."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The signed-in administrator's password, when their own account has "
+        "no authenticator to confirm with",
+    )
+
+
+class ResetUserTwoFactorResponse(BaseModel):
+    """What removing the authenticator did."""
+
+    user_id: str
+    removed: bool = Field(description="False when the account had none")
 
 
 class UpdateUserRequest(BaseModel):
@@ -529,6 +603,12 @@ class ListAuditLogResponse(BaseModel):
 
     total: int
     entries: list[AuditLogEntry]
+
+
+class ListAuditActionsResponse(BaseModel):
+    """Every distinct action recorded in the audit log, sorted."""
+
+    actions: list[str]
 
 
 # ========================================
@@ -2238,6 +2318,10 @@ __all__ = [
     "ApproveUserRequest",
     "ApproveUserResponse",
     "AuditLogEntry",
+    "BatchApproveSkippedUser",
+    "BatchApproveUsersRequest",
+    "BatchApproveUsersResponse",
+    "BatchApprovedUser",
     "BatchModelLimitItem",
     "BulkUserCostHistoryResponse",
     "CreateAPIKeyRequest",
@@ -2253,6 +2337,7 @@ __all__ = [
     "ListAPIKeysResponse",
     "ListAllProviderRoutesResponse",
     "ListAllRouteWeightsResponse",
+    "ListAuditActionsResponse",
     "ListAuditLogResponse",
     "ListBatchModelLimitsResponse",
     "ListModelVisibilityResponse",
@@ -3046,3 +3131,19 @@ class ClearAuthBlockResponse(BaseModel):  # type: ignore[no-any-unimported]
             "discarded either way."
         ),
     )
+
+
+class UnlinkSsoIdentityRequest(BaseModel):
+    """Remove a single sign-on identity from a user's account.
+
+    ``password`` is the signed-in administrator's own.
+    """
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class UnlinkSsoIdentityResponse(BaseModel):
+    """Result of removing a single sign-on identity from a user's account."""
+
+    user_id: str
+    message: str

@@ -33,6 +33,7 @@ def mock_stores():
     op_store.list_user_activity_providers = AsyncMock(return_value=[])
     op_store.get_user_by_id = AsyncMock()
     op_store.approve_user = AsyncMock()
+    op_store.approve_users = AsyncMock(return_value=[])
     op_store.reject_user = AsyncMock()
     op_store.delete_user = AsyncMock()
     op_store.resume_user = AsyncMock()
@@ -40,6 +41,7 @@ def mock_stores():
     op_store.release_hard_delete_user_claim = AsyncMock()
     op_store.hard_delete_user = AsyncMock(return_value={})
     op_store.list_audit_log = AsyncMock(return_value=(0, []))
+    op_store.list_audit_actions = AsyncMock(return_value=[])
     op_store.log_admin_action = AsyncMock()
     op_store.update_user_fields = AsyncMock()
     op_store.set_user_preference = AsyncMock(return_value=True)
@@ -47,6 +49,8 @@ def mock_stores():
     op_store.revoke_user_sessions = AsyncMock(return_value=0)
     op_store.suspend_user = AsyncMock()
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
+    op_store.list_user_identities = AsyncMock(return_value=[])
+    op_store.get_two_factor = AsyncMock(return_value=None)
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})
@@ -342,6 +346,29 @@ async def test_list_audit_log_filter_by_action(admin_client):
     op_store.list_audit_log.assert_awaited_once()
     call_kwargs = op_store.list_audit_log.await_args.kwargs
     assert call_kwargs["action"] == "approve_user"
+
+
+@pytest.mark.asyncio
+async def test_list_audit_actions_returns_recorded_actions(admin_client):
+    """GET /admin/audit-log/actions lists every recorded action, e.g. config.update."""
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_audit_actions.return_value = ["approve_user", "config.update"]
+
+    response = await client.get("/admin/audit-log/actions", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json() == {"actions": ["approve_user", "config.update"]}
+    op_store.list_audit_actions.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_list_audit_actions_requires_admin(admin_client):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get("/admin/audit-log/actions")
+
+    assert response.status_code in (401, 403)
+    op_store.list_audit_actions.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -835,6 +862,23 @@ async def test_get_user_detail_returns_admin_note(admin_client):
 
     assert response.status_code == 200
     assert response.json()["admin_note"] == "watch this user"
+    assert response.json()["two_factor_enabled"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_user_detail_says_whether_the_account_has_an_authenticator(admin_client):
+    """A confirmed authenticator shows; a secret that was only shown does not."""
+    client, op_store, log_store, _log = admin_client
+    op_store.get_user_by_id.return_value = _user_row()
+    log_store.get_user_detail_usage = AsyncMock(return_value={})
+
+    op_store.get_two_factor.return_value = {"confirmed_at": None}
+    pending = await client.get("/admin/users/u1/detail", headers=AUTH)
+    op_store.get_two_factor.return_value = {"confirmed_at": datetime.now(UTC)}
+    confirmed = await client.get("/admin/users/u1/detail", headers=AUTH)
+
+    assert pending.json()["two_factor_enabled"] is False
+    assert confirmed.json()["two_factor_enabled"] is True
 
 
 @pytest.mark.asyncio
@@ -2741,3 +2785,177 @@ async def test_no_notice_is_queued_without_a_mail_provider(
 
     assert resp.status_code == 200, resp.text
     assert attempts == []
+
+
+# ========================================================================
+# Batch approval
+# ========================================================================
+
+
+def _approved_row(uid: str, *, phone_only: bool = False) -> dict[str, Any]:
+    """A row ``approve_users`` returns for an account it approved."""
+    return {
+        "id": uid,
+        "email": None if phone_only else f"{uid}@example.com",
+        "phone": "+15550100" if phone_only else None,
+        "login_name": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_approves_the_pending_and_reports_the_rest(admin_client):
+    client, op_store, _log_store, log_action = admin_client
+    # The store answers in its own order; the response keeps the request's.
+    op_store.approve_users.return_value = [_approved_row("u2"), _approved_row("u1")]
+    current = {"u3": _user_row(uid="u3", status="active"), "u4": None}
+    op_store.get_user_by_id.side_effect = lambda uid: current[uid]
+
+    resp = await client.post(
+        "/admin/users/batch-approve",
+        json={"user_ids": ["u1", "u3", "u2", "u4"]},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["approved"] == [
+        {"user_id": "u1", "email": "u1@example.com", "phone": None},
+        {"user_id": "u2", "email": "u2@example.com", "phone": None},
+    ]
+    assert body["skipped"] == [
+        {"user_id": "u3", "reason": "not_pending", "status": "active"},
+        {"user_id": "u4", "reason": "not_found", "status": None},
+    ]
+    assert body["message"] == "Approved 2 users. 2 not approved: no longer pending or not found."
+    call = op_store.approve_users.await_args
+    assert call.args == (["u1", "u3", "u2", "u4"],)
+    assert call.kwargs["admin_id"]
+    assert call.kwargs["note"] is None
+    # Each approval is audited as a single one is, under its own user.
+    audits = [c.kwargs for c in log_action.await_args_list]
+    assert [a["action"] for a in audits] == ["approve_user", "approve_user"]
+    assert [a["target"] for a in audits] == [AuditTarget.user("u1"), AuditTarget.user("u2")]
+    assert audits[0]["details"] == {"email": "u1@example.com", "note": None, "batch_size": 2}
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_counts_a_repeated_id_once(admin_client):
+    client, op_store, _log_store, log_action = admin_client
+    op_store.approve_users.return_value = [_approved_row("u1")]
+
+    resp = await client.post(
+        "/admin/users/batch-approve", json={"user_ids": ["u1", " u1 ", "u1"]}, headers=AUTH
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert op_store.approve_users.await_args.args == (["u1"],)
+    assert [u["user_id"] for u in resp.json()["approved"]] == ["u1"]
+    assert resp.json()["message"] == "Approved 1 user."
+    log_action.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_records_the_note(admin_client):
+    client, op_store, _log_store, log_action = admin_client
+    op_store.approve_users.return_value = [_approved_row("u1")]
+
+    resp = await client.post(
+        "/admin/users/batch-approve",
+        json={"user_ids": ["u1"], "note": "Spring cohort"},
+        headers=AUTH,
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert op_store.approve_users.await_args.kwargs["note"] == "Spring cohort"
+    assert log_action.await_args.kwargs["details"]["note"] == "Spring cohort"
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_with_nobody_still_pending_changes_nothing(admin_client):
+    client, op_store, _log_store, log_action = admin_client
+    op_store.approve_users.return_value = []
+    op_store.get_user_by_id.return_value = _user_row(uid="u1", status="rejected")
+
+    resp = await client.post("/admin/users/batch-approve", json={"user_ids": ["u1"]}, headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approved"] == []
+    assert resp.json()["skipped"] == [
+        {"user_id": "u1", "reason": "not_pending", "status": "rejected"}
+    ]
+    log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_takes_a_full_page_of_users(admin_client):
+    """The Users tab's largest page (500 rows) fits in one request."""
+    client, op_store, _log_store, _log = admin_client
+    ids = [f"u{i}" for i in range(500)]
+    op_store.approve_users.return_value = [_approved_row(uid) for uid in ids]
+
+    resp = await client.post("/admin/users/batch-approve", json={"user_ids": ids}, headers=AUTH)
+
+    assert resp.status_code == 200, resp.text
+    assert len(resp.json()["approved"]) == 500
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "user_ids",
+    [[], [""], ["u1", "  "], [f"u{i}" for i in range(501)]],
+    ids=["empty", "blank", "blank-among-others", "over-the-limit"],
+)
+async def test_batch_approve_refuses_a_bad_list_and_writes_nothing(admin_client, user_ids):
+    client, op_store, _log_store, log_action = admin_client
+
+    resp = await client.post(
+        "/admin/users/batch-approve", json={"user_ids": user_ids}, headers=AUTH
+    )
+
+    assert resp.status_code == 422
+    op_store.approve_users.assert_not_awaited()
+    log_action.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_batch_approve_requires_admin(admin_client):
+    client, op_store, _log_store, _log = admin_client
+
+    resp = await client.post("/admin/users/batch-approve", json={"user_ids": ["u1"]})
+
+    assert resp.status_code in (401, 403)
+    op_store.approve_users.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("enabled", [True, False], ids=["email-on", "email-off"])
+async def test_batch_approve_emails_each_approved_user_off_the_event_loop(
+    admin_client, monkeypatch, enabled
+):
+    client, op_store, _log_store, _log = admin_client
+    op_store.approve_users.return_value = [
+        _approved_row("u1"),
+        _approved_row("u2", phone_only=True),  # nowhere to send it
+        _approved_row("u3"),
+    ]
+    loop_thread = threading.get_ident()
+    sent: list[tuple[str, int]] = []
+
+    def send(to: str) -> bool:
+        sent.append((to, threading.get_ident()))
+        return True
+
+    monkeypatch.setattr("serving.utils.email.is_email_enabled", lambda: enabled)
+    monkeypatch.setattr("serving.utils.email.send_approval_email", send)
+
+    resp = await client.post(
+        "/admin/users/batch-approve", json={"user_ids": ["u1", "u2", "u3"]}, headers=AUTH
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["approved"][1] == {"user_id": "u2", "email": None, "phone": "+15550100"}
+    if enabled:
+        assert [to for to, _thread in sent] == ["u1@example.com", "u3@example.com"]
+        assert all(thread != loop_thread for _to, thread in sent)
+    else:
+        assert sent == []

@@ -6,6 +6,7 @@ import json
 import sys
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
@@ -13,7 +14,7 @@ if TYPE_CHECKING:
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 # Add project root to Python path for direct test execution.
@@ -85,6 +86,7 @@ async def test_playground_models_hide_unpublished_routes() -> None:
 async def test_playground_source_pricing_is_checked_before_stream_response(monkeypatch):
     from unittest.mock import AsyncMock
 
+    from serving.servers.deps import get_current_user
     from serving.utils import context as req_ctx
 
     router = FixedRouter()
@@ -93,14 +95,25 @@ async def test_playground_source_pricing_is_checked_before_stream_response(monke
     router.register_route("alias", [(adapter, 1.0)])
     dispatch = AsyncMock()
     monkeypatch.setattr(router, "stream_chat_completion", dispatch)
-    body = playground.PlaygroundChatRequest(
-        model="alias", messages=[{"role": "user", "content": "hi"}]
-    )
-    with req_ctx.push(pricing_snapshot=None), pytest.raises(HTTPException) as exc:
-        await playground.playground_chat(
-            body, _admin={}, router_exec=router, model_visibility_resolver=None
-        )
-    assert exc.value.status_code == 503
+
+    app = FastAPI()
+    app.include_router(playground.router)
+    app.state.services = AppServices(router=router)
+    app.dependency_overrides[get_current_user] = lambda: {
+        "user_id": "u-internal",
+        "role": "internal",
+    }
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with req_ctx.push(pricing_snapshot=None):
+            response = await client.post(
+                "/internal/playground/chat",
+                json={
+                    "model": "alias",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+
+    assert response.status_code == 503
     dispatch.assert_not_called()
 
 
@@ -186,69 +199,80 @@ async def admin_mode_client(admin_mode_app: FastAPI):
         yield client
 
 
+def _route_stream(route: Any) -> Any:
+    return SimpleNamespace(session=SimpleNamespace(served_route=route))
+
+
+def _route_badge(route: Any, *, show_host: bool = False) -> dict[str, Any] | None:
+    frame = playground._route_frame(_route_stream(route), show_host=show_host)
+    if frame is None:
+        return None
+    return json.loads(frame[6:])[playground._PLAYGROUND_ROUTE_KEY]
+
+
 class TestAdminModeUnit:
-    """Unit tests that do not require a real database."""
+    """The playground republishes an allow-listed routing summary, nothing else."""
 
-    def test_sanitize_chunk_strips_routing_metadata(self):
-        chunk = (
-            'data: {"id":"chunk-1","object":"chat.completion.chunk","created":123,'
-            '"model":"playground-model","choices":[{"index":0,"delta":{"content":"hello"},'
-            '"finish_reason":null}],"_routing":{"provider":"test"}}\n\n'
-        )
+    def test_route_frame_publishes_only_the_allow_listed_summary(self):
+        route = {
+            "provider": "zai",
+            "endpoint_id": "glm-4.6:zai-api",
+            "pricing": {"prompt": "0.5"},
+            "upstream_cost_usd": 0.02,
+            "api_key": "sk-leaked",
+        }
 
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
+        assert _route_badge(route) == {"provider": "zai", "endpoint_id": "glm-4.6:zai-api"}
+        assert playground._route_frame(_route_stream(route), show_host=False) is not None
 
-        assert "_routing" not in sanitized
-        parsed = json.loads(sanitized[6:])
-        assert parsed["choices"][0]["delta"]["content"] == "hello"
-        # A content chunk carries no endpoint identity — nothing to republish.
-        assert playground._PLAYGROUND_ROUTE_KEY not in parsed
+    def test_route_frame_republishes_without_base_url(self):
+        route = {
+            "provider": "zai",
+            "base_url": "https://user:pw@api.z.ai:8443/v1/chat",
+            "endpoint_id": "glm-4.6:zai-api",
+        }
 
-    def test_sanitize_chunk_republishes_router_frame_without_base_url(self):
-        chunk = (
-            'data: {"choices":[],"_routing":{"provider":"zai",'
-            '"base_url":"https://user:pw@api.z.ai:8443/v1/chat",'
-            '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
-        )
+        frame = playground._route_frame(_route_stream(route), show_host=True)
 
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test", show_host=True)
-
-        assert "_routing" not in sanitized
-        assert "user:pw" not in sanitized
-        assert "/v1/chat" not in sanitized
-        route = json.loads(sanitized[6:])[playground._PLAYGROUND_ROUTE_KEY]
-        assert route == {
+        assert frame is not None
+        assert "user:pw" not in frame
+        assert "/v1/chat" not in frame
+        assert _route_badge(route, show_host=True) == {
             "provider": "zai",
             "endpoint_id": "glm-4.6:zai-api",
             "host": "api.z.ai:8443",
         }
 
-    def test_sanitize_chunk_falls_back_to_provider_as_endpoint_id(self):
-        # `config.endpoint_id` is optional; `endpoint_id_for_adapter` treats the
-        # provider label as its canonical fallback, and so must this.
-        chunk = 'data: {"choices":[],"_routing":{"provider":"test","endpoint_id":null}}\n\n'
+    def test_route_frame_falls_back_to_provider_as_endpoint_id(self):
+        assert _route_badge({"provider": "test", "endpoint_id": None}) == {
+            "provider": "test",
+            "endpoint_id": "test",
+        }
 
-        route = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-test")[6:])[
-            playground._PLAYGROUND_ROUTE_KEY
-        ]
+    def test_route_frame_reports_fallback_without_raw_error_text(self):
+        route = {
+            "provider": "chutes",
+            "base_url": "https://llm.chutes.ai",
+            "endpoint_id": "glm-4.6:chutes-api",
+            "fallback": True,
+            "failed_attempts": [
+                {
+                    "provider": "zai",
+                    "endpoint_id": "glm-4.6:zai-api",
+                    "error_type": "HTTPStatusError",
+                    "error": '401 {"key": "sk-leaked"}',
+                }
+            ],
+        }
 
-        assert route == {"provider": "test", "endpoint_id": "test"}
+        frame = playground._route_frame(_route_stream(route), show_host=False)
 
-    def test_sanitize_chunk_reports_fallback_without_raw_error_text(self):
-        chunk = (
-            'data: {"choices":[],"_routing":{"provider":"chutes","base_url":"https://llm.chutes.ai",'
-            '"endpoint_id":"glm-4.6:chutes-api","fallback":true,'
-            '"failed_attempts":[{"provider":"zai","endpoint_id":"glm-4.6:zai-api",'
-            '"error_type":"HTTPStatusError","error":"401 {\\"key\\": \\"sk-leaked\\"}"}]}}\n\n'
-        )
-
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test")
-
-        assert "sk-leaked" not in sanitized
-        route = json.loads(sanitized[6:])[playground._PLAYGROUND_ROUTE_KEY]
-        assert route["fallback"] is True
-        assert route["endpoint_id"] == "glm-4.6:chutes-api"
-        assert route["failed_attempts"] == [
+        assert frame is not None
+        assert "sk-leaked" not in frame
+        badge = _route_badge(route)
+        assert badge is not None
+        assert badge["fallback"] is True
+        assert badge["failed_attempts"] == [
             {
                 "provider": "zai",
                 "endpoint_id": "glm-4.6:zai-api",
@@ -256,40 +280,39 @@ class TestAdminModeUnit:
             }
         ]
 
-    def test_sanitize_chunk_drops_routing_on_the_final_usage_chunk(self):
-        # The usage chunk's `_routing` exists for cost accounting and carries no
-        # endpoint_id. It is the last frame, so republishing it would overwrite
-        # a precise endpoint badge with a bare provider label.
-        chunk = (
-            'data: {"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],'
-            '"usage":{"completion_tokens":7},'
-            '"_routing":{"provider":"zai","base_url":"http://10.0.0.5:12003"}}\n\n'
-        )
+    def test_route_frame_keeps_the_precise_endpoint_of_the_served_attempt(self):
+        # The final usage frame carries a bare provider; the badge must keep the
+        # endpoint identity the serving attempt announced.
+        route = {
+            "provider": "zai",
+            "base_url": "http://10.0.0.5:12003",
+            "endpoint_id": "glm-4.6:zai-api",
+        }
 
-        parsed = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-test")[6:])
+        assert _route_badge(route) == {
+            "provider": "zai",
+            "endpoint_id": "glm-4.6:zai-api",
+        }
 
-        assert "_routing" not in parsed
-        assert playground._PLAYGROUND_ROUTE_KEY not in parsed
-        assert parsed["usage"]["completion_tokens"] == 7
-
-    def test_sanitize_chunk_fails_closed_on_an_unparseable_port(self):
+    def test_route_frame_fails_closed_on_an_unparseable_port(self):
         # `urlparse` accepts a malformed port; `SplitResult.port` is what
-        # raises. When that escaped, the caller yielded the *original* chunk
-        # and handed the credentialed base_url straight to the browser.
-        chunk = (
-            'data: {"choices":[],"_routing":{"provider":"zai",'
-            '"base_url":"https://user:pw@api.z.ai:notaport/v1",'
-            '"endpoint_id":"glm-4.6:zai-api"}}\n\n'
-        )
+        # raises. When that escaped, the raw credentialed base_url could reach
+        # the browser. The badge is the acceptable loss; the base_url is not.
+        route = {
+            "provider": "zai",
+            "base_url": "https://user:pw@api.z.ai:notaport/v1",
+            "endpoint_id": "glm-4.6:zai-api",
+        }
 
-        sanitized = playground._sanitize_chunk(chunk, "chatcmpl-test", show_host=True)
+        frame = playground._route_frame(_route_stream(route), show_host=True)
 
-        assert "_routing" not in sanitized
-        assert "user:pw" not in sanitized
-        assert "notaport" not in sanitized
-        # The badge is the acceptable loss; the base_url is not.
-        route = json.loads(sanitized[6:]).get(playground._PLAYGROUND_ROUTE_KEY)
-        assert route == {"provider": "zai", "endpoint_id": "glm-4.6:zai-api"}
+        assert frame is not None
+        assert "user:pw" not in frame
+        assert "notaport" not in frame
+        assert _route_badge(route, show_host=True) == {
+            "provider": "zai",
+            "endpoint_id": "glm-4.6:zai-api",
+        }
 
     @pytest.mark.parametrize(
         "base_url",
@@ -302,31 +325,24 @@ class TestAdminModeUnit:
     def test_routing_host_never_raises_on_a_bad_port(self, base_url: str):
         assert playground._routing_host(base_url) is None
 
-    def test_sanitize_chunk_never_raises_even_on_a_hostile_routing_blob(self):
-        # `_sanitize_chunk` is total by contract — the caller is unguarded so
-        # that a redaction failure can never fall back to the raw chunk.
-        for routing in ('"a string"', "42", "null", '{"failed_attempts":"not-a-list"}'):
-            chunk = f'data: {{"choices":[],"_routing":{routing}}}\n\n'
-            assert "_routing" not in playground._sanitize_chunk(chunk, "chatcmpl-test")
-
-    def test_sanitize_chunk_passes_through_unrelated_frames(self):
-        cid = "chatcmpl-test"
-        assert playground._sanitize_chunk("data: [DONE]\n\n", cid) == "data: [DONE]\n\n"
-        assert playground._sanitize_chunk(": keepalive\n\n", cid) == ": keepalive\n\n"
-        assert playground._sanitize_chunk("data: not-json\n\n", cid) == "data: not-json\n\n"
-
-    def test_sanitize_chunk_relabels_frames_with_the_completion_id(self):
-        # Adapters mint an id per chunk; the playground groups by it too.
-        chunk = (
-            'data: {"id":"chunk-1","object":"chat.completion.chunk","created":123,'
-            '"model":"playground-model","choices":[{"index":0,"delta":{"content":"hi"},'
-            '"finish_reason":null}]}\n\n'
+    def test_route_frame_never_raises_even_on_a_hostile_routing_blob(self):
+        # `_route_frame` is total by contract: a redaction failure costs the
+        # badge, never the redaction. Non-mappings produce no badge at all.
+        for route in ("a string", 42, None):
+            assert playground._route_frame(_route_stream(route), show_host=True) is None
+        frame = playground._route_frame(
+            _route_stream({"provider": "test", "base_url": 42, "failed_attempts": "not-a-list"}),
+            show_host=True,
         )
+        assert frame is not None
+        assert "failed_attempts" not in frame
+        assert "base_url" not in frame
 
-        parsed = json.loads(playground._sanitize_chunk(chunk, "chatcmpl-abc")[6:])
-
-        assert parsed["id"] == "chatcmpl-abc"
-        assert parsed["choices"][0]["delta"]["content"] == "hi"
+    def test_unrelated_frames_are_not_mistaken_for_the_terminator(self):
+        assert playground._is_done_frame("data: [DONE]\n\n")
+        assert playground._is_done_frame(b"data: [DONE]\n\n")
+        assert not playground._is_done_frame(": keepalive\n\n")
+        assert not playground._is_done_frame("data: not-json\n\n")
 
 
 @pytest.mark.dbtest
@@ -444,7 +460,7 @@ class TestPlaygroundAccess:
 
         # The router's synthetic frame is republished as an endpoint summary.
         routes = [f[playground._PLAYGROUND_ROUTE_KEY] for f in frames if "_playground_route" in f]
-        assert routes == [{"provider": "test", "endpoint_id": "test", "host": "test"}]
+        assert routes == [{"provider": "test", "endpoint_id": "test", "host": "secret"}]
 
         # `choices` is empty on the routing frame, so index into it defensively.
         content = "".join(

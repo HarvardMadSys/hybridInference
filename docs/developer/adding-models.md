@@ -23,6 +23,14 @@ refer to them as `${NAME}`. The catalog refuses inline credentials. The JSON
 shape follows the field reference below; a small example is in
 [The model registry](configuration.md#the-model-registry).
 
+## Removing a model
+
+In **Admin → Routing**, delete a model's last route. That removes the model
+from the stored `MODEL_CATALOG`. It stops serving on this process now. Other
+processes drop it on their next configuration refresh, and the next start does
+not register it. Deleting one route while others remain only hides that route;
+Restore brings it back, and the catalog is left as it is.
+
 ## Verify it through the gateway
 
 ```bash

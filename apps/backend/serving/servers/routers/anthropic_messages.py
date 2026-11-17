@@ -71,6 +71,7 @@ from serving.exceptions import (
 )
 from serving.grant_auth import ledger_attribution
 from serving.model_access import model_access_denial, route_canonical_model_id
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import RejectionSource, log_rejection_from
 from serving.pricing import effective_pricing, require_source_pricing
 from serving.request_limits import messages_limit_problem
@@ -1222,9 +1223,12 @@ def _schedule_log_store_task(
             try:
                 await log_store.log_request(**bound_rejected_log_payload(log_payload))
             except Exception:
+                from serving.observability.rejection_log import record_lost_row
+
+                record_lost_row()
                 logger.debug(f"Background log store task failed for {request_id}", exc_info=True)
 
-        asyncio.create_task(_log())  # noqa: RUF006
+        detached_tasks.detach(_log(), name="request_log_fallback")
 
     # Successful, billed requests must also advance the daily quota counter that
     # verify_api_key enforces; error rows (status != 200) are logged but never
@@ -1785,6 +1789,13 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     and that failure was counted by the endpoint's circuit breaker: three such
     requests from one caller opened it for every user of the model. Only what
     raised is refused; an empty ``tools`` was skipped, and still is.
+
+    The same went for a text block whose ``text`` is not a string, in a message
+    or in ``system``: the translation for an OpenAI-backed route joins those
+    values into one string (``_text_block_problem``). The translation now
+    answers anything it cannot read as a 400 the breaker exempts
+    (``UntranslatableRequest``), but a stream is committed by then and could
+    only say so in-band, so the shape it was seen with is refused here.
     """
     messages = body.get("messages")
     if not isinstance(messages, list):
@@ -1792,6 +1803,10 @@ def _shape_error(body: dict[str, Any]) -> str | None:
     for index, message in enumerate(messages):
         if not isinstance(message, dict):
             return f"Invalid field: messages[{index}] must be an object"
+        if problem := _text_block_problem(message.get("content"), f"messages[{index}].content"):
+            return problem
+    if problem := _text_block_problem(body.get("system"), "system"):
+        return problem
     metadata = body.get("metadata")
     if metadata is not None and not isinstance(metadata, dict):
         return "Invalid field: metadata must be an object"
@@ -1806,6 +1821,23 @@ def _shape_error(body: dict[str, Any]) -> str | None:
         for index, tool in enumerate(tools):
             if not isinstance(tool, dict):
                 return f"Invalid field: tools[{index}] must be an object"
+    return None
+
+
+def _text_block_problem(blocks: Any, where: str) -> str | None:
+    """Name a text block in ``blocks`` whose ``text`` the translation cannot join, or None.
+
+    The translation joins the ``text`` of a list's text blocks into one string
+    and drops an empty value first, so what raised is a non-empty value that is
+    not a string; nothing else is refused (see :func:`_shape_error`).
+    """
+    if not isinstance(blocks, list):
+        return None
+    for index, block in enumerate(blocks):
+        if isinstance(block, dict) and block.get("type") == "text":
+            text = block.get("text")
+            if text and not isinstance(text, str):
+                return f"Invalid field: {where}[{index}].text must be a string"
     return None
 
 
@@ -1958,9 +1990,9 @@ def render_messages_http(outcome: MessagesOutcome) -> JSONResponse | StreamingRe
     """The HTTP response the Messages routes answer *outcome* with."""
     if isinstance(outcome, MessagesStream):
         # Looked up on use, as the handler always did, not bound at import.
-        from fastapi.responses import StreamingResponse
+        from serving.servers import streaming_response
 
-        return StreamingResponse(
+        return streaming_response.ClosingStreamingResponse(
             outcome.frames, media_type="text/event-stream", headers=outcome.headers
         )
     if isinstance(outcome, MessagesError):
@@ -2095,6 +2127,12 @@ async def execute_messages(
         {
             "auth_key_hash": auth_key_hash or "_anon",
             "affinity_key": affinity_key,
+            # Who the request is, for the callers a circuit-open alert names
+            # (``endpoint_health._caller_str``), as the chat surface publishes
+            # them. Without them a trip on an endpoint this surface serves --
+            # most of the Claude Code traffic -- listed no caller at all.
+            "user_id": user_ctx.get("user_id") or "anonymous",
+            "user_name": user_ctx.get("user_name"),
         }
     )
 
@@ -2157,7 +2195,7 @@ async def execute_messages(
                 ),
             )
         except AutoModelUnavailable as exc:
-            asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+            detached_tasks.rejection_log(  # its row is written after the 4xx is sent
                 log_rejection_from(
                     source=_rejection_source(ctx, services),
                     status_code=exc.status_code,
@@ -2199,7 +2237,7 @@ async def execute_messages(
             batch_routes_only=constraints.batch_routes_only,
         )
     except HTTPException as exc:
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection_from(
                 source=_rejection_source(ctx, services),
                 status_code=exc.status_code,

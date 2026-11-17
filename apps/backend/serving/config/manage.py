@@ -487,7 +487,7 @@ def build_parser() -> argparse.ArgumentParser:
         "document", help="validate and store an application JSON document"
     )
     document.add_argument(
-        "kind", choices=("models", "routing", "alerts", "distribution", "branding")
+        "kind", choices=("models", "routing", "alerts", "distribution", "branding", "sso")
     )
     document.add_argument("path")
     get = commands.add_parser("get", help="show one setting")

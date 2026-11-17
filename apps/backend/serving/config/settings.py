@@ -105,6 +105,19 @@ class Settings(BaseSettings):
     # unaffected. Set this to notify a subset of admins (or a shared inbox)
     # without changing who holds the admin role.
     signup_notify_emails: str = ""
+    # Give administrator access only to a console session that has given a code
+    # from the account's authenticator app, and again from wherever the session
+    # turns up next (serving/auth/two_factor.py). Off by default so an upgrade
+    # changes nothing: turn it on once the administrators can enroll, and they
+    # are asked to on their next visit. While it is on, ADMIN_TOKEN, which no
+    # second factor can protect, is answered for reads only. Read from the
+    # environment alone, so a session that holds administrator access cannot
+    # switch it off.
+    admin_two_factor_required: bool = False
+    # How long a code keeps answering for changes that outlast the session
+    # (raising a role, minting a key for another account, exporting secrets,
+    # changing who sees a model) before the console asks for a new one.
+    two_factor_step_up_minutes: int = Field(default=10, ge=1, le=120)
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 

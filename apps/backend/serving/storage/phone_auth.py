@@ -38,7 +38,7 @@ class PostgresPhoneAuthMixin:
         self, *, user_id: str, phone: str, user_name: str, status: str, signup_reason: str | None
     ) -> bool:
         """Create a verified phone-only identity, refusing duplicate identifiers."""
-        from serving.storage.project_backfill import ensure_personal_org
+        from serving.storage.project_backfill import ensure_default_project
 
         async with self._pool.acquire() as conn, conn.transaction():
             row = await conn.fetchrow(
@@ -52,7 +52,7 @@ class PostgresPhoneAuthMixin:
                 signup_reason,
             )
             if row is not None:
-                await ensure_personal_org(conn, user_id=user_id, user_name=user_name)
+                await ensure_default_project(conn, user_id=user_id)
         return row is not None
 
     async def bind_user_phone(self, user_id: str, phone: str) -> bool:

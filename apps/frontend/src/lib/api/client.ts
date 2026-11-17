@@ -276,6 +276,51 @@ async function refreshAccessToken(apiBase: string): Promise<boolean> {
   return entry.promise;
 }
 
+/**
+ * Take up the session a redirect left in the browser's cookie.
+ *
+ * A sign-in that ends at an identity provider comes back by navigation: the
+ * gateway sets the session cookie on a redirect, and no response ever hands
+ * this tab a token. This asks for one the way a refresh does, but as the
+ * sign-in it is: whatever token the tab still holds -- the account it showed
+ * before it left for the provider -- is dropped first, so the answer is
+ * installed for the account the cookie now names instead of being refused as
+ * another tab's account change. A refresh already under way for the session
+ * this replaces installs nothing, and one that starts meanwhile shares this
+ * request.
+ *
+ * Resolves to the account the new token names, or to `null` when the browser
+ * holds no session to take up. Throws when the gateway could not answer, and
+ * then the tab holds the token it held before: with none, its next refresh
+ * would install the cookie's account under a page that still shows the other.
+ */
+export async function resumeBrowserSession(apiBase: string): Promise<string | null> {
+  if (keptSignedOut) {
+    // As for a sign-in answered here: its session starts in a new document.
+    reloadDocument();
+    return null;
+  }
+  const held = getAccessToken();
+  sessionGeneration += 1;
+  const generation = sessionGeneration;
+  accountChanged = false;
+  accessToken = null;
+  sessionStorage.removeItem('access_token');
+  try {
+    if (!(await refreshAccessToken(apiBase))) return null;
+  } catch (error) {
+    // Nothing was said about the session, so the tab is still the account it
+    // showed. With its token back, a later refresh that names another account
+    // is refused as an account change instead of being installed unnoticed.
+    if (held && generation === sessionGeneration && !getAccessToken()) {
+      accessToken = held;
+      sessionStorage.setItem('access_token', held);
+    }
+    throw error;
+  }
+  return tokenSubject(getAccessToken());
+}
+
 function accountChangedError(): APIError {
   return new APIError('ACCOUNT_CHANGED', ERROR_MESSAGES.ACCOUNT_CHANGED);
 }
@@ -291,7 +336,73 @@ function sessionGoneError(): APIError {
   return accountChangedError();
 }
 
+/**
+ * A request the gateway refused until this session gives a code from the
+ * account's authenticator app (403 `TWO_FACTOR_REQUIRED`).
+ */
+export interface TwoFactorChallenge {
+  /** Why a code is owed: `unverified`, `environment_changed` or `stale`. */
+  reason: string;
+}
+
+/** Asks the person for a code and resolves to whether the session is now verified. */
+type TwoFactorChallenger = (challenge: TwoFactorChallenge) => Promise<boolean>;
+
+let twoFactorChallenger: TwoFactorChallenger | null = null;
+
+/**
+ * Install what answers a `TWO_FACTOR_REQUIRED` refusal -- the console's code
+ * prompt -- or remove it with `null`. With none installed the refusal reaches
+ * the caller as any other error.
+ */
+export function setTwoFactorChallenger(challenger: TwoFactorChallenger | null): void {
+  twoFactorChallenger = challenger;
+}
+
+/** The path that gives the code: a refusal there is the answer, not another question. */
+const TWO_FACTOR_VERIFY_PATH = '/auth/two-factor/verify';
+
+async function twoFactorChallenge(
+  resp: Response,
+  input: string,
+): Promise<TwoFactorChallenge | null> {
+  if (resp.status !== 403 || input.startsWith(TWO_FACTOR_VERIFY_PATH)) return null;
+  if (!(resp.headers.get('content-type') ?? '').includes('json')) return null;
+  try {
+    const data: unknown = await resp.clone().json();
+    if (!data || typeof data !== 'object') return null;
+    const { error_code: code, reason } = data as Record<string, unknown>;
+    if (code !== 'TWO_FACTOR_REQUIRED') return null;
+    return { reason: typeof reason === 'string' ? reason : 'unverified' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A request as this tab's session. One refused for want of an authenticator
+ * code is sent once more after the person gives one; if they do not, the
+ * refusal is returned as it came.
+ */
 export async function fetchWithAuth(
+  apiBase: string,
+  input: string,
+  init: RequestInit = {},
+): Promise<Response> {
+  const generation = sessionGeneration;
+  const resp = await sendWithSession(apiBase, input, init);
+  if (!twoFactorChallenger) return resp;
+  const challenge = await twoFactorChallenge(resp, input);
+  if (!challenge) return resp;
+  const verified = await twoFactorChallenger(challenge);
+  if (!verified) return resp;
+  // The code was given by whoever holds the session now; a request made for
+  // an earlier one must not run again as them.
+  if (accountChanged || generation !== sessionGeneration) throw sessionGoneError();
+  return sendWithSession(apiBase, input, init);
+}
+
+async function sendWithSession(
   apiBase: string,
   input: string,
   init: RequestInit = {},
@@ -549,7 +660,11 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
         errorCode = 'INVALID_CREDENTIALS';
       }
       // If no specific pattern matched, use the detail message directly
-      // Don't force it into a predefined error code
+      // Don't force it into a predefined error code -- unless the body names
+      // its own (the two-factor refusals carry `detail` and `error_code`).
+      if (errorCode === 'UNKNOWN_ERROR' && typeof data.error_code === 'string') {
+        errorCode = data.error_code;
+      }
     } else if (data.error_code && typeof data.error_code === 'string') {
       // Legacy format
       errorCode = data.error_code;

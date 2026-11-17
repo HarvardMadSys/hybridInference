@@ -1,10 +1,12 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
+import { readJson } from './detail';
 import { config } from '@/config/env';
 import type {
   CostHistoryPoint,
   QuotaStateFilter,
   UsersSummary,
 } from '@/app/dashboard/admin/users/types';
+import type { ApiKeyListItem, Project } from './user';
 
 const API_BASE = config.apiBase;
 
@@ -163,6 +165,35 @@ export async function approveUser(userId: string, note?: string): Promise<Approv
   return jsonOrThrow<ApproveRejectResponse>(resp);
 }
 
+/** What a batch approval did with each requested user, in request order. */
+export interface BatchApproveUsersResponse {
+  approved: { user_id: string; email: string | null; phone?: string | null }[];
+  /** Requested users left unchanged: no such account, or no longer pending. */
+  skipped: {
+    user_id: string;
+    reason: 'not_found' | 'not_pending';
+    /** The account's status now; null when there is no such account. */
+    status: string | null;
+  }[];
+  message: string;
+}
+
+/**
+ * Approve several pending users in one request (at most 500). A user that is
+ * no longer pending is reported under `skipped` and left as it is.
+ */
+export async function batchApproveUsers(
+  userIds: string[],
+  note?: string,
+): Promise<BatchApproveUsersResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/users/batch-approve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(note ? { user_ids: userIds, note } : { user_ids: userIds }),
+  });
+  return jsonOrThrow<BatchApproveUsersResponse>(resp);
+}
+
 export async function rejectUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/reject`, {
     method: 'POST',
@@ -176,6 +207,17 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 // User Detail & Edit
 // ========================================
 
+/** One single sign-on identity linked to a user, as an administrator sees it. */
+export interface UserSsoIdentity {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  /** The email the identity carried when it was linked. */
+  email: string | null;
+  linked_at: string;
+  last_login_at: string | null;
+}
+
 export interface UserDetail {
   id: string;
   email: string | null;
@@ -187,6 +229,8 @@ export interface UserDetail {
   email_verified: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** The account has an authenticator app. Absent from a gateway older than the feature. */
+  two_factor_enabled?: boolean;
   has_key: boolean;
   key_prefix: string | null;
   quota_daily_usd: number | null;
@@ -204,6 +248,30 @@ export interface UserDetail {
   avg_turns: number | null;
   avg_user_turns: number | null;
   ask_question_fraction: number | null;
+  /** The identities that can sign in to the account; absent from an older gateway. */
+  sso_identities?: UserSsoIdentity[];
+}
+
+/**
+ * Remove another account's authenticator app and recovery codes, for someone
+ * who lost their device. Confirmed like any guarded change: by a recent code,
+ * or by `password` when the administrator's own account has no authenticator.
+ * 409 for the administrator's own account.
+ */
+export async function resetUserTwoFactor(
+  userId: string,
+  password?: string,
+): Promise<{ user_id: string; removed: boolean }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/two-factor/reset`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return readJson(resp);
 }
 
 export async function getUserDetail(
@@ -220,6 +288,40 @@ export async function getUserDetail(
     `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
   );
   return jsonOrThrow<UserDetail>(resp);
+}
+
+/** An account's projects and every key it holds, as an administrator reads them. */
+export interface AdminUserProjects {
+  projects: Project[];
+  keys: ApiKeyListItem[];
+}
+
+export async function getUserProjects(userId: string): Promise<AdminUserProjects> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/projects`);
+  return jsonOrThrow<AdminUserProjects>(resp);
+}
+
+/**
+ * Remove one single sign-on identity from a user's account. Confirmed like any
+ * guarded change: by a recent code, or by `password` when the administrator's
+ * own account has no authenticator. The admin token cannot stand in for either.
+ * The account's sessions and API keys are untouched.
+ */
+export async function unlinkUserSsoIdentity(
+  userId: string,
+  identityId: string,
+  password?: string,
+): Promise<{ message: string }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/sso-identities/${encodeURIComponent(identityId)}/unlink`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return jsonOrThrow<{ message: string }>(resp);
 }
 
 export interface UserUsageTotals {
@@ -346,7 +448,10 @@ export async function updateUser(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return jsonOrThrow<{ user_id: string; updated_fields: string[]; message: string }>(resp);
+  // The gateway's own reason for a refusal ("Cannot demote your own admin
+  // role.", an account with no authenticator): the shared mapping would read
+  // these 409s as a signup conflict.
+  return readJson<{ user_id: string; updated_fields: string[]; message: string }>(resp);
 }
 
 export async function deleteUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
@@ -463,6 +568,13 @@ export async function listAuditLog(
   params.set('offset', String(offset));
   const resp = await fetchWithAuth(API_BASE, `/admin/audit-log?${params.toString()}`);
   return jsonOrThrow<ListAuditLogResponse>(resp);
+}
+
+/** Every distinct action recorded in the audit log, sorted: what the action filter offers. */
+export async function listAuditActions(): Promise<string[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/audit-log/actions');
+  const data = await jsonOrThrow<{ actions: string[] }>(resp);
+  return data.actions;
 }
 
 // ========================================
@@ -1537,6 +1649,19 @@ interface ExportRequestsParams {
   includeContent?: boolean;
 }
 
+/**
+ * Start a download of the export the filters select, saved by the browser.
+ *
+ * The browser writes a file to its downloads folder as it arrives only when it
+ * requests the file itself, and then it sends no `Authorization` header. So
+ * this asks the gateway for a short-lived link that stands in for the header,
+ * and hands the link to the browser. It resolves once the browser has the
+ * link: from there only the browser's downloads list shows how the download
+ * goes, including a link refused when it is followed (the console cannot see
+ * that response). Read
+ * through `fetch` instead, an export of a few gigabytes had to fit in the tab's
+ * memory before anything was saved.
+ */
 export async function exportRequests(params: ExportRequestsParams): Promise<void> {
   const qs = new URLSearchParams({
     start_time: params.startTime,
@@ -1550,26 +1675,27 @@ export async function exportRequests(params: ExportRequestsParams): Promise<void
   setSourceParams(qs, { source: params.source, batchId: params.batchId });
   if (params.includeContent) qs.set('include_content', 'true');
 
-  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests?${qs.toString()}`);
+  const resp = await fetchWithAuth(API_BASE, `/admin/export/requests/link?${qs.toString()}`, {
+    method: 'POST',
+  });
   if (!resp.ok) {
     const err = await resp.json().catch(() => ({}));
     const message = (err as { detail?: string }).detail ?? `Export failed (HTTP ${resp.status})`;
     throw new Error(message);
   }
+  const { url } = (await resp.json()) as { url: string; expires_in: number };
 
-  const blob = await resp.blob();
-  const url = URL.createObjectURL(blob);
+  // The gateway answers with `Content-Disposition: attachment` and the file
+  // name, so following the link saves the file and leaves this page as it is.
   const a = document.createElement('a');
-  const startDate = params.startTime.slice(0, 10).replace(/-/g, '');
-  const endDate = (params.endTime ?? new Date().toISOString()).slice(0, 10).replace(/-/g, '');
-  a.href = url;
-  a.download = `requests-${startDate}-${endDate}.jsonl`;
+  a.href = `${API_BASE}${url}`;
+  a.download = '';
+  a.rel = 'noopener';
   try {
     document.body.appendChild(a);
     a.click();
   } finally {
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
   }
 }
 
@@ -2979,7 +3105,12 @@ export async function updateProviderRouteBatch(
   return jsonOrThrow<ProviderRoute>(resp);
 }
 
-/** Delete a config (models.yaml) route from this deployment; it can be restored. */
+/**
+ * Delete a catalog route from this deployment.
+ *
+ * While the model has another route, Restore brings this one back. Deleting
+ * the model's last route removes the model from the stored catalog.
+ */
 export async function removeProviderRoute(
   modelId: string,
   routeId: string,

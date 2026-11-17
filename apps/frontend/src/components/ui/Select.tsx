@@ -60,7 +60,7 @@ interface SelectProps<V extends string = string> {
    * `lg` matches the taller text inputs of the routing and key forms.
    */
   size?: 'sm' | 'md' | 'lg';
-  /** `dark` for pages that are always dark (the Playground). */
+  /** `dark` for surfaces that are always dark, independent of the console theme. */
   tone?: 'light' | 'dark';
   /** Width and layout classes for the trigger, e.g. `w-full` or `w-40`. */
   className?: string;

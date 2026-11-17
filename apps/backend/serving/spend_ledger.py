@@ -33,7 +33,10 @@ limit by much more than one of them costs.
 
 Everything here is per process. With several worker processes each one sees
 only its own requests in flight and its own costs not yet written, so a limit
-is protected within each process, not across them; production runs one.
+is protected within each process, not across them; production runs one. The
+shared mode (:mod:`serving.shared_spend`, off unless an operator activates it)
+keeps the same policy with its reservations in PostgreSQL, for every process
+alike; :func:`ledger_for` hands out its ledger when the process runs in it.
 """
 
 from __future__ import annotations
@@ -49,6 +52,7 @@ from decimal import ROUND_HALF_UP, Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
+from serving.observability import detached_tasks
 from serving.observability.tracked_tasks import tracked_task
 from serving.storage.base import CostIncrement, CostWriteOutcomeUnknown
 from serving.utils import context as req_ctx
@@ -124,7 +128,6 @@ class _Amount:
     cost: float = 0.0
     counted: Decimal = Decimal(0)
     requests: int = 0
-    org_id: str | None = None
     project_id: str | None = None
 
     def add(self, cost: float, counted: Decimal, requests: int) -> None:
@@ -196,7 +199,8 @@ class SpendCheck:
     None where the key has none (or the request is not the key's).
     """
 
-    ledger: SpendLedger | None
+    #: The per-process :class:`SpendLedger`, the shared ledger, or None (no store).
+    ledger: Any
     user_id: str
     key_id: int | None
     read_at: float
@@ -230,10 +234,53 @@ class SpendCheck:
         """Check again and reserve up to *amount*, in one step; see :meth:`SpendLedger.admit`.
 
         Without a ledger (no store) there is nothing to reserve in: only checked.
+        The per-process ledger only; the shared one admits with :meth:`reserve`.
         """
         if self.ledger is None:
             return None, self.refusal()
+        if getattr(self.ledger, "shared", False):
+            raise RuntimeError("a shared spend ledger admits asynchronously: use reserve()")
         return self.ledger.admit(self, amount)
+
+    async def reserve(
+        self, amount: float = quota.ESTIMATED_REQUEST_COST_USD, *, operation: str = "request"
+    ) -> tuple[Any, quota.BudgetRefusal | None]:
+        """Admit against this check in whichever mode the process runs.
+
+        The per-process ledger admits as :meth:`admit` does, without suspending.
+        The shared ledger (:meth:`serving.shared_spend.ledger.SharedSpendLedger.admit`)
+        reserves in the database, and raises a
+        :class:`~serving.storage.pools.DatabaseBusyError` when it cannot in time.
+        *operation* names what is admitted (``request``, ``batch``,
+        ``playground``), recorded with a shared reservation.
+        """
+        if self.ledger is not None and getattr(self.ledger, "shared", False):
+            return await self.ledger.admit(self, amount, operation=operation)
+        return self.admit(amount)
+
+
+def decide_admission(
+    check: SpendCheck,
+    amount: float,
+    extra: tuple[float, float, float, float],
+    project_extra: tuple[float, float] = (0.0, 0.0),
+) -> tuple[float | None, quota.BudgetRefusal | None]:
+    """The admission policy: refuse, or what to reserve, given *extra* on top of *check*.
+
+    Refused only when not even the flat minimum
+    (:data:`~serving.quota.ESTIMATED_REQUEST_COST_USD`) fits; otherwise *amount*,
+    but no more than the tightest limit has left and never less than that
+    minimum. Both ledgers apply exactly this.
+    """
+    refusal = _refusal(check, extra, project_extra)
+    if refusal is not None:
+        return None, refusal
+    if amount > quota.ESTIMATED_REQUEST_COST_USD:
+        amount = max(
+            quota.ESTIMATED_REQUEST_COST_USD,
+            min(amount, _headroom(check, extra, project_extra)),
+        )
+    return amount, None
 
 
 def _refusal(
@@ -365,14 +412,10 @@ class SpendLedger:
             if check.project_id
             else (0.0, 0.0)
         )
-        refusal = _refusal(check, extra, project_extra)
-        if refusal is not None:
+        decided, refusal = decide_admission(check, amount, extra, project_extra)
+        if refusal is not None or decided is None:
             return None, refusal
-        if amount > quota.ESTIMATED_REQUEST_COST_USD:
-            amount = max(
-                quota.ESTIMATED_REQUEST_COST_USD,
-                min(amount, _headroom(check, extra, project_extra)),
-            )
+        amount = decided
         reservation = Reservation(self, check.user_id, check.key_id, amount, check.project_id)
         if check.project_id is not None:
             _add_reserved(self._reserved_projects, check.project_id, amount)
@@ -454,38 +497,12 @@ class SpendLedger:
         """
         if not user_id or not cost_usd > 0:
             return None
-        if cost_usd > MAX_REQUEST_COST_USD:
-            logger.error(
-                "A request's cost is beyond any real request's; recording the ceiling",
-                extra={
-                    "event": "cost_above_request_ceiling",
-                    "user_id": user_id,
-                    "api_key_id": api_key_id,
-                    "cost_usd": repr(cost_usd),
-                    "ceiling_usd": MAX_REQUEST_COST_USD,
-                },
-            )
-            context = {
-                "cost_usd": repr(cost_usd),
-                "ceiling_usd": MAX_REQUEST_COST_USD,
-                "logs": "event cost_above_request_ceiling names the account",
-            }
-            _send_alert(
-                lambda alerts: alerts.alert_slack(
-                    alerts.AlertSeverity.ERROR,
-                    "Request cost above the per-request ceiling",
-                    context,
-                    dedupe_key="cost_above_request_ceiling",
-                    cooldown_sec=3600,
-                )
-            )
-            cost_usd = MAX_REQUEST_COST_USD
+        cost_usd = capped_cost(user_id, cost_usd, api_key_id=api_key_id)
         day = utc_day()
         context = req_ctx.get() or {}
-        org_id = context.get(req_ctx.ORG_ID) or None
         project_id = context.get(req_ctx.PROJECT_ID) or None
         key: _Key = (user_id, api_key_id, day, project_id)
-        self._pending.setdefault(key, _Amount(org_id=org_id, project_id=project_id)).add(
+        self._pending.setdefault(key, _Amount(project_id=project_id)).add(
             cost_usd, counted_amount(cost_usd), 1
         )
         unconfirmed = self._unconfirmed.setdefault(user_id, {}).setdefault(
@@ -540,9 +557,9 @@ class SpendLedger:
             self._set_aside([(key, batch[key], error) for key, error in outcome.refused])
         if outcome.failed:
             for key in outcome.failed:
-                self._pending.setdefault(
-                    key, _Amount(org_id=batch[key].org_id, project_id=batch[key].project_id)
-                ).add(batch[key].cost, batch[key].counted, batch[key].requests)
+                self._pending.setdefault(key, _Amount(project_id=batch[key].project_id)).add(
+                    batch[key].cost, batch[key].counted, batch[key].requests
+                )
             self._schedule_retry()
         else:
             self._retry_delay = 0.0
@@ -693,6 +710,34 @@ class SpendLedger:
                 continue
             self._start_write()
 
+    def handoff_report(self) -> dict[str, Any]:
+        """What this ledger still has to write, and what it never will, for a release handoff.
+
+        ``owed`` is recorded and not yet written, or being written: it is
+        written within seconds while the counters take writes (``finished``
+        when none is left). A write whose outcome is unknown is never retried
+        and a refused entry never written again: neither is confirmed in the
+        counters, and neither resolves by waiting. They make the ledger
+        unconfirmed (``confirmed`` false) for as long as this process lives,
+        which is what keeps it from being sealed and stopped as if its books
+        were complete. Only costs that were recorded count: a request that
+        cost nothing was never recorded, and stays out of all of this.
+        """
+        owed = [*self._pending.values(), *self._writing.values()]
+        unconfirmed = [amount for _, amount in [*self._unknown, *self._refused]]
+        return {
+            "mode": "local",
+            "owed_usd": round(sum(a.cost for a in owed), 6),
+            "owed_requests": sum(a.requests for a in owed),
+            "writing": self._writer is not None,
+            "unknown_requests": sum(a.requests for _, a in self._unknown),
+            "refused_requests": sum(a.requests for _, a in self._refused),
+            "unconfirmed_usd": round(sum(a.cost for a in unconfirmed), 6),
+            "unconfirmed_requests": sum(a.requests for a in unconfirmed),
+            "finished": not owed and self._writer is None,
+            "confirmed": not unconfirmed,
+        }
+
     def unwritten(self) -> tuple[float, int]:
         """Costs recorded and not known written (dollars, requests), for shutdown's report.
 
@@ -704,6 +749,37 @@ class SpendLedger:
         amounts += [amount for _, amount in self._unknown]
         amounts += [amount for _, amount in self._refused]
         return sum(a.cost for a in amounts), sum(a.requests for a in amounts)
+
+
+def capped_cost(user_id: str, cost_usd: float, *, api_key_id: int | None = None) -> float:
+    """*cost_usd*, or :data:`MAX_REQUEST_COST_USD` when beyond it -- logged and alerted."""
+    if cost_usd <= MAX_REQUEST_COST_USD:
+        return cost_usd
+    logger.error(
+        "A request's cost is beyond any real request's; recording the ceiling",
+        extra={
+            "event": "cost_above_request_ceiling",
+            "user_id": user_id,
+            "api_key_id": api_key_id,
+            "cost_usd": repr(cost_usd),
+            "ceiling_usd": MAX_REQUEST_COST_USD,
+        },
+    )
+    context = {
+        "cost_usd": repr(cost_usd),
+        "ceiling_usd": MAX_REQUEST_COST_USD,
+        "logs": "event cost_above_request_ceiling names the account",
+    }
+    _send_alert(
+        lambda alerts: alerts.alert_slack(
+            alerts.AlertSeverity.ERROR,
+            "Request cost above the per-request ceiling",
+            context,
+            dedupe_key="cost_above_request_ceiling",
+            cooldown_sec=3600,
+        )
+    )
+    return MAX_REQUEST_COST_USD
 
 
 def _add_reserved(table: dict[Any, list[float]], who: Any, amount: float) -> None:
@@ -743,8 +819,6 @@ async def _write(store: Any, batch: dict[_Key, _Amount]) -> _Outcome:
         async def write_one(key: _Key) -> None:
             amount = batch[key]
             scopes = {}
-            if amount.org_id is not None:
-                scopes["org_id"] = amount.org_id
             if amount.project_id is not None:
                 scopes["project_id"] = amount.project_id
             await store.increment_user_cost(
@@ -807,7 +881,6 @@ def _increment(key: _Key, amount: _Amount) -> CostIncrement:
         api_key_id=key[1],
         cost_usd=amount.counted,
         requests=amount.requests,
-        org_id=amount.org_id,
         project_id=amount.project_id,
     )
 
@@ -873,6 +946,7 @@ def _send_alert(send: Callable[[Any], Awaitable[Any]]) -> None:
     task = loop.create_task(run())
     _ALERTS.add(task)
     task.add_done_callback(_ALERTS.discard)
+    detached_tasks.track(task, name="alert_send")
 
 
 # Per store, weakly: a store that goes away (tests make many) takes its
@@ -882,10 +956,24 @@ _LEDGERS: weakref.WeakKeyDictionary[Any, SpendLedger] = weakref.WeakKeyDictionar
 _PINNED: dict[int, tuple[Any, SpendLedger]] = {}
 
 
-def ledger_for(store: Any) -> SpendLedger | None:
-    """The ledger of operational store *store*, made on first use; None without a store."""
+def ledger_for(store: Any) -> Any:
+    """The ledger of operational store *store*, made on first use; None without a store.
+
+    The per-process :class:`SpendLedger`, or -- in a process that runs the
+    shared mode (:mod:`serving.shared_spend.mode`) on a store that supports it
+    -- its :class:`~serving.shared_spend.ledger.SharedSpendLedger`, which
+    records and checks alike.
+    """
     if store is None:
         return None
+    from serving.shared_spend import mode as spend_mode
+
+    if spend_mode.is_shared():
+        # Fails closed on a store that cannot keep it: never the per-process
+        # ledger behind a shared mode's back.
+        from serving.shared_spend import ledger as shared_ledger
+
+        return shared_ledger.ledger_for(store)
     try:
         ledger = _LEDGERS.get(store)
         if ledger is None:
@@ -898,12 +986,32 @@ def ledger_for(store: Any) -> SpendLedger | None:
         return pinned[1]
 
 
+def handoff_report() -> list[dict[str, Any]]:
+    """Every ledger's :meth:`SpendLedger.handoff_report` (or the shared ledger's), now."""
+    from serving.shared_spend import ledger as shared_ledger
+
+    ledgers = [
+        *_LEDGERS.values(),
+        *(ledger for _, ledger in _PINNED.values()),
+        *shared_ledger.all_ledgers(),
+    ]
+    return [ledger.handoff_report() for ledger in ledgers]
+
+
 async def flush_all(timeout: float = 10.0) -> None:
     """Write every store's recorded costs before shutdown; report what could not be.
 
-    Called by the application's shutdown while the stores can still write.
+    Called by the application's shutdown while the stores can still write. A
+    shared ledger that sent everything then records that this process will
+    send nothing more (:meth:`serving.shared_spend.ledger.SharedSpendLedger.close`).
     """
-    ledgers = [*_LEDGERS.values(), *(ledger for _, ledger in _PINNED.values())]
+    from serving.shared_spend import ledger as shared_ledger
+
+    ledgers = [
+        *_LEDGERS.values(),
+        *(ledger for _, ledger in _PINNED.values()),
+        *shared_ledger.all_ledgers(),
+    ]
     for ledger in ledgers:
         with contextlib.suppress(Exception):
             await ledger.flush(timeout)
@@ -916,4 +1024,26 @@ async def flush_all(timeout: float = 10.0) -> None:
                     "cost_usd": round(cost, 6),
                     "requests": requests,
                 },
+            )
+        holdings = getattr(ledger, "holdings", None)
+        held = holdings() if holdings is not None else {}
+        if any(held.values()):
+            # Shared reservations this process could not settle stay counted in
+            # the database, for an operator (python -m serving.shared_spend).
+            logger.error(
+                "Shutting down with shared spend reservations not settled",
+                extra={
+                    "event": "spend_reservations_unsettled_at_shutdown",
+                    "held": held,
+                    "amount_usd": round(cost, 6),
+                },
+            )
+        close = getattr(ledger, "close", None)
+        if close is not None and not await close():
+            # Not recorded as closed: its settlement receipts are kept, and
+            # what it still holds stays counted, until an operator says this
+            # process is gone (python -m serving.shared_spend reconcile).
+            logger.error(
+                "Shutting down without recording this process's spend closure",
+                extra={"event": "spend_instance_not_closed"},
             )

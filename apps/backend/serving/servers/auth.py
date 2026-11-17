@@ -1,6 +1,5 @@
 """API key authentication and quota enforcement."""
 
-import asyncio
 import hashlib
 import hmac
 import secrets
@@ -25,11 +24,11 @@ from serving.grant_auth import (
     authenticate_grant_model_call,
 )
 from serving.model_access import (
-    CREDENTIAL_SCOPE_KEY,
     KEY_ALLOWED_MODELS_KEY,
     PROJECT_ALLOWED_MODELS_KEY,
     get_disabled_models_from_preferences,
 )
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -628,8 +627,6 @@ def _user_context(
         "project_id": identity.get("project_id"),
         "project_name": identity.get("project_name"),
         "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
-        "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
-        "org_id": identity.get("org_id"),
         "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
         "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
         "project_spent_today_usd": identity.get("project_spent_today_usd"),
@@ -643,11 +640,6 @@ def _user_context(
     project_allowed = identity.get("project_allowed_models")
     if api_key_id is not None and project_allowed is not None:
         context[PROJECT_ALLOWED_MODELS_KEY] = list(project_allowed)
-    # The key's scope binds like its allowlist: only while the request is
-    # attributed to that key, so impersonation never inherits it.
-    scope = identity.get("credential_scope")
-    if api_key_id is not None and scope:
-        context[CREDENTIAL_SCOPE_KEY] = scope
     return context
 
 
@@ -719,7 +711,7 @@ async def _authenticate_by_api_key(
         # fire-and-forget, so without a bound on how many captured prompts sit
         # queued behind it, a flood would grow worker memory by up to a megabyte
         # per rejection while rows drain.
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             queue_rejection_log(
                 request=request,
                 status_code=429,
@@ -757,7 +749,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -833,7 +825,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -856,17 +848,6 @@ async def _authenticate_by_api_key(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
         )
-    if user.get("org_status") == "suspended":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": {
-                    "type": "organization_suspended",
-                    "message": "This organization has been suspended by the operator.",
-                }
-            },
-        )
-
     _remember_key_privilege(key_hash, user.get("role"))
     return user, key_hash, spend_today
 
@@ -929,13 +910,6 @@ async def _resolve_effective_identity(
     if not target or target.get("status") != "active":
         logger.warning(
             "X-On-Behalf-Of target %r not found or inactive; "
-            "attributing request to the service account",
-            on_behalf_of,
-        )
-        return caller
-    if await op_store.get_personal_org_status(target["id"]) == "suspended":
-        logger.warning(
-            "X-On-Behalf-Of target %r belongs to a suspended organization; "
             "attributing request to the service account",
             on_behalf_of,
         )
@@ -1030,7 +1004,6 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
         {
             req_ctx.USER_ROLE: user_ctx.get("role") or "free",
             req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
-            req_ctx.ORG_ID: user_ctx.get("org_id") or "",
         }
     )
     return user_ctx
@@ -1047,7 +1020,7 @@ def _quota_exceeded(
     error_code = (
         "quota_exceeded" if refusal.scope == "account" else f"{refusal.scope}_budget_exceeded"
     )
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+    detached_tasks.rejection_log(  # its row is written after the 4xx is sent
         log_rejection(
             request=request,
             status_code=429,
@@ -1261,8 +1234,6 @@ async def authenticate_stored_key(
         )
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
-    if user.get("org_status") == "suspended":
-        raise StoredKeyRejected("the organization has been suspended by the operator")
 
     quota_daily_cost_usd = _daily_quota_usd(user)
     cost_spent = spend_today or 0.0
@@ -1506,7 +1477,7 @@ async def optional_verify_api_key(
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
-    if not row or row.get("org_status") == "suspended":
+    if not row:
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification
@@ -1547,8 +1518,6 @@ async def optional_verify_api_key(
             if row.get("allowed_models") is not None
             else {}
         ),
-        # And its scope decides which scoped models the listing may show.
-        **({CREDENTIAL_SCOPE_KEY: row["credential_scope"]} if row.get("credential_scope") else {}),
     }
 
 

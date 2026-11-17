@@ -2,12 +2,14 @@ import {
   fetchWithAuth,
   getAccessToken,
   jsonOrThrow,
+  resumeBrowserSession,
   safeFetch,
   setAccessToken,
   withSessionLock,
 } from './client';
 import { config } from '@/config/env';
-import { APIError } from '@/lib/utils/errors';
+import { APIError, ERROR_MESSAGES } from '@/lib/utils/errors';
+import type { SsoProviderRef } from './sso';
 
 const API_BASE = config.apiBase;
 
@@ -189,6 +191,19 @@ export async function login(data: LoginRequest): Promise<LoginResponse> {
 }
 
 /**
+ * Sign in with the session a redirect has already put in the browser's cookie:
+ * the way back from an identity provider, which answers with a navigation and
+ * so with no token. Resolves to the account's id, with its token installed.
+ *
+ * Throws when the browser holds no such session, or the gateway cannot say.
+ */
+export async function resumeSession(): Promise<string> {
+  const userId = await resumeBrowserSession(API_BASE);
+  if (!userId) throw new APIError('SESSION_NOT_FOUND', ERROR_MESSAGES.SESSION_NOT_FOUND);
+  return userId;
+}
+
+/**
  * Sign the current account out of this browser.
  *
  * Done only on the server's word: an ok answer, or a 401 -- its session had
@@ -253,6 +268,11 @@ export interface AccountSummary {
   signed_in: boolean;
   /** Whether it may use the Cloud Agent; null when signed out or unknown. */
   agent_access?: boolean | null;
+  /**
+   * The identity provider an account without a password signs in through.
+   * Signing it in again goes there, not to the password form.
+   */
+  sso_provider?: SsoProviderRef | null;
 }
 
 interface AccountsResponse {

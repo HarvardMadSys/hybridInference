@@ -98,8 +98,9 @@ async def test_cleanup_auth_tables_deletes_expected_tables_in_order():
     assert conn.execute.await_args_list == [
         call("DELETE FROM email_verification_tokens"),
         call("DELETE FROM password_reset_tokens"),
-        call("DELETE FROM agent_invite_tokens"),
-        call("DELETE FROM agent_provisioned_accounts"),
+        call("DELETE FROM sso_pending_links"),
+        call("DELETE FROM sso_flows"),
+        call("DELETE FROM user_identities"),
         call("DELETE FROM auth_sessions"),
         call("DELETE FROM browser_session_accounts"),
         call("DELETE FROM browser_sessions"),

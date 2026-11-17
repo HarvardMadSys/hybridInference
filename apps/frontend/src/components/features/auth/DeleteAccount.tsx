@@ -8,16 +8,19 @@ import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel } from '@/lib/utils/userLabel';
 import { isCompleteCode, OwnerPhoneCode } from './OwnerPhoneCode';
+import { SsoReauthConfirm, useSsoReauth, type SsoReauth } from './SsoReauth';
 import { useT, type Translate } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
 
 /** How the signed-in account proves it is its owner's, or why it cannot here. */
-type DeletionProof = 'password' | 'phone' | 'admin' | 'unavailable';
+type DeletionProof = 'password' | 'phone' | 'sso' | 'admin' | 'unavailable';
 
 export function deletionProof(user: AuthUser, phoneAuth: boolean): DeletionProof {
   if (user.role === 'admin' || user.is_admin) return 'admin';
   if (user.has_password !== false) return 'password';
   if (user.phone && user.phone_verified && phoneAuth) return 'phone';
+  // Neither: it signs in through an identity provider, and confirms there.
+  if (user.sso_reauth_provider) return 'sso';
   return 'unavailable';
 }
 
@@ -67,7 +70,11 @@ function historyKept(t: Translate, contactEmail: string | undefined): string {
 export function DangerZone() {
   const { state } = useAuth();
   const { branding, features } = useSiteConfig();
-  const [open, setOpen] = useState(false);
+  const reauth = useSsoReauth('delete_account');
+  // Back from confirming at the identity provider, the dialog it left is open
+  // again. Only for a round trip this tab started, which left its draft behind:
+  // an address alone -- a link someone was sent -- opens nothing.
+  const [open, setOpen] = useState(() => Boolean(reauth?.confirmed) && reauth?.draft != null);
   const t = useT();
   const user = state.user;
   if (!user) return null;
@@ -112,6 +119,14 @@ export function DangerZone() {
           onClose={() => setOpen(false)}
         />
       ) : null}
+      {open && proof === 'sso' && reauth ? (
+        <DeleteAccountDialog
+          user={user}
+          proof={reauth}
+          contactEmail={contactEmail}
+          onClose={() => setOpen(false)}
+        />
+      ) : null}
     </>
   );
 }
@@ -123,20 +138,23 @@ function DeleteAccountDialog({
   onClose,
 }: {
   user: AuthUser;
-  proof: 'password' | 'phone';
+  /** A password, a code sent to the account's phone, or its identity provider. */
+  proof: 'password' | 'phone' | SsoReauth;
   contactEmail: string | undefined;
   onClose: () => void;
 }) {
   const { deleteAccount } = useAuth();
   const t = useT();
   const identifier = userAccountLabel(user);
+  const reauth = typeof proof === 'object' ? proof : null;
   const titleId = useId();
   const confirmId = useId();
   const secretId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const confirmRef = useRef<HTMLInputElement>(null);
 
-  const [typed, setTyped] = useState('');
+  // What was typed before leaving for the identity provider comes back with it.
+  const [typed, setTyped] = useState(() => reauth?.draft ?? '');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -185,7 +203,11 @@ function DeleteAccountDialog({
   }, []);
 
   const matches = confirmationMatches(typed, identifier);
-  const proven = proof === 'password' ? password !== '' : isCompleteCode(code);
+  const proven = reauth
+    ? reauth.confirmed
+    : proof === 'password'
+      ? password !== ''
+      : isCompleteCode(code);
   const canDelete = matches && proven && !busy;
 
   const submit = async (event: FormEvent) => {
@@ -195,10 +217,16 @@ function DeleteAccountDialog({
     setError(null);
     try {
       await deleteAccount(
-        proof === 'password' ? { confirm: typed, password } : { confirm: typed, phoneCode: code },
+        // Confirmed at the identity provider: the request carries no proof of its own.
+        reauth
+          ? { confirm: typed }
+          : proof === 'password'
+            ? { confirm: typed, password }
+            : { confirm: typed, phoneCode: code },
       );
       toast.success(t('account.delete.done_toast', 'Your account has been deleted.'));
     } catch (err) {
+      reauth?.settle(err);
       setError(getErrorMessage(err));
       setBusy(false);
     }
@@ -262,7 +290,9 @@ function DeleteAccountDialog({
             />
           </div>
 
-          {proof === 'password' ? (
+          {reauth ? (
+            <SsoReauthConfirm reauth={reauth} draft={() => typed} disabled={busy} />
+          ) : proof === 'password' ? (
             <div>
               <label htmlFor={secretId} className="block text-[13px] text-gray-700">
                 {t('account.delete.password', 'Your password')}
