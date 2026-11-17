@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
 from serving.utils.logging import get_logger
 
@@ -417,7 +418,7 @@ async def _take_intake_slot(
         "per-user intake limit hit",
         extra={"user_id": user_id, "role": role_label, "limit": limit, "route": request.url.path},
     )
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+    detached_tasks.rejection_log(  # its row is written after the 4xx is sent
         log_rejection(
             request=request,
             status_code=429,
@@ -663,7 +664,7 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=429,
@@ -692,7 +693,7 @@ async def enforce_user_concurrency(
         for scope, scoped_key, capacity in scope_concurrency_limits(user):
             granted, limit, _ = await limiter.try_acquire(scoped_key, role, is_admin, capacity)
             if not granted:
-                asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+                detached_tasks.rejection_log(  # its row is written after the 4xx is sent
                     log_rejection(
                         request=request,
                         status_code=429,

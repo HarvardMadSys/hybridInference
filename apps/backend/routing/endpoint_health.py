@@ -24,6 +24,7 @@ from serving.exceptions import (
     UpstreamStreamIdleError,
     operator_safe_error,
 )
+from serving.observability import detached_tasks
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import circuit_open_policy
@@ -451,6 +452,7 @@ def _fire_and_forget(coro: Any) -> bool:
     task = loop.create_task(coro)
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
+    detached_tasks.track(task, name="alert_send")
     return True
 
 

@@ -10,6 +10,19 @@ runs only once the headers are complete and the application is called.
 
 Bytes in either direction reset the clock, so a stream that keeps sending is
 unaffected. ``HTTP_IDLE_TIMEOUT_SECONDS`` of 0 or less disables it.
+
+While the process drains for a release handoff (:mod:`serving.servers.handoff`)
+a connection with no request in progress gets uvicorn's own keep-alive limit
+instead, :data:`DRAIN_IDLE_SECONDS`, whatever the setting says. Uvicorn closes a
+connection that served a request after that long anyway; this extends the rule
+to one that was opened and never used, which it leaves alone. A connection
+with a request in progress keeps the normal limit: a quiet stream is not idle.
+The short limit applies only to a connection that was idle when its timer was
+armed; if a request begins before it runs out, the connection gets the normal
+limit instead, counted from its last byte, as it would have had without the
+drain. The normal limit running out still closes a connection, draining or not,
+and a disabled one stays disabled. The open connections, and how many of them have a request in progress, are
+what the handoff's seal reads (:func:`connection_counts`).
 """
 
 from __future__ import annotations
@@ -36,6 +49,13 @@ _PROTOCOLS = (
     ("uvicorn.protocols.http.h11_impl", "H11Protocol"),
 )
 _INSTALLED = "_idle_connection_timeout_installed"
+
+#: The idle limit of a connection with no request in progress while the
+#: process drains: uvicorn's default keep-alive timeout, which is what it
+#: already applies to a connection between two requests.
+DRAIN_IDLE_SECONDS = 5.0
+
+_draining = False
 
 
 def idle_timeout_seconds() -> float:
@@ -77,26 +97,63 @@ class IdleWatch:
         transport: object,
         timeout_s: Callable[[], float],
         peer: Callable[[], str],
+        busy: Callable[[], bool] | None = None,
+        path: Callable[[], str | None] | None = None,
     ) -> None:
         self._transport = transport
         self._timeout_s = timeout_s
         self._peer = peer
+        self._busy = busy or (lambda: False)
+        self._path = path or (lambda: None)
         self._loop = asyncio.get_running_loop()
         self._handle: asyncio.TimerHandle | None = None
         self._closed = False
         self._armed_for = 0.0
+        #: Whether the timer armed now is the drain's short limit for an idle
+        #: connection, rather than the normal one.
+        self._short = False
+        self._touched_at = self._loop.time()
 
     def touch(self) -> None:
         """Push the deadline out because a byte just moved."""
         if self._closed:
             return
+        self._touched_at = self._loop.time()
+        self.rearm()
+
+    def rearm(self) -> None:
+        """Arm the limit that applies now, counted from the last byte."""
+        if self._closed:
+            return
         self._cancel_handle()
         timeout_s = self._timeout_s()
+        self._short = _draining and not self._busy()
+        if self._short:
+            timeout_s = min(timeout_s, DRAIN_IDLE_SECONDS) if timeout_s > 0 else DRAIN_IDLE_SECONDS
+        self._arm(timeout_s)
+
+    def _arm(self, timeout_s: float) -> None:
         if timeout_s <= 0:
             self._armed_for = 0.0
             return
         self._armed_for = timeout_s
-        self._handle = self._loop.call_later(timeout_s, self._fire)
+        elapsed = self._loop.time() - self._touched_at
+        self._handle = self._loop.call_later(max(timeout_s - elapsed, 0.0), self._fire)
+
+    def busy(self) -> bool:
+        """Whether a request is in progress on this connection."""
+        return self._busy()
+
+    def path(self) -> str | None:
+        """The path of the request in progress on this connection, if any."""
+        return self._path() if self._busy() else None
+
+    def closing(self) -> bool:
+        """Whether this connection is closed or being closed."""
+        if self._closed:
+            return True
+        is_closing = getattr(self._transport, "is_closing", None)
+        return bool(callable(is_closing) and is_closing())
 
     def cancel(self) -> None:
         """Drop the timer. The connection is already going away."""
@@ -114,6 +171,15 @@ class IdleWatch:
             return
         is_closing = getattr(self._transport, "is_closing", None)
         if callable(is_closing) and is_closing():
+            return
+        if self._short and self._busy():
+            # The drain's short limit, armed while the connection was idle, and
+            # a request has begun since: that limit was never this request's.
+            # It gets the normal one from its last byte, as without the drain;
+            # none if the normal one is disabled. When that runs out, this
+            # fires again and the connection is closed like any other.
+            self._short = False
+            self._arm(self._timeout_s())
             return
         logger.warning(
             "http_idle_timeout timeout_s=%s peer=%s",
@@ -183,7 +249,13 @@ _BY_TRANSPORT: dict[int, IdleWatch] = {}
 
 
 def _attach(protocol: object, transport: object) -> None:
-    watch = IdleWatch(transport, idle_timeout_seconds, lambda: _peer(protocol))
+    watch = IdleWatch(
+        transport,
+        idle_timeout_seconds,
+        lambda: _peer(protocol),
+        lambda: _busy(protocol),
+        lambda: _path(protocol),
+    )
     protocol._idle_watch = watch  # type: ignore[attr-defined]
     _BY_TRANSPORT[id(transport)] = watch
     watch.touch()
@@ -208,6 +280,53 @@ def _wrap_cycle(cycle: type) -> None:
         await orig_send(self, message)
 
     cycle.send = send  # type: ignore[method-assign]
+
+
+def _busy(protocol: object) -> bool:
+    """Whether *protocol* has a request in progress: headers read, response not finished."""
+    cycle = getattr(protocol, "cycle", None)
+    return cycle is not None and not getattr(cycle, "response_complete", True)
+
+
+def _path(protocol: object) -> str | None:
+    """The path of *protocol*'s current request, as the application sees it."""
+    cycle = getattr(protocol, "cycle", None)
+    scope = getattr(cycle, "scope", None) or {}
+    path = scope.get("path")
+    return path if isinstance(path, str) else None
+
+
+def set_draining(draining: bool) -> None:
+    """Apply, or lift, the drain's idle limit to every connection open now and later."""
+    global _draining
+    if draining == _draining:
+        return
+    _draining = draining
+    for watch in list(_BY_TRANSPORT.values()):
+        watch.rearm()
+
+
+def connection_counts(is_control: Callable[[str], bool] | None = None) -> dict[str, int]:
+    """The accepted connections still open, by what they carry now.
+
+    ``busy`` have a request in progress; ``control`` carry one whose path
+    *is_control* accepts (a probe, a release call); ``other`` is every other
+    open connection -- idle, carrying a request, or with a request arriving --
+    on which a request could still come. A connection already closing is not
+    counted at all: no request can arrive on it. Each connection is judged by
+    its own request, so a probe whose client has gone counts nowhere.
+    """
+    open_ = busy = control = 0
+    for watch in list(_BY_TRANSPORT.values()):
+        if watch.closing():
+            continue
+        open_ += 1
+        if watch.busy():
+            busy += 1
+            path = watch.path()
+            if is_control is not None and path is not None and is_control(path):
+                control += 1
+    return {"open": open_, "busy": busy, "control": control, "other": open_ - control}
 
 
 def _peer(protocol: object) -> str:

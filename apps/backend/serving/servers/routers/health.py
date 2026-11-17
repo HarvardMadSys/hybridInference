@@ -9,10 +9,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from serving.config.settings import get_settings, has_role
+from serving.observability import detached_tasks
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import db_disconnect_policy
-from serving.servers import restart
+from serving.servers import handoff, restart
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import (
     database_enabled,
@@ -65,6 +66,7 @@ def _report_in_background(coro: Coroutine[Any, Any, bool]) -> None:
         return
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
+    detached_tasks.track(task, name="alert_send")
 
 
 def _route_is_published(route: Any) -> bool:
@@ -414,6 +416,12 @@ async def health_ready(
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
     """
+    # A process handing its traffic to another one (serving/servers/handoff.py)
+    # still serves what reaches it, but should be given nothing more.
+    if handoff.HANDOFF.state is not handoff.State.SERVING:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_ready", "reason": handoff.HANDOFF.state.value}
+
     # Membership gates readiness only while it gates identity: with the master
     # TRUST_PROXY_HEADERS switch off, discovery is skipped and identities stay
     # unknown, so the store checks below decide alone.

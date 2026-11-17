@@ -1,6 +1,5 @@
 """API key authentication and quota enforcement."""
 
-import asyncio
 import hashlib
 import hmac
 import secrets
@@ -29,6 +28,7 @@ from serving.model_access import (
     PROJECT_ALLOWED_MODELS_KEY,
     get_disabled_models_from_preferences,
 )
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -711,7 +711,7 @@ async def _authenticate_by_api_key(
         # fire-and-forget, so without a bound on how many captured prompts sit
         # queued behind it, a flood would grow worker memory by up to a megabyte
         # per rejection while rows drain.
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             queue_rejection_log(
                 request=request,
                 status_code=429,
@@ -749,7 +749,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -825,7 +825,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -1020,7 +1020,7 @@ def _quota_exceeded(
     error_code = (
         "quota_exceeded" if refusal.scope == "account" else f"{refusal.scope}_budget_exceeded"
     )
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+    detached_tasks.rejection_log(  # its row is written after the 4xx is sent
         log_rejection(
             request=request,
             status_code=429,

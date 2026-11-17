@@ -1644,6 +1644,46 @@ class SharedSpendLedger:
             "unaccounted": states.get("unaccounted", 0),
         }
 
+    def handoff_report(self) -> dict[str, Any]:
+        """What this ledger still has to send, and what it holds, for a release handoff.
+
+        Unfinished while a request it admitted runs, a settlement is queued,
+        being written or waiting to be retried, or an abandoned admission is
+        unresolved: each ends on its own while the database takes writes.
+
+        Unconfirmed (``confirmed`` false) while a cost is not known to be in
+        the counters and will not get there by waiting: a quarantined or an
+        unaccounted reservation (an operator's, ``python -m
+        serving.shared_spend``) or a plain increment the counters refused and
+        set aside. This process holds them for as long as it lives, and is not
+        to be sealed and stopped as if its books were complete. A reservation
+        released with no cost, or retired by another settlement, holds nothing
+        and counts in neither.
+        """
+        held = self.holdings()
+        cost, records = self.unwritten()
+        liabilities = self._every_liability()
+        unconfirmed = [*self._set_aside, *(c for r in liabilities for c in r.charges)]
+        return {
+            "mode": "shared",
+            "holdings": held,
+            "not_settled_usd": round(cost, 6),
+            "not_settled_records": records,
+            "writing": self._writer is not None,
+            "unconfirmed_reservations": len(liabilities),
+            "unconfirmed_increments": len(self._set_aside),
+            "unconfirmed_usd": round(
+                float(sum((line.cost_usd for line in unconfirmed), Decimal(0))), 6
+            ),
+            "finished": (
+                self._writer is None
+                and not self._has_work()
+                and not held["active"]
+                and not held["abandoned"]
+            ),
+            "confirmed": not liabilities and not self._set_aside,
+        }
+
     def fully_settled(self) -> bool:
         """Whether nothing this process admitted or recorded is unsettled or a liability."""
         return not any(self.holdings().values()) and self.unwritten()[1] == 0
