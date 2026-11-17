@@ -17,7 +17,11 @@ instead, :data:`DRAIN_IDLE_SECONDS`, whatever the setting says. Uvicorn closes a
 connection that served a request after that long anyway; this extends the rule
 to one that was opened and never used, which it leaves alone. A connection
 with a request in progress keeps the normal limit: a quiet stream is not idle.
-The open connections, and how many of them have a request in progress, are
+The short limit applies only to a connection that was idle when its timer was
+armed; if a request begins before it runs out, the connection gets the normal
+limit instead, counted from its last byte, as it would have had without the
+drain. The normal limit running out still closes a connection, draining or not,
+and a disabled one stays disabled. The open connections, and how many of them have a request in progress, are
 what the handoff's seal reads (:func:`connection_counts`).
 """
 
@@ -105,20 +109,36 @@ class IdleWatch:
         self._handle: asyncio.TimerHandle | None = None
         self._closed = False
         self._armed_for = 0.0
+        #: Whether the timer armed now is the drain's short limit for an idle
+        #: connection, rather than the normal one.
+        self._short = False
+        self._touched_at = self._loop.time()
 
     def touch(self) -> None:
         """Push the deadline out because a byte just moved."""
         if self._closed:
             return
+        self._touched_at = self._loop.time()
+        self.rearm()
+
+    def rearm(self) -> None:
+        """Arm the limit that applies now, counted from the last byte."""
+        if self._closed:
+            return
         self._cancel_handle()
         timeout_s = self._timeout_s()
-        if _draining and not self._busy():
+        self._short = _draining and not self._busy()
+        if self._short:
             timeout_s = min(timeout_s, DRAIN_IDLE_SECONDS) if timeout_s > 0 else DRAIN_IDLE_SECONDS
+        self._arm(timeout_s)
+
+    def _arm(self, timeout_s: float) -> None:
         if timeout_s <= 0:
             self._armed_for = 0.0
             return
         self._armed_for = timeout_s
-        self._handle = self._loop.call_later(timeout_s, self._fire)
+        elapsed = self._loop.time() - self._touched_at
+        self._handle = self._loop.call_later(max(timeout_s - elapsed, 0.0), self._fire)
 
     def busy(self) -> bool:
         """Whether a request is in progress on this connection."""
@@ -152,10 +172,14 @@ class IdleWatch:
         is_closing = getattr(self._transport, "is_closing", None)
         if callable(is_closing) and is_closing():
             return
-        if _draining and self._busy():
-            # Armed with the drain's short limit while idle, and a request has
-            # begun since: it gets the normal limit, from now.
-            self.touch()
+        if self._short and self._busy():
+            # The drain's short limit, armed while the connection was idle, and
+            # a request has begun since: that limit was never this request's.
+            # It gets the normal one from its last byte, as without the drain;
+            # none if the normal one is disabled. When that runs out, this
+            # fires again and the connection is closed like any other.
+            self._short = False
+            self._arm(self._timeout_s())
             return
         logger.warning(
             "http_idle_timeout timeout_s=%s peer=%s",
@@ -279,7 +303,7 @@ def set_draining(draining: bool) -> None:
         return
     _draining = draining
     for watch in list(_BY_TRANSPORT.values()):
-        watch.touch()
+        watch.rearm()
 
 
 def connection_counts(is_control: Callable[[str], bool] | None = None) -> dict[str, int]:

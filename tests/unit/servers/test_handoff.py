@@ -10,6 +10,7 @@ do.
 from __future__ import annotations
 
 import asyncio
+import json
 import types
 from typing import Any
 
@@ -20,7 +21,7 @@ from fastapi import FastAPI, Response
 from starlette.responses import StreamingResponse
 
 from serving.observability import detached_tasks
-from serving.servers import handoff, idle_connection
+from serving.servers import handoff, idle_connection, streaming_response
 from serving.servers.handoff import Handoff, HandoffMiddleware, State
 from serving.servers.routers import handoff as handoff_routes
 from serving.servers.streaming_response import ClosingStreamingResponse
@@ -34,7 +35,7 @@ REAL_CONNECTION_COUNTS = idle_connection.connection_counts
 
 class _Logger:
     def __init__(self) -> None:
-        self.report = {"queued": 0, "writing": 0, "dropped": 0, "finished": True}
+        self.report = {"queued": 0, "writing": 0, "dropped": 0, "failed": 0, "finished": True}
 
     def pending(self) -> dict[str, Any]:
         return dict(self.report)
@@ -85,6 +86,7 @@ def world(monkeypatch):
         "serving.utils.email_scheduler.resume_jobs", lambda: state.paused_jobs.append("resume")
     )
     monkeypatch.setattr(detached_tasks, "_PENDING", {})
+    monkeypatch.setattr(streaming_response, "_ABANDONED_CLOSES", 0)
     return state
 
 
@@ -143,7 +145,43 @@ def test_an_idle_draining_process_seals_and_can_resume(world):
             "batch_work_running",
         ),
         (lambda w: setattr(w, "scheduled", 1), "scheduled_jobs_running"),
-        (lambda w: w.spend.append({"mode": "local", "finished": False}), "spend_unwritten"),
+        (
+            lambda w: w.spend.append({"mode": "local", "finished": False, "confirmed": True}),
+            "spend_unwritten",
+        ),
+        (
+            lambda w: w.services.completions_logger.report.update(dropped=1),
+            "request_log_lost",
+        ),
+        (
+            lambda w: w.services.completions_logger.report.update(failed=1),
+            "request_log_lost",
+        ),
+        (
+            lambda w: setattr(streaming_response, "_ABANDONED_CLOSES", 1),
+            "stream_close_abandoned",
+        ),
+        # A local cost whose write had an unknown outcome, or that the counters
+        # refused; a shared reservation quarantined or unaccounted.
+        (
+            lambda w: w.spend.append(
+                {"mode": "local", "finished": True, "confirmed": False, "unknown_requests": 1}
+            ),
+            "spend_unconfirmed",
+        ),
+        (
+            lambda w: w.spend.append(
+                {
+                    "mode": "shared",
+                    "finished": True,
+                    "confirmed": False,
+                    "unconfirmed_reservations": 1,
+                }
+            ),
+            "spend_unconfirmed",
+        ),
+        # A ledger that does not say is read as unconfirmed.
+        (lambda w: w.spend.append({"mode": "local", "finished": True}), "spend_unconfirmed"),
     ],
 )
 def test_anything_left_keeps_the_process_draining(world, change, reason):
@@ -154,17 +192,39 @@ def test_anything_left_keeps_the_process_draining(world, change, reason):
     assert world.handoff.state is State.DRAINING
 
 
-def test_what_never_finishes_by_waiting_is_reported_but_does_not_block(world):
+def test_a_standing_task_does_not_hold_a_drain(world):
     _drain(world)
-    # The shared ledger's hourly upkeep runs for the life of the process; a
-    # refused cost is never written again. Neither is a reason to keep it.
+    # The shared ledger's hourly upkeep runs for the life of the process.
     world.tracked["spend_upkeep"] = 1
-    world.spend.append({"mode": "local", "finished": True, "refused_requests": 3})
 
-    report = handoff.status(world.services)
-    assert report["tasks"]["tracked"] == {}
-    assert report["spend"][0]["refused_requests"] == 3
+    assert handoff.status(world.services)["tasks"]["tracked"] == {}
     assert handoff.seal(world.services, by="test") == []
+
+
+def test_a_cost_not_confirmed_keeps_the_process_draining_however_long_it_waits(world):
+    """It never resolves by waiting, and that is no reason to let the process go."""
+    _drain(world)
+    world.spend.append(
+        {
+            "mode": "local",
+            "finished": True,
+            "confirmed": False,
+            "refused_requests": 3,
+            "unconfirmed_requests": 3,
+            "unconfirmed_usd": 0.75,
+        }
+    )
+
+    for _ in range(3):
+        assert handoff.seal(world.services, by="test") == ["spend_unconfirmed"]
+    report = handoff.status(world.services)
+    assert (report["state"], report["idle"], report["blocking"]) == (
+        "draining",
+        False,
+        ["spend_unconfirmed"],
+    )
+    assert report["spend"][0]["unconfirmed_requests"] == 3
+    assert report["spend"][0]["unconfirmed_usd"] == 0.75
 
 
 async def test_a_detached_write_keeps_the_process_draining_until_it_ends(world):
@@ -428,6 +488,33 @@ async def test_the_body_is_finished_even_while_the_request_is_cancelled():
     assert closed == ["finalized"]
 
 
+async def test_a_close_that_is_abandoned_keeps_the_process_draining(world, monkeypatch):
+    """Whatever the close still had to bill or log is not known to be done."""
+    monkeypatch.setattr(streaming_response, "CLOSE_TIMEOUT_SECONDS", 0.02)
+
+    async def body():
+        try:
+            yield b"one"
+            yield b"two"
+        finally:
+            await asyncio.Event().wait()  # a close that hangs
+
+    hang_up, receive, send, _ = _blocked_client()
+    _drain(world)
+
+    async def app(scope, receive, send):
+        await ClosingStreamingResponse(body())(scope, receive, send)
+
+    call = asyncio.create_task(HandoffMiddleware(app)({**SCOPE}, receive, send))
+    await asyncio.sleep(0.01)
+    hang_up.set()
+    await call
+
+    assert world.handoff.requests == 0
+    assert handoff.seal(world.services, by="test") == ["stream_close_abandoned"]
+    assert handoff.status(world.services)["streams"] == {"close_abandoned": 1}
+
+
 async def test_work_the_close_leaves_behind_keeps_the_process_draining(world):
     """In flight drops to zero when the request ends; what it queued still counts."""
     gate = asyncio.Event()
@@ -565,6 +652,203 @@ async def test_the_playground_badge_wrapper_closes_the_stream_it_wraps():
     await wrapped.body_iterator.aclose()
 
     assert closed == ["finalized"]
+
+
+# -- Responses: the events own the chat stream they re-frame ----------------------------
+
+
+def _chat_frame(text: str) -> str:
+    chunk = {
+        "id": "chatcmpl-1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "m",
+        "choices": [{"index": 0, "delta": {"content": text}, "finish_reason": None}],
+    }
+    return f"data: {json.dumps(chunk)}\n\n"
+
+
+class _Session:
+    """The chat stream's session: its close is where it bills and queues its row.
+
+    Its close waits for *release*, as a real one waits for its upstream reader,
+    so a test can look at the process while the close is under way.
+    """
+
+    def __init__(self) -> None:
+        self.release = asyncio.Event()
+        self.finalized = False
+        self.stream = self._stream()
+
+    async def _stream(self):
+        try:
+            for index in range(50):
+                yield _chat_frame(f"t{index} ")
+        finally:
+            await self.release.wait()
+            self.finalized = True
+
+
+def _primed_chat_stream(session: _Session):
+    """A real :class:`ChatStream` already primed, its rest being *session*'s stream."""
+    from serving.servers.routers.completions import ChatStream
+
+    class Primed(ChatStream):
+        __slots__ = ()
+
+        def __init__(self) -> None:
+            self._sse = None
+            self._head = None
+            self._tail = session.stream
+            self._frames_started = False
+
+        async def prime(self) -> None:
+            return None
+
+    return Primed()
+
+
+def _responses_request():
+    from starlette.requests import Request
+
+    body = json.dumps({"model": "m", "input": "hi", "stream": True, "store": False}).encode()
+
+    async def receive():
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/responses",
+        "headers": [(b"content-type", b"application/json")],
+        "query_string": b"",
+        "client": ("127.0.0.1", 1),
+        "app": types.SimpleNamespace(state=types.SimpleNamespace()),
+    }
+    return Request(scope, receive)
+
+
+async def _v1_responses(streams):
+    from serving.servers.routers import responses
+
+    return await responses.create_response(
+        request=_responses_request(),
+        http_response=Response(),
+        authorization=None,
+        user_ctx={"user_id": "u1", "authenticated": True},
+        router_exec=None,
+        log_store=None,
+        model_router_registry=None,
+        model_visibility_resolver=None,
+        completions_logger=None,
+        pricing_lookup=None,
+        cost_tracker=None,
+        response_store=None,
+        _concurrency_slot=None,
+        _streams=streams,
+    )
+
+
+async def _playground_responses(streams):
+    from serving.servers.routers import playground
+
+    return await playground.playground_responses(
+        request=_responses_request(),
+        caller={"user_id": "u1", "role": "user"},
+        _slot=None,
+        router_exec=None,
+        log_store=None,
+        model_router_registry=None,
+        model_visibility_resolver=None,
+        completions_logger=None,
+        pricing_lookup=None,
+        cost_tracker=None,
+        response_store=None,
+        _streams=streams,
+    )
+
+
+@pytest.mark.parametrize("route", [_v1_responses, _playground_responses])
+async def test_a_responses_stream_left_by_its_client_finishes_its_chat_stream_first(
+    world, monkeypatch, route
+):
+    """The client leaves mid-stream: no seal until the chat stream has billed and logged.
+
+    The test holds the session and the chat stream itself, so the garbage
+    collector cannot close them behind its back.
+    """
+    from serving.servers.routers import responses
+
+    session = _Session()
+    chat_stream = _primed_chat_stream(session)
+
+    async def execute_chat(*_args, **_kwargs):
+        return chat_stream
+
+    monkeypatch.setattr(responses, "execute_chat", execute_chat)
+
+    async def app(scope, receive, send):
+        streams: list[Any] = []
+        response = await route(streams)
+        try:
+            await response(scope, receive, send)
+        finally:
+            # What the route's release dependency does once the response is over.
+            for held in streams:
+                await held.close_if_unstarted()
+
+    hang_up, receive, send, sent = _blocked_client()
+    _drain(world)
+    call = asyncio.create_task(
+        HandoffMiddleware(app)({**SCOPE, "path": "/v1/responses"}, receive, send)
+    )
+    await asyncio.sleep(0.02)
+    assert len(sent) > 2  # streaming, and the client has stopped reading
+    hang_up.set()
+    await asyncio.sleep(0.02)
+
+    # The chat stream's close is under way: the request is not over.
+    assert not session.finalized
+    assert not call.done()
+    assert handoff.seal(world.services, by="test") == ["requests_in_flight"]
+
+    session.release.set()
+    await call
+    assert session.finalized
+    assert handoff.seal(world.services, by="test") == []
+
+
+async def test_responses_events_close_their_chat_stream_however_they_end():
+    """Closed by their consumer mid-way, or run to the end: the chat stream ends with them."""
+    from serving.servers.routers import responses
+
+    async def events(session):
+        return responses._response_events(
+            session.stream,
+            response_store=None,
+            body={"model": "m"},
+            model="m",
+            response_id="resp_1",
+            created_at=1,
+            previous_response_id=None,
+            store=False,
+            convo_messages=[],
+            user_id="u1",
+        )
+
+    closed = _Session()
+    closed.release.set()
+    stream = await events(closed)
+    await stream.__anext__()
+    await stream.aclose()
+    assert closed.finalized
+
+    finished = _Session()
+    finished.release.set()
+    stream = await events(finished)
+    async for _ in stream:
+        pass
+    assert finished.finalized
 
 
 async def test_a_draining_response_replaces_a_keep_alive_header(world):

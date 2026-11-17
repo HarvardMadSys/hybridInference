@@ -159,6 +159,9 @@ class CompletionsLogger:
         self._in_flight = 0
         self._stop_done: concurrent.futures.Future[None] | None = None
         self._dropped_count = 0
+        # Rows that reached no table otherwise: a write that failed, or a
+        # payload refused because the worker pool died on another loop.
+        self._failed_count = 0
         self._last_drop_warn_at: float | None = None
         self._lifecycle: _Lifecycle = _Lifecycle.RUNNING
 
@@ -229,6 +232,7 @@ class CompletionsLogger:
             # here would hand that loop's queue to a second event loop; keep
             # the pending rows and refuse instead.
             if self._queue_loop is not loop:
+                self._failed_count += 1
                 logger.error(
                     f"Request-log workers died on their original loop; refusing "
                     f"payload for {request_id} with {self._queue.qsize() if self._queue else 0} "
@@ -351,6 +355,7 @@ class CompletionsLogger:
             await self._log_store.log_request(**_with_spend_reservation(log_data))
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as exc:
+            self._failed_count += 1
             logger.error(
                 f"Background DB logging failed for request {request_id}: {exc}",
                 exc_info=True,
@@ -362,13 +367,17 @@ class CompletionsLogger:
 
         ``queued`` rows wait for a worker, ``writing`` ones are being written;
         ``dropped`` counts every row lost to a full queue since the process
-        started. ``finished`` is true when nothing is queued or being written.
+        started, and ``failed`` every row whose write failed or that was
+        refused for want of a worker. ``finished`` is true when nothing is
+        queued or being written. A row dropped or failed is never written: the
+        handoff refuses to seal a process with any.
         """
         queued = self._queue.qsize() if self._queue is not None else 0
         return {
             "queued": queued,
             "writing": self._in_flight,
             "dropped": self._dropped_count,
+            "failed": self._failed_count,
             "finished": queued == 0 and self._in_flight == 0,
         }
 

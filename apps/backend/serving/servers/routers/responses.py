@@ -60,7 +60,7 @@ from serving.servers.routers.completions import (
     execute_chat,
     release_unstarted_chat_streams,
 )
-from serving.servers.streaming_response import ClosingStreamingResponse
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.responses_store import decode_conversation
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
@@ -477,6 +477,14 @@ async def _response_events(
         for event in closing:
             yield event.encode()
     finally:
+        # These events own *frames*. Leaving the loop above -- the client gone,
+        # the request cancelled, an error -- does not close it, and its close
+        # is where the chat stream bills what it did and queues its log row.
+        # Closed here, inside the request (shielded, bounded), not whenever the
+        # garbage collector reaches it: a process may be sealed as soon as the
+        # request ends.
+        if frames is not None:
+            await close_body(frames)
         # Early client disconnect / cancellation interrupts the loop before
         # the synchronous persist above runs. Force-finalize and persist
         # best-effort (fire-and-forget — the client is gone) so the partial

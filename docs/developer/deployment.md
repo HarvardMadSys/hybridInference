@@ -382,8 +382,8 @@ database's size plus 1 GiB is free there.
 A release that runs the new gateway process beside the old one can stop the old
 one without cutting a request short or losing a request-log row or a cost. The
 release asks the old process, while it is still alive, whether anything is
-left, and stops it only once nothing is. It never decides by waiting a fixed
-time. Stopping a process with a signal is unchanged: open requests get five
+left, and stops it only once nothing is and every cost and row it recorded is
+confirmed written. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five
 seconds and are then cancelled. A process sealed first has none open.
 
 The routes are off until the process has `HANDOFF_TOKEN` in its environment, a
@@ -417,6 +417,12 @@ is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. Do not stop the
 process: `blocking` says what it is waiting for. To abandon the release instead,
 resume the old process and take the new one away.
 
+Three reasons never clear by waiting: `spend_unconfirmed`, `request_log_lost`
+and `stream_close_abandoned`. A process that reports any of them keeps
+draining for as long as it lives. Keep it, record the release as unfinished
+with what the status reports, and reconcile before stopping it. There is no
+way to force a seal, and clearing the records does not count as reconciling.
+
 While a process drains, it still serves every request that reaches it:
 
 - `/health/ready` answers 503 with `"reason": "draining"`. `/health` stays
@@ -425,7 +431,11 @@ While a process drains, it still serves every request that reaches it:
   kept-alive connection then opens its next request elsewhere.
 - A connection with no request in progress is closed after five seconds,
   uvicorn's keep-alive limit, even one that was opened and never used. A
-  connection with a request in progress is not, however quiet its stream.
+  connection with a request in progress keeps the normal idle limit
+  (`HTTP_IDLE_TIMEOUT_SECONDS`), as it would without a drain: a stream that
+  keeps sending is never cut, and one where nothing moves for that long is
+  closed. If a request begins on a connection after its five seconds started,
+  the normal limit applies instead, counted from its last byte.
 - It claims no new batch items and starts no validation, sealing, webhook
   delivery or sweep; the other process does them. Items it runs go on, and it
   keeps their leases.
@@ -441,14 +451,20 @@ under its own name:
 | `connections_open` | An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it |
 | `background_writes` | Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent |
 | `request_log_unwritten` | Request-log rows queued or being written |
+| `request_log_lost` | A request-log row dropped by a full queue or whose write failed, since the process started. It is never written, and this never clears |
+| `stream_close_abandoned` | A stream whose close took more than ten seconds and was abandoned. What it still had to bill or log is not known to be done, and this never clears |
 | `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here |
 | `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
 | `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |
+| `spend_unconfirmed` | A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives |
 
-Some things never finish by waiting. They are reported and do not block a seal:
-costs the counters refused, cost writes whose outcome is unknown, shared
-reservations an operator has to resolve, and request-log rows dropped by a full
-queue. Copy them into the release record.
+An empty `blocking` means more than "nothing is running". It also means that
+every cost this process recorded is confirmed in the counters and every
+request-log row it took was written. Each ledger in `spend` says so in
+`confirmed`, with what is not confirmed in `unconfirmed_requests` and
+`unconfirmed_usd` (or `unconfirmed_reservations` and `unconfirmed_increments`
+in the shared spend mode). A request that cost nothing was never recorded, so
+it never blocks. Nothing here changes what is charged.
 
 The check and the switch to `sealed` are one step, so no request can start
 between them. From then on a request is refused with 503 and the code

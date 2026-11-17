@@ -320,6 +320,112 @@ async def test_draining_applies_even_when_the_idle_timeout_is_disabled(monkeypat
     assert transport.closed
 
 
+@pytest.mark.asyncio
+async def test_while_draining_a_request_with_nothing_moving_is_closed_at_the_normal_limit(
+    monkeypatch, draining
+):
+    """Draining never extends the normal limit: a stalled request is closed as ever."""
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.02)
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0.1, lambda: "peer", lambda: True)
+    watch.touch()
+
+    await asyncio.sleep(0.06)
+    assert not transport.closed  # neither the short limit nor yet the normal one
+    await asyncio.sleep(0.15)
+    assert transport.closed
+
+
+@pytest.mark.asyncio
+async def test_a_request_begun_after_the_short_limit_gets_the_normal_limit_from_its_last_byte(
+    monkeypatch, draining
+):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.03)
+    busy = [False]
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0.15, lambda: "peer", lambda: busy[0])
+    watch.touch()  # idle: the short limit
+    busy[0] = True  # a request began, then nothing moved
+
+    await asyncio.sleep(0.08)
+    assert not transport.closed  # past the short limit, inside the normal one
+    await asyncio.sleep(0.2)
+    assert transport.closed  # the normal limit, from the last byte
+
+
+@pytest.mark.asyncio
+async def test_a_request_begun_after_the_short_limit_keeps_a_disabled_normal_limit(
+    monkeypatch, draining
+):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.02)
+    busy = [False]
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0, lambda: "peer", lambda: busy[0])
+    watch.touch()
+    busy[0] = True
+
+    await asyncio.sleep(0.15)
+    assert not transport.closed
+    watch.cancel()
+
+
+@pytest.mark.asyncio
+async def test_while_draining_a_stream_that_keeps_sending_is_never_cut(monkeypatch, draining):
+    from serving.servers import idle_connection
+
+    monkeypatch.setattr(idle_connection, "DRAIN_IDLE_SECONDS", 0.02)
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0.2, lambda: "peer", lambda: True)
+    watch.touch()
+
+    for _ in range(15):  # 0.45 s of frames, each well inside the normal limit
+        await asyncio.sleep(0.03)
+        watch.touch()
+        assert not transport.closed
+    await asyncio.sleep(0.4)
+    assert transport.closed  # and once it stops, the normal limit applies
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("busy", [True, False])
+async def test_without_a_drain_the_normal_limit_applies_whatever_the_connection_carries(busy):
+    from serving.servers import idle_connection
+
+    assert not idle_connection._draining
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0.1, lambda: "peer", lambda: busy)
+    watch.touch()
+
+    await asyncio.sleep(0.05)
+    assert not transport.closed
+    await asyncio.sleep(0.15)
+    assert transport.closed
+
+
+@pytest.mark.asyncio
+async def test_starting_a_drain_does_not_restart_a_connection_s_clock(monkeypatch):
+    from serving.servers import idle_connection
+
+    transport = _Transport()
+    watch = IdleWatch(transport, lambda: 0.15, lambda: "peer", lambda: True)
+    idle_connection._BY_TRANSPORT[id(transport)] = watch
+    try:
+        watch.touch()
+        await asyncio.sleep(0.1)
+        idle_connection.set_draining(True)
+        await asyncio.sleep(0.1)
+        assert transport.closed  # 0.15 from its last byte, not from the drain
+    finally:
+        idle_connection.set_draining(False)
+        idle_connection._BY_TRANSPORT.pop(id(transport), None)
+
+
 class _Closing(_Transport):
     def __init__(self) -> None:
         super().__init__()

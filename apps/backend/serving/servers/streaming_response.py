@@ -35,6 +35,17 @@ logger = get_logger(__name__)
 #: hangs, so that it cannot hold the request for good.
 CLOSE_TIMEOUT_SECONDS = 10.0
 
+#: Bodies whose close took longer than :data:`CLOSE_TIMEOUT_SECONDS` and was
+#: abandoned, since the process started. Whatever their close had still to
+#: bill or log is not known to be done, so a process with any is never sealed
+#: (:mod:`serving.servers.handoff`).
+_ABANDONED_CLOSES = 0
+
+
+def abandoned_closes() -> int:
+    """How many body closes were abandoned unfinished since the process started."""
+    return _ABANDONED_CLOSES
+
 
 class ClosingStreamingResponse(StreamingResponse):
     """A :class:`StreamingResponse` that closes its body iterator when it ends."""
@@ -64,6 +75,8 @@ async def close_body(body: Any) -> None:
         except Exception:
             logger.warning("Closing a streaming response body failed", exc_info=True)
     if scope.cancelled_caught:
+        global _ABANDONED_CLOSES
+        _ABANDONED_CLOSES += 1
         logger.error(
             "Closing a streaming response body took over %.0fs; left unfinished",
             CLOSE_TIMEOUT_SECONDS,

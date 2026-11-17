@@ -23,8 +23,13 @@ serving:
     Reached only from ``draining``, and only at a moment when nothing is left:
     no request in progress, no client connection open but the ones carrying
     the release's own calls, no work a request left behind, no batch item or
-    scheduled job running, no request-log row or cost waiting to be written
-    (:func:`blockers`). Checking and switching is one step with no ``await``
+    scheduled job running, no request-log row or cost waiting to be written,
+    and nothing whose recording is not confirmed: a cost the counters refused
+    or whose write had an unknown outcome, a shared reservation an operator
+    has to resolve, a request-log row dropped or whose write failed, a stream whose close was
+    abandoned (:func:`blockers`). The last kind never resolves by waiting; a
+    process holding any stays draining, and the release keeps it and is
+    recorded unfinished. Checking and switching is one step with no ``await``
     in between, so no request can start in the gap. From then on a request is
     refused with 503 before anything is done for it -- no upstream call, no
     cost -- and counted (``refused_after_seal``): a release that saw any of
@@ -172,15 +177,15 @@ HANDOFF = Handoff()
 def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     """Everything this process still has under way or to write, read now, without awaiting.
 
-    Each part says whether it is finished. What can never finish by waiting
-    (costs the counters refused, writes whose outcome is unknown, shared
-    reservations an operator has to resolve) is reported beside it and does
-    not count as unfinished: it is for the release record, not a reason to
-    keep the process.
+    Each part says whether it is finished. Each spend ledger also says whether
+    every cost it recorded is confirmed in the counters (``confirmed``), with
+    what is not; the request log counts the rows it dropped or failed to write; ``streams`` counts
+    the bodies whose close was abandoned. None of those resolves by waiting,
+    and each keeps the process from being sealed (:func:`blockers`).
     """
     from serving.observability.detached_tasks import pending as detached_pending
     from serving.observability.tracked_tasks import pending_tracked_tasks
-    from serving.servers import idle_connection
+    from serving.servers import idle_connection, streaming_response
     from serving.spend_ledger import handoff_report as spend_report
     from serving.utils import email_scheduler
 
@@ -199,6 +204,7 @@ def leftovers(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
         "connections": connections,
         "tasks": {"tracked": owed_tasks, "detached": detached_pending()},
         "request_log": logger_report,
+        "streams": {"close_abandoned": streaming_response.abandoned_closes()},
         "batch": batch,
         "scheduled_jobs": scheduled,
         "spend": spend,
@@ -221,19 +227,26 @@ def _blockers(report: dict[str, Any]) -> list[str]:
         found.append("background_writes")
     if not report["request_log"]["finished"]:
         found.append("request_log_unwritten")
+    if report["request_log"]["dropped"] or report["request_log"]["failed"]:
+        found.append("request_log_lost")
+    if report["streams"]["close_abandoned"]:
+        found.append("stream_close_abandoned")
     if not report["batch"]["finished"]:
         found.append("batch_work_running")
     if report["scheduled_jobs"]:
         found.append("scheduled_jobs_running")
     if not all(ledger["finished"] for ledger in report["spend"]):
         found.append("spend_unwritten")
+    # Read as unconfirmed unless a ledger says otherwise.
+    if not all(ledger.get("confirmed") is True for ledger in report["spend"]):
+        found.append("spend_unconfirmed")
     return found
 
 
 def _request_log(services: Any) -> dict[str, Any]:
     completions_logger = getattr(services, "completions_logger", None)
     if completions_logger is None:
-        return {"queued": 0, "writing": 0, "dropped": 0, "finished": True}
+        return {"queued": 0, "writing": 0, "dropped": 0, "failed": 0, "finished": True}
     return completions_logger.pending()
 
 

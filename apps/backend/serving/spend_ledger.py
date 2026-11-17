@@ -714,12 +714,17 @@ class SpendLedger:
         """What this ledger still has to write, and what it never will, for a release handoff.
 
         ``owed`` is recorded and not yet written, or being written: it is
-        written within seconds while the counters take writes, and it is what
-        a process must not stop with. A write whose outcome is unknown is never
-        retried and a refused entry never written again; they are reported, by
-        requests, and do not make the ledger unfinished.
+        written within seconds while the counters take writes (``finished``
+        when none is left). A write whose outcome is unknown is never retried
+        and a refused entry never written again: neither is confirmed in the
+        counters, and neither resolves by waiting. They make the ledger
+        unconfirmed (``confirmed`` false) for as long as this process lives,
+        which is what keeps it from being sealed and stopped as if its books
+        were complete. Only costs that were recorded count: a request that
+        cost nothing was never recorded, and stays out of all of this.
         """
         owed = [*self._pending.values(), *self._writing.values()]
+        unconfirmed = [amount for _, amount in [*self._unknown, *self._refused]]
         return {
             "mode": "local",
             "owed_usd": round(sum(a.cost for a in owed), 6),
@@ -727,7 +732,10 @@ class SpendLedger:
             "writing": self._writer is not None,
             "unknown_requests": sum(a.requests for _, a in self._unknown),
             "refused_requests": sum(a.requests for _, a in self._refused),
+            "unconfirmed_usd": round(sum(a.cost for a in unconfirmed), 6),
+            "unconfirmed_requests": sum(a.requests for a in unconfirmed),
             "finished": not owed and self._writer is None,
+            "confirmed": not unconfirmed,
         }
 
     def unwritten(self) -> tuple[float, int]:

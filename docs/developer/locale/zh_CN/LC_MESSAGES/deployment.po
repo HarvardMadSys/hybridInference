@@ -2510,8 +2510,8 @@ msgid "Handing traffic to a new gateway process"
 msgstr "把流量交给新的网关进程"
 
 #: ../developer/deployment.md
-msgid "A release that runs the new gateway process beside the old one can stop the old one without cutting a request short or losing a request-log row or a cost. The release asks the old process, while it is still alive, whether anything is left, and stops it only once nothing is. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five seconds and are then cancelled. A process sealed first has none open."
-msgstr "发布时如果让新网关进程与旧进程并存，就可以在不切断任何请求、不丢任何请求日志或费用的前提下停掉旧进程。发布流程趁旧进程还活着时问它还有没有没做完的事，确认什么都没有了才停它，从不靠固定等待时间来判断。用信号停进程的行为不变：进行中的请求有五秒，之后被取消。先封口的进程这时已经没有进行中的请求。"
+msgid "A release that runs the new gateway process beside the old one can stop the old one without cutting a request short or losing a request-log row or a cost. The release asks the old process, while it is still alive, whether anything is left, and stops it only once nothing is and every cost and row it recorded is confirmed written. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five seconds and are then cancelled. A process sealed first has none open."
+msgstr "发布时如果让新网关进程与旧进程并存，就可以在不切断任何请求、不丢任何请求日志或费用的前提下停掉旧进程。发布流程趁旧进程还活着时问它还有没有没做完的事，确认什么都没有了、它记下的每笔费用和每行日志都已确认写入，才停它，从不靠固定等待时间来判断。用信号停进程的行为不变：进行中的请求有五秒，之后被取消。先封口的进程这时已经没有进行中的请求。"
 
 #: ../developer/deployment.md
 msgid "The routes are off until the process has `HANDOFF_TOKEN` in its environment, a random value of at least 32 characters. Without it they answer 404. They are under `/internal/handoff`, which no public path list includes, so neither the console nor an entry forwards them. The release calls each process at its own address with `Authorization: Bearer <HANDOFF_TOKEN>`. This token is separate from the administrator token, which is read-only for changes wherever administrators need a second factor."
@@ -2598,8 +2598,8 @@ msgid "Every response carries `Connection: close`. A client or entry holding a k
 msgstr "每个响应都带 `Connection: close`。持有长连接的客户端或入口会在别处发起下一个请求。"
 
 #: ../developer/deployment.md
-msgid "A connection with no request in progress is closed after five seconds, uvicorn's keep-alive limit, even one that was opened and never used. A connection with a request in progress is not, however quiet its stream."
-msgstr "没有进行中请求的连接在五秒后关闭（uvicorn 的长连接空闲上限），打开后从未用过的连接也一样。有进行中请求的连接不受影响，无论它的流多安静。"
+msgid "A connection with no request in progress is closed after five seconds, uvicorn's keep-alive limit, even one that was opened and never used. A connection with a request in progress keeps the normal idle limit (`HTTP_IDLE_TIMEOUT_SECONDS`), as it would without a drain: a stream that keeps sending is never cut, and one where nothing moves for that long is closed. If a request begins on a connection after its five seconds started, the normal limit applies instead, counted from its last byte."
+msgstr "没有进行中请求的连接在五秒后关闭（uvicorn 的长连接空闲上限），打开后从未用过的连接也一样。有进行中请求的连接保持正常的空闲上限（`HTTP_IDLE_TIMEOUT_SECONDS`），和不排空时一样：持续发送数据的流不会被切断，而这么久没有任何数据往来的连接会被关闭。如果五秒已经开始计时后连接上才开始一个请求，改用正常上限，从它最后一个字节算起。"
 
 #: ../developer/deployment.md
 msgid "It claims no new batch items and starts no validation, sealing, webhook delivery or sweep; the other process does them. Items it runs go on, and it keeps their leases."
@@ -2678,8 +2678,8 @@ msgid "A cost not yet added to the counters, or in the shared spend mode a reser
 msgstr "还没写进计数表的费用；共享额度模式下是还没结算的预留"
 
 #: ../developer/deployment.md
-msgid "Some things never finish by waiting. They are reported and do not block a seal: costs the counters refused, cost writes whose outcome is unknown, shared reservations an operator has to resolve, and request-log rows dropped by a full queue. Copy them into the release record."
-msgstr "有些事等待也不会完成。它们会被报告，但不阻止封口：计数表拒收的费用、结果未知的费用写入、需要运维处理的共享预留，以及因队列满被丢弃的请求日志行。把它们记进发布记录。"
+msgid "An empty `blocking` means more than \"nothing is running\". It also means that every cost this process recorded is confirmed in the counters and every request-log row it took was written. Each ledger in `spend` says so in `confirmed`, with what is not confirmed in `unconfirmed_requests` and `unconfirmed_usd` (or `unconfirmed_reservations` and `unconfirmed_increments` in the shared spend mode). A request that cost nothing was never recorded, so it never blocks. Nothing here changes what is charged."
+msgstr "`blocking` 为空不只表示“没有正在执行的事”，还表示这个进程记下的每笔费用都已在计数表中确认，接手的每行请求日志都已写入。`spend` 里每个账本用 `confirmed` 说明这一点，未确认的部分见 `unconfirmed_requests` 和 `unconfirmed_usd`（共享模式下是 `unconfirmed_reservations` 和 `unconfirmed_increments`）。不产生费用的请求从未被记录，因此永远不会阻止封口。这里的一切都不改变收费规则。"
 
 #: ../developer/deployment.md
 msgid "The check and the switch to `sealed` are one step, so no request can start between them. From then on a request is refused with 503 and the code `instance_sealed` before anything is done for it, so it has no upstream call and no cost. It is counted in `requests.refused_after_seal`. A release that saw any did not hand over cleanly: the entry was still sending to the old process."
@@ -2696,3 +2696,31 @@ msgstr "一次交接排空一个进程。一个端口后面有多个工作进程
 #: ../developer/deployment.md
 msgid "What a handoff does not cover: while the two processes run side by side, each still enforces per-user concurrency, login rate limits and authentication blocks on its own. A user can have up to twice their concurrent requests in flight until the old process's requests end. Budgets are shared between the two processes only in the shared spend mode, and that mode is switched on with every process stopped, not during a handoff."
 msgstr "交接不覆盖的：两个进程并存期间，每用户并发、登录限流和鉴权失败封禁仍由各进程自己执行。在旧进程的请求结束之前，一个用户最多可以有两倍于上限的并发请求。只有在共享额度模式下，两个进程才共用额度；而这个模式要在所有进程都停止时开启，不能在交接中开启。"
+
+#: ../developer/deployment.md
+msgid "Three reasons never clear by waiting: `spend_unconfirmed`, `request_log_lost` and `stream_close_abandoned`. A process that reports any of them keeps draining for as long as it lives. Keep it, record the release as unfinished with what the status reports, and reconcile before stopping it. There is no way to force a seal, and clearing the records does not count as reconciling."
+msgstr "有三种原因等待也不会消失：`spend_unconfirmed`、`request_log_lost` 和 `stream_close_abandoned`。报告其中任何一种的进程会一直处于排空状态，直到它退出。保留这个进程，把发布记为未完成并附上状态报告的内容，对完账后再停它。没有强制封口的办法，清空记录也不算对账。"
+
+#: ../developer/deployment.md
+msgid "`request_log_lost`"
+msgstr "`request_log_lost`"
+
+#: ../developer/deployment.md
+msgid "A request-log row dropped by a full queue or whose write failed, since the process started. It is never written, and this never clears"
+msgstr "进程启动以来，因队列满被丢弃或写入失败的请求日志行。它不会再被写入，这一项也永远不会消失"
+
+#: ../developer/deployment.md
+msgid "`stream_close_abandoned`"
+msgstr "`stream_close_abandoned`"
+
+#: ../developer/deployment.md
+msgid "A stream whose close took more than ten seconds and was abandoned. What it still had to bill or log is not known to be done, and this never clears"
+msgstr "收尾超过十秒而被放弃的流。它原本还要做的计费或写日志无法确认已完成，这一项永远不会消失"
+
+#: ../developer/deployment.md
+msgid "`spend_unconfirmed`"
+msgstr "`spend_unconfirmed`"
+
+#: ../developer/deployment.md
+msgid "A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives"
+msgstr "尚未在计数表中确认、且等待也无法确认的费用：计数表拒收的费用、结果未知的费用写入，或共享模式下被隔离（quarantined）或无法核对（unaccounted）的预留以及被拒收的增量。只要进程还活着，这一项就不会消失"
