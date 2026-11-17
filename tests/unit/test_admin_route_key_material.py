@@ -273,13 +273,27 @@ async def test_verification_sends_one_minimal_request():
     [
         (
             _upstream_error(401, '  {"error": "bad key"}  '),
-            'Provider verification failed with HTTP 401: {"error": "bad key"}',
+            "Provider verification failed with HTTP 401: bad key",
+        ),
+        (
+            _upstream_error(404, '{"error": {"message": "model x not found", "type": "x"}}'),
+            "Provider verification failed with HTTP 404: model x not found",
         ),
         (_upstream_error(502, ""), "Provider verification failed with HTTP 502"),
-        (ConnectionResetError("peer reset"), "Provider verification failed: peer reset"),
+        # An OS error names the address it could not reach: only its kind is shown.
+        (
+            ConnectionRefusedError(111, "Connect call failed ('10.0.0.5', 8000)"),
+            "Provider verification failed (ConnectionRefusedError).",
+        ),
         (ValueError(), "Provider verification failed: ValueError"),
     ],
-    ids=["http-with-body", "http-without-body", "error", "error-without-message"],
+    ids=[
+        "openai-error-string",
+        "openai-error-object",
+        "http-without-body",
+        "os-error",
+        "error-without-message",
+    ],
 )
 async def test_a_failed_verification_tells_the_admin_why(outcome, detail):
     exc = await _verify(Adapter(outcome))
@@ -288,11 +302,29 @@ async def test_a_failed_verification_tells_the_admin_why(outcome, detail):
     assert (exc.status_code, exc.detail) == (400, detail)
 
 
-async def test_a_long_upstream_body_is_cut_short():
-    exc = await _verify(Adapter(_upstream_error(400, "x" * 2000)))
+@pytest.mark.parametrize(
+    "body",
+    [
+        "x" * 2000,
+        "<html>Jenkins: internal-admin-token=abc123</html>",
+        '{"AccessKeyId": "ASIAEXAMPLE", "SecretAccessKey": "abc123"}',
+    ],
+)
+async def test_a_body_that_is_not_an_api_error_is_never_echoed(body):
+    """Review: route verification echoed up to 500 characters of any upstream's answer."""
+    exc = await _verify(Adapter(_upstream_error(400, body)))
 
     assert exc is not None
-    assert exc.detail == f"Provider verification failed with HTTP 400: {'x' * 500}..."
+    assert exc.detail == "Provider verification failed with HTTP 400"
+
+
+async def test_a_long_error_message_is_cut_short():
+    exc = await _verify(
+        Adapter(_upstream_error(400, '{"error": {"message": "%s"}}' % ("x" * 2000)))
+    )
+
+    assert exc is not None
+    assert exc.detail == f"Provider verification failed with HTTP 400: {'x' * 160}"
 
 
 async def test_a_verification_that_hangs_is_cut_off(monkeypatch):

@@ -90,6 +90,7 @@ from serving.utils.admin_upstreams import upstream_refusal
 from serving.utils.ip_classification import parse_ip
 from serving.utils.logging import get_logger
 from serving.utils.metadata_addresses import is_metadata_hostname
+from serving.utils.upstream_errors import connection_failure, error_message
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -3897,14 +3898,25 @@ def _truncate(value: str, limit: int = 500) -> str:
     return f"{value[:limit]}..."
 
 
-def _verification_error_detail(exc: BaseException) -> str:
+def _verification_error_detail(exc: BaseException, *, api_key: str | None = None) -> str:
+    """Why a route's verification failed, without what an arbitrary upstream answered.
+
+    The upstream is whatever the administrator typed, so its body is quoted
+    only as the message of an API's error envelope, and a connection failure
+    is named by its kind, not by the client library's text, which names the
+    resolved address (:mod:`serving.utils.upstream_errors`).
+    """
+    prefix = "Provider verification failed"
     if isinstance(exc, asyncio.TimeoutError):
         return f"Provider verification timed out after {VERIFY_TIMEOUT_SEC:.0f}s"
     if isinstance(exc, aiohttp.ClientResponseError):
-        body = getattr(exc, "error_body", "")
-        body_text = f": {_truncate(str(body))}" if body else ""
-        return f"Provider verification failed with HTTP {exc.status}{body_text}"
-    return f"Provider verification failed: {_truncate(str(exc) or type(exc).__name__)}"
+        message = error_message(getattr(exc, "error_body", ""), secret=api_key)
+        return f"{prefix} with HTTP {exc.status}" + (f": {message}" if message else "")
+    if isinstance(exc, aiohttp.ClientError):
+        return connection_failure(exc, prefix=prefix)
+    if isinstance(exc, OSError):
+        return f"{prefix} ({type(exc).__name__})."
+    return f"{prefix}: {_truncate(str(exc) or type(exc).__name__)}"
 
 
 async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCandidate) -> None:
@@ -3919,7 +3931,11 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
             timeout=VERIFY_TIMEOUT_SEC,
         )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=_verification_error_detail(exc)) from exc
+        api_key = getattr(getattr(update.adapter, "config", None), "api_key", None)
+        detail = _verification_error_detail(
+            exc, api_key=api_key if isinstance(api_key, str) else None
+        )
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _url_host(url: str | None) -> str | None:
