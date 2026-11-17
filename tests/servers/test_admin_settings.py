@@ -46,6 +46,10 @@ async def admin_client(monkeypatch, mock_stores):
 
     mock_log_action = AsyncMock()
     monkeypatch.setattr("serving.servers.routers.admin.settings.log_admin_action", mock_log_action)
+    # These tests are about values; the administrator's confirmation of a
+    # guarded setting, which ADMIN_TOKEN cannot give, has its own
+    # (test_admin_settings_reauth).
+    monkeypatch.setattr("serving.servers.routers.admin.settings.confirm_administrator", AsyncMock())
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
 

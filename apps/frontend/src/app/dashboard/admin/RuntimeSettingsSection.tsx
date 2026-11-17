@@ -1,10 +1,15 @@
 'use client';
 
-import { useState } from 'react';
-import { RuntimeSettingItem, updateRuntimeSetting } from '@/lib/api/admin';
+import { useRef, useState } from 'react';
+import { RuntimeSettingItem, updateRuntimeSetting, updateRuntimeSettings } from '@/lib/api/admin';
 import { AdminLoading, AdminSection } from '@/components/features/admin/AdminPrimitives';
 import { CONTROL, PANEL } from '@/components/features/admin/adminStyles';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import {
+  ReauthPassword,
+  useAdminSsoReauth,
+  useConfirmsWithoutPassword,
+} from '@/components/features/admin/confirm/ReauthPassword';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 
@@ -51,11 +56,26 @@ function isFlag(setting: RuntimeSettingItem): boolean {
   return setting.value_type === 'bool';
 }
 
+/** What a save says once it is done. */
+function savedMessage(pending: SettingChange[]): string {
+  if (pending.length !== 1) return `Saved ${pending.length} settings`;
+  const [{ setting, value }] = pending;
+  return isFlag(setting)
+    ? `${setting.key} ${value ? 'enabled' : 'disabled'}`
+    : `${setting.key} set to ${value}`;
+}
+
 /**
  * A group of runtime settings, switches and numbers alike, edited in place.
  * The edited values are drafts until Save; each changed setting is one
  * request. Nothing once loaded with no settings to show: a deployment may not
  * have every setting a group lists.
+ *
+ * A save that changes a `security_relevant` setting -- who may sign in or sign
+ * up, whether requests need a key, what is logged of them, what each account
+ * may spend and run -- is confirmed first, as the gateway requires: by a code,
+ * the administrator's password, or a fresh single sign-on (`ReauthPassword`).
+ * Its changes are then written together, behind that one confirmation.
  */
 export function RuntimeSettingsSection({
   id,
@@ -90,6 +110,10 @@ export function RuntimeSettingsSection({
   const writes = useConfirmAction();
   const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A guarded save is confirmed in a dialog; the password typed there, if any.
+  const password = useRef('');
+  const withoutPassword = useConfirmsWithoutPassword();
+  const sso = useAdminSsoReauth();
 
   const savedDraft = (setting: RuntimeSettingItem) =>
     isFlag(setting) ? !!setting.value : String(setting.value ?? '');
@@ -139,11 +163,76 @@ export function RuntimeSettingsSection({
     setSaveError(null);
   };
 
+  const dropDrafts = (keys: readonly string[]) =>
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+
+  /** Ask for the confirmation a guarded save needs, then write it all at once. */
+  const confirmGuarded = (pending: SettingChange[], guarded: string[]) => {
+    password.current = '';
+    writes.request({
+      key: id,
+      title: guarded.length === 1 ? `Change ${guarded[0]}?` : 'Change these settings?',
+      confirmLabel: 'Save changes',
+      busyLabel: 'Saving…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who may sign
+            in or sign up, whether requests need a key, what is logged of them, or what each account
+            may spend and run:{' '}
+            {guarded.map((key, index) => (
+              <span key={key}>
+                {index > 0 ? ', ' : null}
+                <code className="text-[12px]">{key}</code>
+              </span>
+            ))}
+            .{withoutPassword ? null : ' Confirm the change with your password.'}
+          </p>
+          <ReauthPassword valueRef={password} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const given = password.current;
+        if (!given && !withoutPassword) {
+          throw new Error('Enter your password to save these settings.');
+        }
+        let updated: RuntimeSettingItem[];
+        try {
+          updated = await updateRuntimeSettings(
+            Object.fromEntries(pending.map(({ setting, value }) => [setting.key, value])),
+            given || undefined,
+          );
+        } catch (error) {
+          // A refusal (a wrong password, a code owed) stays in the dialog.
+          sso?.settle(error);
+          throw error;
+        }
+        sso?.settle();
+        password.current = '';
+        for (const item of updated) onSaved(item);
+        dropDrafts(pending.map(({ setting }) => setting.key));
+        onAfterWrite();
+        onToast(savedMessage(pending));
+      },
+    });
+  };
+
   const save = async () => {
     // Enter in a field reaches here too; the bar already says what to correct.
     if (blocked || changes.length === 0) return;
     setSaveError(null);
     const pending = changes;
+    const guarded = pending
+      .filter(({ setting }) => setting.security_relevant === true)
+      .map(({ setting }) => setting.key);
+    if (guarded.length > 0) {
+      confirmGuarded(pending, guarded);
+      return;
+    }
     const failure = await writes.perform({
       run: async () => {
         let wrote = false;
@@ -163,13 +252,7 @@ export function RuntimeSettingsSection({
         ).finally(() => {
           if (wrote) onAfterWrite();
         });
-        onToast(
-          pending.length === 1
-            ? isFlag(pending[0].setting)
-              ? `${pending[0].setting.key} ${pending[0].value ? 'enabled' : 'disabled'}`
-              : `${pending[0].setting.key} set to ${pending[0].value}`
-            : `Saved ${pending.length} settings`,
-        );
+        onToast(savedMessage(pending));
       },
     });
     setSaveError(failure);
@@ -281,6 +364,7 @@ export function RuntimeSettingsSection({
         blocked={blocked}
         inPlace
       />
+      {writes.dialog}
     </AdminSection>
   );
 }

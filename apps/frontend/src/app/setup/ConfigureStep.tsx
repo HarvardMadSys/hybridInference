@@ -13,7 +13,7 @@ import {
   type ConfigDrafts,
 } from '@/components/features/configuration/configDrafts';
 import { Button } from '@/components/ui/Button';
-import { listRuntimeSettings, updateRuntimeSetting } from '@/lib/api/admin';
+import { listRuntimeSettings, updateRuntimeSetting, updateRuntimeSettings } from '@/lib/api/admin';
 import { getConfig, patchConfig, type ConfigEntry, type ConfigResponse } from '@/lib/api/config';
 import { getErrorMessage } from '@/lib/utils/errors';
 
@@ -57,6 +57,8 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     {},
   );
   const [signupDraft, setSignupDraft] = useState<SignupValues>({});
+  // The sign-up switches the backend guards: changing one needs the password.
+  const [signupGuarded, setSignupGuarded] = useState<ReadonlySet<SignupKey>>(new Set());
   const [drafts, setDrafts] = useState<ConfigDrafts>({});
   const [entryErrors, setEntryErrors] = useState<Record<string, string>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -80,16 +82,19 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     if (settingsResult.status === 'fulfilled') {
       const values: SignupValues = {};
       const descriptions: Partial<Record<SignupKey, string>> = {};
+      const guarded = new Set<SignupKey>();
       for (const { key } of SIGNUP_SETTINGS) {
         const item = settingsResult.value.settings.find((setting) => setting.key === key);
         if (item) {
           values[key] = item.value === true;
           descriptions[key] = item.description;
+          if (item.security_relevant === true) guarded.add(key);
         }
       }
       setSignup(values);
       setSignupDraft(values);
       setSignupDescriptions(descriptions);
+      setSignupGuarded(guarded);
     }
     setConfig(configResult.value);
   }, []);
@@ -115,6 +120,16 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     setEntryErrors((prev) => withoutKeys(prev, [key]));
   }, []);
 
+  /** The sign-up switches this save changes, with their new values. */
+  const changedSignup = (): Partial<Record<SignupKey, boolean>> => {
+    const changed: Partial<Record<SignupKey, boolean>> = {};
+    for (const { key } of SIGNUP_SETTINGS) {
+      const wanted = signupDraft[key];
+      if (wanted !== undefined && wanted !== signup[key]) changed[key] = wanted;
+    }
+    return changed;
+  };
+
   const save = async () => {
     const entries = groups.flatMap((group) => group.entries);
     const { values, errors } = buildPatch(entries, drafts);
@@ -124,7 +139,11 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
       return;
     }
     const guarded = guardedKeys(entries, Object.keys(values));
-    if (guarded.length > 0 && !password) {
+    const signupChanges = changedSignup();
+    const signupNeedsPassword = (Object.keys(signupChanges) as SignupKey[]).some((key) =>
+      signupGuarded.has(key),
+    );
+    if ((guarded.length > 0 || signupNeedsPassword) && !password) {
       setSaveError('Enter your password to save these settings.');
       return;
     }
@@ -134,13 +153,23 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     const keys = Object.keys(values);
     let wrote = false;
     try {
-      for (const { key } of SIGNUP_SETTINGS) {
-        const wanted = signupDraft[key];
-        if (wanted === undefined || wanted === signup[key]) continue;
-        const updated = await updateRuntimeSetting(key, wanted);
+      if (signupNeedsPassword) {
+        // Guarded switches are written together, behind one confirmation.
+        const updated = await updateRuntimeSettings(signupChanges, password);
         wrote = true;
-        // Saved: a retry after a later failure must not send it again.
-        setSignup((prev) => ({ ...prev, [key]: updated.value === true }));
+        // Saved: a retry after a later failure must not send them again.
+        setSignup((prev) => {
+          const next = { ...prev };
+          for (const item of updated) next[item.key as SignupKey] = item.value === true;
+          return next;
+        });
+      } else {
+        for (const [key, wanted] of Object.entries(signupChanges) as [SignupKey, boolean][]) {
+          const updated = await updateRuntimeSetting(key, wanted);
+          wrote = true;
+          // Saved: a retry after a later failure must not send it again.
+          setSignup((prev) => ({ ...prev, [key]: updated.value === true }));
+        }
       }
       // The configuration response is read after the sign-up settings were
       // written, so its `missing` list already reflects them.
@@ -193,7 +222,8 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
   const signupKeys = SIGNUP_SETTINGS.filter(({ key }) => signupDraft[key] !== undefined);
   const pendingEntries = groups.flatMap((group) => group.entries);
   const needsPassword =
-    guardedKeys(pendingEntries, Object.keys(buildPatch(pendingEntries, drafts).values)).length > 0;
+    guardedKeys(pendingEntries, Object.keys(buildPatch(pendingEntries, drafts).values)).length >
+      0 || (Object.keys(changedSignup()) as SignupKey[]).some((key) => signupGuarded.has(key));
 
   return (
     // A form, so Enter continues, and one browsers do not offer to remember:
@@ -296,8 +326,8 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
             Your password
           </label>
           <p className="mt-0.5 text-[12px] text-gray-500">
-            The public URLs and mail settings decide where users and their sign-in links go, so
-            saving them needs the password you just set.
+            Who may sign up, the public URLs and the mail settings decide who gets in and where
+            users and their sign-in links go, so saving them needs the password you just set.
           </p>
           <input
             id="setup-confirm-password"

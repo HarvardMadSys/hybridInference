@@ -11,7 +11,7 @@ import {
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import {
   ReauthPassword,
-  useConfirmsByCode,
+  useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
@@ -254,7 +254,7 @@ export function useConfigurationEditor({
   // A save that changes a security-relevant setting asks for it the same way.
   const settingsPassword = useRef('');
   // An administrator with an authenticator app confirms with its code instead.
-  const byCode = useConfirmsByCode();
+  const withoutPassword = useConfirmsWithoutPassword();
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -489,14 +489,15 @@ export function useConfigurationEditor({
             {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who can sign
             in or administer the gateway, what it trusts, or where it sends requests, keys, mail and
             users: <KeyList keys={guarded} />.
-            {byCode ? null : ' Confirm the change with your password.'}
+            {withoutPassword ? null : ' Confirm the change with your password.'}
           </p>
           <ReauthPassword valueRef={settingsPassword} label="Your password" />
         </div>
       ),
       run: async () => {
         const password = settingsPassword.current;
-        if (!password && !byCode) throw new Error('Enter your password to save these settings.');
+        if (!password && !withoutPassword)
+          throw new Error('Enter your password to save these settings.');
         settingsPassword.current = '';
         // A refusal, a wrong password included, is shown beside the save.
         await commitSave({ ...save, guarded, password });
@@ -769,7 +770,7 @@ export function useConfigurationEditor({
       ),
       run: async () => {
         const password = backupPassword.current;
-        if (!password && !byCode) {
+        if (!password && !withoutPassword) {
           throw new Error('Enter your password to include secret values.');
         }
         downloadBackupJson(await exportConfigBackup({ includeSecrets: true, password }));
@@ -878,7 +879,7 @@ export function useConfigurationEditor({
             <div className="space-y-2">
               <p className="font-medium text-red-800">
                 It also changes security settings. A backup file is not signed, so check that you
-                expect each of these{byCode ? ':' : ', then confirm with your password:'}
+                expect each of these{withoutPassword ? ':' : ', then confirm with your password:'}
               </p>
               <BackupItemList items={securityChanges} />
               <ReauthPassword valueRef={backupPassword} label="Your password" />
@@ -890,7 +891,7 @@ export function useConfigurationEditor({
         let confirmation: { securityChanges: string[]; password: string } | undefined;
         if (securityChanges.length > 0) {
           const password = backupPassword.current;
-          if (!password && !byCode) {
+          if (!password && !withoutPassword) {
             throw new Error('Enter your password to restore security settings.');
           }
           confirmation = { securityChanges, password };

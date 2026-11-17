@@ -1,11 +1,21 @@
-"""Admin runtime settings endpoints."""
+"""Admin runtime settings endpoints.
+
+A runtime setting marked security-relevant in the registry
+(:func:`~serving.config.runtime_settings.runtime_setting_security_relevant`:
+who may sign in or register, whether inference needs a key, what is logged,
+what each account may spend and run) is changed only after the signed-in
+administrator confirms it (:func:`confirm_administrator`), as a security
+setting of ``PATCH /admin/config`` is. ``ADMIN_TOKEN`` cannot confirm, so it
+changes only the others. ``PATCH /admin/settings`` writes several at once
+behind one confirmation.
+"""
 
 from __future__ import annotations
 
 import math
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.audit import AuditActor, AuditTarget
 from serving.auth.signup_policy import (
@@ -19,12 +29,14 @@ from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
     RuntimeSettings,
     get_runtime_settings,
+    runtime_setting_security_relevant,
 )
 from serving.config.settings import get_settings
 from serving.schemas_admin import (
     ListSettingsResponse,
     RuntimeSettingItem,
     UpdateSettingRequest,
+    UpdateSettingsRequest,
 )
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
@@ -34,6 +46,7 @@ from serving.servers.deps import (
     get_operational_store,
     verify_admin_access,
 )
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 
 router = APIRouter(prefix="/admin")
 
@@ -81,6 +94,7 @@ async def list_runtime_settings_endpoint(
                 description=i["description"],
                 min=i.get("min"),
                 max=i.get("max"),
+                security_relevant=bool(i.get("security_relevant")),
             )
             for i in items
             if i["key"] not in hidden
@@ -88,20 +102,22 @@ async def list_runtime_settings_endpoint(
     )
 
 
-@router.patch("/settings/{key}", response_model=RuntimeSettingItem)
-async def update_runtime_setting_endpoint(
-    key: str,
-    payload: UpdateSettingRequest,
-    admin_id: str = Depends(verify_admin_access),
-    actor: AuditActor = Depends(get_admin_audit_actor),
-    op_store=Depends(get_operational_store),
-    rt: RuntimeSettings | None = Depends(get_runtime_settings),
-) -> RuntimeSettingItem:
-    """Update a single runtime setting by key."""
-    if not op_store:
-        raise HTTPException(500, "Database not configured")
-    rt = _require_runtime_settings(rt)
+def _security_action(keys: list[str]) -> str:
+    """Name what a confirmation confirms: "Changing signup_enabled", "Changing A, B and 2 more"."""
+    shown = keys[:3]
+    named = ", ".join(shown)
+    if len(keys) > len(shown):
+        named = f"{named} and {len(keys) - len(shown)} more"
+    return f"Changing {named}"
 
+
+def _checked_value(key: str, value: Any) -> tuple[dict[str, Any], Any]:
+    """Return *key*'s registry entry and *value*, or raise why it cannot be stored.
+
+    Everything is checked here, before any confirmation is asked for and
+    before anything is written: a value that would be refused never spends a
+    password attempt.
+    """
     entry = RUNTIME_SETTINGS_REGISTRY.get(key)
     if entry is None:
         raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
@@ -109,7 +125,6 @@ async def update_runtime_setting_endpoint(
         raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
 
     expected_type = entry["type"]
-    value = payload.value
     if expected_type == "bool" and not isinstance(value, bool):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
     # ``bool`` is a subclass of ``int`` in Python; without the explicit check, a
@@ -166,6 +181,30 @@ async def update_runtime_setting_endpoint(
                 ),
             )
 
+    return entry, value
+
+
+async def _confirm_if_guarded(
+    request: Request, op_store: Any, keys: list[str], password: str | None
+) -> None:
+    """Ask the administrator to confirm before *keys* change, when one of them is guarded."""
+    guarded = sorted(key for key in keys if runtime_setting_security_relevant(key))
+    if guarded:
+        await confirm_administrator(request, op_store, password, action=_security_action(guarded))
+
+
+async def _write(
+    key: str,
+    entry: dict[str, Any],
+    value: Any,
+    *,
+    admin_id: str,
+    actor: AuditActor,
+    op_store: Any,
+    rt: RuntimeSettings,
+) -> RuntimeSettingItem:
+    """Store one checked value, refresh what reads it, and audit the change."""
+    expected_type = entry["type"]
     old_row = await op_store.get_setting(key)
     old_value: Any = None
     if old_row is not None:
@@ -211,4 +250,60 @@ async def update_runtime_setting_endpoint(
         description=entry["description"],
         min=entry.get("min"),
         max=entry.get("max"),
+        security_relevant=runtime_setting_security_relevant(key),
+    )
+
+
+@router.patch("/settings/{key}", response_model=RuntimeSettingItem)
+async def update_runtime_setting_endpoint(
+    key: str,
+    payload: UpdateSettingRequest,
+    request: Request,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
+) -> RuntimeSettingItem:
+    """Update a single runtime setting by key.
+
+    A security-relevant one (``security_relevant`` on its item) needs the
+    signed-in administrator's confirmation: 403 ``TWO_FACTOR_REQUIRED`` when
+    the account has an authenticator and owes a code, 400 for a missing or
+    wrong ``password``, 403 for ``ADMIN_TOKEN``, 429 when rate-limited.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
+    entry, value = _checked_value(key, payload.value)
+    await _confirm_if_guarded(request, op_store, [key], payload.password)
+    return await _write(key, entry, value, admin_id=admin_id, actor=actor, op_store=op_store, rt=rt)
+
+
+@router.patch("/settings", response_model=ListSettingsResponse)
+async def update_runtime_settings_endpoint(
+    payload: UpdateSettingsRequest,
+    request: Request,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+    rt: RuntimeSettings | None = Depends(get_runtime_settings),
+) -> ListSettingsResponse:
+    """Update several runtime settings, confirmed once when any of them is guarded.
+
+    Every value is checked first, and nothing is written when one is refused.
+    A guarded one asks for the confirmation ``PATCH /admin/settings/{key}``
+    does, once for the whole request. Answers the settings as written.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+    rt = _require_runtime_settings(rt)
+    checked = {key: _checked_value(key, value) for key, value in payload.values.items()}
+    await _confirm_if_guarded(request, op_store, list(checked), payload.password)
+    return ListSettingsResponse(
+        settings=[
+            await _write(
+                key, entry, value, admin_id=admin_id, actor=actor, op_store=op_store, rt=rt
+            )
+            for key, (entry, value) in checked.items()
+        ]
     )

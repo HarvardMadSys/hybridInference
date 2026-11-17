@@ -58,7 +58,9 @@ export type SsoReauthPurpose =
   | 'delete_account'
   | 'bind_email'
   | 'link_sso'
-  | 'unlink_sso';
+  | 'unlink_sso'
+  /** One guarded administrator change, in the Admin console. */
+  | 'admin_action';
 
 const SSO_REAUTH_PURPOSES: readonly string[] = [
   'set_password',
@@ -66,6 +68,7 @@ const SSO_REAUTH_PURPOSES: readonly string[] = [
   'bind_email',
   'link_sso',
   'unlink_sso',
+  'admin_action',
 ];
 
 /** The purpose a `reauth` parameter carries, or `null` when it names none. */

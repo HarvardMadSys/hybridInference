@@ -2065,6 +2065,12 @@ export interface RuntimeSettingItem {
   description: string;
   min?: number | null;
   max?: number | null;
+  /**
+   * Changing it needs the signed-in administrator's confirmation: a recent
+   * authenticator code, the account's password, or a fresh single sign-on.
+   * The admin token cannot give one. Absent from an older gateway.
+   */
+  security_relevant?: boolean;
 }
 
 export interface ListSettingsResponse {
@@ -2076,16 +2082,40 @@ export async function listRuntimeSettings(): Promise<ListSettingsResponse> {
   return jsonOrThrow<ListSettingsResponse>(resp);
 }
 
+/**
+ * Change one runtime setting. A `security_relevant` one is confirmed like any
+ * guarded change: by a recent code (the console asks for one when the gateway
+ * wants it), by `password` when the administrator's account has no
+ * authenticator, or by a fresh sign-in at its identity provider.
+ */
 export async function updateRuntimeSetting(
   key: string,
   value: unknown,
+  password?: string,
 ): Promise<RuntimeSettingItem> {
   const resp = await fetchWithAuth(API_BASE, `/admin/settings/${encodeURIComponent(key)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
+    body: JSON.stringify(password ? { value, password } : { value }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
+}
+
+/**
+ * Change several runtime settings behind one confirmation. Every value is
+ * checked first, and nothing is written when one is refused. Resolves to the
+ * settings as written.
+ */
+export async function updateRuntimeSettings(
+  values: Record<string, unknown>,
+  password?: string,
+): Promise<RuntimeSettingItem[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(password ? { values, password } : { values }),
+  });
+  return (await jsonOrThrow<ListSettingsResponse>(resp)).settings;
 }
 
 // ========================================
