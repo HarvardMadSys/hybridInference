@@ -2755,7 +2755,7 @@ class PostgresOperationalStore(
             await _lock_account_keys(conn, user_id)
             await _refuse_claimed_account(conn, user_id)
             await conn.execute(sql, *params)
-            from serving.storage.project_backfill import personal_org_id
+            from serving.storage.project_backfill import legacy_org_id
 
             for key, column in (
                 ("quota_daily_cost_usd", "budget_daily_usd"),
@@ -2764,7 +2764,7 @@ class PostgresOperationalStore(
                 if key in key_fields:
                     await conn.execute(
                         f"UPDATE organizations SET {column} = $2 WHERE id = $1",
-                        personal_org_id(user_id),
+                        legacy_org_id(user_id),
                         key_fields[key],
                     )
             await conn.execute(
