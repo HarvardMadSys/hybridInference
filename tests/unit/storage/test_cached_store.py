@@ -46,6 +46,7 @@ def inner_store() -> MagicMock:
     store.update_user_last_login = AsyncMock()
     store.delete_user = AsyncMock()
     store.approve_user = AsyncMock()
+    store.approve_users = AsyncMock(return_value=[{"id": "u1", "email": "a@b.com"}])
     store.reject_user = AsyncMock()
     store.update_key = AsyncMock()
     store.revoke_key = AsyncMock()
@@ -290,6 +291,7 @@ class TestCacheHits:
         """
         for decide in (
             lambda: cached.approve_user("u1", admin_id="admin-1"),
+            lambda: cached.approve_users(["u1"], admin_id="admin-1"),
             lambda: cached.reject_user("u1", admin_id="admin-1", reason="spam"),
         ):
             # Populate first, then count only the reads after the decision --
@@ -382,6 +384,26 @@ class TestWriteInvalidation:
         await cached.approve_user("u1", admin_id="a1")
         await cached.get_user_by_id("u1")
         assert inner_store.get_user_by_id.await_count == 2
+
+    async def test_approve_users_invalidates_only_the_users_approved(self, cached, inner_store):
+        await cached.get_user_by_id("u1")
+        await cached.get_user_by_id("u2")
+
+        # The store approved u1 only (u2 was no longer pending).
+        approved = await cached.approve_users(["u1", "u2"], admin_id="a1", note="cohort")
+        await cached.get_user_by_id("u1")
+        await cached.get_user_by_id("u2")
+
+        assert approved == [{"id": "u1", "email": "a@b.com"}]
+        inner_store.approve_users.assert_awaited_once_with(
+            ["u1", "u2"], admin_id="a1", note="cohort"
+        )
+        # u1 is read again; u2, which nothing changed, still comes from the cache.
+        assert [c.args for c in inner_store.get_user_by_id.await_args_list] == [
+            ("u1",),
+            ("u2",),
+            ("u1",),
+        ]
 
     async def test_reject_user_invalidates(self, cached, inner_store):
         await cached.get_user_by_id("u1")

@@ -534,7 +534,7 @@ function RequestMetricsCard({
           )}
           <div>{formatLatency(metric.avg_latency_ms)} avg</div>
           {batchRequests > 0 && (
-            <div title="Requests the batch worker ran in this window. They are not in the figures above; each bar stacks them on top, in violet.">
+            <div title="Requests the batch worker ran in this window. Waits while a model was queued for capacity are left out. They are not in the figures above; each bar stacks them on top, in violet.">
               <span className="text-violet-600">{batchRequests.toLocaleString()}</span> batch
             </div>
           )}
@@ -1261,6 +1261,10 @@ export function RequestsTab({
                       includeContent: exportIncludeContent || undefined,
                     });
                     setShowExportPanel(false);
+                    // The browser takes the download from here, and the console
+                    // cannot see how it goes: a link refused at the last moment
+                    // shows only as a failed download in the browser's list.
+                    toast.success("Download requested. Check your browser's downloads.");
                   } catch (err) {
                     toast.error(
                       `Export failed: ${err instanceof Error ? err.message : 'Unknown error'}`,
@@ -1271,7 +1275,7 @@ export function RequestsTab({
                 }}
                 className="rounded-lg bg-gray-900 px-3 py-2 text-[13px] text-white hover:bg-gray-700 disabled:opacity-50"
               >
-                {exportLoading ? 'Exporting…' : 'Export'}
+                {exportLoading ? 'Starting…' : 'Export'}
               </button>
             </div>
           </div>

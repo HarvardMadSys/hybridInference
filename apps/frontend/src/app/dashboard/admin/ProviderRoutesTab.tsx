@@ -2033,6 +2033,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     }
     const runtime = route.source === 'runtime';
     const lastRoute = selectedRoutes.filter((item) => !item.removed).length === 1;
+    const removesModel = !runtime && lastRoute;
     confirmation.request({
       title: `Delete ${runtime ? 'runtime' : 'config'} route ${route.route_id}?`,
       body: (
@@ -2041,7 +2042,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             ? lastRoute
               ? `It is the last route of ${route.model_id}, so the model is deleted too. This cannot be undone.`
               : 'It stops serving now and its saved configuration is deleted from the database. This cannot be undone: add the route again to bring it back.'
-            : 'It stops serving now and stays deleted after restarts; models.yaml is not changed. You can bring it back with Restore, together with its edits and weight. Reset config is different: it only discards edits.'}
+            : lastRoute
+              ? `It is the last route of ${route.model_id}, so the model is removed from the configuration. It stops serving now, stays gone after restarts, and cannot be undone.`
+              : 'It stops serving now and stays deleted after restarts. You can bring it back with Restore, together with its edits and weight. Reset config is different: it only discards edits.'}
         </p>
       ),
       confirmLabel: 'Delete',
@@ -2060,7 +2063,11 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           dropWeightDraft(weightKeyFor(route));
           dropConcurrencyDraft(key);
           toast.success(
-            runtime ? 'Provider route deleted' : 'Config route deleted; Restore brings it back',
+            runtime
+              ? 'Provider route deleted'
+              : removesModel
+                ? 'Model removed from the configuration'
+                : 'Config route deleted; Restore brings it back',
           );
           refreshAfterRouteChange();
         } catch (err) {

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving.audit import AuditActor, AuditTarget
 from serving.config.settings import VALID_ROLES
@@ -20,6 +20,7 @@ from serving.servers.deps import (
     model_router_transition_lock,
     verify_admin_access,
 )
+from serving.servers.routers.admin.reauthentication import confirmed_by_two_factor
 
 router = APIRouter(prefix="/admin")
 
@@ -85,6 +86,7 @@ async def list_model_visibility(
 
 @router.patch("/models/{model_id:path}/visibility", response_model=ModelVisibilityItem)
 async def update_model_visibility(
+    request: Request,
     model_id: str,
     payload: UpdateModelVisibilityRequest,
     admin_id: str = Depends(verify_admin_access),
@@ -92,9 +94,16 @@ async def update_model_visibility(
     services=Depends(get_services),
     op_store=Depends(get_operational_store),
 ) -> ModelVisibilityItem:
-    """Set or clear a per-model required_role override."""
+    """Set or clear a per-model required_role override.
+
+    Who may use a model is what every account's role is measured against: one
+    override opens a reserved model to everyone. An administrator with an
+    authenticator app therefore confirms the change with a recent code (403
+    ``TWO_FACTOR_REQUIRED`` until then). One without is not asked again here.
+    """
     if op_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
+    await confirmed_by_two_factor(request, op_store, action=f"Changing who may use {model_id}")
 
     async with model_router_transition_lock(services, model_id):
         route = _model_routes(services.router).get(model_id)

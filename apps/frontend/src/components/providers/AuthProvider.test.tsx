@@ -17,6 +17,7 @@ const logoutApi = vi.fn();
 const logoutAllApi = vi.fn();
 const switchAccountApi = vi.fn();
 const removeAccountApi = vi.fn();
+const resumeSessionApi = vi.fn();
 const listAccounts = vi.fn();
 const agentSessionUser = vi.fn();
 const endAgentSession = vi.fn();
@@ -29,6 +30,7 @@ vi.mock('@/lib/api/auth', () => ({
   logoutAll: (...args: unknown[]) => logoutAllApi(...args),
   switchAccount: (...args: unknown[]) => switchAccountApi(...args),
   removeAccount: (...args: unknown[]) => removeAccountApi(...args),
+  resumeSession: (...args: unknown[]) => resumeSessionApi(...args),
   listAccounts: (...args: unknown[]) => listAccounts(...args),
   agentSessionUser: (...args: unknown[]) => agentSessionUser(...args),
   endAgentSession: (...args: unknown[]) => endAgentSession(...args),
@@ -83,6 +85,7 @@ beforeEach(() => {
   logoutAllApi.mockReset().mockResolvedValue(undefined);
   switchAccountApi.mockReset().mockResolvedValue({ user: { id: 'other-user' } });
   removeAccountApi.mockReset().mockResolvedValue({ accounts: [], max_accounts: 5 });
+  resumeSessionApi.mockReset().mockResolvedValue('sso-user');
   listAccounts
     .mockReset()
     .mockResolvedValue({ active_user_id: null, accounts: [], max_accounts: 5 });
@@ -160,6 +163,162 @@ describe('AuthProvider adopted session', () => {
       user: { id: 'admin-1', email: null, login_name: 'admin', is_admin: true },
     });
     setAccessToken(null);
+  });
+});
+
+// The way back from an identity provider: the gateway signed the account in on
+// a redirect, so the cookie is already its and no response carried a token.
+describe('AuthProvider finishing a sign-in the gateway answered with a redirect', () => {
+  function signedInByRedirect(id: string, others: string[] = []) {
+    resumeSessionApi.mockResolvedValue(id);
+    getMe.mockResolvedValue(me(id));
+    // The listing already holds the new account: the redirect added it.
+    listAccounts.mockResolvedValue({
+      active_user_id: id,
+      accounts: [account(id, { active: true }), ...others.map((other) => account(other))],
+      max_accounts: 5,
+    });
+  }
+
+  it('takes up the session and shows its account', async () => {
+    await renderWithAgents('/agents');
+    expect(controller.state.isAuthenticated).toBe(false);
+    signedInByRedirect('sso-user');
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(resumeSessionApi).toHaveBeenCalledTimes(1);
+    expect(loginApi).not.toHaveBeenCalled();
+    expect(controller.state).toMatchObject({ isAuthenticated: true, user: { id: 'sso-user' } });
+    expect(controller.accounts.map((entry) => entry.id)).toEqual(['sso-user']);
+  });
+
+  it('drops the answers cached for the account the tab showed before', async () => {
+    await renderWithAgents('/agents');
+    queryClient.setQueryData(['apiKeys'], [{ key_prefix: 'sk-previous' }]);
+    signedInByRedirect('sso-user');
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(queryClient.getQueryData(['apiKeys'])).toBeUndefined();
+  });
+
+  it('ends a stale agent session on a browser that had no other account', async () => {
+    await renderWithAgents('/agents');
+    signedInByRedirect('sso-user');
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+  });
+
+  it('keeps the agent session when the account joins others signed in here', async () => {
+    await renderWithAgents('/agents');
+    signedInByRedirect('sso-user', ['first-user']);
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(endAgentSession).not.toHaveBeenCalled();
+  });
+
+  it('does not count an account whose session ended as signed in here', async () => {
+    await renderWithAgents('/agents');
+    resumeSessionApi.mockResolvedValue('sso-user');
+    getMe.mockResolvedValue(me('sso-user'));
+    listAccounts.mockResolvedValue({
+      active_user_id: 'sso-user',
+      accounts: [account('sso-user', { active: true }), account('gone', { signed_in: false })],
+      max_accounts: 5,
+    });
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+  });
+
+  it('ends the agent session when the accounts cannot be read', async () => {
+    await renderWithAgents('/agents');
+    resumeSessionApi.mockResolvedValue('sso-user');
+    getMe.mockResolvedValue(me('sso-user'));
+    listAccounts.mockRejectedValue(new Error('busy'));
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(endAgentSession).toHaveBeenCalledWith('/agents');
+    expect(controller.state.user?.id).toBe('sso-user');
+  });
+
+  it('tells the browser’s other tabs which account is now active', async () => {
+    await renderWithAgents('/agents');
+    signedInByRedirect('sso-user');
+    const tab = new BroadcastChannel('hybridinference:accounts');
+    const heard = new Promise<unknown>((resolve) => {
+      tab.addEventListener('message', (event) => resolve(event.data), { once: true });
+    });
+
+    await act(() => controller.completeExternalSignIn());
+
+    await expect(heard).resolves.toEqual({ type: 'active', userId: 'sso-user' });
+    tab.close();
+  });
+
+  // The tab's first refresh can meet the new cookie while it still holds the
+  // previous account's token, and take the sign-in for another tab's switch.
+  it('lifts the reload prompt the tab raised over its own sign-in', async () => {
+    await renderWithAgents('/agents');
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: 'switched' }));
+    });
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    signedInByRedirect('sso-user');
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(controller.state.user?.id).toBe('sso-user');
+  });
+
+  it('leaves that prompt in place when there was no session to take up', async () => {
+    await renderWithAgents('/agents');
+    act(() => {
+      window.dispatchEvent(new CustomEvent(ACCOUNT_CHANGED_EVENT, { detail: 'switched' }));
+    });
+    resumeSessionApi.mockRejectedValue(new Error('no session'));
+
+    await act(() => controller.completeExternalSignIn().catch(() => undefined));
+
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+  });
+
+  it('signs nobody in, and keeps what the tab holds, when there is no session', async () => {
+    await renderWithAgents('/agents');
+    queryClient.setQueryData(['apiKeys'], [{ key_prefix: 'sk-current' }]);
+    resumeSessionApi.mockRejectedValue(new Error('no session'));
+
+    await act(() => expect(controller.completeExternalSignIn()).rejects.toThrow('no session'));
+
+    expect(controller.state.isAuthenticated).toBe(false);
+    expect(endAgentSession).not.toHaveBeenCalled();
+    expect(queryClient.getQueryData(['apiKeys'])).toEqual([{ key_prefix: 'sk-current' }]);
+  });
+
+  // The page that asks is drawn again when the account under it changes (and
+  // twice in development), and asks again each time.
+  it('runs once for callers that ask while it is under way', async () => {
+    await renderWithAgents('/agents');
+    signedInByRedirect('sso-user');
+
+    await act(async () => {
+      const first = controller.completeExternalSignIn();
+      const second = controller.completeExternalSignIn();
+      expect(second).toBe(first);
+      await first;
+    });
+    expect(resumeSessionApi).toHaveBeenCalledTimes(1);
+
+    // Finished: a later one is a new sign-in.
+    await act(() => controller.completeExternalSignIn());
+    expect(resumeSessionApi).toHaveBeenCalledTimes(2);
   });
 });
 
@@ -468,6 +627,26 @@ describe('AuthProvider and the toasts on screen', () => {
 
     expect(controller.state.isAuthenticated).toBe(false);
     expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('clears them when a sign-in at an identity provider comes back as another account', async () => {
+    await adminWithToast();
+    resumeSessionApi.mockResolvedValue('sso-user');
+    getMe.mockResolvedValue(me('sso-user'));
+
+    await act(() => controller.completeExternalSignIn());
+
+    expect(controller.state.user?.id).toBe('sso-user');
+    expect(screen.queryByText(ADMIN_TOAST)).toBeNull();
+  });
+
+  it('keeps them when that sign-in left no session to take up', async () => {
+    await adminWithToast();
+    resumeSessionApi.mockRejectedValue(new Error('no session'));
+
+    await act(() => controller.completeExternalSignIn().catch(() => undefined));
+
+    expect(screen.getByText(ADMIN_TOAST)).toBeInTheDocument();
   });
 
   it('keeps them, and the account, when the gateway logout fails', async () => {

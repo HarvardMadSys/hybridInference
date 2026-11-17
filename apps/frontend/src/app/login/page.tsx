@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useState } from 'react';
+import { Suspense, useEffect, useMemo, useState, type FormEvent } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -9,24 +9,52 @@ import toast from 'react-hot-toast';
 import { createAuthSchemas, LoginFormData } from '@/lib/schemas/auth';
 import { useAuth } from '@/components/providers';
 import { resendVerification } from '@/lib/api/auth';
+import {
+  cancelSsoLink,
+  confirmSsoLink,
+  discoverSso,
+  getPendingSsoLink,
+  ssoErrorCode,
+  ssoRefusalMessage,
+  ssoStartUrl,
+  type PendingSsoLink,
+  type SsoErrorCode,
+} from '@/lib/api/sso';
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
-import { internalPathOr } from '@/lib/utils/navigation';
+import { usePageRestored } from '@/lib/hooks/usePageRestored';
+import { internalPathOr, navigateTo } from '@/lib/utils/navigation';
 import { useT } from '@/components/providers/useT';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { fill } from '@/lib/utils/interpolate';
-import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
-import { useAuthAppearance } from '@/site-ui/appearance';
+import { AUTH_DATA, AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
+import { NEUTRAL_AUTH_APPEARANCE, useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 import { AuthMethodSelector } from '@/components/auth/AuthMethodSelector';
 import { PhoneAuthForm } from '@/components/auth/PhoneAuthForm';
 import { AccountChooser } from '@/components/auth/AccountChooser';
+import { ssoErrorMessage, ssoStartFailure } from '@/components/auth/ssoMessages';
 import type { AccountSummary } from '@/lib/api/auth';
 import { userDisplayName } from '@/lib/utils/userLabel';
+
+/**
+ * The row of alternative links under a form. The page spaces it, because a
+ * distribution's form class need not space its children.
+ */
+const UNDER_FORM = 'mt-4 flex items-center justify-center gap-4';
+
+/**
+ * The identity a single sign-on left waiting for the owner of the account it
+ * matched (`?sso=link`): still being read, there, or gone.
+ */
+type PendingLink =
+  | { status: 'loading' }
+  | { status: 'waiting'; identity: PendingSsoLink }
+  | { status: 'gone'; reason: SsoErrorCode };
 
 function LoginContent() {
   const t = useT();
   const skin = useAuthAppearance();
-  const { features } = useSiteConfig();
+  const { features, sso } = useSiteConfig();
   const router = useRouter();
   const searchParams = useSearchParams();
   // Where to land after login. Internal paths only — /authorize round-trips
@@ -36,10 +64,29 @@ function LoginContent() {
   // ?add=1 comes from "Add another account": the visitor is signed in already
   // and wants the form, not to be sent on.
   const addMode = searchParams.get('add') === '1';
-  const { login, loginPhone, state, accounts = [], switchAccount, removeAccount } = useAuth();
+  // How a round trip to an identity provider came back, when this is one. They
+  // are states of this page rather than pages of their own, so that a
+  // distribution's sign-in frame draws them too.
+  //   ?sso=complete   the gateway signed the account in on the redirect
+  //   ?sso=link       an account already has this email: its owner signs in
+  //                   the usual way, then accepts the identity
+  //   ?sso_error=…    it failed, and this is why
+  const ssoReturn = searchParams.get('sso');
+  const returnedError = ssoErrorCode(searchParams.get('sso_error'));
+  // A visitor who is signed in is sent on at once -- except one a round trip
+  // brought here, who has something to read or to answer first.
+  const heldHere = ssoReturn === 'complete' || ssoReturn === 'link' || returnedError !== null;
+  const {
+    login,
+    loginPhone,
+    completeExternalSignIn,
+    state,
+    accounts = [],
+    switchAccount,
+    removeAccount,
+  } = useAuth();
   // Null until the visitor picks: the chooser when this browser has accounts.
   const [view, setView] = useState<'chooser' | 'form' | null>(null);
-  const showChooser = !addMode && view !== 'form' && accounts.length > 0;
   const [method, setMethod] = useState<'email' | 'phone'>('email');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -48,25 +95,106 @@ function LoginContent() {
   const [unverifiedEmail, setUnverifiedEmail] = useState<string | null>(null);
   const [isResending, setIsResending] = useState(false);
   const [resendDone, setResendDone] = useState(false);
+  // The single sign-on email step, which takes the form's place while open.
+  const [ssoStep, setSsoStep] = useState(false);
+  const [ssoEmail, setSsoEmail] = useState('');
+  const [ssoEmailError, setSsoEmailError] = useState<string | undefined>();
+  const [ssoBusy, setSsoBusy] = useState(false);
+  usePageRestored(() => setSsoBusy(false));
+  const [ssoNotice, setSsoNotice] = useState<{ tone: 'info' | 'error'; text: string } | null>(null);
+  // ?sso=complete: the session is being taken up, or could not be.
+  const [completion, setCompletion] = useState<'running' | 'failed' | null>(
+    ssoReturn === 'complete' ? 'running' : null,
+  );
+  // ?sso=link: the identity waiting to be linked.
+  const [pendingLink, setPendingLink] = useState<PendingLink | null>(
+    ssoReturn === 'link' ? { status: 'loading' } : null,
+  );
+  // The visitor signed in on this page while that identity was waiting.
+  const [signedInForLink, setSignedInForLink] = useState(false);
+  const [linkBusy, setLinkBusy] = useState<'confirm' | 'cancel' | null>(null);
+  const [linkError, setLinkError] = useState<string | null>(null);
+  const [linkExpired, setLinkExpired] = useState(false);
   // Validation copy is interface copy too, so the schemas are rebuilt whenever
   // the resolved translator changes; `t` is stable per content document.
-  const { loginSchema } = useMemo(() => createAuthSchemas(t), [t]);
+  const { loginSchema, emailSchema } = useMemo(() => createAuthSchemas(t), [t]);
 
   const {
     register,
     handleSubmit,
     setValue,
+    getValues,
     formState: { errors },
   } = useForm<LoginFormData>({
     resolver: zodResolver(loginSchema),
     defaultValues: { email: searchParams.get('identifier') ?? '' },
   });
 
+  const waiting = pendingLink?.status === 'waiting' ? pendingLink.identity : null;
+  // The account this browser is using already carries the email the identity
+  // was matched by: its owner is here, and only has to say yes.
+  const activeEmail = state.isAuthenticated ? state.user?.email : null;
+  const ownerIsHere =
+    waiting !== null && !!activeEmail && activeEmail.toLowerCase() === waiting.email.toLowerCase();
+  const showLinkPanel =
+    waiting !== null && state.isAuthenticated && (ownerIsHere || signedInForLink);
+  // With an identity waiting, the form comes first: it is what the notice asks for.
+  const showChooser =
+    !addMode && !ssoStep && accounts.length > 0 && (waiting ? view === 'chooser' : view !== 'form');
+
   useEffect(() => {
-    if (!state.loading && state.isAuthenticated && !addMode) {
+    if (!state.loading && state.isAuthenticated && !addMode && !heldHere) {
       router.replace(nextPath);
     }
-  }, [state.loading, state.isAuthenticated, addMode, router, nextPath]);
+  }, [state.loading, state.isAuthenticated, addMode, heldHere, router, nextPath]);
+
+  // The redirect that brought the browser back set the session's cookie. The
+  // tab takes that session up first, and only then is the visitor sent on.
+  useEffect(() => {
+    if (completion !== 'running') return;
+    let stale = false;
+    completeExternalSignIn().then(
+      () => {
+        if (!stale) router.replace(nextPath);
+      },
+      () => {
+        if (!stale) setCompletion('failed');
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [completion, completeExternalSignIn, router, nextPath]);
+
+  // Read from the browser's cookie, so the email is never in the address.
+  useEffect(() => {
+    if (ssoReturn !== 'link') return;
+    let stale = false;
+    getPendingSsoLink().then(
+      (identity) => {
+        if (stale) return;
+        if (!identity) {
+          setPendingLink({ status: 'gone', reason: 'expired' });
+          return;
+        }
+        setPendingLink({ status: 'waiting', identity });
+        setValue('email', identity.email);
+      },
+      () => {
+        if (!stale) setPendingLink({ status: 'gone', reason: 'failed' });
+      },
+    );
+    return () => {
+      stale = true;
+    };
+  }, [ssoReturn, setValue]);
+
+  // Where a sign-in on this page leads: on to where the visitor was going, or,
+  // with an identity waiting, to the question of linking it.
+  const afterSignIn = () => {
+    if (waiting) setSignedInForLink(true);
+    else router.push(nextPath);
+  };
 
   const chooseAccount = async (account: AccountSummary) => {
     await switchAccount(account.id);
@@ -75,11 +203,16 @@ function LoginContent() {
         name: userDisplayName(account),
       }),
     );
-    router.push(nextPath);
+    afterSignIn();
   };
 
-  // An account whose session ended signs in again with its own identifier.
+  // An account whose session ended signs in again with its own identifier --
+  // or, when it has no password and signs in through an identity provider, there.
   const signInAgain = (account: AccountSummary) => {
+    if (account.sso_provider) {
+      navigateTo(ssoStartUrl(account.sso_provider.id, nextPath));
+      return;
+    }
     const identifier = account.email || account.login_name;
     if (identifier) {
       setValue('email', identifier);
@@ -99,7 +232,7 @@ function LoginContent() {
     try {
       await login(data.email, data.password);
       toast.success(t('auth.login.success_toast', 'Login successful!'));
-      router.push(nextPath);
+      afterSignIn();
     } catch (err) {
       // For a suspended account, prefer the admin-authored message (when set)
       // over the generic "account suspended" text.
@@ -139,8 +272,178 @@ function LoginContent() {
     }
   };
 
-  if (state.loading || (state.isAuthenticated && !addMode)) {
+  const openSsoStep = () => {
+    // An address already typed into the form is the likely one.
+    const typed = getValues('email').trim();
+    if (typed.includes('@')) setSsoEmail(typed);
+    setSsoEmailError(undefined);
+    setSsoNotice(null);
+    setSsoStep(true);
+  };
+
+  // The gateway finds the provider by the email's domain and answers with its
+  // address. No account is looked up, so the answer says nothing about one.
+  const submitSso = async (event: FormEvent) => {
+    event.preventDefault();
+    if (ssoBusy) return;
+    const email = ssoEmail.trim();
+    const parsed = emailSchema.safeParse(email);
+    if (!parsed.success) {
+      setSsoEmailError(parsed.error.issues[0]?.message);
+      return;
+    }
+    setSsoEmailError(undefined);
+    setSsoNotice(null);
+    setSsoBusy(true);
+    try {
+      const url = await discoverSso(email, nextPath);
+      if (url) {
+        // The page is on its way out: the button stays busy until it is gone.
+        navigateTo(url);
+        return;
+      }
+      setSsoNotice({
+        tone: 'info',
+        text: t(
+          'auth.sso.not_available',
+          'Your organization has not set up single sign-on here. Use another sign-in method.',
+        ),
+      });
+    } catch (err) {
+      const status = err instanceof APIError ? err.statusCode : undefined;
+      setSsoNotice({ tone: 'error', text: ssoStartFailure(t, status) ?? getErrorMessage(err) });
+    }
+    setSsoBusy(false);
+  };
+
+  const confirmLink = async () => {
+    setLinkBusy('confirm');
+    setLinkError(null);
+    try {
+      await confirmSsoLink();
+      toast.success(t('auth.sso.linked_toast', 'Single sign-on connected.'));
+      // Replaced, not pushed: going back to the question would find nothing
+      // waiting any more and say the sign-in took too long.
+      router.replace(nextPath);
+    } catch (err) {
+      if (err instanceof APIError && err.statusCode === 404) {
+        // Nothing is waiting any more: the identity was kept for ten minutes.
+        setLinkExpired(true);
+        setLinkError(ssoErrorMessage(t, 'expired'));
+      } else {
+        setLinkError(ssoRefusalMessage(err) ?? getErrorMessage(err));
+      }
+      setLinkBusy(null);
+    }
+  };
+
+  const declineLink = async () => {
+    setLinkBusy('cancel');
+    try {
+      await cancelSsoLink();
+    } catch {
+      // Left alone, the waiting identity expires by itself.
+    }
+    router.replace(nextPath);
+  };
+
+  if (
+    state.loading ||
+    pendingLink?.status === 'loading' ||
+    (state.isAuthenticated && !addMode && !heldHere)
+  ) {
     return <AuthLoading />;
+  }
+
+  const kicker = t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN');
+  const legal = (
+    <>
+      {t('auth.legal.see', 'See')} <Link href="/terms">{t('chrome.footer.terms', 'Terms')}</Link>
+      {' · '}
+      <Link href="/terms#terms-s5">{t('chrome.footer.privacy', 'Privacy')}</Link>
+    </>
+  );
+
+  if (completion === 'running') {
+    return (
+      <AuthPageFrame
+        page="login"
+        kicker={kicker}
+        title={t('auth.login.title', 'Log In')}
+        subtitle={t('auth.sso.completing', 'Signing you in…')}
+        legal={legal}
+      >
+        <div className={skin.form} data-auth={AUTH_DATA.form}>
+          <AuthLoading />
+        </div>
+      </AuthPageFrame>
+    );
+  }
+
+  if (waiting && showLinkPanel) {
+    return (
+      <AuthPageFrame
+        page="login"
+        kicker={kicker}
+        title={fill(t('auth.sso.link_title', 'Connect your {name} account?'), {
+          name: waiting.provider_name,
+        })}
+        subtitle={fill(
+          t(
+            'auth.sso.link_body',
+            '{email} will be able to sign in to this account through {name}.',
+          ),
+          { email: waiting.email, name: waiting.provider_name },
+        )}
+        legal={legal}
+      >
+        <div className={skin.form} data-auth={AUTH_DATA.form}>
+          {linkError && <AuthNotice tone="error">{linkError}</AuthNotice>}
+          {linkExpired ? (
+            <button
+              type="button"
+              className={skin.submit}
+              data-auth={AUTH_DATA.submit}
+              onClick={() => router.push(nextPath)}
+            >
+              {t('auth.sso.continue', 'Continue')}
+            </button>
+          ) : (
+            <>
+              <AuthNotice>
+                {t(
+                  'auth.sso.link_keys_hint',
+                  'If you did not create this account yourself, review its API keys after connecting.',
+                )}
+              </AuthNotice>
+              <button
+                type="button"
+                className={skin.submit}
+                data-auth={AUTH_DATA.submit}
+                disabled={linkBusy !== null}
+                aria-busy={linkBusy === 'confirm'}
+                onClick={confirmLink}
+              >
+                {t('auth.sso.link_confirm', 'Connect')}
+              </button>
+            </>
+          )}
+        </div>
+        {!linkExpired && (
+          <div className={UNDER_FORM} data-auth={AUTH_DATA.secondaryActions}>
+            <button
+              type="button"
+              className={skin.linkButton}
+              disabled={linkBusy !== null}
+              aria-busy={linkBusy === 'cancel'}
+              onClick={declineLink}
+            >
+              {t('auth.sso.link_cancel', 'Not now')}
+            </button>
+          </div>
+        )}
+      </AuthPageFrame>
+    );
   }
 
   // The field wraps its action in the `field-action` hook itself.
@@ -150,10 +453,23 @@ function LoginContent() {
     </Link>
   );
 
+  // Why the round trip that led here ended on this form.
+  const returnFailure: SsoErrorCode | null =
+    completion === 'failed'
+      ? 'failed'
+      : pendingLink?.status === 'gone'
+        ? pendingLink.reason
+        : returnedError;
+  // The entry is one, whichever provider answers: the page lists no organization.
+  // Not beside an identity that is waiting, which a second round trip would replace.
+  const offerSso = sso.enabled && !showChooser && !ssoStep && !waiting;
+  const isNeutral = skin === NEUTRAL_AUTH_APPEARANCE;
+  const divider = t('auth.sso.divider', 'or');
+
   return (
     <AuthPageFrame
       page="login"
-      kicker={t('auth.login.kicker', 'GOOD TO SEE YOU AGAIN')}
+      kicker={kicker}
       title={
         showChooser
           ? t('auth.accounts.title', 'Choose an account')
@@ -162,11 +478,16 @@ function LoginContent() {
             : t('auth.login.title', 'Log In')
       }
       subtitle={
-        showChooser
-          ? t('auth.accounts.subtitle', 'Accounts signed in on this browser')
-          : features.phoneAuth
-            ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
-            : t('auth.login.subtitle', 'Welcome back, please log in')
+        ssoStep
+          ? t(
+              'auth.sso.subtitle',
+              'Enter your work or school email. We will send you to your organization to sign in.',
+            )
+          : showChooser
+            ? t('auth.accounts.subtitle', 'Accounts signed in on this browser')
+            : features.phoneAuth
+              ? t('auth.phone.login_subtitle', 'Welcome back, please log in')
+              : t('auth.login.subtitle', 'Welcome back, please log in')
       }
       topbar={
         features.publicSignup ? (
@@ -178,16 +499,28 @@ function LoginContent() {
           </>
         ) : undefined
       }
-      legal={
-        <>
-          {t('auth.legal.see', 'See')}{' '}
-          <Link href="/terms">{t('chrome.footer.terms', 'Terms')}</Link>
-          {' · '}
-          <Link href="/terms#terms-s5">{t('chrome.footer.privacy', 'Privacy')}</Link>
-        </>
-      }
+      legal={legal}
     >
-      {showChooser ? (
+      {/* Above the chooser and both forms, whichever the visitor is on. */}
+      {!ssoStep && (returnFailure || waiting) ? (
+        <div className="mt-6 space-y-3">
+          {returnFailure && (
+            <AuthNotice tone="error">{ssoErrorMessage(t, returnFailure)}</AuthNotice>
+          )}
+          {waiting && (
+            <AuthNotice>
+              {fill(
+                t(
+                  'auth.sso.link_notice',
+                  'An account already exists for this email. Sign in the way you usually do to connect your {name} account.',
+                ),
+                { name: waiting.provider_name },
+              )}
+            </AuthNotice>
+          )}
+        </div>
+      ) : null}
+      {ssoStep ? null : showChooser ? (
         <AccountChooser
           accounts={accounts}
           onChoose={chooseAccount}
@@ -214,13 +547,60 @@ function LoginContent() {
           ) : null}
         </>
       )}
-      {showChooser ? null : features.phoneAuth && method === 'phone' ? (
+      {ssoStep ? (
+        <>
+          <form onSubmit={submitSso} className={skin.form} data-auth={AUTH_DATA.form} noValidate>
+            {ssoNotice && <AuthNotice tone={ssoNotice.tone}>{ssoNotice.text}</AuthNotice>}
+            <AuthField
+              id="sso-email"
+              label={t('auth.sso.email_label', 'Work or school email')}
+              error={ssoEmailError}
+            >
+              <input
+                id="sso-email"
+                className={ssoEmailError ? skin.inputError : skin.input}
+                data-auth="control"
+                type="email"
+                autoComplete="email"
+                autoCapitalize="none"
+                autoCorrect="off"
+                spellCheck={false}
+                value={ssoEmail}
+                onChange={(event) => {
+                  setSsoEmail(event.target.value);
+                  setSsoEmailError(undefined);
+                }}
+                disabled={ssoBusy}
+              />
+            </AuthField>
+            <button
+              type="submit"
+              className={skin.submit}
+              data-auth={AUTH_DATA.submit}
+              disabled={ssoBusy}
+              aria-busy={ssoBusy}
+            >
+              {t('auth.sso.continue', 'Continue')}
+            </button>
+          </form>
+          <div className={UNDER_FORM} data-auth={AUTH_DATA.secondaryActions}>
+            <button
+              type="button"
+              className={skin.linkButton}
+              disabled={ssoBusy}
+              onClick={() => setSsoStep(false)}
+            >
+              {t('auth.sso.back', 'Back to log in')}
+            </button>
+          </div>
+        </>
+      ) : showChooser ? null : features.phoneAuth && method === 'phone' ? (
         <PhoneAuthForm
           purpose="login"
           onLogin={async (phone, code) => {
             await loginPhone(phone, code);
             toast.success(t('auth.login.success_toast', 'Login successful!'));
-            router.push(nextPath);
+            afterSignIn();
           }}
         />
       ) : (
@@ -304,6 +684,23 @@ function LoginContent() {
           </button>
         </form>
       )}
+      {offerSso ? (
+        <div className="mt-6 flex flex-col items-center gap-3" data-auth={AUTH_DATA.sso}>
+          {isNeutral ? (
+            <div className="flex w-full items-center gap-3 text-xs text-gray-500">
+              <span className="h-px flex-1 bg-gray-200" aria-hidden="true" />
+              <span>{divider}</span>
+              <span className="h-px flex-1 bg-gray-200" aria-hidden="true" />
+            </div>
+          ) : (
+            // A distribution's own small print: its colors are not the page's to pick.
+            <span className={skin.hint}>{divider}</span>
+          )}
+          <button type="button" className={skin.linkButton} onClick={openSsoStep}>
+            {t('auth.sso.button', 'Log in with SSO')}
+          </button>
+        </div>
+      ) : null}
     </AuthPageFrame>
   );
 }

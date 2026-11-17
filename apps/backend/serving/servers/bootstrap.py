@@ -268,12 +268,15 @@ async def _refresh_route_state_snapshots(
     interval_seconds: float = 10.0,
     router: Any | None = None,
     apply_removals: Callable[[], Awaitable[None]] | None = None,
+    services: Any | None = None,
 ) -> None:
     """Periodically reload disabled/removed routes so workers converge after admin edits.
 
     ``apply_removals`` is what boot could not do: take deleted config routes
     out of the route table. It runs once, after the first reload that
-    succeeds, and again on the next one if it fails.
+    succeeds, and again on the next one if it fails. ``services`` lets the
+    same pass drop a config model the stored catalog no longer lists, which
+    is how a model removed on another process leaves this one.
     """
     refresh_state = _EffectiveRouteRefreshState()
     while True:
@@ -287,6 +290,16 @@ async def _refresh_route_state_snapshots(
             if apply_removals is not None:
                 await apply_removals()
                 apply_removals = None
+            if services is not None:
+                # Its own try: a catalog read must not skip route-state reloads.
+                try:
+                    from serving.servers.routers.admin.provider_routes import (
+                        retire_models_removed_from_catalog,
+                    )
+
+                    await retire_models_removed_from_catalog(services)
+                except Exception:
+                    logger.warning("Catalog model retirement failed", exc_info=True)
             if changed:
                 _report_route_weight_divergence(router)
         except Exception:
@@ -675,6 +688,7 @@ def _start_live_config(pool: Any) -> None:
         return
     from serving.config import instances
     from serving.servers import restart
+    from serving.shared_spend import mode as spend_mode
 
     reporter = instances.InstanceReporter(
         pool=pool,
@@ -684,6 +698,7 @@ def _start_live_config(pool: Any) -> None:
             **live_config.COORDINATOR.capabilities(),
             "groups": {**live_config.COORDINATOR.capabilities()["groups"], "routing.runtime": [1]},
             "details": instances.default_details(),
+            spend_mode.CAPABILITY: spend_mode.capability(),
         },
     )
     live_config.COORDINATOR.start(reporter)
@@ -993,6 +1008,15 @@ async def initialize() -> AppServices:
                 # Checked again on the pool everything else uses: the
                 # configuration load may have run without the database.
                 await require_schema(db_logger.pool)
+                # The spend accounting mode, once, for this process's life.
+                from serving.shared_spend import mode as spend_mode
+
+                await spend_mode.load(db_logger.pool)
+                logger.info(
+                    "Spend accounting mode: %s",
+                    spend_mode.current(),
+                    extra={"event": "spend_accounting_mode", "mode": spend_mode.current()},
+                )
                 logger.info("Database logger initialized successfully")
                 # Start broadcast email scheduler. Tear it down if rehydration
                 # fails to avoid a half-initialized scheduler running in background.
@@ -1302,6 +1326,12 @@ async def initialize() -> AppServices:
         )
         await pg_operational.initialize()
         operational_store = CachedOperationalStore(pg_operational, InMemoryCache())
+        from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
+
+        if spend_mode.is_shared():
+            # Fail closed at startup: every admission and cost reaches one
+            # ledger through this store, or the process does not start.
+            shared_ledger.ledger_for(operational_store)
         log_store = PostgresLogStore(
             db_logger.pool,
             store_full_prompts=settings.db_store_full_content,
@@ -1310,17 +1340,20 @@ async def initialize() -> AppServices:
         logger.info("Operational store initialized (Postgres + in-memory cache)")
         logger.info("Log store initialized (Postgres)")
 
+        from serving.storage.postgres_operational import reconcile_key_quota_copies
         from serving.storage.project_backfill import backfill_projects
 
         async def _run_project_backfill() -> None:
             try:
                 async with db_logger.pool.acquire() as conn:
                     accounts = await backfill_projects(conn)
+                    key_quotas = await reconcile_key_quota_copies(conn)
                 logger.info(
                     "project_backfill_complete",
                     extra={
                         "event": "project_backfill_complete",
                         "accounts": accounts,
+                        "key_quotas_reconciled": key_quotas,
                     },
                 )
             except Exception:
@@ -1435,6 +1468,7 @@ async def initialize() -> AppServices:
     # a failure here should not prevent the server from starting.
     restored_routewise_model_ids: set[str] = set()
     route_state_resolver: RouteStateResolver | None = None
+    provider_route_services: AppServices | None = None
     # Set when boot could not take deleted config routes out of the table, so
     # the route-state refresh loop does it once the states can be read.
     late_route_removals: Callable[[], Awaitable[None]] | None = None
@@ -1715,6 +1749,7 @@ async def initialize() -> AppServices:
                     model_router_registry,
                     router=router,
                     apply_removals=late_route_removals,
+                    services=provider_route_services,
                 )
             )
             _BACKGROUND_TASKS.add(route_state_refresh_task)
@@ -1985,6 +2020,12 @@ async def shutdown(services: AppServices) -> None:
     Args:
         services: The services container returned by :func:`initialize`.
     """
+    # Where a release handoff stood, for its record: a process sealed before
+    # its stop has nothing in flight (serving/servers/handoff.py).
+    from serving.servers import handoff
+
+    handoff.log_at_shutdown()
+
     # The batch worker first: its in-flight requests run through the whole
     # serving stack (router, pricing, stores), so it stops before any of that
     # is torn down.

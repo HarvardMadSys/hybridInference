@@ -93,6 +93,11 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
 
+    # Log probabilities of the output tokens, and how many alternatives to
+    # return for each (OpenAI caps it at 20, as does vLLM by default).
+    logprobs: bool | None = None
+    top_logprobs: int | None = Field(default=None, ge=0, le=20)
+
     # Reasoning effort: "low", "medium", "high"
     reasoning_effort: str | None = None
 
@@ -165,6 +170,7 @@ class ChatCompletionChoice(BaseModel):  # type: ignore[no-any-unimported]
     index: int
     message: ChoiceMessage
     finish_reason: str | None = None
+    logprobs: dict[str, Any] | None = None
 
 
 class Usage(BaseModel):  # type: ignore[no-any-unimported]

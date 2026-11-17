@@ -367,7 +367,9 @@ async def admin_get_request_metrics(
     other value is a 422. Whatever it is, every bucket and window also reports
     the batch worker's requests in it (``batch_request_count`` /
     ``batch_requests``) and how many of them failed, so a chart of the
-    interactive counts can stack them on top.
+    interactive counts can stack them on top. A row whose error starts with
+    ``UpstreamModelQueued:`` is left out of every count: the model was waiting
+    for capacity and nothing ran. The request list still shows that row.
 
     Client disconnects — the caller hung up mid-stream — are counted in their own
     ``client_disconnect_*`` field and excluded from ``error_*``. They are split

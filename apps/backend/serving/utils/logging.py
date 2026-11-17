@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from typing import TYPE_CHECKING, Any
 
 from . import context as req_ctx
@@ -118,6 +119,11 @@ _STRUCTURED_LOG_KEYS = (
     # victims of an upstream fault as its culprits — see the module comment on
     # routing/endpoint_health._MAX_TRACKED_CALLERS.
     "affected_callers",
+    # Whose request a breaker-exempt failure was (``client_error_skip_breaker``,
+    # ``caller_repeat_skip_breaker``): ``endpoint_health._caller_key``, a short
+    # hash of the affinity key with no way back to the credential. A skipped
+    # repeat is only actionable when it says which caller kept failing.
+    "caller",
     # Upstream rejection of the gateway's own credential
     # (routing/endpoint_health.py ``upstream_auth_misconfig``).
     "consecutive_auth_rejections",
@@ -192,6 +198,38 @@ _STRUCTURED_LOG_KEYS = (
     # (``route_capability_override_orphaned``, servers/routers/admin/
     # provider_routes.py). Next to ``model_id`` it says which row to look at.
     "route_id",
+    # The shared spend accounting's evidence (serving/shared_spend/ledger.py,
+    # and the shutdown report of its ledgers in serving/spend_ledger.py). Its
+    # alerts say "the log lists each entry to reconcile", and for a cost that
+    # was set aside, dropped as a duplicate or left unaccounted the line is the
+    # only record of how much: ``increments`` and ``reservations`` are those
+    # lists (a settlement batch's, so at most a few hundred short items),
+    # ``amount_usd`` the sum, ``batch_id`` / ``reservation_id`` / ``sqlstate``
+    # what to look them up by, ``entry_count`` and ``unavailable`` how a write
+    # ended. ``held`` is what a process still held when it shut down;
+    # ``failing_for_seconds``, ``oldest_age_seconds`` and ``instances`` are
+    # what a stalled settlement and stranded reservations are reported with.
+    # None of these names is used by any other log line: the per-process
+    # ledger's own fields (``entries``, ``cost_usd``, ...) are not among them
+    # and are written as before.
+    "increments",
+    "reservations",
+    "amount_usd",
+    "batch_id",
+    "reservation_id",
+    "sqlstate",
+    "entry_count",
+    "unavailable",
+    "held",
+    "failing_for_seconds",
+    "oldest_age_seconds",
+    "instances",
+    # Where a release handoff stood (serving/servers/handoff.py): its state,
+    # the requests in flight and those refused after the seal. A release
+    # record is built from these lines; no other line uses the names.
+    "handoff_state",
+    "handoff_in_flight",
+    "handoff_refused_after_seal",
 )
 
 
@@ -293,16 +331,72 @@ class _QuietPathFilter(logging.Filter):
         return not any(f'"{path} ' in msg or f'"{path}"' in msg for path in _QUIET_PATHS)
 
 
+#: Paths whose ``token`` query parameter is a credential: an admin export's
+#: download link (``serving.servers.routers.admin.export``), which downloads the
+#: export with no other authentication for as long as it lasts.
+_CREDENTIAL_QUERY_PATHS = ("/admin/export/requests/download",)
+_TOKEN_PARAM = re.compile(r"([?&]token=)[^&]*")
+
+
+class _CredentialQueryFilter(logging.Filter):
+    """Write a download link's ``token`` as ``<redacted>`` in uvicorn's access log.
+
+    The link is a URL, so uvicorn logs it whole; the log would otherwise hold
+    a usable credential for the rest of its minute.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Redact the token in place; never suppress the line."""
+        # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            path = args[2]
+            if path.startswith(_CREDENTIAL_QUERY_PATHS) and "token=" in path:
+                redacted = _TOKEN_PARAM.sub(r"\1<redacted>", path)
+                record.args = (*args[:2], redacted, *args[3:])
+        return True
+
+
+_SSO_CALLBACK_WITH_QUERY = re.compile(r"(/auth/sso/[^/?]+/callback)\?")
+
+
+class _CallbackQueryFilter(logging.Filter):
+    """Keep a single sign-on callback's query out of uvicorn's access log.
+
+    The identity provider sends the browser back with its one-time
+    authorization code and the flow's state in the query. The line keeps the
+    path, which names the provider and, with the status, says what happened.
+    """
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        """Drop the query from a callback's request line; never suppress the line."""
+        # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
+        args = record.args
+        if isinstance(args, tuple) and len(args) >= 3 and isinstance(args[2], str):
+            callback = _SSO_CALLBACK_WITH_QUERY.match(args[2])
+            if callback:
+                record.args = (*args[:2], callback.group(1), *args[3:])
+        return True
+
+
 def attach_quiet_access_filter() -> None:
-    """Attach the quiet-path filter to uvicorn's access logger.
+    """Attach the gateway's filters to uvicorn's access logger.
+
+    The quiet-path filter drops polling paths; set LOG_LEVEL=DEBUG to disable
+    that and see all access logs. The credential filter redacts a download
+    link's token, and the callback filter leaves a single sign-on callback's
+    query out, at every level.
 
     Must be called after uvicorn's own logging setup (i.e., from the app
-    lifespan), otherwise uvicorn's dictConfig will wipe the filter.
-    Set LOG_LEVEL=DEBUG to disable suppression and see all access logs.
+    lifespan), otherwise uvicorn's dictConfig will wipe the filters.
     """
     uvicorn_access = logging.getLogger("uvicorn.access")
     if not any(isinstance(f, _QuietPathFilter) for f in uvicorn_access.filters):
         uvicorn_access.addFilter(_QuietPathFilter())
+    if not any(isinstance(f, _CredentialQueryFilter) for f in uvicorn_access.filters):
+        uvicorn_access.addFilter(_CredentialQueryFilter())
+    if not any(isinstance(f, _CallbackQueryFilter) for f in uvicorn_access.filters):
+        uvicorn_access.addFilter(_CallbackQueryFilter())
 
 
 # Resolves LOG_LEVEL and LOG_FORMAT: the environment until the database-backed

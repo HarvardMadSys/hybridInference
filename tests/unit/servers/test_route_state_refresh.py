@@ -66,3 +66,38 @@ async def test_a_failed_removal_pass_is_retried_on_the_next_reload():
     await _run_loop(resolver, apply_removals)
 
     assert attempts == [1, 2]
+
+
+@pytest.mark.unit
+async def test_each_refresh_retires_catalog_models_and_a_failure_stays_there(monkeypatch):
+    """A catalog retirement runs every pass, and its failure does not skip later ones."""
+    resolver = _FlakyStates(failures=0)
+    services = object()
+    seen: list[object] = []
+
+    async def retire(passed) -> None:
+        seen.append(passed)
+        if len(seen) == 1:
+            raise RuntimeError("catalog unreadable")
+
+    monkeypatch.setattr(
+        "serving.servers.routers.admin.provider_routes.retire_models_removed_from_catalog",
+        retire,
+    )
+
+    task = asyncio.create_task(
+        _refresh_route_state_snapshots(
+            resolver,
+            None,
+            interval_seconds=0.001,
+            services=services,
+        )
+    )
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert len(seen) > 1
+    assert seen[0] is services
+    assert resolver.loads == len(seen)

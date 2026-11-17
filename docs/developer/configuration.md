@@ -32,10 +32,12 @@ other settings. No JSON file is a runtime fallback either.
 | `ALERT_RULES` | Optional alert thresholds and rule switches | Backend restart |
 | `SITE_CONFIGURATION` | Public site identity and feature restrictions | Settings refresh |
 | `SITE_BRANDING` | Validated public branding | Settings refresh |
+| `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | Settings refresh |
 
 Empty routing and alert documents use the built-in policy and thresholds.
 Empty site documents use neutral branding. An empty model catalog supplies no
-models; models created in Admin Routing remain available independently.
+models; models created in Admin Routing remain available independently. An
+empty single sign-on document offers no single sign-on.
 
 A stored site document that no longer validates is passed over: the explicit
 `SITE_*` settings and then the neutral defaults apply, public signup and RAG are

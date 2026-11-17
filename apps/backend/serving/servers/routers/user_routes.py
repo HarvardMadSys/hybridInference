@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditTarget
+from serving.auth import sso_accounts
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
@@ -413,6 +414,13 @@ async def get_current_user_info(
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
 
+    # Only an account with neither a password nor a verified phone confirms
+    # sensitive actions at its identity provider, so only it is looked up.
+    reauth_provider = (
+        await sso_accounts.account_provider(op_store, user_row["id"])
+        if sso_accounts.confirms_through_provider(user_row)
+        else None
+    )
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
@@ -420,6 +428,7 @@ async def get_current_user_info(
         phone=user_row.get("phone"),
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
+        sso_reauth_provider=sso_accounts.provider_ref(reauth_provider),
         user_name=user_row["user_name"],
         avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
@@ -732,26 +741,34 @@ async def list_api_keys(
 
     rows = await op_store.list_account_keys(current_user["user_id"])
 
-    keys: list[APIKeyListItem] = []
-    for row in rows:
-        keys.append(
-            APIKeyListItem(
-                key_prefix=row["key_prefix"],
-                key_masked=mask_key_prefix(row["key_prefix"]),
+    return APIKeyListResponse(
+        keys=[
+            key_list_item(
+                row,
                 revealable=row["status"] in _REVEALABLE_STATUSES
                 and bool(row.get("api_key_encrypted")),
-                name=row.get("name"),
-                created_at=row["created_at"],
-                last_used_at=row["last_used_at"],
-                status=row["status"],
-                spent_today_usd=float(row.get("spent_today_usd") or 0),
-                spent_month_usd=float(row.get("spent_month_usd") or 0),
-                project_id=row.get("project_id"),
-                project_name=row.get("project_name"),
-                **_key_limits(row),
             )
-        )
-    return APIKeyListResponse(keys=keys)
+            for row in rows
+        ]
+    )
+
+
+def key_list_item(row: dict[str, Any], *, revealable: bool) -> APIKeyListItem:
+    """One ``list_account_keys`` row as the key listings show it: masked, never the key."""
+    return APIKeyListItem(
+        key_prefix=row["key_prefix"],
+        key_masked=mask_key_prefix(row["key_prefix"]),
+        revealable=revealable,
+        name=row.get("name"),
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+        status=row["status"],
+        spent_today_usd=float(row.get("spent_today_usd") or 0),
+        spent_month_usd=float(row.get("spent_month_usd") or 0),
+        project_id=row.get("project_id"),
+        project_name=row.get("project_name"),
+        **_key_limits(row),
+    )
 
 
 @router.post("/api-keys/{key_prefix}/reveal", response_model=APIKeyRevealResponse)
@@ -1406,6 +1423,7 @@ async def change_password(
         password=body.old_password,
         phone_code=body.phone_code,
         purpose="set_password",
+        sid=current_user.get("sid"),
     )
     if not first_password and body.new_password == body.old_password:
         raise HTTPException(

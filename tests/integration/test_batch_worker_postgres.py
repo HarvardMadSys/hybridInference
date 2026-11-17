@@ -272,7 +272,13 @@ async def test_two_workers_drain_a_batch_within_the_deployment_wide_cap(
         custom_id: f"echo {custom_id}" for custom_id, _ in items
     }
     assert all(r["request_id"] for r in results)
-    # The owner was charged as for their own requests.
+    # The owner was charged as for their own requests. The counters are written
+    # in the background (spend_ledger), so the last charge can land after the
+    # batch reads completed.
+    await _until(
+        lambda: _charged_at_least(store._pool, owner["user_id"], 18 * _ITEM_COST),
+        what="every charge to land",
+    )
     async with store._pool.acquire() as conn:
         spent = await conn.fetchval(
             "SELECT COALESCE(SUM(cost_usd), 0) FROM user_daily_cost WHERE user_id = $1",

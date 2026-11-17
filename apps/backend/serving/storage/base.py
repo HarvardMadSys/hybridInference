@@ -110,7 +110,6 @@ class CostIncrement(NamedTuple):
     api_key_id: int | None
     cost_usd: Decimal | float
     requests: int = 1
-    org_id: str | None = None
     project_id: str | None = None
 
 
@@ -246,6 +245,64 @@ class OperationalStore(ABC):
     async def record_phone_login_event(self, **fields: Any) -> None:
         """Record phone login outcomes without fabricating an email."""
         raise RuntimeError("Phone authentication is unavailable in this store")
+
+    # -- single sign-on (optional for legacy store implementations) ----------
+
+    async def get_user_identity(self, issuer: str, subject: str) -> Row | None:
+        """Fetch the identity an identity provider vouches for, if it is linked."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def list_user_identities(self, user_id: str) -> list[Row]:
+        """List an account's linked identities, oldest first."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def link_user_identity(self, **fields: Any) -> str:
+        """Link an identity to an active account; say why not when it cannot be."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def touch_user_identity(self, identity_id: str) -> None:
+        """Record that an identity just signed in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def unlink_user_identity(self, **fields: Any) -> str:
+        """Remove one of an account's identities, optionally keeping its last way in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_user(self, **fields: Any) -> bool:
+        """Create an account for a first single sign-on and link the identity to it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_flow(self, **fields: Any) -> None:
+        """Record one redirect to an identity provider."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def mark_sso_reauth_verified(self, state_hash: str) -> None:
+        """Record that a claimed re-authentication flow ended in a fresh sign-in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_reauth_proof(self, **fields: Any) -> bool:
+        """Spend a recent re-authentication for one account, session and purpose."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_pending_link(self, **fields: Any) -> None:
+        """Hold an identity until the owner of the account it matched accepts it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def get_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Read a pending link that is still waiting, without claiming it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Atomically claim a pending link."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def delete_sso_pending_link(self, token_hash: str) -> None:
+        """Drop a pending link its browser declined."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
 
     # -- users ---------------------------------------------------------------
 
@@ -603,6 +660,24 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
+    async def approve_users(
+        self,
+        user_ids: list[str],
+        *,
+        admin_id: str,
+        note: str | None = None,
+    ) -> list[Row]:
+        """Approve each listed user that is still pending, in one statement.
+
+        Records reviewer and note as :meth:`approve_user` does, but only on
+        rows whose status is ``pending_approval`` when the update runs, so a
+        user rejected, deleted or already approved meanwhile is left as it is.
+        Returns ``id``, ``email``, ``phone`` and ``login_name`` of every user
+        approved, in no particular order; an ID that names no pending user is
+        absent. An empty list writes nothing.
+        """
+
+    @abstractmethod
     async def reject_user(
         self,
         user_id: str,
@@ -751,7 +826,6 @@ class OperationalStore(ABC):
         name: str | None = None,
         max_active_keys: int | None = None,
         project_id: str | None = None,
-        credential_scope: str = "",
     ) -> Row:
         """Insert a new API key. Returns the inserted row (at least ``id``, ``created_at``).
 
@@ -797,7 +871,7 @@ class OperationalStore(ABC):
 
     # -- projects ------------------------------------------------------------
     #
-    # A project belongs to the owner's personal organization. Its budgets are
+    # A project belongs to one account. Its budgets are
     # sub-limits of the account ceiling, and its allowlist narrows the models
     # its keys may call. The Default project of each account is where keys go
     # when the caller names none.
@@ -815,7 +889,7 @@ class OperationalStore(ABC):
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
     ) -> Row:
-        """Insert a project under the user's personal organization."""
+        """Insert a project owned by *user_id*."""
 
     @abstractmethod
     async def list_projects(self, user_id: str) -> list[Row]:
@@ -848,19 +922,11 @@ class OperationalStore(ABC):
         """Return how many active keys the project holds."""
 
     @abstractmethod
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Update an organization's ceilings or status; return the row."""
-
-    @abstractmethod
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Return the status of the account's personal organization, or None."""
-
-    @abstractmethod
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
 
-        Reads the personal organization first and falls back to the legacy key
-        quota while the organization has no ceiling of its own.
+        The account quota is the one every key of the account carries, and the
+        one its next key would inherit.
         """
 
     @abstractmethod
@@ -1026,6 +1092,137 @@ class OperationalStore(ABC):
 
         Whichever browser holds it can no longer refresh it. Returns whether a
         session was still live to revoke.
+        """
+
+    # -- second factor ---------------------------------------------------------
+    #
+    # An account's authenticator (``user_two_factor``), its recovery codes, and
+    # what each of its sessions has proved (two columns of ``auth_sessions``).
+    # See ``serving.auth.two_factor``.
+
+    @abstractmethod
+    async def get_two_factor(self, user_id: str) -> Row | None:
+        """Fetch an account's second factor, or None when it has never started one.
+
+        Returns: ``secret_encrypted, confirmed_at, last_used_step,
+        failed_attempts, locked_until, recovery_codes_left`` and
+        ``pending_session_id``, the session whose setup still waits for its
+        first code (NULL when none does). ``confirmed_at`` is NULL until the
+        account has given a first code.
+        """
+
+    @abstractmethod
+    async def set_pending_two_factor(
+        self,
+        user_id: str,
+        pending_secret_encrypted: str,
+        *,
+        sid: str,
+        ttl_seconds: int,
+        attempts: int,
+    ) -> None:
+        """Record a secret session *sid* has been shown and not yet proved.
+
+        Replaces an earlier pending one, whoever started it. It waits
+        *ttl_seconds* for its first code and allows *attempts* tries at it. A
+        confirmed secret keeps working until :meth:`confirm_two_factor` swaps
+        the pending one in.
+        """
+
+    @abstractmethod
+    async def begin_two_factor_setup_attempt(self, user_id: str, sid: str) -> str | None:
+        """Take one of the tries session *sid*'s pending setup has left; return its secret.
+
+        None when that session has no setup waiting: none was started, it ran
+        out of time or of tries, or another session's replaced it. Taking the
+        try and deciding are one statement, so guesses sent together get no
+        more tries than are left.
+        """
+
+    @abstractmethod
+    async def cancel_pending_two_factor(self, user_id: str, sid: str) -> bool:
+        """Drop the setup session *sid* started; False when it has none."""
+
+    @abstractmethod
+    async def confirm_two_factor(
+        self,
+        user_id: str,
+        *,
+        pending_secret_encrypted: str,
+        step: int,
+        recovery_code_hashes: Sequence[str],
+        sid: str,
+        environment: str,
+    ) -> bool:
+        """Make the pending secret the account's authenticator, in one transaction.
+
+        *pending_secret_encrypted* must still be the pending value, so of two
+        confirmations racing only one wins. Sets ``last_used_step`` to *step*,
+        replaces every recovery code, forgets what the account's sessions
+        proved with an earlier authenticator, and marks session *sid* verified
+        from *environment*. Returns whether it did.
+        """
+
+    @abstractmethod
+    async def begin_two_factor_attempt(
+        self, user_id: str, *, lock_every: int, lock_seconds: int, max_lock_seconds: int
+    ) -> datetime | None:
+        """Count one attempt at the account's codes; return when it may next try, or None.
+
+        None means the attempt was counted and may be checked. Every
+        *lock_every*-th attempt in a row holds the account's codes off, for
+        *lock_seconds* the first time and twice as long each time after, up to
+        *max_lock_seconds*; an attempt made during a hold is not counted and
+        gets the time it ends. Counting and deciding are one statement, so
+        guesses sent together are let through one run at a time. A code that
+        is accepted (:meth:`verify_session_two_factor`) ends the run.
+        """
+
+    @abstractmethod
+    async def verify_session_two_factor(
+        self,
+        user_id: str,
+        sid: str,
+        environment: str,
+        *,
+        secret_encrypted: str | None = None,
+        step: int | None = None,
+        recovery_code_hash: str | None = None,
+    ) -> str:
+        """Accept a code and mark session *sid* verified by it, or do neither.
+
+        For a code from the app give *secret_encrypted*, the stored secret
+        the caller checked it against, and *step*, the time step it matched;
+        for a recovery code give *recovery_code_hash*. One transaction under
+        the lock every change of authenticator takes: a code is good once, and
+        one accepted for an authenticator that has since been replaced or
+        removed marks nothing.
+
+        Returns ``"verified"``, ``"rejected"`` (no such authenticator any
+        more, a step no newer than the last accepted, an unknown or spent
+        recovery code), or ``"session_ended"`` (a good code, not spent,
+        because no live session was there to mark).
+        """
+
+    @abstractmethod
+    async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
+        """Replace a confirmed account's recovery codes; False when it has no authenticator."""
+
+    @abstractmethod
+    async def delete_two_factor(self, user_id: str) -> bool:
+        """Remove an account's authenticator, its recovery codes and what its sessions proved.
+
+        Returns whether there was one. The account's sessions stay signed in;
+        none of them counts as verified any longer.
+        """
+
+    @abstractmethod
+    async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
+        """Fetch what session *sid* of *user_id* has proved, or None for no such live session.
+
+        Returns: ``enrolled`` (the account has a confirmed authenticator),
+        ``verified_at``, ``environment``. Never cached: a code given, or an
+        authenticator removed, counts on the very next request.
         """
 
     # -- browser sessions ----------------------------------------------------
@@ -1262,78 +1459,6 @@ class OperationalStore(ABC):
         a race in which two concurrent exchanges both observe an unused code.
         """
 
-    # -- agent invitations ----------------------------------------------------
-
-    async def create_agent_invite_token(
-        self,
-        *,
-        token_hash: str,
-        agent_account_id: str,
-        email: str,
-        expires_at: datetime,
-    ) -> None:
-        """Store a hashed agent-invitation token, superseding earlier live ones.
-
-        The token is stored hashed: a read of this table must not yield a
-        link anyone can redeem. Every still-usable earlier token for the
-        same agent account is superseded in the same write, so at most one
-        outstanding link per invited account can ever be redeemed. Only the
-        PostgreSQL store implements invitations; other stores inherit this
-        refusal.
-        """
-        raise NotImplementedError("This operational store does not support agent invitations")
-
-    async def redeem_agent_invite(
-        self,
-        *,
-        token_hash: str,
-        user_id: str,
-        user_name: str | None,
-        password_hash: str,
-        api_key_hash: str,
-        api_key_prefix: str,
-        credential_scope: str,
-        quota_daily_cost_usd: Decimal | float,
-        max_active_keys: int,
-    ) -> Row | None:
-        """Claim an invite and settle the account behind it, in one transaction.
-
-        Claims the token (unused, unexpired, not superseded), then — under
-        the same commit — finds the user by the invited email or creates it
-        with the given password hash, sets that password either way, marks
-        the email verified and the account active, ensures its personal
-        organization, and issues exactly one scoped API key. Any refusal
-        after the claim (for example the account's key ceiling) rolls the
-        whole transaction back, claim included, so the link stays usable.
-
-        Returns ``user_id, api_key_id, created`` (``created`` is True when
-        this call made the user), or ``None`` when the token is unknown,
-        used, superseded or expired — the caller cannot tell those apart,
-        and should not.
-
-        Raises:
-            APIKeyLimitReachedError: The account already holds
-                ``max_active_keys``; nothing was written.
-        """
-        raise NotImplementedError("This operational store does not support agent invitations")
-
-    async def get_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
-        """Return the provisioning link for an agent account id, or None.
-
-        The row names the local user and the scoped key issued for it, and
-        whether provisioning was revoked.
-        """
-        raise NotImplementedError("This operational store does not support agent invitations")
-
-    async def revoke_agent_provisioned_account(self, agent_account_id: str) -> Row | None:
-        """Revoke a provisioned account's scoped key and mark the link revoked.
-
-        Returns the link row, or None when the agent account was never
-        provisioned here. Revoking an already-revoked link returns it
-        unchanged: the caller's intent already holds.
-        """
-        raise NotImplementedError("This operational store does not support agent invitations")
-
     # -- inference grants ----------------------------------------------------
 
     @abstractmethod
@@ -1442,6 +1567,14 @@ class OperationalStore(ABC):
         for a row written without them.
         """
 
+    @abstractmethod
+    async def list_audit_actions(self) -> list[str]:
+        """Return every distinct ``action`` recorded in the audit log, sorted.
+
+        The admin audit filter offers these, so an action can be filtered
+        on as soon as it has been recorded, without a client-side list.
+        """
+
     # -- cost counters (user_daily_cost table) ---------------------------------
 
     @abstractmethod
@@ -1453,7 +1586,6 @@ class OperationalStore(ABC):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
@@ -1471,7 +1603,6 @@ class OperationalStore(ABC):
         writes them.
 
         Args:
-            org_id: Organization attributed at request admission.
             project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
@@ -1502,7 +1633,6 @@ class OperationalStore(ABC):
                 day=increment.day,
                 api_key_id=increment.api_key_id,
                 requests=increment.requests,
-                org_id=increment.org_id,
                 project_id=increment.project_id,
             )
 

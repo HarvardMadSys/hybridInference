@@ -16,6 +16,7 @@ import jwt
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving.audit import AuditActor
+from serving.auth.two_factor import admin_two_factor_required, require_session_two_factor
 from serving.config.settings import get_settings
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
@@ -477,6 +478,82 @@ def require_role(min_role: str):
     return _check
 
 
+#: Methods that change nothing, which is all ADMIN_TOKEN may use while the
+#: deployment requires a second factor of its administrators.
+_READ_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+
+
+async def admit_admin_session(request: Request, op_store: Any, payload: dict[str, Any]) -> str:
+    """Admit the admin account a session token names, or refuse it.
+
+    The checks :func:`verify_admin_access` makes of a JWT once its signature
+    is good: the session is live, and the account is active, verified and an
+    admin. Each is read from the database, so it holds at the moment of the
+    request, not when the token was issued. A caller that carries a session's
+    ``sub`` and ``sid`` some other way -- an export download link -- makes the
+    same checks with this. Records the account on the request as
+    ``verify_admin_access`` does.
+
+    Returns:
+        The admin's email, or its login name when the account has no email.
+
+    Where the deployment requires a second factor of its administrators
+    (``ADMIN_TWO_FACTOR_REQUIRED``), the session must also have given a code
+    from the account's authenticator, from the kind of client using it now.
+
+    Raises:
+        HTTPException: 401 for a token that names no account or an ended
+            session, 403 for an account that may not act as admin, 503 when
+            the database cannot be read.
+        TwoFactorRequiredError: 403 when the session owes a code, or the
+            account an authenticator.
+    """
+    user_id = payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid token payload.")
+    if not op_store:
+        # DB unavailable — fail closed.  Admin endpoints require
+        # authoritative role verification from the database.
+        logger.warning("admin auth: DB unavailable, refusing admin access (fail-closed)")
+        raise HTTPException(
+            status_code=503,
+            detail="Database unavailable; cannot verify admin role. Try again later.",
+        )
+    await require_live_session(op_store, payload)
+    user_row = await op_store.get_user_by_id(user_id)
+    if not user_row or user_row["status"] != "active":
+        raise HTTPException(status_code=403, detail="Admin account is no longer active.")
+    require_verification = get_settings().signup_require_email_verification
+    try:
+        from serving.config.runtime_settings import get_runtime_settings_instance
+
+        rs = get_runtime_settings_instance()
+        require_verification = await rs.get_bool("signup_require_email_verification")
+    except (RuntimeError, KeyError):
+        pass
+    if (
+        require_verification and user_row.get("email") and not user_row["email_verified"]
+    ) or phone_identity_unverified(user_row):
+        raise HTTPException(
+            status_code=403,
+            detail="Email not verified. Please verify your email to continue.",
+        )
+    if (user_row["role"] or "free") != "admin":
+        raise HTTPException(status_code=403, detail="Admin access required.")
+    if admin_two_factor_required():
+        # The role and a live session are what a copied token also has. The
+        # deployment asks for what it does not: a code from the account's
+        # authenticator, given in this session, from the kind of client that
+        # is using it now. An administrator without an authenticator has no
+        # administrator access until it adds one, which it does through its
+        # own account's routes (/auth/two-factor), not through these.
+        await require_session_two_factor(request, op_store, user_id, payload.get("sid"))
+    request.state.admin_user_id = user_id
+    request.state.admin_session_id = payload.get("sid")
+    request.state.audit_actor = AuditActor.admin(user_id, get_client_ip(request))
+    return user_row["email"] or user_row.get("login_name") or user_id
+
+
 async def verify_admin_access(
     request: Request,
     authorization: str | None = Header(None),
@@ -512,47 +589,10 @@ async def verify_admin_access(
 
     try:
         payload = verify_access_token(token)
-        user_id = payload.get("sub")
-
-        if op_store and user_id:
-            await require_live_session(op_store, payload)
-            user_row = await op_store.get_user_by_id(user_id)
-            if not user_row or user_row["status"] != "active":
-                raise HTTPException(status_code=403, detail="Admin account is no longer active.")
-            require_verification = get_settings().signup_require_email_verification
-            try:
-                from serving.config.runtime_settings import get_runtime_settings_instance
-
-                rs = get_runtime_settings_instance()
-                require_verification = await rs.get_bool("signup_require_email_verification")
-            except (RuntimeError, KeyError):
-                pass
-            if (
-                require_verification and user_row.get("email") and not user_row["email_verified"]
-            ) or phone_identity_unverified(user_row):
-                raise HTTPException(
-                    status_code=403,
-                    detail="Email not verified. Please verify your email to continue.",
-                )
-            if (user_row["role"] or "free") != "admin":
-                raise HTTPException(status_code=403, detail="Admin access required.")
-            request.state.admin_user_id = user_id
-            request.state.audit_actor = AuditActor.admin(user_id, get_client_ip(request))
-            admin_identity = user_row["email"] or user_row.get("login_name") or user_id
-        else:
-            # DB unavailable — fail closed.  Admin endpoints require
-            # authoritative role verification from the database.
-            logger.warning(
-                "verify_admin_access: DB unavailable, refusing admin access (fail-closed)"
-            )
-            raise HTTPException(
-                status_code=503,
-                detail="Database unavailable; cannot verify admin role. Try again later.",
-            )
-
-        return admin_identity
     except (jwt.ExpiredSignatureError, jwt.InvalidTokenError):
         pass
+    else:
+        return await admit_admin_session(request, op_store, payload)
 
     # Fall back to ADMIN_TOKEN
     admin_token = get_settings().admin_token
@@ -572,9 +612,27 @@ async def verify_admin_access(
             detail="Invalid authentication token.",
         )
 
+    if admin_two_factor_required() and request.method not in _READ_METHODS:
+        # The token is one fixed string with no account behind it, so nothing
+        # can ask it for a second factor. Where the deployment requires one of
+        # every administrator, the token reads and nothing else.
+        raise HTTPException(
+            status_code=403,
+            detail="The admin token is read-only while ADMIN_TWO_FACTOR_REQUIRED is on. "
+            "Sign in to the console as an administrator to make this change.",
+        )
+
     client_ip = get_client_ip(request)
     request.state.audit_actor = AuditActor.admin_token(client_ip)
     return client_ip if client_ip != "unknown" else "admin-token"
+
+
+def get_admin_session_id(request: Request) -> str | None:
+    """Return the session of the admin account ``verify_admin_access`` admitted.
+
+    None for an ``ADMIN_TOKEN`` caller, which signs in with no session.
+    """
+    return getattr(request.state, "admin_session_id", None)
 
 
 def get_admin_user_id(request: Request) -> str | None:

@@ -120,6 +120,17 @@ order from the outside in is:
    through a route handler and is bounded only here, so raising
    `REQUEST_MAX_BODY_MB` takes effect behind the console too.
 
+Accepted connections have one more clock, and it is not a middleware.
+Uvicorn arms its keep-alive timer only while it is waiting for the next
+request, and cancels that timer on the first byte. A client that then stops,
+including one that never finishes the headers, holds the socket until the
+process restarts. `HTTP_IDLE_TIMEOUT_SECONDS` (default 600, `<=0` disables
+it) closes that connection after that many seconds with no bytes in either
+direction. Response bytes reset it, so a stream that keeps sending is limited
+by the streaming clocks below rather than by this one. It is longer than
+`REQUEST_TIMEOUT_SECONDS` and the inter-chunk stream idle, so a slow prefill
+still receives the gateway's 504 instead of a dropped connection.
+
 Control routes get a much smaller body limit: 256 KiB under `/auth/`, `/user/`,
 `/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 MiB under
 `/admin/`. FastAPI reads and decodes a route's declared body model before any
@@ -261,12 +272,20 @@ Circuit state lives per `endpoint_id` in
 | Seconds an open circuit waits before a half-open probe | `CIRCUIT_COOLDOWN_SECONDS` | 30 |
 | Availability floor | `CIRCUIT_MIN_AVAILABILITY` | 0.7 |
 | EWMA smoothing for the availability estimate | `ROUTER_HEALTH_EWMA_ALPHA` | 0.1 |
+| Seconds a caller's repeat failures stay off a circuit that has served others since its counted failure | `CIRCUIT_CALLER_WINDOW_SECONDS` | 60 |
 
 Client errors do not trip the breaker: a 4xx other than 408, 429, 401, and 407
 is the caller's problem, and counting it would let one malformed request take an
 endpoint away from everybody. 408 and 429 signal upstream overload and do count;
 401 and 407 are unambiguous rejections of *the gateway's own* credential and
 count too, because no user can fix them.
+
+Nor can one caller open a circuit by itself while the endpoint keeps serving
+other callers: its failure there counts, and its further failures, until it is
+served again, are skipped for up to `CIRCUIT_CALLER_WINDOW_SECONDS` if the
+endpoint has served somebody else since. An outage serves nobody, so it still
+opens the circuit at once. See
+[Endpoint health and circuit breaking](routing.md#endpoint-health-and-circuit-breaking).
 
 Separately, the routing file can turn on a probe that polls the `/health`
 path of the local endpoints it lists. The probe only reports; it never changes
@@ -438,8 +457,8 @@ capped with a fabricated `[DONE]`.
 ## Configuration
 
 Application documents are validated JSON settings in `app_config`:
-`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION` and
-`SITE_BRANDING`. Application YAML files and their path/mode selectors are not
+`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`,
+`SITE_BRANDING` and `SSO_PROVIDERS`. Application YAML files and their path/mode selectors are not
 runtime inputs. A fresh gateway serves an empty model list and a neutral console
 that asks an administrator to configure it.
 

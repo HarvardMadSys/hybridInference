@@ -18,9 +18,15 @@ vi.mock('react-hot-toast', () => ({
 
 vi.mock('@/lib/api/admin', () => ({
   listAuditLog: vi.fn(),
+  listAuditActions: vi.fn(),
 }));
 
-import { listAuditLog, type AuditLogEntry, type ListAuditLogResponse } from '@/lib/api/admin';
+import {
+  listAuditActions,
+  listAuditLog,
+  type AuditLogEntry,
+  type ListAuditLogResponse,
+} from '@/lib/api/admin';
 import { AuditTab } from './AuditTab';
 import { chooseOption } from '@/test-utils/select';
 import { escapingScreenReaderText } from './__tests__/layoutContainment';
@@ -76,6 +82,7 @@ function detail(details: HTMLElement, label: string): HTMLElement | null {
 beforeEach(() => {
   vi.clearAllMocks();
   search = new URLSearchParams();
+  vi.mocked(listAuditActions).mockResolvedValue([]);
   vi.mocked(listAuditLog).mockResolvedValue({
     total: 2,
     entries: [
@@ -358,6 +365,45 @@ describe('AuditTab', () => {
     // Choosing it again changes nothing.
     fireEvent.click(within(current).getByRole('option', { name: 'Settings update' }));
     expect(replace).not.toHaveBeenCalled();
+  });
+
+  it('offers every recorded action, such as Config update, after the user and key ones', async () => {
+    vi.mocked(listAuditActions).mockResolvedValue([
+      'update_user',
+      'settings.update',
+      'config.update',
+      'alerts.mute',
+    ]);
+    render(<AuditTab />);
+    await screen.findByText('Update user');
+
+    const filter = screen.getByRole('combobox', { name: 'Filter by action' });
+    fireEvent.click(filter);
+    const other = await screen.findByRole('group', { name: 'Other actions' });
+    // Sorted by label; user and key actions stay in their own group only.
+    expect(
+      within(other)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Alerts mute', 'Config update', 'Settings update']);
+    expect(screen.getByRole('group', { name: 'Users and API keys' })).toBeInTheDocument();
+
+    fireEvent.click(within(other).getByRole('option', { name: 'Config update' }));
+    expect(replace).toHaveBeenLastCalledWith('/dashboard/admin/log?action=config.update', {
+      scroll: false,
+    });
+  });
+
+  it('still offers the user and key actions when the recorded actions cannot be loaded', async () => {
+    vi.mocked(listAuditActions).mockRejectedValue(new Error('gateway down'));
+    render(<AuditTab />);
+    await screen.findByText('Update user');
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Filter by action' }));
+    expect(
+      within(screen.getByRole('group', { name: 'Users and API keys' })).getAllByRole('option'),
+    ).toHaveLength(13);
+    expect(screen.queryByRole('group', { name: 'Other actions' })).not.toBeInTheDocument();
   });
 
   it('says when filters match nothing and clears them', async () => {

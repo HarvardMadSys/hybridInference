@@ -170,13 +170,3 @@ async def test_project_name_cannot_be_cleared(client, op_store):
 
     assert response.status_code == 422
     op_store.update_project.assert_not_awaited()
-
-
-@pytest.mark.parametrize("payload", [{"status": None}, {"budget_daily_usd": "1e20"}])
-def test_org_settings_reject_values_the_database_cannot_store(payload):
-    from pydantic import ValidationError
-
-    from serving.servers.routers.admin.orgs import OrgUpdateRequest
-
-    with pytest.raises(ValidationError):
-        OrgUpdateRequest.model_validate(payload)

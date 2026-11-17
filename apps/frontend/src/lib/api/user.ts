@@ -1,6 +1,8 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
+import { sortModelsById } from '@/lib/utils/modelOrder';
+import type { SsoProviderRef } from './sso';
 
 const API_BASE = config.apiBase;
 
@@ -21,6 +23,11 @@ interface User {
   created_at: string;
   /** The interface language this account last chose; absent when it never chose. */
   locale?: AccountLocaleChoice | null;
+  /**
+   * Set only for an account with no password and no verified phone that has an
+   * identity at an enabled provider: it confirms sensitive actions there.
+   */
+  sso_reauth_provider?: SsoProviderRef | null;
 }
 
 interface ApiKeyResponse {
@@ -183,7 +190,8 @@ export async function updateLocalePreference(
 
 export async function getModels(): Promise<ModelCatalogResponse> {
   const resp = await fetchWithAuth(API_BASE, '/user/models');
-  return jsonOrThrow<ModelCatalogResponse>(resp);
+  const catalog = await jsonOrThrow<ModelCatalogResponse>(resp);
+  return { ...catalog, data: sortModelsById(catalog.data ?? []) };
 }
 
 /** Create another key for the account; `name` labels it and may be omitted. */
@@ -273,7 +281,9 @@ export async function updateProfile(data: {
 
 /**
  * Change the password, or set a first one. An account without a password
- * confirms its owner with `phoneCode`, a `set_password` code.
+ * confirms its owner with `phoneCode`, a `set_password` code; one with neither
+ * a password nor a phone has confirmed at its identity provider just before,
+ * and sends neither.
  */
 export async function updatePassword(
   currentPassword: string,

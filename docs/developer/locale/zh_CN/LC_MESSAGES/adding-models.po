@@ -1686,3 +1686,15 @@ msgstr "此 OpenAI 兼容上游是否会响应 `stream_options.include_usage` �
 #: ../developer/adding-models.md:0
 msgid "Route-only. The public reasoning-effort levels this route takes, each mapped to the value its upstream receives as `reasoning_effort`; see [Mapping reasoning-effort levels on a route](#mapping-reasoning-effort-levels-on-a-route)"
 msgstr "仅限路由。这条路由接受的公开推理强度档位，每个映射到其上游作为 `reasoning_effort` 收到的取值；参见[在路由上映射推理强度档位](#mapping-reasoning-effort-levels-on-a-route)"
+
+#: ../developer/adding-models.md:26
+msgid ""
+"Removing a model"
+msgstr ""
+"移除模型"
+
+#: ../developer/adding-models.md:28
+msgid ""
+"In **Admin → Routing**, delete a model's last route. That removes the model from the stored `MODEL_CATALOG`. It stops serving on this process now. Other processes drop it on their next configuration refresh, and the next start does not register it. Deleting one route while others remain only hides that route; Restore brings it back, and the catalog is left as it is."
+msgstr ""
+"在 **Admin → Routing** 中删除模型的最后一条路由，即可把该模型从已保存的 `MODEL_CATALOG` 中移除。当前进程会立即停止提供该模型；其他进程在下一次配置刷新时丢弃它，之后的启动也不会再注册它。模型还有其他路由时，删除其中一条只会隐藏该路由；Restore 可以把它恢复，模型目录保持不变。"

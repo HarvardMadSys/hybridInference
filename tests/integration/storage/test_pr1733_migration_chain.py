@@ -1,9 +1,10 @@
 """Migration-chain verification for PR #1733 (invariant 9 and mixed-version).
 
-The PR adds ``0016_hard_delete_claim_lease``. These tests check the chain
-forms exactly one head, that the revision is an *expand* (earlier code keeps
-working on its result), that upgrade/downgrade/re-upgrade behave, and that a
-database at the previous revision is accepted by the previous code.
+The PR adds ``0016_hard_delete_claim_lease`` and a mergepoint joining it with
+current ``dev``. These tests check the graph forms exactly one head, that the
+claim revision is an *expand* (earlier code keeps working on its result),
+that upgrade/downgrade/re-upgrade behave, and that older code remains
+compatible with the expanded schema.
 """
 
 from __future__ import annotations
@@ -31,8 +32,9 @@ async def scratch():
 def test_the_chain_has_exactly_one_head_and_the_new_revision_is_its_tip():
     chain = code_chain()
     assert len(chain) == len(set(chain)), "a revision appears twice"
-    assert chain[-1] == "0016_hard_delete_claim_lease"
-    # Every revision file is in the chain, and the chain is a single line.
+    assert chain[-1] == "0022_merge_hard_delete_and_current_dev"
+    assert "0016_hard_delete_claim_lease" in chain
+    # Every revision file is in the graph, which has one merged head.
     files = sorted(p.stem for p in VERSIONS.glob("*.py") if p.stem != "__init__")
     assert len(files) == len(chain)
 
@@ -60,8 +62,10 @@ def test_a_database_at_the_previous_revision_is_refused_by_this_code():
     assert verdict is not Verdict.CURRENT
 
 
-def test_a_database_at_the_new_revision_is_current():
-    verdict = judge(SchemaState(revision="0016_hard_delete_claim_lease", floor=None), code_chain())
+def test_a_database_at_the_merged_revision_is_current():
+    verdict = judge(
+        SchemaState(revision="0022_merge_hard_delete_and_current_dev", floor=None), code_chain()
+    )
     assert verdict is Verdict.CURRENT
 
 

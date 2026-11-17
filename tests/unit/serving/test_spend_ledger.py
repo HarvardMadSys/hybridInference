@@ -615,7 +615,7 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     store = _AtomicStore()
     store.gate = asyncio.Event()
     ledger = SpendLedger(store)
-    req_ctx.update({req_ctx.PROJECT_ID: "proj_shared", req_ctx.ORG_ID: "org_shared"})
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_shared"})
     ledger.record("u1", 0.02, api_key_id=1)
     req_ctx.reset_request_scope()
     check = _check(ledger, key_id=2, project_id="proj_shared", project_budget_daily_usd=0.025)
@@ -627,7 +627,7 @@ async def test_project_cost_keeps_attribution_through_the_coalesced_writer():
     store.gate.set()
     assert await ledger.flush()
     increment = store.batches[0][0]
-    assert (increment.org_id, increment.project_id) == ("org_shared", "proj_shared")
+    assert increment.project_id == "proj_shared"
     assert check.refusal().scope == "project"
 
 
@@ -636,7 +636,7 @@ async def test_keyless_cost_records_keep_their_own_project():
 
     store = _AtomicStore()
     ledger = SpendLedger(store)
-    req_ctx.update({req_ctx.PROJECT_ID: "proj_a", req_ctx.ORG_ID: "org_shared"})
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_a"})
     ledger.record("u1", 0.02)
     req_ctx.update({req_ctx.PROJECT_ID: "proj_b"})
     ledger.record("u1", 0.03)
@@ -669,3 +669,43 @@ async def test_project_headroom_caps_a_large_reservation():
         == "project"
     )
     reservation.release()
+
+
+# -- what a release handoff reads ---------------------------------------------------
+
+
+async def test_a_handoff_sees_written_costs_as_confirmed_and_nothing_charged_as_nothing():
+    ledger = SpendLedger(_AtomicStore())
+    assert ledger.record("u1", 0.0) is None  # a request that cost nothing
+    assert ledger.handoff_report()["confirmed"] is True
+
+    ledger.record("u1", 0.5)
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"], report["owed_requests"]) == (False, True, 1)
+    assert await ledger.flush()
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"]) == (True, True)
+
+
+async def test_a_handoff_sees_an_unknown_outcome_as_unconfirmed_for_good():
+    store = _AtomicStore()
+    store.fail_next = [CostWriteOutcomeUnknown(42)]
+    ledger = SpendLedger(store)
+    await asyncio.wait({ledger.record("u1", 0.5)})
+    assert await ledger.flush()
+
+    report = ledger.handoff_report()
+    assert report["finished"] is True  # nothing left to write: waiting changes nothing
+    assert report["confirmed"] is False
+    assert (report["unconfirmed_requests"], report["unconfirmed_usd"]) == (1, 0.5)
+
+
+async def test_a_handoff_sees_a_refused_cost_as_unconfirmed(alerts):
+    store = _Counters()
+    store.counters[("full", utc_day())] = _COUNTER_MAX
+    ledger = SpendLedger(store)
+    await asyncio.wait({ledger.record("full", 0.25)})
+
+    report = ledger.handoff_report()
+    assert (report["finished"], report["confirmed"]) == (True, False)
+    assert (report["refused_requests"], report["unconfirmed_usd"]) == (1, 0.25)

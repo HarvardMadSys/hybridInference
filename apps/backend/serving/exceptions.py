@@ -112,6 +112,22 @@ class AccountSuspendedError(AuthenticationError):
         super().__init__(f"Account is {status}")
 
 
+class TwoFactorRequiredError(AuthenticationError):
+    """The session has to give a code from the account's authenticator first.
+
+    ``reason`` says what is missing, in the words of
+    ``serving.auth.two_factor``: ``enrollment`` (the account has no
+    authenticator yet), ``unverified`` (this session has never given a code),
+    ``environment_changed`` (it gave one from a different kind of client) or
+    ``stale`` (too long ago for a change that outlasts the session).
+    """
+
+    def __init__(self, reason: str, action: str | None = None):
+        self.reason = reason
+        self.action = action
+        super().__init__(f"Two-factor verification required ({reason})")
+
+
 # User management errors
 class UserNotFoundError(UserFacingError):
     """User not found."""
@@ -146,17 +162,6 @@ class AmbiguousAPIKeyError(UserFacingError):
 
 class APIKeyNotFoundError(UserFacingError):
     """API key not found."""
-
-    pass
-
-
-class AgentInviteSubjectUnavailableError(UserFacingError):
-    """The invited email belongs to an account that may not sign in.
-
-    Raised before anything is written: an invitation must never lift a
-    suspension, a rejection or a pending deletion, and the link stays
-    usable if an administrator restores the account.
-    """
 
     pass
 

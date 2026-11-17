@@ -182,6 +182,7 @@ async def dispatch_item(
     attempt: int | None = None,
     protocol_profile: str | None = None,
     timeout_s: float | None = None,
+    spend_reservation: Any = None,
 ) -> DispatchResult:
     """Run one batch item's request and report how it went. Never raises.
 
@@ -199,6 +200,9 @@ async def dispatch_item(
         protocol_profile: The ``anthropic-version`` of a Messages item.
         timeout_s: How long the attempt may run before it is abandoned as a
             timeout; ``None`` for no limit beyond the upstream timeouts.
+        spend_reservation: The attempt's shared spend reservation, if any:
+            published in its request scope so the costs it records are settled
+            with it (``req_ctx.SPEND_RESERVATION``).
 
     Returns:
         The outcome. Cancellation still propagates, as it must.
@@ -217,6 +221,7 @@ async def dispatch_item(
             attempt=attempt,
             protocol_profile=protocol_profile,
             timeout_s=timeout_s,
+            spend_reservation=spend_reservation,
         ),
         name=f"batch_dispatch:{batch_id}",
         context=contextvars.Context(),
@@ -235,6 +240,7 @@ async def _dispatch(
     attempt: int | None,
     protocol_profile: str | None,
     timeout_s: float | None,
+    spend_reservation: Any = None,
 ) -> DispatchResult:
     if not isinstance(body, dict):
         return replace(_failure(400, "The request body must be a JSON object."), dispatched=False)
@@ -254,6 +260,8 @@ async def _dispatch(
         "pricing_time": dt.datetime.now(dt.UTC),
         "pricing_snapshot": get_pricing_snapshot(),
     }
+    if spend_reservation is not None and getattr(spend_reservation, "charge", None) is not None:
+        seed[req_ctx.SPEND_RESERVATION] = spend_reservation
     result: Any = None
     # The upstream may have run, and charged, without its billing point reporting it:
     # an attempt abandoned at its deadline, or one that crashed.
