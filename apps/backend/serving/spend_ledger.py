@@ -142,7 +142,7 @@ def _logged_cost(counted: Decimal) -> dict[str, str]:
 class _Amount:
     """Costs recorded for one user, key and day: their sum, and how many."""
 
-    cost: Money = 0.0
+    cost: Money = field(default_factory=lambda: get_accounting_policy().zero)
     counted: Decimal = Decimal(0)
     requests: int = 0
     project_id: str | None = None
@@ -157,7 +157,9 @@ class _Amount:
 class _Unconfirmed:
     """A user's costs not known to be in the counters, for one key and day."""
 
-    cost: Money = 0.0
+    # Nothing, in the ledger's arithmetic: a float on USD, a decimal natively,
+    # so whatever is added later is of the same kind.
+    cost: Money = field(default_factory=lambda: get_accounting_policy().zero)
     requests: int = 0
     project_id: str | None = None
 

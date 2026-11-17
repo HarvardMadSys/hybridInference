@@ -9,6 +9,7 @@ upstream behaviour, which ``test_spend_ledger.py`` covers.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -210,3 +211,33 @@ async def test_a_reservation_never_falls_below_the_native_minimum(cny):
     assert refusal is None
     assert reservation is not None
     assert reservation.amount == quota.estimated_request_cost()
+
+
+class _FailingOnceStore(_AtomicStore):
+    """The PostgreSQL store's shape, whose first write fails with the database down."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 1
+
+    async def increment_user_costs(self, increments: list[CostIncrement]) -> None:
+        if self.failures:
+            self.failures -= 1
+            raise ConnectionError("db down")
+        await super().increment_user_costs(increments)
+
+
+async def test_a_failed_native_write_is_retried_with_its_exact_amount(cny):
+    """A transient failure requeues the native charge; the retry writes it whole, once."""
+    store = _FailingOnceStore()
+    ledger = SpendLedger(store)
+    task = ledger.record("u1", Decimal("0.000000050583"), api_key_id=7)
+    await asyncio.wait({task})
+    assert store.batches == []
+    # Still counted while it waits for the retry.
+    assert ledger.unwritten() == (Decimal("0.000000050583"), 1)
+    assert await ledger.flush()
+    (increment,) = store.batches[0]
+    assert increment.cost_amount == Decimal("0.000000050583")
+    assert increment.requests == 1
+    assert ledger.unwritten() == (0, 0)
