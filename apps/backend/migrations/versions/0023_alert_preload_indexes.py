@@ -6,7 +6,7 @@ all-history reads without indexing test events, unrelated event kinds, or
 undelivered history.
 
 Revision ID: 0023_alert_preload_indexes
-Revises: 0022_merge_hard_delete_and_current_dev
+Revises: 0022_hard_delete_merge
 Create Date: 2026-11-13
 """
 
@@ -16,7 +16,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "0023_alert_preload_indexes"
-down_revision = "0022_merge_hard_delete_and_current_dev"
+down_revision = "0022_hard_delete_merge"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
