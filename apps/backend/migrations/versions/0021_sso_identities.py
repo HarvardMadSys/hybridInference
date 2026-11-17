@@ -17,8 +17,11 @@
 
 All three are expand-only: the new tables are invisible to earlier code.
 
-Revision ID: 0020_sso_identities
-Revises: 0019_two_factor
+Sequenced after ``0020_shared_spend``, the revision this one merged beside: two
+heads break ``upgrade`` before either can run.
+
+Revision ID: 0021_sso_identities
+Revises: 0020_shared_spend
 Create Date: 2026-11-13
 """
 
@@ -26,8 +29,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0020_sso_identities"
-down_revision = "0019_two_factor"
+revision = "0021_sso_identities"
+down_revision = "0020_shared_spend"
 branch_labels = None
 depends_on = None
 compatibility = "expand"
