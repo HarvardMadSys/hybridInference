@@ -900,6 +900,13 @@ async def alert_slack(
             # for the same bookkeeping: no cooldown spent, and an incident it
             # kept out of the channel entirely closes without a card.
             held = _policy.hold_reason(key)
+            if held is not None and held not in {
+                _policy.RECORD_ONLY,
+                _policy.ALREADY_NOTIFIED,
+                _policy.BELOW_MIN_DURATION,
+            }:
+                log.warning("unknown alert policy hold reason %r; sending alert", held)
+                held = None
             if held == _policy.RECORD_ONLY and not _history.decision(
                 key, episode_id=episode_id, reason=held
             ):

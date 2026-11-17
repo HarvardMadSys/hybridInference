@@ -157,6 +157,20 @@ async def test_capture_on_keeps_the_bool_and_records_attempt_and_result(history,
     assert SLACK not in str(attempt.content())
 
 
+async def test_unknown_policy_hold_reason_fails_open_to_delivery(history, monkeypatch, caplog):
+    _capture, records, posts = history
+    monkeypatch.setattr(alerts._policy, "hold_reason", lambda _key: "new_policy_reason")
+
+    sent = await alert_slack(AlertSeverity.ERROR, "Title", {"count": 3}, dedupe_key="unknown-hold")
+
+    assert sent is True
+    assert posts.messages
+    assert "unknown alert policy hold reason" in caplog.text
+    _capture.decision("history-fallback", episode_id=None, reason="new_policy_reason")
+    decisions = kinds(records, kind="notification_decision")
+    assert any(record.decision_reason == "other" for record in decisions)
+
+
 async def test_sender_exception_is_still_false_and_recorded_as_unknown(history):
     _capture, records, posts = history
     posts.answers = [RuntimeError("synthetic transport failure")]
