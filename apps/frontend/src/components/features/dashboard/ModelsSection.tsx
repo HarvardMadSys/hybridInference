@@ -69,6 +69,10 @@ export function ModelsSection(): JSX.Element {
   const money = useMoney();
   const { data, isLoading, error } = useModels();
   const models = (data?.data ?? []).filter(isDashboardModelVisible);
+  // The heading names the currency the listed prices are in -- each response's
+  // own, never the site's alone -- or none when they differ.
+  const priceCurrencies = new Set(models.map((model) => money.sourceCurrency(model)));
+  const priceCurrency = priceCurrencies.size === 1 ? [...priceCurrencies][0] : null;
   const t = useT();
   const fmt = useFormatter();
 
@@ -130,9 +134,11 @@ export function ModelsSection(): JSX.Element {
                   {t('dashboard.models.col_limits', 'Ctx / out')}
                 </th>
                 <th className="py-1.5 text-right sm:whitespace-nowrap">
-                  {fill(t('dashboard.models.col_price', '{currency} / 1M tokens'), {
-                    currency: money.currency,
-                  })}
+                  {priceCurrency
+                    ? fill(t('dashboard.models.col_price', '{currency} / 1M tokens'), {
+                        currency: priceCurrency,
+                      })
+                    : t('dashboard.models.col_price_any', 'Price / 1M tokens')}
                 </th>
               </tr>
             </thead>

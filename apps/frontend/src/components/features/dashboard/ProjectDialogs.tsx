@@ -112,8 +112,11 @@ function ProjectEditDialog({
 }): JSX.Element {
   const t = useT();
   const money = useMoney();
-  // The ledger's own currency, as the deployment reports it (/site-config).
-  const native = money.currency !== 'USD';
+  // An existing project is edited in the currency its own response was read
+  // in, so a USD-only response is never relabelled and saved as CNY; a new
+  // project in the ledger currency the deployment reports (/site-config).
+  const currency = project ? moneyCurrency(project) : money.currency;
+  const native = currency !== 'USD';
   const toast = useAccountToast();
   const createMutation = useCreateProject();
   const updateMutation = useUpdateProject();
@@ -159,7 +162,7 @@ function ProjectEditDialog({
       ? {
           budget_daily: parseBudget(form.daily),
           budget_monthly: parseBudget(form.monthly),
-          currency: money.currency,
+          currency,
         }
       : {
           budget_daily_usd: parseBudget(form.daily),
@@ -235,7 +238,7 @@ function ProjectEditDialog({
         <div className="grid grid-cols-2 gap-3">
           <InputField
             label={fill(t('dashboard.projects.daily_label', 'Daily budget ({currency})'), {
-              currency: money.currency,
+              currency,
             })}
             value={form.daily}
             onChange={(event) => setForm({ ...form, daily: event.target.value })}
@@ -245,7 +248,7 @@ function ProjectEditDialog({
           />
           <InputField
             label={fill(t('dashboard.projects.monthly_label', 'Monthly budget ({currency})'), {
-              currency: money.currency,
+              currency,
             })}
             value={form.monthly}
             onChange={(event) => setForm({ ...form, monthly: event.target.value })}

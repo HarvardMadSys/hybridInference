@@ -58,6 +58,48 @@ describe('CNY accounting dashboard', () => {
     expect(screen.queryByText('$0.15')).not.toBeInTheDocument();
   });
 
+  it('labels the prices with the currency of the response they came in', () => {
+    const usdOnly = {
+      id: 'legacy',
+      name: 'Legacy',
+      context_length: 1000,
+      max_output_length: 100,
+      pricing: { prompt: '0.15', completion: '0.60' },
+    };
+    const native = {
+      id: 'native',
+      name: 'Native',
+      context_length: 1000,
+      max_output_length: 100,
+      currency: 'CNY',
+      pricing: { prompt: '0.15', completion: '0.60' },
+      prices: { prompt: '1', completion: '4' },
+    };
+    const renderModels = (data: unknown[]) => {
+      vi.mocked(useModels).mockReturnValue({
+        data: { data },
+        isLoading: false,
+        error: null,
+      } as unknown as ReturnType<typeof useModels>);
+      render(
+        <SiteConfigProvider initialConfig={cnyConfig}>
+          <ModelsSection />
+        </SiteConfigProvider>,
+      );
+    };
+    // A USD-only response stays USD on a CNY console: heading and prices alike.
+    renderModels([usdOnly]);
+    expect(screen.getByRole('columnheader', { name: 'USD / 1M tokens' })).toBeInTheDocument();
+    expect(screen.getByText('$0.15')).toBeInTheDocument();
+    expect(screen.queryByText(/¥/)).not.toBeInTheDocument();
+    cleanup();
+    // Prices in two currencies: the heading names none; each price keeps its own.
+    renderModels([usdOnly, native]);
+    expect(screen.getByRole('columnheader', { name: 'Price / 1M tokens' })).toBeInTheDocument();
+    expect(screen.getByText('$0.15')).toBeInTheDocument();
+    expect(screen.getByText('¥1')).toBeInTheDocument();
+  });
+
   it('renders actual native usage and remaining quota without converting USD values', () => {
     vi.mocked(useUsageStats).mockReturnValue({
       data: {

@@ -82,6 +82,34 @@ describe('projects on a CNY ledger', () => {
     expect(changes).not.toHaveProperty('budget_monthly_usd');
   });
 
+  it('edits a USD-only project response in USD, never relabelled and saved as CNY', async () => {
+    const legacy = {
+      ...RESEARCH,
+      currency: undefined,
+      budget_daily: undefined,
+      budget_monthly: undefined,
+      spent_today: undefined,
+      spent_month: undefined,
+      budget_daily_usd: 20,
+    } as unknown as Project;
+    renderCny(<ProjectDialogs dialog={{ mode: 'edit', project: legacy }} onClose={vi.fn()} />);
+    const dialog = screen.getByRole('dialog');
+    expect(within(dialog).getByLabelText('Daily budget (USD)')).toHaveValue('20');
+    expect(within(dialog).queryByLabelText('Daily budget (CNY)')).not.toBeInTheDocument();
+    // Only the name changes; the budgets are saved as the USD amounts they are.
+    fireEvent.change(within(dialog).getByLabelText('Name'), { target: { value: 'Renamed' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: /Save/ }));
+    await waitFor(() => expect(state.update).toHaveBeenCalled());
+    const { changes } = state.update.mock.calls[0][0];
+    expect(changes).toMatchObject({
+      name: 'Renamed',
+      budget_daily_usd: 20,
+      budget_monthly_usd: null,
+    });
+    expect(changes).not.toHaveProperty('budget_daily');
+    expect(changes).not.toHaveProperty('currency');
+  });
+
   it('creates a project with a native budget', async () => {
     renderCny(<ProjectDialogs dialog={{ mode: 'create' }} onClose={vi.fn()} />);
     const dialog = screen.getByRole('dialog');

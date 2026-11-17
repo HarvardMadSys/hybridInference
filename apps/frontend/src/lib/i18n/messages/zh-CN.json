@@ -2951,6 +2951,10 @@
     "source": "{currency} / 1M tokens",
     "text": "{currency} / 百万 token"
   },
+  "dashboard.models.col_price_any": {
+    "source": "Price / 1M tokens",
+    "text": "价格 / 百万 token"
+  },
   "dashboard.models.copied_toast": {
     "source": "Model ID copied to clipboard",
     "text": "模型 ID 已复制到剪贴板"
