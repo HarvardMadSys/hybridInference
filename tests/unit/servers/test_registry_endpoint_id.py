@@ -171,6 +171,22 @@ def test_dedicated_adapter_profile_defaults_are_preserved():
     assert openrouter.config.provider_profile == "openrouter"
 
 
+def test_zai_chat_path_is_preserved_when_provider_profile_is_supplied():
+    adapter = _make_adapter(
+        "zai",
+        {
+            "id": "glm",
+            "name": "GLM",
+            "provider": "zai",
+            "base_url": "https://api.z.ai/v4",
+            "provider_profile": "existing-profile",
+        },
+    )
+
+    assert adapter.config.provider_profile == "existing-profile"
+    assert adapter.config.chat_path == "/chat/completions"
+
+
 def test_registered_adapter_factory_takes_precedence(monkeypatch):
     from serving.servers import registry
 

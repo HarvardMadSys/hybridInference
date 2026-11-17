@@ -675,6 +675,10 @@ def _build_adapter(kind: str, cfg: dict[str, Any]):
             cfg = {**cfg, "provider_profile": "kimi"}
         elif kind == "minimax":
             cfg = {**cfg, "provider_profile": "minimax"}
+    if kind == "zai":
+        # The ZAI-compatible API uses its non-v1 chat path even when a
+        # same-target edit carries an existing provider profile.
+        cfg = {**cfg, "chat_path": "/chat/completions"}
     if kind == "vllm":
         cfg = {**cfg, "vllm_structured_outputs": True}
 
