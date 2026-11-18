@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useEffect, useState } from 'react';
 
 interface Props {
@@ -25,6 +26,7 @@ function parseInput(s: string): number | null {
 }
 
 export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onChange }: Props) {
+  const money = useMoney();
   const [todayInput, setTodayInput] = useState(toInputString(minCostToday));
   const [monthInput, setMonthInput] = useState(toInputString(minCostMonth));
   const [hoursInput, setHoursInput] = useState(toInputString(activeWithinHours));
@@ -64,7 +66,7 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
   return (
     <div className="flex flex-wrap items-center gap-2 text-[13px]">
       <label className="flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white pl-2.5 pr-1 focus-within:border-gray-400">
-        <span className="whitespace-nowrap text-[12px] text-gray-500">Today ≥ $</span>
+        <span className="whitespace-nowrap text-[12px] text-gray-500">Today ≥ {money.symbol}</span>
         <input
           type="number"
           min={0}
@@ -76,7 +78,7 @@ export function UsageFilter({ minCostToday, minCostMonth, activeWithinHours, onC
         />
       </label>
       <label className="flex h-8 items-center gap-1.5 rounded-md border border-gray-200 bg-white pl-2.5 pr-1 focus-within:border-gray-400">
-        <span className="whitespace-nowrap text-[12px] text-gray-500">Month ≥ $</span>
+        <span className="whitespace-nowrap text-[12px] text-gray-500">Month ≥ {money.symbol}</span>
         <input
           type="number"
           min={0}

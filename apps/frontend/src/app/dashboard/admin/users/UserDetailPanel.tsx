@@ -8,6 +8,8 @@ import {
 } from '@/components/features/admin/confirm/ReauthPassword';
 import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useMoney } from '@/lib/hooks/useMoney';
+import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
 import { hasRole } from '@/components/providers/AuthProvider';
 import { Select } from '@/components/ui/Select';
 import { getUserDetail, resetUserTwoFactor } from '@/lib/api/admin';
@@ -175,24 +177,39 @@ interface AccountDraft {
   disabledModels: string[];
 }
 
+/**
+ * The daily quota as the editor holds it, in the detail's own currency. A key
+ * without a quota starts from the gateway's 100 USD default; no amount is
+ * assumed for another currency.
+ */
+function savedQuota(detail: UserDetail): string {
+  const amount = moneyAmount(detail, 'quota_daily');
+  if (amount != null) return amount.toString();
+  return moneyCurrency(detail) === 'USD' ? '100' : '';
+}
+
 function savedAccount(detail: UserDetail): AccountDraft {
   return {
     role: detail.role || 'free',
-    quota: detail.quota_daily_usd?.toString() ?? '100',
+    quota: savedQuota(detail),
     maxConcurrent: detail.max_concurrent_requests?.toString() ?? '',
     disabledModels: [...(detail.disabled_models ?? [])].sort(),
   };
 }
 
+const quotaLabel = (detail: UserDetail) => `Daily quota (${moneyCurrency(detail)})`;
+
 /**
- * Why a changed daily quota cannot be sent, or `null`. The API takes a number
- * of dollars from 0 up (0 is a deliberate "no spend"); an emptied field is not
- * a number, and `Number('')` would otherwise send it as 0.
+ * Why a changed daily quota cannot be sent, or `null`. The API takes an amount
+ * from 0 up (0 is a deliberate "no spend"); an emptied field is not a number,
+ * and `Number('')` would otherwise send it as 0.
  */
 function quotaError(detail: UserDetail, draft: AccountDraft): string | null {
   if (draft.quota === savedAccount(detail).quota) return null;
   const raw = draft.quota.trim();
-  if (raw === '') return 'Enter a daily quota in USD. Use 0 to allow no spend.';
+  if (raw === '') {
+    return `Enter a daily quota in ${moneyCurrency(detail)}. Use 0 to allow no spend.`;
+  }
   const value = Number(raw);
   if (!Number.isFinite(value) || value < 0) return 'Enter a daily quota of 0 or more.';
   return null;
@@ -204,7 +221,9 @@ function accountPatch(detail: UserDetail, draft: AccountDraft): UpdateUserData {
   const patch: UpdateUserData = {};
   if (draft.role !== saved.role) patch.role = draft.role;
   if (draft.quota !== saved.quota && quotaError(detail, draft) === null) {
-    patch.quota_daily_cost_usd = Number(draft.quota.trim());
+    // The native amount, in the currency the detail was read in.
+    patch.quota_daily_cost = Number(draft.quota.trim());
+    patch.currency = moneyCurrency(detail);
   }
   const nextDisabledModels = [...draft.disabledModels].sort();
   if (JSON.stringify(nextDisabledModels) !== JSON.stringify(saved.disabledModels)) {
@@ -218,7 +237,7 @@ function accountPatch(detail: UserDetail, draft: AccountDraft): UpdateUserData {
 
 /** How many changes a patch makes: each field once, and each model whose access changes. */
 function countChanges(detail: UserDetail, patch: UpdateUserData): number {
-  const fields = [patch.role, patch.quota_daily_cost_usd, patch.max_concurrent_requests].filter(
+  const fields = [patch.role, patch.quota_daily_cost, patch.max_concurrent_requests].filter(
     (value) => value !== undefined,
   ).length;
   if (patch.disabled_models === undefined) return fields;
@@ -363,7 +382,7 @@ function AccountSettings({
         </label>
         {detail.has_key && (
           <label className="block">
-            <div className="mb-1 text-[11px] font-medium text-gray-500">Daily quota (USD)</div>
+            <div className="mb-1 text-[11px] font-medium text-gray-500">{quotaLabel(detail)}</div>
             <input
               type="number"
               min={0}
@@ -755,6 +774,7 @@ function TwoFactorReset({
 }
 
 export function UserDetailPanel(props: UserDetailPanelProps) {
+  const money = useMoney();
   const {
     user: u,
     detail,
@@ -816,18 +836,22 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
         <div className="grid grid-cols-2 divide-x divide-gray-100 sm:grid-cols-4">
           <Stat
             label="Today"
-            value={`$${Number(detail.usage_today_usd).toFixed(2)}`}
+            value={money.value(detail, 'usage_today', { maximumFractionDigits: 2 })}
             sub={`${detail.usage_today_requests} req`}
           />
           <Stat
             label="This month"
-            value={`$${Number(detail.usage_month_usd).toFixed(2)}`}
+            value={money.value(detail, 'usage_month', { maximumFractionDigits: 2 })}
             sub={`${detail.usage_month_requests} req`}
           />
           <Stat label="Last active" value={relTime(detail.last_request_at)} />
           <Stat
             label="Quota"
-            value={detail.quota_daily_usd ? `$${detail.quota_daily_usd}/d` : '-'}
+            value={
+              money.amount(detail, 'quota_daily') != null
+                ? `${money.value(detail, 'quota_daily')}/d`
+                : '—'
+            }
           />
         </div>
         {/* All-time activity stats (avg turns, ask-question share) require

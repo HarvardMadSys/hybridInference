@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useQuery } from '@tanstack/react-query';
 import { getBulkCostHistory } from '@/lib/api/admin';
 import type { CostHistoryPoint } from '../types';
@@ -18,10 +19,11 @@ function chunkArray<T>(arr: T[], size: number): T[][] {
 }
 
 export function useBulkCostHistory(userIds: string[], days = 7, enabled = true) {
+  const { currency } = useMoney();
   // Stable cache key: sort ids so order doesn't matter
   const key = [...userIds].sort().join(',');
   return useQuery<Record<string, CostHistoryPoint[]>>({
-    queryKey: ['admin', 'users', 'cost-history', 'bulk', key, days],
+    queryKey: ['admin', 'users', 'cost-history', 'bulk', key, days, currency],
     queryFn: async () => {
       if (userIds.length === 0) return {};
       // Chunk into groups of ≤200 to stay within backend limit, then merge.

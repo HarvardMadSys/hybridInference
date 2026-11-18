@@ -2,6 +2,7 @@
 
 import { useRouter } from 'next/navigation';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
@@ -713,6 +714,7 @@ const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 
 export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
   const router = useRouter();
+  const money = useMoney();
   const toast = useAccountToast();
   const [routes, setRoutes] = useState<ProviderRoute[]>([]);
   const [routeWeights, setRouteWeights] = useState<RouteWeight[]>([]);
@@ -1127,7 +1129,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     model_id: creatingModel ? newModelIdValue : selectedModel,
     strategy: creatingModel ? newModelStrategy : strategy,
     required_role: creatingModel ? newModelRequiredRole : undefined,
-    pricing: creatingModel ? runtimePricing : undefined,
+    prices: creatingModel ? runtimePricing : undefined,
+    currency: money.currency,
     capabilities: runtimeCapabilities,
     payload: createRoutePayload,
   });
@@ -1833,7 +1836,9 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
-          pricing: runtimePricing,
+          // Native prices in the runtime's accounting currency.
+          prices: runtimePricing,
+          currency: money.currency,
           capabilities,
         }
       : null;
@@ -1872,7 +1877,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           model_id: newModelIdValue,
           strategy: newModelStrategy,
           required_role: newModelRequiredRole,
-          pricing: runtimePricing,
+          prices: runtimePricing,
+          currency: money.currency,
           capabilities: runtimeCapabilities,
         });
       } else {
@@ -2985,7 +2991,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="text-[12px] font-medium text-gray-500"
                       htmlFor="new-model-pricing-prompt"
                     >
-                      Prompt $/M
+                      Prompt {money.symbol}/M
                     </label>
                     <input
                       id="new-model-pricing-prompt"
@@ -3010,7 +3016,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="text-[12px] font-medium text-gray-500"
                       htmlFor="new-model-pricing-completion"
                     >
-                      Completion $/M
+                      Completion {money.symbol}/M
                     </label>
                     <input
                       id="new-model-pricing-completion"
@@ -3035,7 +3041,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="text-[12px] font-medium text-gray-500"
                       htmlFor="new-model-pricing-cache-read"
                     >
-                      Cache read $/M
+                      Cache read {money.symbol}/M
                     </label>
                     <input
                       id="new-model-pricing-cache-read"
@@ -3059,7 +3065,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
                       className="text-[12px] font-medium text-gray-500"
                       htmlFor="new-model-pricing-cache-write"
                     >
-                      Cache write $/M
+                      Cache write {money.symbol}/M
                     </label>
                     <input
                       id="new-model-pricing-cache-write"

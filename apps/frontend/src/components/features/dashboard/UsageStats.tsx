@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useEffect, useId, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import clsx from 'clsx';
@@ -8,7 +9,6 @@ import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
-import { formatUsd } from '@/lib/utils/currency';
 import { Select } from '@/components/ui/Select';
 import { popoverContainer, useAnchoredPopover } from '@/components/ui/anchoredPopover';
 
@@ -160,6 +160,7 @@ function StatMetric({
 }
 
 export function UsageStats(): JSX.Element {
+  const money = useMoney();
   const branding = useBranding();
   const [period, setPeriod] = useState<'today' | 'month' | 'all'>('today');
   const { data: stats, isLoading, error } = useUsageStats(period);
@@ -185,11 +186,13 @@ export function UsageStats(): JSX.Element {
   // Cache reads are a subset of input tokens; clamp in case a provider
   // reports them outside the prompt count.
   const cacheReadShare = share(cacheReadTokens, promptTokens);
-  const remainingToday = quota?.remaining_today_usd ?? 0;
-  const dailyLimit = quota?.daily_limit_usd;
+  // Native ledger amounts; a USD alias is never shown as another currency.
+  const quotaCurrency = money.sourceCurrency(quota);
+  const remainingToday = money.amount(quota, 'remaining_today') ?? 0;
+  const dailyLimit = money.amount(quota, 'daily_limit');
 
   const values = {
-    cost: formatUsd(stats?.usage.cost_usd ?? 0),
+    cost: stats ? money.value(stats.usage, 'cost') : money.format(0),
     requests: fmt.number(requests),
     input: fmt.number(promptTokens),
     output: fmt.number(stats?.usage.completion_tokens ?? 0),
@@ -253,12 +256,12 @@ export function UsageStats(): JSX.Element {
                 </div>
                 <div className="mt-0.5 flex flex-wrap items-baseline gap-x-1.5">
                   <span className="text-xl font-semibold tracking-tight text-gray-900">
-                    {formatUsd(remainingToday)}
+                    {money.format(remainingToday, undefined, quotaCurrency)}
                   </span>
                   {dailyLimit != null && (
                     <span className="text-sm text-gray-500">
                       {fill(t('dashboard.usage.quota_of', 'of {limit}'), {
-                        limit: formatUsd(dailyLimit),
+                        limit: money.format(dailyLimit, undefined, quotaCurrency),
                       })}
                     </span>
                   )}
@@ -430,7 +433,7 @@ export function UsageStats(): JSX.Element {
           <p className="text-xs leading-relaxed text-gray-500">
             {t(
               'dashboard.usage.footnote',
-              'All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.',
+              'All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; amounts are attribution from logs, not invoices.',
             )}
           </p>
         </div>

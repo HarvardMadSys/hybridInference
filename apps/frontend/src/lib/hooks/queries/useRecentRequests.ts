@@ -1,3 +1,4 @@
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useQuery } from '@tanstack/react-query';
 import { getRecentRequests } from '@/lib/api/user';
 
@@ -7,8 +8,9 @@ export function useRecentRequests(
   modelId?: string,
   keyPrefix?: string,
 ) {
+  const { currency } = useMoney();
   return useQuery({
-    queryKey: ['user', 'recent-requests', limit, offset, modelId, keyPrefix],
+    queryKey: ['user', 'recent-requests', limit, offset, modelId, keyPrefix, currency],
     queryFn: () => getRecentRequests(limit, offset, modelId, keyPrefix),
     staleTime: 30 * 1000, // 30 seconds
     refetchInterval: 60 * 1000, // Auto-refresh every minute

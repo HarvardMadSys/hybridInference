@@ -7,6 +7,7 @@ export type UserStatus = 'pending_approval' | 'active' | 'suspended' | 'rejected
 export type UserRole = 'free' | 'pro' | 'internal' | 'admin';
 
 export interface UserRow {
+  currency?: 'USD' | 'CNY';
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -26,38 +27,49 @@ export interface UserRow {
   has_key: boolean;
   key_prefix: string | null;
   key_status: string | null;
+  usage_today?: string | number;
   usage_today_usd: string; // Decimal serialised
+  usage_month?: string | number;
   usage_month_usd: string;
+  usage_alltime?: string | number;
   usage_alltime_usd: string;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
 }
 
 export interface CostHistoryPoint {
+  currency?: 'USD' | 'CNY';
   day: string; // YYYY-MM-DD
+  cost?: string;
   cost_usd: string; // Decimal
   requests: number;
 }
 
 export interface SummaryUserItem {
+  currency?: 'USD' | 'CNY';
   id: string;
   email: string | null;
   login_name?: string | null;
   phone?: string | null;
   user_name: string | null;
   role: UserRole;
+  today_cost?: string;
   today_cost_usd: string;
+  avg_prior_7d?: string;
   avg_prior_7d_usd: string;
+  quota_daily?: number | null;
   quota_daily_usd: number | null;
   multiplier: number | null;
 }
 
 export interface SummaryCard {
+  currency?: 'USD' | 'CNY';
   count: number;
   top: SummaryUserItem[];
 }
 
 export interface UsersSummary {
+  currency?: 'USD' | 'CNY';
   pending: SummaryCard;
   top_spenders_today: SummaryCard;
   anomalies: SummaryCard;

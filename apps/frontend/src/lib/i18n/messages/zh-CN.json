@@ -2592,16 +2592,16 @@
     "text": "API key"
   },
   "dashboard.key_detail.budget_invalid": {
-    "source": "Enter an amount in USD, such as 5 or 12.50, or leave it blank.",
-    "text": "请输入美元金额，例如 5 或 12.50；留空表示不限。"
+    "source": "Enter an amount in {currency}, such as 5 or 12.50, or leave it blank.",
+    "text": "请输入 {currency} 金额，例如 5 或 12.50；留空表示不限。"
   },
   "dashboard.key_detail.created": {
     "source": "Created {date}",
     "text": "创建于 {date}"
   },
   "dashboard.key_detail.daily_budget": {
-    "source": "Daily budget (USD)",
-    "text": "每日预算（美元）"
+    "source": "Daily budget ({currency})",
+    "text": "每日预算（{currency}）"
   },
   "dashboard.key_detail.last_used": {
     "source": "Last used {date}",
@@ -2624,8 +2624,8 @@
     "text": "模型"
   },
   "dashboard.key_detail.monthly_budget": {
-    "source": "Monthly budget (USD)",
-    "text": "每月预算（美元）"
+    "source": "Monthly budget ({currency})",
+    "text": "每月预算（{currency}）"
   },
   "dashboard.key_detail.no_limit": {
     "source": "No limit",
@@ -2948,8 +2948,12 @@
     "text": "模型"
   },
   "dashboard.models.col_price": {
-    "source": "USD / 1M tokens",
-    "text": "美元 / 百万 token"
+    "source": "{currency} / 1M tokens",
+    "text": "{currency} / 百万 token"
+  },
+  "dashboard.models.col_price_any": {
+    "source": "Price / 1M tokens",
+    "text": "价格 / 百万 token"
   },
   "dashboard.models.copied_toast": {
     "source": "Model ID copied to clipboard",
@@ -3184,7 +3188,7 @@
     "text": "根据请求日志估算出的内部成本。“今天”和“本月”都从 UTC 时间 00:00 开始算，也就是每日额度重置的时刻。这不是账单，只是让你心里有数。"
   },
   "dashboard.usage.footnote": {
-    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
+    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
   },
   "dashboard.usage.help_label": {
@@ -4386,8 +4390,8 @@
     "text": "项目已创建。"
   },
   "dashboard.projects.daily_label": {
-    "source": "Daily budget (USD)",
-    "text": "每日预算（美元）"
+    "source": "Daily budget ({currency})",
+    "text": "每日预算（{currency}）"
   },
   "dashboard.projects.default_badge": {
     "source": "Default",
@@ -4402,8 +4406,8 @@
     "text": "请输入非负预算和正整数并发限制。"
   },
   "dashboard.projects.monthly_label": {
-    "source": "Monthly budget (USD)",
-    "text": "每月预算（美元）"
+    "source": "Monthly budget ({currency})",
+    "text": "每月预算（{currency}）"
   },
   "dashboard.projects.name_label": {
     "source": "Name",
