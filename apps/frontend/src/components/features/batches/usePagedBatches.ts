@@ -29,8 +29,12 @@ interface PagedBatches {
  * previous filters cannot overwrite or extend the list for the current ones.
  * Only one "next page" request runs at a time, and rows already listed are not
  * appended twice. No next page is requested while the first page of a reload
- * is still loading.
+ * is still loading. A batch whose deletion was confirmed (see ``remove``) is
+ * never listed again, whichever page read before the deletion answers later.
  */
+/** How often one load asks again after the rows it got were deleted meanwhile. */
+const MAX_ASKS = 3;
+
 export function usePagedBatches(
   fetchPage: (after: string | null) => Promise<ConsoleBatchPage>,
   queryKey: string,
@@ -55,6 +59,13 @@ export function usePagedBatches(
   // gateway had already deleted the row, so the end said nothing about the
   // rows after it (see remove).
   const endedAfter = useRef<string | null>(null);
+  // Batches whose deletion was confirmed: a page read before a deletion can
+  // answer after it, and must not list the batch again.
+  const removed = useRef(new Set<string>());
+  const listable = useCallback(
+    (rows: ConsoleBatch[]) => rows.filter((row) => !removed.current.has(row.id)),
+    [],
+  );
 
   const reload = useCallback(async () => {
     const mine = ++generation.current;
@@ -69,11 +80,24 @@ export function usePagedBatches(
     setLoading(true);
     setError(null);
     try {
-      const page = await fetchRef.current(null);
-      if (mine !== generation.current) return;
-      setBatches(page.data);
-      setHasMore(page.has_more);
-      cursor.current = page.last_id;
+      for (let ask = 1; ; ask++) {
+        const page = await fetchRef.current(null);
+        if (mine !== generation.current) return;
+        const rows = listable(page.data);
+        if (rows.length === 0 && page.data.length > 0 && page.has_more && ask < MAX_ASKS) {
+          // Every row of this page was deleted meanwhile: the next page is
+          // found from its last row, which is gone, so ask for the first again.
+          continue;
+        }
+        rowsRef.current = rows;
+        setBatches(rows);
+        // The cursor is the last row still listed: the gateway finds the next
+        // page from it, and a deleted one would end the listing early.
+        cursor.current = rows.at(-1)?.id ?? null;
+        hasMoreRef.current = page.has_more && cursor.current !== null;
+        setHasMore(hasMoreRef.current);
+        return;
+      }
     } catch (err) {
       if (mine !== generation.current) return;
       setError(getErrorMessage(err));
@@ -83,7 +107,7 @@ export function usePagedBatches(
         setLoading(false);
       }
     }
-  }, []);
+  }, [listable]);
 
   useEffect(() => {
     // A new query: forget the old list at once rather than showing it under
@@ -100,24 +124,38 @@ export function usePagedBatches(
     moreInFlight.current = true;
     setLoadingMore(true);
     try {
-      for (;;) {
+      for (let ask = 1; ; ask++) {
         const after: string | null = cursor.current;
         const page = await fetchRef.current(after);
         if (mine !== generation.current) return;
         setError(null);
-        if (cursor.current !== after && page.data.length === 0 && cursor.current !== null) {
-          // The row this page was asked after was removed while it loaded
-          // (see remove). The gateway finds the next page from that row, so
-          // its empty answer says nothing about the rows after it: keep the
-          // cursor remove moved to the new last row, and ask from there.
+        const rows = listable(page.data);
+        const moved = cursor.current !== after;
+        if (
+          rows.length === 0 &&
+          cursor.current !== null &&
+          ask < MAX_ASKS &&
+          (moved ? page.data.length === 0 : page.data.length > 0 && page.has_more)
+        ) {
+          // Either the row this page was asked after was removed while it
+          // loaded (see remove): the gateway finds the next page from that
+          // row, so its empty answer says nothing about the rows after it.
+          // Or every row it brought was deleted meanwhile. Ask again from
+          // the cursor, the last row still listed.
           continue;
         }
+        const seen = new Set(rowsRef.current.map((row) => row.id));
+        const fresh = rows.filter((row) => !seen.has(row.id));
+        rowsRef.current = [...rowsRef.current, ...fresh];
         setBatches((current) => {
-          const seen = new Set(current.map((row) => row.id));
-          return [...current, ...page.data.filter((row) => !seen.has(row.id))];
+          const listed = new Set(current.map((row) => row.id));
+          return [...current, ...fresh.filter((row) => !listed.has(row.id))];
         });
-        setHasMore(page.has_more);
-        cursor.current = page.last_id;
+        // Continue from the last row of this page still listed; with none,
+        // from where this page was asked (or where remove moved the cursor).
+        cursor.current = rows.at(-1)?.id ?? (page.has_more ? cursor.current : page.last_id);
+        hasMoreRef.current = page.has_more && cursor.current !== null;
+        setHasMore(hasMoreRef.current);
         endedAfter.current = page.data.length === 0 && !page.has_more ? after : null;
         return;
       }
@@ -129,7 +167,7 @@ export function usePagedBatches(
         setLoadingMore(false);
       }
     }
-  }, []);
+  }, [listable]);
 
   const replace = useCallback((batch: ConsoleBatch) => {
     setBatches((current) => current.map((row) => (row.id === batch.id ? batch : row)));
@@ -145,25 +183,25 @@ export function usePagedBatches(
       // is asked again from there (see loadMore). Removed after its next page
       // already came back as that empty end, the list is resumed from the new
       // last row at once. With no row left, start over.
-      const cursorRemoved = cursor.current === batchId && hasMoreRef.current;
-      const endedOnRemoved = endedAfter.current === batchId;
-      let resume = false;
-      if ((cursorRemoved || endedOnRemoved) && !reloading.current) {
-        if (rest.length === 0) {
-          void reload();
-          return;
-        }
-        cursor.current = rest[rest.length - 1].id;
-        if (endedOnRemoved) {
-          endedAfter.current = null;
-          hasMoreRef.current = true;
-          setHasMore(true);
-          resume = true;
-        }
-      }
+      // The row goes at once, whatever the paging does next: its deletion
+      // is confirmed, and a reload that fails must not show it again.
+      removed.current.add(batchId);
       rowsRef.current = rest;
       setBatches((current) => current.filter((row) => row.id !== batchId));
-      if (resume) void loadMore();
+      const cursorRemoved = cursor.current === batchId && hasMoreRef.current;
+      const endedOnRemoved = endedAfter.current === batchId;
+      if (!(cursorRemoved || endedOnRemoved) || reloading.current) return;
+      if (rest.length === 0) {
+        void reload();
+        return;
+      }
+      cursor.current = rest[rest.length - 1].id;
+      if (endedOnRemoved) {
+        endedAfter.current = null;
+        hasMoreRef.current = true;
+        setHasMore(true);
+        void loadMore();
+      }
     },
     [loadMore, reload],
   );

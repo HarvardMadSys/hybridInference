@@ -98,7 +98,11 @@ from serving.servers.concurrency import (
 )
 from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import spend_check_of
-from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
+from serving.storage.batch_store import (
+    RESULT_BUDGET_SPENT_MESSAGE,
+    TARGET_CHAT,
+    TARGET_EMBEDDINGS,
+)
 from serving.storage.pools import DatabaseBusyError
 from serving.utils.logging import get_logger
 
@@ -1107,8 +1111,8 @@ class BatchScheduler:
                 entry,
                 error={
                     "code": "result_too_large",
-                    "message": "The batch's responses reached their storage limit of "
-                    f"{budget} bytes; this request did not run.",
+                    "message": RESULT_BUDGET_SPENT_MESSAGE.format(budget=budget)
+                    + "; this request did not run.",
                     "status": 500,
                 },
                 status_code=500,

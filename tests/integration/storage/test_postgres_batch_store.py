@@ -2065,20 +2065,23 @@ class _PauseReleaseAfterTransaction:
 
     The connection's transaction has committed (or rolled back) by then; the
     caller is paused while the connection is being handed back, until
-    ``resume`` is set.
+    ``resume`` is set. Armed with ``lose_answer``, the caller instead gets an
+    error once the connection is back, as when a commit's answer is lost.
     """
 
     def __init__(self, pool: Any) -> None:
         self._pool = pool
         self._armed = False
+        self._lose_answer = False
         self.paused = asyncio.Event()
         self.resume = asyncio.Event()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._pool, name)
 
-    def arm(self) -> None:
+    def arm(self, *, lose_answer: bool = False) -> None:
         self._armed = True
+        self._lose_answer = lose_answer
 
     def acquire(self) -> Any:
         return _PausingAcquire(self)
@@ -2108,6 +2111,9 @@ class _PausingAcquire:
         owner = self._owner
         if self._transacted and owner._armed:
             owner._armed = False
+            if owner._lose_answer:
+                await self._inner.__aexit__(*exc)
+                raise ConnectionResetError("the connection dropped before the commit was answered")
             owner.paused.set()
             await owner.resume.wait()
         return await self._inner.__aexit__(*exc)
@@ -2156,6 +2162,104 @@ async def test_a_committed_overflow_spends_the_budget_before_the_next_completion
     assert results[later["id"]]["error"]["code"] == "result_too_large"
     assert results[later["id"]]["response"] is None
     assert store.result_budget_spent(created["id"], budget)
+
+
+async def _spend_the_budget(complete, first, overflow) -> None:
+    """Store *first*'s small response, then commit *overflow*'s ``result_too_large``."""
+    assert await complete(first, {"text": "s" * 100})
+    assert await complete(overflow, {"text": "b" * 2000})
+
+
+def _spendable_budget() -> int:
+    """Room for the small response of :func:`_spend_the_budget` and two more, not the big one."""
+    return 3 * _size({"text": "s" * 100}) + 10
+
+
+async def _assert_refused_small(store: BatchStore, complete, batch_id: str, item) -> None:
+    small = {"text": "s" * 100}
+    assert await complete(item, small)
+    results = {r["id"]: r for r in await store.list_results(batch_id)}
+    assert results[item["id"]]["status"] == "failed"
+    assert results[item["id"]]["error"]["code"] == "result_too_large"
+    assert results[item["id"]]["response"] is None
+
+
+@pytest.mark.parametrize("failure", ["rolled_back", "cancelled", "answer_lost"])
+async def test_a_later_failed_completion_keeps_the_committed_spent_budget(
+    pool, monkeypatch, failure
+):
+    pausing = _PauseReleaseAfterTransaction(pool)
+    store = BatchStore(pausing)
+    model = _model()
+    created = await _create(store, _items(model, 4))
+    first, overflow, in_flight, later = await _claim(store, model, limit=4)
+    budget = _spendable_budget()
+    complete = _budget_completion(store, budget)
+    await _spend_the_budget(complete, first, overflow)
+    assert store.result_budget_spent(created["id"], budget)
+
+    # Another request already in flight records its (small) response, and
+    # that completion fails: rolled back at its last step, cancelled while
+    # there, or committed with its answer lost on the way back.
+    small = {"text": "s" * 100}
+    if failure == "rolled_back":
+        _fail_first_settle(store, monkeypatch)
+        with pytest.raises(RuntimeError):
+            await complete(in_flight, small)
+    elif failure == "cancelled":
+        reached, _ = _fail_first_settle(store, monkeypatch, hold=asyncio.Event())
+        task = asyncio.create_task(complete(in_flight, small))
+        await asyncio.wait_for(reached.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        pausing.arm(lose_answer=True)
+        with pytest.raises(ConnectionResetError):
+            await complete(in_flight, small)
+        # The scheduler records again; the write it lost track of had committed.
+        assert not await complete(in_flight, small)
+
+    # The spent budget was committed before, and stays spent: the scheduler
+    # still sees it, and a later small response is still refused.
+    assert store.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(store, complete, created["id"], later)
+
+
+async def test_an_overflow_whose_commit_answer_was_lost_spends_the_budget_on_retry(pool):
+    pausing = _PauseReleaseAfterTransaction(pool)
+    store = BatchStore(pausing)
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    budget = _spendable_budget()
+    complete = _budget_completion(store, budget)
+    assert await complete(first, {"text": "s" * 100})
+
+    # The overflow's failure commits, but its answer is lost: this process
+    # cannot tell whether it did, so it says nothing until it reads again.
+    pausing.arm(lose_answer=True)
+    with pytest.raises(ConnectionResetError):
+        await complete(overflow, {"text": "b" * 2000})
+    # The scheduler's retry finds the write already made, and reads the
+    # committed state while judging it: the budget is spent.
+    assert not await complete(overflow, {"text": "b" * 2000})
+    assert store.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(store, complete, created["id"], later)
+
+
+async def test_a_new_process_finds_a_spent_budget_in_the_stored_failures(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    budget = _spendable_budget()
+    await _spend_the_budget(_budget_completion(store, budget), first, overflow)
+
+    # The stored responses alone fit the budget; the failure says it was spent.
+    fresh = BatchStore(pool)
+    assert not fresh.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(fresh, _budget_completion(fresh, budget), created["id"], later)
+    assert fresh.result_budget_spent(created["id"], budget)
 
 
 async def test_concurrent_completions_of_a_batch_share_its_budget(pool, store):

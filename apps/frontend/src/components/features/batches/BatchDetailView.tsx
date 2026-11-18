@@ -95,7 +95,11 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   // older than the one on screen is dropped: a poll still in flight when the
   // page refreshes itself (after a cancel) cannot overwrite the fresher state.
   // A newer read never discards an older one before it lands, so a server
-  // slower than the polling interval still moves the page forward.
+  // slower than the polling interval still moves the page forward. The
+  // generation also changes when the page goes away (the console route mounts
+  // a new page for another batch), and an action's follow-up -- the refresh
+  // after a cancel, leaving for the list after a delete -- happens only while
+  // it is the generation the action started in.
   const generation = useRef(0);
   const sent = useRef(0);
   const shown = useRef(0);
@@ -125,7 +129,11 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
     setDetail(null);
     setError(null);
     setGone(false);
+    setBusy(false);
     if (userId) void load();
+    return () => {
+      generation.current += 1;
+    };
   }, [load, userId]);
 
   // An expired or failed batch can still be finishing its running requests:
@@ -149,14 +157,17 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
     };
   }, [following, load]);
 
-  async function act(run: () => Promise<void>) {
+  /** Run an action; *run* is told whether the page still shows what it started on. */
+  async function act(run: (stillHere: () => boolean) => Promise<void>) {
+    const started = generation.current;
+    const stillHere = () => started === generation.current;
     setBusy(true);
     try {
-      await run();
+      await run(stillHere);
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setBusy(false);
+      if (stillHere()) setBusy(false);
     }
   }
 
@@ -222,9 +233,9 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
                   )
                 )
                   return;
-                void act(async () => {
+                void act(async (stillHere) => {
                   await cancelMyBatch(detail.id);
-                  await load();
+                  if (stillHere()) await load();
                 });
               }}
             >
@@ -252,10 +263,10 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
                 )
               )
                 return;
-              void act(async () => {
+              void act(async (stillHere) => {
                 await deleteMyBatch(detail.id);
                 toast.success(t('batches.toast.deleted', 'Batch deleted.'));
-                router.push('/dashboard/batches');
+                if (stillHere()) router.push('/dashboard/batches');
               });
             }}
           >
@@ -264,6 +275,22 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
         </div>
       </div>
 
+      {error && (
+        // A read after the details loaded failed (the page keeps polling, and
+        // the next read that answers clears this).
+        <p
+          role="alert"
+          className="rounded-lg bg-red-50 p-3 text-sm text-red-800 ring-1 ring-inset ring-red-200"
+        >
+          {fill(
+            t(
+              'batches.detail.refresh_failed',
+              'Could not refresh this batch ({error}). The details below are from the last successful update.',
+            ),
+            { error },
+          )}
+        </p>
+      )}
       {paused && (
         <div
           role="note"

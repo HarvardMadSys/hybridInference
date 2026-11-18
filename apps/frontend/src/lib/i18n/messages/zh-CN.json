@@ -1703,6 +1703,10 @@
     "source": "Batches",
     "text": "批处理"
   },
+  "batches.detail.refresh_failed": {
+    "source": "Could not refresh this batch ({error}). The details below are from the last successful update.",
+    "text": "无法刷新此批处理（{error}）。下方显示的是上次成功更新时的详情。"
+  },
   "batches.detail.cancel_semantics": {
     "source": "Cancelling stops requests that have not started; requests already running finish and are billed. Results so far stay available to download.",
     "text": "取消后，尚未开始的请求不再执行；正在执行的请求会完成并计费。已有结果仍可下载。"
