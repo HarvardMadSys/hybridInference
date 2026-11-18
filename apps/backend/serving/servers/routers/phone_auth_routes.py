@@ -31,7 +31,7 @@ from serving.servers.deps import (
     user_audit_actor,
 )
 from serving.setup_state import refresh_setup_state
-from serving.storage.phone_auth import OWNER_PURPOSES
+from serving.storage.phone_auth import OWNER_PURPOSES, UNRESOLVED_IP
 from serving.utils.email import is_email_enabled, send_new_registration_admin_email
 from serving.utils.jwt import (
     create_access_token,
@@ -43,7 +43,7 @@ from serving.utils.jwt import (
 )
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import hash_phone_code, phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, normalize_ip_bucket
+from serving.utils.request_ip import get_client_ip, get_client_ip_info, normalize_ip_bucket
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.sms import is_sms_enabled, send_verification_sms
 from serving.utils.turnstile import verify_turnstile_token
@@ -60,13 +60,16 @@ _recent_send_seconds: deque[float] = deque(maxlen=32)
 _DEFAULT_SEND_SECONDS = 0.3
 
 
-def _limit_key(request: Request) -> str:
+def _limit_key(request: Request) -> str | None:
     """The client address the code quotas count by: an IPv6 address by its /64.
 
     Counted by the raw address, a client rotating through the prefix it was
-    delegated escaped every per-address quota.
+    delegated escaped every per-address quota. None when the address could
+    not be resolved: every such client reads "unknown", and counting them as
+    one address let any one of them use up every other one's quota.
     """
-    return normalize_ip_bucket(get_client_ip(request))
+    client = get_client_ip_info(request)
+    return normalize_ip_bucket(client.client_ip) if client.resolved else None
 
 
 async def _wait_like_a_send() -> None:
@@ -102,7 +105,12 @@ async def _require_signup() -> None:
 async def verify_phone_code(
     request: Request, body: PhoneVerifyRequest, purpose: str, op_store, user_id=None
 ) -> None:
-    """Spend one code for *purpose*, raising 429 or 400 when it does not verify."""
+    """Spend one code for *purpose*, raising 429 or 400 when it does not verify.
+
+    An unresolved client is limited by the number's own window and the code's
+    attempts alone (``ip=None``): a shared per-address window would let one
+    such client keep every other one from verifying.
+    """
     result = await op_store.consume_phone_code(
         phone=body.phone,
         purpose=purpose,
@@ -144,20 +152,31 @@ async def send_phone_code(
         user_id = existing_user["id"]
     code = f"{secrets.randbelow(1_000_000):06d}"
     challenge_id = generate_ulid()
+    # A resolved client has its own address quota. Unresolved ones share a
+    # budget of their own, apart from every address's and larger: one of them
+    # cannot use up the rest's, and an unresolved flood still has a ceiling.
+    limit_key = _limit_key(request)
+    if limit_key is None:
+        limit_key = UNRESOLVED_IP
+        ip_hour = settings.sms_otp_send_unresolved_per_hour
+        ip_day = settings.sms_otp_send_unresolved_per_day
+    else:
+        ip_hour = settings.sms_otp_send_per_ip_hour
+        ip_day = settings.sms_otp_send_per_ip_day
     retry_after = await op_store.reserve_phone_code(
         phone=body.phone,
         purpose=body.purpose,
         user_id=user_id,
         challenge_id=challenge_id,
         code_hash=hash_phone_code(body.phone, body.purpose, user_id, code),
-        ip=_limit_key(request),
+        ip=limit_key,
         limits={
             "cooldown": settings.sms_otp_send_cooldown_seconds,
             "expire": settings.sms_otp_expire_seconds,
             "phone_hour": settings.sms_otp_send_per_phone_hour,
             "phone_day": settings.sms_otp_send_per_phone_day,
-            "ip_hour": settings.sms_otp_send_per_ip_hour,
-            "ip_day": settings.sms_otp_send_per_ip_day,
+            "ip_hour": ip_hour,
+            "ip_day": ip_day,
         },
     )
     if retry_after:

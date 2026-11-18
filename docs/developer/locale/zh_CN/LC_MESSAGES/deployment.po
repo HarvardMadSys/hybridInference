@@ -1054,14 +1054,9 @@ msgstr ""
 "200。这是有意这样设计的：容器的 `HEALTHCHECK` 用的是 `curl -f /health`，如果部分降级也返回 "
 "503，还在正常响应请求的后端就会被下线。"
 
-#: ../developer/deployment.md:307
-msgid ""
-"Use `/health/ready` for a strict readiness probe: it applies AND-logic "
-"across configured stores and returns 503 unless every one of them is up. "
-"`/health/deep` additionally reports per-endpoint health."
-msgstr ""
-"需要严格的就绪探针（readiness probe）时，用 `/health/ready`：它要求已配置的存储全部正常，有任何一个没起来就返回 "
-"503。`/health/deep` 还会额外报告每个端点的健康状况。"
+#: ../developer/deployment.md
+msgid "Use `/health/ready` for a strict readiness probe: it applies AND-logic across configured stores and returns 503 unless every one of them is up. Like `/health`, it tells an anonymous caller `{\"status\": \"ready\"}` or `{\"status\": \"not_ready\"}`, and an administrator also the reason and stores. `/health/deep` additionally reports per-endpoint health."
+msgstr "严格的就绪探针请使用 `/health/ready`：它对已配置的存储做 AND 判断，只要有一个不可用就返回 503。与 `/health` 一样，它对匿名调用方只返回 `{\"status\": \"ready\"}` 或 `{\"status\": \"not_ready\"}`，对管理员还会返回原因和存储状态。`/health/deep` 还会报告每个端点的健康状况。"
 
 #: ../developer/deployment.md:311
 msgid "Marking monitor traffic"
@@ -2724,3 +2719,11 @@ msgstr "`spend_unconfirmed`"
 #: ../developer/deployment.md
 msgid "A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives"
 msgstr "尚未在计数表中确认、且等待也无法确认的费用：计数表拒收的费用、结果未知的费用写入，或共享模式下被隔离（quarantined）或无法核对（unaccounted）的预留以及被拒收的增量。只要进程还活着，这一项就不会消失"
+
+#: ../developer/deployment.md
+msgid "Anyone may call `/health` and `/health/ready`, and anyone is answered with the status code and `status` alone:"
+msgstr "任何人都可以调用 `/health` 和 `/health/ready`，并且只会得到状态码和 `status`："
+
+#: ../developer/deployment.md
+msgid "The status codes are what probes and monitors read, and they are the same for every caller. An administrator's credential, a console token or `ADMIN_TOKEN`, also shows the reason, the process's `instance`, the route count and how each store is doing:"
+msgstr "探针和监控读取的是状态码，对所有调用方都一样。管理员凭据（控制台令牌或 `ADMIN_TOKEN`）还会看到原因、进程的 `instance`、路由数量以及各存储的状态："

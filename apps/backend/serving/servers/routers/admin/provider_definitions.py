@@ -37,7 +37,13 @@ from serving.servers.routers.admin.provider_routes import (
     PROVIDER_TARGETS,
     _validate_base_url,
 )
-from serving.utils.metadata_addresses import refuse_metadata_socket
+from serving.utils.admin_upstreams import admin_upstream_socket
+from serving.utils.upstream_errors import (
+    MAX_ERROR_BODY_BYTES,
+    connection_failure,
+    error_message,
+    one_line,
+)
 
 router = APIRouter(prefix="/admin")
 
@@ -368,8 +374,7 @@ def _chat_completions_url(base_url: str) -> str:
 
 
 def _safe_preview(value: str) -> str:
-    text = " ".join(value.replace("\x00", "").split())
-    return text[:160] if text else ""
+    return one_line(value)
 
 
 def _route_adapters(route: Any) -> list[Any]:
@@ -590,8 +595,9 @@ async def _probe_openai_compat(
             aiohttp.ClientSession(
                 timeout=timeout,
                 # The host is resolved again here; refuse it if it now answers
-                # with a cloud metadata address that _validate_base_url never saw.
-                connector=aiohttp.TCPConnector(socket_factory=refuse_metadata_socket),
+                # with an address _validate_base_url would have refused (cloud
+                # metadata, or private while the deployment forbids that).
+                connector=aiohttp.TCPConnector(socket_factory=admin_upstream_socket),
             ) as session,
             session.post(
                 _chat_completions_url(cleaned_base_url),
@@ -606,16 +612,26 @@ async def _probe_openai_compat(
                 allow_redirects=False,
             ) as response,
         ):
+            if 300 <= response.status < 400:
+                # Not followed, and where it points is not shown: it may name
+                # an internal address the administrator never typed.
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Provider answered with a redirect (HTTP {response.status}), which "
+                    "the probe does not follow. Use the Base URL it redirects to.",
+                )
             if response.status >= 400:
-                body = _safe_preview(await response.text())
+                message = error_message(
+                    await response.content.read(MAX_ERROR_BODY_BYTES), secret=key
+                )
                 if response.status in {401, 403}:
                     detail = "Authentication failed. Check the API key."
                 elif response.status == 404:
                     detail = "Endpoint not found. Check that Base URL excludes /chat/completions."
                 else:
-                    detail = f"Provider probe failed with HTTP {response.status}"
-                if body:
-                    detail = f"{detail} {body}"
+                    detail = f"Provider probe failed with HTTP {response.status}."
+                if message:
+                    detail = f"{detail} Provider said: {message}"
                 raise HTTPException(status_code=400, detail=detail)
 
             buffer = b""
@@ -672,7 +688,9 @@ async def _probe_openai_compat(
             detail="Probe timed out. Check provider availability or model id.",
         ) from exc
     except aiohttp.ClientError as exc:
-        raise HTTPException(status_code=400, detail=f"Provider probe failed: {exc}") from exc
+        raise HTTPException(
+            status_code=400, detail=connection_failure(exc, prefix="Provider probe failed")
+        ) from exc
 
 
 @router.get("/provider-definitions", response_model=ListProviderDefinitionsResponse)

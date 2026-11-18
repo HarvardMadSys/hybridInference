@@ -846,7 +846,11 @@ class SsoMessageResponse(BaseModel):
 class SsoReauthStartRequest(BaseModel):
     """Confirm a sensitive action by signing in at the account's identity provider again."""
 
-    purpose: Literal["set_password", "delete_account", "bind_email", "link_sso", "unlink_sso"]
+    #: ``admin_action``: one guarded administrator change
+    #: (``serving.servers.routers.admin.reauthentication``).
+    purpose: Literal[
+        "set_password", "delete_account", "bind_email", "link_sso", "unlink_sso", "admin_action"
+    ]
     return_to: str | None = Field(default=None, max_length=2048)
 
 

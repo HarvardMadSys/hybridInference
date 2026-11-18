@@ -1837,6 +1837,12 @@ class OperationalStore(ABC):
     ) -> None:
         """Upsert a site_settings row."""
 
+    async def set_settings(
+        self, rows: Sequence[tuple[str, str, str]], updated_by: str | None
+    ) -> None:
+        """Upsert several ``(key, value, value_type)`` site_settings rows: all of them or none."""
+        raise NotImplementedError("This operational store does not support atomic settings")
+
     async def compare_and_set_setting(
         self,
         key: str,

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import math
 import re
 import socket
 import time
-from collections.abc import Collection, Mapping, MutableMapping
+from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -45,6 +44,7 @@ from serving.config.settings import (
     get_settings,
     parse_provider_route_types,
 )
+from serving.http import UpstreamRedirectRefused, probe_session
 from serving.model_effort_capabilities import adapter_effort_domain
 from serving.schemas_admin import (
     CreateProviderRouteModelRequest,
@@ -88,8 +88,11 @@ from serving.servers.routewise_compat import (
 from serving.servers.routewise_rebuild import (
     rebuild_routewise_routers as _rebuild_routewise_routers,
 )
+from serving.utils.admin_upstreams import admin_upstream_socket, upstream_refusal
+from serving.utils.ip_classification import parse_ip
 from serving.utils.logging import get_logger
-from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
+from serving.utils.metadata_addresses import is_metadata_hostname
+from serving.utils.upstream_errors import connection_failure, error_message
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable, Iterator
@@ -1705,17 +1708,20 @@ async def _validate_base_url(base_url: str) -> str:
         raise HTTPException(status_code=422, detail="base_url must use http or https")
 
     # Admins are trusted to point a route at any upstream, plain-http and
-    # private hosts included (self-hosted engines, on-prem gateways). Only cloud
-    # instance metadata endpoints are refused: no inference upstream lives there,
-    # and they hand out the host's own credentials. This check gives the admin a
-    # clear error; the connection itself is guarded again at connect time (see
-    # serving.utils.metadata_addresses), since the name may resolve differently.
+    # private hosts included (self-hosted engines, on-prem gateways). Cloud
+    # instance metadata endpoints are refused in every spelling, IPv4 carried
+    # in IPv6 included: no inference upstream lives there, and they hand out
+    # the host's own credentials. A deployment may also refuse private and
+    # loopback hosts (ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0, see
+    # serving.utils.admin_upstreams). This check gives the admin a clear
+    # error; the connection itself is guarded again at connect time, since the
+    # name may resolve differently.
     hostname = parsed.hostname.rstrip(".").lower()
-    if hostname in METADATA_HOSTNAMES:
+    if is_metadata_hostname(hostname):
         raise HTTPException(status_code=422, detail="base_url host is not allowed")
 
     try:
-        ip = ipaddress.ip_address(hostname)
+        addresses = [str(parse_ip(hostname))]
     except ValueError:
         try:
             resolved = await asyncio.wait_for(
@@ -1737,25 +1743,23 @@ async def _validate_base_url(base_url: str) -> str:
                 status_code=422,
                 detail="base_url host could not be resolved",
             ) from exc
+        addresses = [str(result[4][0]) for result in resolved]
 
-        for result in resolved:
-            address = result[4][0]
-            try:
-                resolved_ip = ipaddress.ip_address(address)
-            except ValueError:
-                raise HTTPException(
-                    status_code=422,
-                    detail="base_url host resolved to an invalid address",
-                ) from None
-            if is_metadata_address(resolved_ip):
-                raise HTTPException(
-                    status_code=422,
-                    detail="base_url host is not allowed",
-                ) from None
-        return cleaned
-
-    if is_metadata_address(ip):
-        raise HTTPException(status_code=422, detail="base_url host is not allowed")
+    for address in addresses:
+        refusal = upstream_refusal(address)
+        if refusal == "invalid":
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host resolved to an invalid address",
+            )
+        if refusal == "metadata":
+            raise HTTPException(status_code=422, detail="base_url host is not allowed")
+        if refusal == "private":
+            raise HTTPException(
+                status_code=422,
+                detail="base_url host is a private, loopback or link-local address, which this "
+                "deployment does not allow (ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS)",
+            )
     return cleaned
 
 
@@ -3900,29 +3904,70 @@ def _truncate(value: str, limit: int = 500) -> str:
     return f"{value[:limit]}..."
 
 
-def _verification_error_detail(exc: BaseException) -> str:
+def _route_secrets(adapter: Any) -> list[str]:
+    """Every key a route's request could carry: its configured keys and its pool's."""
+    config = getattr(adapter, "config", None)
+    keys: list[Any] = [getattr(config, "api_key", None), *(getattr(config, "api_keys", None) or [])]
+    pool = getattr(adapter, "_key_pool", None)
+    if pool is not None:
+        keys.extend(pool.snapshot_keys())
+    return [key for key in keys if isinstance(key, str) and key]
+
+
+def _verification_error_detail(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
+    """Why a route's verification failed, without what an arbitrary upstream answered.
+
+    The upstream is whatever the administrator typed, so its body is quoted
+    only as the message of an API's error envelope, with every key the request
+    could have carried (*secrets*) masked. A connection failure is named by its
+    kind, not by the client library's text, which names the resolved address
+    (:mod:`serving.utils.upstream_errors`). Any other failure is named by its
+    type alone: an adapter's own message can quote the answer it could not
+    parse (Gemini's puts the whole JSON body in a ``ValueError``).
+    """
+    prefix = "Provider verification failed"
     if isinstance(exc, asyncio.TimeoutError):
         return f"Provider verification timed out after {VERIFY_TIMEOUT_SEC:.0f}s"
+    if isinstance(exc, UpstreamRedirectRefused):
+        # Not followed, and where it points is not shown: it may name an
+        # internal address the administrator never typed.
+        return (
+            f"Provider answered with a redirect (HTTP {exc.status}), which verification does "
+            "not follow. Use the Base URL it redirects to."
+        )
     if isinstance(exc, aiohttp.ClientResponseError):
-        body = getattr(exc, "error_body", "")
-        body_text = f": {_truncate(str(body))}" if body else ""
-        return f"Provider verification failed with HTTP {exc.status}{body_text}"
-    return f"Provider verification failed: {_truncate(str(exc) or type(exc).__name__)}"
+        message = error_message(getattr(exc, "error_body", ""), secrets=secrets)
+        return f"{prefix} with HTTP {exc.status}" + (f": {message}" if message else "")
+    if isinstance(exc, aiohttp.ClientError):
+        return connection_failure(exc, prefix=prefix)
+    return f"{prefix} ({type(exc).__name__})."
 
 
 async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCandidate) -> None:
-    """Send a minimal upstream request before accepting a route target change."""
+    """Send a minimal upstream request before accepting a route target change.
+
+    The request runs in a probe session of its own (:func:`serving.http.probe_session`):
+    each socket is opened through :func:`admin_upstream_socket`, so a name that
+    passed ``_validate_base_url`` and now resolves to a refused address --
+    metadata always, private or loopback under
+    ``ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`` -- is refused when it connects;
+    no pooled connection is reused; and a redirect is reported, not followed,
+    so a validated host cannot send the probe somewhere it was never checked.
+    Inference to saved routes keeps the shared session.
+    """
     try:
-        await asyncio.wait_for(
-            update.adapter.chat_completion(
-                [{"role": "user", "content": "ping"}],
-                max_tokens=1,
-                temperature=0,
-            ),
-            timeout=VERIFY_TIMEOUT_SEC,
-        )
+        async with probe_session(admin_upstream_socket):
+            await asyncio.wait_for(
+                update.adapter.chat_completion(
+                    [{"role": "user", "content": "ping"}],
+                    max_tokens=1,
+                    temperature=0,
+                ),
+                timeout=VERIFY_TIMEOUT_SEC,
+            )
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=_verification_error_detail(exc)) from exc
+        detail = _verification_error_detail(exc, secrets=_route_secrets(update.adapter))
+        raise HTTPException(status_code=400, detail=detail) from exc
 
 
 def _url_host(url: str | None) -> str | None:

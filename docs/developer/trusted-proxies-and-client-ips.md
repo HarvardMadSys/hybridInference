@@ -99,8 +99,8 @@ Keep the console's port reachable from that edge alone. The bundled Compose
 file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every
 process on the host and every container on its network able to reach it, and
 any of them can claim any address. Without such an edge, leave the console
-untrusted: every browser then resolves to `"unknown"`, with the shared sign-in
-limits described under [The "unknown" outcome](#the-unknown-outcome).
+untrusted: every browser then resolves to `"unknown"`, with the per-account
+sign-in limits described under [The "unknown" outcome](#the-unknown-outcome).
 
 An entry that sends `/v1` and `/anthropic` straight to the gateway is a second
 peer beside the console, and its requests have to resolve without the console
@@ -378,15 +378,31 @@ This is correct: if the socket peer is a Docker bridge and there is no
 trustworthy forwarding provenance, `"unknown"` is more useful than
 `172.19.0.1`.
 
-Sign-in limits are a consumer you will notice. They count attempts per
-address — five per username from one address in 15 minutes, twenty per
-address in an hour — and every browser whose address resolves to `"unknown"`
-shares one. Behind the bundled Compose file's console, unless the gateway
-trusts the header your edge sets (see [Behind the console](#behind-the-console)),
-that is every browser: anyone's wrong passwords then count against everyone
-else's sign-ins. Only a browser that has signed in to the account before
-escapes this, with the device cookie that gives it attempts of its own; see
+Sign-in limits are a consumer you will notice. A resolved client is limited
+per address: five attempts per username from one address in 15 minutes, and
+twenty per address in an hour. An `"unknown"` one has no address to count by,
+and one window shared by every such browser would let anyone's wrong
+passwords lock everyone else out. So an unresolved sign-in is counted per
+account only: five per username in 15 minutes from all unresolved browsers
+together, plus the account-wide window. A signed-in user confirming a change
+with their password is counted under their own session instead, which
+someone else's guesses at the name cannot reach. Nothing refuses a sign-in
+for what other unresolved browsers did, so one source spreading single
+guesses over many accounts is bounded only per account and by the password
+hashing capacity. A browser that has signed in to the account before, with
+its device cookie, keeps attempts of its own; see
 [The first admin account](deployment.md#the-first-admin-account).
+
+Phone codes follow the same rule. Codes sent to unresolved clients share a
+budget of their own (`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 200 and
+`SMS_OTP_SEND_UNRESOLVED_PER_DAY` 1000), apart from any address. Verifying a
+code is limited by the number's own window and the code's attempts only.
+
+This keeps users behind an unresolved proxy from locking one another out,
+but it does not tell them apart. Behind the bundled Compose file's console,
+unless the gateway trusts the header your edge sets (see
+[Behind the console](#behind-the-console)), every browser is unresolved:
+configure the trust there.
 
 Downstream consumers that key on `client_ip` (rate limits, auth-failure
 blocklist, routing affinity) must inspect `ClientIpInfo.resolved` and handle

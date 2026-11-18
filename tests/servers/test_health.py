@@ -8,6 +8,10 @@ Covers the AND-vs-OR semantics introduced in the reliability fixes:
   containers on transient log-store hiccups.
 - /health/ready: strict AND. 503 when any configured store is
   unreachable.
+
+Both answer an anonymous caller with ``status`` alone; the reason, the
+instance, the route count and the stores are an administrator's
+(``ADMIN`` below). The status codes are the same for both.
 """
 
 from __future__ import annotations
@@ -20,6 +24,9 @@ import pytest
 from routing.routers import RouteConfig
 
 pytestmark = [pytest.mark.unit, pytest.mark.asyncio]
+
+#: The test app's ADMIN_TOKEN (tests/servers/conftest.py).
+ADMIN = {"Authorization": "Bearer test-admin-token"}
 
 
 async def _set_store_health(store, healthy: bool) -> None:
@@ -37,7 +44,7 @@ async def test_health_both_stores_ok_returns_healthy(test_client, app_services) 
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, True)
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -52,8 +59,8 @@ async def test_health_names_the_process_that_answers(test_client, app_services) 
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, True)
 
-    first = (await test_client.get("/health")).json()["instance"]
-    second = (await test_client.get("/health")).json()["instance"]
+    first = (await test_client.get("/health", headers=ADMIN)).json()["instance"]
+    second = (await test_client.get("/health", headers=ADMIN)).json()["instance"]
 
     assert first == second == restart.INSTANCE_ID
     assert len(first) == 16
@@ -68,7 +75,7 @@ async def test_health_op_only_up_returns_200_degraded(test_client, app_services)
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, False)
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -83,7 +90,7 @@ async def test_health_log_only_up_returns_200_degraded(test_client, app_services
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, True)
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -96,7 +103,7 @@ async def test_health_both_stores_down_returns_503(test_client, app_services) ->
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, False)
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 503
     body = resp.json()
@@ -108,7 +115,7 @@ async def test_health_ready_both_stores_ok_returns_200(test_client, app_services
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, True)
 
-    resp = await test_client.get("/health/ready")
+    resp = await test_client.get("/health/ready", headers=ADMIN)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -120,7 +127,7 @@ async def test_health_ready_op_only_up_returns_503(test_client, app_services) ->
     await _set_store_health(app_services.operational_store, True)
     await _set_store_health(app_services.log_store, False)
 
-    resp = await test_client.get("/health/ready")
+    resp = await test_client.get("/health/ready", headers=ADMIN)
 
     assert resp.status_code == 503
     body = resp.json()
@@ -132,7 +139,7 @@ async def test_health_ready_log_only_up_returns_503(test_client, app_services) -
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, True)
 
-    resp = await test_client.get("/health/ready")
+    resp = await test_client.get("/health/ready", headers=ADMIN)
 
     assert resp.status_code == 503
     body = resp.json()
@@ -143,7 +150,7 @@ async def test_health_ready_both_down_returns_503(test_client, app_services) -> 
     await _set_store_health(app_services.operational_store, False)
     await _set_store_health(app_services.log_store, False)
 
-    resp = await test_client.get("/health/ready")
+    resp = await test_client.get("/health/ready", headers=ADMIN)
 
     assert resp.status_code == 503
     body = resp.json()
@@ -172,7 +179,7 @@ async def test_discovery_and_health_counts_hide_unpublished_routes(
         published=False,
     )
 
-    health_response = await test_client.get("/health")
+    health_response = await test_client.get("/health", headers=ADMIN)
     deep_response = await test_client.get("/health/deep")
     routing_response = await test_client.get("/routing")
 
@@ -195,7 +202,7 @@ async def test_health_reports_no_database_when_none_is_configured(
     app_services.operational_store = None
     app_services.log_store = None
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 200
     body = resp.json()
@@ -217,7 +224,7 @@ async def test_health_does_not_call_a_failed_database_unconfigured(
     app_services.operational_store = None
     app_services.log_store = None
 
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers=ADMIN)
 
     assert resp.status_code == 503
     body = resp.json()
@@ -225,3 +232,78 @@ async def test_health_does_not_call_a_failed_database_unconfigured(
     assert body["reason"] == "database_unavailable_at_startup"
     assert body["database_configured"] is True
     assert body["database_connected"] is False
+
+
+@pytest.mark.parametrize(
+    ("op_ok", "log_ok", "status_code", "status"),
+    [
+        (True, True, 200, "healthy"),
+        (True, False, 200, "degraded"),
+        (False, True, 200, "degraded"),
+        (False, False, 503, "unhealthy"),
+    ],
+)
+async def test_an_anonymous_caller_is_told_only_the_status(
+    test_client, app_services, op_ok, log_ok, status_code, status
+) -> None:
+    """The probe's status code and ``status`` stay; the outline of the deployment does not."""
+    await _set_store_health(app_services.operational_store, op_ok)
+    await _set_store_health(app_services.log_store, log_ok)
+
+    resp = await test_client.get("/health")
+
+    assert resp.status_code == status_code
+    assert resp.json() == {"status": status}
+
+
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {},
+        {"Authorization": "Bearer not-the-admin-token"},
+        {"Authorization": "Basic dGVzdDp0ZXN0"},
+    ],
+)
+async def test_a_credential_that_is_not_an_admins_reads_as_anonymous(
+    test_client, app_services, headers
+) -> None:
+    await _set_store_health(app_services.operational_store, True)
+    await _set_store_health(app_services.log_store, True)
+
+    resp = await test_client.get("/health", headers=headers)
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "healthy"}
+
+
+async def test_an_anonymous_caller_is_not_told_a_database_failed_at_startup(
+    test_client, app_services, monkeypatch
+):
+    monkeypatch.setenv("DB_ENABLED", "true")
+    app_services.operational_store = None
+    app_services.log_store = None
+
+    resp = await test_client.get("/health")
+
+    assert resp.status_code == 503
+    assert resp.json() == {"status": "unhealthy"}
+
+
+@pytest.mark.parametrize(
+    ("op_ok", "log_ok", "status_code", "status"),
+    [
+        (True, True, 200, "ready"),
+        (True, False, 503, "not_ready"),
+        (False, False, 503, "not_ready"),
+    ],
+)
+async def test_readiness_tells_an_anonymous_caller_only_the_status(
+    test_client, app_services, op_ok, log_ok, status_code, status
+) -> None:
+    await _set_store_health(app_services.operational_store, op_ok)
+    await _set_store_health(app_services.log_store, log_ok)
+
+    resp = await test_client.get("/health/ready")
+
+    assert resp.status_code == status_code
+    assert resp.json() == {"status": status}

@@ -708,6 +708,10 @@ async def test_a_backup_with_secret_values_needs_the_administrators_password(
 async def test_an_account_without_a_password_cannot_export_secret_values(console_admin) -> None:
     client, _store, _audit, account = console_admin
     account["password_hash"] = None
+    # Nor an identity provider to confirm through.
+    client._transport.app.state.services.operational_store.list_user_identities = AsyncMock(
+        return_value=[]
+    )
 
     response = await client.post(
         "/admin/config/backup", headers=AUTH, json={"include_secrets": True, "password": "x"}
@@ -981,6 +985,34 @@ async def test_security_changes_need_confirmation_and_the_password(console_admin
     assert audit.await_args.kwargs["actor"].id == "u-admin"
     assert audit.await_args.kwargs["details"]["security_changes"] == changes
     assert audit.await_args.kwargs["target"] == AuditTarget("config", "backup")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("key", "value", "value_type"),
+    [
+        ("user_daily_quota_free", "100000.0", "float"),
+        ("user_concurrency_admin", "0", "int"),
+        ("log_rejected_requests", "true", "bool"),
+        ("signup_admin_notify_enabled", "false", "bool"),
+    ],
+)
+async def test_a_restore_confirms_every_guarded_runtime_setting(
+    console_admin, key, value, value_type
+) -> None:
+    """A restore must not be the way around PATCH /admin/settings' confirmation."""
+    client, _store, _audit, _account = console_admin
+    op_store = client._transport.app.state.services.operational_store
+    op_store.list_settings = AsyncMock(return_value=[])
+    bundle = {
+        **_security_bundle(),
+        "site_settings": [{"key": key, "value": value, "value_type": value_type}],
+    }
+
+    preview = await client.post("/admin/config/restore/preview", headers=AUTH, json=bundle)
+
+    assert preview.status_code == 200
+    assert f"site_settings:{key}" in preview.json()["security_changes"]
 
 
 def refused_detail(response) -> str:

@@ -469,28 +469,51 @@ class TestLoginAbuseProtection:
         assert "Retry-After" in response.headers
 
     @pytest.mark.asyncio
-    async def test_login_rate_limited_per_ip(self, auth_app_client: AsyncClient):
+    async def test_login_rate_limited_per_ip(self, auth_test_app):
         """Per-IP bucket trips at `login_rate_limit_per_hour_per_ip`.
 
         Vary the email each attempt so neither per-account bucket can trip;
-        the per-IP limit (default 20) must be the gating factor.
+        the per-IP limit (default 20) must be the gating factor. The client
+        connects from a public address: only a resolved one is counted per IP.
         """
-        for i in range(20):
+        from httpx import ASGITransport
+
+        transport = ASGITransport(app=auth_test_app, client=("8.8.8.8", 1234))
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            for i in range(20):
+                response = await client.post(
+                    "/auth/login",
+                    json={
+                        "email": f"unique-{i}@example.com",
+                        "password": "AnyPassword123!",
+                    },
+                )
+                assert response.status_code in (401, 403)
+
+            response = await client.post(
+                "/auth/login",
+                json={"email": "next@example.com", "password": "AnyPassword123!"},
+            )
+        assert response.status_code == 429
+        assert response.headers.get("Retry-After") == "3600"
+
+    @pytest.mark.asyncio
+    async def test_unresolved_clients_are_not_limited_as_one_address(
+        self, auth_app_client: AsyncClient, test_user
+    ):
+        """The test client connects from loopback, which reads as "unknown"."""
+        for i in range(25):
             response = await auth_app_client.post(
                 "/auth/login",
-                json={
-                    "email": f"unique-{i}@example.com",
-                    "password": "AnyPassword123!",
-                },
+                json={"email": f"unique-{i}@example.com", "password": "AnyPassword123!"},
             )
             assert response.status_code in (401, 403)
 
         response = await auth_app_client.post(
             "/auth/login",
-            json={"email": "next@example.com", "password": "AnyPassword123!"},
+            json={"email": test_user["email"], "password": test_user["password"]},
         )
-        assert response.status_code == 429
-        assert response.headers.get("Retry-After") == "3600"
+        assert response.status_code == 200, response.text
 
 
 class TestLogout:

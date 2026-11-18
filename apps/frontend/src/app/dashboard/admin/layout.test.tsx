@@ -10,7 +10,10 @@ import catalog from '@/lib/i18n/messages/zh-CN.json';
 import AdminLayout from './layout';
 import { RouteDeploymentField } from './RouteDeploymentField';
 
-vi.mock('next/navigation', () => ({ useRouter: () => ({ replace: vi.fn() }) }));
+vi.mock('next/navigation', () => ({
+  useRouter: () => ({ replace: vi.fn() }),
+  usePathname: () => '/dashboard/admin',
+}));
 vi.mock('@/components/providers', () => ({
   useAuth: () => ({ state: { loading: false, isAuthenticated: true, user: { is_admin: true } } }),
 }));

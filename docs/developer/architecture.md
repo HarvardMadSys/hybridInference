@@ -519,6 +519,8 @@ The gateway reports through these; it has no Prometheus exporter:
   `status: "degraded"` when a configured store is down but traffic can still be
   served, and 503 only when every configured store is unreachable.
   `/health/ready` is the strict variant: 503 unless everything configured is up.
+  Both tell an anonymous caller only `status`; the reason, instance, route count
+  and stores are shown to an administrator.
   `/health/deep` adds per-endpoint availability and circuit state, and reports
   `degraded` when any endpoint is. All three answer from one shared store probe
   for two seconds, and concurrent callers wait for the probe in flight, so

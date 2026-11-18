@@ -1533,6 +1533,12 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         await self._store.set_setting(key, value, value_type, updated_by)
 
+    async def set_settings(
+        self, rows: Sequence[tuple[str, str, str]], updated_by: str | None
+    ) -> None:
+        """Delegate to wrapped store."""
+        await self._store.set_settings(rows, updated_by)
+
     async def delete_setting(self, key: str) -> bool:
         """Delegate to wrapped store."""
         return await self._store.delete_setting(key)
