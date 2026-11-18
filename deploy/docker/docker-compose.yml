@@ -290,7 +290,7 @@ services:
   # (`postgres:16.15@sha256:...`) closes the tag moving under it; Dependabot
   # (.github/dependabot.yml) then keeps tag and digest current.
   postgres:
-    image: postgres:16.15
+    image: postgres:16.16
     container_name: hybridinference-postgres
     restart: unless-stopped
     logging: *logging
