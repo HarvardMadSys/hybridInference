@@ -41,3 +41,24 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
     expect(parsed.status).toBeNull();
   });
 });
+
+describe('currency-bound amount filters', () => {
+  it('drops legacy USD thresholds when opened in CNY', () => {
+    const parsed = filterStateFromUrl(
+      new URLSearchParams('min_cost_today=5&min_cost_month=20&status=active'),
+      'CNY',
+    );
+    expect(parsed.minCostToday).toBeNull();
+    expect(parsed.minCostMonth).toBeNull();
+    expect(parsed.status).toBe('active');
+  });
+
+  it('round-trips a CNY threshold and refuses it in USD', () => {
+    const params = new URLSearchParams(
+      filterStateToUrl({ ...DEFAULT_FILTER_STATE, minCostToday: 5 }, 'CNY'),
+    );
+    expect(params.get('currency')).toBe('CNY');
+    expect(filterStateFromUrl(params, 'CNY').minCostToday).toBe(5);
+    expect(filterStateFromUrl(params, 'USD').minCostToday).toBeNull();
+  });
+});

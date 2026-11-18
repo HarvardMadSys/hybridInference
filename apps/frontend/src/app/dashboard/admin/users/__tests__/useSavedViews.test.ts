@@ -66,3 +66,19 @@ describe('useSavedViews helpers', () => {
     expect(loadCustomViews()).toEqual([]);
   });
 });
+
+it('isolates saved monetary filters by currency and preserves existing USD views', () => {
+  const view = {
+    id: 'spend',
+    name: 'Spend',
+    builtin: false,
+    filterState: { ...DEFAULT_FILTER_STATE, minCostToday: 5 },
+  };
+  saveCustomView(view);
+  expect(loadCustomViews('CNY')).toEqual([]);
+  saveCustomView({ ...view, filterState: { ...view.filterState, minCostToday: 30 } }, 'CNY');
+  expect(loadCustomViews()[0].filterState.minCostToday).toBe(5);
+  expect(loadCustomViews('CNY')[0].filterState.minCostToday).toBe(30);
+  deleteCustomView('spend', 'CNY');
+  expect(loadCustomViews()).toHaveLength(1);
+});

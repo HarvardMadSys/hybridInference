@@ -6,13 +6,13 @@ import type { ApiKeyListItem, ApiKeyUpdate } from '@/lib/api/user';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { useApiKeys, useProjects, useUpdateApiKey, useUsageStats } from '@/lib/hooks';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { formatUsd } from '@/lib/utils/currency';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { fill } from '@/lib/utils/interpolate';
 import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
-import { limitsSummary, parseBudget } from './keyLimits';
+import { keyBudget, limitsSummary, parseBudget } from './keyLimits';
 import { ModelPicker } from './ModelPicker';
 import { projectHasLimits, projectSummary } from './ProjectDialogs';
 
@@ -27,12 +27,16 @@ function SpendMeter({
   label,
   spent,
   budget,
+  currency,
 }: {
   label: string;
   spent: number;
   budget: number | null | undefined;
+  /** The ledger currency both amounts are in. */
+  currency: 'USD' | 'CNY';
 }): JSX.Element {
   const t = useT();
+  const money = useMoney();
   const share = budget == null ? null : budget === 0 ? 1 : Math.min(spent / budget, 1);
   return (
     <div>
@@ -40,10 +44,10 @@ function SpendMeter({
         <span className="text-sm text-gray-600">{label}</span>
         <span className="text-sm font-medium text-gray-900">
           {budget == null
-            ? formatUsd(spent)
+            ? money.format(spent, undefined, currency)
             : fill(t('dashboard.key_detail.spent_of', '{spent} of {budget}'), {
-                spent: formatUsd(spent),
-                budget: formatUsd(budget),
+                spent: money.format(spent, undefined, currency),
+                budget: money.format(budget, undefined, currency),
               })}
         </span>
       </div>
@@ -73,6 +77,7 @@ function SpendMeter({
 export function ApiKeyDetail({ keyPrefix }: { keyPrefix: string }): JSX.Element {
   const t = useT();
   const fmt = useFormatter();
+  const money = useMoney();
   const { data, isLoading, error } = useApiKeys();
   const key = data?.keys.find((candidate) => candidate.key_prefix === keyPrefix);
 
@@ -149,13 +154,15 @@ export function ApiKeyDetail({ keyPrefix }: { keyPrefix: string }): JSX.Element 
         <div className="mt-4 grid gap-5 sm:grid-cols-2">
           <SpendMeter
             label={t('dashboard.key_detail.today', 'Today')}
-            spent={key.spent_today_usd ?? 0}
-            budget={key.budget_daily_usd}
+            spent={money.amount(key, 'spent_today') ?? 0}
+            budget={keyBudget(key, 'budget_daily')}
+            currency={money.sourceCurrency(key)}
           />
           <SpendMeter
             label={t('dashboard.key_detail.this_month', 'This month')}
-            spent={key.spent_month_usd ?? 0}
-            budget={key.budget_monthly_usd}
+            spent={money.amount(key, 'spent_month') ?? 0}
+            budget={keyBudget(key, 'budget_monthly')}
+            currency={money.sourceCurrency(key)}
           />
         </div>
         <p className="mt-4 text-xs text-gray-500">
@@ -173,7 +180,7 @@ export function ApiKeyDetail({ keyPrefix }: { keyPrefix: string }): JSX.Element 
           <h2 className="text-base font-semibold text-gray-900">
             {t('dashboard.key_detail.limits_title', 'Limits')}
           </h2>
-          <p className="mt-2 text-sm text-gray-600">{limitsSummary(key, t)}</p>
+          <p className="mt-2 text-sm text-gray-600">{limitsSummary(key, t, money.value)}</p>
         </section>
       )}
     </div>
@@ -182,38 +189,59 @@ export function ApiKeyDetail({ keyPrefix }: { keyPrefix: string }): JSX.Element 
 
 function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
   const t = useT();
+  const money = useMoney();
   const toast = useAccountToast();
   const update = useUpdateApiKey();
   const { data: usage } = useUsageStats('today');
   const { data: projects } = useProjects();
   const project = projects?.find((candidate) => candidate.id === apiKey.project_id);
 
-  const [daily, setDaily] = useState(budgetText(apiKey.budget_daily_usd));
-  const [monthly, setMonthly] = useState(budgetText(apiKey.budget_monthly_usd));
+  // Budgets are typed and sent in the ledger currency: a native amount on a
+  // non-USD ledger, the `*_usd` field on a USD one.
+  const currency = money.sourceCurrency(apiKey);
+  const native = currency !== 'USD';
+  const storedDaily = keyBudget(apiKey, 'budget_daily');
+  const storedMonthly = keyBudget(apiKey, 'budget_monthly');
+  const [daily, setDaily] = useState(budgetText(storedDaily));
+  const [monthly, setMonthly] = useState(budgetText(storedMonthly));
   const [allowed, setAllowed] = useState<string[] | null>(apiKey.allowed_models ?? null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // A refetch after saving brings the stored values back; start from them.
   useEffect(() => {
-    setDaily(budgetText(apiKey.budget_daily_usd));
-    setMonthly(budgetText(apiKey.budget_monthly_usd));
+    setDaily(budgetText(storedDaily));
+    setMonthly(budgetText(storedMonthly));
     setAllowed(apiKey.allowed_models ?? null);
-  }, [apiKey.budget_daily_usd, apiKey.budget_monthly_usd, apiKey.allowed_models]);
+  }, [storedDaily, storedMonthly, apiKey.allowed_models]);
 
-  const dailyValue = parseBudget(daily);
-  const monthlyValue = parseBudget(monthly);
-  const invalidBudget = t(
-    'dashboard.key_detail.budget_invalid',
-    'Enter an amount in USD, such as 5 or 12.50, or leave it blank.',
+  const maxBudget = native ? Infinity : undefined;
+  // A budget left as stored is kept as stored, unvalidated: a migrated native
+  // budget may carry more decimal places than a new one may be typed with.
+  const dailyValue =
+    daily === budgetText(storedDaily) ? storedDaily : parseBudget(daily, maxBudget);
+  const monthlyValue =
+    monthly === budgetText(storedMonthly) ? storedMonthly : parseBudget(monthly, maxBudget);
+  const invalidBudget = fill(
+    t(
+      'dashboard.key_detail.budget_invalid',
+      'Enter an amount in {currency}, such as 5 or 12.50, or leave it blank.',
+    ),
+    { currency },
   );
   const noModels = allowed !== null && allowed.length === 0;
 
   const changes: ApiKeyUpdate = {};
-  if (dailyValue !== undefined && dailyValue !== (apiKey.budget_daily_usd ?? null)) {
-    changes.budget_daily_usd = dailyValue;
+  if (dailyValue !== undefined && dailyValue !== storedDaily) {
+    if (native) changes.budget_daily = dailyValue;
+    else changes.budget_daily_usd = dailyValue;
   }
-  if (monthlyValue !== undefined && monthlyValue !== (apiKey.budget_monthly_usd ?? null)) {
-    changes.budget_monthly_usd = monthlyValue;
+  if (monthlyValue !== undefined && monthlyValue !== storedMonthly) {
+    if (native) changes.budget_monthly = monthlyValue;
+    else changes.budget_monthly_usd = monthlyValue;
+  }
+  // A native amount names its currency, so the server can refuse a stale page.
+  if (native && ('budget_daily' in changes || 'budget_monthly' in changes)) {
+    changes.currency = currency;
   }
   const before = apiKey.allowed_models == null ? null : [...apiKey.allowed_models].sort();
   const nextAllowed = allowed == null ? null : [...allowed].sort();
@@ -238,7 +266,7 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
     }
   }
 
-  const accountQuota = usage?.quota.daily_limit_usd;
+  const accountQuota = usage ? money.amount(usage.quota, 'daily_limit') : null;
 
   return (
     <form
@@ -265,7 +293,7 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
                 'dashboard.key_detail.project_limits',
                 'Project {name} limits this key too, together with its other keys: {summary}.',
               ),
-              { name: project.name, summary: projectSummary(project, t) },
+              { name: project.name, summary: projectSummary(project, t, money) },
             )}
           </p>
         )}
@@ -273,7 +301,9 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
 
       <div className="grid gap-4 sm:grid-cols-2">
         <InputField
-          label={t('dashboard.key_detail.daily_budget', 'Daily budget (USD)')}
+          label={fill(t('dashboard.key_detail.daily_budget', 'Daily budget ({currency})'), {
+            currency,
+          })}
           inputMode="decimal"
           placeholder={t('dashboard.key_detail.no_limit', 'No limit')}
           value={daily}
@@ -286,13 +316,15 @@ function KeyLimitsForm({ apiKey }: { apiKey: ApiKeyListItem }): JSX.Element {
                     'dashboard.key_detail.account_quota_hint',
                     "Your account's daily quota of {amount} also applies.",
                   ),
-                  { amount: formatUsd(accountQuota) },
+                  { amount: money.value(usage?.quota, 'daily_limit') },
                 )
               : undefined
           }
         />
         <InputField
-          label={t('dashboard.key_detail.monthly_budget', 'Monthly budget (USD)')}
+          label={fill(t('dashboard.key_detail.monthly_budget', 'Monthly budget ({currency})'), {
+            currency,
+          })}
           inputMode="decimal"
           placeholder={t('dashboard.key_detail.no_limit', 'No limit')}
           value={monthly}

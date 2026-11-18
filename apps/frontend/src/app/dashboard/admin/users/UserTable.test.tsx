@@ -5,8 +5,12 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import toast from 'react-hot-toast';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import { UserTable } from './UserTable';
 import type { UserRow } from './types';
+
+const cnyConfig = { ...buildTimeSiteConfig, accounting: { currency: 'CNY' as const } };
 
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
 
@@ -605,8 +609,10 @@ describe('UserTable admin note', () => {
       fireEvent.change(quotaInput, { target: { value } });
       fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
       await waitFor(() => {
+        // The native amount, sent with the currency the detail was read in.
         expect(onUpdate).toHaveBeenCalledWith('user-1', {
-          quota_daily_cost_usd: Number(value),
+          quota_daily_cost: Number(value),
+          currency: 'USD',
         });
       });
       // The refetched value shows once the save is done and its draft is gone.
@@ -925,7 +931,10 @@ describe('UserTable account settings: in place, written by Save', () => {
     expect(screen.queryByRole('alert')).toBeNull();
     saveAccount();
     await waitFor(() =>
-      expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', { quota_daily_cost_usd: 25 }),
+      expect(onUpdate).toHaveBeenCalledExactlyOnceWith('user-1', {
+        quota_daily_cost: 25,
+        currency: 'USD',
+      }),
     );
   });
 
@@ -947,7 +956,7 @@ describe('UserTable account settings: in place, written by Save', () => {
     });
     saveAccount();
     await waitFor(() =>
-      expect(onUpdate).toHaveBeenCalledWith('user-1', { quota_daily_cost_usd: 0 }),
+      expect(onUpdate).toHaveBeenCalledWith('user-1', { quota_daily_cost: 0, currency: 'USD' }),
     );
     expect(onUpdate).toHaveBeenCalledTimes(1);
   });
@@ -1142,8 +1151,143 @@ describe('UserTable account settings: in place, written by Save', () => {
 
     saveAccount();
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
-    expect(onUpdate).toHaveBeenLastCalledWith('user-1', { quota_daily_cost_usd: 250 });
+    expect(onUpdate).toHaveBeenLastCalledWith('user-1', {
+      quota_daily_cost: 250,
+      currency: 'USD',
+    });
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+});
+
+describe('UserTable account settings in a CNY runtime', () => {
+  // The native quota (700 CNY) is what an admin reads, edits, reviews and
+  // sends; `quota_daily_usd` (100) is the legacy USD figure and never shows.
+  const cnyDetail = (overrides: Partial<UserDetail> = {}) =>
+    detailFixture({
+      currency: 'CNY',
+      role: 'free',
+      quota_daily: 700,
+      quota_daily_usd: 100,
+      max_concurrent_requests: null,
+      ...overrides,
+    });
+
+  function renderCnyTable(onUpdate: (userId: string, patch: UpdateUserData) => Promise<void>) {
+    return render(
+      <SiteConfigProvider initialConfig={cnyConfig}>
+        <UserTable {...tableProps(baseUser, { onUpdate })} />
+      </SiteConfigProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(cnyDetail());
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('shows the native quota, with its currency', async () => {
+    renderCnyTable(vi.fn(async () => undefined));
+    await expand();
+
+    // The panel edits in place, so the quota is the native amount and the
+    // legacy USD figure is never the field's value or label.
+    expect(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' })).toHaveValue(700);
+    expect(screen.queryByLabelText('Daily quota (USD)')).toBeNull();
+    expect(screen.getByText('¥700.00/d')).toBeInTheDocument();
+  });
+
+  it('sends the native quota in CNY, and Discard keeps the saved amount', async () => {
+    const onUpdate = vi.fn(async () => undefined);
+    renderCnyTable(onUpdate);
+    await expand();
+
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' });
+    expect(quota).toHaveValue(700);
+    fireEvent.change(quota, { target: { value: '800' } });
+    expect(screen.getByText('1 unsaved change')).toBeVisible();
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    vi.mocked(getUserDetail).mockResolvedValueOnce(cnyDetail({ quota_daily: 800 }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(1));
+    expect(onUpdate).toHaveBeenCalledWith('user-1', { quota_daily_cost: 800, currency: 'CNY' });
+    await waitFor(() =>
+      expect(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' })).toHaveValue(800),
+    );
+  });
+
+  it('Discard keeps the saved native quota and writes nothing', async () => {
+    const onUpdate = vi.fn(async () => undefined);
+    renderCnyTable(onUpdate);
+    await expand();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' }), {
+      target: { value: '900' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to account settings' }));
+    expect(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' })).toHaveValue(700);
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it('shows the saved native quota when the refetch after a save fails', async () => {
+    const onUpdate = vi.fn(async () => undefined);
+    renderCnyTable(onUpdate);
+    await expand();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' }), {
+      target: { value: '850' },
+    });
+    vi.mocked(getUserDetail).mockRejectedValueOnce(new Error('offline'));
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+
+    await waitFor(() =>
+      expect(onUpdate).toHaveBeenCalledWith('user-1', {
+        quota_daily_cost: 850,
+        currency: 'CNY',
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' })).toHaveValue(850),
+    );
+  });
+
+  it('assumes no USD default for an unset CNY quota and asks for a CNY amount', async () => {
+    // Lowering the role saves on the click; raising one asks for the password.
+    vi.mocked(getUserDetail).mockResolvedValue(
+      cnyDetail({ quota_daily: null, quota_daily_usd: null, role: 'internal' }),
+    );
+    const onUpdate = vi.fn(async () => undefined);
+    renderCnyTable(onUpdate);
+    await expand();
+
+    const quota = screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' });
+    // An unset CNY quota is empty, not the gateway's 100 USD default.
+    expect(quota).toHaveValue(null);
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+
+    // Typing and emptying it again is still no change: nothing is sent.
+    fireEvent.change(quota, { target: { value: '5' } });
+    // A number typed in is a native CNY draft, offered for saving like any other.
+    expect(screen.getByRole('button', { name: 'Save changes to account settings' })).toBeEnabled();
+    fireEvent.change(quota, { target: { value: '' } });
+    expect(screen.queryByRole('button', { name: 'Save changes to account settings' })).toBeNull();
+
+    chooseOption('Role', 'pro');
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+    await waitFor(() => expect(onUpdate).toHaveBeenCalledWith('user-1', { role: 'pro' }));
+  });
+
+  it('explains an emptied quota in CNY', async () => {
+    renderCnyTable(vi.fn(async () => undefined));
+    await expand();
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'Daily quota (CNY)' }), {
+      target: { value: '' },
+    });
+    expect(screen.getByText('Enter a daily quota in CNY. Use 0 to allow no spend.')).toBeVisible();
   });
 });
 

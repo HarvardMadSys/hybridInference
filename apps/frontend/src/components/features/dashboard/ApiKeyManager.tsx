@@ -24,7 +24,7 @@ import { useBranding } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
-import { formatUsd } from '@/lib/utils/currency';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { keyDetailHref, limitsSummary } from './keyLimits';
 import { ProjectDialogs, projectHasLimits, projectSummary } from './ProjectDialogs';
 import type { ProjectDialog } from './ProjectDialogs';
@@ -116,6 +116,7 @@ function liveFirst(keys: ApiKeyListItem[]): ApiKeyListItem[] {
 }
 
 export function ApiKeyManager(): JSX.Element {
+  const money = useMoney();
   const toast = useAccountToast();
   const router = useRouter();
   const branding = useBranding();
@@ -351,7 +352,7 @@ export function ApiKeyManager(): JSX.Element {
               </span>
             )}
             {apiKey.status === 'active' && (
-              <span className="text-xs text-gray-500">{limitsSummary(apiKey, t)}</span>
+              <span className="text-xs text-gray-500">{limitsSummary(apiKey, t, money.value)}</span>
             )}
           </p>
           <div className="grid grid-cols-[minmax(0,1fr)_1.75rem_1.75rem] items-center gap-2">
@@ -431,12 +432,20 @@ export function ApiKeyManager(): JSX.Element {
           </span>
           <span className="whitespace-nowrap">
             {fill(t('dashboard.keys.spent_today', '{amount} today'), {
-              amount: formatUsd(apiKey.spent_today_usd ?? 0),
+              amount: money.format(
+                money.amount(apiKey, 'spent_today') ?? 0,
+                undefined,
+                money.sourceCurrency(apiKey),
+              ),
             })}
           </span>{' '}
           <span className="whitespace-nowrap text-gray-500 md:block">
             {fill(t('dashboard.keys.spent_month', '{amount} this month'), {
-              amount: formatUsd(apiKey.spent_month_usd ?? 0),
+              amount: money.format(
+                money.amount(apiKey, 'spent_month') ?? 0,
+                undefined,
+                money.sourceCurrency(apiKey),
+              ),
             })}
           </span>
         </div>
@@ -518,7 +527,7 @@ export function ApiKeyManager(): JSX.Element {
                 </span>
               )}
             </h3>
-            <p className="mt-1 text-xs text-gray-500">{projectSummary(project, t)}</p>
+            <p className="mt-1 text-xs text-gray-500">{projectSummary(project, t, money)}</p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
             <Button
