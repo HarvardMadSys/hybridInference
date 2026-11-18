@@ -13,9 +13,12 @@ from __future__ import annotations
 
 import errno
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 #: Longest quoted message.
 MAX_MESSAGE_CHARS = 160
@@ -29,13 +32,28 @@ def one_line(value: str, limit: int = MAX_MESSAGE_CHARS) -> str:
     return text[:limit] if text else ""
 
 
-def error_message(raw: bytes | str | None, *, secret: str | None = None) -> str:
+def mask_secrets(text: str, secrets: Iterable[str | None]) -> str:
+    """*text* with every non-empty secret in *secrets* replaced by ``***``, longest first.
+
+    Longest first, so a key that contains another is masked whole.
+    """
+    for secret in sorted({s for s in secrets if s}, key=len, reverse=True):
+        text = text.replace(secret, "***")
+    return text
+
+
+def error_message(
+    raw: bytes | str | None,
+    *,
+    secret: str | None = None,
+    secrets: Iterable[str | None] = (),
+) -> str:
     """The message of an API's error answer, or "" for any other body.
 
     Recognized: ``{"error": {"message": ...}}`` (OpenAI, Anthropic, Gemini),
     ``{"error": "..."}`` (Ollama) and vLLM's older ``{"object": "error",
-    "message": ...}``. *secret*, the key the request carried, is masked should
-    the upstream echo it.
+    "message": ...}``. *secret*, the key the request carried, and *secrets*,
+    every key it could have carried, are masked should the upstream echo one.
     """
     if not raw:
         return ""
@@ -56,9 +74,7 @@ def error_message(raw: bytes | str | None, *, secret: str | None = None) -> str:
         message = body.get("message")
     if not isinstance(message, str):
         return ""
-    if secret:
-        message = message.replace(secret, "***")
-    return one_line(message)
+    return one_line(mask_secrets(message, [secret, *secrets]))
 
 
 def connection_failure(exc: aiohttp.ClientError, *, prefix: str) -> str:

@@ -60,6 +60,13 @@ class Upstream:
             raise web.HTTPTemporaryRedirect(location=self.redirect_to)
         return web.json_response(COMPLETION)
 
+    async def refuse_key(self, request: web.Request) -> web.StreamResponse:
+        """Answer 401, quoting the key the request carried, as some providers do."""
+        key = request.headers.get("Authorization", "").removeprefix("Bearer ")
+        return web.json_response(
+            {"error": {"message": f"Incorrect API key provided: {key}"}}, status=401
+        )
+
     async def internal(self, request: web.Request) -> web.StreamResponse:
         self.internal_hits += 1
         return web.json_response(COMPLETION)
@@ -70,6 +77,7 @@ async def upstream() -> AsyncIterator[Upstream]:
     fake = Upstream()
     app = web.Application()
     app.router.add_post("/v1/chat/completions", fake.chat)
+    app.router.add_post("/revoked/v1/chat/completions", fake.refuse_key)
     app.router.add_route("*", "/internal/chat/completions", fake.internal)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -235,3 +243,22 @@ def _empty():
     import contextvars
 
     return contextvars.Context()
+
+
+async def test_a_pooled_key_the_upstream_quotes_back_is_masked(upstream, http_client):
+    """The probe sends one of the route's pooled keys; whichever it is, it is not shown."""
+    adapter = OpenAICompatAdapter(
+        ModelConfig(
+            id="probe-model",
+            name="Probe model",
+            provider="openai",
+            base_url=f"http://127.0.0.1:{upstream.port}/revoked/v1",
+            api_keys=["sk-pool-first-key", "sk-pool-second-key"],
+        )
+    )
+
+    refused = await _refused(SimpleNamespace(adapter=adapter))
+
+    assert refused.detail == (
+        "Provider verification failed with HTTP 401: Incorrect API key provided: ***"
+    )

@@ -8,7 +8,7 @@ import math
 import re
 import socket
 import time
-from collections.abc import Collection, Mapping, MutableMapping
+from collections.abc import Collection, Mapping, MutableMapping, Sequence
 from dataclasses import asdict, dataclass, fields, is_dataclass, replace
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any, TypeVar
@@ -3904,13 +3904,26 @@ def _truncate(value: str, limit: int = 500) -> str:
     return f"{value[:limit]}..."
 
 
-def _verification_error_detail(exc: BaseException, *, api_key: str | None = None) -> str:
+def _route_secrets(adapter: Any) -> list[str]:
+    """Every key a route's request could carry: its configured keys and its pool's."""
+    config = getattr(adapter, "config", None)
+    keys: list[Any] = [getattr(config, "api_key", None), *(getattr(config, "api_keys", None) or [])]
+    pool = getattr(adapter, "_key_pool", None)
+    if pool is not None:
+        keys.extend(pool.snapshot_keys())
+    return [key for key in keys if isinstance(key, str) and key]
+
+
+def _verification_error_detail(exc: BaseException, *, secrets: Sequence[str] = ()) -> str:
     """Why a route's verification failed, without what an arbitrary upstream answered.
 
     The upstream is whatever the administrator typed, so its body is quoted
-    only as the message of an API's error envelope, and a connection failure
-    is named by its kind, not by the client library's text, which names the
-    resolved address (:mod:`serving.utils.upstream_errors`).
+    only as the message of an API's error envelope, with every key the request
+    could have carried (*secrets*) masked. A connection failure is named by its
+    kind, not by the client library's text, which names the resolved address
+    (:mod:`serving.utils.upstream_errors`). Any other failure is named by its
+    type alone: an adapter's own message can quote the answer it could not
+    parse (Gemini's puts the whole JSON body in a ``ValueError``).
     """
     prefix = "Provider verification failed"
     if isinstance(exc, asyncio.TimeoutError):
@@ -3923,13 +3936,11 @@ def _verification_error_detail(exc: BaseException, *, api_key: str | None = None
             "not follow. Use the Base URL it redirects to."
         )
     if isinstance(exc, aiohttp.ClientResponseError):
-        message = error_message(getattr(exc, "error_body", ""), secret=api_key)
+        message = error_message(getattr(exc, "error_body", ""), secrets=secrets)
         return f"{prefix} with HTTP {exc.status}" + (f": {message}" if message else "")
     if isinstance(exc, aiohttp.ClientError):
         return connection_failure(exc, prefix=prefix)
-    if isinstance(exc, OSError):
-        return f"{prefix} ({type(exc).__name__})."
-    return f"{prefix}: {_truncate(str(exc) or type(exc).__name__)}"
+    return f"{prefix} ({type(exc).__name__})."
 
 
 async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCandidate) -> None:
@@ -3955,10 +3966,7 @@ async def _verify_provider_route(update: PreparedRouteUpdate | PreparedRouteCand
                 timeout=VERIFY_TIMEOUT_SEC,
             )
     except Exception as exc:
-        api_key = getattr(getattr(update.adapter, "config", None), "api_key", None)
-        detail = _verification_error_detail(
-            exc, api_key=api_key if isinstance(api_key, str) else None
-        )
+        detail = _verification_error_detail(exc, secrets=_route_secrets(update.adapter))
         raise HTTPException(status_code=400, detail=detail) from exc
 
 
