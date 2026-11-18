@@ -18,8 +18,9 @@ import asyncio
 import ipaddress
 import json
 import socket
+import time
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 
 import httpx
@@ -28,12 +29,16 @@ from serving.config.settings import get_settings
 from serving.utils.ip_classification import is_public_unicast
 from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
 
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
 _PROTOCOL_VERSION = "2025-06-18"
 _TIMEOUT_S = 20.0
 _DNS_TIMEOUT_S = 5.0
 _MAX_BODY_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_PAGES = 100
 _MAX_TOOLS = 5000
+_SESSION_TTL_S = 600.0
 _FORBIDDEN_HEADERS = frozenset(
     {
         "host",
@@ -49,6 +54,10 @@ _FORBIDDEN_HEADERS = frozenset(
 
 class McpError(Exception):
     """An MCP server could not be reached or answered with an error."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
 
 
 @dataclass(frozen=True)
@@ -197,18 +206,35 @@ def _result_for(frames: list[dict[str, Any]], request_id: int) -> Any:
 
 
 class _Session:
-    def __init__(self, client: httpx.AsyncClient, target: _Target, headers: dict[str, str]) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        target: _Target,
+        headers: dict[str, str],
+        *,
+        session_id: str | None = None,
+        protocol_version: str = _PROTOCOL_VERSION,
+    ) -> None:
         self._client = client
         self._target = target
         self._headers = headers
-        self._session_id: str | None = None
+        self._session_id = session_id
+        self._protocol_version = protocol_version
         self._next_id = 0
+
+    @property
+    def session_id(self) -> str | None:
+        return self._session_id
+
+    @property
+    def protocol_version(self) -> str:
+        return self._protocol_version
 
     async def _post(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            "Mcp-Protocol-Version": _PROTOCOL_VERSION,
+            "Mcp-Protocol-Version": self._protocol_version,
             "Host": self._target.host_header,
             **self._headers,
         }
@@ -252,7 +278,7 @@ class _Session:
         await self._post(payload)
 
     async def initialize(self) -> None:
-        await self.request(
+        result = await self.request(
             "initialize",
             {
                 "protocolVersion": _PROTOCOL_VERSION,
@@ -260,16 +286,87 @@ class _Session:
                 "clientInfo": {"name": "hybridinference-playground", "version": "1.0"},
             },
         )
+        if isinstance(result, dict):
+            negotiated = result.get("protocolVersion")
+            if isinstance(negotiated, str) and negotiated:
+                self._protocol_version = negotiated
         await self.notify("notifications/initialized")
+
+
+@dataclass
+class _CachedSession:
+    session_id: str
+    protocol_version: str
+    last_used: float
+
+
+_SessionKey = tuple[str, tuple[tuple[str, str], ...]]
+_session_cache: dict[_SessionKey, _CachedSession] = {}
+_session_locks: dict[_SessionKey, asyncio.Lock] = {}
+
+
+def _session_key(target: _Target, headers: dict[str, str]) -> _SessionKey:
+    return (target.url, tuple(sorted(headers.items())))
+
+
+async def _open_session(
+    client: httpx.AsyncClient,
+    target: _Target,
+    headers: dict[str, str],
+) -> _Session:
+    """Reuse a server's session, or initialize one and remember it."""
+    key = _session_key(target, headers)
+    lock = _session_locks.setdefault(key, asyncio.Lock())
+    async with lock:
+        now = time.monotonic()
+        for stale in [
+            cached_key
+            for cached_key, cached in _session_cache.items()
+            if now - cached.last_used > _SESSION_TTL_S
+        ]:
+            _session_cache.pop(stale, None)
+        cached = _session_cache.get(key)
+        if cached is not None:
+            cached.last_used = now
+            return _Session(
+                client,
+                target,
+                headers,
+                session_id=cached.session_id,
+                protocol_version=cached.protocol_version,
+            )
+        session = _Session(client, target, headers)
+        await session.initialize()
+        if session.session_id:
+            _session_cache[key] = _CachedSession(session.session_id, session.protocol_version, now)
+        return session
+
+
+async def _with_session(
+    client: httpx.AsyncClient,
+    target: _Target,
+    headers: dict[str, str],
+    action: Callable[[_Session], Awaitable[Any]],
+) -> Any:
+    """Run *action* on a cached session, retrying once if the server forgot it."""
+    key = _session_key(target, headers)
+    session = await _open_session(client, target, headers)
+    try:
+        return await action(session)
+    except McpError as exc:
+        if exc.status != 404:
+            raise
+        _session_cache.pop(key, None)
+        session = await _open_session(client, target, headers)
+        return await action(session)
 
 
 async def list_tools(url: str, headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
     """Return every tool definition a paginated MCP server publishes."""
     target = await _resolve_target(url)
+    clean = _clean_headers(headers)
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        session = _Session(client, target, _clean_headers(headers))
-        await session.initialize()
-        return await _list_all_tools(session)
+        return await _with_session(client, target, clean, _list_all_tools)
 
 
 async def _list_all_tools(session: _Session) -> list[dict[str, Any]]:
@@ -305,16 +402,27 @@ async def call_tool(
 ) -> dict[str, Any]:
     """Invoke one MCP tool and flatten its result into text for the transcript."""
     target = await _resolve_target(url)
+    clean = _clean_headers(headers)
+
+    async def _call(session: _Session) -> Any:
+        return await session.request("tools/call", {"name": name, "arguments": arguments})
+
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        session = _Session(client, target, _clean_headers(headers))
-        await session.initialize()
-        result = await session.request("tools/call", {"name": name, "arguments": arguments})
-    if not isinstance(result, dict):
-        return {"content": "", "isError": False}
+        result = await _with_session(client, target, clean, _call)
     return {
-        "content": _flatten_content(result.get("content")),
-        "isError": bool(result.get("isError")),
+        "content": _flatten_result(result),
+        "isError": bool(result.get("isError")) if isinstance(result, dict) else False,
     }
+
+
+def _flatten_result(result: Any) -> str:
+    if not isinstance(result, dict):
+        return ""
+    text = _flatten_content(result.get("content"))
+    if text:
+        return text
+    structured = result.get("structuredContent")
+    return "" if structured is None else json.dumps(structured)
 
 
 def _flatten_content(content: Any) -> str:

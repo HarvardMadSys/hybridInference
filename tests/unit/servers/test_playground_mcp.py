@@ -19,6 +19,15 @@ FREE = {"user_id": "u-free", "role": "free", "is_admin": False}
 TARGET = mcp_client._Target("https://mcp.example/rpc", "mcp.example", "mcp.example")
 
 
+@pytest.fixture(autouse=True)
+def _clear_mcp_sessions():
+    mcp_client._session_cache.clear()
+    mcp_client._session_locks.clear()
+    yield
+    mcp_client._session_cache.clear()
+    mcp_client._session_locks.clear()
+
+
 def _client(user: dict[str, Any]) -> AsyncClient:
     app = FastAPI()
     app.include_router(playground_mcp.router)
@@ -92,6 +101,30 @@ async def test_the_handshake_sends_the_protocol_version_and_session() -> None:
     assert all(headers.get("Mcp-Protocol-Version") == "2025-06-18" for headers in server.headers)
     assert server.headers[-1].get("Mcp-Session-Id") == "s-1"
     assert server.headers[-1].get("Host") == "mcp.example"
+
+
+@pytest.mark.asyncio
+async def test_the_negotiated_protocol_version_is_used_after_initialize() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-03-26"}, {"tools": []}])
+    session = mcp_client._Session(server, TARGET, {})  # type: ignore[arg-type]
+    await session.initialize()
+    await session.request("tools/list")
+
+    assert server.headers[1]["Mcp-Protocol-Version"] == "2025-03-26"
+    assert server.headers[2]["Mcp-Protocol-Version"] == "2025-03-26"
+
+
+@pytest.mark.asyncio
+async def test_a_session_is_reused_for_later_calls() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-06-18"}])
+    first = await mcp_client._open_session(server, TARGET, {})  # type: ignore[arg-type]
+    second = await mcp_client._open_session(server, TARGET, {})  # type: ignore[arg-type]
+
+    assert first.session_id == second.session_id == "s-1"
+    assert [request["method"] for request in server.requests] == [
+        "initialize",
+        "notifications/initialized",
+    ]
 
 
 @pytest.mark.asyncio
@@ -248,6 +281,22 @@ async def test_a_response_past_the_limit_is_stopped_while_streaming(
 
     with pytest.raises(mcp_client.McpError, match="too large"):
         await mcp_client._read_body(_Response())  # type: ignore[arg-type]
+
+
+def test_structured_content_is_used_when_no_text_is_present() -> None:
+    assert (
+        mcp_client._flatten_result({"content": [], "structuredContent": {"temperature": 23}})
+        == '{"temperature": 23}'
+    )
+    assert (
+        mcp_client._flatten_result(
+            {
+                "content": [{"type": "text", "text": "23 C"}],
+                "structuredContent": {"temperature": 23},
+            }
+        )
+        == "23 C"
+    )
 
 
 def test_tool_content_is_flattened_to_text() -> None:

@@ -80,10 +80,7 @@ describe('formatHistory', () => {
       { role: 'user', content: 'q' },
       { role: 'assistant', content: '', toolCalls: [{ ...CALL, status: undefined }] },
     ];
-    expect(formatHistory('messages', unresolved)).toEqual([
-      { role: 'user', content: 'q' },
-      { role: 'assistant', content: '' },
-    ]);
+    expect(formatHistory('messages', unresolved)).toEqual([{ role: 'user', content: 'q' }]);
   });
 });
 
@@ -177,5 +174,19 @@ describe('failed tool calls', () => {
         ],
       },
     ]);
+  });
+});
+
+describe('unrun tool calls in history', () => {
+  it('does not emit an empty assistant after filtering', () => {
+    const history: HistoryMessage[] = [
+      { role: 'user', content: 'q' },
+      {
+        role: 'assistant',
+        content: '',
+        toolCalls: [{ id: 'c1', name: 'search', arguments: '{}', complete: true }],
+      },
+    ];
+    expect(formatHistory('messages', history)).toEqual([{ role: 'user', content: 'q' }]);
   });
 });

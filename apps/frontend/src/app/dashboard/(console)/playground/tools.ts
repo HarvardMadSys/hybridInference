@@ -139,6 +139,7 @@ function chatHistory(history: HistoryMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const message of history) {
     const calls = completedToolCalls(message);
+    if (message.role === 'assistant' && calls.length === 0 && !message.content.trim()) continue;
     if (message.role === 'assistant' && calls.length > 0) {
       out.push({
         role: 'assistant',
@@ -163,6 +164,7 @@ function responsesHistory(history: HistoryMessage[]): Record<string, unknown>[] 
   const out: Record<string, unknown>[] = [];
   for (const message of history) {
     const calls = completedToolCalls(message);
+    if (message.role === 'assistant' && calls.length === 0 && !message.content.trim()) continue;
     if (message.role === 'assistant' && calls.length > 0) {
       if (message.content) out.push({ role: 'assistant', content: message.content });
       for (const call of calls) {
@@ -187,6 +189,7 @@ function messagesHistory(history: HistoryMessage[]): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const message of history) {
     const calls = completedToolCalls(message);
+    if (message.role === 'assistant' && calls.length === 0 && !message.content.trim()) continue;
     if (message.role === 'assistant' && calls.length > 0) {
       out.push({
         role: 'assistant',

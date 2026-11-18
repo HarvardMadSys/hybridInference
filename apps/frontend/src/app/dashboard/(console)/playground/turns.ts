@@ -61,12 +61,21 @@ export interface Message {
   routing?: RoutingInfo;
 }
 
+/** Whether a call has a result the next request can replay. */
+export function hasReplayableToolCalls(message: Message): boolean {
+  return (message.toolCalls ?? []).some(
+    (call) =>
+      (call.status === 'done' || call.status === 'error') &&
+      (typeof call.result === 'string' || typeof call.error === 'string'),
+  );
+}
+
 /** A reply worth sending back as context: it finished and produced something. */
 export function isUsableReply(message: Message | undefined): boolean {
   return (
     message?.role === 'assistant' &&
     message.status !== 'error' &&
-    (message.content.trim() !== '' || (message.toolCalls?.length ?? 0) > 0)
+    (message.content.trim() !== '' || hasReplayableToolCalls(message))
   );
 }
 

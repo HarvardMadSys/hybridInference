@@ -153,3 +153,19 @@ describe('assistant continuations', () => {
     ]);
   });
 });
+
+describe('unrun tool calls', () => {
+  it('drops a tool-only reply that has no replayable call', () => {
+    expect(
+      requestHistory([
+        user('q1'),
+        reply('', {
+          toolCalls: [
+            { id: 'c1', name: 'search', arguments: '{}', complete: true, status: undefined },
+          ],
+        }),
+        user('q2'),
+      ]),
+    ).toEqual([{ role: 'user', content: 'q2' }]);
+  });
+});
