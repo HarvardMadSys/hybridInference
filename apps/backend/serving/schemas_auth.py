@@ -622,52 +622,6 @@ class UsageResponse(BaseModel):
     usage: UsageStats
 
 
-class UserConcurrencyLimit(BaseModel):
-    """The per-account in-flight cap the limiter enforces."""
-
-    role: str
-    source: Literal["override", "role"]
-    max_concurrency: int = Field(description="In-flight requests; 0 means unlimited")
-
-
-class ConcurrencyLimit(BaseModel):
-    """A separate per-user budget for one surface."""
-
-    max_concurrency: int = Field(description="In-flight requests; 0 means unlimited")
-
-
-class ScopedConcurrencyLimit(BaseModel):
-    """A shared project or organization pool's cap, when it declares one."""
-
-    max_concurrency: int | None = Field(
-        default=None,
-        description="In-flight requests shared by the pool; 0 means unlimited, null means no pool cap",
-    )
-
-
-class ProjectConcurrencyLimit(ScopedConcurrencyLimit):
-    """The project a key is attributed to and its shared cap."""
-
-    id: str
-    name: str | None = None
-
-
-class OrgConcurrencyLimit(ScopedConcurrencyLimit):
-    """The organization a key is attributed to and its shared cap."""
-
-    id: str
-
-
-class ConcurrencyLimitsResponse(BaseModel):
-    """Effective concurrency caps for the calling API key."""
-
-    user: UserConcurrencyLimit
-    project: ProjectConcurrencyLimit | None = None
-    org: OrgConcurrencyLimit | None = None
-    exempt_models: ConcurrencyLimit
-    count_tokens: ConcurrencyLimit
-
-
 # Password reset schemas (optional, for future)
 class ForgotPasswordRequest(BaseModel):
     """Forgot password request."""

@@ -41,7 +41,6 @@ from .routers import (
     identity,
     internal,
     internal_lookups,
-    limits,
     models,
     playground,
     projects,
@@ -171,7 +170,6 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(handoff.router)
     app.include_router(models.router)
-    app.include_router(limits.router)
     app.include_router(completions.router)
     app.include_router(embeddings.router)
     app.include_router(batches.router)
