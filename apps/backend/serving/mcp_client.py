@@ -4,6 +4,12 @@ Only the three calls a tools picker needs are implemented: ``initialize``,
 ``tools/list`` and ``tools/call``. There is no registry here: the caller
 supplies the server URL and any auth headers, because the deployment's own MCP
 registry and proxy moved to the cloud agent with the rest of that feature.
+
+The caller-supplied URL is checked before it is used, and the check decides the
+address the socket is opened to: the host is resolved here, the URL is rebuilt
+around the chosen address, and the original name travels in ``Host`` and, for
+TLS, in ``sni_hostname``. A name that resolves differently between the check and
+the connection therefore cannot redirect the request.
 """
 
 from __future__ import annotations
@@ -12,19 +18,31 @@ import asyncio
 import ipaddress
 import json
 import socket
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import urlparse
 
 import httpx
 
+from serving.config.settings import get_settings
 from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
 
 _PROTOCOL_VERSION = "2025-06-18"
 _TIMEOUT_S = 20.0
 _DNS_TIMEOUT_S = 5.0
 _MAX_BODY_BYTES = 2 * 1024 * 1024
+_MAX_TOOL_PAGES = 100
+_MAX_TOOLS = 5000
 _FORBIDDEN_HEADERS = frozenset(
-    {"host", "content-length", "content-type", "accept", "mcp-session-id", "connection"}
+    {
+        "host",
+        "content-length",
+        "content-type",
+        "accept",
+        "mcp-session-id",
+        "mcp-protocol-version",
+        "connection",
+    }
 )
 
 
@@ -32,49 +50,77 @@ class McpError(Exception):
     """An MCP server could not be reached or answered with an error."""
 
 
-def validate_mcp_url(url: str) -> str:
-    """Return *url* if it is a usable http(s) URL, else raise :class:`McpError`."""
+@dataclass(frozen=True)
+class _Target:
+    """The address actually connected to, and the identity the server sees."""
+
+    url: str
+    host_header: str
+    sni_hostname: str | None
+
+
+def _allowed_internal_hosts() -> set[str]:
+    raw = get_settings().playground_mcp_allowed_hosts
+    return {host.strip().rstrip(".").lower() for host in raw.split(",") if host.strip()}
+
+
+def _validate_url(url: str) -> None:
     try:
         parsed = urlparse(url)
     except ValueError as exc:
         raise McpError("The MCP server URL is not valid.") from exc
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise McpError("The MCP server URL must be an http or https address.")
+
+
+async def _resolve_target(url: str) -> _Target:
+    """Pick an allowed address and rebuild the URL around it."""
+    _validate_url(url)
+    parsed = urlparse(url)
     host = parsed.hostname.rstrip(".").lower()
     if host in METADATA_HOSTNAMES:
         raise McpError("That MCP server address is not allowed.")
-    try:
-        address = ipaddress.ip_address(host)
-    except ValueError:
-        return url
-    if is_metadata_address(address):
-        raise McpError("That MCP server address is not allowed.")
-    return url
+    allow_private = host in _allowed_internal_hosts()
 
-
-async def _refuse_metadata_resolution(url: str) -> None:
-    host = urlparse(url).hostname
-    if not host:
-        return
     try:
-        ipaddress.ip_address(host)
-        return
+        addresses = [ipaddress.ip_address(host)]
     except ValueError:
-        pass
-    try:
-        resolved = await asyncio.wait_for(
-            asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM),
-            timeout=_DNS_TIMEOUT_S,
-        )
-    except (TimeoutError, socket.gaierror) as exc:
-        raise McpError("The MCP server host could not be resolved.") from exc
-    for result in resolved:
         try:
-            address = ipaddress.ip_address(result[4][0])
-        except ValueError:
-            raise McpError("The MCP server resolved to an invalid address.") from None
-        if is_metadata_address(address):
-            raise McpError("That MCP server address is not allowed.")
+            resolved = await asyncio.wait_for(
+                asyncio.to_thread(socket.getaddrinfo, host, None, type=socket.SOCK_STREAM),
+                timeout=_DNS_TIMEOUT_S,
+            )
+        except (TimeoutError, socket.gaierror) as exc:
+            raise McpError("The MCP server host could not be resolved.") from exc
+        addresses = []
+        for result in resolved:
+            try:
+                addresses.append(ipaddress.ip_address(result[4][0]))
+            except ValueError as exc:
+                raise McpError("The MCP server resolved to an invalid address.") from exc
+
+    chosen = next(
+        (
+            address
+            for address in addresses
+            if not is_metadata_address(address) and (allow_private or address.is_global)
+        ),
+        None,
+    )
+    if chosen is None:
+        raise McpError("That MCP server address is not allowed.")
+
+    literal = f"[{chosen}]" if chosen.version == 6 else str(chosen)
+    netloc = f"{literal}:{parsed.port}" if parsed.port else literal
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+    host_header = f"{host}:{parsed.port}" if parsed.port else host
+    return _Target(
+        url=f"{parsed.scheme}://{netloc}{path}",
+        host_header=host_header,
+        sni_hostname=host if parsed.scheme == "https" else None,
+    )
 
 
 def _clean_headers(headers: dict[str, str] | None) -> dict[str, str]:
@@ -87,13 +133,22 @@ def _clean_headers(headers: dict[str, str] | None) -> dict[str, str]:
     }
 
 
-def _parse_frames(response: httpx.Response) -> list[dict[str, Any]]:
-    if len(response.content) > _MAX_BODY_BYTES:
-        raise McpError("The MCP server response was too large.")
-    if "text/event-stream" in response.headers.get("content-type", ""):
-        return _parse_sse(response.text)
+async def _read_body(response: httpx.Response) -> str:
+    chunks: list[bytes] = []
+    total = 0
+    async for chunk in response.aiter_bytes():
+        total += len(chunk)
+        if total > _MAX_BODY_BYTES:
+            raise McpError("The MCP server response was too large.")
+        chunks.append(chunk)
+    return b"".join(chunks).decode("utf-8", errors="replace")
+
+
+def _parse_frames(body: str, content_type: str) -> list[dict[str, Any]]:
+    if "text/event-stream" in content_type:
+        return _parse_sse(body)
     try:
-        payload = response.json()
+        payload = json.loads(body)
     except ValueError as exc:
         raise McpError("The MCP server returned an unreadable response.") from exc
     return [payload] if isinstance(payload, dict) else []
@@ -141,31 +196,45 @@ def _result_for(frames: list[dict[str, Any]], request_id: int) -> Any:
 
 
 class _Session:
-    def __init__(self, client: httpx.AsyncClient, url: str, headers: dict[str, str]) -> None:
+    def __init__(self, client: httpx.AsyncClient, target: _Target, headers: dict[str, str]) -> None:
         self._client = client
-        self._url = url
+        self._target = target
         self._headers = headers
         self._session_id: str | None = None
         self._next_id = 0
 
-    async def _post(self, payload: dict[str, Any]) -> httpx.Response:
+    async def _post(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
+            "Mcp-Protocol-Version": _PROTOCOL_VERSION,
+            "Host": self._target.host_header,
             **self._headers,
         }
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
+        extensions = (
+            {"sni_hostname": self._target.sni_hostname} if self._target.sni_hostname else {}
+        )
         try:
-            response = await self._client.post(self._url, json=payload, headers=headers)
+            async with self._client.stream(
+                "POST",
+                self._target.url,
+                json=payload,
+                headers=headers,
+                extensions=extensions,
+            ) as response:
+                if response.status_code >= 400:
+                    raise McpError(f"The MCP server refused the request ({response.status_code}).")
+                session_id = response.headers.get("mcp-session-id")
+                if session_id:
+                    self._session_id = session_id
+                if "id" not in payload:
+                    return []
+                body = await _read_body(response)
+                return _parse_frames(body, response.headers.get("content-type", ""))
         except httpx.HTTPError as exc:
             raise McpError(f"Could not reach the MCP server: {exc}") from exc
-        if response.status_code >= 400:
-            raise McpError(f"The MCP server refused the request ({response.status_code}).")
-        session_id = response.headers.get("mcp-session-id")
-        if session_id:
-            self._session_id = session_id
-        return response
 
     async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
         self._next_id += 1
@@ -173,8 +242,7 @@ class _Session:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
-        response = await self._post(payload)
-        return _result_for(_parse_frames(response), request_id)
+        return _result_for(await self._post(payload), request_id)
 
     async def notify(self, method: str, params: dict[str, Any] | None = None) -> None:
         payload: dict[str, Any] = {"jsonrpc": "2.0", "method": method}
@@ -195,17 +263,37 @@ class _Session:
 
 
 async def list_tools(url: str, headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
-    """Return the tool definitions an MCP server publishes."""
-    validate_mcp_url(url)
-    await _refuse_metadata_resolution(url)
+    """Return every tool definition a paginated MCP server publishes."""
+    target = await _resolve_target(url)
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        session = _Session(client, url, _clean_headers(headers))
+        session = _Session(client, target, _clean_headers(headers))
         await session.initialize()
-        result = await session.request("tools/list")
-    tools = result.get("tools") if isinstance(result, dict) else None
-    if not isinstance(tools, list):
-        return []
-    return [tool for tool in tools if isinstance(tool, dict) and isinstance(tool.get("name"), str)]
+        return await _list_all_tools(session)
+
+
+async def _list_all_tools(session: _Session) -> list[dict[str, Any]]:
+    tools: list[dict[str, Any]] = []
+    cursor: str | None = None
+    seen: set[str] = set()
+    for _ in range(_MAX_TOOL_PAGES):
+        result = await session.request("tools/list", {"cursor": cursor} if cursor else None)
+        if not isinstance(result, dict):
+            break
+        batch = result.get("tools")
+        if isinstance(batch, list):
+            tools.extend(
+                tool
+                for tool in batch
+                if isinstance(tool, dict) and isinstance(tool.get("name"), str)
+            )
+        if len(tools) >= _MAX_TOOLS:
+            break
+        next_cursor = result.get("nextCursor")
+        if not isinstance(next_cursor, str) or not next_cursor or next_cursor in seen:
+            break
+        seen.add(next_cursor)
+        cursor = next_cursor
+    return tools[:_MAX_TOOLS]
 
 
 async def call_tool(
@@ -215,10 +303,9 @@ async def call_tool(
     headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Invoke one MCP tool and flatten its result into text for the transcript."""
-    validate_mcp_url(url)
-    await _refuse_metadata_resolution(url)
+    target = await _resolve_target(url)
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        session = _Session(client, url, _clean_headers(headers))
+        session = _Session(client, target, _clean_headers(headers))
         await session.initialize()
         result = await session.request("tools/call", {"name": name, "arguments": arguments})
     if not isinstance(result, dict):

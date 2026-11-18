@@ -104,6 +104,7 @@ describe('selectedTools', () => {
         serverUrl: 'https://mcp.example/mcp',
         serverHeaders: { Authorization: 'Bearer x' },
         tool: { name: 'search', inputSchema: { type: 'object' } },
+        wire: 'search',
       },
     ]);
   });
@@ -120,5 +121,61 @@ describe('selectedTools', () => {
       serverHeaders: { Authorization: 'Bearer x' },
       mcpName: 'search',
     });
+  });
+
+  it('gives same-named tools on different servers distinct wire names', () => {
+    const two = [
+      ...servers,
+      {
+        id: 's2',
+        url: 'https://other.example/mcp',
+        headers: {},
+        tools: [{ name: 'search', inputSchema: { type: 'object' } }],
+      },
+    ];
+    const selected = selectedTools(two, [
+      { serverId: 's1', name: 'search' },
+      { serverId: 's2', name: 'search' },
+    ]);
+    expect(selected.map((tool) => tool.wire)).toEqual(['search', 'search_2']);
+    expect(resolveToolCall({ id: 'c', name: 'search_2', arguments: '{}' }, selected)).toMatchObject(
+      { serverUrl: 'https://other.example/mcp', mcpName: 'search' },
+    );
+  });
+});
+
+describe('failed tool calls', () => {
+  const failed = {
+    ...CALL,
+    status: 'error' as const,
+    result: undefined,
+    error: 'upstream rejected the arguments',
+  };
+
+  it('keeps the error content so the model can correct its arguments', () => {
+    const history: HistoryMessage[] = [
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', toolCalls: [failed] },
+    ];
+    expect(formatHistory('chat', history)).toMatchObject([
+      {},
+      {},
+      { role: 'tool', tool_call_id: 'call-1', content: 'upstream rejected the arguments' },
+    ]);
+    expect(formatHistory('messages', history)).toMatchObject([
+      {},
+      {},
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'call-1',
+            content: 'upstream rejected the arguments',
+            is_error: true,
+          },
+        ],
+      },
+    ]);
   });
 });

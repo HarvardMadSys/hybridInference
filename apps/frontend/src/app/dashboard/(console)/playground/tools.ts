@@ -20,6 +20,8 @@ export interface SelectedTool {
   serverUrl: string;
   serverHeaders: Record<string, string>;
   tool: McpTool;
+  /** Unique and wire-safe within this selection; the model sees only this. */
+  wire: string;
 }
 
 export interface ServerSelection {
@@ -34,23 +36,31 @@ export function wireName(name: string): string {
 
 export function selectedTools(servers: McpServer[], selection: ServerSelection[]): SelectedTool[] {
   const tools: SelectedTool[] = [];
+  const used = new Set<string>();
   for (const pick of selection) {
     const server = servers.find((candidate) => candidate.id === pick.serverId);
     const tool = server?.tools.find((candidate) => candidate.name === pick.name);
-    if (server && tool) {
-      tools.push({
-        serverId: server.id,
-        serverUrl: server.url,
-        serverHeaders: server.headers,
-        tool,
-      });
+    if (!server || !tool) continue;
+    const base = wireName(tool.name);
+    let wire = base;
+    for (let suffix = 2; used.has(wire); suffix++) {
+      const tag = `_${suffix}`;
+      wire = `${base.slice(0, 64 - tag.length)}${tag}`;
     }
+    used.add(wire);
+    tools.push({
+      serverId: server.id,
+      serverUrl: server.url,
+      serverHeaders: server.headers,
+      tool,
+      wire,
+    });
   }
   return tools;
 }
 
 export function findTool(tools: SelectedTool[], name: string): SelectedTool | undefined {
-  return tools.find((tool) => wireName(tool.tool.name) === wireName(name));
+  return tools.find((tool) => tool.wire === name);
 }
 
 /** Attach the server and id the model's tool call refers to, once it names one. */
@@ -70,7 +80,7 @@ export function chatTools(tools: SelectedTool[]): Record<string, unknown>[] {
   return tools.map((tool) => ({
     type: 'function',
     function: {
-      name: wireName(tool.tool.name),
+      name: tool.wire,
       ...(tool.tool.description ? { description: tool.tool.description } : {}),
       parameters: tool.tool.inputSchema,
     },
@@ -80,7 +90,7 @@ export function chatTools(tools: SelectedTool[]): Record<string, unknown>[] {
 export function responsesTools(tools: SelectedTool[]): Record<string, unknown>[] {
   return tools.map((tool) => ({
     type: 'function',
-    name: wireName(tool.tool.name),
+    name: tool.wire,
     ...(tool.tool.description ? { description: tool.tool.description } : {}),
     parameters: tool.tool.inputSchema,
   }));
@@ -88,7 +98,7 @@ export function responsesTools(tools: SelectedTool[]): Record<string, unknown>[]
 
 export function messagesTools(tools: SelectedTool[]): Record<string, unknown>[] {
   return tools.map((tool) => ({
-    name: wireName(tool.tool.name),
+    name: tool.wire,
     ...(tool.tool.description ? { description: tool.tool.description } : {}),
     input_schema: tool.tool.inputSchema,
   }));
@@ -105,8 +115,14 @@ function parseArguments(raw: string): Record<string, unknown> {
 
 function completedToolCalls(message: HistoryMessage): ToolCall[] {
   return (message.toolCalls ?? []).filter(
-    (call) => call.status === 'done' && typeof call.result === 'string',
+    (call) =>
+      (call.status === 'done' || call.status === 'error') &&
+      (typeof call.result === 'string' || typeof call.error === 'string'),
   );
+}
+
+function callOutput(call: ToolCall): string {
+  return call.result ?? call.error ?? '';
 }
 
 /** The history in the body shape the selected API format expects. */
@@ -130,11 +146,11 @@ function chatHistory(history: HistoryMessage[]): Record<string, unknown>[] {
         tool_calls: calls.map((call) => ({
           id: call.id,
           type: 'function',
-          function: { name: wireName(call.name), arguments: call.arguments },
+          function: { name: call.name, arguments: call.arguments },
         })),
       });
       for (const call of calls) {
-        out.push({ role: 'tool', tool_call_id: call.id, content: call.result });
+        out.push({ role: 'tool', tool_call_id: call.id, content: callOutput(call) });
       }
       continue;
     }
@@ -153,12 +169,12 @@ function responsesHistory(history: HistoryMessage[]): Record<string, unknown>[] 
         out.push({
           type: 'function_call',
           call_id: call.id,
-          name: wireName(call.name),
+          name: call.name,
           arguments: call.arguments,
         });
       }
       for (const call of calls) {
-        out.push({ type: 'function_call_output', call_id: call.id, output: call.result });
+        out.push({ type: 'function_call_output', call_id: call.id, output: callOutput(call) });
       }
       continue;
     }
@@ -179,7 +195,7 @@ function messagesHistory(history: HistoryMessage[]): Record<string, unknown>[] {
           ...calls.map((call) => ({
             type: 'tool_use',
             id: call.id,
-            name: wireName(call.name),
+            name: call.name,
             input: parseArguments(call.arguments),
           })),
         ],
@@ -189,7 +205,8 @@ function messagesHistory(history: HistoryMessage[]): Record<string, unknown>[] {
         content: calls.map((call) => ({
           type: 'tool_result',
           tool_use_id: call.id,
-          content: call.result,
+          content: callOutput(call),
+          ...(call.status === 'error' ? { is_error: true } : {}),
         })),
       });
       continue;

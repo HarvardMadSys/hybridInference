@@ -19,10 +19,14 @@ export interface RoutingInfo {
 export interface ToolCall {
   id: string;
   name: string;
+  /** The stream's own block index; it can skip and is not the rendered position. */
+  index?: number;
   /** The tool's own name, before the wire-safe alias the model saw. */
   mcpName?: string;
   /** Arguments as the model streamed them: a JSON string, possibly partial. */
   arguments: string;
+  /** False until the turn ends without a stop or error. */
+  complete?: boolean;
   serverUrl?: string;
   serverHeaders?: Record<string, string>;
   status?: 'running' | 'done' | 'error';

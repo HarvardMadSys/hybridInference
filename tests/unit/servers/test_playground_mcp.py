@@ -1,4 +1,4 @@
-"""The playground MCP proxy: URL safety, framing, and the endpoint contract."""
+"""The playground MCP proxy: destination policy, framing, and the endpoints."""
 
 from __future__ import annotations
 
@@ -16,6 +16,7 @@ from serving.servers.routers import playground_mcp
 
 INTERNAL = {"user_id": "u-internal", "role": "internal", "is_admin": False}
 FREE = {"user_id": "u-free", "role": "free", "is_admin": False}
+TARGET = mcp_client._Target("https://mcp.example/rpc", "mcp.example", "mcp.example")
 
 
 def _client(user: dict[str, Any]) -> AsyncClient:
@@ -29,36 +30,57 @@ def _sse(*frames: dict[str, Any]) -> str:
     return "".join(f"event: message\ndata: {json.dumps(frame)}\n\n" for frame in frames)
 
 
-class _Server:
-    """A fake httpx client that answers the MCP handshake and one method."""
+class _FakeStream:
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+
+    async def __aenter__(self) -> httpx.Response:
+        return self._response
+
+    async def __aexit__(self, *_args: Any) -> None:
+        pass
+
+
+class _FakeClient:
+    """An httpx client that answers the MCP handshake and one method."""
 
     def __init__(self, results: list[dict[str, Any]], *, content_type: str = "application/json"):
         self.results = results
         self.content_type = content_type
         self.requests: list[dict[str, Any]] = []
+        self.headers: list[dict[str, str]] = []
 
-    async def post(
-        self, _url: str, json: dict[str, Any] | None = None, headers: dict[str, str] | None = None
-    ) -> httpx.Response:
+    def stream(
+        self,
+        _method: str,
+        _url: str,
+        *,
+        json: dict[str, Any] | None = None,
+        headers: dict[str, str] | None = None,
+        **_kwargs: Any,
+    ) -> _FakeStream:
         assert json is not None
         self.requests.append(json)
+        self.headers.append(headers or {})
         if "id" not in json:
-            return httpx.Response(202, headers={"mcp-session-id": "s-1"})
+            return _FakeStream(httpx.Response(202, headers={"mcp-session-id": "s-1"}))
         result = self.results.pop(0)
         frame = {"jsonrpc": "2.0", "id": json["id"], "result": result}
         if self.content_type == "text/event-stream":
-            return httpx.Response(
-                200,
-                text=_sse(frame),
-                headers={"content-type": "text/event-stream", "mcp-session-id": "s-1"},
+            return _FakeStream(
+                httpx.Response(
+                    200,
+                    text=_sse(frame),
+                    headers={"content-type": "text/event-stream", "mcp-session-id": "s-1"},
+                )
             )
-        return httpx.Response(200, json=frame, headers={"mcp-session-id": "s-1"})
+        return _FakeStream(httpx.Response(200, json=frame, headers={"mcp-session-id": "s-1"}))
 
 
 @pytest.mark.asyncio
-async def test_list_tools_performs_the_handshake_and_returns_tool_definitions() -> None:
-    server = _Server([{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}])
-    session = mcp_client._Session(server, "https://mcp.example/rpc", {})  # type: ignore[arg-type]
+async def test_the_handshake_sends_the_protocol_version_and_session() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}])
+    session = mcp_client._Session(server, TARGET, {})  # type: ignore[arg-type]
     await session.initialize()
     result = await session.request("tools/list")
     assert result == {"tools": [{"name": "search"}]}
@@ -67,58 +89,103 @@ async def test_list_tools_performs_the_handshake_and_returns_tool_definitions() 
         "notifications/initialized",
         "tools/list",
     ]
+    assert all(headers.get("Mcp-Protocol-Version") == "2025-06-18" for headers in server.headers)
+    assert server.headers[-1].get("Mcp-Session-Id") == "s-1"
+    assert server.headers[-1].get("Host") == "mcp.example"
 
 
 @pytest.mark.asyncio
 async def test_an_sse_answer_is_parsed() -> None:
-    server = _Server(
+    server = _FakeClient(
         [{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}],
         content_type="text/event-stream",
     )
-    session = mcp_client._Session(server, "https://mcp.example/rpc", {})  # type: ignore[arg-type]
+    session = mcp_client._Session(server, TARGET, {})  # type: ignore[arg-type]
     await session.initialize()
     assert await session.request("tools/list") == {"tools": [{"name": "search"}]}
 
 
 @pytest.mark.asyncio
 async def test_an_error_frame_becomes_an_mcp_error() -> None:
-    class _Failing(_Server):
-        async def post(
-            self,
-            _url: str,
-            json: dict[str, Any] | None = None,
-            headers: dict[str, str] | None = None,
-        ) -> httpx.Response:
-            assert json is not None
-            if "id" not in json:
-                return httpx.Response(202)
-            return httpx.Response(
-                200,
-                json={
-                    "jsonrpc": "2.0",
-                    "id": json["id"],
-                    "error": {"code": -32602, "message": "bad arguments"},
-                },
+    class _Failing(_FakeClient):
+        def stream(self, *_args: Any, **kwargs: Any) -> _FakeStream:
+            payload = kwargs.get("json") or {}
+            if "id" not in payload:
+                return _FakeStream(httpx.Response(202))
+            return _FakeStream(
+                httpx.Response(
+                    200,
+                    json={
+                        "jsonrpc": "2.0",
+                        "id": payload["id"],
+                        "error": {"code": -32602, "message": "bad arguments"},
+                    },
+                )
             )
 
-    session = mcp_client._Session(_Failing([]), "https://mcp.example/rpc", {})  # type: ignore[arg-type]
+    session = mcp_client._Session(_Failing([]), TARGET, {})  # type: ignore[arg-type]
     with pytest.raises(mcp_client.McpError, match="bad arguments"):
         await session.initialize()
 
 
-def test_url_validation_rejects_non_http_and_link_local_addresses() -> None:
-    for url in ("ftp://mcp.example", "file:///etc/passwd", "http://169.254.169.254/latest"):
-        with pytest.raises(mcp_client.McpError):
-            mcp_client.validate_mcp_url(url)
-    assert mcp_client.validate_mcp_url("http://127.0.0.1:8000/mcp")
-
-
 @pytest.mark.asyncio
-async def test_a_hostname_resolving_to_metadata_is_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_a_public_address_is_rewritten_to_the_checked_ip(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client, "_allowed_internal_hosts", lambda: set())
     monkeypatch.setattr(
         mcp_client.socket,
         "getaddrinfo",
-        lambda *_args, **_kwargs: [
+        lambda *_a, **_k: [
+            (mcp_client.socket.AF_INET, mcp_client.socket.SOCK_STREAM, 6, "", ("93.184.216.34", 0))
+        ],
+    )
+    target = await mcp_client._resolve_target("https://mcp.example:8443/rpc?x=1")
+    assert target.url == "https://93.184.216.34:8443/rpc?x=1"
+    assert target.host_header == "mcp.example:8443"
+    assert target.sni_hostname == "mcp.example"
+
+
+@pytest.mark.asyncio
+async def test_a_private_address_is_refused_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_client, "_allowed_internal_hosts", lambda: set())
+    monkeypatch.setattr(
+        mcp_client.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (mcp_client.socket.AF_INET, mcp_client.socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))
+        ],
+    )
+    with pytest.raises(mcp_client.McpError, match="not allowed"):
+        await mcp_client._resolve_target("http://mcp.internal/rpc")
+
+
+@pytest.mark.asyncio
+async def test_an_explicitly_allowed_host_may_reach_a_private_address(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client, "_allowed_internal_hosts", lambda: {"mcp.internal"})
+    monkeypatch.setattr(
+        mcp_client.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (mcp_client.socket.AF_INET, mcp_client.socket.SOCK_STREAM, 6, "", ("10.0.0.5", 0))
+        ],
+    )
+    target = await mcp_client._resolve_target("http://mcp.internal:8080/rpc")
+    assert target.url == "http://10.0.0.5:8080/rpc"
+    assert target.host_header == "mcp.internal:8080"
+
+
+@pytest.mark.asyncio
+async def test_metadata_is_refused_even_when_the_host_is_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client, "_allowed_internal_hosts", lambda: {"mcp.internal"})
+    monkeypatch.setattr(
+        mcp_client.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
             (
                 mcp_client.socket.AF_INET,
                 mcp_client.socket.SOCK_STREAM,
@@ -129,7 +196,41 @@ async def test_a_hostname_resolving_to_metadata_is_refused(monkeypatch: pytest.M
         ],
     )
     with pytest.raises(mcp_client.McpError, match="not allowed"):
-        await mcp_client._refuse_metadata_resolution("https://mcp.example/rpc")
+        await mcp_client._resolve_target("http://mcp.internal/rpc")
+
+
+@pytest.mark.asyncio
+async def test_tool_listing_follows_every_page() -> None:
+    class _Paged:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, str] | None] = []
+
+        async def request(
+            self, _method: str, params: dict[str, str] | None = None
+        ) -> dict[str, Any]:
+            self.calls.append(params)
+            if params is None:
+                return {"tools": [{"name": "a"}], "nextCursor": "c1"}
+            return {"tools": [{"name": "b"}]}
+
+    session = _Paged()
+    assert await mcp_client._list_all_tools(session) == [{"name": "a"}, {"name": "b"}]  # type: ignore[arg-type]
+    assert session.calls == [None, {"cursor": "c1"}]
+
+
+@pytest.mark.asyncio
+async def test_a_response_past_the_limit_is_stopped_while_streaming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(mcp_client, "_MAX_BODY_BYTES", 5)
+
+    class _Response:
+        async def aiter_bytes(self):
+            yield b"123"
+            yield b"456789"
+
+    with pytest.raises(mcp_client.McpError, match="too large"):
+        await mcp_client._read_body(_Response())  # type: ignore[arg-type]
 
 
 def test_tool_content_is_flattened_to_text() -> None:

@@ -142,20 +142,26 @@ function formatDuration(ms: number): string {
 function applyToolDeltas(current: ToolCall[] | undefined, deltas: ToolCallDelta[]): ToolCall[] {
   const calls = [...(current ?? [])];
   for (const delta of deltas) {
-    const existing = calls[delta.index];
-    calls[delta.index] = {
+    const position = calls.findIndex((call) => call?.index === delta.index);
+    const existing = position >= 0 ? calls[position] : undefined;
+    const merged: ToolCall = {
       id: existing?.id ?? '',
       name: existing?.name ?? '',
+      index: delta.index,
       arguments: existing?.arguments ?? '',
+      ...(existing?.mcpName ? { mcpName: existing.mcpName } : {}),
       ...(existing?.serverUrl ? { serverUrl: existing.serverUrl } : {}),
       ...(existing?.serverHeaders ? { serverHeaders: existing.serverHeaders } : {}),
       ...(existing?.status ? { status: existing.status } : {}),
+      ...(existing?.complete !== undefined ? { complete: existing.complete } : {}),
       ...(existing?.result !== undefined ? { result: existing.result } : {}),
       ...(existing?.error !== undefined ? { error: existing.error } : {}),
       ...(delta.id ? { id: delta.id } : {}),
       ...(delta.name ? { name: delta.name } : {}),
       ...(delta.arguments ? { arguments: (existing?.arguments ?? '') + delta.arguments } : {}),
     };
+    if (position >= 0) calls[position] = merged;
+    else calls.push(merged);
   }
   return calls;
 }
@@ -483,7 +489,7 @@ export default function PlaygroundPage() {
       const call = sessions
         .find((candidate) => candidate.id === sessionId)
         ?.messages.find((message) => message.id === messageId)?.toolCalls?.[callIndex];
-      if (!call?.serverUrl) return;
+      if (!call?.serverUrl || !call.complete) return;
       const update = (next: Partial<ToolCall>) => {
         patchSession(sessionId, (s) => ({
           ...s,
@@ -959,11 +965,12 @@ export default function PlaygroundPage() {
           const last = s.messages[s.messages.length - 1];
           // Cleared mid-stream: leave the session (and its Undo) untouched.
           if (last?.role !== 'assistant') return s;
-          const toolCalls = (last.toolCalls ?? [])
+          const toolCalls = [...(last.toolCalls ?? [])]
             .filter((call): call is ToolCall => Boolean(call))
-            .map((call, index) => {
-              const withId = call.id ? call : { ...call, id: `${last.id}-call-${index}` };
-              return resolveToolCall(withId, toolDefs);
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+            .map((call, position) => {
+              const withId = call.id ? call : { ...call, id: `${last.id}-call-${position}` };
+              return resolveToolCall({ ...withId, complete: !outcome }, toolDefs);
             });
           const cleaned: Message = {
             ...last,
@@ -1013,6 +1020,12 @@ export default function PlaygroundPage() {
     patch((s) => ({ ...s, input: '' }));
     void startTurn([...msgs, { id: messageId(), role: 'user', content: text }]);
   }, [input, activeStreaming, modelId, msgs, patch, startTurn]);
+
+  /** Let the model answer now that the tool results are in the transcript. */
+  const continueWithResults = useCallback(() => {
+    if (activeStreaming || !session || !modelId) return;
+    void startTurn([...msgs]);
+  }, [activeStreaming, session, modelId, msgs, startTurn]);
 
   /** Re-run the last reply: a retry after a failure, a fresh sample otherwise. */
   const regenerate = useCallback(() => {
@@ -1865,12 +1878,24 @@ export default function PlaygroundPage() {
                                             Result
                                           </span>
                                         ) : call.status === 'error' ? (
-                                          <span className="text-[11px] text-red-600">Failed</span>
+                                          <span className="flex items-center gap-2">
+                                            <span className="text-[11px] text-red-600">Failed</span>
+                                            {call.complete && call.serverUrl && (
+                                              <button
+                                                type="button"
+                                                onClick={() => void runToolCall(msg.id, callIndex)}
+                                                disabled={activeStreaming}
+                                                className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 disabled:opacity-40"
+                                              >
+                                                Retry
+                                              </button>
+                                            )}
+                                          </span>
                                         ) : call.status === 'running' ? (
                                           <span className="text-[11px] text-gray-500">
                                             Running...
                                           </span>
-                                        ) : call.serverUrl ? (
+                                        ) : call.complete && call.serverUrl ? (
                                           <button
                                             type="button"
                                             onClick={() => void runToolCall(msg.id, callIndex)}
@@ -1879,6 +1904,10 @@ export default function PlaygroundPage() {
                                           >
                                             Run
                                           </button>
+                                        ) : call.serverUrl ? (
+                                          <span className="text-[11px] text-gray-400">
+                                            Incomplete
+                                          </span>
                                         ) : (
                                           <span className="text-[11px] text-gray-400">
                                             No matching MCP server
@@ -1888,7 +1917,7 @@ export default function PlaygroundPage() {
                                       <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-gray-700">
                                         {call.arguments || '{}'}
                                       </pre>
-                                      {call.result !== undefined && (
+                                      {call.status === 'done' && call.result !== undefined && (
                                         <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-gray-700">
                                           {call.result}
                                         </pre>
@@ -1900,6 +1929,21 @@ export default function PlaygroundPage() {
                                       )}
                                     </div>
                                   ))}
+                                  {isLast &&
+                                    !activeStreaming &&
+                                    msg.toolCalls.some(
+                                      (call) =>
+                                        (call.status === 'done' || call.status === 'error') &&
+                                        (call.result !== undefined || call.error !== undefined),
+                                    ) && (
+                                      <button
+                                        type="button"
+                                        onClick={continueWithResults}
+                                        className="rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+                                      >
+                                        Continue with results
+                                      </button>
+                                    )}
                                 </div>
                               ) : null}
                               {msg.status === 'error' && (

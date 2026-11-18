@@ -311,6 +311,7 @@ const TOOL = {
     description: 'Find pages',
     inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
   },
+  wire: 'search_web',
 };
 
 describe('tools', () => {
@@ -393,5 +394,40 @@ describe('tools', () => {
         delta: { type: 'input_json_delta', partial_json: '{"q":' },
       })?.toolCalls,
     ).toEqual([{ index: 0, arguments: '{"q":' }]);
+  });
+});
+
+describe('Python code with tools', () => {
+  it('includes the selected tools and the executed tool history', () => {
+    const call = {
+      id: 'call-1',
+      name: 'search_web',
+      mcpName: 'search web',
+      arguments: '{"q":"x"}',
+      status: 'done' as const,
+      result: 'found it',
+    };
+    const options = {
+      ...OPTIONS,
+      tools: [TOOL],
+      history: [
+        { role: 'user' as const, content: 'q' },
+        { role: 'assistant' as const, content: '', toolCalls: [call] },
+      ],
+    };
+    const chat = buildCode('python', 'chat', 'https://gw.example', options);
+    expect(chat).toContain('tools=');
+    expect(chat).toContain('"name": "search_web"');
+    expect(chat).toContain('"role": "tool"');
+    expect(chat).toContain('found it');
+
+    const messages = buildCode('python', 'messages', 'https://gw.example', options);
+    expect(messages).toContain('tools=');
+    expect(messages).toContain('"type": "tool_use"');
+    expect(messages).toContain('"type": "tool_result"');
+
+    const responses = buildCode('python', 'responses', 'https://gw.example', options);
+    expect(responses).toContain('tools=');
+    expect(responses).toContain('"type": "function_call"');
   });
 });

@@ -1018,6 +1018,57 @@ describe('PlaygroundPage', () => {
     });
   });
 
+  it('renders a text block followed by a tool call at a later block index', async () => {
+    stubWindowWidth(true);
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) => {
+      if (path === '/internal/playground/models') return MODELS;
+      if (path === '/internal/playground/mcp/tools') {
+        return {
+          ok: true,
+          json: async () => ({
+            tools: [
+              { name: 'search', description: 'Search docs', inputSchema: { type: 'object' } },
+            ],
+          }),
+        };
+      }
+      return sseResponse([
+        frame({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } }),
+        frame({
+          type: 'content_block_delta',
+          index: 0,
+          delta: { type: 'text_delta', text: 'Let me check.' },
+        }),
+        frame({
+          type: 'content_block_start',
+          index: 1,
+          content_block: { type: 'tool_use', id: 'tu1', name: 'search', input: {} },
+        }),
+        frame({
+          type: 'content_block_delta',
+          index: 1,
+          delta: { type: 'input_json_delta', partial_json: '{"q":"x"}' },
+        }),
+        frame({ type: 'content_block_stop', index: 1 }),
+        frame({ type: 'message_delta', delta: { stop_reason: 'tool_use' } }),
+      ]);
+    });
+
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.change(screen.getByLabelText('MCP server URL'), {
+      target: { value: 'https://mcp.example/mcp' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /search/ }));
+    chooseOption('API', 'Anthropic Messages');
+    await sendPrompt('weather?');
+
+    expect(await screen.findByText('Let me check.')).toBeInTheDocument();
+    expect(screen.getAllByText('search').length).toBeGreaterThan(1);
+    expect(screen.getByRole('button', { name: 'Run' })).not.toBeDisabled();
+  });
+
   it('aborts every live stream when the page unmounts', async () => {
     const first = controlledStream();
     const second = controlledStream();

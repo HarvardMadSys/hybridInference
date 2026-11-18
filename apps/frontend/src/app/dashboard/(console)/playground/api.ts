@@ -272,16 +272,56 @@ function singleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function pyMessages(history: RequestOptions['history'], systemPrompt: string): string[] {
-  const lines = history.map(
-    (message) =>
-      `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
-  );
-  if (systemPrompt.trim()) {
-    lines.unshift(`        {"role": "system", "content": ${JSON.stringify(systemPrompt.trim())}},`);
+/** Render a value as a Python literal, using SDK-friendly dict/list shapes. */
+function pyLiteral(value: unknown, indent = 0): string {
+  const pad = ' '.repeat(indent);
+  if (value === null) return 'None';
+  if (value === true) return 'True';
+  if (value === false) return 'False';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    const items = value.map((item) => pyLiteral(item, indent + 4));
+    if (items.every((item) => !item.includes('\n'))) return `[${items.join(', ')}]`;
+    return `[\n${items.map((item) => `${' '.repeat(indent + 4)}${item},`).join('\n')}\n${pad}]`;
   }
-  if (lines.length === 0) return ['    messages=[],'];
-  return ['    messages=[', ...lines, '    ],'];
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return '{}';
+    const items = entries.map(
+      ([key, item]) => `${JSON.stringify(key)}: ${pyLiteral(item, indent + 4)}`,
+    );
+    if (items.length <= 3 && items.every((item) => !item.includes('\n'))) {
+      return `{${items.join(', ')}}`;
+    }
+    return `{\n${items.map((item) => `${' '.repeat(indent + 4)}${item},`).join('\n')}\n${pad}}`;
+  }
+  return 'None';
+}
+
+function pyBlock(name: string, value: unknown, indent = 4): string[] {
+  return [`${' '.repeat(indent)}${name}=${pyLiteral(value, indent)},`];
+}
+
+function pyHistory(
+  api: 'chat' | 'responses' | 'messages',
+  history: RequestOptions['history'],
+  systemPrompt: string,
+): string[] {
+  if (api === 'chat') {
+    const system = systemPrompt.trim() ? [{ role: 'system', content: systemPrompt.trim() }] : [];
+    return pyBlock('messages', [...system, ...formatHistory('chat', history)]);
+  }
+  if (api === 'responses') return pyBlock('input', formatHistory('responses', history));
+  return pyBlock('messages', formatHistory('messages', history));
+}
+
+function pyTools(api: 'chat' | 'responses' | 'messages', tools: SelectedTool[]): string[] {
+  if (tools.length === 0) return [];
+  if (api === 'chat') return pyBlock('tools', chatTools(tools));
+  if (api === 'responses') return pyBlock('tools', responsesTools(tools));
+  return pyBlock('tools', messagesTools(tools));
 }
 
 /** A runnable Python call with the official SDK, for the selected API format. */
@@ -314,7 +354,8 @@ export function buildPythonCode(
         ? [`    output_config={"effort": ${JSON.stringify(options.reasoningEffort)}},`]
         : []),
       ...system,
-      ...pyMessages(options.history, ''),
+      ...pyHistory('messages', options.history, ''),
+      ...pyTools('messages', options.tools ?? []),
       '    stream=True,',
       ')',
       '',
@@ -332,12 +373,8 @@ export function buildPythonCode(
           ...(options.systemPrompt.trim()
             ? [`    instructions=${JSON.stringify(options.systemPrompt.trim())},`]
             : []),
-          '    input=[',
-          ...options.history.map(
-            (message) =>
-              `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
-          ),
-          '    ],',
+          ...pyHistory('responses', options.history, ''),
+          ...pyTools('responses', options.tools ?? []),
           `    temperature=${options.temperature},`,
           `    max_output_tokens=${options.maxTokens},`,
           ...(options.reasoningEffort
@@ -354,7 +391,8 @@ export function buildPythonCode(
       : [
           'stream = client.chat.completions.create(',
           `    model=${JSON.stringify(options.model)},`,
-          ...pyMessages(options.history, options.systemPrompt),
+          ...pyHistory('chat', options.history, options.systemPrompt),
+          ...pyTools('chat', options.tools ?? []),
           `    temperature=${options.temperature},`,
           `    max_tokens=${options.maxTokens},`,
           ...(options.reasoningEffort
