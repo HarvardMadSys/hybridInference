@@ -24,6 +24,7 @@ class McpServerBody(BaseModel):
 
     url: str = Field(min_length=1, max_length=2048)
     headers: dict[str, str] = Field(default_factory=dict)
+    connection_id: str = Field(min_length=1, max_length=128)
 
 
 class McpCallBody(McpServerBody):
@@ -49,12 +50,13 @@ def _refuse(exc: mcp_client.McpError) -> HTTPException:
     openapi_extra=json_body_schema(McpServerBody),
 )
 async def list_tools(
-    _caller: dict[str, Any] = Depends(_require_internal),
+    caller: dict[str, Any] = Depends(_require_internal),
     body: McpServerBody = Depends(_tools_body),
 ) -> dict[str, Any]:
     """Return the tools an existing MCP server publishes."""
+    scope = f"{caller.get('user_id', '')}:{body.connection_id}"
     try:
-        tools = await mcp_client.list_tools(body.url, body.headers)
+        tools = await mcp_client.list_tools(body.url, body.headers, scope=scope)
     except mcp_client.McpError as exc:
         raise _refuse(exc) from exc
     return {
@@ -75,11 +77,14 @@ async def list_tools(
     openapi_extra=json_body_schema(McpCallBody),
 )
 async def call_tool(
-    _caller: dict[str, Any] = Depends(_require_internal),
+    caller: dict[str, Any] = Depends(_require_internal),
     body: McpCallBody = Depends(_call_body),
 ) -> dict[str, Any]:
     """Invoke one tool on an existing MCP server."""
+    scope = f"{caller.get('user_id', '')}:{body.connection_id}"
     try:
-        return await mcp_client.call_tool(body.url, body.name, body.arguments, body.headers)
+        return await mcp_client.call_tool(
+            body.url, body.name, body.arguments, body.headers, scope=scope
+        )
     except mcp_client.McpError as exc:
         raise _refuse(exc) from exc

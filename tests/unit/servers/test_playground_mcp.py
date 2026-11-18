@@ -128,6 +128,55 @@ async def test_a_session_is_reused_for_later_calls() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cached_sessions_are_scoped_to_the_playground_connection() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-06-18"}, {"protocolVersion": "2025-06-18"}])
+    first = await mcp_client._open_session(server, TARGET, {}, scope="u1:conn-1")  # type: ignore[arg-type]
+    second = await mcp_client._open_session(server, TARGET, {}, scope="u2:conn-1")  # type: ignore[arg-type]
+
+    assert first.session_id == second.session_id == "s-1"
+    assert [request["method"] for request in server.requests].count("initialize") == 2
+
+
+@pytest.mark.asyncio
+async def test_cached_sessions_use_the_original_host_identity() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-06-18"}, {"protocolVersion": "2025-06-18"}])
+    first = mcp_client._Target(
+        "https://1.2.3.4/rpc", "a.example", "a.example", "https://a.example/rpc"
+    )
+    second = mcp_client._Target(
+        "https://1.2.3.4/rpc", "b.example", "b.example", "https://b.example/rpc"
+    )
+    await mcp_client._open_session(server, first, {})  # type: ignore[arg-type]
+    await mcp_client._open_session(server, second, {})  # type: ignore[arg-type]
+
+    assert [request["method"] for request in server.requests].count("initialize") == 2
+
+
+@pytest.mark.asyncio
+async def test_request_ids_stay_unique_across_a_cached_session() -> None:
+    server = _FakeClient([{"protocolVersion": "2025-06-18"}, {"tools": []}, {"tools": []}])
+    first = await mcp_client._open_session(server, TARGET, {})  # type: ignore[arg-type]
+    await first.request("tools/list")
+    second = await mcp_client._open_session(server, TARGET, {})  # type: ignore[arg-type]
+    await second.request("tools/list")
+
+    ids = [request["id"] for request in server.requests if "id" in request]
+    assert len(ids) == len(set(ids))
+
+
+@pytest.mark.asyncio
+async def test_a_404_keeps_its_status_for_session_recovery() -> None:
+    class _NotFound(_FakeClient):
+        def stream(self, *_args: Any, **_kwargs: Any) -> _FakeStream:
+            return _FakeStream(httpx.Response(404))
+
+    session = mcp_client._Session(_NotFound([]), TARGET, {})  # type: ignore[arg-type]
+    with pytest.raises(mcp_client.McpError) as caught:
+        await session.request("tools/list")
+    assert caught.value.status == 404
+
+
+@pytest.mark.asyncio
 async def test_an_sse_answer_is_parsed() -> None:
     server = _FakeClient(
         [{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}],
@@ -313,7 +362,10 @@ def test_tool_content_is_flattened_to_text() -> None:
 
 @pytest.mark.asyncio
 async def test_listing_tools_is_available_to_internal_users() -> None:
-    async def _tools(_url: str, _headers: Any = None) -> list[dict[str, Any]]:
+    seen: dict[str, Any] = {}
+
+    async def _tools(_url: str, _headers: Any = None, **kwargs: Any) -> list[dict[str, Any]]:
+        seen.update(kwargs)
         return [{"name": "search", "description": "Find pages", "inputSchema": {"type": "object"}}]
 
     original = mcp_client.list_tools
@@ -321,7 +373,8 @@ async def test_listing_tools_is_available_to_internal_users() -> None:
     try:
         async with _client(INTERNAL) as client:
             response = await client.post(
-                "/internal/playground/mcp/tools", json={"url": "https://mcp.example/rpc"}
+                "/internal/playground/mcp/tools",
+                json={"url": "https://mcp.example/rpc", "connection_id": "conn-1"},
             )
     finally:
         mcp_client.list_tools = original  # type: ignore[assignment]
@@ -330,13 +383,15 @@ async def test_listing_tools_is_available_to_internal_users() -> None:
     assert response.json()["tools"] == [
         {"name": "search", "description": "Find pages", "inputSchema": {"type": "object"}}
     ]
+    assert seen["scope"] == "u-internal:conn-1"
 
 
 @pytest.mark.asyncio
 async def test_a_free_user_cannot_use_the_proxy() -> None:
     async with _client(FREE) as client:
         response = await client.post(
-            "/internal/playground/mcp/tools", json={"url": "https://mcp.example/rpc"}
+            "/internal/playground/mcp/tools",
+            json={"url": "https://mcp.example/rpc", "connection_id": "conn-1"},
         )
     assert response.status_code == 403
 
@@ -344,7 +399,11 @@ async def test_a_free_user_cannot_use_the_proxy() -> None:
 @pytest.mark.asyncio
 async def test_a_tool_call_returns_the_flattened_result() -> None:
     async def _call(
-        _url: str, _name: str, _arguments: dict[str, Any], _headers: Any = None
+        _url: str,
+        _name: str,
+        _arguments: dict[str, Any],
+        _headers: Any = None,
+        **_kwargs: Any,
     ) -> dict[str, Any]:
         return {"content": "42", "isError": False}
 
@@ -354,7 +413,12 @@ async def test_a_tool_call_returns_the_flattened_result() -> None:
         async with _client(INTERNAL) as client:
             response = await client.post(
                 "/internal/playground/mcp/call",
-                json={"url": "https://mcp.example/rpc", "name": "search", "arguments": {}},
+                json={
+                    "url": "https://mcp.example/rpc",
+                    "connection_id": "conn-1",
+                    "name": "search",
+                    "arguments": {},
+                },
             )
     finally:
         mcp_client.call_tool = original  # type: ignore[assignment]
@@ -365,7 +429,7 @@ async def test_a_tool_call_returns_the_flattened_result() -> None:
 
 @pytest.mark.asyncio
 async def test_an_unreachable_server_is_a_bad_gateway() -> None:
-    async def _tools(_url: str, _headers: Any = None) -> list[dict[str, Any]]:
+    async def _tools(_url: str, _headers: Any = None, **_kwargs: Any) -> list[dict[str, Any]]:
         raise mcp_client.McpError("Could not reach the MCP server")
 
     original = mcp_client.list_tools
@@ -373,7 +437,8 @@ async def test_an_unreachable_server_is_a_bad_gateway() -> None:
     try:
         async with _client(INTERNAL) as client:
             response = await client.post(
-                "/internal/playground/mcp/tools", json={"url": "https://mcp.example/rpc"}
+                "/internal/playground/mcp/tools",
+                json={"url": "https://mcp.example/rpc", "connection_id": "conn-1"},
             )
     finally:
         mcp_client.list_tools = original  # type: ignore[assignment]

@@ -73,6 +73,7 @@ function isAbsoluteUrl(value: string): boolean {
 
 interface PlaygroundSession {
   id: string;
+  connectionId: string;
   title: string;
   selectedModelId: string;
   selectedProvider: string | null;
@@ -101,9 +102,17 @@ function messageId(): string {
   return `m-${messageCounter}`;
 }
 
+function newConnectionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `conn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function createSession(id: string, defaultModelId = ''): PlaygroundSession {
   return {
     id,
+    connectionId: newConnectionId(),
     title: 'New session',
     selectedModelId: defaultModelId,
     selectedProvider: null,
@@ -436,7 +445,11 @@ export default function PlaygroundPage() {
       const resp = await fetchWithAuth(API_BASE, '/internal/playground/mcp/tools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url, headers }),
+        body: JSON.stringify({
+          url,
+          headers,
+          connection_id: session?.connectionId ?? newConnectionId(),
+        }),
       });
       const data = await jsonOrThrow<{ tools: McpTool[] }>(resp);
       const server: McpServer = {
@@ -459,7 +472,7 @@ export default function PlaygroundPage() {
     } finally {
       setMcpBusy(false);
     }
-  }, [mcpUrl, mcpToken, mcpBusy, patch]);
+  }, [mcpUrl, mcpToken, mcpBusy, patch, session?.connectionId]);
 
   const toggleMcpTool = useCallback(
     (serverId: string, name: string) => {
@@ -490,9 +503,10 @@ export default function PlaygroundPage() {
   const runToolCall = useCallback(
     async (messageId: string, callIndex: number) => {
       const sessionId = activeSessionId;
-      const call = sessions
-        .find((candidate) => candidate.id === sessionId)
-        ?.messages.find((message) => message.id === messageId)?.toolCalls?.[callIndex];
+      const connection = sessions.find((candidate) => candidate.id === sessionId);
+      const call = connection?.messages.find((message) => message.id === messageId)?.toolCalls?.[
+        callIndex
+      ];
       if (!call?.serverUrl || !call.complete) return;
       const update = (next: Partial<ToolCall>) => {
         patchSession(sessionId, (s) => ({
@@ -518,6 +532,7 @@ export default function PlaygroundPage() {
           body: JSON.stringify({
             url: call.serverUrl,
             headers: call.serverHeaders ?? {},
+            connection_id: connection?.connectionId ?? '',
             name: call.mcpName ?? call.name,
             arguments: args,
           }),

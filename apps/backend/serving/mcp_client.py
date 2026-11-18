@@ -22,6 +22,7 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
+from uuid import uuid4
 
 import httpx
 
@@ -67,6 +68,7 @@ class _Target:
     url: str
     host_header: str
     sni_hostname: str | None
+    identity: str = ""
 
 
 def _allowed_internal_hosts() -> set[str]:
@@ -81,6 +83,8 @@ def _validate_url(url: str) -> None:
         raise McpError("The MCP server URL is not valid.") from exc
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise McpError("The MCP server URL must be an http or https address.")
+    if parsed.username or parsed.password:
+        raise McpError("The MCP server URL must not include credentials.")
 
 
 async def _resolve_target(url: str) -> _Target:
@@ -130,6 +134,7 @@ async def _resolve_target(url: str) -> _Target:
         url=f"{parsed.scheme}://{netloc}{path}",
         host_header=host_header,
         sni_hostname=host if parsed.scheme == "https" else None,
+        identity=f"{parsed.scheme}://{host}{f':{parsed.port}' if parsed.port else ''}{path}",
     )
 
 
@@ -192,7 +197,7 @@ def _parse_sse(text: str) -> list[dict[str, Any]]:
     return frames
 
 
-def _result_for(frames: list[dict[str, Any]], request_id: int) -> Any:
+def _result_for(frames: list[dict[str, Any]], request_id: str) -> Any:
     for frame in frames:
         if frame.get("id") != request_id:
             continue
@@ -220,7 +225,6 @@ class _Session:
         self._headers = headers
         self._session_id = session_id
         self._protocol_version = protocol_version
-        self._next_id = 0
 
     @property
     def session_id(self) -> str | None:
@@ -252,7 +256,10 @@ class _Session:
                 extensions=extensions,
             ) as response:
                 if response.status_code >= 400:
-                    raise McpError(f"The MCP server refused the request ({response.status_code}).")
+                    raise McpError(
+                        f"The MCP server refused the request ({response.status_code}).",
+                        status=response.status_code,
+                    )
                 session_id = response.headers.get("mcp-session-id")
                 if session_id:
                     self._session_id = session_id
@@ -264,8 +271,7 @@ class _Session:
             raise McpError(f"Could not reach the MCP server: {exc}") from exc
 
     async def request(self, method: str, params: dict[str, Any] | None = None) -> Any:
-        self._next_id += 1
-        request_id = self._next_id
+        request_id = uuid4().hex
         payload: dict[str, Any] = {"jsonrpc": "2.0", "id": request_id, "method": method}
         if params is not None:
             payload["params"] = params
@@ -305,17 +311,19 @@ _session_cache: dict[_SessionKey, _CachedSession] = {}
 _session_locks: dict[_SessionKey, asyncio.Lock] = {}
 
 
-def _session_key(target: _Target, headers: dict[str, str]) -> _SessionKey:
-    return (target.url, tuple(sorted(headers.items())))
+def _session_key(scope: str, target: _Target, headers: dict[str, str]) -> _SessionKey:
+    return (scope, target.identity or target.url, tuple(sorted(headers.items())))
 
 
 async def _open_session(
     client: httpx.AsyncClient,
     target: _Target,
     headers: dict[str, str],
+    *,
+    scope: str = "",
 ) -> _Session:
     """Reuse a server's session, or initialize one and remember it."""
-    key = _session_key(target, headers)
+    key = _session_key(scope, target, headers)
     lock = _session_locks.setdefault(key, asyncio.Lock())
     async with lock:
         now = time.monotonic()
@@ -347,26 +355,30 @@ async def _with_session(
     target: _Target,
     headers: dict[str, str],
     action: Callable[[_Session], Awaitable[Any]],
+    *,
+    scope: str = "",
 ) -> Any:
     """Run *action* on a cached session, retrying once if the server forgot it."""
-    key = _session_key(target, headers)
-    session = await _open_session(client, target, headers)
+    key = _session_key(scope, target, headers)
+    session = await _open_session(client, target, headers, scope=scope)
     try:
         return await action(session)
     except McpError as exc:
         if exc.status != 404:
             raise
         _session_cache.pop(key, None)
-        session = await _open_session(client, target, headers)
+        session = await _open_session(client, target, headers, scope=scope)
         return await action(session)
 
 
-async def list_tools(url: str, headers: dict[str, str] | None = None) -> list[dict[str, Any]]:
+async def list_tools(
+    url: str, headers: dict[str, str] | None = None, *, scope: str = ""
+) -> list[dict[str, Any]]:
     """Return every tool definition a paginated MCP server publishes."""
     target = await _resolve_target(url)
     clean = _clean_headers(headers)
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        return await _with_session(client, target, clean, _list_all_tools)
+        return await _with_session(client, target, clean, _list_all_tools, scope=scope)
 
 
 async def _list_all_tools(session: _Session) -> list[dict[str, Any]]:
@@ -399,6 +411,8 @@ async def call_tool(
     name: str,
     arguments: dict[str, Any],
     headers: dict[str, str] | None = None,
+    *,
+    scope: str = "",
 ) -> dict[str, Any]:
     """Invoke one MCP tool and flatten its result into text for the transcript."""
     target = await _resolve_target(url)
@@ -408,7 +422,7 @@ async def call_tool(
         return await session.request("tools/call", {"name": name, "arguments": arguments})
 
     async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        result = await _with_session(client, target, clean, _call)
+        result = await _with_session(client, target, clean, _call, scope=scope)
     return {
         "content": _flatten_result(result),
         "isError": bool(result.get("isError")) if isinstance(result, dict) else False,
