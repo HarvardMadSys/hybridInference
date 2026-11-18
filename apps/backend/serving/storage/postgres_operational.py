@@ -11,9 +11,11 @@ import asyncio
 import json
 import secrets
 from datetime import UTC
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving import quota
+from serving.accounting import AccountingPolicy, get_accounting_policy, money_decimal
 from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import ROLE_RANK, VALID_ROLES, get_settings
 from serving.exceptions import (
@@ -50,7 +52,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from contextlib import AbstractAsyncContextManager
     from datetime import datetime
-    from decimal import Decimal
 
     import asyncpg
 
@@ -127,6 +128,106 @@ WITH batch AS (
 ),"""
     + _COST_INCREMENT_WRITES
 )
+
+
+def _native_cost_increment_writes(rate: str, currency: str) -> str:
+    """:data:`_COST_INCREMENT_WRITES` in the native ledger, from ``batch.cost_amount``.
+
+    *rate* and *currency* name the parameters holding the fixed policy rate and
+    the ledger currency. The account's counter keeps both columns, the USD one
+    derived from the native running total (its trigger lets a rollup's pair
+    differ by rounding); the key's and the project's are written in the native
+    amount only and their triggers derive the USD equivalent from the running
+    total, so a rounded USD column never disagrees with the ledger. A row that
+    predates its native column continues from its USD value at the rate.
+    """
+    total = f"(COALESCE(c.cost_amount, c.cost_usd * {rate}::numeric) + EXCLUDED.cost_amount)"
+    return f"""
+account_rows AS (
+    INSERT INTO user_daily_cost AS c
+        (user_id, day, cost_usd, cost_amount, accounting_currency, requests, last_request_at)
+    SELECT user_id, day, SUM(cost_amount) / {rate}::numeric, SUM(cost_amount), {currency}::text,
+           SUM(requests), NOW()
+    FROM batch
+    GROUP BY user_id, day
+    ON CONFLICT (user_id, day) DO UPDATE SET
+        cost_amount = {total},
+        cost_usd = {total} / {rate}::numeric,
+        accounting_currency = EXCLUDED.accounting_currency,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+),
+key_rows AS (
+    INSERT INTO api_key_daily_cost AS c
+        (key_id, day, user_id, cost_usd, cost_amount, accounting_currency, requests,
+         last_request_at)
+    SELECT key_id, day, MIN(user_id), NULL::numeric, SUM(cost_amount), {currency}::text,
+           SUM(requests),
+           NOW()
+    FROM batch
+    WHERE key_id IS NOT NULL
+    GROUP BY key_id, day
+    ON CONFLICT (key_id, day) DO UPDATE SET
+        cost_amount = {total},
+        accounting_currency = EXCLUDED.accounting_currency,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+),
+scope_rows AS (
+    INSERT INTO spend_counters AS c
+        (scope_id, period, cost_usd, cost_amount, accounting_currency, requests, last_request_at)
+    SELECT scope_id, period, NULL::numeric, SUM(cost_amount), {currency}::text, SUM(requests),
+           NOW()
+    FROM batch
+    CROSS JOIN LATERAL (VALUES (project_id)) scopes(scope_id)
+    CROSS JOIN LATERAL (VALUES ('d:' || day), ('m:' || left(day, 7))) periods(period)
+    WHERE scope_id IS NOT NULL
+    GROUP BY scope_id, period
+    ON CONFLICT (scope_id, period) DO UPDATE SET
+        cost_amount = {total},
+        accounting_currency = EXCLUDED.accounting_currency,
+        requests = c.requests + EXCLUDED.requests,
+        last_request_at = NOW()
+)
+SELECT txid_current()
+"""
+
+
+# :data:`COST_INCREMENTS_SQL` and :data:`COST_INCREMENTS_FENCED_SQL` on a
+# non-USD ledger: ``$4`` holds each increment's native amount, and the rate and
+# currency follow the other parameters.
+NATIVE_COST_INCREMENTS_SQL = """
+WITH batch AS (
+    SELECT *
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[])
+        AS b(user_id, day, key_id, cost_amount, requests, project_id)
+),""" + _native_cost_increment_writes("$7", "$8")
+NATIVE_COST_INCREMENTS_FENCED_SQL = """
+WITH batch AS (
+    SELECT b.user_id, b.day, b.key_id, b.cost_amount, b.requests, b.project_id
+    FROM unnest($1::text[], $2::text[], $3::bigint[], $4::numeric[], $5::integer[], $6::text[], $7::text[])
+        AS b(user_id, day, key_id, cost_amount, requests, project_id, fence_key)
+    WHERE NOT EXISTS (SELECT 1 FROM erasure_fence AS f WHERE f.account_digest = b.fence_key)
+),""" + _native_cost_increment_writes("$8", "$9")
+
+
+def cost_increment_statements(policy: AccountingPolicy) -> tuple[str, str, tuple[Any, ...]]:
+    """The statements adding increments to the counters *policy*'s ledger keeps its record in.
+
+    ``(unfenced, fenced, trailing parameters)``. A USD ledger writes the
+    ``cost_usd`` counters exactly as it always has (their triggers keep the
+    native columns); a native ledger writes ``cost_amount`` and passes the
+    fixed rate and the currency after the other parameters. Each increment's
+    value is :meth:`~serving.storage.base.CostIncrement.ledger_amount`.
+    """
+    if policy.native:
+        return (
+            NATIVE_COST_INCREMENTS_SQL,
+            NATIVE_COST_INCREMENTS_FENCED_SQL,
+            (policy.usd_to_currency_rate, policy.currency),
+        )
+    return COST_INCREMENTS_SQL, COST_INCREMENTS_FENCED_SQL, ()
+
 
 # How long to keep asking how a cost transaction ended after its COMMIT's
 # answer was lost: the delays before each try.
@@ -280,6 +381,12 @@ _KEY_INSERT_COLUMNS = (
 )
 _KEY_INSERT_VALUES = "$1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, $13, $14"
 
+#: The native ledger quota a new key is inserted with, after the columns above.
+_KEY_INSERT_NATIVE_COLUMNS = (
+    "quota_daily_cost_amount, quota_monthly_cost_amount, accounting_currency"
+)
+_KEY_INSERT_NATIVE_VALUES = "$15, $16, $17"
+
 #: A key's own limits (P2a), on top of its account's quota. NULL means no limit
 #: at the key.
 _KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models"
@@ -288,8 +395,17 @@ _KEY_LIMIT_COLUMNS = "k.budget_daily_usd, k.budget_monthly_usd, k.allowed_models
 #: how a refusal names it.
 _AUTH_KEY_COLUMNS = f"k.key_prefix, k.name AS key_name, {_KEY_LIMIT_COLUMNS}"
 
+#: The native ledger amounts of the key's budgets, read with their USD
+#: equivalents wherever a gate compares them. The account quota's are the
+#: scope's (:data:`_PROJECT_SCOPE_NATIVE_COLUMNS`).
+_KEY_NATIVE_COLUMNS = "k.budget_daily_amount, k.budget_monthly_amount, k.accounting_currency"
+
 #: The settings an account's owner may change on one of its keys.
 KEY_SETTINGS_COLUMNS = ("name", "budget_daily_usd", "budget_monthly_usd", "allowed_models")
+
+#: The native ledger amounts of the key budgets. A change may set them beside
+#: their USD equivalents; on a non-USD ledger they are reported with them.
+KEY_SETTINGS_NATIVE_COLUMNS = ("budget_daily_amount", "budget_monthly_amount")
 
 #: What key ``k`` spent on the current UTC day and month, from
 #: ``api_key_daily_cost``, read only for a key with a budget: at most a month of
@@ -300,7 +416,14 @@ _KEY_SPEND_JOIN = (
     "  SELECT COALESCE(SUM(c.cost_usd) FILTER ("
     "           WHERE c.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
     "           AS key_spent_today_usd, "
-    "         COALESCE(SUM(c.cost_usd), 0) AS key_spent_month_usd "
+    "         COALESCE(SUM(c.cost_usd), 0) AS key_spent_month_usd, "
+    # The native ledger amounts of the same rows; ``$2`` is the fixed policy
+    # rate, for a row written before its native column existed.
+    "         COALESCE(SUM(COALESCE(c.cost_amount, c.cost_usd * $2::numeric)) FILTER ("
+    "           WHERE c.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+    "           AS key_spent_today_amount, "
+    "         COALESCE(SUM(COALESCE(c.cost_amount, c.cost_usd * $2::numeric)), 0) "
+    "           AS key_spent_month_amount "
     "  FROM api_key_daily_cost c "
     "  WHERE c.key_id = k.id "
     "    AND (k.budget_daily_usd IS NOT NULL OR k.budget_monthly_usd IS NOT NULL) "
@@ -329,7 +452,9 @@ _ACCOUNT_QUOTA_JOIN = "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
 
 _ACCOUNT_MONTH_SPEND_JOIN = (
     "LEFT JOIN LATERAL ("
-    "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd "
+    "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd, "
+    "         COALESCE(SUM(COALESCE(m.cost_amount, m.cost_usd * $2::numeric)), 0) "
+    "           AS account_spent_month_amount "
     "  FROM user_daily_cost m "
     "  WHERE m.user_id = k.user_id "
     f"    AND {_ACCOUNT_MONTHLY_QUOTA} IS NOT NULL "
@@ -349,6 +474,23 @@ _PROJECT_SCOPE_COLUMNS = (
     "p.max_concurrent_requests AS project_max_concurrent_requests"
 )
 
+#: The native ledger amounts of the budgets above the key, chosen exactly as
+#: :data:`_PROJECT_SCOPE_COLUMNS` chooses their USD equivalents: the
+#: organization's ceiling when it has one, else the key's copy of the account
+#: quota. NULL where the chosen row predates its native column; the gate then
+#: reads the USD value at the fixed rate (``serving.quota.native_limit``).
+_ACCOUNT_QUOTA_NATIVE_COLUMNS = (
+    "CASE WHEN aq.quota_daily_cost_usd IS NOT NULL THEN aq.quota_daily_cost_amount "
+    "ELSE k.quota_daily_cost_amount END AS quota_daily_cost_amount, "
+    "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_amount "
+    "ELSE k.quota_monthly_cost_amount END AS quota_monthly_cost_amount"
+)
+_PROJECT_SCOPE_NATIVE_COLUMNS = (
+    "p.budget_daily_amount AS project_budget_daily_amount, "
+    "p.budget_monthly_amount AS project_budget_monthly_amount, "
+    f"{_ACCOUNT_QUOTA_NATIVE_COLUMNS}"
+)
+
 _PROJECT_SCOPE_JOIN = (
     f"LEFT JOIN projects p ON p.id = k.project_id AND p.status = 'active' {_ACCOUNT_QUOTA_JOIN}"
 )
@@ -359,6 +501,13 @@ _PROJECT_SCOPE_JOIN = (
 _SCOPE_SPEND_COLUMNS = (
     "COALESCE(ps.cost_usd, 0) AS project_spent_today_usd, "
     "COALESCE(pm.cost_usd, 0) AS project_spent_month_usd"
+)
+
+#: The same project spend in the native ledger amount; ``$2`` is the fixed
+#: policy rate, for a counter written before its native column existed.
+_SCOPE_SPEND_NATIVE_COLUMNS = (
+    "COALESCE(ps.cost_amount, ps.cost_usd * $2::numeric, 0) AS project_spent_today_amount, "
+    "COALESCE(pm.cost_amount, pm.cost_usd * $2::numeric, 0) AS project_spent_month_amount"
 )
 
 _SCOPE_SPEND_JOIN = (
@@ -379,6 +528,9 @@ _COLUMN_CASTS = {
     "status": "text",
     "budget_daily_usd": "numeric",
     "budget_monthly_usd": "numeric",
+    "budget_daily_amount": "numeric",
+    "budget_monthly_amount": "numeric",
+    "accounting_currency": "text",
     "max_concurrent_requests": "integer",
     "allowed_models": "text[]",
 }
@@ -436,6 +588,8 @@ async def _sync_account_quota(
     daily: Any,
     monthly: Any,
     except_id: int | None = None,
+    daily_amount: Any = None,
+    monthly_amount: Any = None,
 ) -> None:
     """Give every unrevoked key of *user_id* the account quota ``(daily, monthly)``.
 
@@ -443,17 +597,67 @@ async def _sync_account_quota(
     of its keys: the auth lookup reads them from the presented key's row, so
     every unrevoked key must carry the same values. A revoked key never
     authenticates again and is left as it was.
+
+    The native ledger amounts travel with them: ``daily_amount`` /
+    ``monthly_amount`` when the caller has them exactly, else the USD values
+    at the fixed policy rate, so every key also carries the same native quota.
     """
+    policy = get_accounting_policy()
+    if daily_amount is None and daily is not None:
+        daily_amount = policy.from_usd(daily)
+    if monthly_amount is None and monthly is not None:
+        monthly_amount = policy.from_usd(monthly)
     await conn.execute(
-        "UPDATE api_keys SET quota_daily_cost_usd = $2, quota_monthly_cost_usd = $3 "
+        "UPDATE api_keys SET quota_daily_cost_usd = $2, quota_monthly_cost_usd = $3, "
+        "quota_daily_cost_amount = $5, quota_monthly_cost_amount = $6 "
         "WHERE user_id = $1 AND status <> 'revoked' AND ($4::bigint IS NULL OR id <> $4) "
         "AND (quota_daily_cost_usd IS DISTINCT FROM $2::numeric "
-        "     OR quota_monthly_cost_usd IS DISTINCT FROM $3::numeric)",
+        "     OR quota_monthly_cost_usd IS DISTINCT FROM $3::numeric "
+        "     OR quota_daily_cost_amount IS DISTINCT FROM $5::numeric "
+        "     OR quota_monthly_cost_amount IS DISTINCT FROM $6::numeric)",
         user_id,
         daily,
         monthly,
         except_id,
+        daily_amount,
+        monthly_amount,
     )
+
+
+#: The project and organization budgets: USD column, native column.
+_BUDGET_PAIRS = (
+    ("budget_daily_usd", "budget_daily_amount"),
+    ("budget_monthly_usd", "budget_monthly_amount"),
+)
+
+
+def _ledger_budget_changes(changes: dict[str, Any]) -> dict[str, Any]:
+    """The budget columns a project or organization write sets, in the ledger's columns.
+
+    A USD ledger writes the USD columns (their triggers keep the native ones).
+    A non-USD ledger writes the native columns only, the exact native amount
+    when given and else the USD value at the fixed rate, and tags the currency:
+    the table's trigger derives the USD equivalent, which a write of both would
+    have to match to the trigger's precision. Other columns pass unchanged.
+    """
+    policy = get_accounting_policy()
+    result = {
+        name: value
+        for name, value in changes.items()
+        if name not in {column for pair in _BUDGET_PAIRS for column in pair}
+    }
+    for usd, native in _BUDGET_PAIRS:
+        if usd not in changes and native not in changes:
+            continue
+        if not policy.native:
+            result[usd] = changes[usd] if usd in changes else changes[native]
+            continue
+        amount = changes.get(native)
+        if amount is None and changes.get(usd) is not None:
+            amount = policy.from_usd(changes[usd])
+        result[native] = amount
+        result["accounting_currency"] = policy.currency
+    return result
 
 
 #: The account's quota: what a key added to the account takes (``create_key``
@@ -469,11 +673,16 @@ ACCOUNT_QUOTA_SOURCE_SQL = (
     "SELECT COALESCE(q.quota_daily_cost_usd, k.quota_daily_cost_usd) AS quota_daily_cost_usd, "
     "CASE WHEN q.user_id IS NOT NULL THEN q.quota_monthly_cost_usd "
     "ELSE k.quota_monthly_cost_usd END AS quota_monthly_cost_usd, "
+    "CASE WHEN q.quota_daily_cost_usd IS NOT NULL THEN q.quota_daily_cost_amount "
+    "ELSE k.quota_daily_cost_amount END AS quota_daily_cost_amount, "
+    "CASE WHEN q.user_id IS NOT NULL THEN q.quota_monthly_cost_amount "
+    "ELSE k.quota_monthly_cost_amount END AS quota_monthly_cost_amount, "
     "k.user_id IS NOT NULL AS has_key "
     "FROM (SELECT $1::text AS user_id) a "
     "LEFT JOIN account_quotas q ON q.user_id = a.user_id "
     "LEFT JOIN LATERAL ("
-    "  SELECT user_id, quota_daily_cost_usd, quota_monthly_cost_usd FROM api_keys "
+    "  SELECT user_id, quota_daily_cost_usd, quota_monthly_cost_usd, "
+    "  quota_daily_cost_amount, quota_monthly_cost_amount FROM api_keys "
     "  WHERE user_id = a.user_id "
     "  ORDER BY status = 'revoked', "
     "  CASE WHEN status = 'revoked' THEN GREATEST(created_at, last_used_at) END "
@@ -485,27 +694,32 @@ ACCOUNT_QUOTA_SOURCE_SQL = (
 
 
 async def _set_account_quota(conn: Any, user_id: str, **changes: Any) -> None:
-    """Record the account quota: ``quota_daily_cost_usd``/``quota_monthly_cost_usd`` given.
-
-    A value left out keeps what the account had. Runs in the caller's
-    transaction, under the account's key lock, beside the write that gives the
-    account's unrevoked keys the same values.
-    """
+    """Write the account authority and native quota atomically with its key copies."""
     current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
-    daily = changes.get(
-        "quota_daily_cost_usd", current["quota_daily_cost_usd"] if current else None
-    )
-    monthly = changes.get(
-        "quota_monthly_cost_usd", current["quota_monthly_cost_usd"] if current else None
-    )
+    policy = get_accounting_policy()
+    values = []
+    for period in ("daily", "monthly"):
+        usd_column = f"quota_{period}_cost_usd"
+        native_column = f"quota_{period}_cost_amount"
+        if not policy.native:
+            values.append(changes.get(usd_column, current[usd_column] if current else None))
+        elif native_column in changes:
+            values.append(changes[native_column])
+        elif usd_column in changes:
+            value = changes[usd_column]
+            values.append(policy.from_usd(value) if value is not None else None)
+        else:
+            values.append(
+                quota.native_limit(current, native_column, usd_column) if current else None
+            )
+    suffix = "usd" if not policy.native else "amount"
+    daily, monthly = (f"quota_{period}_cost_{suffix}" for period in ("daily", "monthly"))
     await conn.execute(
-        "INSERT INTO account_quotas (user_id, quota_daily_cost_usd, quota_monthly_cost_usd) "
-        "VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET "
-        "quota_daily_cost_usd = EXCLUDED.quota_daily_cost_usd, "
-        "quota_monthly_cost_usd = EXCLUDED.quota_monthly_cost_usd, updated_at = NOW()",
+        f"INSERT INTO account_quotas (user_id, {daily}, {monthly}) "
+        f"VALUES ($1, $2, $3) ON CONFLICT (user_id) DO UPDATE SET "
+        f"{daily} = EXCLUDED.{daily}, {monthly} = EXCLUDED.{monthly}, updated_at = NOW()",
         user_id,
-        daily,
-        monthly,
+        *values,
     )
 
 
@@ -519,6 +733,19 @@ async def reconcile_key_quota_copies(conn: asyncpg.Connection) -> int:
     """
     async with conn.transaction():
         await _lock_all_account_keys(conn)
+        if get_accounting_policy().native:
+            tag = await conn.execute(
+                "UPDATE api_keys k SET "
+                "quota_daily_cost_amount = CASE WHEN q.quota_daily_cost_usd IS NOT NULL "
+                "THEN q.quota_daily_cost_amount ELSE k.quota_daily_cost_amount END, "
+                "quota_monthly_cost_amount = q.quota_monthly_cost_amount "
+                "FROM account_quotas q WHERE q.user_id = k.user_id AND k.status <> 'revoked' "
+                "AND (k.quota_daily_cost_amount IS DISTINCT FROM "
+                "CASE WHEN q.quota_daily_cost_usd IS NOT NULL THEN q.quota_daily_cost_amount "
+                "ELSE k.quota_daily_cost_amount END "
+                "OR k.quota_monthly_cost_amount IS DISTINCT FROM q.quota_monthly_cost_amount)"
+            )
+            return _parse_command_tag_count(tag)
         tag = await conn.execute(
             "UPDATE api_keys k SET "
             "quota_daily_cost_usd = COALESCE(q.quota_daily_cost_usd, k.quota_daily_cost_usd), "
@@ -1279,7 +1506,8 @@ class PostgresOperationalStore(
         from decimal import Decimal as _Decimal
 
         anomaly_multiplier = _Decimal("5.0")
-        anomaly_min_today = _Decimal("1.00")
+        policy = get_accounting_policy()
+        anomaly_min_today = policy.from_usd("1.00")
         anomaly_min_history_days = 3
         today_str = datetime.now(UTC).date().isoformat()
         prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
@@ -1358,20 +1586,20 @@ class PostgresOperationalStore(
         # filters apply before LIMIT/OFFSET.
         if min_cost_today is not None:
             where_clauses.append(
-                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
                 f"    AND l.timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
-            filter_params.append(min_cost_today)
+            filter_params.append(policy.from_usd(min_cost_today))
         if min_cost_month is not None:
             where_clauses.append(
-                f"COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"  WHERE l.user_id = u.id "
                 f"    AND l.timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')), 0) "
                 f">= ${len(filter_params) + 1}"
             )
-            filter_params.append(min_cost_month)
+            filter_params.append(policy.from_usd(min_cost_month))
         if quota_state in ("near", "over"):
             # threshold: 0.80 for near, 1.00 for over.
             threshold = "0.80" if quota_state == "near" else "1.00"
@@ -1380,13 +1608,13 @@ class PostgresOperationalStore(
                 f"  SELECT 1 FROM api_keys kq "
                 f"  WHERE kq.account_id = u.id "
                 f"    AND kq.status = 'active' "
-                f"    AND kq.quota_daily_cost_usd IS NOT NULL "
-                f"    AND kq.quota_daily_cost_usd > 0 "
-                f"    AND COALESCE((SELECT SUM(cost_usd) FROM api_logs l "
+                f"    AND COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd) IS NOT NULL "
+                f"    AND COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd) > 0 "
+                f"    AND COALESCE((SELECT SUM(COALESCE(cost_amount, cost_usd)) FROM api_logs l "
                 f"                  WHERE l.user_id = u.id "
                 f"                    AND l.timestamp >= (date_trunc('day', "
                 f"                        NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
-                f"                 ), 0) >= {threshold} * kq.quota_daily_cost_usd"
+                f"                 ), 0) >= {threshold} * COALESCE(kq.quota_daily_cost_amount, kq.quota_daily_cost_usd)"
                 f")"
             )
         if anomaly:
@@ -1403,11 +1631,11 @@ class PostgresOperationalStore(
             where_clauses.append(
                 f"u.status = 'active' AND EXISTS ("
                 f"  WITH t AS ("
-                f"    SELECT COALESCE(SUM(cost_usd), 0) AS today_cost "
+                f"    SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS today_cost "
                 f"    FROM user_daily_cost "
                 f"    WHERE user_id = u.id AND day = ${today_idx} "
                 f"  ), p AS ("
-                f"    SELECT COALESCE(SUM(cost_usd), 0) AS total_prior, "
+                f"    SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS total_prior, "
                 f"           COUNT(DISTINCT day) AS days_history "
                 f"    FROM user_daily_cost "
                 f"    WHERE user_id = u.id "
@@ -1436,9 +1664,9 @@ class PostgresOperationalStore(
         # Sort clause map (uses fu.* aliases defined in the CTE below).
         _sort_clauses = {
             "created": "fu.created_at DESC, fu.id",
-            "cost_today": "COALESCE(ut.cost, 0) DESC, fu.created_at DESC, fu.id",
-            "cost_month": "COALESCE(um.cost, 0) DESC, fu.created_at DESC, fu.id",
-            "cost_alltime": "COALESCE(ua.cost, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_today": "COALESCE(ut.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_month": "COALESCE(um.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
+            "cost_alltime": "COALESCE(ua.cost_amount, 0) DESC, fu.created_at DESC, fu.id",
             "last_login": "fu.last_login_at DESC NULLS LAST, fu.created_at DESC, fu.id",
             "requests": "COALESCE(ux.request_count, 0) DESC, fu.created_at DESC, fu.id",
             "tokens": "COALESCE(ux.total_tokens, 0) DESC, fu.created_at DESC, fu.id",
@@ -1499,7 +1727,8 @@ class PostgresOperationalStore(
             if needs_today:
                 cte_parts.append(
                     "usage_today AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "    AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
@@ -1508,11 +1737,13 @@ class PostgresOperationalStore(
                 )
                 join_parts.append("LEFT JOIN usage_today ut ON ut.user_id = fu.id")
                 select_extras.append("COALESCE(ut.cost, 0) AS usage_today")
+                select_extras.append("COALESCE(ut.cost_amount, 0) AS usage_today_amount")
 
             if needs_month:
                 cte_parts.append(
                     "usage_month AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "    AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC')"
@@ -1521,11 +1752,13 @@ class PostgresOperationalStore(
                 )
                 join_parts.append("LEFT JOIN usage_month um ON um.user_id = fu.id")
                 select_extras.append("COALESCE(um.cost, 0) AS usage_month")
+                select_extras.append("COALESCE(um.cost_amount, 0) AS usage_month_amount")
 
             if needs_alltime:
                 cte_parts.append(
                     "usage_alltime AS ("
-                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost"
+                    "  SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount"
                     "  FROM api_logs"
                     "  WHERE user_id IN (SELECT id FROM filtered_users)"
                     "  GROUP BY user_id"
@@ -1533,6 +1766,7 @@ class PostgresOperationalStore(
                 )
                 join_parts.append("LEFT JOIN usage_alltime ua ON ua.user_id = fu.id")
                 select_extras.append("COALESCE(ua.cost, 0) AS usage_alltime")
+                select_extras.append("COALESCE(ua.cost_amount, 0) AS usage_alltime_amount")
 
             if needs_usage_sort:
                 usage_totals = user_usage_rollup.metrics_sql("IN (SELECT id FROM filtered_users)")
@@ -1565,7 +1799,8 @@ class PostgresOperationalStore(
 
             if user_ids and not needs_today:
                 today_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
                     "  AND timestamp >= (date_trunc('day', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
@@ -1573,12 +1808,15 @@ class PostgresOperationalStore(
                     user_ids,
                 )
                 today_map = {r["user_id"]: r["cost"] for r in today_rows}
+                today_amount_map = {r["user_id"]: r.get("cost_amount") for r in today_rows}
             else:
                 today_map = {}
+                today_amount_map = {}
 
             if user_ids and not needs_month:
                 month_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM api_logs "
                     "WHERE user_id = ANY($1::text[]) "
                     "  AND timestamp >= (date_trunc('month', NOW() AT TIME ZONE 'UTC') AT TIME ZONE 'UTC') "
@@ -1586,20 +1824,25 @@ class PostgresOperationalStore(
                     user_ids,
                 )
                 month_map = {r["user_id"]: r["cost"] for r in month_rows}
+                month_amount_map = {r["user_id"]: r.get("cost_amount") for r in month_rows}
             else:
                 month_map = {}
+                month_amount_map = {}
 
             if user_ids and not needs_alltime:
                 alltime_rows = await conn.fetch(
-                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost "
+                    "SELECT user_id, COALESCE(SUM(cost_usd), 0) AS cost, "
+                    "COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost_amount "
                     "FROM user_daily_cost "
                     "WHERE user_id = ANY($1::text[]) "
                     "GROUP BY user_id",
                     user_ids,
                 )
                 alltime_map = {r["user_id"]: r["cost"] for r in alltime_rows}
+                alltime_amount_map = {r["user_id"]: r.get("cost_amount") for r in alltime_rows}
             else:
                 alltime_map = {}
+                alltime_amount_map = {}
 
             # Callers that load lifetime statistics separately skip them here.
             # Sorting by either metric already returned both above.
@@ -1614,8 +1857,17 @@ class PostgresOperationalStore(
         for row in rows:
             r = dict(row)
             r["usage_today"] = r.get("usage_today") or today_map.get(r["id"], 0)
+            r["usage_today_amount"] = r.get("usage_today_amount") or today_amount_map.get(
+                r["id"], 0
+            )
             r["usage_month"] = r.get("usage_month") or month_map.get(r["id"], 0)
+            r["usage_month_amount"] = r.get("usage_month_amount") or month_amount_map.get(
+                r["id"], 0
+            )
             r["usage_alltime"] = r.get("usage_alltime") or alltime_map.get(r["id"], 0)
+            r["usage_alltime_amount"] = r.get("usage_alltime_amount") or alltime_amount_map.get(
+                r["id"], 0
+            )
             for field, metric in (
                 ("usage_alltime_requests", "requests"),
                 ("usage_alltime_tokens", "tokens"),
@@ -1719,7 +1971,8 @@ class PostgresOperationalStore(
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, "
-                f"{_PROJECT_SCOPE_COLUMNS}, {_AUTH_KEY_COLUMNS}, "
+                f"{_PROJECT_SCOPE_COLUMNS}, {_PROJECT_SCOPE_NATIVE_COLUMNS}, {_AUTH_KEY_COLUMNS}, "
+                f"{_KEY_NATIVE_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -1757,8 +2010,12 @@ class PostgresOperationalStore(
                 f"{_PROJECT_SCOPE_COLUMNS}, am.account_spent_month_usd, "
                 f"{_AUTH_KEY_COLUMNS}, ks.key_spent_today_usd, ks.key_spent_month_usd, "
                 f"{_SCOPE_SPEND_COLUMNS}, "
+                f"{_PROJECT_SCOPE_NATIVE_COLUMNS}, {_SCOPE_SPEND_NATIVE_COLUMNS}, "
+                f"{_KEY_NATIVE_COLUMNS}, am.account_spent_month_amount, "
+                "ks.key_spent_today_amount, ks.key_spent_month_amount, "
                 f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, "
-                "COALESCE(s.cost_usd, 0) AS cost_usd "
+                "COALESCE(s.cost_usd, 0) AS cost_usd, "
+                "COALESCE(s.cost_amount, s.cost_usd * $2::numeric, 0) AS cost_amount "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "LEFT JOIN user_daily_cost s "
@@ -1774,6 +2031,7 @@ class PostgresOperationalStore(
                 "  AND u.id IS NOT NULL AND u.status = 'active' "
                 "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
+                get_accounting_policy().usd_to_currency_rate,
             )
         return _coerce_user_row(row)
 
@@ -1862,6 +2120,22 @@ class PostgresOperationalStore(
             )
         return float(row["today"]), float(row["month"])
 
+    async def get_key_spend_amount(self, key_id: int) -> tuple[Decimal, Decimal]:
+        """:meth:`get_key_spend` in the native ledger amount, exact."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd * $2::numeric)) FILTER ("
+                "         WHERE day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')), 0) "
+                "         AS today, "
+                "       COALESCE(SUM(COALESCE(cost_amount, cost_usd * $2::numeric)), 0) AS month "
+                "FROM api_key_daily_cost "
+                "WHERE key_id = $1 "
+                "  AND day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')",
+                key_id,
+                get_accounting_policy().usd_to_currency_rate,
+            )
+        return money_decimal(row["today"]), money_decimal(row["month"])
+
     async def create_key(
         self,
         *,
@@ -1871,6 +2145,8 @@ class PostgresOperationalStore(
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -1904,6 +2180,11 @@ class PostgresOperationalStore(
         # would otherwise persist NULL and hide the key from the user. This
         # stops the ongoing NULL-producing path at its single source (#630).
         effective_account_id = account_id if account_id is not None else user_id
+        policy = get_accounting_policy()
+        if quota_daily_cost_amount is None:
+            quota_daily_cost_amount = policy.from_usd(quota_daily_cost_usd)
+        if quota_monthly_cost_amount is None and quota_monthly_cost_usd is not None:
+            quota_monthly_cost_amount = policy.from_usd(quota_monthly_cost_usd)
 
         # asyncpg has no jsonb codec registered on this pool, so jsonb
         # parameters must be JSON strings; admin routes pass dicts through.
@@ -1920,6 +2201,7 @@ class PostgresOperationalStore(
                 if active >= max_active_keys:
                     raise APIKeyLimitReachedError(max_active_keys)
             daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
+            daily_amount, monthly_amount = quota_daily_cost_amount, quota_monthly_cost_amount
             if inherit_account_quota:
                 current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
                 if current is not None:
@@ -1928,6 +2210,14 @@ class PostgresOperationalStore(
                     if current["quota_daily_cost_usd"] is not None or current["has_key"]:
                         daily = current["quota_daily_cost_usd"]
                     monthly = current["quota_monthly_cost_usd"]
+                    # The account's native quota travels with its USD
+                    # equivalent; a row predating the native column has none.
+                    daily_amount = quota.native_limit(
+                        current, "quota_daily_cost_amount", "quota_daily_cost_usd"
+                    )
+                    monthly_amount = quota.native_limit(
+                        current, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
+                    )
             from serving.storage.project_backfill import (
                 default_project_id,
                 ensure_default_project,
@@ -1945,7 +2235,8 @@ class PostgresOperationalStore(
             if found is None:
                 raise ProjectNotFoundError("Project not found")
             row = await conn.fetchrow(
-                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}) VALUES ({_KEY_INSERT_VALUES}) "
+                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}, {_KEY_INSERT_NATIVE_COLUMNS}) "
+                f"VALUES ({_KEY_INSERT_VALUES}, {_KEY_INSERT_NATIVE_VALUES}) "
                 "RETURNING id, created_at",
                 key_hash,
                 key_prefix,
@@ -1962,12 +2253,26 @@ class PostgresOperationalStore(
                 target_project,
                 # Read by the previous release only; see ``legacy_org_id``.
                 legacy_org_id(user_id),
+                daily_amount,
+                monthly_amount,
+                policy.currency,
             )
             await _sync_account_quota(
-                conn, user_id, daily=daily, monthly=monthly, except_id=row["id"]
+                conn,
+                user_id,
+                daily=daily,
+                monthly=monthly,
+                except_id=row["id"],
+                daily_amount=daily_amount,
+                monthly_amount=monthly_amount,
             )
             await _set_account_quota(
-                conn, user_id, quota_daily_cost_usd=daily, quota_monthly_cost_usd=monthly
+                conn,
+                user_id,
+                quota_daily_cost_usd=daily,
+                quota_monthly_cost_usd=monthly,
+                quota_daily_cost_amount=daily_amount,
+                quota_monthly_cost_amount=monthly_amount,
             )
         return dict(row)
 
@@ -1997,12 +2302,20 @@ class PostgresOperationalStore(
                 "k.project_id, p.name AS project_name, "
                 f"k.api_key_encrypted, {_KEY_LIMIT_COLUMNS}, "
                 "COALESCE(s.today, 0) AS spent_today_usd, "
-                "COALESCE(s.month, 0) AS spent_month_usd "
+                "COALESCE(s.month, 0) AS spent_month_usd, "
+                # The native ledger amounts beside them (``$2``: the fixed
+                # policy rate, for a row older than its native column).
+                "k.budget_daily_amount, k.budget_monthly_amount, k.accounting_currency, "
+                "COALESCE(s.today_amount, 0) AS spent_today_amount, "
+                "COALESCE(s.month_amount, 0) AS spent_month_amount "
                 "FROM api_keys k "
                 "LEFT JOIN projects p ON p.id = k.project_id "
                 "LEFT JOIN LATERAL ("
                 "  SELECT SUM(c.cost_usd) FILTER (WHERE c.day = d.today) AS today, "
-                "         SUM(c.cost_usd) AS month "
+                "         SUM(c.cost_usd) AS month, "
+                "         SUM(COALESCE(c.cost_amount, c.cost_usd * $2::numeric)) "
+                "           FILTER (WHERE c.day = d.today) AS today_amount, "
+                "         SUM(COALESCE(c.cost_amount, c.cost_usd * $2::numeric)) AS month_amount "
                 "  FROM api_key_daily_cost c, "
                 "       (SELECT to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS today, "
                 "               to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), "
@@ -2012,6 +2325,7 @@ class PostgresOperationalStore(
                 "WHERE k.account_id = $1 "
                 "ORDER BY (k.status = 'active') DESC, k.created_at DESC, k.id DESC",
                 account_id,
+                get_accounting_policy().usd_to_currency_rate,
             )
         return [dict(row) for row in rows]
 
@@ -2028,26 +2342,44 @@ class PostgresOperationalStore(
         budget_monthly_usd: Decimal | float | None = None,
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
+        budget_daily_amount: Decimal | None = None,
+        budget_monthly_amount: Decimal | None = None,
     ) -> Row:
-        """Create a project owned by the account."""
+        """Create a project owned by the account.
+
+        The budgets are written in the ledger's columns
+        (:func:`_ledger_budget_changes`): the native ``budget_*_amount``, when
+        given, on a non-USD ledger.
+        """
         from serving.storage.project_backfill import ensure_legacy_org, legacy_org_id
 
+        budgets = _ledger_budget_changes(
+            {
+                "budget_daily_usd": budget_daily_usd,
+                "budget_monthly_usd": budget_monthly_usd,
+                "budget_daily_amount": budget_daily_amount,
+                "budget_monthly_amount": budget_monthly_amount,
+            }
+        )
+        columns = list(budgets)
+        placeholders = ", ".join(
+            f"${index}::{_COLUMN_CASTS[column]}" for index, column in enumerate(columns, start=8)
+        )
         async with self._pool.acquire() as conn, conn.transaction():
             await ensure_legacy_org(conn, user_id=user_id)
             row = await conn.fetchrow(
                 "INSERT INTO projects "
-                "(id, user_id, org_id, name, budget_daily_usd, budget_monthly_usd, "
-                "allowed_models, max_concurrent_requests, description) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *",
+                f"(id, user_id, org_id, name, allowed_models, max_concurrent_requests, description, "
+                f"{', '.join(columns)}) "
+                f"VALUES ($1, $2, $3, $4, $5, $6, $7, {placeholders}) RETURNING *",
                 project_id,
                 user_id,
                 legacy_org_id(user_id),
                 name,
-                budget_daily_usd,
-                budget_monthly_usd,
                 allowed_models,
                 max_concurrent_requests,
                 description,
+                *budgets.values(),
             )
         return self._project_row(row)
 
@@ -2095,12 +2427,15 @@ class PostgresOperationalStore(
             "description",
             "budget_daily_usd",
             "budget_monthly_usd",
+            "budget_daily_amount",
+            "budget_monthly_amount",
+            "accounting_currency",
             "allowed_models",
             "max_concurrent_requests",
         }
         assignments: list[str] = []
         values: list[Any] = []
-        for name, value in changes.items():
+        for name, value in _ledger_budget_changes(changes).items():
             if name not in allowed:
                 continue
             values.append(value)
@@ -2155,6 +2490,19 @@ class PostgresOperationalStore(
             None if monthly is None else float(monthly),
         )
 
+    async def get_account_budget_amounts(self, user_id: str) -> tuple[Decimal, Decimal | None]:
+        """The account quota in native ledger amounts, preserving exact precision."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
+        policy = get_accounting_policy()
+        if row is None:
+            return policy.from_usd(quota.DEFAULT_DAILY_QUOTA_USD), None
+        daily = quota.native_limit(row, "quota_daily_cost_amount", "quota_daily_cost_usd")
+        monthly = quota.native_limit(row, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
+        return (
+            daily if daily is not None else policy.from_usd(quota.DEFAULT_DAILY_QUOTA_USD)
+        ), monthly
+
     async def count_project_keys(self, project_id: str) -> int:
         """Count active keys attached to a project."""
         async with self._pool.acquire() as conn:
@@ -2180,6 +2528,26 @@ class PostgresOperationalStore(
                 today = float(row["cost_usd"])
             else:
                 month = float(row["cost_usd"])
+        return today, month
+
+    async def get_project_spend_amount(self, project_id: str) -> tuple[Decimal, Decimal]:
+        """:meth:`get_project_spend` in the native ledger amount, exact."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT period, COALESCE(cost_amount, cost_usd * $2::numeric) AS amount "
+                "FROM spend_counters "
+                "WHERE scope_id = $1 AND period IN ("
+                "  'd:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD'), "
+                "  'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM'))",
+                project_id,
+                get_accounting_policy().usd_to_currency_rate,
+            )
+        today = month = Decimal(0)
+        for row in rows:
+            if row["period"].startswith("d:"):
+                today = money_decimal(row["amount"])
+            else:
+                month = money_decimal(row["amount"])
         return today, month
 
     @staticmethod
@@ -2208,11 +2576,19 @@ class PostgresOperationalStore(
         Raises:
             ValueError: *changes* is empty or names another column.
         """
-        if not changes or set(changes) - set(KEY_SETTINGS_COLUMNS):
-            raise ValueError(f"key settings must be a non-empty subset of {KEY_SETTINGS_COLUMNS}")
-        columns = [c for c in KEY_SETTINGS_COLUMNS if c in changes]
+        allowed = KEY_SETTINGS_COLUMNS + KEY_SETTINGS_NATIVE_COLUMNS
+        if not changes or set(changes) - set(allowed):
+            raise ValueError(f"key settings must be a non-empty subset of {allowed}")
+        columns = [c for c in allowed if c in changes]
         assignments = ", ".join(f"{c} = ${i}" for i, c in enumerate(columns, start=3))
-        returned = ", ".join(KEY_SETTINGS_COLUMNS)
+        # A non-USD ledger reports the native budgets it keeps; a USD one keeps
+        # the settings exactly as before.
+        reported = (
+            KEY_SETTINGS_COLUMNS
+            if not get_accounting_policy().native
+            else KEY_SETTINGS_COLUMNS + KEY_SETTINGS_NATIVE_COLUMNS
+        )
+        returned = ", ".join(reported)
         async with self._pool.acquire() as conn, conn.transaction():
             before = await conn.fetchrow(
                 f"SELECT id, {returned} FROM api_keys "
@@ -2330,6 +2706,7 @@ class PostgresOperationalStore(
             rows = await conn.fetch(
                 f"SELECT k.user_id, k.user_name, k.key_prefix, k.status, "
                 f"k.quota_daily_cost_usd, k.quota_monthly_cost_usd, "
+                "k.quota_daily_cost_amount, k.quota_monthly_cost_amount, k.accounting_currency, "
                 f"k.created_at, k.last_used_at, k.expires_at, k.notes, "
                 f"k.project_id, p.name AS project_name "
                 f"FROM api_keys k LEFT JOIN projects p ON p.id = k.project_id {where_sql} "
@@ -2351,6 +2728,7 @@ class PostgresOperationalStore(
             row = await conn.fetchrow(
                 "SELECT user_id, user_name, key_prefix, status, "
                 "quota_daily_cost_usd, quota_monthly_cost_usd, "
+                "quota_daily_cost_amount, quota_monthly_cost_amount, accounting_currency, "
                 "created_at, last_used_at, expires_at, notes, metadata "
                 "FROM api_keys WHERE user_id = $1 "
                 "ORDER BY CASE status WHEN 'active' THEN 0 WHEN 'suspended' THEN 1 ELSE 2 END, "
@@ -2391,6 +2769,15 @@ class PostgresOperationalStore(
         invalid = set(fields) - API_KEYS_MUTABLE_COLUMNS.keys()
         if invalid:
             raise ValueError(f"Invalid column(s) for api_keys: {invalid}")
+        policy = get_accounting_policy()
+        for legacy, native in (
+            ("quota_daily_cost_usd", "quota_daily_cost_amount"),
+            ("quota_monthly_cost_usd", "quota_monthly_cost_amount"),
+        ):
+            if legacy in fields and native not in fields:
+                fields[native] = (
+                    policy.from_usd(fields[legacy]) if fields[legacy] is not None else None
+                )
         set_parts = []
         params: list[Any] = [user_id]
         for idx, (key, val) in enumerate(fields.items(), start=2):
@@ -2408,7 +2795,12 @@ class PostgresOperationalStore(
             await conn.execute(sql, *params)
             quota = {
                 name: fields[name]
-                for name in ("quota_daily_cost_usd", "quota_monthly_cost_usd")
+                for name in (
+                    "quota_daily_cost_usd",
+                    "quota_monthly_cost_usd",
+                    "quota_daily_cost_amount",
+                    "quota_monthly_cost_amount",
+                )
                 if name in fields
             }
             if quota:
@@ -2466,7 +2858,7 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT id, key_prefix, created_at, last_used_at, status, "
-                "quota_daily_cost_usd "
+                "quota_daily_cost_usd, quota_daily_cost_amount, accounting_currency "
                 "FROM api_keys "
                 "WHERE (account_id = $1 OR user_id = $1) AND status = 'active' "
                 "ORDER BY created_at DESC, id DESC LIMIT 1",
@@ -2482,7 +2874,8 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(
                 "SELECT k.id, k.key_prefix, k.created_at, k.last_used_at, k.status, "
-                "k.quota_daily_cost_usd, k.project_id, p.name AS project_name "
+                "k.quota_daily_cost_usd, k.quota_daily_cost_amount, k.accounting_currency, "
+                "k.project_id, p.name AS project_name "
                 "FROM api_keys k LEFT JOIN projects p ON p.id = k.project_id "
                 "WHERE k.account_id = $1 AND k.status = 'active' "
                 "ORDER BY k.created_at DESC, k.id DESC LIMIT 1",
@@ -3060,7 +3453,10 @@ class PostgresOperationalStore(
                 "p.budget_monthly_usd AS project_budget_monthly_usd, "
                 "p.max_concurrent_requests AS project_max_concurrent_requests, "
                 f"{_SCOPE_SPEND_COLUMNS}, "
-                f"{_ACCOUNT_QUOTA_COLUMNS}, u.role "
+                f"{_ACCOUNT_QUOTA_COLUMNS}, u.role, "
+                # The native amounts beside them (``$2``: the fixed policy rate).
+                f"{_PROJECT_SCOPE_NATIVE_COLUMNS}, {_SCOPE_SPEND_NATIVE_COLUMNS}, "
+                "k.accounting_currency "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 f"{_ACCOUNT_QUOTA_JOIN}"
@@ -3074,6 +3470,7 @@ class PostgresOperationalStore(
                 "ORDER BY k.created_at, k.id "
                 "LIMIT 1",
                 user_id,
+                get_accounting_policy().usd_to_currency_rate,
             )
         return [_coerce_user_row(row) for row in rows]
 
@@ -4328,6 +4725,67 @@ class PostgresOperationalStore(
 
     # -- cost counters -------------------------------------------------------
 
+    async def increment_user_cost_amount(
+        self,
+        user_id: str,
+        cost: Decimal | float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Atomically add native money to the counters, with its legacy USD equivalent.
+
+        :meth:`increment_user_cost` in the ledger currency: the account's, the
+        key's and the project's counters, in one statement
+        (:meth:`increment_user_costs`).
+        """
+        from datetime import datetime
+
+        amount = money_decimal(cost)
+        if day is None:
+            day = datetime.now(UTC).strftime("%Y-%m-%d")
+        await self.increment_user_costs(
+            [
+                CostIncrement(
+                    user_id,
+                    day,
+                    api_key_id,
+                    get_accounting_policy().to_usd(amount),
+                    requests,
+                    project_id,
+                    cost_amount=amount,
+                )
+            ]
+        )
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's primary native counter, retaining pre-migration USD fallback."""
+        return await self._get_user_cost_period_amount(user_id, "today")
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this UTC month's primary native counters."""
+        return await self._get_user_cost_period_amount(user_id, "month")
+
+    async def _get_user_cost_period_amount(
+        self, user_id: str, period: Literal["today", "month"]
+    ) -> Decimal:
+        predicate = (
+            "day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+            if period == "today"
+            else "day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+        )
+        async with self._pool.acquire() as conn:
+            value = await conn.fetchval(
+                "SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd * $2)), 0) "
+                f"FROM user_daily_cost WHERE user_id = $1 AND {predicate}",
+                user_id,
+                get_accounting_policy().usd_to_currency_rate,
+            )
+        return money_decimal(value)
+
     async def increment_user_cost(
         self,
         user_id: str,
@@ -4377,14 +4835,16 @@ class PostgresOperationalStore(
         """
         if not increments:
             return
+        policy = get_accounting_policy()
         args = (
             [increment.user_id for increment in increments],
             [increment.day for increment in increments],
             [increment.api_key_id for increment in increments],
-            [increment.cost_usd for increment in increments],
+            [increment.ledger_amount(policy) for increment in increments],
             [increment.requests for increment in increments],
             [increment.project_id for increment in increments],
         )
+        unfenced_sql, fenced_sql, ledger = cost_increment_statements(policy)
         fence_keys = (
             [
                 fence_account_digest(increment.user_id, self._fence_secret)
@@ -4397,12 +4857,12 @@ class PostgresOperationalStore(
         try:
             async with self._pool.acquire() as conn, conn.transaction():
                 if fence_keys is None:
-                    xid = await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                    xid = await conn.fetchval(unfenced_sql, *args, *ledger)
                 else:
                     accounts = sorted(set(fence_keys))
                     if len(accounts) <= _COST_FENCE_LOCKS_MAX:
                         await lock_fence_keys_shared(conn, accounts)
-                    xid = await conn.fetchval(COST_INCREMENTS_FENCED_SQL, *args, fence_keys)
+                    xid = await conn.fetchval(fenced_sql, *args, fence_keys, *ledger)
             return
         except Exception as exc:
             if xid is None:
@@ -4486,9 +4946,11 @@ class PostgresOperationalStore(
         pre-charge, and the gate has already started refusing them. Exactly
         19.99 does not appear: 19.99 + 0.01 equals the cap, and both the gate
         and this query refuse only when the sum exceeds it. The
-        comparison is done in float8 rather than ``numeric`` for a related
+        USD compatibility comparison is done in float8 rather than ``numeric`` for a related
         reason — both doors compare Python floats, and matching that arithmetic
-        exactly is worth more here than numeric's extra precision.
+        exactly is worth more here than numeric's extra precision. CNY compares
+        and orders the primary native amounts with decimal arithmetic; the
+        returned tuple keeps its historical USD meaning.
 
         **The scan drives off today's counter rows.** ``user_daily_cost`` is
         keyed ``(user_id, day)`` with an index on ``day``, so today's slice is
@@ -4517,7 +4979,23 @@ class PostgresOperationalStore(
         # dollars past its own, and on a truncated list the free account — the
         # one whose behaviour actually changed — would be the row that fell
         # off. Overage is what a truncated list must keep.
-        sql = """
+        policy = get_accounting_policy()
+        comparison = "udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)"
+        overage = "udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)"
+        capped = max(1, limit)
+        params: list[Any] = [
+            capped + 1,
+            quota.DEFAULT_DAILY_QUOTA_USD,
+            quota.ESTIMATED_REQUEST_COST_USD,
+        ]
+        if policy.native:
+            spend = "COALESCE(udc.cost_amount, udc.cost_usd * $4::numeric)"
+            cap = "COALESCE(k.quota_daily_cost_amount, k.quota_daily_cost_usd * $4::numeric, $2::numeric * $4::numeric)"
+            comparison = f"{spend} + $3::numeric * $4::numeric > {cap}"
+            overage = f"{spend} - {cap}"
+            params[2] = money_decimal(quota.ESTIMATED_REQUEST_COST_USD)
+            params.append(policy.usd_to_currency_rate)
+        sql = f"""
             SELECT u.id AS user_id,
                    u.role AS role,
                    udc.cost_usd::float8 AS spend_usd,
@@ -4529,7 +5007,7 @@ class PostgresOperationalStore(
             -- One row per account: its keys all carry the account's quota,
             -- and an account may hold several.
             JOIN LATERAL (
-                SELECT k.quota_daily_cost_usd
+                SELECT k.quota_daily_cost_usd, k.quota_daily_cost_amount
                 FROM api_keys k
                 WHERE k.user_id = u.id
                   AND k.status = 'active'
@@ -4538,20 +5016,14 @@ class PostgresOperationalStore(
                 LIMIT 1
             ) k ON TRUE
             WHERE udc.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')
-              AND udc.cost_usd + $3::float8 > COALESCE(k.quota_daily_cost_usd, $2::float8)
-            ORDER BY (udc.cost_usd - COALESCE(k.quota_daily_cost_usd, $2::float8)) DESC
+              AND {comparison}
+            ORDER BY ({overage}) DESC
             LIMIT $1
         """
         # Fetch one more row than asked for, so truncation is a fact rather
         # than an inference from "len == limit".
-        capped = max(1, limit)
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                sql,
-                capped + 1,
-                quota.DEFAULT_DAILY_QUOTA_USD,
-                quota.ESTIMATED_REQUEST_COST_USD,
-            )
+            rows = await conn.fetch(sql, *params)
         if len(rows) > capped:
             logger.warning(
                 "query_users_at_daily_quota truncated at %d rows; more users are at "
@@ -4601,7 +5073,7 @@ class PostgresOperationalStore(
         cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT day, cost_usd, requests "
+                "SELECT day, cost_usd, COALESCE(cost_amount, cost_usd) AS cost_amount, requests "
                 "FROM user_daily_cost "
                 "WHERE user_id = $1 "
                 "  AND day >= $2 "
@@ -4613,6 +5085,7 @@ class PostgresOperationalStore(
             {
                 "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
                 "cost_usd": r["cost_usd"],
+                "cost_amount": r.get("cost_amount"),
                 "requests": r["requests"],
             }
             for r in rows
@@ -4631,7 +5104,7 @@ class PostgresOperationalStore(
         cutoff = (datetime.now(UTC).date() - timedelta(days=days - 1)).isoformat()
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT user_id, day, cost_usd, requests "
+                "SELECT user_id, day, cost_usd, COALESCE(cost_amount, cost_usd) AS cost_amount, requests "
                 "FROM user_daily_cost "
                 "WHERE user_id = ANY($1::text[]) "
                 "  AND day >= $2 "
@@ -4645,6 +5118,7 @@ class PostgresOperationalStore(
                 {
                     "day": r["day"].isoformat() if hasattr(r["day"], "isoformat") else r["day"],
                     "cost_usd": r["cost_usd"],
+                    "cost_amount": r.get("cost_amount"),
                     "requests": r["requests"],
                 }
             )
@@ -4677,6 +5151,9 @@ class PostgresOperationalStore(
         if anomaly_min_today is None:
             anomaly_min_today = _Decimal("1.00")
 
+        policy = get_accounting_policy()
+        anomaly_min_amount = policy.from_usd(anomaly_min_today)
+
         today_str = datetime.now(UTC).date().isoformat()
         prior_7d_start = (datetime.now(UTC).date() - timedelta(days=7)).isoformat()
         prior_7d_end = (datetime.now(UTC).date() - timedelta(days=1)).isoformat()
@@ -4700,7 +5177,8 @@ class PostgresOperationalStore(
             usage_rows = await conn.fetch(
                 f"""
                 WITH today_costs AS (
-                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost
+                    SELECT user_id, COALESCE(SUM(cost_usd), 0) AS today_cost,
+                           COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS today_cost_amount
                     FROM user_daily_cost
                     WHERE day = $1
                     GROUP BY user_id
@@ -4708,6 +5186,7 @@ class PostgresOperationalStore(
                 prior_7d AS (
                     SELECT user_id,
                            COALESCE(SUM(cost_usd), 0) AS total,
+                           COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS total_amount,
                            COUNT(DISTINCT day) AS days_with_history
                     FROM user_daily_cost
                     WHERE day BETWEEN $2 AND $3
@@ -4715,16 +5194,18 @@ class PostgresOperationalStore(
                 )
                 SELECT {joined_identity},
                        COALESCE(t.today_cost, 0) AS today_cost,
+                       COALESCE(t.today_cost_amount, 0) AS today_cost_amount,
+                       COALESCE(p.total_amount, 0) AS prior_7d_total_amount,
                        COALESCE(p.total, 0) AS prior_7d_total,
                        COALESCE(p.days_with_history, 0) AS days_with_history,
-                       k.quota_daily_cost_usd
+                       k.quota_daily_cost_usd, k.quota_daily_cost_amount
                 FROM users u
                 LEFT JOIN today_costs t ON t.user_id = u.id
                 LEFT JOIN prior_7d p ON p.user_id = u.id
                 -- One row per user, however many active keys it holds; each
                 -- carries the account's quota.
                 LEFT JOIN LATERAL (
-                    SELECT quota_daily_cost_usd FROM api_keys
+                    SELECT quota_daily_cost_usd, quota_daily_cost_amount FROM api_keys
                     WHERE account_id = u.id AND status = 'active'
                     ORDER BY created_at, id LIMIT 1
                 ) k ON TRUE
@@ -4745,6 +5226,16 @@ class PostgresOperationalStore(
                 days = int(r["days_with_history"] or 0)
                 avg_7d = (prior / days) if days > 0 else _Decimal("0")
                 quota = r["quota_daily_cost_usd"]
+                today_amount = r.get("today_cost_amount")
+                if today_amount is None:
+                    today_amount = policy.from_usd(today)
+                prior_amount = r.get("prior_7d_total_amount")
+                if prior_amount is None:
+                    prior_amount = policy.from_usd(prior)
+                avg_amount = prior_amount / days if days > 0 else _Decimal("0")
+                quota_amount = r.get("quota_daily_cost_amount")
+                if quota_amount is None and quota is not None:
+                    quota_amount = policy.from_usd(quota)
 
                 base_item = {
                     "id": r["id"],
@@ -4754,38 +5245,43 @@ class PostgresOperationalStore(
                     "user_name": r["user_name"],
                     "role": r["role"] or "free",
                     "today_cost_usd": today,
+                    "today_cost_amount": today_amount,
+                    "avg_prior_7d_amount": avg_amount,
+                    "quota_daily_amount": quota_amount,
                     "avg_prior_7d_usd": avg_7d,
                     "quota_daily_usd": float(quota) if quota else None,
                     "multiplier": None,
                 }
 
                 # Top spenders today
-                if today > 0:
+                if today_amount > 0:
                     top_spenders.append(dict(base_item))
 
                 # Anomaly
                 if (
                     days >= anomaly_min_history_days
-                    and today >= anomaly_min_today
-                    and avg_7d > 0
-                    and today >= _Decimal(str(anomaly_multiplier)) * avg_7d
+                    and today_amount >= anomaly_min_amount
+                    and avg_amount > 0
+                    and today_amount >= _Decimal(str(anomaly_multiplier)) * avg_amount
                 ):
-                    multiplier = float(today / avg_7d) if avg_7d > 0 else None
+                    multiplier = float(today_amount / avg_amount) if avg_amount > 0 else None
                     anomaly_item = dict(base_item)
                     anomaly_item["multiplier"] = multiplier
                     anomalies.append(anomaly_item)
 
                 # Near / over quota
-                if quota and float(quota) > 0:
-                    pct = float(today) / float(quota)
-                    if pct >= near_quota_pct:
+                if quota_amount is not None and quota_amount > 0:
+                    pct = today_amount / quota_amount
+                    if pct >= _Decimal(str(near_quota_pct)):
                         near_quota.append(dict(base_item))
 
-            top_spenders.sort(key=lambda x: x["today_cost_usd"], reverse=True)
+            top_spenders.sort(key=lambda x: x["today_cost_amount"], reverse=True)
             anomalies.sort(key=lambda x: x["multiplier"] or 0, reverse=True)
             near_quota.sort(
                 key=lambda x: (
-                    float(x["today_cost_usd"]) / x["quota_daily_usd"] if x["quota_daily_usd"] else 0
+                    x["today_cost_amount"] / x["quota_daily_amount"]
+                    if x["quota_daily_amount"]
+                    else 0
                 ),
                 reverse=True,
             )
@@ -4810,7 +5306,7 @@ class PostgresOperationalStore(
                 ],
             },
             "top_spenders_today": {
-                "count": len([s for s in top_spenders if s["today_cost_usd"] > 0]),
+                "count": len(top_spenders),
                 "top": top_spenders[:top_n],
             },
             "anomalies": {
@@ -4846,6 +5342,25 @@ class PostgresOperationalStore(
                 user_ids,
             )
         return {r["user_id"]: float(r["cost"]) for r in rows}
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return exact native counters without converting rounded USD totals."""
+        if not user_ids:
+            return {}
+        if period == "today":
+            date_filter = "day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+        else:
+            date_filter = "day >= to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') || '-01'"
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT user_id, COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) AS cost "
+                f"FROM user_daily_cost WHERE {date_filter} "
+                "AND user_id = ANY($1::text[]) GROUP BY user_id",
+                user_ids,
+            )
+        return {row["user_id"]: row["cost"] for row in rows}
 
     # -- role quota ----------------------------------------------------------
 
@@ -4885,33 +5400,37 @@ class PostgresOperationalStore(
             tag = await conn.execute(
                 """
                     UPDATE api_keys
-                    SET quota_daily_cost_usd = $1
+                    SET quota_daily_cost_usd = $1, quota_daily_cost_amount = $3
                     WHERE status <> 'revoked'
                       AND user_id IN (SELECT id FROM users WHERE role = $2)
                     """,
                 quota,
                 role,
+                get_accounting_policy().from_usd(quota),
             )
             # The account quota too, for accounts with keys and without: an
             # account without a row keeps the monthly quota its keys carry.
+            native = get_accounting_policy().native
+            daily_column = "quota_daily_cost_amount" if native else "quota_daily_cost_usd"
+            monthly_column = "quota_monthly_cost_amount" if native else "quota_monthly_cost_usd"
             await conn.execute(
-                """
+                f"""
                     INSERT INTO account_quotas
-                        (user_id, quota_daily_cost_usd, quota_monthly_cost_usd)
-                    SELECT u.id, $1, k.quota_monthly_cost_usd
+                        (user_id, {daily_column}, {monthly_column})
+                    SELECT u.id, $1, k.{monthly_column}
                     FROM users u
                     LEFT JOIN LATERAL (
-                        SELECT quota_monthly_cost_usd FROM api_keys
+                        SELECT {monthly_column} FROM api_keys
                         WHERE user_id = u.id
                         ORDER BY status = 'revoked', created_at DESC
                         LIMIT 1
                     ) k ON TRUE
                     WHERE u.role = $2
                     ON CONFLICT (user_id) DO UPDATE SET
-                        quota_daily_cost_usd = EXCLUDED.quota_daily_cost_usd,
+                        {daily_column} = EXCLUDED.{daily_column},
                         updated_at = NOW()
                     """,
-                quota,
+                get_accounting_policy().from_usd(quota) if native else quota,
                 role,
             )
         return _parse_command_tag_count(tag)

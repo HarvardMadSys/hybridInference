@@ -245,7 +245,11 @@ async def test_the_429_body_and_headers_match_the_direct_path(store, token) -> N
         "X-RateLimit-Limit-Cost",
         "X-RateLimit-Remaining-Cost",
         "X-RateLimit-Reset",
+        "X-Accounting-Currency",
+        "X-RateLimit-Cost-Currency",
     }
+    assert headers["X-Accounting-Currency"] == "USD"
+    assert headers["X-RateLimit-Cost-Currency"] == "USD"
 
 
 async def test_a_null_quota_still_means_the_documented_default(store, token) -> None:

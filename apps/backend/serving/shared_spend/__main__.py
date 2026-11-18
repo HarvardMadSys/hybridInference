@@ -41,6 +41,7 @@ import json
 import sys
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import AccountingPolicy, get_accounting_policy
 from serving.shared_spend import reconcile
 from serving.shared_spend.mode import CAPABILITY, PROTOCOL_VERSION
 from serving.shared_spend.stats import stranded
@@ -52,8 +53,18 @@ if TYPE_CHECKING:
     from serving.shared_spend.store import SharedSpendStore
 
 
-def participation(instances: list[dict[str, Any]], stored_mode: str) -> dict[str, Any]:
-    """Which recently heard-from processes support and run the shared mode."""
+def participation(
+    instances: list[dict[str, Any]], stored_mode: str, policy: AccountingPolicy | None = None
+) -> dict[str, Any]:
+    """Which recently heard-from processes support and run the shared mode.
+
+    Supporting it takes this protocol and the ledger's own accounting policy:
+    a process that reports another currency or rate (or none, an older build)
+    would reserve and settle in another unit, so it is listed in
+    ``unsupported`` and in ``other_policy`` however it reports its mode.
+    """
+    policy = policy or get_accounting_policy()
+    expected = (policy.currency, str(policy.usd_to_currency_rate))
     rows = []
     for instance in instances:
         if instance["stale"] or instance["lifecycle"] == "stopped":
@@ -66,11 +77,23 @@ def participation(instances: list[dict[str, Any]], stored_mode: str) -> dict[str
                 "lifecycle": instance["lifecycle"],
                 "protocol": capability.get("protocol"),
                 "mode": capability.get("mode"),
+                "currency": capability.get("currency"),
+                "usd_to_currency_rate": capability.get("usd_to_currency_rate"),
             }
         )
+    other_policy = [
+        r["instance_id"] for r in rows if (r["currency"], r["usd_to_currency_rate"]) != expected
+    ]
     return {
+        "currency": policy.currency,
+        "usd_to_currency_rate": str(policy.usd_to_currency_rate),
         "instances": rows,
-        "unsupported": [r["instance_id"] for r in rows if (r["protocol"] or 0) < PROTOCOL_VERSION],
+        "unsupported": [
+            r["instance_id"]
+            for r in rows
+            if (r["protocol"] or 0) < PROTOCOL_VERSION or r["instance_id"] in other_policy
+        ],
+        "other_policy": other_policy,
         "not_in_stored_mode": [r["instance_id"] for r in rows if r["mode"] != stored_mode],
         # Registration cannot prove coverage: an older build never registers.
         "participation_proven": False,
@@ -181,6 +204,12 @@ async def _main(args: argparse.Namespace) -> list[str]:
         max_size=2,
     )
     try:
+        from serving.accounting import bind_accounting_policy, load_accounting_policy
+        from serving.storage.accounting_schema import require_accounting_schema
+        from serving.storage.postgres_operational import PostgresOperationalStore
+
+        await require_accounting_schema(pool)
+        bind_accounting_policy(await load_accounting_policy(PostgresOperationalStore(pool)))
         if fence_secret is not None:
             await require_pinned_secret(pool, fence_secret)
         return await run(args, SharedSpendStore(pool, fence_secret=fence_secret))

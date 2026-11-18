@@ -212,8 +212,10 @@ def _check(kind: str, value: dict[str, Any]) -> None:
 
         alert_config_from_data(value)
     elif kind == "distribution":
+        from serving.accounting import declared_currency_problem
         from serving.config.distribution import DistributionConfig
 
+        currency = "USD"
         if value:
             # Its root refuses a key it does not define; a section ignores one.
             config = DistributionConfig.model_validate(value)
@@ -221,6 +223,9 @@ def _check(kind: str, value: dict[str, Any]) -> None:
                 raise DocumentError(
                     "file paths are retired; configure application documents in Admin"
                 )
+            currency = config.accounting.currency
+        if problem := declared_currency_problem(currency):
+            raise DocumentError(problem)
         # A public document: no credential belongs in it, not even under a
         # key a section ignores.
         _credentials(value, references=False)

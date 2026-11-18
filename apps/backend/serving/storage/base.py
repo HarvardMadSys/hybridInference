@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
+    from serving.accounting import AccountingPolicy
     from serving.audit import AuditActor, AuditTarget
 
 
@@ -70,6 +71,11 @@ class CostIncrement(NamedTuple):
     *cost_usd* and *requests* are added to the user's counter for *day*, and
     to the key's when *api_key_id* is set. *requests* counts the requests the
     cost sums, so coalescing several into one increment keeps the counts.
+
+    *cost_amount* is the exact native amount on a non-USD ledger, which the
+    native counters (``cost_amount``) are written with; *cost_usd* is then its
+    USD equivalent. None means the increment is USD only, and a non-USD store
+    records it at the fixed policy rate.
     """
 
     user_id: str
@@ -78,6 +84,19 @@ class CostIncrement(NamedTuple):
     cost_usd: Decimal | float
     requests: int = 1
     project_id: str | None = None
+    cost_amount: Decimal | None = None
+
+    def ledger_amount(self, policy: AccountingPolicy) -> Any:
+        """What this increment adds to the counters *policy*'s ledger keeps its record in.
+
+        A USD ledger adds :attr:`cost_usd`, as it always has. A native one adds
+        the exact :attr:`cost_amount`, or a USD-only increment at the fixed rate.
+        """
+        if not policy.native:
+            return self.cost_usd
+        if self.cost_amount is not None:
+            return self.cost_amount
+        return policy.from_usd(self.cost_usd)
 
 
 class CostWriteOutcomeUnknown(Exception):
@@ -137,6 +156,8 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
     "status": "status",
     "quota_daily_cost_usd": "quota_daily_cost_usd",
     "quota_monthly_cost_usd": "quota_monthly_cost_usd",
+    "quota_daily_cost_amount": "quota_daily_cost_amount",
+    "quota_monthly_cost_amount": "quota_monthly_cost_amount",
     "expires_at": "expires_at",
     "last_used_at": "last_used_at",
     "notes": "notes",
@@ -660,14 +681,14 @@ class OperationalStore(ABC):
         """Auth context plus today's spend, for one round-trip (issue #185).
 
         Same projection and the same active-key/active-user filters as
-        :meth:`get_auth_context_by_key_hash`, plus a ``cost_usd`` field: the
+        :meth:`get_auth_context_by_key_hash`, plus legacy ``cost_usd`` and native ``cost_amount`` fields: the
         ``user_daily_cost`` counter for the key's owner, UTC-midnight day,
         ``0.0`` when no counter row exists. ``None`` means the key did not
         resolve, exactly like the identity-only lookup. When the account has a
         monthly quota, ``account_spent_month_usd`` is the owner's spend this
         UTC month (the sum :meth:`get_user_cost_period` returns); 0 otherwise.
 
-        Not cached: the quota gate reads ``cost_usd`` on every request, and
+        Not cached: the quota gate reads the live monetary counter on every request, and
         caching the merged row would stale the gate by the auth TTL. The
         identity-only lookup above keeps its cache; this one stays fresh.
         """
@@ -724,6 +745,10 @@ class OperationalStore(ABC):
         common path :meth:`get_auth_context_with_spend` already carries it.
         """
 
+    async def get_key_spend_amount(self, key_id: int) -> tuple[Decimal, Decimal]:
+        """:meth:`get_key_spend` in the native ledger amount, ``(today, month)``."""
+        raise NotImplementedError
+
     @abstractmethod
     async def create_key(
         self,
@@ -734,6 +759,8 @@ class OperationalStore(ABC):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -805,8 +832,13 @@ class OperationalStore(ABC):
         budget_monthly_usd: Decimal | float | None = None,
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
+        budget_daily_amount: Decimal | None = None,
+        budget_monthly_amount: Decimal | None = None,
     ) -> Row:
-        """Insert a project owned by *user_id*."""
+        """Insert a project owned by the user.
+
+        ``budget_*_amount`` are the exact native budgets on a non-USD ledger.
+        """
 
     @abstractmethod
     async def list_projects(self, user_id: str) -> list[Row]:
@@ -834,6 +866,10 @@ class OperationalStore(ABC):
     async def get_project_spend(self, project_id: str) -> tuple[float, float]:
         """The project's spend on the current UTC day and month, ``(today, month)``."""
 
+    async def get_project_spend_amount(self, project_id: str) -> tuple[Decimal, Decimal]:
+        """:meth:`get_project_spend` in the native ledger amount."""
+        raise NotImplementedError
+
     @abstractmethod
     async def count_project_keys(self, project_id: str) -> int:
         """Return how many active keys the project holds."""
@@ -845,6 +881,10 @@ class OperationalStore(ABC):
         The account quota is the one every key of the account carries, and the
         one its next key would inherit.
         """
+
+    async def get_account_budget_amounts(self, user_id: str) -> tuple[Decimal, Decimal | None]:
+        """:meth:`get_account_budgets` in the native ledger amount."""
+        raise NotImplementedError
 
     @abstractmethod
     async def update_key_settings(
@@ -1483,6 +1523,32 @@ class OperationalStore(ABC):
 
     # -- cost counters (user_daily_cost table) ---------------------------------
 
+    async def increment_user_cost_amount(
+        self,
+        user_id: str,
+        cost: Decimal | float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Write native accounting money; implementations must persist it atomically.
+
+        :meth:`increment_user_cost` in the ledger currency: the same counters,
+        keys and scopes, written in their native columns.
+        """
+        raise NotImplementedError
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's primary native accounting amount."""
+        raise NotImplementedError
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this UTC month's primary native accounting amount."""
+        raise NotImplementedError
+
     @abstractmethod
     async def increment_user_cost(
         self,
@@ -1533,6 +1599,17 @@ class OperationalStore(ABC):
         applies the increments one after another.
         """
         for increment in increments:
+            if increment.cost_amount is not None:
+                await self.increment_user_cost_amount(
+                    increment.user_id,
+                    increment.cost_amount,
+                    day=increment.day,
+                    api_key_id=increment.api_key_id,
+                    requests=increment.requests,
+                    org_id=increment.org_id,
+                    project_id=increment.project_id,
+                )
+                continue
             await self.increment_user_cost(
                 increment.user_id,
                 float(increment.cost_usd),
@@ -1604,6 +1681,12 @@ class OperationalStore(ABC):
                 truncated, so a day that overflows it is visible rather than
                 silently cut off.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(
@@ -2408,6 +2491,12 @@ class LogStore(ABC):
         those rows. An implementation may answer from a cache a few seconds
         old.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(

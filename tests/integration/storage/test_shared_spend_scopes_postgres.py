@@ -36,8 +36,8 @@ from serving.shared_spend.store import (
     CostLine,
     SettlementBatch,
     SharedSpendStore,
+    quantized_amount,
     scope_lock_keys,
-    usd,
 )
 from serving.spend_ledger import SpendCheck
 from serving.storage.pools import DatabaseBusyError, request_connection
@@ -124,7 +124,7 @@ async def _probe(ledger, user: str, *, day: str, key_id=None, project_id=None):
         user_id=user,
         api_key_id=key_id,
         project_id=project_id,
-        requested_usd=D("0.01"),
+        requested_amount=D("0.01"),
         check_day=day,
         operation="probe",
         check_key=key_id is not None,
@@ -184,9 +184,9 @@ async def test_each_ceiling_counts_settled_cost_and_every_processes_reservations
         )
 
     settled_on = earlier if window == "month" else today
-    lines = [CostLine(other, settled_on, key, usd(0.40), 1, project)]
+    lines = [CostLine(other, settled_on, key, quantized_amount(0.40), 1, project)]
     if window == "day":
-        lines.append(CostLine(other, earlier, key, usd(5.0), 1, project))
+        lines.append(CostLine(other, earlier, key, quantized_amount(5.0), 1, project))
     await _settle_plain(db.b, *lines)
     held, _ = await db.b.admit(make(db.b, other), 0.30)  # another process, still running
     assert held.amount == D("0.3")
@@ -254,7 +254,7 @@ async def test_accounts_sharing_a_project_wait_on_its_lock_and_share_its_headroo
     assert admitted == [D("0.1"), D("0.3"), D("0.3"), D("0.3")]
     assert {refusal.scope for r, refusal in results if refusal is not None} == {"project"}
     rows = [r for r in await _rows(db.pool) if r["project_id"] == burst]
-    assert sum(r["amount_usd"] for r in rows) == D("1")
+    assert sum(r["amount"] for r in rows) == D("1")
 
 
 async def _waiting(pool) -> bool:
@@ -311,17 +311,17 @@ async def test_settlement_adds_each_cost_to_the_account_key_and_project_counters
 
     async with db.pool.acquire() as conn:
         account = await conn.fetch(
-            "SELECT user_id, day, cost_usd, requests FROM user_daily_cost "
+            "SELECT user_id, day, cost_amount, requests FROM user_daily_cost "
             "WHERE user_id = ANY($1::text[]) ORDER BY user_id",
             [user, other],
         )
         keys = await conn.fetch(
-            "SELECT key_id, day, user_id, cost_usd, requests FROM api_key_daily_cost "
+            "SELECT key_id, day, user_id, cost_amount, requests FROM api_key_daily_cost "
             "WHERE key_id = ANY($1::bigint[]) ORDER BY key_id",
             [KEY, KEY + 1],
         )
         projects = await conn.fetch(
-            "SELECT period, cost_usd, requests FROM spend_counters "
+            "SELECT period, cost_amount, requests FROM spend_counters "
             "WHERE scope_id = $1 ORDER BY period",
             project,
         )
@@ -381,7 +381,7 @@ async def test_at_midnight_an_active_reservation_moves_on_and_a_quarantined_one_
     def make(ledger, **budgets):
         return limits(ledger, user, daily=1.0, monthly=1.5, **budgets)
 
-    await _settle_plain(db.a, CostLine(user, clock.day, None, usd(0.20)))
+    await _settle_plain(db.a, CostLine(user, clock.day, None, quantized_amount(0.20)))
     running, _ = await db.a.admit(make(db.a), 0.30)  # still running at midnight
     ended, _ = await db.a.admit(make(db.a), 0.30)
     await end_quarantined(db.a, ended, 0.10)  # ended on Jan 31; the counters refused its cost
@@ -483,7 +483,7 @@ async def test_month_ceilings_of_key_and_project_turn_over_with_the_utc_month(db
     # (a reservation whose cost the counters refused), fill both month
     # ceilings (the key's is checked first).
     clock.day = "2031-04-30"
-    await _settle_plain(db.a, CostLine(user, "2031-04-03", KEY, usd(0.70), 1, project))
+    await _settle_plain(db.a, CostLine(user, "2031-04-03", KEY, quantized_amount(0.70), 1, project))
     ended, _ = await db.a.admit(make(db.a), 0.30)
     await end_quarantined(db.a, ended, 0.10, project=project, key=KEY)
     apr = await _probe(db.b, user, day=clock.day, key_id=KEY, project_id=project)
@@ -533,7 +533,7 @@ async def test_limits_are_the_gates_and_spend_is_read_again_under_the_locks(db, 
     # A gate that read a full Mar 15 and admits after midnight: the admission
     # reads Mar 16, and the reservation is Mar 16's.
     late = PREFIX + "limits-midnight"
-    await _settle_plain(db.a, CostLine(late, clock.day, None, usd(0.99)))
+    await _settle_plain(db.a, CostLine(late, clock.day, None, quantized_amount(0.99)))
     stale = limits(db.a, late, daily=1.0, spent_today=0.99)
     clock.day = "2031-03-16"
     reservation, _ = await db.a.admit(stale, 0.30)
@@ -648,7 +648,7 @@ async def test_an_admission_stalled_between_two_statements_does_not_hold_its_acc
         user_id=user,
         api_key_id=None,
         project_id=None,
-        requested_usd=usd(0.30),
+        requested_amount=quantized_amount(0.30),
         check_day=clock.day,
         operation="request",
     )
@@ -658,7 +658,7 @@ async def test_an_admission_stalled_between_two_statements_does_not_hold_its_acc
             return await backend.admit_on(
                 conn,
                 request,
-                lambda snapshot: usd(0.30),
+                lambda snapshot: quantized_amount(0.30),
                 budget_ms=300,
                 on_xid=lambda xid: None,
                 pause=stall,
@@ -789,7 +789,7 @@ async def test_a_read_only_database_refuses_admission_and_keeps_settlements_queu
         db.a._backend.pool = writable
         assert await db.a.flush(5)
         assert await _base._account(db.pool, user, clock.day) == D("0.4")
-        assert [r["amount_usd"] for r in await _rows(db.pool, user)] == [D("0.6")]
+        assert [r["amount"] for r in await _rows(db.pool, user)] == [D("0.6")]
     finally:
         db.a._backend.pool = writable
         await asyncio.wait_for(read_only.close(), 5)

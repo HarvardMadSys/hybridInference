@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, ClassVar, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import Currency, NativeOnlyFields, accounting_currency
 from serving.config.runtime_settings import (
     RUNTIME_SETTINGS_REGISTRY,
     RuntimeSettings,
@@ -30,22 +32,31 @@ class RoleQuotaApplyRequest(BaseModel):
     """Request body for POST /admin/quota/role-apply."""
 
     role: Role
+    currency: Currency | None = None
 
 
-class RoleQuotaPreview(BaseModel):
+class RoleQuotaPreview(NativeOnlyFields):
     """Preview of how many keys/users a role-quota apply would touch."""
+
+    native_fields: ClassVar[tuple[str, ...]] = ("amount", "currency")
 
     role: Role
     quota: Decimal
+    amount: Decimal
+    currency: Currency = Field(default_factory=accounting_currency)
     keys_affected: int
     users_affected: int
 
 
-class RoleQuotaApplyResult(BaseModel):
+class RoleQuotaApplyResult(NativeOnlyFields):
     """Result of a role-quota bulk apply."""
+
+    native_fields: ClassVar[tuple[str, ...]] = ("amount", "currency")
 
     role: Role
     quota: Decimal
+    amount: Decimal
+    currency: Currency = Field(default_factory=accounting_currency)
     keys_updated: int
 
 
@@ -76,7 +87,13 @@ async def preview_role_apply(
     rt = _require_rt(rt)
     quota = await _quota_for_role(rt, role)
     keys, users = await op_store.count_active_keys_for_role(role)
-    return RoleQuotaPreview(role=role, quota=quota, keys_affected=keys, users_affected=users)
+    return RoleQuotaPreview(
+        role=role,
+        quota=quota,
+        amount=get_accounting_policy().from_usd(quota),
+        keys_affected=keys,
+        users_affected=users,
+    )
 
 
 @router.post("/quota/role-apply", response_model=RoleQuotaApplyResult)
@@ -90,6 +107,8 @@ async def apply_role_quota(
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_rt(rt)
+    if payload.currency is not None and payload.currency != accounting_currency():
+        raise HTTPException(409, "Accounting currency changed; reload before applying")
     quota = await _quota_for_role(rt, payload.role)
     updated = await op_store.apply_role_quota(payload.role, quota)
     try:
@@ -106,4 +125,9 @@ async def apply_role_quota(
             updated,
             exc_info=True,
         )
-    return RoleQuotaApplyResult(role=payload.role, quota=quota, keys_updated=updated)
+    return RoleQuotaApplyResult(
+        role=payload.role,
+        quota=quota,
+        amount=get_accounting_policy().from_usd(quota),
+        keys_updated=updated,
+    )

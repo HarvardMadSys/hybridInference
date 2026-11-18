@@ -39,6 +39,7 @@ from serving.servers.routers.admin.metrics import (
     _load_request_perf_trend,
 )
 from tests.fixtures import postgres
+from tests.fixtures.accounting_schema import add_native_columns
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -85,6 +86,8 @@ async def db_logger(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerat
     assert pool is not None
     async with pool.acquire() as conn:
         await ensure_api_logs_schema(conn)
+        # The gateway's log writers name the native accounting columns.
+        await add_native_columns(conn, ("api_logs",))
         # The list endpoint LEFT JOINs users unconditionally; only the columns it
         # reads are needed here.
         await conn.execute(

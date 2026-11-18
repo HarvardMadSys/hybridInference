@@ -2530,8 +2530,10 @@ async def test_user_balance_reflects_spend(anthropic_test_client):
 
 
 @pytest.mark.asyncio
-async def test_user_balance_tiny_remainder_rounds_to_unavailable(anthropic_test_client):
-    """A sub-rounding-precision remainder must not claim is_available while balance_usd shows 0.0."""
+async def test_user_balance_on_a_usd_ledger_keeps_its_shape_and_rounding(
+    anthropic_test_client,
+):
+    """A USD ledger answers as it always has: no native fields, availability as displayed."""
     from serving.servers.auth import verify_api_key_for_balance
 
     app = anthropic_test_client._transport.app
@@ -2547,6 +2549,8 @@ async def test_user_balance_tiny_remainder_rounds_to_unavailable(anthropic_test_
     body = r.json()
     assert body["balance_usd"] == 0.0
     assert body["is_available"] is False
+    assert body["currency"] == "USD"
+    assert not {"balance", "daily_limit", "spent_today"} & set(body)
 
 
 @pytest.mark.asyncio

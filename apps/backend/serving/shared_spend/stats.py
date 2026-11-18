@@ -118,7 +118,7 @@ def stranded(reservations: list[dict[str, Any]]) -> dict[str, Any]:
     rows = [row for row in reservations if row["state"] == "active" and row["owner"] in OWNER_GONE]
     return {
         "reservations": sum(int(row["n"]) for row in rows),
-        "amount_usd": sum((row["amount_usd"] or 0 for row in rows), Decimal(0)),
+        "amount": sum((row["amount"] or 0 for row in rows), Decimal(0)),
         "oldest_age_seconds": max((row["oldest_age_seconds"] or 0 for row in rows), default=None),
         "instances": sorted({row["instance_id"] for row in rows}),
     }
@@ -132,7 +132,7 @@ def survey(summary: dict[str, Any]) -> dict[str, Any]:
         of_state = [row for row in rows if row["state"] == state]
         return {
             "reservations": sum(int(row["n"]) for row in of_state),
-            "amount_usd": sum((row["amount_usd"] or 0 for row in of_state), Decimal(0)),
+            "amount": sum((row["amount"] or 0 for row in of_state), Decimal(0)),
             "oldest_age_seconds": max(
                 (row["oldest_age_seconds"] or 0 for row in of_state), default=None
             ),

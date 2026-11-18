@@ -56,6 +56,7 @@ def test_registry_inherits_source_and_route_can_disable_it(tmp_path):
                         "id": "price-source-test",
                         "name": "Price source test",
                         "pricing_source": SOURCE,
+                        "pricing_currency": "CNY",
                         "route": [
                             {
                                 "kind": "openai_compat",
@@ -67,6 +68,7 @@ def test_registry_inherits_source_and_route_can_disable_it(tmp_path):
                                 "base_url": "http://localhost:8102",
                                 "weight": 1,
                                 "pricing_source": None,
+                                "pricing_currency": "USD",
                                 "pricing": {"prompt": "2", "completion": "3"},
                             },
                         ],
@@ -81,8 +83,11 @@ def test_registry_inherits_source_and_route_can_disable_it(tmp_path):
     automatic = next(config for config in configs if config.base_url.endswith("8101"))
     manual = next(config for config in configs if config.base_url.endswith("8102"))
     assert automatic.pricing_source == SOURCE
+    assert automatic.pricing_currency == "CNY"
     assert manual.pricing_source is None
+    assert manual.pricing_currency == "USD"
     assert manual.pricing == {"prompt": "2", "completion": "3"}
     restored = ModelConfig(**_config_to_dict(automatic))
     assert restored.pricing_source == SOURCE
+    assert restored.pricing_currency == "CNY"
     assert restored.pricing_source is not automatic.pricing_source

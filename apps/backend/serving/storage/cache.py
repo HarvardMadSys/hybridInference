@@ -554,6 +554,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store — never cached, a budget gate reads it."""
         return await self._store.get_key_spend(key_id)
 
+    async def get_key_spend_amount(self, key_id: int) -> tuple[Decimal, Decimal]:
+        """Delegate to wrapped store — never cached, a budget gate reads it."""
+        return await self._store.get_key_spend_amount(key_id)
+
     async def count_active_keys(self, user_id: str) -> int:
         """Delegate to wrapped store."""
         return await self._store.count_active_keys(user_id)
@@ -573,6 +577,8 @@ class CachedOperationalStore(OperationalStore):
         budget_monthly_usd: Decimal | float | None = None,
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
+        budget_daily_amount: Decimal | None = None,
+        budget_monthly_amount: Decimal | None = None,
     ) -> Row:
         """Delegate, then invalidate auth caches."""
         row = await self._store.create_project(
@@ -584,6 +590,8 @@ class CachedOperationalStore(OperationalStore):
             budget_monthly_usd=budget_monthly_usd,
             allowed_models=allowed_models,
             max_concurrent_requests=max_concurrent_requests,
+            budget_daily_amount=budget_daily_amount,
+            budget_monthly_amount=budget_monthly_amount,
         )
         await self.invalidate_auth_caches()
         return row
@@ -618,6 +626,10 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.get_project_spend(project_id)
 
+    async def get_project_spend_amount(self, project_id: str) -> tuple[Decimal, Decimal]:
+        """Delegate to wrapped store."""
+        return await self._store.get_project_spend_amount(project_id)
+
     async def count_project_keys(self, project_id: str) -> int:
         """Delegate to wrapped store."""
         return await self._store.count_project_keys(project_id)
@@ -625,6 +637,10 @@ class CachedOperationalStore(OperationalStore):
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Delegate to wrapped store."""
         return await self._store.get_account_budgets(user_id)
+
+    async def get_account_budget_amounts(self, user_id: str) -> tuple[Decimal, Decimal | None]:
+        """Delegate to wrapped store."""
+        return await self._store.get_account_budget_amounts(user_id)
 
     async def update_key_settings(
         self, account_id: str, key_prefix: str, changes: dict[str, Any]
@@ -794,6 +810,8 @@ class CachedOperationalStore(OperationalStore):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -817,6 +835,8 @@ class CachedOperationalStore(OperationalStore):
             user_name=user_name,
             quota_daily_cost_usd=quota_daily_cost_usd,
             quota_monthly_cost_usd=quota_monthly_cost_usd,
+            quota_daily_cost_amount=quota_daily_cost_amount,
+            quota_monthly_cost_amount=quota_monthly_cost_amount,
             expires_at=expires_at,
             notes=notes,
             api_key_encrypted=api_key_encrypted,
@@ -1880,6 +1900,36 @@ class CachedOperationalStore(OperationalStore):
 
     # -- cost counters (pass-through) ----------------------------------------
 
+    async def increment_user_cost_amount(
+        self,
+        user_id: str,
+        cost: Decimal | float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Delegate the atomic native counter increment to the wrapped store."""
+        return await self._store.increment_user_cost_amount(
+            user_id,
+            cost,
+            day=day,
+            api_key_id=api_key_id,
+            requests=requests,
+            org_id=org_id,
+            project_id=project_id,
+        )
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's native ledger amount from the wrapped store."""
+        return await self._store.get_user_cost_today_amount(user_id)
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this month's native ledger amount from the wrapped store."""
+        return await self._store.get_user_cost_month_amount(user_id)
+
     async def increment_user_cost(
         self,
         user_id: str,
@@ -1939,6 +1989,12 @@ class CachedOperationalStore(OperationalStore):
         cached answer would date the alert by the TTL.
         """
         return await self._store.query_users_at_daily_quota(limit=limit)
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Read native batch totals from the wrapped store."""
+        return await self._store.get_batch_usage_amount(user_ids, period)
 
     async def get_batch_usage(
         self, user_ids: list[str], period: Literal["today", "month"]

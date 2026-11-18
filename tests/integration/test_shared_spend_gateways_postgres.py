@@ -138,8 +138,8 @@ async def _answers(*gateways: SimpleNamespace, path: str = "/ok") -> list[int]:
 async def _set_counter(pool, day: str, cost: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests) VALUES ($1, $2, $3, 1) "
-            "ON CONFLICT (user_id, day) DO UPDATE SET cost_usd = EXCLUDED.cost_usd",
+            "INSERT INTO user_daily_cost (user_id, day, cost_amount, requests) VALUES ($1, $2, $3, 1) "
+            "ON CONFLICT (user_id, day) DO UPDATE SET cost_amount = EXCLUDED.cost_amount",
             USER,
             day,
             Decimal(cost),
@@ -198,7 +198,7 @@ async def test_a_quarantined_liability_is_refused_alike_on_its_day_and_admitted_
     finally:
         a.ledger._backend = real
     rows = await _base._rows(a.pool, USER)
-    assert [(r["state"], r["liability_day"], r["cost_usd"]) for r in rows] == [
+    assert [(r["state"], r["liability_day"], r["cost_amount"]) for r in rows] == [
         ("quarantined", day_one, Decimal("0.5"))
     ]
     assert a.ledger.holdings()["quarantined"] == 1

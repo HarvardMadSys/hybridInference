@@ -54,7 +54,7 @@ INSERT INTO provider_hourly_stats AS p (
     throughput_avg_tps, throughput_p50_tps, throughput_p95_tps,
     prompt_tokens_avg, completion_tokens_avg, total_completion_tokens,
     total_prompt_tokens, total_cache_read_tokens,
-    total_reasoning_tokens, total_cost_usd
+    total_reasoning_tokens, total_cost_usd, total_cost_amount
 )
 SELECT
     date_trunc('hour', timestamp AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'    AS hour_bucket,
@@ -96,12 +96,13 @@ SELECT
     COALESCE(SUM(prompt_tokens), 0)::BIGINT                                 AS total_prompt_tokens,
     COALESCE(SUM(cache_read_tokens), 0)::BIGINT                             AS total_cache_read_tokens,
     COALESCE(SUM(reasoning_tokens), 0)::BIGINT                              AS total_reasoning_tokens,
-    COALESCE(SUM(cost_usd), 0)::DECIMAL(14, 8)                              AS total_cost_usd
+    COALESCE(SUM(cost_usd), 0)::DECIMAL(14, 8)                              AS total_cost_usd,
+    COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0)::NUMERIC(24, 12)                          AS total_cost_amount
 FROM (
     SELECT
         timestamp, provider, model_id, status_code, error,
         stream, ttft_ms, latency_ms, prompt_tokens, completion_tokens,
-        cache_read_tokens, reasoning_tokens, cost_usd,
+        cache_read_tokens, reasoning_tokens, cost_usd, cost_amount,
         CASE
             WHEN status_code >= 400
                  OR error IS NOT NULL
@@ -147,7 +148,8 @@ ON CONFLICT (provider, model_id, hour_bucket) DO UPDATE SET
     total_prompt_tokens     = EXCLUDED.total_prompt_tokens,
     total_cache_read_tokens = EXCLUDED.total_cache_read_tokens,
     total_reasoning_tokens  = EXCLUDED.total_reasoning_tokens,
-    total_cost_usd          = EXCLUDED.total_cost_usd
+    total_cost_usd          = EXCLUDED.total_cost_usd,
+    total_cost_amount       = EXCLUDED.total_cost_amount
 """
 
 # The hours in [$1, $2) that no rollup has marked as covered, newest first. On

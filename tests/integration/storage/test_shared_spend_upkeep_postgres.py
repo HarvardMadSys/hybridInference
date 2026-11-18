@@ -195,16 +195,16 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     plan = await _reconcile(backend, "inst-crashed")
     assert plan["owner"] == "not registered" and plan["reconcilable"] and not plan["applied"]
     assert (plan["reservations"], plan["to_charge"], plan["to_release"]) == (3, 1, 2)
-    assert plan["held_usd"] == "0.900000" and plan["charge_usd"] == "0.002000"
+    assert plan["held_amount"] == "0.900000" and plan["charge_amount"] == "0.002000"
     by_id = {entry["reservation_id"]: entry for entry in plan["plan"]}
     assert by_id[logged.reservation_id]["would"] == "charge"
     assert by_id[logged.reservation_id]["request_log"][0]["request_id"] == request_id
-    assert by_id[logged.reservation_id]["request_log"][0]["charged_usd"] == "0.002000"
+    assert by_id[logged.reservation_id]["request_log"][0]["charged_amount"] == "0.002000"
     # The failed request's row carries a price; what was charged is what counts.
     assert by_id[failed.reservation_id]["would"] == "release"
     failed_row = by_id[failed.reservation_id]["request_log"][0]
-    assert (failed_row["status_code"], failed_row["charged_usd"]) == (502, "0.000000")
-    assert Decimal(failed_row["cost_usd"]) == Decimal("0.002")
+    assert (failed_row["status_code"], failed_row["charged_amount"]) == (502, "0.000000")
+    assert Decimal(failed_row["cost_amount"]) == Decimal("0.002")
     assert by_id[cut_off.reservation_id]["request_log"] == []
     assert user not in json.dumps(plan, default=str)  # no account is named
     assert len(await _rows(db.pool, user)) == 3  # showing the plan changes nothing
@@ -223,7 +223,7 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
         reason="host rebooted at 03:10; the process is gone",
     )
     assert (done["charged"], done["released"]) == (1, 2)
-    assert done["charge_usd"] == "0.002000" and done["released_usd"] == "0.600000"
+    assert done["charge_amount"] == "0.002000" and done["released_amount"] == "0.600000"
     assert done["not_retired"] == {} and done["closed_now"] is True
     assert (done["active_left"], done["quarantined_left"]) == (0, 0)
 
@@ -237,7 +237,7 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     audit = await _audit(db.pool)
     assert set(audit) == {logged.reservation_id, failed.reservation_id, cut_off.reservation_id}
     row = audit[logged.reservation_id]
-    assert (row["outcome"], row["cost_usd"], row["amount_usd"]) == (
+    assert (row["outcome"], row["cost_amount"], row["amount"]) == (
         "settled",
         Decimal("0.002"),
         Decimal("0.3"),
@@ -250,7 +250,7 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     assert "rebooted" in row["reason"] and row["batch_id"] in done["batches"]
     evidence = json.loads(row["evidence"])
     assert [e["request_id"] for e in evidence] == [request_id]
-    assert evidence[0]["charged_usd"] == "0.002000"
+    assert evidence[0]["charged_amount"] == "0.002000"
     assert audit[failed.reservation_id]["outcome"] == "released"
     assert json.loads(audit[failed.reservation_id]["evidence"])[0]["status_code"] == 502
     assert json.loads(audit[cut_off.reservation_id]["evidence"]) == []
@@ -262,7 +262,7 @@ async def test_what_a_killed_process_left_is_charged_from_the_request_log_or_giv
     assert after.amount == Decimal("0.998000")
     status = json.loads((await run(SimpleNamespace(command="status"), backend))[0])
     assert status["reconciled"]["reservations"] == 3
-    assert Decimal(str(status["reconciled"]["cost_usd"])) == Decimal("0.002")
+    assert Decimal(str(status["reconciled"]["cost_amount"])) == Decimal("0.002")
     assert status["closures"] == {"operator": 1}
     assert "inst-crashed" not in status["stranded"]["instances"]
 
@@ -322,14 +322,14 @@ async def test_a_cost_recorded_before_midnight_is_restored_to_the_day_it_was_rec
     done = await _reconcile(
         backend, "inst-crashed", apply=True, operator="alice", reason="killed at midnight"
     )
-    assert (done["charged"], done["charge_usd"]) == (2, "0.350000")
+    assert (done["charged"], done["charge_amount"]) == (2, "0.350000")
     # Where the process's own settlement would have put them.
     assert await _account(db.pool, user, yesterday) == Decimal("0.5")
     assert await _account(db.pool, user, today) == Decimal("0.05")
     audit = await _audit(db.pool)
     evidence = json.loads(audit[left.reservation_id]["evidence"])
     assert evidence[0]["charged_days"] == {yesterday: "0.200000"}
-    assert audit[both.reservation_id]["cost_usd"] == Decimal("0.15")
+    assert audit[both.reservation_id]["cost_amount"] == Decimal("0.15")
 
 
 async def test_a_process_the_registry_hears_from_is_refused(db):
@@ -390,12 +390,12 @@ async def test_a_reservation_with_several_log_rows_is_charged_its_latest_total_o
 
     plan = await _reconcile(db.b._backend, "inst-rows")
     (entry,) = plan["plan"]
-    assert [row["charged_usd"] for row in entry["request_log"]] == ["0.002000", "0.005000"]
-    assert entry["charge_usd"] == "0.005000"
+    assert [row["charged_amount"] for row in entry["request_log"]] == ["0.002000", "0.005000"]
+    assert entry["charge_amount"] == "0.005000"
     done = await _reconcile(
         db.b._backend, "inst-rows", apply=True, operator="alice", reason="process gone"
     )
-    assert (done["charged"], done["charge_usd"]) == (1, "0.005000")
+    assert (done["charged"], done["charge_amount"]) == (1, "0.005000")
     assert await _account(db.pool, user) == Decimal("0.005")  # the total, once
     (audit,) = (await _audit(db.pool)).values()
     assert [e["request_id"] for e in json.loads(audit["evidence"])][-1] == latest
@@ -426,7 +426,7 @@ async def test_a_process_wrongly_declared_gone_charges_nothing_twice_when_it_set
         r for r in caplog.records if getattr(r, "event", None) == "spend_settlement_duplicate"
     ]
     assert dropped.reservations == [reservation.reservation_id]
-    assert dropped.amount_usd == "0.002000"
+    assert dropped.amount == "0.002000"
 
 
 class RefusesChargeOf:
@@ -666,3 +666,27 @@ async def test_a_batch_not_answered_keeps_its_receipt_through_the_upkeep_and_is_
         assert (await real.summary())["receipts"]["batches"] == 0
     finally:
         ledger._backend = real
+
+
+async def test_pre_native_usd_log_reconciles_its_legacy_charge_and_day(db):
+    user = PREFIX + "legacy-usd"
+    reservation, _ = await db.a.admit(check(db.a, user), 0.3)
+    _charge(db.a, reservation, 0.2)
+    request_id = await _log_request(db.pool, reservation, user)
+    async with db.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_logs SET metadata = (metadata - 'spend_charged_amount' - 'spend_currency') "
+            "|| jsonb_build_object('spend_charged_days', "
+            "(SELECT jsonb_agg(day - 'amount') FROM jsonb_array_elements(metadata->'spend_charged_days') day)) "
+            "WHERE request_id=$1",
+            request_id,
+        )
+    done = await _reconcile(
+        db.b._backend,
+        "inst-a",
+        apply=True,
+        operator="synthetic",
+        reason="legacy USD writer is gone",
+    )
+    assert done["charged"] == 1 and done["charge_amount"] == "0.200000"
+    assert await _account(db.pool, user) == Decimal("0.2")
