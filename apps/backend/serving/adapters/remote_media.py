@@ -49,7 +49,6 @@ import base64
 import concurrent.futures
 import contextlib
 import errno
-import ipaddress
 import re
 import socket
 import time
@@ -61,6 +60,7 @@ import aiohttp
 from aiohttp.abc import AbstractResolver, ResolveResult
 
 from serving.utils import context as req_ctx
+from serving.utils.ip_classification import is_public_unicast
 from serving.utils.logging import get_logger
 from serving.utils.metadata_addresses import is_metadata_address
 
@@ -142,16 +142,6 @@ _RAW_BASE64_RE = re.compile(r"^[A-Za-z0-9+/]+={0,2}$")
 # SGLang opens a value ending like this as a local file.
 _FILE_LIKE_SUFFIXES = ("png", "jpg", "jpeg", "webp", "gif")
 
-# IPv6 ranges that embed an IPv4 address a gateway could be routed to, in their
-# last 32 bits: NAT64, IPv4-compatible (deprecated, but a host may still route
-# it) and IPv4-translated (stateless translation, RFC 2765). Python's
-# ``is_global`` calls the last two global whatever they embed.
-_EMBEDS_IPV4 = (
-    ipaddress.ip_network("64:ff9b::/96"),
-    ipaddress.ip_network("::/96"),
-    ipaddress.ip_network("::ffff:0:0:0/96"),
-)
-
 
 class RemoteMediaRefused(aiohttp.ClientResponseError):
     """A media URL on a self-hosted route the gateway would not, or could not, fetch.
@@ -181,25 +171,17 @@ def is_public_address(address: str) -> bool:
     """Whether ``address`` is a public unicast address a media fetch may connect to.
 
     IPv4 carried in IPv6 -- mapped, 6to4, NAT64, IPv4-compatible and
-    IPv4-translated -- is judged as the IPv4 address it reaches; Teredo is
-    refused outright. Not an IP address: False.
+    IPv4-translated -- is judged as the IPv4 address it reaches; Teredo and
+    local-use NAT64 are refused outright
+    (:func:`serving.utils.ip_classification.is_public_unicast`). Not an IP
+    address: False.
     """
     try:
-        ip = ipaddress.ip_address(address.split("%", 1)[0])
+        if is_metadata_address(address):
+            return False
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address):
-        if ip.teredo is not None:
-            return False
-        if ip.ipv4_mapped is not None:
-            ip = ip.ipv4_mapped
-        elif ip.sixtofour is not None:
-            ip = ip.sixtofour
-        elif any(ip in network for network in _EMBEDS_IPV4):
-            ip = ipaddress.IPv4Address(int(ip) & 0xFFFFFFFF)
-    if is_metadata_address(ip):
-        return False
-    return ip.is_global and not ip.is_multicast
+    return is_public_unicast(address)
 
 
 def _public_socket(addr_info: tuple[Any, ...]) -> socket.socket:

@@ -127,7 +127,7 @@ describe('runtime setting client', () => {
     fetchMock.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
 
     await updateRuntimeSetting('max_concurrent_requests_per_user', 5);
-    await updateRuntimeSetting('user_daily_quota_pro', 120, 'CNY');
+    await updateRuntimeSetting('user_daily_quota_pro', 120, undefined, 'CNY');
 
     const [firstUrl, first] = fetchMock.mock.calls[0];
     expect(String(firstUrl)).toContain('/admin/settings/max_concurrent_requests_per_user');

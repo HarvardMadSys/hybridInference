@@ -41,6 +41,15 @@ if TYPE_CHECKING:
         "fe80::1",
         "fe80::1%eth0",
         "::ffff:169.254.169.254",
+        # IPv4 carried in IPv6, which ``ipaddress`` calls global and does not map.
+        "::169.254.169.254",  # IPv4-compatible
+        "::ffff:0:a9fe:a9fe",  # IPv4-translated
+        "64:ff9b::169.254.169.254",  # NAT64
+        "64:ff9b::169.254.0.23",
+        "64:ff9b::6464:64c8",  # NAT64 to 100.100.100.200
+        "64:ff9b:1::a9fe:a9fe",  # RFC 8215 local-use NAT64
+        "2002:a9fe:a9fe::",  # 6to4
+        "::169.254.169.254%eth0",
     ],
 )
 def test_a_metadata_address_is_recognised_in_every_spelling(address):
@@ -60,6 +69,9 @@ def test_a_metadata_address_is_recognised_in_every_spelling(address):
         "fd00:ec3::254",
         "8.8.8.8",
         "2606:4700::6810:84e5",
+        "64:ff9b::808:808",  # NAT64 to a public address
+        "2002:808:808::1",
+        "::ffff:10.0.0.5",
     ],
 )
 def test_an_upstream_address_is_not_a_metadata_address(address):
@@ -72,7 +84,16 @@ def _addr_info(address: str) -> tuple:
     return (socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, 80))
 
 
-@pytest.mark.parametrize("address", ["169.254.169.254", "fd00:ec2::254%0", "not-an-address"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        "169.254.169.254",
+        "fd00:ec2::254%0",
+        "not-an-address",
+        "::169.254.169.254",
+        "64:ff9b::169.254.169.254",
+    ],
+)
 def test_the_socket_factory_refuses_before_creating_a_socket(address, monkeypatch):
     def no_socket(*args, **kwargs):
         raise AssertionError("a socket must not be created for a refused address")
@@ -161,3 +182,18 @@ async def test_the_shared_adapter_session_still_reaches_a_private_upstream(
         await client.close()
 
     assert answer == {"ok": True}
+
+
+@pytest.mark.parametrize(
+    "hostname",
+    [
+        "metadata.google.internal",
+        "METADATA.GOOGLE.INTERNAL.",
+        "metadata.tencentyun.com",
+        "metadata",
+    ],
+)
+def test_a_metadata_host_name_is_recognised(hostname):
+    from serving.utils.metadata_addresses import is_metadata_hostname
+
+    assert is_metadata_hostname(hostname)

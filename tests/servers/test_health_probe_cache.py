@@ -74,7 +74,7 @@ async def test_the_next_call_after_the_window_probes_again(test_client, app_serv
     clock.now += health.HEALTH_PROBE_TTL_SEC + 0.1
     app_services.operational_store.health_check = AsyncMock(return_value=False)
     app_services.log_store.health_check = AsyncMock(return_value=False)
-    resp = await test_client.get("/health")
+    resp = await test_client.get("/health", headers={"Authorization": "Bearer test-admin-token"})
 
     assert resp.status_code == 503
     assert resp.json()["reason"] == "database_disconnected"
@@ -139,7 +139,9 @@ async def test_readiness_sees_an_outage_once_the_window_has_passed(
 
     clock.now += health.HEALTH_PROBE_TTL_SEC + 0.1
     app_services.log_store.health_check = AsyncMock(return_value=False)
-    resp = await test_client.get("/health/ready")
+    resp = await test_client.get(
+        "/health/ready", headers={"Authorization": "Bearer test-admin-token"}
+    )
 
     assert resp.status_code == 503
     assert resp.json()["reason"] == "store_degraded"

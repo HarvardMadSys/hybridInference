@@ -20,11 +20,29 @@ to the account before is counted in three of them:
 
 The per-address buckets tell clients apart only as well as the client address
 does. A backend that cannot resolve one — every browser reaching it through
-the console's proxy, without trusted-proxy settings, is ``"unknown"`` — puts
-all of them on one address, where the per-account-per-address bucket is per
-account again. A browser that has signed in to the account before presents
-the device cookie that sign-in gave it (:mod:`serving.utils.device_cookie`)
-and is counted in the last two buckets alone:
+the console's proxy, without trusted-proxy settings, is ``"unknown"``
+(``ClientIpInfo.resolved`` is False) — has no address to count by. Such an
+attempt is kept out of the per-IP bucket, which would otherwise be one window
+shared by every unresolved client, there for any one of them to fill and lock
+the rest out of every account. It is counted per account instead, in the
+per-account-per-address bucket under one :data:`UNRESOLVED_CLIENT` key, and
+in the account-wide one, so guessing at one account stays as bounded as it
+was. A signed-in owner confirming a change (:mod:`.reauth`) is counted under
+its own session there instead: someone else's guesses at the name do not
+reach it, and whoever holds a stolen session still gets five a window.
+
+Nothing refuses an unresolved sign-in for what other clients did. What the
+per-IP bucket also bounded -- one source spreading single guesses over many
+accounts -- has no identity to be bounded by: any shared budget for it is one
+every other unresolved client can be locked out of. What remains is per
+account, plus the password capacity guard
+(:func:`serving.utils.password.ensure_password_capacity`), which bounds the
+hashing a flood can cost. This mirrors :mod:`serving.utils.mail_rate_limit`;
+trusted-proxy settings are what tell such clients apart, and the request IP
+resolver warns while they are missing. A browser that has signed in to the
+account before presents the device cookie that sign-in gave it
+(:mod:`serving.utils.device_cookie`) and is counted in the last two buckets
+alone:
 
 * Per device: its own ``settings.login_rate_limit_per_15min`` attempts per
   15 minutes, keyed by the cookie entry's nonce. While the shared window
@@ -76,7 +94,7 @@ from itertools import islice
 from typing import TYPE_CHECKING, TypeVar
 
 from serving.config.settings import settings
-from serving.utils.request_ip import normalize_ip_bucket
+from serving.utils.request_ip import ClientIpInfo, normalize_ip_bucket
 
 if TYPE_CHECKING:
     from serving.utils.device_cookie import RecognizedDevice
@@ -112,6 +130,9 @@ _account_attempts: OrderedDict[str, list[float]] = OrderedDict()
 _ip_attempts: OrderedDict[str, list[float]] = OrderedDict()
 # When a refusal was last recorded, by (address bucket, reason).
 _refusals_recorded: OrderedDict[tuple[str, str], list[float]] = OrderedDict()
+#: The address key every attempt from an unresolved client is counted under, per
+#: account. Never a parseable address, so no resolved client shares it.
+UNRESOLVED_CLIENT = "unresolved"
 _setup_attempts: dict[str, deque[float]] = {}
 _lock = asyncio.Lock()
 _setup_sweep_counter = 0
@@ -171,8 +192,24 @@ def _record(bucket: list[float], now: float, keep: int) -> None:
         del bucket[: len(bucket) - keep]
 
 
+def _address_key(client: ClientIpInfo | str) -> str | None:
+    """The bucket a client's address is counted in, or None when it is unresolved.
+
+    A string is an address the caller already resolved; ``"unknown"``, which
+    :func:`serving.utils.request_ip.get_client_ip` answers for an unresolved
+    one, reads as unresolved too.
+    """
+    if isinstance(client, ClientIpInfo):
+        return normalize_ip_bucket(client.client_ip) if client.resolved else None
+    return None if client == "unknown" else normalize_ip_bucket(client)
+
+
 async def check_and_record_login(
-    email: str, ip: str, *, device: RecognizedDevice | str | None = None
+    email: str,
+    client: ClientIpInfo | str,
+    *,
+    device: RecognizedDevice | str | None = None,
+    session_id: str | None = None,
 ) -> tuple[bool, str | None]:
     """Record a login attempt and return whether it should be allowed.
 
@@ -188,6 +225,12 @@ async def check_and_record_login(
     bucket that tripped: ``"device"`` (this browser), ``"ip"`` (this address,
     any account), ``"email"`` (this account from this address) or
     ``"account"`` (this account from every address together).
+
+    *client* is the request's :class:`~serving.utils.request_ip.ClientIpInfo`
+    (or an address string). An unresolved one is counted per account only,
+    never in the per-IP bucket. *session_id* is the session of a signed-in
+    owner confirming a change: an unresolved one is then counted under that
+    session rather than with every other unresolved client.
 
     Recording happens on entry, in the same critical section as the check,
     so probing with varied payloads or concurrent requests cannot bypass the
@@ -209,8 +252,8 @@ async def check_and_record_login(
     # Normalize the identifier so case variants share the same bucket.
     account_key = email.strip().lower()
     # Normalize IPv6 to its /64 so rotating within a delegated prefix cannot
-    # reset either per-address window.
-    ip_key = normalize_ip_bucket(ip)
+    # reset either per-address window. None: the address is unresolved.
+    ip_key = _address_key(client)
 
     async with _lock:
         if device is not None:
@@ -237,13 +280,22 @@ async def check_and_record_login(
         # sending a new name each time adds nothing per name. Checked ahead of
         # the 15-minute windows, it also makes Retry-After a realistic wait
         # (telling an hour-blocked client to retry in 15 min would be wrong).
-        ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)
-        ip_count = len(ip_bucket)
-        _record(ip_bucket, now, per_ip)
-        if ip_count >= per_ip:
-            return False, "ip"
+        if ip_key is None:
+            # No address to tell this client from every other unresolved one:
+            # it is counted per account below (see the module docstring), a
+            # signed-in owner under its own session.
+            address_key = f"session:{session_id}" if session_id else UNRESOLVED_CLIENT
+        else:
+            ip_bucket = _window(_ip_attempts, ip_key, ip_cutoff)
+            ip_count = len(ip_bucket)
+            _record(ip_bucket, now, per_ip)
+            if ip_count >= per_ip:
+                return False, "ip"
+            address_key = ip_key
 
-        address_bucket = _window(_account_address_attempts, (account_key, ip_key), window_cutoff)
+        address_bucket = _window(
+            _account_address_attempts, (account_key, address_key), window_cutoff
+        )
         address_count = len(address_bucket)
         _record(address_bucket, now, per_account_address)
         if address_count >= per_account_address:

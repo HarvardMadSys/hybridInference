@@ -12,8 +12,9 @@ routes requests normally — it simply has no request history, no user accounts,
 API-key issuance, and no admin surfaces backed by stored settings. It reads
 every setting from the environment instead.
 
-The distinction matters when reading `/health`, because the two "no database"
-states are not the same answer:
+The distinction matters when reading `/health` as an administrator (anyone else
+is told `status` alone), because the two "no database" states are not the same
+answer:
 
 ```json
 {"status": "healthy",   "routes_configured": 3, "database_configured": false, "database_connected": false}

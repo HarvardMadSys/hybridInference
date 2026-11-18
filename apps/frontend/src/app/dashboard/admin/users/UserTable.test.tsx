@@ -13,6 +13,50 @@ import type { UserRow } from './types';
 const cnyConfig = { ...buildTimeSiteConfig, accounting: { currency: 'CNY' as const } };
 
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+
+/** The administrator's single sign-on confirmation; none unless a test sets one. */
+const adminSso = vi.hoisted(() => ({
+  current: null as null | {
+    provider: { id: string; name: string };
+    purpose: 'admin_action';
+    confirmed: boolean;
+    draft: string | null;
+    settle: (error?: unknown) => void;
+    returnTo: string;
+    userId: string;
+  },
+}));
+vi.mock('@/components/features/admin/confirm/adminSsoReauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/features/admin/confirm/adminSsoReauth')>()),
+  useAdminSsoReauth: () => adminSso.current,
+  useSpendAdminSso:
+    () =>
+    async <T,>(write: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await write();
+        adminSso.current?.settle();
+        return result;
+      } catch (error) {
+        adminSso.current?.settle(error);
+        throw error;
+      }
+    },
+}));
+
+/** Back from the provider, confirmed: the next guarded action needs no password. */
+function confirmedSso() {
+  const settle = vi.fn();
+  adminSso.current = {
+    provider: { id: 'okta', name: 'Okta' },
+    purpose: 'admin_action',
+    confirmed: true,
+    draft: null,
+    settle,
+    returnTo: '/dashboard/admin/users',
+    userId: 'u-admin',
+  };
+  return settle;
+}
 vi.mock('@/lib/api/admin', () => ({
   getUserDetail: vi.fn(),
   // The projects panel loads on its own; these tests are about the rest.
@@ -723,6 +767,46 @@ describe('UserDetailPanel two-factor authentication', () => {
       ).not.toBeInTheDocument(),
     );
     expect(resetUserTwoFactor).toHaveBeenCalledExactlyOnceWith('user-1', 'Hunter2hunter2');
+  });
+});
+
+describe('removing an authenticator, confirmed through single sign-on', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture({ two_factor_enabled: true }));
+  });
+  afterEach(() => {
+    adminSso.current = null;
+    cleanup();
+  });
+
+  it('spends the confirmation once the gateway removes it', async () => {
+    const settle = confirmedSso();
+    vi.mocked(resetUserTwoFactor).mockResolvedValue({ user_id: 'user-1', removed: true });
+    renderTable(baseUser);
+    await expand();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove authenticator' }));
+    expect(within(dialog()).queryByLabelText('Your password')).not.toBeInTheDocument();
+    clickInDialog('Remove');
+
+    await waitFor(() => expect(resetUserTwoFactor).toHaveBeenCalledWith('user-1', undefined));
+    await waitFor(() => expect(settle).toHaveBeenCalledWith());
+  });
+
+  it('spends it when the gateway refuses, keeping the reason in the dialog', async () => {
+    const settle = confirmedSso();
+    const refusal = Object.assign(new Error('Confirm your identity first.'), { statusCode: 400 });
+    vi.mocked(resetUserTwoFactor).mockRejectedValue(refusal);
+    renderTable(baseUser);
+    await expand();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove authenticator' }));
+    clickInDialog('Remove');
+
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent(
+      'Confirm your identity first.',
+    );
+    expect(settle).toHaveBeenCalledWith(refusal);
   });
 });
 

@@ -35,7 +35,6 @@ import base64
 import errno
 import hashlib
 import hmac
-import ipaddress
 import json
 import secrets
 import socket
@@ -46,8 +45,9 @@ from urllib.parse import urljoin, urlsplit
 
 import aiohttp
 
+from serving.utils.ip_classification import is_public_unicast, parse_ip, reachable_addresses
 from serving.utils.logging import get_logger
-from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
+from serving.utils.metadata_addresses import is_metadata_address, is_metadata_hostname
 
 logger = get_logger(__name__)
 
@@ -109,17 +109,21 @@ def verify(secret: str, headers: dict[str, str], body: bytes, *, tolerance: int 
 
 
 def _refused_address(address: str, *, allow_private: bool) -> bool:
+    """Whether a webhook may not connect to *address*.
+
+    Judged by every host the address reaches, so IPv4 carried in IPv6 (NAT64,
+    IPv4-compatible, 6to4, ...) is refused exactly as the IPv4 address would be
+    (:mod:`serving.utils.ip_classification`).
+    """
     try:
-        ip = ipaddress.ip_address(address.split("%", 1)[0])
+        ip = parse_ip(address)
     except ValueError:
         return True
-    if ip.version == 6 and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped
     if is_metadata_address(ip):
         return True
     if allow_private:
-        return ip.is_multicast or ip.is_unspecified
-    return not ip.is_global or ip.is_multicast
+        return any(host.is_multicast or host.is_unspecified for host in reachable_addresses(ip))
+    return not is_public_unicast(ip)
 
 
 def check_url(url: str, *, allow_private: bool) -> str:
@@ -147,10 +151,10 @@ def check_url(url: str, *, allow_private: bool) -> str:
     if not host:
         raise WebhookTargetRefused("The webhook URL has no host.")
     local_name = host == "localhost" or host.endswith(".localhost")
-    if host in METADATA_HOSTNAMES or (local_name and not (allow_private and host == "localhost")):
+    if is_metadata_hostname(host) or (local_name and not (allow_private and host == "localhost")):
         raise WebhookTargetRefused("The webhook host is not allowed.")
     try:
-        ipaddress.ip_address(host)
+        parse_ip(host)
     except ValueError:
         # A name: it must encode as IDNA (no empty or over-long label), or the
         # lookup would fail with a UnicodeError before any network I/O.

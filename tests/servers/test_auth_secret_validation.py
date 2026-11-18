@@ -217,6 +217,9 @@ async def settings_client(monkeypatch, auth_environment):
     await runtime_settings.get_bool("user_auth_enabled")
     log_action = AsyncMock()
     monkeypatch.setattr(settings_routes, "log_admin_action", log_action)
+    # The administrator's confirmation of a guarded setting has its own tests
+    # (test_admin_settings_reauth); here it is given.
+    monkeypatch.setattr(settings_routes, "confirm_administrator", AsyncMock())
     app = FastAPI()
     app.include_router(settings_routes.router)
     app.dependency_overrides[verify_admin_access] = lambda: "test-admin"

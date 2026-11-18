@@ -2087,22 +2087,35 @@ export async function removeSignupAllowedDomain(
 // ========================================
 
 export interface RuntimeSettingItem {
-  currency?: 'USD' | 'CNY';
   key: string;
   value: unknown;
-  amount?: number;
-  default_amount?: number;
-  min_amount?: number | null;
-  max_amount?: number | null;
   value_type: string;
   default_value: unknown;
   description: string;
   min?: number | null;
   max?: number | null;
+  /**
+   * Changing it needs the signed-in administrator's confirmation: a recent
+   * authenticator code, the account's password, or a fresh single sign-on.
+   * The admin token cannot give one. Absent from an older gateway.
+   */
+  security_relevant?: boolean;
+  /**
+   * A role quota on a ledger kept in another currency than USD: `value`,
+   * `default_value`, `min` and `max` stay USD figures, and these give the same
+   * in `currency`, the unit the quota is edited and sent in.
+   */
+  currency?: LedgerCurrency;
+  amount?: number | null;
+  default_amount?: number | null;
+  min_amount?: number | null;
+  max_amount?: number | null;
 }
 
+/** The units a deployment's ledger can be kept in. */
+export type LedgerCurrency = 'USD' | 'CNY';
+
 export interface ListSettingsResponse {
-  currency?: 'USD' | 'CNY';
   settings: RuntimeSettingItem[];
 }
 
@@ -2111,17 +2124,51 @@ export async function listRuntimeSettings(): Promise<ListSettingsResponse> {
   return jsonOrThrow<ListSettingsResponse>(resp);
 }
 
+/**
+ * Change one runtime setting. A `security_relevant` one is confirmed like any
+ * guarded change: by a recent code (the console asks for one when the gateway
+ * wants it), by `password` when the administrator's account has no
+ * authenticator, or by a fresh sign-in at its identity provider.
+ */
 export async function updateRuntimeSetting(
   key: string,
   value: unknown,
-  currency?: 'USD' | 'CNY',
+  password?: string,
+  currency?: LedgerCurrency,
 ): Promise<RuntimeSettingItem> {
   const resp = await fetchWithAuth(API_BASE, `/admin/settings/${encodeURIComponent(key)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value, ...(currency ? { currency } : {}) }),
+    body: JSON.stringify({
+      value,
+      ...(currency ? { currency } : {}),
+      ...(password ? { password } : {}),
+    }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
+}
+
+/**
+ * Change several runtime settings behind one confirmation. Every value is
+ * checked first, and nothing is written when one is refused. Resolves to the
+ * settings as written. `currency` is the unit the role quotas among `values`
+ * are given in; without it the gateway reads them as USD.
+ */
+export async function updateRuntimeSettings(
+  values: Record<string, unknown>,
+  password?: string,
+  currency?: LedgerCurrency,
+): Promise<RuntimeSettingItem[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      values,
+      ...(currency ? { currency } : {}),
+      ...(password ? { password } : {}),
+    }),
+  });
+  return (await jsonOrThrow<ListSettingsResponse>(resp)).settings;
 }
 
 // ========================================

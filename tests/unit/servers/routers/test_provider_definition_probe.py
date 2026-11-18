@@ -183,7 +183,57 @@ async def test_a_redirect_is_never_followed(upstream):
     refused = await _refused(upstream)
 
     assert upstream.elsewhere_hits == 0
-    assert refused.detail == "Provider did not return a streaming response."
+    assert refused.detail.startswith("Provider answered with a redirect (HTTP 302)")
+    # Where it pointed is not shown: it may name an internal address.
+    assert "/internal" not in refused.detail
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "root:x:0:0:root:/root:/bin/bash\ninternal-admin-token=abc123",
+        "<html><body>Jenkins dashboard: build secret abc123</body></html>",
+        '{"AccessKeyId": "ASIAEXAMPLE", "SecretAccessKey": "abc123"}',
+        '{"detail": "internal service abc123"}',
+        '["abc123"]',
+    ],
+)
+async def test_a_body_that_is_not_an_openai_error_is_never_echoed(upstream, body):
+    """The probe may reach a service that is not an inference API: its answer stays private."""
+    upstream.handler = lambda request: web.Response(status=500, text=body)
+
+    refused = await _refused(upstream)
+
+    assert refused.detail == "Provider probe failed with HTTP 500."
+    assert "abc123" not in refused.detail
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"error": {"message": "model probe-model does not exist", "type": "invalid_request"}}',
+        '{"object": "error", "message": "model probe-model does not exist", "code": 404}',
+    ],
+)
+async def test_an_openai_error_message_is_quoted(upstream, body):
+    upstream.handler = lambda request: web.Response(status=400, text=body)
+
+    refused = await _refused(upstream)
+
+    assert refused.detail == (
+        "Provider probe failed with HTTP 400. Provider said: model probe-model does not exist"
+    )
+
+
+async def test_an_echoed_api_key_is_masked(upstream):
+    upstream.handler = lambda request: web.json_response(
+        {"error": {"message": "Incorrect API key provided: sk-test-key"}}, status=401
+    )
+
+    refused = await _refused(upstream)
+
+    assert "sk-test-key" not in refused.detail
+    assert refused.detail.endswith("Incorrect API key provided: ***")
 
 
 async def test_a_non_streaming_answer_is_refused(upstream):
@@ -275,5 +325,63 @@ async def test_a_name_that_rebinds_to_cloud_metadata_after_validation_is_refused
         )
 
     assert caught.value.status_code == 400
-    assert "connection to cloud metadata address 169.254.169.254 refused" in caught.value.detail
+    assert caught.value.detail == (
+        "Provider probe failed: this deployment does not allow connections to the "
+        "provider's address."
+    )
+    # The client library's text, which names the resolved address, is not shown.
+    assert "169.254" not in caught.value.detail
     assert lookups == ["rebind.example", "rebind.example"]
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["::169.254.169.254", "64:ff9b::a9fe:a9fe", "64:ff9b::169.254.0.23", "2002:a9fe:a9fe::1"],
+)
+async def test_a_name_that_rebinds_to_embedded_metadata_is_refused(monkeypatch, address):
+    """IPv4 carried in IPv6 reaches the metadata endpoint all the same."""
+    lookups: list[str] = []
+
+    def rebinding_getaddrinfo(host, port, *args, **kwargs):
+        lookups.append(host)
+        if len(lookups) == 1:
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", port or 80))]
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, port or 80, 0, 0))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", rebinding_getaddrinfo)
+    monkeypatch.setattr(provider_definitions, "PROBE_TIMEOUT_SEC", 2.0)
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions._probe_openai_compat(
+            default_base_url="http://rebind.example/v1",
+            api_key="sk-test-key",
+            probe_model_id="probe-model",
+        )
+
+    assert caught.value.status_code == 400
+    assert "does not allow connections" in caught.value.detail
+
+
+async def test_private_upstreams_switched_off_refuse_a_rebind_to_loopback(monkeypatch):
+    """With ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0 the connect-time guard refuses loopback too."""
+    from serving.utils import admin_upstreams
+
+    monkeypatch.setattr(admin_upstreams, "private_upstreams_allowed", lambda: False)
+    lookups: list[str] = []
+
+    def rebinding_getaddrinfo(host, port, *args, **kwargs):
+        lookups.append(host)
+        address = "93.184.216.34" if len(lookups) == 1 else "127.0.0.1"
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (address, port or 80))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", rebinding_getaddrinfo)
+    monkeypatch.setattr(provider_definitions, "PROBE_TIMEOUT_SEC", 2.0)
+
+    with pytest.raises(HTTPException) as caught:
+        await provider_definitions._probe_openai_compat(
+            default_base_url="http://rebind.example/v1",
+            api_key="sk-test-key",
+            probe_model_id="probe-model",
+        )
+
+    assert "does not allow connections" in caught.value.detail

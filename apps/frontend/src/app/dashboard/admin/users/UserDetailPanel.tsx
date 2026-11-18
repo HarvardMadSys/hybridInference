@@ -4,8 +4,9 @@ import { useRef, useState, type ReactNode } from 'react';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import {
   ReauthPassword,
-  useConfirmsByCode,
+  useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import type { ConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
@@ -269,7 +270,8 @@ function AccountSettings({
   // A higher role is confirmed with the administrator's password.
   const password = useRef('');
   // An administrator with an authenticator app confirms with its code instead.
-  const byCode = useConfirmsByCode();
+  const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const busy = confirmation.busy;
   const current: AccountDraft = { ...savedAccount(detail), ...draft };
   const patch = accountPatch(detail, current);
@@ -332,15 +334,16 @@ function AccountSettings({
               {raisedRole === 'admin'
                 ? 'An administrator can change every setting and every account, and keeps that access until the role is taken away.'
                 : `The ${raisedRole} role reaches more models and the provider keys reserved for it.`}
-              {byCode ? null : ' Confirm with your password.'}
+              {withoutPassword ? null : ' Confirm with your password.'}
             </p>
             <ReauthPassword valueRef={password} label="Your password" />
           </div>
         ),
         run: async () => {
           const given = password.current;
-          if (!given && !byCode) throw new Error('Enter your password to raise this role.');
-          await onSave({ ...pendingPatch, ...(given ? { password: given } : {}) });
+          if (!given && !withoutPassword)
+            throw new Error('Enter your password to raise this role.');
+          await spendSso(() => onSave({ ...pendingPatch, ...(given ? { password: given } : {}) }));
           password.current = '';
           setDraft({});
         },
@@ -612,7 +615,8 @@ function SingleSignOn({
   // Unlinking is confirmed like a higher role: with the administrator's
   // password, or with a code when they have an authenticator app.
   const password = useRef('');
-  const byCode = useConfirmsByCode();
+  const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   const identities = detail.sso_identities ?? [];
   if (identities.length === 0) return null;
   const account = detail.email || detail.login_name || detail.phone || detail.id;
@@ -635,14 +639,15 @@ function SingleSignOn({
           <p>
             An account with no password will have no way to sign in until it resets its password.
           </p>
-          {byCode ? null : <p>Confirm with your password.</p>}
+          {withoutPassword ? null : <p>Confirm with your password.</p>}
           <ReauthPassword valueRef={password} label="Your password" />
         </div>
       ),
       run: async () => {
         const given = password.current;
-        if (!given && !byCode) throw new Error('Enter your password to unlink this identity.');
-        await onUnlink(identity.id, given || undefined);
+        if (!given && !withoutPassword)
+          throw new Error('Enter your password to unlink this identity.');
+        await spendSso(() => onUnlink(identity.id, given || undefined));
         password.current = '';
       },
     });
@@ -714,7 +719,8 @@ function TwoFactorReset({
 }) {
   const [removed, setRemoved] = useState(false);
   const password = useRef('');
-  const byCode = useConfirmsByCode();
+  const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
   if (removed) return null;
   const account = detail.email || detail.login_name || detail.phone || detail.id;
 
@@ -731,15 +737,16 @@ function TwoFactorReset({
             Its codes and recovery codes stop working. The account signs in with its password and
             adds an authenticator app again in Settings; where administrators must have one, an
             administrator has no administrator access until then.
-            {byCode ? null : ' Confirm with your password.'}
+            {withoutPassword ? null : ' Confirm with your password.'}
           </p>
           <ReauthPassword valueRef={password} label="Your password" />
         </div>
       ),
       run: async () => {
         const given = password.current;
-        if (!given && !byCode) throw new Error('Enter your password to remove the authenticator.');
-        await resetUserTwoFactor(detail.id, given || undefined);
+        if (!given && !withoutPassword)
+          throw new Error('Enter your password to remove the authenticator.');
+        await spendSso(() => resetUserTwoFactor(detail.id, given || undefined));
         password.current = '';
         setRemoved(true);
       },

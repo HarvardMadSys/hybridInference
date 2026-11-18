@@ -103,7 +103,8 @@ const cnyQuotaSetting = {
   value_type: 'float',
   default_value: 10,
   default_amount: 70,
-  description: 'Default daily USD spend quota seeded onto a pro user.',
+  // The gateway names the ledger's currency in a role quota's description.
+  description: 'Default daily CNY spend quota seeded onto a pro user.',
   min: 0,
   min_amount: 0,
   max: null,
@@ -231,7 +232,9 @@ describe('SettingsTab CNY role quota', () => {
     // The native amount, default and currency, never the USD figures.
     const field = await screen.findByLabelText('user_daily_quota_pro value');
     expect(field).toHaveValue(100);
-    expect(screen.getByText('Daily quota (CNY)')).toBeInTheDocument();
+    expect(
+      screen.getByText('Default daily CNY spend quota seeded onto a pro user.'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Default: 70')).toBeInTheDocument();
     // Nothing to save until the native amount changes.
     expect(
@@ -243,7 +246,12 @@ describe('SettingsTab CNY role quota', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save changes to Daily Quotas' }));
 
     await waitFor(() =>
-      expect(api.updateRuntimeSetting).toHaveBeenCalledWith('user_daily_quota_pro', 120, 'CNY'),
+      expect(api.updateRuntimeSetting).toHaveBeenCalledWith(
+        'user_daily_quota_pro',
+        120,
+        undefined,
+        'CNY',
+      ),
     );
     expect(api.updateRuntimeSetting).toHaveBeenCalledTimes(1);
     // The native amount is what is sent; the legacy USD value is never written.

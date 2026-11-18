@@ -18,6 +18,50 @@ import type { UserRow } from './types';
 const twoFactor = vi.hoisted(() => ({ status: undefined as { enabled: boolean } | undefined }));
 
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+
+/** The administrator's single sign-on confirmation; none unless a test sets one. */
+const adminSso = vi.hoisted(() => ({
+  current: null as null | {
+    provider: { id: string; name: string };
+    purpose: 'admin_action';
+    confirmed: boolean;
+    draft: string | null;
+    settle: (error?: unknown) => void;
+    returnTo: string;
+    userId: string;
+  },
+}));
+vi.mock('@/components/features/admin/confirm/adminSsoReauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/features/admin/confirm/adminSsoReauth')>()),
+  useAdminSsoReauth: () => adminSso.current,
+  useSpendAdminSso:
+    () =>
+    async <T,>(write: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await write();
+        adminSso.current?.settle();
+        return result;
+      } catch (error) {
+        adminSso.current?.settle(error);
+        throw error;
+      }
+    },
+}));
+
+/** Back from the provider, confirmed: the next guarded action needs no password. */
+function confirmedSso() {
+  const settle = vi.fn();
+  adminSso.current = {
+    provider: { id: 'okta', name: 'Okta' },
+    purpose: 'admin_action',
+    confirmed: true,
+    draft: null,
+    settle,
+    returnTo: '/dashboard/admin/users',
+    userId: 'u-admin',
+  };
+  return settle;
+}
 vi.mock('@/components/providers/TwoFactorProvider', () => ({
   useTwoFactor: () => ({ status: twoFactor.status, isPending: false, refresh: async () => {} }),
 }));
@@ -330,5 +374,38 @@ describe('the single sign-on block of the user detail panel', () => {
     const rows = within(block()!).getAllByRole('listitem');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toHaveTextContent('Example Labs');
+  });
+});
+
+describe('unlinking, confirmed through single sign-on', () => {
+  afterEach(() => {
+    adminSso.current = null;
+  });
+
+  it('spends the confirmation on the unlink, accepted or refused', async () => {
+    const settle = confirmedSso();
+    const refusal = Object.assign(new Error('Confirm your identity first.'), { statusCode: 400 });
+    vi.mocked(getUserDetail).mockResolvedValue(detail({ sso_identities: [identity()] }));
+    vi.mocked(unlinkUserSsoIdentity)
+      .mockRejectedValueOnce(refusal)
+      .mockResolvedValueOnce({ message: 'Unlinked.' });
+    renderTable();
+    await expand();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Unlink Example University' }));
+    const dialog = screen.getByRole('dialog', {
+      name: 'Unlink Example University from carol@example.edu?',
+    });
+    expect(within(dialog).queryByLabelText('Your password')).not.toBeInTheDocument();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(settle).toHaveBeenCalledWith(refusal));
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Unlink' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(settle).toHaveBeenLastCalledWith();
+    expect(vi.mocked(unlinkUserSsoIdentity).mock.calls).toEqual([
+      ['user-1', 'idn_1', undefined],
+      ['user-1', 'idn_1', undefined],
+    ]);
   });
 });

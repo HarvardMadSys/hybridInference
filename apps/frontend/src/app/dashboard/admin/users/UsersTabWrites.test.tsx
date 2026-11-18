@@ -19,6 +19,50 @@ import {
 } from '@/lib/api/admin';
 
 vi.mock('react-hot-toast', () => ({ default: { success: vi.fn(), error: vi.fn() } }));
+
+/** The administrator's single sign-on confirmation; none unless a test sets one. */
+const adminSso = vi.hoisted(() => ({
+  current: null as null | {
+    provider: { id: string; name: string };
+    purpose: 'admin_action';
+    confirmed: boolean;
+    draft: string | null;
+    settle: (error?: unknown) => void;
+    returnTo: string;
+    userId: string;
+  },
+}));
+vi.mock('@/components/features/admin/confirm/adminSsoReauth', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/components/features/admin/confirm/adminSsoReauth')>()),
+  useAdminSsoReauth: () => adminSso.current,
+  useSpendAdminSso:
+    () =>
+    async <T,>(write: () => Promise<T>): Promise<T> => {
+      try {
+        const result = await write();
+        adminSso.current?.settle();
+        return result;
+      } catch (error) {
+        adminSso.current?.settle(error);
+        throw error;
+      }
+    },
+}));
+
+/** Back from the provider, confirmed: the next guarded action needs no password. */
+function confirmedSso() {
+  const settle = vi.fn();
+  adminSso.current = {
+    provider: { id: 'okta', name: 'Okta' },
+    purpose: 'admin_action',
+    confirmed: true,
+    draft: null,
+    settle,
+    returnTo: '/dashboard/admin/users',
+    userId: 'u-admin',
+  };
+  return settle;
+}
 vi.mock('next/navigation', () => {
   const search = new URLSearchParams();
   const router = { replace: vi.fn() };
@@ -322,4 +366,31 @@ it('says in the confirmation when none of the selected users could be approved',
   );
   expect(toast.success).not.toHaveBeenCalled();
   expect(toast.error).not.toHaveBeenCalled();
+});
+
+it('spends a single sign-on confirmation on a raised role, so the next one asks again', async () => {
+  const settle = confirmedSso();
+  mockList('active');
+  vi.mocked(getUserDetail)
+    .mockResolvedValueOnce(detail())
+    .mockResolvedValueOnce(detail({ role: 'admin' }));
+  vi.mocked(updateUser).mockResolvedValueOnce({
+    user_id: 'fixture-user',
+    updated_fields: ['role'],
+    message: 'ok',
+  });
+  renderUsers();
+
+  fireEvent.click(await screen.findByText('fixture@example.test'));
+  await screen.findByRole('combobox', { name: 'Role' });
+  chooseOption('Role', 'admin');
+  fireEvent.click(screen.getByRole('button', { name: 'Save changes to account settings' }));
+  const dialog = await screen.findByRole('dialog');
+  expect(within(dialog).queryByLabelText('Your password')).not.toBeInTheDocument();
+  fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+  expect(vi.mocked(updateUser).mock.calls).toEqual([['fixture-user', { role: 'admin' }]]);
+  expect(settle).toHaveBeenCalledWith();
+  adminSso.current = null;
 });

@@ -26,7 +26,10 @@ from serving.config.offload_routes import (
     decode_offload_policy,
 )
 from serving.config.route_states import RouteState
-from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
+from serving.config.runtime_settings import (
+    RUNTIME_SETTINGS_REGISTRY,
+    runtime_setting_security_relevant,
+)
 
 try:
     from serving.config.routewise_model_settings import (
@@ -118,16 +121,14 @@ _SECRET_SITE_SETTING_KEYS: frozenset[str] = frozenset({USAGE_INSIGHTS_API_KEY})
 # who may sign in or use what, which networks are trusted, where the gateway
 # sends requests, credentials, mail and users, and whether it reports trouble.
 # For ``app_config`` that is :func:`app_config.security_relevant`; for
-# ``site_settings``, these keys and the keys under these prefixes: a runtime
+# ``site_settings``, every runtime setting its registry marks security-relevant
+# (:func:`runtime_setting_security_relevant`, which ``PATCH /admin/settings``
+# guards too), these keys and the keys under these prefixes: a runtime
 # model's required role, and an alert type's mute. The plan also lists a
 # change to who may use a model or a provider key, and to where and how a
 # route sends requests and keys (:func:`_restore_plan`).
 _SECURITY_SITE_SETTING_KEYS: frozenset[str] = frozenset(
     {
-        "user_auth_enabled",
-        "signup_enabled",
-        "signup_require_email_verification",
-        "log_full_payload",
         SNOOZE_SETTING_KEY,
         *_SECRET_SITE_SETTING_KEYS,
     }
@@ -145,7 +146,11 @@ _MAX_RESTORED_SNOOZE_SECONDS = 7 * 24 * 60 * 60 + 60
 
 def _security_relevant_site_setting(key: str) -> bool:
     """Whether changing ``site_settings`` *key* from a backup needs confirmation and the password."""
-    return key in _SECURITY_SITE_SETTING_KEYS or key.startswith(_SECURITY_SITE_SETTING_PREFIXES)
+    return (
+        key in _SECURITY_SITE_SETTING_KEYS
+        or runtime_setting_security_relevant(key)
+        or key.startswith(_SECURITY_SITE_SETTING_PREFIXES)
+    )
 
 
 def _jsonb_value(raw: Any) -> Any:

@@ -591,3 +591,13 @@ async def test_the_fetch_is_gateway_time_not_engine_time(media):
 
     assert events[:3] == ["queued", "fetched", "sent"]
     assert len(http.sent) == 1
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["::169.254.169.254", "64:ff9b::10.0.0.5", "64:ff9b:1::808:808", "::ffff:0:127.0.0.1"],
+)
+def test_embedded_ipv4_from_the_shared_classifier_is_not_public(address):
+    from serving.adapters.remote_media import is_public_address
+
+    assert not is_public_address(address)

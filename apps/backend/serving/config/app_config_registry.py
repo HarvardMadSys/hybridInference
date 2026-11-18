@@ -696,6 +696,20 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         minimum=1,
     ),
     _setting(
+        "sms_otp_send_unresolved_per_hour",
+        "phone",
+        "Messages requested per hour by all clients whose address could not be resolved, together.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
+        "sms_otp_send_unresolved_per_day",
+        "phone",
+        "Messages requested per day by all clients whose address could not be resolved, together.",
+        "int",
+        minimum=1,
+    ),
+    _setting(
         "sms_otp_max_attempts",
         "phone",
         "Maximum guesses for a verification code.",
@@ -1366,6 +1380,18 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "network",
         "Accept X-Real-IP from trusted proxies. Requires TRUST_PROXY_HEADERS.",
         "bool",
+    ),
+    ConfigEntry(
+        "ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS",
+        "network",
+        "Let administrators save and probe provider Base URLs, and the model queue status "
+        "address, on private, loopback and link-local addresses (self-hosted engines). Off "
+        "refuses them when saved or probed and at connect time, for a gateway kept apart "
+        "from its own network; routes saved earlier keep serving. Cloud metadata addresses "
+        "are always refused.",
+        type="bool",
+        default="1",
+        flag=True,
     ),
     # --- alerts ------------------------------------------------------------
     _setting(
