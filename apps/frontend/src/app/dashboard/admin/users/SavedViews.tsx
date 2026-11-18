@@ -29,6 +29,11 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
           <button
             type="button"
             onClick={() => onApply(v.filterState)}
+            title={
+              v.thresholdsLeftOut
+                ? `Saved while amounts were in ${v.thresholdsLeftOut}: its spend thresholds are left out`
+                : undefined
+            }
             className={`rounded-full border px-3 py-1 text-[12px] font-medium transition-colors ${
               v.builtin ? '' : 'rounded-r-none border-r-0'
             } ${
@@ -38,6 +43,9 @@ export function SavedViews({ current, onApply }: SavedViewsProps) {
             }`}
           >
             {v.name}
+            {v.thresholdsLeftOut && (
+              <span className="ml-1 opacity-60">· no {v.thresholdsLeftOut} thresholds</span>
+            )}
           </button>
           {!v.builtin && (
             <button

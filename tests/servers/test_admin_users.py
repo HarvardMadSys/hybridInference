@@ -251,6 +251,62 @@ async def test_list_users_deleted_count(admin_client):
     assert counts["active"] == 1
 
 
+@pytest.fixture
+def cny_ledger(monkeypatch):
+    from serving import accounting
+
+    policy = accounting.AccountingPolicy("CNY", Decimal("6.7180"), "2026-11-05", "synthetic")
+    monkeypatch.setattr(accounting, "_policy", policy)
+    return policy
+
+
+@pytest.mark.asyncio
+async def test_list_users_opens_without_a_threshold_under_a_stale_currency(
+    admin_client, cny_ledger
+):
+    """A console loaded before the ledger moved to CNY still opens the list.
+
+    It names the currency it was loaded under (USD) on every request. With no
+    spend threshold nothing in the request depends on it, so the list is not
+    refused.
+    """
+    client, op_store, _log_store, _log = admin_client
+    op_store.list_users.return_value = (1, [_user_row()], {"all": 1, "active": 1})
+
+    response = await client.get("/admin/users?currency=USD&status=active", headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    kwargs = op_store.list_users.await_args.kwargs
+    assert kwargs["min_cost_today"] is None
+    assert kwargs["min_cost_month"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("threshold", ["min_cost_today", "min_cost_month"])
+async def test_list_users_refuses_a_threshold_read_under_another_currency(
+    admin_client, cny_ledger, threshold
+):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get(f"/admin/users?currency=USD&{threshold}=5", headers=AUTH)
+
+    assert response.status_code == 409
+    op_store.list_users.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_list_users_reads_a_threshold_in_the_ledger_currency(admin_client, cny_ledger):
+    client, op_store, _log_store, _log = admin_client
+
+    response = await client.get("/admin/users?currency=CNY&min_cost_today=67.18", headers=AUTH)
+
+    assert response.status_code == 200
+    kwargs = op_store.list_users.await_args.kwargs
+    assert kwargs["min_cost_today"] == Decimal("10")
+    assert kwargs["min_cost_month"] is None
+
+
 # ========================================================================
 # Feature 2: Audit Log
 # ========================================================================

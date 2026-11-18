@@ -14,11 +14,15 @@ export const USERS_LIST_QUERY_KEY = ['admin', 'users', 'list'] as const;
 
 export function useUsers(state: FilterState, limit = 100, offset = 0) {
   const { currency } = useMoney();
+  // Only a spend threshold is read in the ledger's currency, so only a request
+  // with one names it: the gateway refuses that request when its ledger has
+  // since moved to another currency, and nothing else in the list depends on it.
+  const thresholds = state.minCostToday !== null || state.minCostMonth !== null;
   return useQuery({
     queryKey: [...USERS_LIST_QUERY_KEY, state, limit, offset, currency],
     queryFn: () =>
       listUsers({
-        currency,
+        currency: thresholds ? currency : undefined,
         status: state.status ?? undefined,
         search: state.search || undefined,
         sortBy: state.sortBy,
