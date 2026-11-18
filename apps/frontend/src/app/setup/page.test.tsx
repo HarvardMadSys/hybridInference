@@ -42,6 +42,7 @@ vi.mock('@/lib/api/config', () => ({
 vi.mock('@/lib/api/admin', () => ({
   listRuntimeSettings: vi.fn(),
   updateRuntimeSetting: vi.fn(),
+  updateRuntimeSettings: vi.fn(),
 }));
 
 vi.mock('@/lib/utils/navigation', async (importOriginal) => ({
@@ -49,7 +50,7 @@ vi.mock('@/lib/utils/navigation', async (importOriginal) => ({
   navigateTo: (url: string) => navigateToMock(url),
 }));
 
-import { listRuntimeSettings, updateRuntimeSetting } from '@/lib/api/admin';
+import { listRuntimeSettings, updateRuntimeSetting, updateRuntimeSettings } from '@/lib/api/admin';
 import { getConfig, patchConfig, restartBackend, waitForBackendRestart } from '@/lib/api/config';
 import { createSetupAdmin, getSetupStatus } from '@/lib/api/setup';
 
@@ -583,6 +584,45 @@ describe('step 2: configure', () => {
         password: 'Secret123',
       }),
     );
+    expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
+  });
+
+  it('asks for the password a guarded sign-up switch needs, and writes the switches together', async () => {
+    // A backend that guards who may sign up: the console token alone cannot change it.
+    vi.mocked(listRuntimeSettings).mockResolvedValue({
+      settings: RUNTIME_SETTINGS.settings.map((item) => ({ ...item, security_relevant: true })),
+    });
+    vi.mocked(updateRuntimeSettings).mockImplementation(async (values) =>
+      Object.entries(values).map(([key, value]) => ({
+        key,
+        value,
+        value_type: 'bool',
+        default_value: true,
+        description: '',
+        security_relevant: true,
+      })),
+    );
+    await reachConfigureStep();
+    expect(screen.queryByLabelText('Your password')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('switch', { name: 'Allow public sign-up' }));
+    fireEvent.click(screen.getByRole('switch', { name: 'Require email verification' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Enter your password to save these settings.',
+    );
+    expect(updateRuntimeSettings).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText('Your password'), { target: { value: 'Secret123' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+
+    await waitFor(() =>
+      expect(updateRuntimeSettings).toHaveBeenCalledWith(
+        { signup_enabled: false, signup_require_email_verification: false },
+        'Secret123',
+      ),
+    );
+    expect(updateRuntimeSetting).not.toHaveBeenCalled();
     expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
   });
 

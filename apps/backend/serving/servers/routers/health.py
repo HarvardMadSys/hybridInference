@@ -308,12 +308,28 @@ async def root() -> dict[str, Any]:
     }
 
 
+def _for_caller(body: dict[str, Any], admin: bool) -> dict[str, Any]:
+    """*body* for an administrator; for anyone else, only its ``status``.
+
+    The liveness and readiness probes are anonymous, and what they need is the
+    status code and ``status``. The rest names this process (``instance``), the
+    number of routes and how the stores are built (``postgres``, an in-memory
+    cache): an outline of the deployment that only an administrator
+    (:func:`_admin_caller`) is shown. ``admin`` counts only when it is ``True``,
+    so a direct call that leaves out the dependency gets the public answer.
+    """
+    if admin is True:
+        return body
+    return {"status": body["status"]}
+
+
 @router.get("/health")
 async def health(
     response: Response,
     router_exec=Depends(get_router),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
     """Liveness check endpoint with active database connection test.
 
@@ -333,7 +349,19 @@ async def health(
     The store probe behind it is shared: one probe answers every caller for
     :data:`HEALTH_PROBE_TTL_SEC`, and callers arriving while it runs wait for
     it rather than starting their own.
+
+    Anyone is answered ``{"status": ...}`` with the status code; only an
+    administrator is also shown the reason, this process's ``instance``, the
+    route count and each store's state (:func:`_for_caller`).
     """
+    body = await _health_body(response, router_exec, op_store, log_store)
+    return _for_caller(body, admin)
+
+
+async def _health_body(
+    response: Response, router_exec: Any, op_store: Any, log_store: Any
+) -> dict[str, Any]:
+    """The full ``/health`` answer, setting the status code on *response*."""
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
     store_health = await _cached_store_health(op_store, log_store)
@@ -406,6 +434,7 @@ async def health_ready(
     response: Response,
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
     """Strict readiness probe: every configured store must be reachable.
 
@@ -415,7 +444,17 @@ async def health_ready(
     instance from a load balancer on partial-DB degradation. Distinct
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
+
+    Like ``/health``, anyone is answered ``{"status": ...}``; an administrator
+    is also shown the reason and the stores (:func:`_for_caller`).
     """
+    return _for_caller(await _ready_body(request, response, op_store, log_store), admin)
+
+
+async def _ready_body(
+    request: Request, response: Response, op_store: Any, log_store: Any
+) -> dict[str, Any]:
+    """The full ``/health/ready`` answer, setting the status code on *response*."""
     # A process handing its traffic to another one (serving/servers/handoff.py)
     # still serves what reaches it, but should be given nothing more.
     if handoff.HANDOFF.state is not handoff.State.SERVING:

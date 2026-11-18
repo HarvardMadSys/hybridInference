@@ -193,6 +193,22 @@ before deleting the key.
 Add and verify providers and keys here. Credentials remain write-only. Built-in
 adapter kinds and catalog-owned provider names remain reserved.
 
+A provider's Base URL may name any host, private and loopback ones included,
+so that a self-hosted engine (vLLM, SGLang, Ollama) can be added. Cloud
+instance metadata addresses are always refused, in every spelling: IPv4 carried
+in IPv6 (IPv4-compatible, NAT64, 6to4 and the rest) is judged as the IPv4
+address it reaches. When a probe fails, it shows the upstream's error message
+only when the upstream answered in the OpenAI error format. Other response
+bodies, redirect targets and connection details are not shown.
+
+A deployment whose gateway must not reach its own network can set
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs
+saved or probed in Admin, and the model queue status address, must then
+resolve to public addresses. This is checked when the URL is validated and
+again for every connection the probe opens. Routes saved earlier keep serving:
+the switch governs what Admin accepts and probes, not existing inference
+traffic. Restrict the gateway's egress at the network layer as well.
+
 ### Routing tab
 
 Create models, verify routes, edit their targets and capabilities, adjust
@@ -247,8 +263,17 @@ Analytics visibility switches affect the console without a backend restart.
 
 ### On the Settings tab
 
-Security-sensitive changes require the administrator's password. Conditional
-saves prevent overwriting another administrator's concurrent edits.
+Security-sensitive changes require the administrator to confirm who they are.
+An account with an authenticator app gives a code. An account with a password
+gives the password. An account that signs in only through single sign-on
+signs in there again, which confirms one change within five minutes. A save
+that would need it twice, such as resetting a credential and changing another
+security setting of the same category, sends nothing; save them one at a time.
+`ADMIN_TOKEN` cannot confirm. These changes include the runtime switches and
+numbers that decide who may sign in or sign up, whether inference needs a key,
+what is logged of a request, and what each account may spend and run at once.
+Analytics and routing switches save without a confirmation. Conditional saves
+prevent overwriting another administrator's concurrent edits.
 
 ### Backup and restore
 

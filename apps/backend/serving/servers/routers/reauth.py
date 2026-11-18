@@ -19,7 +19,7 @@ from serving.servers.routers.phone_auth_routes import verify_phone_code
 from serving.utils import password as password_utils
 from serving.utils.device_cookie import recognized_device
 from serving.utils.login_rate_limit import check_and_record_login
-from serving.utils.request_ip import get_client_ip
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.sms import is_sms_enabled
 
 #: How long a fresh sign-in at an identity provider confirms an action for.
@@ -44,7 +44,8 @@ async def confirm_account_owner(
     """Raise unless *password* or *phone_code* proves the owner of *user_row*.
 
     An account with a password must give it; attempts count against the login
-    rate limit, so this is never a second place to guess it. An account
+    rate limit, so this is never a second place to guess it (from an
+    unresolved address, counted under the session *sid* names). An account
     without one must give a code for *purpose* sent to its verified phone. An
     account with neither, which signs in through an identity provider, must
     have just signed in there again for *purpose* in the session *sid* names
@@ -59,10 +60,13 @@ async def confirm_account_owner(
         identifier = account_identifier(user_row) or user_row["id"]
         # The same limits as sign-in, including the device cookie's own budget:
         # someone else's guesses at this name must not block its owner here.
+        # A signed-in session: from an unresolved address it is counted under
+        # its own session, which anonymous guesses at this name never reach.
         allowed, reason = await check_and_record_login(
             identifier,
-            get_client_ip(request),
+            get_client_ip_info(request),
             device=recognized_device(request, identifier),
+            session_id=sid,
         )
         if not allowed:
             raise HTTPException(

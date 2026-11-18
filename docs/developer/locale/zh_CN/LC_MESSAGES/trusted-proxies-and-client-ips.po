@@ -725,23 +725,9 @@ msgstr ""
 "`ClientIpInfo.resolved=False`），而不是拿一个内部地址冒充客户端地址。这样做是对的：如果套接字对端是 Docker "
 "网桥，又没有可信的转发来源，`\"unknown\"` 比 `172.19.0.1` 更有用。"
 
-#: ../developer/trusted-proxies-and-client-ips.md:283
-msgid ""
-"Sign-in limits are a consumer you will notice. They count attempts per "
-"address — five per username from one address in 15 minutes, twenty per "
-"address in an hour — and every browser whose address resolves to "
-"`\"unknown\"` shares one. Behind the bundled Compose file's console, unless "
-"the gateway trusts the header your edge sets (see [Behind the "
-"console](#behind-the-console)), that is every browser: anyone's wrong "
-"passwords then count against everyone else's sign-ins. Only a browser that "
-"has signed in to the account before escapes this, with the device cookie "
-"that gives it attempts of its own; see [The first admin "
-"account](deployment.md#the-first-admin-account)."
-msgstr ""
-"登录限制就是一个你会注意到的使用方。它们按地址为尝试计数——同一个用户名从同一个地址每 15 分钟五次，每个地址每小时二十次——而所有地址解析为 "
-"`\"unknown\"` 的浏览器共用同一个地址。在仓库自带 Compose "
-"文件的控制台后面，除非网关信任你的边缘层所设置的那个头（见[在控制台后面](#behind-the-console)），那就是所有浏览器：任何人输错的密码都会算到其他所有人的登录头上。只有以前登录过这个账号的浏览器能免于此，靠的是让它拥有自己尝试额度的设备"
-" cookie；见[第一个管理员账号](deployment.md#the-first-admin-account)。"
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Sign-in limits are a consumer you will notice. A resolved client is limited per address: five attempts per username from one address in 15 minutes, and twenty per address in an hour. An `\"unknown\"` one has no address to count by, and one window shared by every such browser would let anyone's wrong passwords lock everyone else out. So an unresolved sign-in is counted per account only: five per username in 15 minutes from all unresolved browsers together, plus the account-wide window. A signed-in user confirming a change with their password is counted under their own session instead, which someone else's guesses at the name cannot reach. Nothing refuses a sign-in for what other unresolved browsers did, so one source spreading single guesses over many accounts is bounded only per account and by the password hashing capacity. A browser that has signed in to the account before, with its device cookie, keeps attempts of its own; see [The first admin account](deployment.md#the-first-admin-account)."
+msgstr "登录限流是你一定会注意到的使用方。已解析的客户端按地址限流：同一地址对同一用户名每 15 分钟 5 次，每个地址每小时 20 次。`\"unknown\"` 客户端没有地址可计数，而让所有这类浏览器共用一个窗口，任何人的错误密码都会把其他所有人锁在门外。因此未解析的登录只按账号计数：所有未解析浏览器合计，每个用户名每 15 分钟 5 次，外加账号级窗口。已登录用户用密码确认修改时，改为按其自身会话计数，别人对该用户名的猜测碰不到这个窗口。不会因为其他未解析浏览器的行为而拒绝某次登录，所以同一来源跨多个账号逐一猜测，只受每账号窗口和密码哈希容量限制。曾经登录过该账号、持有设备 cookie 的浏览器有自己的尝试次数；参见[第一个管理员账号](deployment.md#the-first-admin-account)。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:293
 msgid ""
@@ -1557,18 +1543,8 @@ msgid "a client chooses every header the console relays"
 msgstr "控制台转发的每个头都由客户端自己决定"
 
 #: ../developer/trusted-proxies-and-client-ips.md
-msgid ""
-"Keep the console's port reachable from that edge alone. The bundled Compose "
-"file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every"
-" process on the host and every container on its network able to reach it, "
-"and any of them can claim any address. Without such an edge, leave the "
-"console untrusted: every browser then resolves to `\"unknown\"`, with the "
-"shared sign-in limits described under [The \"unknown\" "
-"outcome](#the-unknown-outcome)."
-msgstr ""
-"让控制台的端口只能从这个边缘层访问。仓库自带的 Compose 文件把它发布在 "
-"`127.0.0.1`（`FRONTEND_HOST`）上，但主机上的每个进程、它所在网络里的每个容器仍然能连到它，而它们中的任何一个都可以声称自己是任何地址。没有这样的边缘层时，就不要信任控制台：这时所有浏览器都会解析为"
-" `\"unknown\"`，共用[返回「unknown」的情况](#the-unknown-outcome)一节里讲到的登录限制。"
+msgid "Keep the console's port reachable from that edge alone. The bundled Compose file publishes it on `127.0.0.1` (`FRONTEND_HOST`), which still leaves every process on the host and every container on its network able to reach it, and any of them can claim any address. Without such an edge, leave the console untrusted: every browser then resolves to `\"unknown\"`, with the per-account sign-in limits described under [The \"unknown\" outcome](#the-unknown-outcome)."
+msgstr "让控制台端口只允许该边缘代理访问。随附的 Compose 文件把它发布在 `127.0.0.1`（`FRONTEND_HOST`），这样主机上的每个进程、同一网络中的每个容器仍然都能访问它，并且可以声称任意地址。如果没有这样的边缘代理，就不要信任控制台：此时每个浏览器都会解析为 `\"unknown\"`，适用[\"unknown\" 结果](#the-unknown-outcome)中所述的按账号计算的登录限制。"
 
 #: ../developer/trusted-proxies-and-client-ips.md:105
 msgid ""
@@ -1581,3 +1557,11 @@ msgstr ""
 "把 `/v1` 和 `/anthropic` "
 "直接交给网关的入口，是控制台之外的第二个对端，它的请求必须在控制台没有运行时也能解析。按它的精确地址信任它，与控制台的并列，绝不用更宽的范围；见[在入口分流推理流量](deployment.md"
 "#splitting-inference-traffic-at-the-entry)。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "Phone codes follow the same rule. Codes sent to unresolved clients share a budget of their own (`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 200 and `SMS_OTP_SEND_UNRESOLVED_PER_DAY` 1000), apart from any address. Verifying a code is limited by the number's own window and the code's attempts only."
+msgstr "手机验证码遵循同样的规则。发给未解析客户端的验证码共用一份独立预算（`SMS_OTP_SEND_UNRESOLVED_PER_HOUR` 200、`SMS_OTP_SEND_UNRESOLVED_PER_DAY` 1000），与任何地址的配额分开。校验验证码只受该号码自身的窗口和该验证码的尝试次数限制。"
+
+#: ../developer/trusted-proxies-and-client-ips.md
+msgid "This keeps users behind an unresolved proxy from locking one another out, but it does not tell them apart. Behind the bundled Compose file's console, unless the gateway trusts the header your edge sets (see [Behind the console](#behind-the-console)), every browser is unresolved: configure the trust there."
+msgstr "这样可以避免同一未解析代理后的用户互相锁死，但并不能区分他们。在随附 Compose 文件的控制台之后，除非网关信任你的边缘代理设置的请求头（见[控制台之后](#behind-the-console)），每个浏览器都是未解析的：请在那里配置信任。"

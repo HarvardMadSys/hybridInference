@@ -3,7 +3,7 @@
 // Shapes mirror `GET /admin/config` in
 // docs/agents/specs/2026-10-10-db-backed-config-first-run-setup-design.md.
 
-import { fetchWithAuth } from './client';
+import { fetchWithAuth, getAccessToken } from './client';
 import { apiErrorFromResponse, readJson } from './detail';
 import { config as env } from '@/config/env';
 import { APIError } from '@/lib/utils/errors';
@@ -531,12 +531,21 @@ interface BackendHealth {
 /**
  * One liveness probe. Any failure — refused, timed out, or a non-2xx such as
  * the proxy's 502 while the backend is gone — is "down"; it never throws.
+ *
+ * `/health` names the process that answered only to an administrator, so the
+ * probe carries the signed-in administrator's token. A plain `fetch`, not
+ * `fetchWithAuth`: a probe must not refresh the session or ask for a code, and
+ * an expired token only makes the answer anonymous, which still says "up".
  */
 export async function checkBackendHealth(): Promise<BackendHealth> {
   try {
+    const token = getAccessToken();
     const resp = await fetch(`${API_BASE}/health`, {
       cache: 'no-store',
-      headers: { accept: 'application/json' },
+      headers: {
+        accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
       signal: AbortSignal.timeout(HEALTH_ATTEMPT_TIMEOUT_MS),
     });
     if (!resp.ok) return { up: false, instance: null };

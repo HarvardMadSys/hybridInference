@@ -3881,6 +3881,19 @@ class PostgresOperationalStore(
                 updated_by,
             )
 
+    async def set_settings(
+        self, rows: Sequence[tuple[str, str, str]], updated_by: str | None
+    ) -> None:
+        """Upsert several ``(key, value, value_type)`` site_settings rows in one transaction."""
+        async with self._pool.acquire() as conn, conn.transaction():
+            await conn.executemany(
+                "INSERT INTO site_settings (key, value, value_type, updated_at, updated_by) "
+                "VALUES ($1, $2, $3, NOW(), $4) "
+                "ON CONFLICT (key) DO UPDATE SET "
+                "value = $2, value_type = $3, updated_at = NOW(), updated_by = $4",
+                [(key, value, value_type, updated_by) for key, value, value_type in rows],
+            )
+
     async def delete_setting(self, key: str) -> bool:
         """Delete a site_settings row by key. Returns True when removed."""
         async with self._pool.acquire() as conn:

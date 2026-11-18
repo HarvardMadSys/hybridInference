@@ -36,6 +36,14 @@ logger = get_logger(__name__)
 #: worker reaches the others.
 REFRESH_INTERVAL_SECONDS = 10.0
 
+#: An entry marked ``"security_relevant": True`` decides who may sign in or
+#: register, whether inference needs a key, what is logged of a request, or how
+#: much each account may spend and run at once. A stolen console session or
+#: ``ADMIN_TOKEN`` must not change one on its own: ``PATCH /admin/settings``
+#: asks the signed-in administrator to confirm it first
+#: (:func:`serving.servers.routers.admin.reauthentication.confirm_administrator`).
+#: The rest -- analytics sections, routing behaviour -- change as they always
+#: have.
 RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     "analytics_token_usage_enabled": {
         "type": "bool",
@@ -59,21 +67,25 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_auth_enabled": {
         "type": "bool",
+        "security_relevant": True,
         "default": True,
         "description": "Require user API keys for inference requests (does not disable account login)",
     },
     "signup_enabled": {
         "type": "bool",
+        "security_relevant": True,
         "default": True,
         "description": "Allow new user signups",
     },
     "signup_require_email_verification": {
         "type": "bool",
+        "security_relevant": True,
         "default": True,
         "description": "Require email verification for new signups",
     },
     "signup_admin_notify_enabled": {
         "type": "bool",
+        "security_relevant": True,
         "default": True,
         "description": (
             "Email the configured recipients (SIGNUP_NOTIFY_EMAILS, else "
@@ -83,11 +95,13 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "log_full_payload": {
         "type": "bool",
+        "security_relevant": True,
         "default": False,
         "description": "Log full request payloads at DEBUG level",
     },
     "log_rejected_requests": {
         "type": "bool",
+        "security_relevant": True,
         "default": False,
         "description": (
             "Persist rejected inference requests (rate-limit, quota, auth, "
@@ -138,30 +152,35 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_concurrency_free": {
         "type": "int",
+        "security_relevant": True,
         "default": 3,
         "min": 1,
         "description": "Per-user concurrency cap for free-tier users",
     },
     "user_concurrency_pro": {
         "type": "int",
+        "security_relevant": True,
         "default": 3,
         "min": 1,
         "description": "Per-user concurrency cap for pro-tier users",
     },
     "user_concurrency_internal": {
         "type": "int",
+        "security_relevant": True,
         "default": 10,
         "min": 1,
         "description": "Per-user concurrency cap for internal users",
     },
     "user_concurrency_admin": {
         "type": "int",
+        "security_relevant": True,
         "default": 0,
         "min": 0,
         "description": "Per-user concurrency cap for admin users (0 = unlimited)",
     },
     "user_daily_quota_free": {
         "type": "float",
+        "security_relevant": True,
         "default": 100.00,
         "min": 0.0,
         "description": (
@@ -170,6 +189,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_daily_quota_pro": {
         "type": "float",
+        "security_relevant": True,
         "default": 100.00,
         "min": 0.0,
         "description": (
@@ -178,6 +198,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_daily_quota_internal": {
         "type": "float",
+        "security_relevant": True,
         "default": 1000.00,
         "min": 0.0,
         "description": (
@@ -186,6 +207,7 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
     },
     "user_daily_quota_admin": {
         "type": "float",
+        "security_relevant": True,
         "default": 1000.00,
         "min": 0.0,
         "description": (
@@ -220,6 +242,13 @@ RUNTIME_SETTINGS_REGISTRY: dict[str, dict[str, Any]] = {
         "description": "Seconds between RouteWise background probe cycles",
     },
 }
+
+
+def runtime_setting_security_relevant(key: str) -> bool:
+    """Whether changing the runtime setting *key* needs the administrator's confirmation."""
+    entry = RUNTIME_SETTINGS_REGISTRY.get(key)
+    return bool(entry and entry.get("security_relevant"))
+
 
 _SENTINEL = object()
 
@@ -403,6 +432,7 @@ class RuntimeSettings:
                     "description": entry["description"],
                     "min": entry.get("min"),
                     "max": entry.get("max"),
+                    "security_relevant": bool(entry.get("security_relevant")),
                 }
             )
         return results

@@ -87,7 +87,7 @@ from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
 from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, get_client_ip_info
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
@@ -411,6 +411,9 @@ async def login(
     A browser presenting a device cookie entry for the identifier, from an
     earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead,
     and the account's recognized browsers to 50 per 15 minutes together.
+    A client whose address could not be resolved is counted per account only,
+    never as one address with every other such client (see
+    :mod:`serving.utils.login_rate_limit`).
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -418,7 +421,8 @@ async def login(
     identifier = body.email
 
     # Record on entry so probing varied passwords cannot bypass the limit.
-    client_ip = get_client_ip(request)
+    client = get_client_ip_info(request)
+    client_ip = client.client_ip
 
     async def _record(
         outcome: str,
@@ -455,7 +459,7 @@ async def login(
         # refuse before counting the attempt or looking the name up. The same
         # for every name; and a recognized browser is never refused this way.
         password_utils.ensure_password_capacity()
-    allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
+    allowed, reason = await check_and_record_login(identifier, client, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this

@@ -50,11 +50,9 @@ msgstr ""
 "启动的网关照样能正常路由请求，只是没有请求历史、没有用户账号、不能签发 API "
 "key，也没有那些依赖已存设置的管理功能。它改为从环境变量读取所有设置项。"
 
-#: ../developer/database.md:15
-msgid ""
-"The distinction matters when reading `/health`, because the two \"no "
-"database\" states are not the same answer:"
-msgstr "看 `/health` 时要注意区分，两种「没有数据库」的状态返回的结果并不一样："
+#: ../developer/database.md
+msgid "The distinction matters when reading `/health` as an administrator (anyone else is told `status` alone), because the two \"no database\" states are not the same answer:"
+msgstr "以管理员身份读取 `/health` 时（其他调用方只会得到 `status`），这一区别很重要，因为两种\"没有数据库\"的状态给出的答案不同："
 
 #: ../developer/database.md:23
 msgid ""

@@ -1442,6 +1442,9 @@ class RuntimeSettingItem(NativeOnlyFields):
     description: str
     min: float | None = None
     max: float | None = None
+    #: Changing it needs the signed-in administrator's confirmation: a recent
+    #: authenticator code, the account's password, or a fresh single sign-on.
+    security_relevant: bool = False
 
     currency: Currency | None = None
     amount: float | None = None
@@ -1477,6 +1480,27 @@ class UpdateSettingRequest(BaseModel):
 
     value: Any
     currency: Currency | None = None
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The signed-in administrator's password: needed to change a "
+        "security-relevant setting (security_relevant on its item) when the account has "
+        "no authenticator app",
+    )
+
+
+class UpdateSettingsRequest(BaseModel):
+    """Several runtime settings written together, confirmed once."""
+
+    values: dict[str, Any] = Field(min_length=1, max_length=64)
+    #: The accounting unit role quotas among *values* are given in.
+    currency: Currency | None = None
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The signed-in administrator's password: needed when values change a "
+        "security-relevant setting and the account has no authenticator app",
+    )
 
 
 class TestAlertRequest(BaseModel):

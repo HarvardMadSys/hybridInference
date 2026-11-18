@@ -609,8 +609,24 @@ never rewrites provider URLs. See
 
 ## Health checks
 
+Anyone may call `/health` and `/health/ready`, and anyone is answered with the
+status code and `status` alone:
+
 ```bash
 curl -s http://localhost:8080/health
+```
+
+```json
+{"status": "healthy"}
+```
+
+The status codes are what probes and monitors read, and they are the same
+for every caller. An administrator's credential, a console token or
+`ADMIN_TOKEN`, also shows the reason, the process's `instance`, the route
+count and how each store is doing:
+
+```bash
+curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/health
 ```
 
 ```json
@@ -639,7 +655,9 @@ curl -s http://localhost:8080/health
   would tear down backends that are still answering requests.
 
 Use `/health/ready` for a strict readiness probe: it applies AND-logic across
-configured stores and returns 503 unless every one of them is up.
+configured stores and returns 503 unless every one of them is up. Like
+`/health`, it tells an anonymous caller `{"status": "ready"}` or
+`{"status": "not_ready"}`, and an administrator also the reason and stores.
 `/health/deep` additionally reports per-endpoint health.
 
 ### Marking monitor traffic
