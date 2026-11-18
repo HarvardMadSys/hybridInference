@@ -282,3 +282,83 @@ describe('RuntimeSettingsSection, a guarded setting', () => {
     expect(settle).toHaveBeenCalledWith(refusal);
   });
 });
+
+describe('RuntimeSettingsSection, a role quota on a CNY ledger', () => {
+  const quota = setting('user_daily_quota_free', {
+    value: 5,
+    value_type: 'float',
+    default_value: 12.5,
+    min: 0,
+    max: 1000,
+    security_relevant: true,
+    currency: 'CNY',
+    amount: 40,
+    default_amount: 100,
+    min_amount: 0,
+    max_amount: 8000,
+    description: 'Daily quota in CNY for free users',
+  });
+
+  it('shows the amount in yuan and sends what is typed as yuan', async () => {
+    api.updateRuntimeSettings.mockResolvedValue([{ ...quota, value: 6.25, amount: 50 }]);
+    render(
+      <RuntimeSettingsSection
+        id="settings-quotas"
+        title="Quotas"
+        description="What each role may spend"
+        settings={[quota]}
+        loading={false}
+        onSaved={vi.fn()}
+        onAfterWrite={vi.fn()}
+        onToast={vi.fn()}
+      />,
+    );
+
+    const field = screen.getByRole('spinbutton', { name: 'user_daily_quota_free value' });
+    // The yuan amount, its bounds and default -- not the USD figures.
+    expect(field).toHaveValue(40);
+    expect(field).toHaveAttribute('max', '8000');
+    expect(screen.getByText(/Default: 100/)).toBeInTheDocument();
+    // 5000 is within the yuan bound, though above the USD one.
+    fireEvent.change(field, { target: { value: '5000' } });
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    fireEvent.change(field, { target: { value: '50' } });
+    save();
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Your password'), {
+      target: { value: 'admin-password' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(api.updateRuntimeSettings).toHaveBeenCalledWith(
+        { user_daily_quota_free: 50 },
+        'admin-password',
+        'CNY',
+      ),
+    );
+  });
+
+  it('sends a quota on a USD ledger, which names no currency, as USD', async () => {
+    api.updateRuntimeSettings.mockResolvedValue([]);
+    renderSection();
+
+    fireEvent.change(screen.getByRole('spinbutton', { name: 'user_daily_quota_free value' }), {
+      target: { value: '120' },
+    });
+    save();
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.change(within(dialog).getByLabelText('Your password'), {
+      target: { value: 'admin-password' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() =>
+      expect(api.updateRuntimeSettings).toHaveBeenCalledWith(
+        { user_daily_quota_free: 120 },
+        'admin-password',
+        'USD',
+      ),
+    );
+  });
+});

@@ -1,7 +1,12 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { RuntimeSettingItem, updateRuntimeSetting, updateRuntimeSettings } from '@/lib/api/admin';
+import {
+  type LedgerCurrency,
+  RuntimeSettingItem,
+  updateRuntimeSetting,
+  updateRuntimeSettings,
+} from '@/lib/api/admin';
 import { AdminLoading, AdminSection } from '@/components/features/admin/AdminPrimitives';
 import { CONTROL, PANEL } from '@/components/features/admin/adminStyles';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
@@ -28,9 +33,42 @@ function settingLabel(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const isQuotaSetting = (setting: RuntimeSettingItem) => setting.key.startsWith('user_daily_quota_');
+
+/** The unit a role quota is edited and sent in: the ledger's, USD from an older gateway. */
+const quotaCurrency = (setting: RuntimeSettingItem): LedgerCurrency =>
+  setting.currency === 'CNY' ? 'CNY' : 'USD';
+
+/**
+ * What a role quota's field shows and is compared with: its amount in the
+ * ledger's currency. `value` and the bounds are USD figures, so they stand in
+ * only on a USD ledger; on another one a missing amount shows nothing rather
+ * than a USD number under the ledger's unit.
+ */
+function inLedger(
+  setting: RuntimeSettingItem,
+  usd: 'value' | 'default_value' | 'min' | 'max',
+  native: 'amount' | 'default_amount' | 'min_amount' | 'max_amount',
+): unknown {
+  if (!isQuotaSetting(setting)) return setting[usd];
+  return setting[native] ?? (quotaCurrency(setting) === 'USD' ? setting[usd] : null);
+}
+
+const settingValue = (setting: RuntimeSettingItem) => inLedger(setting, 'value', 'amount');
+const settingDefault = (setting: RuntimeSettingItem) =>
+  inLedger(setting, 'default_value', 'default_amount');
+const settingBound = (setting: RuntimeSettingItem, bound: 'min' | 'max') =>
+  (inLedger(setting, bound, `${bound}_amount`) as number | null | undefined) ?? undefined;
+
+/** The currency the role quotas among *pending* are sent in, when there are any. */
+function pendingCurrency(pending: SettingChange[]): LedgerCurrency | undefined {
+  const quota = pending.find(({ setting }) => isQuotaSetting(setting));
+  return quota ? quotaCurrency(quota.setting) : undefined;
+}
+
 function rangeHint(setting: RuntimeSettingItem): string | null {
-  const lo = setting.min;
-  const hi = setting.max;
+  const lo = settingBound(setting, 'min');
+  const hi = settingBound(setting, 'max');
   if (lo != null && hi != null) return `${lo}–${hi}`;
   if (lo != null) return `≥ ${lo}`;
   if (hi != null) return `≤ ${hi}`;
@@ -39,8 +77,8 @@ function rangeHint(setting: RuntimeSettingItem): string | null {
 
 function validateNumeric(setting: RuntimeSettingItem, draft: string) {
   return validateNumericSettingInput(draft, {
-    min: setting.min,
-    max: setting.max,
+    min: settingBound(setting, 'min'),
+    max: settingBound(setting, 'max'),
     integer: setting.value_type === 'int',
   });
 }
@@ -116,7 +154,7 @@ export function RuntimeSettingsSection({
   const spendSso = useSpendAdminSso();
 
   const savedDraft = (setting: RuntimeSettingItem) =>
-    isFlag(setting) ? !!setting.value : String(setting.value ?? '');
+    isFlag(setting) ? !!setting.value : String(settingValue(setting) ?? '');
   const draftOf = (setting: RuntimeSettingItem) => drafts[setting.key] ?? savedDraft(setting);
 
   // A value set back to what is saved is no draft, so a later refresh of the
@@ -137,7 +175,7 @@ export function RuntimeSettingsSection({
       return draft === !!setting.value ? [] : [{ setting, value: draft as boolean }];
     }
     const validated = validateNumeric(setting, String(draft));
-    if (!validated.ok || validated.value === setting.value) return [];
+    if (!validated.ok || validated.value === settingValue(setting)) return [];
     return [{ setting, value: validated.value as number }];
   });
   const invalid = settings.filter(
@@ -201,11 +239,15 @@ export function RuntimeSettingsSection({
           throw new Error('Enter your password to save these settings.');
         }
         // A refusal (a wrong password, a code owed) stays in the dialog.
+        const values = Object.fromEntries(
+          pending.map(({ setting, value }) => [setting.key, value]),
+        );
+        // Role quotas are sent in the unit their fields were read in.
+        const currency = pendingCurrency(pending);
         const updated = await spendSso(() =>
-          updateRuntimeSettings(
-            Object.fromEntries(pending.map(({ setting, value }) => [setting.key, value])),
-            given || undefined,
-          ),
+          currency
+            ? updateRuntimeSettings(values, given || undefined, currency)
+            : updateRuntimeSettings(values, given || undefined),
         );
         password.current = '';
         for (const item of updated) onSaved(item);
@@ -235,7 +277,10 @@ export function RuntimeSettingsSection({
           pending,
           ({ setting }) => setting.key,
           async ({ setting, value }) => {
-            const updated = await updateRuntimeSetting(setting.key, value);
+            // A role quota is sent in the unit its field was read in.
+            const updated = isQuotaSetting(setting)
+              ? await updateRuntimeSetting(setting.key, value, undefined, quotaCurrency(setting))
+              : await updateRuntimeSetting(setting.key, value);
             wrote = true;
             onSaved(updated);
             setDrafts((prev) => {
@@ -265,7 +310,7 @@ export function RuntimeSettingsSection({
         >
           {settings.map((setting) => {
             const flag = isFlag(setting);
-            const isDefault = setting.value === setting.default_value;
+            const isDefault = settingValue(setting) === settingDefault(setting);
             const draft = draftOf(setting);
             const validated = flag ? null : validateNumeric(setting, String(draft));
             const hint = flag ? null : rangeHint(setting);
@@ -293,7 +338,7 @@ export function RuntimeSettingsSection({
                     {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
                     {!flag ? (
                       <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
+                        Default: {String(settingDefault(setting) ?? '—')}
                       </span>
                     ) : null}
                   </p>
@@ -326,8 +371,8 @@ export function RuntimeSettingsSection({
                     <input
                       type="number"
                       step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
+                      min={settingBound(setting, 'min')}
+                      max={settingBound(setting, 'max')}
                       value={String(draft)}
                       disabled={writes.busy}
                       onChange={(e) => changeDraft(setting, e.target.value)}
