@@ -596,7 +596,9 @@ Send an `Idempotency-Key` header with a create call (either input method) to
 make it safe to retry. The same key with the same request — for a Messages
 batch, the same `anthropic-version` header too — returns the batch
 the first call created, even if your quota has since run out or your role
-changed; the same key with a different request answers `409`. After the batch
+changed; the same key with a different request answers `409`. A key names one
+batch across both input methods: a key already used for an inline batch answers
+`409` to a file batch, and the reverse, even when the two calls race. After the batch
 is deleted the key answers `410` for at least a day; a key is remembered until a
 day after its batch ends. The key belongs to your account, so any of your API
 keys can replay it, and a replay never changes which key the batch runs under.
@@ -898,8 +900,9 @@ A running batch shows when it should finish at its pace so far (from its
 first. **Prompts** opens a batch's stored requests with their answers (`GET
 /admin/batch/jobs/{batch_id}/requests`), a page at a time. It is offered only
 where the gateway keeps prompts in its request log (`db_store_full_content`);
-elsewhere it answers `403`. Opening a batch's requests is audited as
-`batch.requests.read` against the batch's owner.
+elsewhere it answers `403`. Every page that returns a batch's requests is
+audited as `batch.requests.read` against the batch's owner, with the item ids it
+returned; a page whose read cannot be recorded is not returned.
 
 The tab's **Requests** page lists the requests the batch worker ran, newest
 first: one row per attempt, from the request log, with the batch it belongs

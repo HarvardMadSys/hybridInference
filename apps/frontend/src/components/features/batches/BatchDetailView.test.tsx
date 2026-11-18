@@ -1,9 +1,9 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { act, cleanup, render, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { getMyBatch, type BatchDetail } from '@/lib/api/batches';
+import { cancelMyBatch, getMyBatch, type BatchDetail } from '@/lib/api/batches';
 import { APIError } from '@/lib/utils/errors';
 
 import { BatchDetailView } from './BatchDetailView';
@@ -30,7 +30,7 @@ vi.mock('@/lib/hooks/useAccountToast', () => ({
 }));
 vi.mock('@/lib/api/batches', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/api/batches')>();
-  return { ...actual, getMyBatch: vi.fn() };
+  return { ...actual, getMyBatch: vi.fn(), cancelMyBatch: vi.fn() };
 });
 
 function detail(overrides: Partial<BatchDetail> = {}): BatchDetail {
@@ -257,5 +257,152 @@ describe('BatchDetailView polling', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     await act(async () => vi.advanceTimersByTimeAsync(15000));
     expect(getMyBatch).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('BatchDetailView polling with a slow gateway', () => {
+  // Every read takes longer to answer than the page waits between polls.
+  const SLOW_MS = 6000;
+  const POLL_MS = 5000;
+
+  function slow<T>(value: T, ms = SLOW_MS): Promise<T> {
+    return new Promise((resolve) => setTimeout(() => resolve(value), ms));
+  }
+
+  function running(done: number, overrides: Partial<BatchDetail> = {}): BatchDetail {
+    return detail({
+      api_surface: 'openai_inline',
+      input: 'inline',
+      status: 'in_progress',
+      phase: 'runnable',
+      results_available: false,
+      request_counts: { total: 10, completed: done, failed: 0 },
+      cancelled: 0,
+      expired: 0,
+      ...overrides,
+    });
+  }
+
+  function sealed(overrides: Partial<BatchDetail> = {}): BatchDetail {
+    return running(10, {
+      status: 'completed',
+      phase: 'sealed',
+      results_available: true,
+      ...overrides,
+    });
+  }
+
+  const advance = (ms: number) => act(async () => void (await vi.advanceTimersByTimeAsync(ms)));
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('moves forward one poll at a time, then shows the download and stops at sealed results', async () => {
+    const answers = [running(0), running(4), sealed()];
+    let call = 0;
+    vi.mocked(getMyBatch).mockImplementation(() => slow(answers[Math.min(call++, 2)]));
+    render(<BatchDetailView batchId="batch_1" />);
+
+    await advance(SLOW_MS);
+    expect(screen.getByTestId('count-succeeded')).toHaveTextContent('0');
+    // The next read is sent once the previous one answered, never on top of it.
+    await advance(POLL_MS + SLOW_MS);
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
+    expect(screen.getByTestId('count-succeeded')).toHaveTextContent('4');
+    await advance(POLL_MS + SLOW_MS);
+    expect(screen.getByTestId('count-succeeded')).toHaveTextContent('10');
+    expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
+
+    await advance(4 * (POLL_MS + SLOW_MS));
+    expect(getMyBatch).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops polling a batch deleted while a slow poll was in flight', async () => {
+    vi.mocked(getMyBatch)
+      .mockImplementationOnce(() => slow(running(1)))
+      .mockImplementationOnce(() =>
+        slow(null).then(() => {
+          throw new APIError('NOT_FOUND', "Batch 'batch_1' not found", 404);
+        }),
+      );
+    render(<BatchDetailView batchId="batch_1" />);
+    await advance(SLOW_MS);
+    expect(screen.getByText('eval-0420')).toBeInTheDocument();
+
+    await advance(POLL_MS + SLOW_MS);
+    expect(screen.getByRole('alert')).toHaveTextContent('not found');
+    await advance(4 * (POLL_MS + SLOW_MS));
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps the state a refresh after a cancel read, not the older poll still in flight', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    vi.mocked(cancelMyBatch).mockResolvedValue(running(2, { status: 'cancelling' }) as never);
+    vi.mocked(getMyBatch)
+      .mockResolvedValueOnce(running(2))
+      // The poll, sent before the cancel and answered after the refresh.
+      .mockImplementationOnce(() => slow(running(2)))
+      // The refresh the cancel makes.
+      .mockResolvedValueOnce(sealed({ status: 'cancelled' }))
+      .mockImplementation(() => slow(running(2)));
+    render(<BatchDetailView batchId="batch_1" />);
+    await advance(0);
+    await advance(POLL_MS + 1000);
+    expect(getMyBatch).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    await advance(0);
+    expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
+
+    await advance(SLOW_MS);
+    expect(screen.getByRole('button', { name: 'Download results' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    await advance(4 * (POLL_MS + SLOW_MS));
+    expect(getMyBatch).toHaveBeenCalledTimes(3);
+  });
+
+  it('drops a slow answer for the batch the page showed before', async () => {
+    let firstRead = true;
+    vi.mocked(getMyBatch).mockImplementation((id: string) => {
+      if (id === 'batch_2') return Promise.resolve(running(7, { id: 'batch_2', name: 'second' }));
+      if (firstRead) {
+        firstRead = false;
+        return Promise.resolve(running(1));
+      }
+      return slow(running(1));
+    });
+    const { rerender } = render(<BatchDetailView batchId="batch_1" />);
+    await advance(0);
+    await advance(POLL_MS + 1000);
+
+    rerender(<BatchDetailView batchId="batch_2" />);
+    await advance(0);
+    expect(screen.getByText('second')).toBeInTheDocument();
+    await advance(SLOW_MS);
+    expect(screen.getByText('second')).toBeInTheDocument();
+    expect(screen.queryByText('eval-0420')).not.toBeInTheDocument();
+    expect(screen.getByTestId('count-succeeded')).toHaveTextContent('7');
+  });
+
+  it('drops a slow answer for the account signed in before', async () => {
+    vi.mocked(getMyBatch)
+      .mockResolvedValueOnce(running(1))
+      .mockImplementationOnce(() => slow(running(1)))
+      .mockResolvedValue(running(9, { user_id: 'bob', name: 'bobs-batch' }));
+    const { rerender } = render(<BatchDetailView batchId="batch_1" />);
+    await advance(0);
+    await advance(POLL_MS + 1000);
+
+    currentUser = 'bob';
+    rerender(<BatchDetailView batchId="batch_1" />);
+    await advance(0);
+    expect(screen.getByText('bobs-batch')).toBeInTheDocument();
+    await advance(SLOW_MS);
+    expect(screen.getByText('bobs-batch')).toBeInTheDocument();
+    expect(screen.queryByText('eval-0420')).not.toBeInTheDocument();
   });
 });

@@ -12,7 +12,9 @@ goes through the same sequence:
    when the request is the same (its digest: the normalized body, endpoint,
    metadata and, for a Messages batch, its ``anthropic-version``), answers 409
    when it differs and 410 when that
-   batch was deleted. A replay is decided **before** the role, quota and caps
+   batch was deleted. A key names one batch per account across the input
+   methods: one already used for an inline batch answers 409 to a file
+   create, and the reverse. A replay is decided **before** the role, quota and caps
    below, so an owner whose quota ran out or whose role was lowered can still
    learn what their earlier request created; it never changes the batch, and
    in particular never the key it runs under. The key is never part of the
@@ -22,8 +24,9 @@ goes through the same sequence:
 4. **Role, daily quota, feature switch** -- only for a request that creates.
 5. **Validation** of the requests (:mod:`serving.batch.targets`).
 6. **The create transaction**, under the owner's admission lock: the
-   idempotency record checked again (a concurrent create with the same key
-   returns the first one's batch), the active-batch and queued-request caps,
+   idempotency record checked again, for both input methods (a concurrent
+   create with the same key returns the first one's batch, or 409 when the
+   first used the other input method), the active-batch and queued-request caps,
    and the insert, together (:meth:`BatchStore.create_batch`).
 """
 

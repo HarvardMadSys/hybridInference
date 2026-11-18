@@ -65,6 +65,9 @@ function sourceStateText(state: string, t: Translate): string {
   }
 }
 
+/** The pause between one read of a followed batch answering and the next. */
+const POLL_INTERVAL_MS = 5000;
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-1 py-2 sm:grid-cols-3 sm:gap-4">
@@ -86,21 +89,31 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [gone, setGone] = useState(false);
-  // Each request is numbered; only the newest one's answer is shown, so a slow
-  // poll cannot overwrite a fresher state (after a cancel, say), and an answer
-  // for a previous account or batch (a switch in another tab) is dropped.
-  const latest = useRef(0);
+  // Which answers may be shown. ``generation`` changes with the account or the
+  // batch, so an answer for the previous one (a switch in another tab, say) is
+  // dropped. Every read is numbered in the order it was sent, and an answer
+  // older than the one on screen is dropped: a poll still in flight when the
+  // page refreshes itself (after a cancel) cannot overwrite the fresher state.
+  // A newer read never discards an older one before it lands, so a server
+  // slower than the polling interval still moves the page forward.
+  const generation = useRef(0);
+  const sent = useRef(0);
+  const shown = useRef(0);
 
   const load = useCallback(async () => {
-    const mine = ++latest.current;
+    const mine = ++sent.current;
+    const forGeneration = generation.current;
     const forUser = userId;
+    const current = () => forGeneration === generation.current && mine > shown.current;
     try {
       const found = await getMyBatch(batchId);
-      if (mine !== latest.current || (found.user_id && found.user_id !== forUser)) return;
+      if (!current() || (found.user_id && found.user_id !== forUser)) return;
+      shown.current = mine;
       setDetail(found);
       setError(null);
     } catch (err) {
-      if (mine !== latest.current) return;
+      if (!current()) return;
+      shown.current = mine;
       // A deleted batch (or one of another account) is not polled any longer.
       if (err instanceof APIError && err.statusCode === 404) setGone(true);
       setError(getErrorMessage(err));
@@ -108,7 +121,7 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   }, [batchId, userId]);
 
   useEffect(() => {
-    latest.current += 1;
+    generation.current += 1;
     setDetail(null);
     setError(null);
     setGone(false);
@@ -120,10 +133,20 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   const following =
     detail !== null && !gone && (!FINAL_STATUSES.has(detail.status) || !detail.results_available);
   useEffect(() => {
-    // Follow an unfinished batch while the page is open.
+    // Follow an unfinished batch while the page is open: one read at a time,
+    // the next sent 5 s after the previous one answered.
     if (!following) return;
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await load();
+      if (!stopped) timer = setTimeout(poll, POLL_INTERVAL_MS);
+    };
+    timer = setTimeout(poll, POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
   }, [following, load]);
 
   async function act(run: () => Promise<void>) {

@@ -94,15 +94,26 @@ export function usePagedBatches(
     moreInFlight.current = true;
     setLoadingMore(true);
     try {
-      const page = await fetchRef.current(cursor.current);
-      if (mine !== generation.current) return;
-      setError(null);
-      setBatches((current) => {
-        const seen = new Set(current.map((row) => row.id));
-        return [...current, ...page.data.filter((row) => !seen.has(row.id))];
-      });
-      setHasMore(page.has_more);
-      cursor.current = page.last_id;
+      for (;;) {
+        const after: string | null = cursor.current;
+        const page = await fetchRef.current(after);
+        if (mine !== generation.current) return;
+        setError(null);
+        if (cursor.current !== after && page.data.length === 0 && cursor.current !== null) {
+          // The row this page was asked after was removed while it loaded
+          // (see remove). The gateway finds the next page from that row, so
+          // its empty answer says nothing about the rows after it: keep the
+          // cursor remove moved to the new last row, and ask from there.
+          continue;
+        }
+        setBatches((current) => {
+          const seen = new Set(current.map((row) => row.id));
+          return [...current, ...page.data.filter((row) => !seen.has(row.id))];
+        });
+        setHasMore(page.has_more);
+        cursor.current = page.last_id;
+        return;
+      }
     } catch (err) {
       if (mine === generation.current) setError(getErrorMessage(err));
     } finally {
@@ -123,7 +134,9 @@ export function usePagedBatches(
       if (cursor.current === batchId && hasMoreRef.current && !reloading.current) {
         // The next page is found from the cursor row; once that row is gone
         // the gateway ends the listing, so continue from the new last row
-        // (rows listed twice are not appended again) or start over.
+        // (rows listed twice are not appended again) or start over. A next
+        // page already in flight from the removed row is asked again from
+        // this one if it comes back empty (see loadMore).
         if (rest.length === 0) {
           void reload();
           return;
