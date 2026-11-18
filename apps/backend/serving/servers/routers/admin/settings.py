@@ -205,35 +205,33 @@ async def _confirm_if_guarded(
         await confirm_administrator(request, op_store, password, action=_security_action(guarded))
 
 
-async def _write(
+async def _stored_value(key: str, entry: dict[str, Any], op_store: Any) -> Any:
+    """What *key* holds now, for the audit log: its stored row, else the environment's."""
+    expected_type = entry["type"]
+    old_row = await op_store.get_setting(key)
+    if old_row is None:
+        return getattr(get_settings(), key, entry["default"])
+    raw = old_row.get("value")
+    if expected_type == "bool":
+        return raw.lower() in ("true", "1", "yes") if isinstance(raw, str) else raw
+    if expected_type == "int":
+        return int(raw) if raw is not None else None
+    if expected_type == "float":
+        return float(raw) if raw is not None else None
+    return raw
+
+
+async def _publish(
     key: str,
     entry: dict[str, Any],
     value: Any,
+    old_value: Any,
     *,
-    admin_id: str,
     actor: AuditActor,
     op_store: Any,
     rt: RuntimeSettings,
 ) -> RuntimeSettingItem:
-    """Store one checked value, refresh what reads it, and audit the change."""
-    expected_type = entry["type"]
-    old_row = await op_store.get_setting(key)
-    old_value: Any = None
-    if old_row is not None:
-        raw = old_row.get("value")
-        if expected_type == "bool":
-            old_value = raw.lower() in ("true", "1", "yes") if isinstance(raw, str) else raw
-        elif expected_type == "int":
-            old_value = int(raw) if raw is not None else None
-        elif expected_type == "float":
-            old_value = float(raw) if raw is not None else None
-        else:
-            old_value = raw
-    else:
-        old_value = getattr(get_settings(), key, entry["default"])
-
-    await op_store.set_setting(key, str(value), expected_type, admin_id)
-
+    """After *value* is stored: refresh what reads *key*, and audit the change."""
     # Cache the stored value rather than dropping the old one: a dropped entry
     # reads as "not loaded", and synchronous readers such as
     # is_user_auth_enabled() would fall back to the environment until the next
@@ -257,7 +255,7 @@ async def _write(
     return RuntimeSettingItem(
         key=key,
         value=value,
-        value_type=expected_type,
+        value_type=entry["type"],
         default_value=entry["default"],
         description=entry["description"],
         min=entry.get("min"),
@@ -288,7 +286,9 @@ async def update_runtime_setting_endpoint(
     rt = _require_runtime_settings(rt)
     entry, value = _checked_value(key, payload.value, payload.currency)
     await _confirm_if_guarded(request, op_store, [key], payload.password)
-    return await _write(key, entry, value, admin_id=admin_id, actor=actor, op_store=op_store, rt=rt)
+    old_value = await _stored_value(key, entry, op_store)
+    await op_store.set_setting(key, str(value), entry["type"], admin_id)
+    return await _publish(key, entry, value, old_value, actor=actor, op_store=op_store, rt=rt)
 
 
 @router.patch("/settings", response_model=ListSettingsResponse)
@@ -304,7 +304,10 @@ async def update_runtime_settings_endpoint(
 
     Every value is checked first, and nothing is written when one is refused.
     A guarded one asks for the confirmation ``PATCH /admin/settings/{key}``
-    does, once for the whole request. Answers the settings as written.
+    does, once for the whole request. The values are stored in one
+    transaction, so a store that fails part way leaves every setting as it
+    was; only then do caches and the audit log follow. Answers the settings
+    as written.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
@@ -313,10 +316,16 @@ async def update_runtime_settings_endpoint(
         key: _checked_value(key, value, payload.currency) for key, value in payload.values.items()
     }
     await _confirm_if_guarded(request, op_store, list(checked), payload.password)
+    old_values = {
+        key: await _stored_value(key, entry, op_store) for key, (entry, _) in checked.items()
+    }
+    await op_store.set_settings(
+        [(key, str(value), entry["type"]) for key, (entry, value) in checked.items()], admin_id
+    )
     return ListSettingsResponse(
         settings=[
-            await _write(
-                key, entry, value, admin_id=admin_id, actor=actor, op_store=op_store, rt=rt
+            await _publish(
+                key, entry, value, old_values[key], actor=actor, op_store=op_store, rt=rt
             )
             for key, (entry, value) in checked.items()
         ]

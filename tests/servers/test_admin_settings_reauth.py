@@ -100,9 +100,14 @@ def op_store() -> MagicMock:
     async def set_setting(key, value, value_type, updated_by):
         rows[key] = {"key": key, "value": value, "value_type": value_type}
 
+    async def set_settings(batch, updated_by):
+        for key, value, value_type in batch:
+            rows[key] = {"key": key, "value": value, "value_type": value_type}
+
     store.rows = rows
     store.get_setting = AsyncMock(side_effect=get_setting)
     store.set_setting = AsyncMock(side_effect=set_setting)
+    store.set_settings = AsyncMock(side_effect=set_settings)
     store.list_settings = AsyncMock(return_value=[])
     store.list_signup_allowed_domains = AsyncMock(return_value=[])
     store.list_user_identities = AsyncMock(return_value=[])
@@ -345,7 +350,9 @@ async def test_several_settings_are_confirmed_once(client, op_store, audit, cons
         "user_daily_quota_admin",
         "analytics_growth_rate_enabled",
     ]
-    assert op_store.set_setting.await_count == 5
+    # One write of all five, then one audit row each.
+    op_store.set_settings.assert_awaited_once()
+    assert len(op_store.set_settings.await_args.args[0]) == 5
     assert audit.await_count == 5
     # One confirmation: four more saves like it fit in the sign-in window.
     for _ in range(4):
@@ -366,7 +373,7 @@ async def test_a_batch_with_a_refused_value_writes_nothing(client, op_store, con
     )
 
     assert response.status_code == 400
-    op_store.set_setting.assert_not_awaited()
+    op_store.set_settings.assert_not_awaited()
 
 
 async def test_the_admin_token_batch_with_a_guarded_setting_writes_nothing(client, op_store):
@@ -377,7 +384,7 @@ async def test_the_admin_token_batch_with_a_guarded_setting_writes_nothing(clien
     )
 
     assert response.status_code == 403
-    op_store.set_setting.assert_not_awaited()
+    op_store.set_settings.assert_not_awaited()
 
 
 async def test_the_admin_token_batch_of_display_switches_is_written(client, op_store):
@@ -388,7 +395,7 @@ async def test_the_admin_token_batch_of_display_switches_is_written(client, op_s
     )
 
     assert response.status_code == 200
-    op_store.set_setting.assert_awaited_once()
+    op_store.set_settings.assert_awaited_once()
 
 
 @pytest.fixture
@@ -437,4 +444,29 @@ async def test_a_batch_in_a_stale_currency_writes_nothing_and_spends_no_password
     )
 
     assert response.status_code == 409
+    op_store.set_settings.assert_not_awaited()
+
+
+async def test_a_batch_the_store_fails_part_way_changes_nothing_it_reports(
+    client, op_store, audit, console_admin
+):
+    """Review: written one by one, a failure part way left the first values in force."""
+    app = client._transport.app
+    rt = app.state.services.runtime_settings
+    before = rt.get_cached("user_daily_quota_free")
+    op_store.set_settings.side_effect = ConnectionError("database went away")
+
+    with pytest.raises(ConnectionError):
+        await client.patch(
+            "/admin/settings",
+            json={
+                "values": {"user_daily_quota_free": 5.0, "user_daily_quota_pro": 50.0},
+                "password": PASSWORD,
+            },
+        )
+
+    # Nothing is cached or audited as changed, and nothing is half stored.
+    assert rt.get_cached("user_daily_quota_free") == before
+    audit.assert_not_awaited()
+    assert op_store.rows == {}
     op_store.set_setting.assert_not_awaited()
