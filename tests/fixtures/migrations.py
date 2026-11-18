@@ -99,6 +99,10 @@ async def ensure_api_logs_tables(conn: Any) -> None:
         "migrations.versions.0015_projects"
     ).API_LOG_STATEMENTS:
         await conn.execute(statement)
+    # The native accounting columns and the rollup's native sum.
+    ledger = importlib.import_module("migrations.versions.0022_ledger_currency")
+    for statement in (*ledger.API_LOG_STATEMENTS, *ledger.USAGE_STATEMENTS):
+        await conn.execute(statement)
 
 
 async def prepare_current_schema(conn: Any) -> None:

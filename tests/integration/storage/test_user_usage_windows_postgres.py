@@ -69,6 +69,13 @@ _USER_USAGE_SQL = "SELECT {} FROM api_logs WHERE user_id = $1".format(
             for window, cond in _USER_USAGE_WINDOWS.items()
             for col in _USER_USAGE_SUMS
         ]
+        # The native ledger amount the dashboard reports on a non-USD ledger
+        # (0022_ledger_currency), from the rows' own native column.
+        + [
+            f"COALESCE(SUM(COALESCE(cost_amount, cost_usd)) FILTER (WHERE {cond}), 0) "
+            f"AS {window}__cost_amount"
+            for window, cond in _USER_USAGE_WINDOWS.items()
+        ]
     )
 )
 
@@ -86,6 +93,7 @@ def _oracle_window(row, window: str) -> dict:
             continue
         value = row[f"{window}__{col}"] if row else 0
         stats[col] = float(value) if col == "cost_usd" else int(value)
+    stats["cost_amount"] = Decimal(row[f"{window}__cost_amount"]) if row else Decimal(0)
     return stats
 
 
@@ -123,11 +131,17 @@ async def db():
 
 
 async def _log(conn, user_id, at, *, cost, prompt, completion, cache_read, cache_write, reasoning):
+    # A native amount unlike its USD value, so the native sum is checked on its
+    # own; every third priced row predates its native column (NULL), which the
+    # sum reads as its USD value, as the offline migration left none.
+    native = None
+    if cost is not None and int(prompt or 0) % 3 != 1:
+        native = cost * Decimal("6.7180")
     await conn.execute(
         "INSERT INTO api_logs (request_id, model_id, provider, user_id, timestamp, cost_usd, "
         "prompt_tokens, completion_tokens, cache_read_tokens, cache_write_tokens, "
-        "reasoning_tokens, total_tokens, status_code) "
-        "VALUES ($1, 'm', 'p', $2, $3, $4, $5, $6, $7, $8, $9, 0, 200)",
+        "reasoning_tokens, total_tokens, status_code, cost_amount) "
+        "VALUES ($1, 'm', 'p', $2, $3, $4, $5, $6, $7, $8, $9, 0, 200, $10)",
         uuid.uuid4().hex,
         user_id,
         at,
@@ -137,6 +151,7 @@ async def _log(conn, user_id, at, *, cost, prompt, completion, cache_read, cache
         cache_read,
         cache_write,
         reasoning,
+        native,
     )
 
 
@@ -217,6 +232,7 @@ async def _compare(pool, windows: set[str]) -> None:
             # Same types too: the dashboard renders them.
             for window in windows:
                 assert type(got[window]["cost_usd"]) is float
+                assert type(got[window]["cost_amount"]) is Decimal
                 assert all(
                     type(got[window][c]) is int
                     for c in ("requests", "prompt_tokens", "completion_tokens")
@@ -272,7 +288,8 @@ async def test_dropped_days_are_counted_live_not_added(db):
         # A stored row without coverage must be neither read nor added.
         await conn.execute(
             "UPDATE user_usage_daily SET request_count = 999, cost_usd = 999, "
-            "prompt_tokens = 999, reasoning_tokens_known = 999 WHERE day = ANY($1::date[])",
+            "cost_amount = 999, prompt_tokens = 999, reasoning_tokens_known = 999 "
+            "WHERE day = ANY($1::date[])",
             dropped,
         )
 
@@ -289,9 +306,9 @@ async def test_days_stored_before_the_sums_existed_are_counted_live(db):
             "WHERE day IN (SELECT day FROM user_usage_daily_coverage ORDER BY day DESC LIMIT 20)"
         )
         await conn.execute(
-            "UPDATE user_usage_daily SET cost_usd = 0, prompt_tokens = 0, completion_tokens = 0, "
-            "cache_read_tokens = 0, cache_write_tokens = 0, reasoning_tokens = 0, "
-            "reasoning_tokens_known = 0 "
+            "UPDATE user_usage_daily SET cost_usd = 0, cost_amount = 0, prompt_tokens = 0, "
+            "completion_tokens = 0, cache_read_tokens = 0, cache_write_tokens = 0, "
+            "reasoning_tokens = 0, reasoning_tokens_known = 0 "
             "WHERE day IN (SELECT day FROM user_usage_daily_coverage WHERE usage_definition = '')"
         )
 
@@ -310,7 +327,7 @@ async def test_days_under_another_admin_definition_are_counted_live(db):
             "WHERE day IN (SELECT day FROM user_usage_daily_coverage ORDER BY day LIMIT 50)"
         )
         await conn.execute(
-            "UPDATE user_usage_daily SET cost_usd = cost_usd + 1 "
+            "UPDATE user_usage_daily SET cost_usd = cost_usd + 1, cost_amount = cost_amount + 1 "
             "WHERE day IN (SELECT day FROM user_usage_daily_coverage "
             "WHERE definition = 'retired')"
         )

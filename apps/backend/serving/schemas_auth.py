@@ -3,11 +3,12 @@
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from pydantic.networks import validate_email
 
+from serving.accounting_api import MoneyInput, MoneyResponse
 from serving.config.site_identity import get_site_identity
 from serving.utils.password import validate_password_strength
 from serving.utils.phone_auth import normalize_phone
@@ -410,14 +411,20 @@ API_KEY_BUDGET_MAX_USD = Decimal("1000000")
 API_KEY_ALLOWED_MODELS_MAX = 200
 
 
-class APIKeyUpdateRequest(BaseModel):
+class APIKeyUpdateRequest(MoneyInput):
     """Settings to change on one of the owner's API keys.
 
     A field that is not sent stays as it is; ``null`` clears it. A cleared
     budget is no limit at the key (the account's quota still applies); a
     cleared allowlist is every model the account may use. A budget of 0 pauses
     the key without revoking it.
+
+    A budget is either the USD ``budget_*_usd`` or the native ``budget_*``
+    with the accounting ``currency``, never both; the native amount is stored
+    exactly and its USD equivalent beside it.
     """
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
     budget_daily_usd: Decimal | None = Field(
@@ -429,6 +436,9 @@ class APIKeyUpdateRequest(BaseModel):
     allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
+
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
 
 
 class APIKeyResponse(BaseModel):
@@ -457,7 +467,7 @@ class APIKeyInfo(BaseModel):
     project_name: str | None = None
 
 
-class APIKeyListItem(BaseModel):
+class APIKeyListItem(MoneyResponse):
     """Single API key record for the current user."""
 
     #: Always null: the listing never carries a full key. One saved key is
@@ -483,6 +493,12 @@ class APIKeyListItem(BaseModel):
     budget_monthly_usd: float | None = None
     allowed_models: list[str] | None = None
 
+    #: The same spend and limits in the accounting ``currency``.
+    spent_today: float | None = None
+    spent_month: float | None = None
+    budget_daily: float | None = None
+    budget_monthly: float | None = None
+
 
 class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
@@ -497,7 +513,7 @@ class APIKeyRevealResponse(BaseModel):
     api_key: str
 
 
-class APIKeyUpdateResponse(BaseModel):
+class APIKeyUpdateResponse(MoneyResponse):
     """The owner's settings on an API key after a change."""
 
     key_prefix: str
@@ -505,6 +521,10 @@ class APIKeyUpdateResponse(BaseModel):
     budget_daily_usd: float | None = None
     budget_monthly_usd: float | None = None
     allowed_models: list[str] | None = None
+
+    #: The budgets in the accounting ``currency``.
+    budget_daily: float | None = None
+    budget_monthly: float | None = None
 
 
 class APIKeyDeleteResponse(BaseModel):
@@ -525,7 +545,7 @@ class APIKeyRegenerateResponse(BaseModel):
 
 
 # Usage statistics schemas
-class QuotaInfo(BaseModel):
+class QuotaInfo(MoneyResponse):
     """User quota information."""
 
     has_key: bool
@@ -539,6 +559,12 @@ class QuotaInfo(BaseModel):
     reset_timezone: str = "UTC"
     contact_email: str = Field(default_factory=lambda: get_site_identity().support_email)
     increase_request_message: str = Field(default_factory=lambda: _quota_message())
+
+    daily_limit: float | None = None
+    monthly_limit: float | None = None
+    spent_today: float | None = None
+    spent_month: float | None = None
+    remaining_today: float | None = None
 
 
 def _quota_message() -> str:
@@ -556,7 +582,7 @@ def _quota_message() -> str:
     return "Need more quota? Contact the operator of this deployment and explain your use case."
 
 
-class UsageStats(BaseModel):
+class UsageStats(MoneyResponse):
     """User usage statistics."""
 
     requests: int = 0
@@ -584,6 +610,8 @@ class UsageStats(BaseModel):
         ),
     )
     cost_usd: float = 0.0
+
+    cost: float | None = None
 
 
 class UsageResponse(BaseModel):
@@ -665,7 +693,7 @@ class DeleteAccountResponse(BaseModel):
 
 
 # Recent requests schemas
-class RecentRequestItem(BaseModel):
+class RecentRequestItem(MoneyResponse):
     """A single API request log entry (user-facing)."""
 
     request_id: str
@@ -692,6 +720,8 @@ class RecentRequestItem(BaseModel):
     # before usage was attributed to keys, or made without one of its keys.
     key_prefix: str | None = None
 
+    cost: float | None = None
+
 
 class RecentRequestsResponse(BaseModel):
     """Paginated list of recent requests for the current user."""
@@ -705,8 +735,12 @@ class RecentRequestsResponse(BaseModel):
     offset: int
 
 
-class ProjectResponse(BaseModel):
-    """A project with its budgets, keys and current spend."""
+class ProjectResponse(MoneyResponse):
+    """A project with its budgets, keys and current spend.
+
+    On a USD deployment exactly its USD fields; on another, the native budgets
+    and spend with the accounting ``currency`` beside them.
+    """
 
     id: str
     name: str
@@ -721,9 +755,21 @@ class ProjectResponse(BaseModel):
     key_count: int = 0
     created_at: datetime
 
+    #: The same budgets and spend in the accounting ``currency``.
+    budget_daily: Decimal | None = None
+    budget_monthly: Decimal | None = None
+    spent_today: Decimal | None = None
+    spent_month: Decimal | None = None
 
-class ProjectCreateRequest(BaseModel):
-    """Create a project owned by the caller."""
+
+class ProjectCreateRequest(MoneyInput):
+    """Create a project owned by the caller.
+
+    A budget is either the USD ``budget_*_usd`` or the native ``budget_*``
+    with the accounting ``currency``, never both, as for an API key.
+    """
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str = Field(..., min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -738,9 +784,14 @@ class ProjectCreateRequest(BaseModel):
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
 
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
 
-class ProjectUpdateRequest(BaseModel):
-    """Patch a project; omitted fields are unchanged."""
+
+class ProjectUpdateRequest(MoneyInput):
+    """Patch a project; omitted fields are unchanged. Budgets as :class:`ProjectCreateRequest`."""
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str | None = Field(default=None, min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -754,6 +805,9 @@ class ProjectUpdateRequest(BaseModel):
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
 
 
 # Single sign-on schemas

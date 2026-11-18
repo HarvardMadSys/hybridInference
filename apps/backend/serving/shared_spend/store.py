@@ -46,9 +46,10 @@ import contextlib
 import hashlib
 import json
 from dataclasses import dataclass, field
-from decimal import ROUND_HALF_UP, Decimal
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving.accounting import USD, get_accounting_policy
 from serving.storage.erasure_fence import (
     ERASURE_FENCE_TABLE,
     fence_account_advisory_key,
@@ -84,8 +85,6 @@ PURGE_BATCHES = 500
 #: stopped, not heard from for too long, or no longer registered at all.
 OWNER_GONE = frozenset({"closed", "stopped", "stale", "not registered"})
 
-_MICRO = Decimal("0.000001")
-
 
 def _hash32(text: str) -> int:
     """A signed 32-bit key for *text*: collisions only serialize, never break."""
@@ -104,9 +103,13 @@ def scope_lock_keys(
     return sorted(set(keys))
 
 
-def usd(value: float | Decimal) -> Decimal:
-    """*value* to the counters' six places, half away from zero (as ``counted_amount``)."""
-    return Decimal(value).quantize(_MICRO, rounding=ROUND_HALF_UP)
+def quantized_amount(value: float | Decimal) -> Decimal:
+    """*value* to the ledger's quantum, half away from zero (as ``counted_amount``).
+
+    See :meth:`serving.accounting.AccountingPolicy.quantize`: six places on a
+    USD ledger, twelve on a native one.
+    """
+    return get_accounting_policy().quantize(value)
 
 
 # -- admission ---------------------------------------------------------------
@@ -119,7 +122,7 @@ class AdmissionRequest:
     ``api_key_id`` and ``project_id`` are the request's attribution, stored on
     the reservation whatever is checked; ``check_key`` and ``check_project``
     say whether the key's and the project's budgets apply (they are locked and
-    read only then). ``requested_usd`` is the estimate asked for; what is
+    read only then). ``requested_amount`` is the estimate asked for; what is
     reserved is decided under the locks and may be less (the headroom clamp).
     """
 
@@ -128,7 +131,7 @@ class AdmissionRequest:
     user_id: str
     api_key_id: int | None
     project_id: str | None
-    requested_usd: Decimal
+    requested_amount: Decimal
     check_day: str
     operation: str
     check_key: bool = False
@@ -146,7 +149,9 @@ class AdmissionRequest:
             self.user_id,
             self.api_key_id,
             self.project_id,
-            str(self.requested_usd),
+            str(self.requested_amount),
+            get_accounting_policy().currency,
+            str(get_accounting_policy().usd_to_currency_rate),
             self.check_day,
             self.operation,
         ]
@@ -191,7 +196,7 @@ class AdmissionOutcome:
     """How one admission transaction ended, and what it reserved."""
 
     result: AdmissionResult
-    reserved_usd: Decimal | None = None
+    reserved_amount: Decimal | None = None
     snapshot: SpendSnapshot | None = None
 
 
@@ -217,7 +222,7 @@ _HELD_FROM = """
                AS month_held
     FROM (
         SELECT state = 'active' AS active, liability_day,
-               GREATEST(amount_usd, COALESCE(cost_usd, 0)) AS held
+               GREATEST(amount, COALESCE(cost_amount, 0)) AS held
         FROM spend_reservations WHERE {where}
     ) s
 """
@@ -225,7 +230,7 @@ _HELD_FROM = """
 _READ_SQL = f"""
 SELECT
     r.digest AS existing_digest,
-    r.amount_usd AS existing_amount,
+    r.amount AS existing_amount,
     r.state AS existing_state,
     (SELECT batch_id FROM spend_settlement_members WHERE reservation_id = $1) AS retired_by,
     ($7::text IS NOT NULL AND EXISTS (
@@ -246,19 +251,19 @@ SELECT
 FROM (SELECT 1) AS one
 LEFT JOIN spend_reservations r ON r.reservation_id = $1
 CROSS JOIN LATERAL (
-    SELECT SUM(cost_usd) FILTER (WHERE day = $3) AS day_cost, SUM(cost_usd) AS month_cost
+    SELECT SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) FILTER (WHERE day = $3) AS day_cost, SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) AS month_cost
     FROM user_daily_cost
     WHERE user_id = $2 AND day >= $4 || '-01' AND day <= $4 || '-31'
 ) ua
 CROSS JOIN LATERAL (
-    SELECT SUM(cost_usd) FILTER (WHERE day = $3) AS day_cost, SUM(cost_usd) AS month_cost
+    SELECT SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) FILTER (WHERE day = $3) AS day_cost, SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) AS month_cost
     FROM api_key_daily_cost
     WHERE $5::bigint IS NOT NULL AND key_id = $5
       AND day >= $4 || '-01' AND day <= $4 || '-31'
 ) ka
 CROSS JOIN LATERAL (
-    SELECT SUM(cost_usd) FILTER (WHERE period = 'd:' || $3) AS day_cost,
-           SUM(cost_usd) FILTER (WHERE period = 'm:' || $4) AS month_cost
+    SELECT SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) FILTER (WHERE period = 'd:' || $3) AS day_cost,
+           SUM(COALESCE(cost_amount, cost_usd * $8::numeric)) FILTER (WHERE period = 'm:' || $4) AS month_cost
     FROM spend_counters
     WHERE $6::text IS NOT NULL AND scope_id = $6 AND period IN ('d:' || $3, 'm:' || $4)
 ) pa
@@ -269,7 +274,7 @@ CROSS JOIN LATERAL ({_HELD_FROM.format(where="$6::text IS NOT NULL AND project_i
 
 _INSERT_SQL = """
 INSERT INTO spend_reservations
-    (reservation_id, instance_id, user_id, api_key_id, project_id, amount_usd,
+    (reservation_id, instance_id, user_id, api_key_id, project_id, amount,
      check_day, operation, digest)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 """
@@ -352,9 +357,12 @@ WHERE c.closed_by = 'shutdown'
 # which is where it is counted. ``day`` is the day the row itself was written,
 # later than that: used for a row that does not say.
 _REQUEST_LOG_SQL = """
-SELECT r.reservation_id, l.request_id, l.cost_usd, l.status_code,
-       l.metadata->>'spend_charged_usd' AS charged_usd,
+SELECT r.reservation_id, l.request_id, l.cost_amount, l.status_code,
+       CASE WHEN COALESCE(l.metadata->>'spend_currency', 'USD') = 'USD'
+            THEN COALESCE(l.metadata->>'spend_charged_amount', l.metadata->>'spend_charged_usd')
+            ELSE l.metadata->>'spend_charged_amount' END AS charged_amount,
        l.metadata->'spend_charged_days' AS charged_days,
+       COALESCE(l.metadata->>'spend_currency', 'USD') AS spend_currency,
        to_char(l.timestamp AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS day
 FROM unnest($1::text[], $2::text[], $3::timestamptz[]) AS r(reservation_id, user_id, since)
 JOIN api_logs l
@@ -365,9 +373,9 @@ ORDER BY l.timestamp, l.request_id
 
 _AUDIT_SQL = """
 INSERT INTO spend_reconciliations
-    (reservation_id, instance_id, batch_id, amount_usd, operation, admitted_at, outcome,
-     cost_usd, evidence, owner_state, operator, reason)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)
+    (reservation_id, instance_id, batch_id, amount, operation, admitted_at, outcome,
+     cost_amount, evidence, owner_state, operator, reason, cost_usd)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12, NULL)
 """
 
 
@@ -484,6 +492,7 @@ class SharedSpendStore:
                 request.api_key_id if request.check_key else None,
                 request.project_id if request.check_project else None,
                 digest_key,
+                get_accounting_policy().usd_to_currency_rate,
             )
             if pause is not None:
                 await pause("read")
@@ -493,7 +502,7 @@ class SharedSpendStore:
                 if read["existing_state"] != "active" or read["retired_by"] is not None:
                     return await finish(AdmissionOutcome("retired"))
                 return await finish(
-                    AdmissionOutcome("existing", reserved_usd=read["existing_amount"])
+                    AdmissionOutcome("existing", reserved_amount=read["existing_amount"])
                 )
             if read["retired_by"] is not None:
                 return await finish(AdmissionOutcome("retired"))
@@ -520,7 +529,7 @@ class SharedSpendStore:
             if pause is not None:
                 await pause("inserted")
             outcome = await finish(
-                AdmissionOutcome("admitted", reserved_usd=amount, snapshot=snapshot)
+                AdmissionOutcome("admitted", reserved_amount=amount, snapshot=snapshot)
             )
             if pause is not None:
                 await pause("committed")
@@ -591,10 +600,7 @@ class SharedSpendStore:
         *batch* is consistent (:meth:`SettlementBatch.inconsistency`). The
         caller commits, or rolls everything back by raising.
         """
-        from serving.storage.postgres_operational import (
-            COST_INCREMENTS_FENCED_SQL,
-            COST_INCREMENTS_SQL,
-        )
+        from serving.storage.postgres_operational import cost_increment_statements
 
         await conn.execute(f"SELECT set_config('{WRITER_SETTING}', 'shared', true)")
         inserted = await conn.fetchval(
@@ -695,18 +701,22 @@ class SharedSpendStore:
                 [c.user_id for c in costs],
                 [c.day for c in costs],
                 [c.api_key_id for c in costs],
-                [c.cost_usd for c in costs],
+                [c.cost_amount for c in costs],
                 [c.requests for c in costs],
                 [c.project_id for c in costs],
             )
+            # The counters the ledger keeps its record in (see
+            # :func:`serving.storage.postgres_operational.cost_increment_statements`).
+            unfenced, fenced, ledger_args = cost_increment_statements(get_accounting_policy())
             if self.fence_secret:
                 await conn.fetchval(
-                    COST_INCREMENTS_FENCED_SQL,
+                    fenced,
                     *args,
                     [self.fence_digest(c.user_id) for c in costs],
+                    *ledger_args,
                 )
             else:
-                await conn.fetchval(COST_INCREMENTS_SQL, *args)
+                await conn.fetchval(unfenced, *args, *ledger_args)
 
         recorded = [
             (rid, outcome)
@@ -760,7 +770,7 @@ class SharedSpendStore:
         async with self.pool.acquire() as conn:
             marked = await conn.fetchval(
                 "UPDATE spend_reservations SET state = 'quarantined', "
-                "liability_day = COALESCE(liability_day, $6), cost_usd = $7, note = $8, "
+                "liability_day = COALESCE(liability_day, $6), cost_amount = $7, note = $8, "
                 "updated_at = NOW() "
                 "WHERE reservation_id = $1 AND instance_id = $2 "
                 "AND state IN ('active', 'quarantined') "
@@ -773,7 +783,7 @@ class SharedSpendStore:
                 member.api_key_id,
                 member.project_id,
                 day,
-                member.cost_usd(),
+                member.cost_amount(),
                 note[:200],
             )
             if marked:
@@ -894,7 +904,7 @@ class SharedSpendStore:
         """
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT reservation_id, user_id, api_key_id, project_id, amount_usd, operation, "
+                "SELECT reservation_id, user_id, api_key_id, project_id, amount, operation, "
                 "created_at, EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds "
                 "FROM spend_reservations WHERE instance_id = $1 AND state = 'active' "
                 "AND NOT (reservation_id = ANY($3::text[])) "
@@ -940,7 +950,7 @@ class SharedSpendStore:
         A request's log row names the reservation it ran under
         (``metadata.spend_reservation``) and what the billing points had
         recorded under it when the row was written
-        (``metadata.spend_charged_usd``, and ``metadata.spend_charged_days``
+        (``metadata.spend_charged_amount``, and ``metadata.spend_charged_days``
         for the day each part was recorded on); all are set as the row is
         written, by ``CompletionsLogger``. ``day`` is the day the row itself
         was written. Rows are looked up by the reservation's
@@ -959,13 +969,29 @@ class SharedSpendStore:
             )
         found: dict[str, list[dict[str, Any]]] = {}
         for row in rows:
+            currency = row["spend_currency"]
+            if currency != get_accounting_policy().currency:
+                raise ValueError(
+                    "reservation log currency is missing or differs from accounting policy"
+                )
+            days = _json(row["charged_days"])
+            if currency == USD and isinstance(days, list):
+                # Before native-unit metadata, USD writers recorded only `usd`.
+                # This fallback is never used on a CNY ledger.
+                days = [
+                    {**day, "amount": day.get("amount", day.get("usd"))}
+                    if isinstance(day, dict)
+                    else day
+                    for day in days
+                ]
             found.setdefault(row["reservation_id"], []).append(
                 {
                     "request_id": row["request_id"],
                     "day": row["day"],
-                    "cost_usd": row["cost_usd"],
-                    "charged_usd": row["charged_usd"],
-                    "charged_days": _json(row["charged_days"]),
+                    "cost_amount": row["cost_amount"],
+                    "charged_amount": row["charged_amount"],
+                    "currency": currency,
+                    "charged_days": days,
                     "status_code": row["status_code"],
                 }
             )
@@ -1022,11 +1048,11 @@ class SharedSpendStore:
                             entry.reservation_id,
                             instance_id,
                             batch.batch_id,
-                            entry.amount_usd,
+                            entry.amount,
                             entry.operation,
                             entry.admitted_at,
                             outcome,
-                            entry.member.cost_usd(),
+                            entry.member.cost_amount(),
                             json.dumps(list(entry.evidence), default=str),
                             state,
                             operator,
@@ -1048,7 +1074,7 @@ class SharedSpendStore:
         """Every reservation not retired, oldest first (at most *limit*); no account names."""
         async with self.pool.acquire() as conn:
             rows = await conn.fetch(
-                "SELECT reservation_id, instance_id, amount_usd, cost_usd, state, check_day, "
+                "SELECT reservation_id, instance_id, amount, cost_amount, state, check_day, "
                 "liability_day, operation, note, created_at, "
                 "EXTRACT(EPOCH FROM (NOW() - created_at)) AS age_seconds "
                 "FROM spend_reservations ORDER BY created_at LIMIT $1",
@@ -1075,8 +1101,8 @@ class SharedSpendStore:
         """
         async with self.pool.acquire() as conn:
             by_state = await conn.fetch(
-                "SELECT instance_id, state, COUNT(*) AS n, SUM(amount_usd) AS amount_usd, "
-                "SUM(cost_usd) AS known_cost_usd, "
+                "SELECT instance_id, state, COUNT(*) AS n, SUM(amount) AS amount, "
+                "SUM(cost_amount) AS known_cost_amount, "
                 "EXTRACT(EPOCH FROM (NOW() - MIN(created_at))) AS oldest_age_seconds "
                 "FROM spend_reservations GROUP BY instance_id, state ORDER BY instance_id, state"
             )
@@ -1100,7 +1126,7 @@ class SharedSpendStore:
                 "SELECT closed_by, COUNT(*) AS n FROM spend_instance_closures GROUP BY closed_by"
             )
             reconciled = await conn.fetchrow(
-                "SELECT COUNT(*) AS n, COALESCE(SUM(cost_usd), 0) AS cost_usd, "
+                "SELECT COUNT(*) AS n, COALESCE(SUM(cost_amount), 0) AS cost_amount, "
                 "MAX(reconciled_at) AS last FROM spend_reconciliations"
             )
             owners = await self.owner_states(conn)
@@ -1127,7 +1153,7 @@ class SharedSpendStore:
             "closures": {row["closed_by"]: int(row["n"]) for row in closures},
             "reconciled": {
                 "reservations": int(reconciled["n"]),
-                "cost_usd": reconciled["cost_usd"],
+                "cost_amount": reconciled["cost_amount"],
                 "last": reconciled["last"],
             },
         }
@@ -1143,7 +1169,7 @@ class CostLine:
     user_id: str
     day: str
     api_key_id: int | None
-    cost_usd: Decimal
+    cost_amount: Decimal
     requests: int = 1
     project_id: str | None = None
 
@@ -1153,7 +1179,9 @@ class CostLine:
             self.user_id,
             self.day,
             self.api_key_id,
-            str(self.cost_usd),
+            str(self.cost_amount),
+            get_accounting_policy().currency,
+            str(get_accounting_policy().usd_to_currency_rate),
             self.requests,
             self.project_id,
         ]
@@ -1180,9 +1208,9 @@ class Member:
     project_id: str | None = None
     costs: tuple[CostLine, ...] = ()
 
-    def cost_usd(self) -> Decimal:
+    def cost_amount(self) -> Decimal:
         """The member's known cost."""
-        return sum((c.cost_usd for c in self.costs), Decimal(0))
+        return sum((c.cost_amount for c in self.costs), Decimal(0))
 
     def canonical(self) -> list[Any]:
         """The member as the payload digest sees it."""
@@ -1294,7 +1322,7 @@ class Reconciliation:
     """
 
     reservation_id: str
-    amount_usd: Decimal
+    amount: Decimal
     operation: str
     admitted_at: Any
     member: Member

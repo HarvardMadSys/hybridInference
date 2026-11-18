@@ -1020,6 +1020,7 @@ def register_from_models_document(
                     "pricing",
                     "pricing_schedule",
                     "pricing_source",
+                    "pricing_currency",
                     "route_metadata",
                     "extra_body",
                     "processor",
@@ -1250,6 +1251,8 @@ def register_from_models_document(
                     adapter_cfg["pricing_schedule"] = r["pricing_schedule"]
                 if "pricing_source" in r:
                     adapter_cfg["pricing_source"] = r["pricing_source"]
+                if "pricing_currency" in r:
+                    adapter_cfg["pricing_currency"] = r["pricing_currency"]
 
                 # Route-level processor override (bypasses model-ID auto-detection)
                 if "processor" in r:

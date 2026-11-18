@@ -1590,16 +1590,23 @@ def _quota_card(
     # "over_by: $-0.01" on a card titled "quota consumed" reads as a
     # contradiction rather than as the boundary case it is. At or below the cap
     # the honest word is "at cap".
-    over = spend - quota_usd
+    from serving.accounting import get_accounting_policy
+
+    policy = get_accounting_policy()
+    # In the ledger currency; a USD ledger's card reads exactly as it did.
+    spend_amount = policy.in_ledger(spend)
+    quota_amount = policy.in_ledger(quota_usd)
+    over = spend_amount - quota_amount
     card = {
         "user_id": user_id,
         "role": role,
-        "spend": f"${spend:.2f}",
+        "spend": policy.label(spend_amount),
         # The account's own cap, not a role threshold — two users with the same
         # role routinely have different ones, so the card has to carry the
         # number that was actually enforced on this one.
-        "quota": f"${quota_usd:.2f}",
-        "over_by": f"${over:.2f}" if over > 0 else "$0.00 (at cap)",
+        "quota": policy.label(quota_amount),
+        "over_by": policy.label(over) if over > 0 else f"{policy.symbol}0.00 (at cap)",
+        **({"currency": policy.currency} if policy.native else {}),
     }
     if note:
         card["note"] = note

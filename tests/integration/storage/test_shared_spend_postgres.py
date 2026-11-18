@@ -36,7 +36,7 @@ from serving.shared_spend.store import (
     CostLine,
     Member,
     SettlementBatch,
-    usd,
+    quantized_amount,
 )
 from serving.spend_ledger import SpendCheck, utc_day
 from serving.storage.erasure_fence import fence_account_digest
@@ -183,7 +183,7 @@ async def _advisory_waiters(pool) -> int:
 async def _account(pool, user: str, day: str | None = None) -> Decimal:
     async with pool.acquire() as conn:
         value = await conn.fetchval(
-            "SELECT cost_usd FROM user_daily_cost WHERE user_id = $1 AND day = $2",
+            "SELECT cost_amount FROM user_daily_cost WHERE user_id = $1 AND day = $2",
             user,
             day or utc_day(),
         )
@@ -253,7 +253,7 @@ async def test_two_processes_share_one_accounts_headroom_exactly(db):
     assert admitted == [Decimal("0.100000"), *[Decimal("0.300000")] * 3]
     assert sum(1 for r, refusal in results if refusal is not None) == 16
     rows = await _rows(db.pool, user)
-    assert sum(row["amount_usd"] for row in rows) == Decimal("1.000000")
+    assert sum(row["amount"] for row in rows) == Decimal("1.000000")
     assert {row["instance_id"] for row in rows} <= {"inst-a", "inst-b"}
 
 
@@ -317,12 +317,12 @@ async def test_naive_separate_reads_lose_a_cost_settled_between_them(db):
 
     async with db.pool.acquire() as conn:
         counters = await conn.fetchval(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM user_daily_cost WHERE user_id = $1", user
+            "SELECT COALESCE(SUM(cost_amount), 0) FROM user_daily_cost WHERE user_id = $1", user
         )
         gate.go.set()
         await db.a.flush(5)
         reserved = await conn.fetchval(
-            "SELECT COALESCE(SUM(amount_usd), 0) FROM spend_reservations WHERE user_id = $1",
+            "SELECT COALESCE(SUM(amount), 0) FROM spend_reservations WHERE user_id = $1",
             user,
         )
     assert counters + reserved == 0  # the $0.50 is in neither read
@@ -344,7 +344,7 @@ async def _snapshot(ledger, user: str):
         user_id=user,
         api_key_id=None,
         project_id=None,
-        requested_usd=Decimal("0.01"),
+        requested_amount=Decimal("0.01"),
         check_day=utc_day(),
         operation="probe",
     )
@@ -447,7 +447,7 @@ def _member(reservation, *costs: float, kind="settle", **override) -> Member:
                 reservation.user_id,
                 utc_day(),
                 reservation.key_id,
-                usd(c),
+                quantized_amount(c),
                 1,
                 reservation.project_id,
             )
@@ -463,7 +463,7 @@ async def test_a_batch_applies_once_and_its_id_cannot_carry_another_payload(db):
     u, v = PREFIX + "u", PREFIX + "v"
     r1 = await _active(db.a, u)
     r2 = await _active(db.a, u)
-    plain = CostLine(v, utc_day(), None, usd(0.2))
+    plain = CostLine(v, utc_day(), None, quantized_amount(0.2))
     b1 = SettlementBatch.make("inst-a", [_member(r1, 0.5)], [plain])
 
     first = await backend.settle(b1)
@@ -498,7 +498,14 @@ async def test_settlement_refuses_inconsistent_members_before_writing(db):
     listed_twice = SettlementBatch.make("inst-a", [_member(r, 0.1), _member(r, 0.1)], [])
     elsewhere = SettlementBatch.make(
         "inst-a",
-        [_member(r, costs=(CostLine(PREFIX + "other", utc_day(), 71, usd(0.1), 1, "p-ss-1"),))],
+        [
+            _member(
+                r,
+                costs=(
+                    CostLine(PREFIX + "other", utc_day(), 71, quantized_amount(0.1), 1, "p-ss-1"),
+                ),
+            )
+        ],
         [],
     )
     for batch in (listed_twice, elsewhere):
@@ -546,7 +553,7 @@ async def test_an_admission_identity_cannot_be_reused_once_retired_or_for_anothe
         user_id=user,
         api_key_id=None,
         project_id=None,
-        requested_usd=Decimal("0.300000"),
+        requested_amount=Decimal("0.300000"),
         check_day=utc_day(),
         operation="request",
     )
@@ -556,7 +563,7 @@ async def test_an_admission_identity_cannot_be_reused_once_retired_or_for_anothe
 
     for change in (
         {"user_id": PREFIX + "else"},
-        {"requested_usd": Decimal("0.5")},
+        {"requested_amount": Decimal("0.5")},
         {"operation": "batch"},
         {"check_day": "2000-01-01"},
     ):
@@ -708,7 +715,7 @@ async def test_a_refused_entry_is_split_out_and_kept_counted(db):
 
     assert await _account(db.pool, fine) == Decimal("0.1")
     rows = await _rows(db.pool, full)
-    assert [(r["state"], r["cost_usd"]) for r in rows] == [("quarantined", Decimal("0.5"))]
+    assert [(r["state"], r["cost_amount"]) for r in rows] == [("quarantined", Decimal("0.5"))]
     assert rows[0]["liability_day"] == utc_day()
     assert db.a.holdings()["quarantined"] == 1
     assert db.a.unwritten() == (pytest.approx(0.5), 1)
@@ -756,7 +763,7 @@ async def test_a_refused_request_stays_counted_while_its_row_is_being_marked(db)
     flushing = asyncio.create_task(ledger.flush(10))
     await asyncio.wait_for(backend.reached.wait(), 5)
 
-    assert [(r["state"], r["amount_usd"]) for r in await _rows(db.pool, user)] == [
+    assert [(r["state"], r["amount"]) for r in await _rows(db.pool, user)] == [
         ("active", Decimal("0.3"))
     ]
     second, refusal = await ledger.admit(check(ledger, user), 0.30)
@@ -794,7 +801,7 @@ async def test_a_mark_that_got_no_answer_is_sent_again_and_counts_nothing_twice(
     assert await ledger.flush(10)
 
     assert backend.calls == 2 and first.state == "quarantined"
-    assert [(r["state"], r["cost_usd"]) for r in await _rows(db.pool, user)] == [
+    assert [(r["state"], r["cost_amount"]) for r in await _rows(db.pool, user)] == [
         ("quarantined", Decimal("0.5"))
     ]
     assert ledger.holdings()["quarantined"] == 1 and ledger.holdings()["unaccounted"] == 0
@@ -935,7 +942,7 @@ async def test_a_crashed_process_leaves_its_reservations_counted_and_listed(db):
     # reservations are what an operator is pointed at ($0.30 + $0.70).
     assert {r["owner"] for r in status["open_reservations"]} == {"not registered"}
     assert status["stranded"]["reservations"] == 2
-    assert Decimal(str(status["stranded"]["amount_usd"])) == Decimal("1.0")
+    assert Decimal(str(status["stranded"]["amount"])) == Decimal("1.0")
     assert status["stranded"]["instances"] == ["inst-b", "inst-crashed"]
     assert status["stranded"]["oldest_age_seconds"] >= 0
     listing = await run(SimpleNamespace(command="list", limit=10), db.b._backend)
@@ -998,7 +1005,13 @@ async def test_the_mode_is_local_by_default_and_read_once(db):
         await conn.execute("UPDATE spend_accounting SET mode = 'shared' WHERE id")
     try:
         assert await spend_mode.load(db.pool) == "shared"
-        assert spend_mode.capability() == {"protocol": 1, "mode": "shared"}
+        assert spend_mode.capability() == {
+            "protocol": 2,
+            "mode": "shared",
+            "currency": "USD",
+            "native_amounts": 1,
+            "usd_to_currency_rate": "1",
+        }
     finally:
         spend_mode.set_mode("local")
 
@@ -1074,7 +1087,7 @@ async def test_two_os_processes_share_one_accounts_headroom(db):
     amounts = sorted(Decimal(x) for out, _ in outputs for x in json.loads(out))
     assert amounts == [Decimal("0.100000"), *[Decimal("0.300000")] * 3]
     rows = await _rows(db.pool, user)
-    assert sum(r["amount_usd"] for r in rows) == Decimal("1.000000")
+    assert sum(r["amount"] for r in rows) == Decimal("1.000000")
 
 
 # -- the production wrapper: one ledger from the gate to the billing point ------

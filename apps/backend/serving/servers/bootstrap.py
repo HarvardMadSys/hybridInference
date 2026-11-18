@@ -51,6 +51,10 @@ from serving.servers.routewise_compat import (
     apply_routewise_settings_to_router,
 )
 from serving.setup_state import init_setup_state
+from serving.storage.accounting_schema import (
+    AccountingSchemaUnavailable,
+    require_accounting_schema,
+)
 from serving.storage.batch_file_store import BatchFileStore
 from serving.storage.batch_store import BatchStore
 from serving.storage.batch_webhook_store import BatchWebhookStore
@@ -941,6 +945,39 @@ def _alert_history_fence_secret() -> str | None:
         return None
 
 
+async def _bind_accounting_policy(operational_store: Any) -> None:
+    """Validate and bind the native unit before registering or starting monetary work."""
+    from serving.accounting import bind_accounting_policy, load_accounting_policy
+    from serving.config.distribution import (
+        DistributionConfigError,
+        get_active_distribution_config,
+    )
+
+    # The ledger's currency is the persisted policy; the site configuration
+    # (SITE_CONFIGURATION, ``accounting.currency``, USD when absent) declares
+    # the one this deployment expects. They must agree: a database migrated
+    # to CNY never serves as USD, nor the reverse.
+    accounting_policy = await load_accounting_policy(operational_store)
+    try:
+        distribution = get_active_distribution_config()
+    except DistributionConfigError as exc:
+        raise RuntimeError(
+            "SITE_CONFIGURATION does not validate, so the accounting currency it declares "
+            "cannot be checked against the database's; correct it with "
+            "`python -m serving.config.manage set SITE_CONFIGURATION <json>` before starting"
+        ) from exc
+    expected_currency = distribution.accounting.currency if distribution is not None else "USD"
+    if accounting_policy.currency != expected_currency:
+        raise RuntimeError(
+            f"The database's accounting currency is {accounting_policy.currency} but "
+            f"SITE_CONFIGURATION declares {expected_currency}: import the deployment's site "
+            "configuration (`python -m serving.config.manage import-legacy <manifest>`) or set "
+            f'its "accounting": {{"currency": "{accounting_policy.currency}"}}, or run the '
+            "offline currency migration first"
+        )
+    bind_accounting_policy(accounting_policy)
+
+
 async def initialize() -> AppServices:
     """Initialize application services.
 
@@ -1008,6 +1045,19 @@ async def initialize() -> AppServices:
                 # Checked again on the pool everything else uses: the
                 # configuration load may have run without the database.
                 await require_schema(db_logger.pool)
+                # The native accounting columns and triggers come from their own
+                # revision; verify them read-only so a database that reached a
+                # head this code does not know cannot start without a ledger.
+                await require_accounting_schema(db_logger.pool)
+                # Bind the policy before any scheduler, router warm-up or instance
+                # capability snapshot can observe the process default (USD).
+                policy_reader = CachedOperationalStore(
+                    PostgresOperationalStore(db_logger.pool), InMemoryCache()
+                )
+                try:
+                    await _bind_accounting_policy(policy_reader)
+                except (ValueError, RuntimeError) as exc:
+                    raise AccountingSchemaUnavailable(str(exc)) from exc
                 # The spend accounting mode, once, for this process's life.
                 from serving.shared_spend import mode as spend_mode
 
@@ -1183,11 +1233,13 @@ async def initialize() -> AppServices:
                                 f"{stop_exc}"
                             )
                 break
-            except (ErasureFenceUnavailable, SchemaNotReady):
+            except (ErasureFenceUnavailable, SchemaNotReady, AccountingSchemaUnavailable):
                 # A pinned secret mismatch is a privacy-boundary violation, and
                 # a schema this code cannot run on needs the migrations: neither
-                # is transient. Propagate instead of retrying and eventually
-                # starting without a logger.
+                # is transient. Nor is a ledger without its native accounting
+                # columns: serving would degrade to an unusable ledger.
+                # Propagate instead of retrying and eventually starting without
+                # a logger.
                 await db_logger.cleanup()
                 raise
             except Exception as exc:
@@ -1203,6 +1255,9 @@ async def initialize() -> AppServices:
                         f"{_describe_exc(exc)}. Service will start without database logging."
                     )
                     db_logger = None
+
+    if db_logger is None:
+        await _bind_accounting_policy(None)
 
     # Administrator writes and the refresh loop use the logger's pool.
     if db_logger and db_logger.pool:
@@ -1852,7 +1907,11 @@ async def initialize() -> AppServices:
     source_models = configured_source_models(router, embedding_adapters)
     bind_pricing_snapshot_provider(None)
     if source_models:
-        pricing_sync = PricingSyncService(operational_store, source_models)
+        from serving.accounting import get_accounting_policy
+
+        pricing_sync = PricingSyncService(
+            operational_store, source_models, currency=get_accounting_policy().currency
+        )
         await pricing_sync.initialize()
         bind_pricing_snapshot_provider(pricing_sync.snapshot)
 

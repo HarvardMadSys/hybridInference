@@ -143,7 +143,7 @@ async def test_costs_recorded_by_the_request_are_settled_with_its_reservation():
     (batch,) = backend.batches
     assert batch.increments == ()
     (member,) = batch.members
-    assert [line.cost_usd for line in member.costs] == [Decimal("0.25"), Decimal("0.05")]
+    assert [line.cost_amount for line in member.costs] == [Decimal("0.25"), Decimal("0.05")]
     assert backend.counters[USER] == Decimal("0.30")
     assert backend.rows == {}
     assert ledger.fully_settled()
@@ -284,5 +284,5 @@ async def test_a_cut_off_stream_settles_the_tail_its_billing_point_charged():
         await _until(lambda: not ledger_for(store)._active)
     assert await _kinds(store, backend) == ["settle"]
     (member,) = backend.batches[0].members
-    assert [line.cost_usd for line in member.costs] == [Decimal("0.07")]
+    assert [line.cost_amount for line in member.costs] == [Decimal("0.07")]
     assert backend.counters[USER] == Decimal("0.07")
