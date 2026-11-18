@@ -316,6 +316,21 @@ def _session_key(scope: str, target: _Target, headers: dict[str, str]) -> _Sessi
     return (scope, target.identity or target.url, tuple(sorted(headers.items())))
 
 
+def _cached_session(key: _SessionKey) -> _CachedSession | None:
+    """The live cache entry for *key*, pruning expired ones on the way."""
+    now = time.monotonic()
+    for stale in [
+        cached_key
+        for cached_key, cached in _session_cache.items()
+        if now - cached.last_used > _SESSION_TTL_S
+    ]:
+        _session_cache.pop(stale, None)
+    cached = _session_cache.get(key)
+    if cached is not None:
+        cached.last_used = now
+    return cached
+
+
 async def _open_session(
     client: httpx.AsyncClient,
     target: _Target,
@@ -326,28 +341,33 @@ async def _open_session(
     """Reuse a server's session, or initialize one and remember it."""
     key = _session_key(scope, target, headers)
     async with _init_lock:
-        now = time.monotonic()
-        for stale in [
-            cached_key
-            for cached_key, cached in _session_cache.items()
-            if now - cached.last_used > _SESSION_TTL_S
-        ]:
-            _session_cache.pop(stale, None)
-        cached = _session_cache.get(key)
-        if cached is not None:
-            cached.last_used = now
+        cached = _cached_session(key)
+    if cached is not None:
+        return _Session(
+            client,
+            target,
+            headers,
+            session_id=cached.session_id,
+            protocol_version=cached.protocol_version,
+        )
+
+    session = _Session(client, target, headers)
+    await session.initialize()
+    async with _init_lock:
+        raced = _cached_session(key)
+        if raced is not None:
             return _Session(
                 client,
                 target,
                 headers,
-                session_id=cached.session_id,
-                protocol_version=cached.protocol_version,
+                session_id=raced.session_id,
+                protocol_version=raced.protocol_version,
             )
-        session = _Session(client, target, headers)
-        await session.initialize()
         if session.session_id:
-            _session_cache[key] = _CachedSession(session.session_id, session.protocol_version, now)
-        return session
+            _session_cache[key] = _CachedSession(
+                session.session_id, session.protocol_version, time.monotonic()
+            )
+    return session
 
 
 async def _with_session(

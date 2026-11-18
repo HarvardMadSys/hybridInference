@@ -176,6 +176,61 @@ async def test_a_404_keeps_its_status_for_session_recovery() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_blocked_initialize_does_not_serialize_other_servers() -> None:
+    gate = asyncio.Event()
+
+    class _BlockingStream:
+        def __init__(self, payload: dict[str, Any]) -> None:
+            self._payload = payload
+
+        async def __aenter__(self) -> httpx.Response:
+            await gate.wait()
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._payload["id"],
+                    "result": {"protocolVersion": "2025-06-18"},
+                },
+                headers={"mcp-session-id": "slow"},
+            )
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+    class _BlockingClient(_FakeClient):
+        def stream(self, _method: str, _url: str, **kwargs: Any) -> Any:
+            payload = kwargs.get("json") or {}
+            if payload.get("method") == "initialize":
+                self.requests.append(payload)
+                self.headers.append(kwargs.get("headers") or {})
+                return _BlockingStream(payload)
+            return super().stream(_method, _url, **kwargs)
+
+    slow = _BlockingClient([])
+    fast = _FakeClient([{"protocolVersion": "2025-06-18"}])
+    slow_target = mcp_client._Target(
+        "https://slow.example/rpc", "slow.example", "slow.example", "https://slow.example/rpc"
+    )
+    fast_target = mcp_client._Target(
+        "https://fast.example/rpc", "fast.example", "fast.example", "https://fast.example/rpc"
+    )
+
+    blocked = asyncio.create_task(
+        mcp_client._open_session(slow, slow_target, {}, scope="slow")  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0)
+    fast_session = await asyncio.wait_for(
+        mcp_client._open_session(fast, fast_target, {}, scope="fast"),  # type: ignore[arg-type]
+        timeout=1,
+    )
+    assert fast_session.session_id == "s-1"
+
+    gate.set()
+    await blocked
+
+
+@pytest.mark.asyncio
 async def test_an_sse_answer_is_parsed() -> None:
     server = _FakeClient(
         [{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}],
