@@ -2,6 +2,8 @@
 // UserRow mirrors backend UserListItem (decimals decoded as numbers/strings
 // — keep numeric strings for safety and parse where needed).
 
+import type { Currency } from '@/lib/utils/money';
+
 export type UserStatus = 'pending_approval' | 'active' | 'suspended' | 'rejected' | 'deleted';
 
 export type UserRole = 'free' | 'pro' | 'internal' | 'admin';
@@ -105,6 +107,11 @@ export interface SavedView {
   name: string;
   builtin: boolean;
   filterState: FilterState;
+  /**
+   * Set on a view saved under another currency than the ledger's: the currency
+   * its spend thresholds were in, which are left out here. Never stored.
+   */
+  thresholdsLeftOut?: Currency;
 }
 
 export type Density = 'comfortable' | 'compact';
