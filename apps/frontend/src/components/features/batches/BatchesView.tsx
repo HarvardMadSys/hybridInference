@@ -352,7 +352,15 @@ function BatchesManager({
 }) {
   const t = useT();
   const toast = useAccountToast();
-  const [busyId, setBusyId] = useState<string | null>(null);
+  // Rows with an action in flight: one finishing must not free another.
+  const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(() => new Set());
+  const setBusy = (batchId: string, busy: boolean) =>
+    setBusyIds((current) => {
+      const next = new Set(current);
+      if (busy) next.add(batchId);
+      else next.delete(batchId);
+      return next;
+    });
   const [query, setQuery] = useState('');
   const [appliedQuery, setAppliedQuery] = useState('');
   const [category, setCategory] = useState<BatchCategory | ''>('');
@@ -387,14 +395,26 @@ function BatchesManager({
       'Cancel this batch? Requests that have not started will not run; running ones finish.',
     );
     if (!window.confirm(message)) return;
-    setBusyId(batch.id);
+    setBusy(batch.id, true);
     try {
-      replace(await cancelMyBatch(batch.id));
-      toast.success(t('batches.toast.cancelled', 'Batch cancelled.'));
+      const updated = await cancelMyBatch(batch.id);
+      replace(updated);
+      // A batch that already expired or failed is only finishing its running
+      // requests: the gateway leaves it as it is rather than cancelling it.
+      if (updated.status === 'cancelling' || updated.status === 'cancelled') {
+        toast.success(t('batches.toast.cancelled', 'Batch cancelled.'));
+      } else {
+        toast.error(
+          t(
+            'batches.toast.cancel_finishing',
+            'This batch is already finishing and can no longer be cancelled.',
+          ),
+        );
+      }
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setBusyId(null);
+      setBusy(batch.id, false);
     }
   }
 
@@ -404,7 +424,7 @@ function BatchesManager({
       'Delete this batch and its results? This cannot be undone.',
     );
     if (!window.confirm(message)) return;
-    setBusyId(batch.id);
+    setBusy(batch.id, true);
     try {
       await deleteMyBatch(batch.id);
       remove(batch.id);
@@ -412,18 +432,18 @@ function BatchesManager({
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setBusyId(null);
+      setBusy(batch.id, false);
     }
   }
 
   async function handleDownload(batch: ConsoleBatch, kind: ResultKind) {
-    setBusyId(batch.id);
+    setBusy(batch.id, true);
     try {
       await downloadMyResults(batch.id, kind);
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setBusyId(null);
+      setBusy(batch.id, false);
     }
   }
 
@@ -516,7 +536,7 @@ function BatchesManager({
               <BatchRow
                 key={batch.id}
                 batch={batch}
-                busy={busyId === batch.id}
+                busy={busyIds.has(batch.id)}
                 onCancel={handleCancel}
                 onDelete={handleDelete}
                 onDownload={handleDownload}

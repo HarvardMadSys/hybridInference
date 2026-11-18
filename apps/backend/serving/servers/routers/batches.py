@@ -581,6 +581,15 @@ async def create_batch(
     )
     if replay is not None:
         return batch_object(replay, config)
+    if key is not None:
+        # The key belongs to the account, not to one input method: a key that
+        # already named a batch made the other way is a different request.
+        # Answered early here, before the requests are validated; the create
+        # transaction checks it again under the owner's admission lock, which
+        # is what holds when two creates with the key race.
+        other = SURFACE_OPENAI_INLINE if file_mode else SURFACE_OPENAI_FILE
+        if await store.find_idempotent(owner_id=owner, api_surface=other, key=key) is not None:
+            raise admission.conflict_error()
 
     _may_create(request, user_ctx, config)
     if version is not None and version not in config.anthropic_versions:

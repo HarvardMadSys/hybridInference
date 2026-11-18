@@ -1930,6 +1930,27 @@ async def test_project_cap_is_shared_by_batch_and_interactive_work():
     assert scheduler._role_slots._slots[OWNER].in_use == 0
 
 
+@pytest.mark.asyncio
+async def test_a_failing_scoped_release_still_gives_back_the_role_slot():
+    limiter = UserConcurrencyLimiter(static_limits_provider({"free": 10}))
+
+    def broken_release(slot: str) -> None:
+        raise RuntimeError("limiter backend unavailable")
+
+    limiter.release = broken_release
+    scheduler = object.__new__(BatchScheduler)
+    scheduler._role_slots = UserConcurrencyLimiter(static_limits_provider({"free": 10}))
+    scheduler._services = types.SimpleNamespace(user_concurrency_limiter=limiter)
+    scheduler._owner_slots = Counter()
+    user = {"user_id": OWNER, "project_id": "proj_x", "project_max_concurrent_requests": 1}
+
+    release = await scheduler._take_user_slot(user, "model")
+    assert release is not None
+    assert scheduler._role_slots._slots[OWNER].in_use == 1
+    release()
+    assert scheduler._role_slots._slots[OWNER].in_use == 0
+
+
 # -- the shared accounting mode -------------------------------------------------
 
 

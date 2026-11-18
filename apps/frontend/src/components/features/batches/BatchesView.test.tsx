@@ -414,6 +414,74 @@ describe('BatchesView', () => {
   });
 });
 
+describe('BatchesView when a delete races the list', () => {
+  const rowsShown = (...names: string[]) => names.map((name) => screen.queryByText(name) !== null);
+
+  async function deleteRow(id: string) {
+    const row = screen.getByText(id).closest('li') as HTMLElement;
+    fireEvent.click(within(row).getByLabelText(`More actions for ${id}`));
+    fireEvent.click(within(row).getByRole('button', { name: 'Delete' }));
+  }
+
+  let confirm: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+  });
+  afterEach(() => confirm.mockRestore());
+
+  it('drops the only row shown once its delete is confirmed, even when the reload fails', async () => {
+    vi.mocked(listMyBatches)
+      .mockResolvedValueOnce(page([batch('batch_only')], true))
+      .mockRejectedValueOnce(new Error('The gateway is busy'))
+      .mockResolvedValue(page([batch('batch_next')]));
+    vi.mocked(deleteMyBatch).mockResolvedValue({ id: 'batch_only', deleted: true });
+    render(<BatchesView />);
+    await screen.findByText('batch_only');
+
+    await deleteRow('batch_only');
+    expect(await screen.findByRole('alert')).toHaveTextContent('The gateway is busy');
+    expect(screen.queryByText('batch_only')).toBeNull();
+
+    // The error can be retried from the list's refresh.
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    expect(await screen.findByText('batch_next')).toBeInTheDocument();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByText('batch_only')).toBeNull();
+  });
+
+  it('does not bring back a deleted row from a refresh sent before the delete', async () => {
+    const removal = deferred<{ id: string; deleted: boolean }>();
+    const refreshed = deferred<ConsoleBatchPage>();
+    vi.mocked(listMyBatches)
+      .mockResolvedValueOnce(page([batch('batch_a'), batch('batch_b')], true))
+      .mockReturnValueOnce(refreshed.promise)
+      .mockResolvedValue(page([batch('batch_c')]));
+    vi.mocked(deleteMyBatch).mockReturnValue(removal.promise);
+    render(<BatchesView />);
+    await screen.findByText('batch_b');
+
+    // The delete is sent, then the list refreshed; the delete is confirmed
+    // first, and the refresh (read before the row was deleted) answers last.
+    await deleteRow('batch_b');
+    fireEvent.click(screen.getByRole('button', { name: 'Refresh' }));
+    await act(async () => {
+      removal.resolve({ id: 'batch_b', deleted: true });
+      await removal.promise;
+    });
+    await act(async () => {
+      refreshed.resolve(page([batch('batch_a'), batch('batch_b')], true));
+      await refreshed.promise;
+    });
+    expect(rowsShown('batch_a', 'batch_b')).toEqual([true, false]);
+
+    // Paging goes on from the last row still listed, not from the deleted one.
+    fireEvent.click(screen.getByRole('button', { name: 'Show more' }));
+    expect(await screen.findByText('batch_c')).toBeInTheDocument();
+    expect(vi.mocked(listMyBatches).mock.calls.at(-1)?.[0]).toBe('batch_a');
+    expect(rowsShown('batch_a', 'batch_b', 'batch_c')).toEqual([true, false, true]);
+  });
+});
+
 describe('BatchesView capabilities', () => {
   it.each(['disabled', 'unavailable'] as const)(
     'when Batch is %s, explains so and loads no batch data',

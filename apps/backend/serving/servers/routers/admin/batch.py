@@ -255,8 +255,11 @@ async def admin_batch_requests(
     log (``db_store_full_content``), the setting that already decides whether
     administrators can read request content: where a deployment keeps that
     off, a batch's stored requests stay unreadable here too, although the
-    batch needs them to run. Opening a batch's requests (the first page) is
-    audited as ``batch.requests.read`` against the batch's owner.
+    batch needs them to run. Every page that returns stored content is
+    audited as ``batch.requests.read`` against the batch's owner, with the
+    item ids it returned, before it is returned: a page whose audit row cannot
+    be written is not answered. A page with nothing on it returns no content
+    and is not audited.
     """
     if batch_store is None:
         raise HTTPException(status_code=500, detail="Database not configured")
@@ -271,16 +274,26 @@ async def admin_batch_requests(
     batch = await batch_store.get_batch(batch_id)
     if batch is None:
         raise HTTPException(status_code=404, detail=f"Batch '{batch_id}' not found")
-    if after == 0:
+    items = await batch_store.item_contents(batch_id, after=after, limit=limit + 1)
+    page = items[:limit]
+    if page:
+        # Each read that returns content is its own audit row, naming exactly
+        # the items it returned (ids are ascending within the batch, so the
+        # range and count identify them): a later page is never covered by
+        # the audit of an earlier one.
         await log_admin_action(
             op_store,
             action="batch.requests.read",
             actor=actor,
             target=AuditTarget.user(batch["user_id"]),
-            details={"batch_id": batch_id},
+            details={
+                "batch_id": batch_id,
+                "after": after,
+                "first_item_id": page[0]["id"],
+                "last_item_id": page[-1]["id"],
+                "items": len(page),
+            },
         )
-    items = await batch_store.item_contents(batch_id, after=after, limit=limit + 1)
-    page = items[:limit]
     for item in page:
         completed = item.get("completed_at")
         item["completed_at"] = int(completed.timestamp()) if completed is not None else None

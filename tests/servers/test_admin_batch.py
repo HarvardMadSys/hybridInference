@@ -477,12 +477,38 @@ async def test_an_admin_reads_a_batchs_prompts_page_by_page(admin_client):
     assert [item["custom_id"] for item in second.json()["data"]] == ["req-3"]
     assert second.json()["has_more"] is False
 
-    # Opening the batch's requests is audited once, against its owner.
-    client.audit.assert_awaited_once()
-    kwargs = client.audit.await_args.kwargs
-    assert kwargs["action"] == "batch.requests.read"
-    assert (kwargs["target"].type, kwargs["target"].id) == ("user", "u-owner")
-    assert kwargs["details"] == {"batch_id": "batch_1"}
+    # Each page that returned content is audited, against the batch's owner,
+    # with the items it returned.
+    assert client.audit.await_count == 2
+    reads = [call.kwargs for call in client.audit.await_args_list]
+    assert {kwargs["action"] for kwargs in reads} == {"batch.requests.read"}
+    assert {(kwargs["target"].type, kwargs["target"].id) for kwargs in reads} == {
+        ("user", "u-owner")
+    }
+    assert [kwargs["details"] for kwargs in reads] == [
+        {"batch_id": "batch_1", "after": 0, "first_item_id": 1, "last_item_id": 2, "items": 2},
+        {"batch_id": "batch_1", "after": 2, "first_item_id": 3, "last_item_id": 3, "items": 1},
+    ]
+
+
+async def test_a_page_past_the_last_item_returns_nothing_and_is_not_audited(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+
+    response = await client.get("/admin/batch/jobs/batch_1/requests?after=3", headers=ADMIN)
+
+    assert response.status_code == 200
+    assert response.json()["data"] == []
+    client.audit.assert_not_awaited()
+
+
+async def test_a_page_whose_read_cannot_be_audited_is_not_returned(admin_client):
+    client, _ = admin_client
+    _store_prompts(client, True)
+    client.audit.side_effect = RuntimeError("audit log unavailable")
+
+    with pytest.raises(RuntimeError):
+        await client.get("/admin/batch/jobs/batch_1/requests?after=1", headers=ADMIN)
 
 
 async def test_prompts_stay_unreadable_where_the_gateway_does_not_keep_them(admin_client):

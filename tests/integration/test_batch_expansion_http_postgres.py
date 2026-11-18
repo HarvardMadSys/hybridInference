@@ -1110,6 +1110,78 @@ async def test_an_idempotent_replay_comes_before_quota_and_role(gateway):
     assert model.calls.count("idem") == 1
 
 
+async def test_one_key_racing_across_input_methods_creates_one_batch(gateway, monkeypatch):
+    client, model, store = gateway.client, gateway.model, gateway.store
+    # Paused, so neither batch runs (and either can be deleted) while it is inspected.
+    await store.set_model_limit(model.config.id, 0, "test")
+    uploaded = await _upload(client, _lines(model.config.id, 2))
+    bodies = {
+        "inline": {
+            "requests": [
+                {
+                    "custom_id": "one",
+                    "url": "/v1/chat/completions",
+                    "body": {
+                        "model": model.config.id,
+                        "messages": [{"role": "user", "content": "race"}],
+                    },
+                }
+            ]
+        },
+        "file": {
+            "input_file_id": uploaded["id"],
+            "endpoint": "/v1/chat/completions",
+            "completion_window": "24h",
+        },
+    }
+    # Both creates pass the router's early key check before either commits:
+    # each waits at the create transaction until the other has reached it too.
+    real_create = store.create_batch
+    arrived: list[str] = []
+    both = asyncio.Event()
+
+    async def create_once_both_arrive(**kwargs):
+        arrived.append(kwargs["api_surface"])
+        if len(arrived) == 2:
+            both.set()
+        await asyncio.wait_for(both.wait(), timeout=10)
+        return await real_create(**kwargs)
+
+    monkeypatch.setattr(store, "create_batch", create_once_both_arrive)
+    headers = {**KEY, "Idempotency-Key": "one-key-two-methods"}
+    inline, from_file = await asyncio.gather(
+        client.post("/v1/batches", headers=headers, json=bodies["inline"]),
+        client.post("/v1/batches", headers=headers, json=bodies["file"]),
+    )
+    assert sorted(arrived) == ["openai_file", "openai_inline"]
+    assert sorted([inline.status_code, from_file.status_code]) == [200, 409], (
+        inline.text,
+        from_file.text,
+    )
+    listed = await store.list_batches(user_id=gateway.owner["user_id"], limit=10)
+    winner, loser = ("inline", "file") if inline.status_code == 200 else ("file", "inline")
+    created = (inline if winner == "inline" else from_file).json()
+    assert [row["id"] for row in listed] == [created["id"]]
+
+    # The winner's own request still replays; the other input method stays refused.
+    replay = await client.post("/v1/batches", headers=headers, json=bodies[winner])
+    assert (replay.status_code, replay.json()["id"]) == (200, created["id"])
+    again = await client.post("/v1/batches", headers=headers, json=bodies[loser])
+    assert again.status_code == 409
+
+    # Deleted, the batch's own request answers 410; the other method is still 409.
+    async def deleted():
+        response = await client.delete(f"/v1/batches/{created['id']}", headers=KEY)
+        return response.status_code == 200
+
+    await _until(deleted, what="the created batch to be deleted")
+    gone = await client.post("/v1/batches", headers=headers, json=bodies[winner])
+    assert gone.status_code == 410
+    still = await client.post("/v1/batches", headers=headers, json=bodies[loser])
+    assert still.status_code == 409
+    assert model.calls == []
+
+
 async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
     client = gateway.client
     received: list[tuple[dict[str, str], bytes, bool]] = []

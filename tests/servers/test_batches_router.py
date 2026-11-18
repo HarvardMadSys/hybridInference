@@ -579,6 +579,22 @@ async def test_a_demoted_owner_still_gets_the_batch_its_key_created(client, stor
     assert len(store.created) == 1
 
 
+async def test_a_key_used_for_a_file_batch_conflicts_with_an_inline_batch(client, store):
+    async def find_idempotent(*, owner_id: str, api_surface: str, key: str):
+        if (owner_id, api_surface, key) != ("alice", "openai_file", "k"):
+            return None
+        return {"batch_id": "batch_file", "request_digest": "file-digest", "deleted": False}
+
+    store.find_idempotent = find_idempotent
+
+    response = await client.post(
+        "/v1/batches", json=_body(), headers={**_auth(), "Idempotency-Key": "k"}
+    )
+
+    assert response.status_code == 409, response.text
+    assert store.created == []
+
+
 @pytest.mark.parametrize(
     ("method", "path"), [("POST", "/v1/batches"), ("GET", "/v1/batches")], ids=["create", "list"]
 )
