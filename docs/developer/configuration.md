@@ -266,7 +266,9 @@ Analytics visibility switches affect the console without a backend restart.
 Security-sensitive changes require the administrator to confirm who they are.
 An account with an authenticator app gives a code. An account with a password
 gives the password. An account that signs in only through single sign-on
-signs in there again, which confirms one change within five minutes.
+signs in there again, which confirms one change within five minutes. A save
+that would need it twice, such as resetting a credential and changing another
+security setting of the same category, sends nothing; save them one at a time.
 `ADMIN_TOKEN` cannot confirm. These changes include the runtime switches and
 numbers that decide who may sign in or sign up, whether inference needs a key,
 what is logged of a request, and what each account may spend and run at once.

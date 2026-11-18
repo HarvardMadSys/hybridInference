@@ -11,6 +11,7 @@ import {
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
 import {
   ReauthPassword,
+  useConfirmMode,
   useConfirmsWithoutPassword,
 } from '@/components/features/admin/confirm/ReauthPassword';
 import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
@@ -256,6 +257,7 @@ export function useConfigurationEditor({
   const settingsPassword = useRef('');
   // An administrator with an authenticator app confirms with its code instead.
   const withoutPassword = useConfirmsWithoutPassword();
+  const confirmMode = useConfirmMode();
   const spendSso = useSpendAdminSso();
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
@@ -475,6 +477,22 @@ export function useConfigurationEditor({
     const guarded = securityRelevantKeys(group, [...Object.keys(values), ...resets]);
     if (guarded.length === 0) {
       void commitSave(save);
+      return;
+    }
+    // A fresh single sign-on confirms one request, and a save sends its values
+    // in one and each reset in another. Asked to confirm more than one, it would
+    // save the first and be refused the rest, so nothing is sent.
+    const guardedRequests =
+      (Object.keys(values).some((key) => guarded.includes(key)) ? 1 : 0) +
+      resets.filter((key) => guarded.includes(key)).length;
+    if (confirmMode === 'sso' && guardedRequests > 1) {
+      setGroupErrors((prev) => ({
+        ...prev,
+        [group.id]:
+          'A sign-in at your identity provider confirms one change at a time. Save the reset of ' +
+          `${resets.filter((key) => guarded.includes(key)).join(', ')} and the other changes to ` +
+          `${group.label} one by one: undo all but one, save it, then do the next.`,
+      }));
       return;
     }
     // A signing secret, the trusted networks, where mail and users go: a stolen

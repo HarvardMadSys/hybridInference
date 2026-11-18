@@ -3143,6 +3143,36 @@ describe('an administrator who confirms through single sign-on', () => {
     expect(settle).toHaveBeenCalledWith();
   });
 
+  it('sends nothing when one save would need it twice: two resets, or a reset and a change', async () => {
+    const settle = confirmedSso();
+    await renderTab(guardedConfig());
+    const email = within(section('Email (SMTP)'));
+    fireEvent.click(email.getByRole('button', { name: 'Reset SMTP_PASSWORD' }));
+    fireEvent.change(screen.getByLabelText('SMTP_PORT'), { target: { value: '2525' } });
+    save('Email (SMTP)');
+
+    expect(
+      await screen.findByText(/confirms one change at a time\. Save the reset of SMTP_PASSWORD/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(resetConfigKey).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  it('still saves a single guarded reset with it', async () => {
+    const settle = confirmedSso();
+    await renderTab(guardedConfig());
+    const email = within(section('Email (SMTP)'));
+    fireEvent.click(email.getByRole('button', { name: 'Reset SMTP_PORT' }));
+    save('Email (SMTP)');
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    await waitFor(() => expect(resetConfigKey).toHaveBeenCalledTimes(1));
+    expect(settle).toHaveBeenCalledWith();
+  });
+
   it('spends it when the gateway refuses the save too', async () => {
     const settle = confirmedSso();
     const refusal = new APIError(
