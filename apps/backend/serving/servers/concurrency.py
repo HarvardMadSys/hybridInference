@@ -182,16 +182,18 @@ class UserConcurrencyLimiter:
     def _limit_for(role: str, is_admin: bool, limits: dict[str, int]) -> int:
         if is_admin:
             return limits.get("admin", _FALLBACK_LIMITS["admin"])
-        if role in limits:
-            return limits[role]
+        role_key = (role or "free").lower()
+        if role_key in limits:
+            return limits[role_key]
         return limits.get("free", _FALLBACK_LIMITS["free"])
 
     @staticmethod
     def _role_label(role: str, is_admin: bool, limits: dict[str, int]) -> str:
         if is_admin:
             return "admin"
-        if role in limits:
-            return role
+        role_key = (role or "free").lower()
+        if role_key in limits:
+            return role_key
         return "free"
 
     async def try_acquire(

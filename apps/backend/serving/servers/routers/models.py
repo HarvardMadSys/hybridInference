@@ -55,7 +55,7 @@ from serving.servers.auth import (
     optional_verify_api_key,
     verify_api_key_for_balance,
 )
-from serving.servers.concurrency import effective_user_concurrency
+from serving.servers.concurrency import effective_user_concurrency, scope_concurrency_limits
 from serving.servers.deps import (
     get_auto_mode,
     get_embedding_adapters,
@@ -435,8 +435,9 @@ async def describe_key(
     ``concurrency.max_in_flight`` is the cap the limiter enforces for the user
     this request is attributed to, ``null`` when unlimited. A trusted service
     account's ``X-On-Behalf-Of`` applies to it exactly as it does to inference.
-    When no limiter is configured, inference is unguarded and the cap is
-    ``null``.
+    ``concurrency.project_max_in_flight`` is the project's own shared cap,
+    ``null`` when it has none; admission requires room under both. When no
+    limiter is configured, inference is unguarded and both are ``null``.
     """
     from serving import quota
 
@@ -471,9 +472,15 @@ async def describe_key(
             op_store,
         )
     max_in_flight = None
+    project_max_in_flight = None
     if limiter is not None:
         cap = await effective_user_concurrency(concurrency_user, runtime_settings)
         max_in_flight = cap if cap else None
+        project_cap = next(
+            (capacity for _scope, _key, capacity in scope_concurrency_limits(concurrency_user)),
+            None,
+        )
+        project_max_in_flight = project_cap if project_cap else None
 
     described: dict[str, Any] = {
         "key_prefix": user_ctx.get("key_prefix"),
@@ -482,7 +489,10 @@ async def describe_key(
             "name": user_ctx.get("project_name"),
         },
         "models": models,
-        "concurrency": {"max_in_flight": max_in_flight},
+        "concurrency": {
+            "max_in_flight": max_in_flight,
+            "project_max_in_flight": project_max_in_flight,
+        },
         "budgets": {
             "key": {
                 window: (
