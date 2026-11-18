@@ -161,6 +161,23 @@ async def test_a_private_address_is_refused_by_default(monkeypatch: pytest.Monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("address", ["64:ff9b::a00:1", "::ffff:10.0.0.1"])
+async def test_an_ipv6_wrapper_around_a_private_address_is_refused(
+    monkeypatch: pytest.MonkeyPatch, address: str
+) -> None:
+    monkeypatch.setattr(mcp_client, "_allowed_internal_hosts", lambda: set())
+    monkeypatch.setattr(
+        mcp_client.socket,
+        "getaddrinfo",
+        lambda *_a, **_k: [
+            (mcp_client.socket.AF_INET6, mcp_client.socket.SOCK_STREAM, 6, "", (address, 0, 0, 0))
+        ],
+    )
+    with pytest.raises(mcp_client.McpError, match="not allowed"):
+        await mcp_client._resolve_target("http://mcp.internal/rpc")
+
+
+@pytest.mark.asyncio
 async def test_an_explicitly_allowed_host_may_reach_a_private_address(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

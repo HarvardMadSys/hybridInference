@@ -1069,6 +1069,72 @@ describe('PlaygroundPage', () => {
     expect(screen.getByRole('button', { name: 'Run' })).not.toBeDisabled();
   });
 
+  it('accumulates a Chat Completions tool name split across fragments', async () => {
+    stubWindowWidth(true);
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) => {
+      if (path === '/internal/playground/models') return MODELS;
+      if (path === '/internal/playground/mcp/tools') {
+        return {
+          ok: true,
+          json: async () => ({
+            tools: [
+              {
+                name: 'get_weather',
+                description: 'Current weather',
+                inputSchema: { type: 'object' },
+              },
+            ],
+          }),
+        };
+      }
+      return sseResponse([
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  {
+                    index: 0,
+                    id: 'c1',
+                    type: 'function',
+                    function: { name: 'get_', arguments: '' },
+                  },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        frame({
+          choices: [
+            {
+              index: 0,
+              delta: {
+                tool_calls: [
+                  { index: 0, function: { name: 'weather', arguments: '{"city":"Paris"}' } },
+                ],
+              },
+              finish_reason: null,
+            },
+          ],
+        }),
+        frame({ choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] }),
+      ]);
+    });
+
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.change(screen.getByLabelText('MCP server URL'), {
+      target: { value: 'https://mcp.example/mcp' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: /get_weather/ }));
+    await sendPrompt('weather?');
+
+    expect(await screen.findByRole('button', { name: 'Run' })).not.toBeDisabled();
+  });
+
   it('aborts every live stream when the page unmounts', async () => {
     const first = controlledStream();
     const second = controlledStream();

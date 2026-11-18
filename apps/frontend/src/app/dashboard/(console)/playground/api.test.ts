@@ -363,7 +363,7 @@ describe('tools', () => {
           },
         ],
       })?.toolCalls,
-    ).toEqual([{ index: 0, id: 'call-1', name: 'search', arguments: '{"q":' }]);
+    ).toEqual([{ index: 0, id: 'call-1', name: 'search', nameMode: 'append', arguments: '{"q":' }]);
 
     expect(
       parseStreamEvent('responses', {

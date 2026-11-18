@@ -92,6 +92,8 @@ export interface ToolCallDelta {
   index: number;
   id?: string;
   name?: string;
+  /** Chat Completions streams names in fragments; whole names replace. */
+  nameMode?: 'append' | 'replace';
   arguments?: string;
 }
 
@@ -180,7 +182,9 @@ export function parseStreamEvent(api: PlaygroundApi, parsed: unknown): StreamEve
       calls.push({
         index,
         ...(typeof call.id === 'string' && call.id ? { id: call.id } : {}),
-        ...(typeof fn.name === 'string' && fn.name ? { name: fn.name } : {}),
+        ...(typeof fn.name === 'string' && fn.name
+          ? { name: fn.name, nameMode: 'append' as const }
+          : {}),
         ...(typeof fn.arguments === 'string' && fn.arguments ? { arguments: fn.arguments } : {}),
       });
     });

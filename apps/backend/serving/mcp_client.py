@@ -25,6 +25,7 @@ from urllib.parse import urlparse
 import httpx
 
 from serving.config.settings import get_settings
+from serving.utils.ip_classification import is_public_unicast
 from serving.utils.metadata_addresses import METADATA_HOSTNAMES, is_metadata_address
 
 _PROTOCOL_VERSION = "2025-06-18"
@@ -103,7 +104,7 @@ async def _resolve_target(url: str) -> _Target:
         (
             address
             for address in addresses
-            if not is_metadata_address(address) and (allow_private or address.is_global)
+            if not is_metadata_address(address) and (allow_private or is_public_unicast(address))
         ),
         None,
     )

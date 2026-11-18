@@ -77,24 +77,32 @@ export function isUsableReply(message: Message | undefined): boolean {
  */
 export function requestHistory(messages: Message[]): HistoryMessage[] {
   const history: HistoryMessage[] = [];
-  for (let i = 0; i < messages.length; i++) {
-    const message = messages[i];
-    if (message.role !== 'user') continue;
-    const reply = messages[i + 1];
-    if (reply?.role === 'assistant') {
-      if (isUsableReply(reply)) {
-        history.push({ role: 'user', content: message.content });
-        history.push({
-          role: 'assistant',
-          content: reply.content,
-          ...(reply.toolCalls?.length ? { toolCalls: reply.toolCalls } : {}),
-        });
-      }
-      i++;
-    } else {
-      history.push({ role: 'user', content: message.content });
+  let user: Message | null = null;
+  let started = false;
+  for (const message of messages) {
+    if (message.role === 'user') {
+      user = message;
+      started = false;
+      continue;
     }
+    if (!user) continue;
+    if (!isUsableReply(message)) {
+      // The first reply of a turn failed or said nothing: drop the question.
+      // A later continuation that failed is skipped, keeping the replies before it.
+      if (!started) user = null;
+      continue;
+    }
+    if (!started) {
+      history.push({ role: 'user', content: user.content });
+      started = true;
+    }
+    history.push({
+      role: 'assistant',
+      content: message.content,
+      ...(message.toolCalls?.length ? { toolCalls: message.toolCalls } : {}),
+    });
   }
+  if (user && !started) history.push({ role: 'user', content: user.content });
   return history;
 }
 

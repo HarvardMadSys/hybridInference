@@ -157,7 +157,14 @@ function applyToolDeltas(current: ToolCall[] | undefined, deltas: ToolCallDelta[
       ...(existing?.result !== undefined ? { result: existing.result } : {}),
       ...(existing?.error !== undefined ? { error: existing.error } : {}),
       ...(delta.id ? { id: delta.id } : {}),
-      ...(delta.name ? { name: delta.name } : {}),
+      ...(delta.name
+        ? {
+            name:
+              delta.nameMode === 'append'
+                ? (existing?.name ?? '') + delta.name
+                : delta.name,
+          }
+        : {}),
       ...(delta.arguments ? { arguments: (existing?.arguments ?? '') + delta.arguments } : {}),
     };
     if (position >= 0) calls[position] = merged;

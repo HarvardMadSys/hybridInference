@@ -114,3 +114,42 @@ describe('tool calls in history', () => {
     ).toEqual([{ role: 'user', content: 'q2' }]);
   });
 });
+
+describe('assistant continuations', () => {
+  const call = {
+    id: 'call-1',
+    name: 'search',
+    arguments: '{}',
+    status: 'done' as const,
+    result: 'found it',
+  };
+
+  it('keeps every usable assistant reply after one user message', () => {
+    expect(
+      requestHistory([
+        user('q'),
+        reply('', { toolCalls: [call] }),
+        reply('Here is the answer.', { toolCalls: [call] }),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', toolCalls: [call] },
+      { role: 'assistant', content: 'Here is the answer.', toolCalls: [call] },
+    ]);
+  });
+
+  it('skips a failed continuation but keeps the replies before it', () => {
+    expect(
+      requestHistory([
+        user('q'),
+        reply('', { toolCalls: [call] }),
+        reply('', { status: 'error', error: 'HTTP 502' }),
+        user('next'),
+      ]),
+    ).toEqual([
+      { role: 'user', content: 'q' },
+      { role: 'assistant', content: '', toolCalls: [call] },
+      { role: 'user', content: 'next' },
+    ]);
+  });
+});
