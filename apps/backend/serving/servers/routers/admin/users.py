@@ -145,7 +145,11 @@ async def list_users(
     - limit: Max results (default: 100)
     - offset: Pagination offset
     - min_cost_today / min_cost_month: filter to users whose today/month spend
-      meets the threshold (USD).
+      meets the threshold, in ``currency`` when given and USD otherwise.
+    - currency: the unit the console read the thresholds in. Only a request
+      with a threshold is refused (409) when it differs from the ledger's: the
+      rest of the list does not depend on it, so a console loaded before the
+      ledger's currency changed can still open it.
     - quota_state: ``default`` / ``custom`` filter on whether the user's active
       key has a quota override; ``near`` / ``over`` use today's spend vs quota.
     - provider: keep only users who hit ``provider`` in api_logs in the last
@@ -160,7 +164,7 @@ async def list_users(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
-    if currency is not None:
+    if currency is not None and (min_cost_today is not None or min_cost_month is not None):
         policy = get_accounting_policy()
         if currency != policy.currency:
             raise HTTPException(409, "Accounting currency changed; reload the filters")
