@@ -27,7 +27,6 @@ from serving.servers.routers.admin import (
     model_queue,
     model_visibility,
     offload_routes,
-    orgs,
     provider_definitions,
     provider_keys,
     provider_routes,
@@ -41,6 +40,7 @@ from serving.servers.routers.admin import (
     system,
     upstream_concurrency,
     usage_insights,
+    user_projects,
     users,
 )
 
@@ -68,7 +68,6 @@ router.include_router(model_concurrency.router)
 router.include_router(model_queue.router)
 router.include_router(model_visibility.router)
 router.include_router(offload_routes.router)
-router.include_router(orgs.router)
 router.include_router(provider_definitions.router)
 router.include_router(provider_keys.router)
 router.include_router(provider_routes.router)
@@ -85,5 +84,6 @@ router.include_router(system.router)
 router.include_router(upstream_concurrency.router)
 router.include_router(usage_insights.router)
 router.include_router(users.router)
+router.include_router(user_projects.router)
 
 __all__ = ["_decode_throughput_tps", "router"]

@@ -1,6 +1,7 @@
 'use client';
 
 import { CHECKBOX } from '@/components/features/admin/adminStyles';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { Sparkline } from './Sparkline';
 import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
@@ -90,10 +91,11 @@ export function UserRow({
   selected = false,
   onSelectedChange,
 }: UserRowProps) {
+  const money = useMoney();
   const status = STATUS_STYLE[user.status] ?? STATUS_STYLE.active;
-  const today = Number(user.usage_today_usd);
-  const month = Number(user.usage_month_usd);
-  const alltime = Number(user.usage_alltime_usd);
+  const today = money.amount(user, 'usage_today') ?? 0;
+  const month = money.amount(user, 'usage_month') ?? 0;
+  const alltime = money.amount(user, 'usage_alltime') ?? 0;
   // Exclude today's data point: cost-history is returned ascending and includes
   // today. The anomaly rule compares today vs the *prior* 7-day average, so we
   // must drop the last point (today) before passing to isAnomalous.
@@ -102,7 +104,7 @@ export function UserRow({
     .filter((p) => p.day < todayIso)
     .slice(-7)
     .map((p) => Number(p.cost_usd));
-  const anomalous = isAnomalous(today, prior);
+  const anomalous = isAnomalous(Number(user.usage_today_usd), prior);
   const compact = density === 'compact';
   const rowHeight = compact ? 'h-10' : 'h-14';
   const edge = (id: ColumnId) => (groupStarts.has(id) ? 'border-l border-gray-100' : '');
@@ -235,7 +237,7 @@ export function UserRow({
       </td>
       {visible.has('today') && (
         <td className={`${NUM} ${numTone(today)} ${cellBucket} ${edge('today')}`}>
-          ${today.toFixed(2)}
+          {money.value(user, 'usage_today', { maximumFractionDigits: 2 })}
         </td>
       )}
       {visible.has('trend') && (
@@ -244,13 +246,15 @@ export function UserRow({
         </td>
       )}
       {visible.has('month') && (
-        <td className={`${NUM} ${numTone(month)} ${edge('month')}`}>${month.toFixed(2)}</td>
+        <td className={`${NUM} ${numTone(month)} ${edge('month')}`}>
+          {money.value(user, 'usage_month', { maximumFractionDigits: 2 })}
+        </td>
       )}
       {visible.has('alltime') && (
         <td
           className={`${NUM} ${alltime > 0 ? 'text-gray-600' : 'text-gray-300'} ${edge('alltime')}`}
         >
-          ${alltime.toFixed(2)}
+          {money.value(user, 'usage_alltime', { maximumFractionDigits: 2 })}
         </td>
       )}
       {visible.has('requests') && (

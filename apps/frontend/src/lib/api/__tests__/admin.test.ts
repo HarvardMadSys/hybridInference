@@ -18,6 +18,8 @@ import {
   listRoutewiseProbeSamples,
   listRoutewiseSettings,
   updateUser,
+  unlinkUserSsoIdentity,
+  getUserDetail,
   listModelVisibility,
   listOffloadRoutes,
   previewRoleQuotaApply,
@@ -28,6 +30,7 @@ import {
   updateProviderRoute,
   updateProviderRouteStrategy,
   updateRoutewiseSetting,
+  updateRuntimeSetting,
   verifyProviderRoute,
   verifyProviderRouteModel,
   verifyProviderRouteCandidate,
@@ -99,6 +102,39 @@ describe('role quota client', () => {
     const [, init] = fetchMock.mock.calls[0];
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body as string)).toEqual({ role: 'pro' });
+  });
+
+  it('applyRoleQuota sends the currency of a native amount', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ role: 'pro', currency: 'CNY', quota: 15, amount: 100, keys_updated: 5 }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+    await applyRoleQuota('pro', 'CNY');
+    const [, init] = fetchMock.mock.calls[0];
+    expect(JSON.parse(init.body as string)).toEqual({ role: 'pro', currency: 'CNY' });
+  });
+});
+
+describe('runtime setting client', () => {
+  it('updateRuntimeSetting sends only the value unless a currency is given', async () => {
+    const answer = () =>
+      new Response(JSON.stringify({ key: 'user_daily_quota_pro', value: 15 }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      });
+    fetchMock.mockResolvedValueOnce(answer()).mockResolvedValueOnce(answer());
+
+    await updateRuntimeSetting('max_concurrent_requests_per_user', 5);
+    await updateRuntimeSetting('user_daily_quota_pro', 120, undefined, 'CNY');
+
+    const [firstUrl, first] = fetchMock.mock.calls[0];
+    expect(String(firstUrl)).toContain('/admin/settings/max_concurrent_requests_per_user');
+    expect(first.method).toBe('PATCH');
+    expect(JSON.parse(first.body as string)).toEqual({ value: 5 });
+    const [, second] = fetchMock.mock.calls[1];
+    expect(JSON.parse(second.body as string)).toEqual({ value: 120, currency: 'CNY' });
   });
 });
 
@@ -364,6 +400,74 @@ describe('admin user client', () => {
     expect((init.headers as Headers).get('Content-Type')).toBe('application/json');
     expect(JSON.parse(init.body as string)).toEqual({
       disabled_models: ['claude-3-5-sonnet', 'gpt-4o-mini'],
+    });
+  });
+
+  it('getUserDetail carries the account’s single sign-on identities', async () => {
+    const identity = {
+      id: 'idn_1',
+      provider_id: 'example-univ',
+      provider_name: 'Example University',
+      email: 'carol@example.edu',
+      linked_at: '2026-11-01T12:00:00Z',
+      last_login_at: null,
+    };
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ id: 'user-1', sso_identities: [identity] }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await getUserDetail('user-1');
+
+    expect(out.sso_identities).toEqual([identity]);
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/\/admin\/users\/user-1\/detail$/);
+  });
+
+  it('unlinkUserSsoIdentity POSTs the administrator’s password for one identity', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'Single sign-on identity unlinked.' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    const out = await unlinkUserSsoIdentity('user/1', 'idn 1', 'Admin-pw-1');
+
+    expect(out).toEqual({ message: 'Single sign-on identity unlinked.' });
+    const [url, init] = fetchMock.mock.calls[0];
+    // Each id is one path segment, whatever it contains.
+    expect(String(url)).toMatch(/\/admin\/users\/user%2F1\/sso-identities\/idn%201\/unlink$/);
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('Authorization')).toMatch(/^Bearer /);
+    expect(JSON.parse(init.body as string)).toEqual({ password: 'Admin-pw-1' });
+  });
+
+  it('unlinkUserSsoIdentity sends no password for an administrator who confirms by code', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ message: 'Single sign-on identity unlinked.' }), {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+
+    await unlinkUserSsoIdentity('user-1', 'idn_1');
+
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body as string)).toEqual({});
+  });
+
+  it('unlinkUserSsoIdentity keeps the gateway’s reason for a refusal', async () => {
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ error: { message: 'Current password is incorrect.', code: 400 } }),
+        { status: 400, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    await expect(unlinkUserSsoIdentity('user-1', 'idn_1', 'wrong')).rejects.toMatchObject({
+      message: 'Current password is incorrect.',
+      statusCode: 400,
     });
   });
 });

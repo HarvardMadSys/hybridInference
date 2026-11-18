@@ -10,11 +10,12 @@ from serving.config.settings import Settings, settings
 from serving.utils import login_rate_limit
 from serving.utils.device_cookie import RecognizedDevice
 from serving.utils.login_rate_limit import check_and_record_login, reset_login_rate_limit_state
+from serving.utils.request_ip import ClientIpInfo
 
 ATTACKER = "198.51.100.7"
 OWNER = "192.0.2.44"
-# What the backend sees for every browser behind a proxy it does not trust.
-SHARED = "unknown"
+# One resolved address many browsers share: a NAT, a campus or office egress.
+SHARED = "198.51.100.200"
 
 
 @pytest.fixture(autouse=True)
@@ -139,7 +140,7 @@ async def test_a_device_is_limited_on_its_own_window():
 
 
 async def test_a_device_signs_in_while_every_window_it_would_share_is_exhausted():
-    """Behind a proxy that hides addresses, the attacker and the admin share one."""
+    """Behind one shared address, the attacker and the admin share its windows."""
     for _ in range(25):
         await check_and_record_login("admin", SHARED)
     for n in range(10):
@@ -371,3 +372,111 @@ async def test_reset_clears_every_login_window():
     assert await check_and_record_login("admin", ATTACKER) == (True, None)
     assert await check_and_record_login("admin", ATTACKER, device="d1") == (True, None)
     assert len(login_rate_limit._account_device_attempts[("admin", "")]) == 1
+
+
+# -- unresolved client addresses ------------------------------------------------------
+#
+# Without trusted-proxy settings every browser behind the console's proxy reads
+# "unknown" (ClientIpInfo.resolved is False). These pin that one such client
+# cannot lock the others out, while each account stays as guarded as before.
+
+
+def _client(address: str, *, resolved: bool) -> ClientIpInfo:
+    return ClientIpInfo(
+        client_ip=address if resolved else "unknown",
+        peer_ip="172.18.0.5",
+        source="socket" if resolved else "unknown",
+        trusted_proxy_headers=False,
+        resolved=resolved,
+    )
+
+
+UNRESOLVED = _client("unknown", resolved=False)
+
+
+async def test_unresolved_attempts_are_never_counted_as_one_address():
+    """The reported lockout: 20 attempts from "unknown" refused every unresolved sign-in."""
+    for n in range(40):
+        assert await check_and_record_login(f"victim-{n}", UNRESOLVED) == (True, None)
+
+    assert "unknown" not in login_rate_limit._ip_attempts
+    assert login_rate_limit.UNRESOLVED_CLIENT not in login_rate_limit._ip_attempts
+    # Another unresolved user still signs in.
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_the_string_unknown_reads_as_unresolved():
+    for n in range(40):
+        assert await check_and_record_login(f"victim-{n}", "unknown") == (True, None)
+    assert login_rate_limit._ip_attempts == {}
+
+
+async def test_an_unresolved_account_keeps_its_own_window():
+    """Guessing at one account is bounded exactly as it was."""
+    for _ in range(5):
+        assert await check_and_record_login("admin", UNRESOLVED) == (True, None)
+
+    assert await check_and_record_login("admin", UNRESOLVED) == (False, "email")
+    # Another account is untouched, and so is the same account from a resolved address.
+    assert await check_and_record_login("root@example.com", UNRESOLVED) == (True, None)
+    assert await check_and_record_login("admin", _client(OWNER, resolved=True)) == (True, None)
+
+
+async def test_an_unresolved_account_counts_toward_the_account_wide_window():
+    for n in range(10):
+        for _ in range(5):
+            await check_and_record_login("admin", f"203.0.113.{n + 1}")
+
+    assert await check_and_record_login("admin", UNRESOLVED) == (False, "account")
+
+
+async def test_resolved_clients_keep_their_per_ip_window():
+    """A public IPv4 client is still refused past its hourly allowance."""
+    client = _client("8.8.8.8", resolved=True)
+    for n in range(20):
+        assert await check_and_record_login(f"user-{n}", client) == (True, None)
+
+    assert await check_and_record_login("user-20", client) == (False, "ip")
+    assert await check_and_record_login("user-21", _client("8.8.4.4", resolved=True)) == (
+        True,
+        None,
+    )
+
+
+async def test_resolved_ipv6_clients_share_their_64():
+    for n in range(20):
+        client = _client(f"2001:db8:1:2::{n + 1:x}", resolved=True)
+        assert await check_and_record_login(f"user-{n}", client) == (True, None)
+
+    rotated = _client("2001:db8:1:2:ffff::1", resolved=True)
+    assert await check_and_record_login("user-20", rotated) == (False, "ip")
+    other_prefix = _client("2001:db8:1:3::1", resolved=True)
+    assert await check_and_record_login("user-21", other_prefix) == (True, None)
+
+
+async def test_one_unresolved_client_failing_everywhere_locks_no_one_else_out():
+    """Review regression: 50 wrong passwords at 50 invented names, then the owner."""
+    for n in range(60):
+        assert await check_and_record_login(f"invented-{n}", UNRESOLVED) == (True, None)
+
+    assert await check_and_record_login("owner@example.com", UNRESOLVED) == (True, None)
+
+
+async def test_a_signed_in_owner_is_counted_under_its_own_session():
+    """Anonymous guesses at the name do not reach a re-authentication; its own guesses are bounded."""
+    for _ in range(5):
+        await check_and_record_login("admin", UNRESOLVED)
+    assert await check_and_record_login("admin", UNRESOLVED) == (False, "email")
+
+    for _ in range(5):
+        assert await check_and_record_login("admin", UNRESOLVED, session_id="sid-1") == (
+            True,
+            None,
+        )
+    assert await check_and_record_login("admin", UNRESOLVED, session_id="sid-1") == (
+        False,
+        "email",
+    )
+    # Another session of the account has its own window; both count account-wide.
+    assert await check_and_record_login("admin", UNRESOLVED, session_id="sid-2") == (True, None)
+    assert len(login_rate_limit._account_attempts["admin"]) == 11

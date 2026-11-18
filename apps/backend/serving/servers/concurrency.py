@@ -18,6 +18,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
 from serving.utils.logging import get_logger
 
@@ -209,8 +210,10 @@ from starlette.requests import ClientDisconnect
 from serving import quota
 from serving.batch.interactive_load import INTERACTIVE_LOAD, InteractiveLoadTracker
 from serving.pricing import effective_pricing
+from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import Reservation, spend_check_of
 from serving.surfaces.context import InteractiveAdmission
+from serving.utils import context as req_ctx
 
 from .auth import _quota_exceeded, verify_api_key
 from .deps import (
@@ -224,13 +227,14 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterator
 
 
-def _admit_spend(
+async def _admit_spend(
     request: Request,
     user: dict[str, Any],
     *,
     model: str | None = None,
     router: Any = None,
     embedding_adapters: dict[str, Any] | None = None,
+    operation: str = "request",
 ) -> Reservation | None:
     """Reserve the request's estimated cost against the check its gate made.
 
@@ -243,13 +247,30 @@ def _admit_spend(
     up to what the caller's limits have left. ``None`` for a caller with no
     check (auth disabled, or a gate that a test replaced): nothing to reserve
     against.
+
+    In the shared accounting mode the reservation is made in the database
+    (:meth:`~serving.spend_ledger.SpendCheck.reserve`) and published in the
+    request context (``req_ctx.SPEND_RESERVATION``), where the costs the
+    request records find it; a database that cannot answer in time raises the
+    request path's 503 (:class:`~serving.storage.pools.DatabaseBusyError`).
+    In either mode whoever takes the reservation releases it when the request
+    ends, however it ends: what the request is charged is what its billing
+    point recorded by then.
     """
     check = spend_check_of(user)
     if check is None:
         return None
-    reservation, refusal = check.admit(
-        _reserved_cost(request, model, router=router, embedding_adapters=embedding_adapters)
-    )
+    try:
+        reservation, refusal = await check.reserve(
+            _reserved_cost(request, model, router=router, embedding_adapters=embedding_adapters),
+            operation=operation,
+        )
+    except AccountErased:
+        raise HTTPException(
+            status_code=401, detail="This account is no longer available."
+        ) from None
+    if reservation is not None and getattr(reservation, "charge", None) is not None:
+        req_ctx.update({req_ctx.SPEND_RESERVATION: reservation})
     if refusal is not None:
         raise _quota_exceeded(
             request,
@@ -269,6 +290,10 @@ def _reserved_cost(
 ) -> float:
     """What a request may cost, reserved against its caller's limits while it runs.
 
+    In the ledger currency, as the spend ledger counts: the prices are
+    :func:`~serving.pricing.effective_pricing`'s, and the flat minimum is
+    :func:`serving.quota.estimated_request_cost`.
+
     :func:`serving.quota.estimate_request_cost` of the prompt -- the body's
     size, a token for every four bytes, at most the model's context window --
     and of the output the request allows: its ``max_tokens`` (or
@@ -282,7 +307,7 @@ def _reserved_cost(
     try:
         body = getattr(request, "_body", None)
         if not isinstance(model, str) or not isinstance(body, bytes) or router is None:
-            return quota.ESTIMATED_REQUEST_COST_USD
+            return quota.estimated_request_cost()
         resolved = resolve_anthropic_alias(model)
         route = router.routes.get(resolved)
         if route is not None:
@@ -292,7 +317,7 @@ def _reserved_cost(
             configs = [embedding.config] if embedding is not None else []
         prices = [price for price in map(_prices, configs) if price is not None]
         if not prices:
-            return quota.ESTIMATED_REQUEST_COST_USD
+            return quota.estimated_request_cost()
         context_limit = max(_count(getattr(config, "context_length", 0)) for config in configs)
         output_limit = max(_count(getattr(config, "max_output_length", 0)) for config in configs)
         prompt_tokens = len(body) // 4
@@ -310,7 +335,7 @@ def _reserved_cost(
         )
     except Exception:
         logger.debug("user_concurrency: reservation estimate skipped", exc_info=True)
-        return quota.ESTIMATED_REQUEST_COST_USD
+        return quota.estimated_request_cost()
 
 
 def _prices(config: Any) -> tuple[float, float] | None:
@@ -397,7 +422,7 @@ async def _take_intake_slot(
         "per-user intake limit hit",
         extra={"user_id": user_id, "role": role_label, "limit": limit, "route": request.url.path},
     )
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+    detached_tasks.rejection_log(  # its row is written after the 4xx is sent
         log_rejection(
             request=request,
             status_code=429,
@@ -519,16 +544,12 @@ async def _slot_for_canonical(
 
 
 def scope_concurrency_limits(user: dict[str, Any]) -> list[tuple[str, str, int]]:
-    """Return the shared project and organization slots with explicit caps."""
-    limits = []
-    for scope, scope_id in (
-        ("project", user.get("project_id")),
-        ("org", user.get("org_id")),
-    ):
-        capacity = user.get(f"{scope}_max_concurrent_requests")
-        if scope_id is not None and capacity is not None:
-            limits.append((scope, f"scope:{scope}:{scope_id}", int(capacity)))
-    return limits
+    """Return the shared project slot, when the project has an explicit cap."""
+    project_id = user.get("project_id")
+    capacity = user.get("project_max_concurrent_requests")
+    if project_id is None or capacity is None:
+        return []
+    return [("project", f"scope:project:{project_id}", int(capacity))]
 
 
 def _rejection_prompt(request: Request) -> list[dict[str, Any]] | str:
@@ -613,7 +634,7 @@ async def enforce_user_concurrency(
         # remains visible to the batch worker, including a later auto retarget;
         # so is the cost reservation.
         logger.warning("user_concurrency: limiter is None; passing request through unguarded")
-        reservation = _admit_spend(
+        reservation = await _admit_spend(
             request, user, model=model, router=router, embedding_adapters=embedding_adapters
         )
         try:
@@ -647,7 +668,7 @@ async def enforce_user_concurrency(
                 "route": request.url.path,
             },
         )
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=429,
@@ -676,7 +697,7 @@ async def enforce_user_concurrency(
         for scope, scoped_key, capacity in scope_concurrency_limits(user):
             granted, limit, _ = await limiter.try_acquire(scoped_key, role, is_admin, capacity)
             if not granted:
-                asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+                detached_tasks.rejection_log(  # its row is written after the 4xx is sent
                     log_rejection(
                         request=request,
                         status_code=429,
@@ -704,7 +725,7 @@ async def enforce_user_concurrency(
                 request, router=router, embedding_adapters=embedding_adapters
             )
         # After the body is read: what is reserved is estimated from it.
-        reservation = _admit_spend(
+        reservation = await _admit_spend(
             request, user, model=model, router=router, embedding_adapters=embedding_adapters
         )
         with _track_interactive_request(canonical) as tracker:

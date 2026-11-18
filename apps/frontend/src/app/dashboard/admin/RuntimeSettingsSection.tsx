@@ -1,10 +1,20 @@
 'use client';
 
-import { useState } from 'react';
-import { RuntimeSettingItem, updateRuntimeSetting } from '@/lib/api/admin';
+import { useRef, useState } from 'react';
+import {
+  type LedgerCurrency,
+  RuntimeSettingItem,
+  updateRuntimeSetting,
+  updateRuntimeSettings,
+} from '@/lib/api/admin';
 import { AdminLoading, AdminSection } from '@/components/features/admin/AdminPrimitives';
 import { CONTROL, PANEL } from '@/components/features/admin/adminStyles';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
+import {
+  ReauthPassword,
+  useConfirmsWithoutPassword,
+} from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
 
@@ -23,9 +33,42 @@ function settingLabel(key: string): string {
   return key.replace(/_/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+const isQuotaSetting = (setting: RuntimeSettingItem) => setting.key.startsWith('user_daily_quota_');
+
+/** The unit a role quota is edited and sent in: the ledger's, USD from an older gateway. */
+const quotaCurrency = (setting: RuntimeSettingItem): LedgerCurrency =>
+  setting.currency === 'CNY' ? 'CNY' : 'USD';
+
+/**
+ * What a role quota's field shows and is compared with: its amount in the
+ * ledger's currency. `value` and the bounds are USD figures, so they stand in
+ * only on a USD ledger; on another one a missing amount shows nothing rather
+ * than a USD number under the ledger's unit.
+ */
+function inLedger(
+  setting: RuntimeSettingItem,
+  usd: 'value' | 'default_value' | 'min' | 'max',
+  native: 'amount' | 'default_amount' | 'min_amount' | 'max_amount',
+): unknown {
+  if (!isQuotaSetting(setting)) return setting[usd];
+  return setting[native] ?? (quotaCurrency(setting) === 'USD' ? setting[usd] : null);
+}
+
+const settingValue = (setting: RuntimeSettingItem) => inLedger(setting, 'value', 'amount');
+const settingDefault = (setting: RuntimeSettingItem) =>
+  inLedger(setting, 'default_value', 'default_amount');
+const settingBound = (setting: RuntimeSettingItem, bound: 'min' | 'max') =>
+  (inLedger(setting, bound, `${bound}_amount`) as number | null | undefined) ?? undefined;
+
+/** The currency the role quotas among *pending* are sent in, when there are any. */
+function pendingCurrency(pending: SettingChange[]): LedgerCurrency | undefined {
+  const quota = pending.find(({ setting }) => isQuotaSetting(setting));
+  return quota ? quotaCurrency(quota.setting) : undefined;
+}
+
 function rangeHint(setting: RuntimeSettingItem): string | null {
-  const lo = setting.min;
-  const hi = setting.max;
+  const lo = settingBound(setting, 'min');
+  const hi = settingBound(setting, 'max');
   if (lo != null && hi != null) return `${lo}–${hi}`;
   if (lo != null) return `≥ ${lo}`;
   if (hi != null) return `≤ ${hi}`;
@@ -34,8 +77,8 @@ function rangeHint(setting: RuntimeSettingItem): string | null {
 
 function validateNumeric(setting: RuntimeSettingItem, draft: string) {
   return validateNumericSettingInput(draft, {
-    min: setting.min,
-    max: setting.max,
+    min: settingBound(setting, 'min'),
+    max: settingBound(setting, 'max'),
     integer: setting.value_type === 'int',
   });
 }
@@ -51,11 +94,26 @@ function isFlag(setting: RuntimeSettingItem): boolean {
   return setting.value_type === 'bool';
 }
 
+/** What a save says once it is done. */
+function savedMessage(pending: SettingChange[]): string {
+  if (pending.length !== 1) return `Saved ${pending.length} settings`;
+  const [{ setting, value }] = pending;
+  return isFlag(setting)
+    ? `${setting.key} ${value ? 'enabled' : 'disabled'}`
+    : `${setting.key} set to ${value}`;
+}
+
 /**
  * A group of runtime settings, switches and numbers alike, edited in place.
  * The edited values are drafts until Save; each changed setting is one
  * request. Nothing once loaded with no settings to show: a deployment may not
  * have every setting a group lists.
+ *
+ * A save that changes a `security_relevant` setting -- who may sign in or sign
+ * up, whether requests need a key, what is logged of them, what each account
+ * may spend and run -- is confirmed first, as the gateway requires: by a code,
+ * the administrator's password, or a fresh single sign-on (`ReauthPassword`).
+ * Its changes are then written together, behind that one confirmation.
  */
 export function RuntimeSettingsSection({
   id,
@@ -90,9 +148,13 @@ export function RuntimeSettingsSection({
   const writes = useConfirmAction();
   const [drafts, setDrafts] = useState<Record<string, string | boolean>>({});
   const [saveError, setSaveError] = useState<string | null>(null);
+  // A guarded save is confirmed in a dialog; the password typed there, if any.
+  const password = useRef('');
+  const withoutPassword = useConfirmsWithoutPassword();
+  const spendSso = useSpendAdminSso();
 
   const savedDraft = (setting: RuntimeSettingItem) =>
-    isFlag(setting) ? !!setting.value : String(setting.value ?? '');
+    isFlag(setting) ? !!setting.value : String(settingValue(setting) ?? '');
   const draftOf = (setting: RuntimeSettingItem) => drafts[setting.key] ?? savedDraft(setting);
 
   // A value set back to what is saved is no draft, so a later refresh of the
@@ -113,7 +175,7 @@ export function RuntimeSettingsSection({
       return draft === !!setting.value ? [] : [{ setting, value: draft as boolean }];
     }
     const validated = validateNumeric(setting, String(draft));
-    if (!validated.ok || validated.value === setting.value) return [];
+    if (!validated.ok || validated.value === settingValue(setting)) return [];
     return [{ setting, value: validated.value as number }];
   });
   const invalid = settings.filter(
@@ -139,11 +201,75 @@ export function RuntimeSettingsSection({
     setSaveError(null);
   };
 
+  const dropDrafts = (keys: readonly string[]) =>
+    setDrafts((prev) => {
+      const next = { ...prev };
+      for (const key of keys) delete next[key];
+      return next;
+    });
+
+  /** Ask for the confirmation a guarded save needs, then write it all at once. */
+  const confirmGuarded = (pending: SettingChange[], guarded: string[]) => {
+    password.current = '';
+    writes.request({
+      key: id,
+      title: guarded.length === 1 ? `Change ${guarded[0]}?` : 'Change these settings?',
+      confirmLabel: 'Save changes',
+      busyLabel: 'Saving…',
+      body: (
+        <div className="space-y-2">
+          <p>
+            {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who may sign
+            in or sign up, whether requests need a key, what is logged of them, or what each account
+            may spend and run:{' '}
+            {guarded.map((key, index) => (
+              <span key={key}>
+                {index > 0 ? ', ' : null}
+                <code className="text-[12px]">{key}</code>
+              </span>
+            ))}
+            .{withoutPassword ? null : ' Confirm the change with your password.'}
+          </p>
+          <ReauthPassword valueRef={password} label="Your password" />
+        </div>
+      ),
+      run: async () => {
+        const given = password.current;
+        if (!given && !withoutPassword) {
+          throw new Error('Enter your password to save these settings.');
+        }
+        // A refusal (a wrong password, a code owed) stays in the dialog.
+        const values = Object.fromEntries(
+          pending.map(({ setting, value }) => [setting.key, value]),
+        );
+        // Role quotas are sent in the unit their fields were read in.
+        const currency = pendingCurrency(pending);
+        const updated = await spendSso(() =>
+          currency
+            ? updateRuntimeSettings(values, given || undefined, currency)
+            : updateRuntimeSettings(values, given || undefined),
+        );
+        password.current = '';
+        for (const item of updated) onSaved(item);
+        dropDrafts(pending.map(({ setting }) => setting.key));
+        onAfterWrite();
+        onToast(savedMessage(pending));
+      },
+    });
+  };
+
   const save = async () => {
     // Enter in a field reaches here too; the bar already says what to correct.
     if (blocked || changes.length === 0) return;
     setSaveError(null);
     const pending = changes;
+    const guarded = pending
+      .filter(({ setting }) => setting.security_relevant === true)
+      .map(({ setting }) => setting.key);
+    if (guarded.length > 0) {
+      confirmGuarded(pending, guarded);
+      return;
+    }
     const failure = await writes.perform({
       run: async () => {
         let wrote = false;
@@ -151,7 +277,10 @@ export function RuntimeSettingsSection({
           pending,
           ({ setting }) => setting.key,
           async ({ setting, value }) => {
-            const updated = await updateRuntimeSetting(setting.key, value);
+            // A role quota is sent in the unit its field was read in.
+            const updated = isQuotaSetting(setting)
+              ? await updateRuntimeSetting(setting.key, value, undefined, quotaCurrency(setting))
+              : await updateRuntimeSetting(setting.key, value);
             wrote = true;
             onSaved(updated);
             setDrafts((prev) => {
@@ -163,13 +292,7 @@ export function RuntimeSettingsSection({
         ).finally(() => {
           if (wrote) onAfterWrite();
         });
-        onToast(
-          pending.length === 1
-            ? isFlag(pending[0].setting)
-              ? `${pending[0].setting.key} ${pending[0].value ? 'enabled' : 'disabled'}`
-              : `${pending[0].setting.key} set to ${pending[0].value}`
-            : `Saved ${pending.length} settings`,
-        );
+        onToast(savedMessage(pending));
       },
     });
     setSaveError(failure);
@@ -187,7 +310,7 @@ export function RuntimeSettingsSection({
         >
           {settings.map((setting) => {
             const flag = isFlag(setting);
-            const isDefault = setting.value === setting.default_value;
+            const isDefault = settingValue(setting) === settingDefault(setting);
             const draft = draftOf(setting);
             const validated = flag ? null : validateNumeric(setting, String(draft));
             const hint = flag ? null : rangeHint(setting);
@@ -215,7 +338,7 @@ export function RuntimeSettingsSection({
                     {hint && <span className="ml-1 text-gray-400">(range: {hint})</span>}
                     {!flag ? (
                       <span className="ml-1 text-gray-400">
-                        Default: {String(setting.default_value)}
+                        Default: {String(settingDefault(setting) ?? '—')}
                       </span>
                     ) : null}
                   </p>
@@ -248,8 +371,8 @@ export function RuntimeSettingsSection({
                     <input
                       type="number"
                       step={setting.value_type === 'int' ? 1 : 'any'}
-                      min={setting.min ?? undefined}
-                      max={setting.max ?? undefined}
+                      min={settingBound(setting, 'min')}
+                      max={settingBound(setting, 'max')}
                       value={String(draft)}
                       disabled={writes.busy}
                       onChange={(e) => changeDraft(setting, e.target.value)}
@@ -281,6 +404,7 @@ export function RuntimeSettingsSection({
         blocked={blocked}
         inPlace
       />
+      {writes.dialog}
     </AdminSection>
   );
 }

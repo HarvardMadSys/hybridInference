@@ -3,7 +3,7 @@ import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApiKeyListItem } from '@/lib/api/user';
+import type { ApiKeyListItem, Project } from '@/lib/api/user';
 import { ApiKeyManager } from './ApiKeyManager';
 
 vi.mock('@/lib/hooks', () => ({
@@ -14,6 +14,10 @@ vi.mock('@/lib/hooks', () => ({
   useRegenerateApiKey: vi.fn(),
   useRenameApiKey: vi.fn(),
   useRevealApiKey: vi.fn(),
+  useModels: vi.fn(() => ({ data: { object: 'list', data: [] }, isLoading: false })),
+  useCreateProject: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useUpdateProject: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
+  useArchiveProject: vi.fn(() => ({ mutateAsync: vi.fn(), isPending: false })),
 }));
 
 const push = vi.fn();
@@ -23,6 +27,8 @@ vi.mock('next/navigation', () => ({
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
   useBranding: () => ({ appName: 'Test App' }),
+  // No accounting section: the console's USD default.
+  useSiteConfig: () => ({}),
 }));
 
 vi.mock('react-hot-toast', () => ({
@@ -32,6 +38,7 @@ vi.mock('react-hot-toast', () => ({
 import toast from 'react-hot-toast';
 import {
   useApiKeys,
+  useProjects,
   useCreateApiKey,
   useDeleteApiKey,
   useRegenerateApiKey,
@@ -430,5 +437,173 @@ describe('ApiKeyManager with several keys', () => {
     expect(
       within(screen.getByRole('dialog')).getByText(/keeps its name, limits and spend/),
     ).toBeInTheDocument();
+  });
+});
+
+function project(overrides: Partial<Project> = {}): Project {
+  return {
+    id: 'proj_default',
+    name: 'Default',
+    is_default: true,
+    budget_daily_usd: null,
+    budget_monthly_usd: null,
+    allowed_models: null,
+    max_concurrent_requests: null,
+    spent_today_usd: 0,
+    spent_month_usd: 0,
+    key_count: 0,
+    created_at: '2026-11-01T00:00:00Z',
+    ...overrides,
+  };
+}
+
+function mockProjects(items: Project[]): void {
+  vi.mocked(useProjects).mockReturnValue({ data: items } as ReturnType<typeof useProjects>);
+}
+
+const CI = project({
+  id: 'proj_ci',
+  name: 'CI',
+  is_default: false,
+  budget_daily_usd: 5,
+  spent_today_usd: 1,
+});
+
+describe('ApiKeyManager and projects', () => {
+  it('stays a plain list of keys while the account has only an unlimited Default', () => {
+    mockProjects([project()]);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_default', project_name: 'Default' })]);
+    render(<ApiKeyManager />);
+
+    expect(screen.queryByRole('region', { name: 'Default' })).not.toBeInTheDocument();
+    expect(screen.queryByText('Default')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'New project' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create API Key' }));
+    expect(within(screen.getByRole('dialog')).queryByText('Project')).not.toBeInTheDocument();
+  });
+
+  it('groups keys under their projects once there is more than one', () => {
+    mockProjects([project({ key_count: 1 }), CI]);
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'laptop', project_id: 'proj_default' }),
+      makeItem({ key_prefix: 'hyi-bbbbbbbb', name: 'runner', project_id: 'proj_ci' }),
+    ]);
+    render(<ApiKeyManager />);
+
+    const ci = screen.getByRole('region', { name: 'CI' });
+    expect(within(ci).getByRole('link', { name: 'runner' })).toBeInTheDocument();
+    expect(within(ci).queryByRole('link', { name: 'laptop' })).not.toBeInTheDocument();
+    expect(within(ci).getByText(/\$1\.00 of \$5\.00 today/)).toBeInTheDocument();
+    const fallback = screen.getByRole('region', { name: 'Default' });
+    expect(within(fallback).getByRole('link', { name: 'laptop' })).toBeInTheDocument();
+  });
+
+  it('shows Default as a group when its own limits apply', () => {
+    mockProjects([project({ budget_daily_usd: 2 })]);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_default' })]);
+    render(<ApiKeyManager />);
+
+    expect(screen.getByRole('region', { name: 'Default' })).toBeInTheDocument();
+  });
+
+  it('creates a key in the project whose Add key was used', async () => {
+    mockProjects([project(), CI]);
+    mockKeys([]);
+    render(<ApiKeyManager />);
+
+    const ci = screen.getByRole('region', { name: 'CI' });
+    expect(within(ci).getByText('No keys in this project yet.')).toBeInTheDocument();
+    fireEvent.click(within(ci).getByRole('button', { name: 'Add key' }));
+    fireEvent.click(
+      within(screen.getByRole('dialog')).getByRole('button', { name: 'Create API Key' }),
+    );
+
+    await waitFor(() =>
+      expect(mutations.create.mutateAsync).toHaveBeenCalledWith({
+        name: null,
+        projectId: 'proj_ci',
+      }),
+    );
+  });
+
+  it('offers archiving for a named project but never for Default', () => {
+    mockProjects([project(), CI]);
+    mockKeys([]);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for Default' }));
+    expect(screen.queryByRole('menuitem', { name: 'Archive' })).not.toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Actions for CI' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Archive' }));
+    expect(within(screen.getByRole('dialog')).getByText(/Archive CI\?/)).toBeInTheDocument();
+  });
+
+  it("reaches Default's limits from the plain list", () => {
+    mockProjects([project()]);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_default' })]);
+    render(<ApiKeyManager />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Set limits for Default' }));
+    expect(within(screen.getByRole('dialog')).getByLabelText('Daily budget (USD)')).toHaveValue('');
+  });
+
+  it('keeps archived-project keys apart after the last named project is archived', () => {
+    mockProjects([project()]);
+    mockKeys([
+      makeItem({ key_prefix: 'hyi-aaaaaaaa', name: 'laptop', project_id: 'proj_default' }),
+      makeItem({
+        key_prefix: 'hyi-cccccccc',
+        name: 'old',
+        status: 'revoked',
+        project_id: 'proj_gone',
+        project_name: 'Gone',
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    const archived = screen.getByRole('region', { name: 'Archived projects' });
+    expect(within(archived).getByText('Gone')).toBeInTheDocument();
+    expect(
+      within(screen.getByRole('region', { name: 'Default' })).getByRole('link', { name: 'laptop' }),
+    ).toBeInTheDocument();
+  });
+
+  it('says so when the projects fail to load, instead of acting as if there were none', () => {
+    vi.mocked(useProjects).mockReturnValue({
+      data: undefined,
+      error: new Error('boom'),
+    } as unknown as ReturnType<typeof useProjects>);
+    mockKeys([makeItem({ name: 'laptop', project_id: 'proj_ci', project_name: 'CI' })]);
+    render(<ApiKeyManager />);
+
+    expect(
+      screen.getByText('Failed to load projects. Please try again later.'),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'laptop' })).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'Archived projects' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Set limits for Default' }),
+    ).not.toBeInTheDocument();
+  });
+
+  it('keeps the revoked keys of an archived project, under their old project name', () => {
+    mockProjects([project(), CI]);
+    mockKeys([
+      makeItem({
+        key_prefix: 'hyi-cccccccc',
+        name: 'old',
+        status: 'revoked',
+        project_id: 'proj_gone',
+        project_name: 'Gone',
+      }),
+    ]);
+    render(<ApiKeyManager />);
+
+    const archived = screen.getByRole('region', { name: 'Archived projects' });
+    expect(within(archived).getByRole('link', { name: 'old' })).toBeInTheDocument();
+    expect(within(archived).getByText('Gone')).toBeInTheDocument();
   });
 });

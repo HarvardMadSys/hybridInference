@@ -93,6 +93,58 @@ describe('resolveRuntimeSiteConfig', () => {
     ).toThrow();
   });
 
+  it('offers single sign-on only when the gateway publishes the block', () => {
+    // An older gateway, or one with no provider enabled, sends no key at all.
+    expect(resolveRuntimeSiteConfig(runtimeDocument).sso).toEqual({ enabled: false });
+    expect(resolveRuntimeSiteConfig({ ...runtimeDocument, sso: null }).sso).toEqual({
+      enabled: false,
+    });
+    expect(resolveRuntimeSiteConfig({ ...runtimeDocument, sso: { enabled: true } }).sso).toEqual({
+      enabled: true,
+    });
+    expect(resolveRuntimeSiteConfig({ ...runtimeDocument, sso: { enabled: false } }).sso).toEqual({
+      enabled: false,
+    });
+    expect(buildTimeSiteConfig.sso).toEqual({ enabled: false });
+
+    // A sibling of `features`, never a member of it: that object stays strict.
+    const resolved = resolveRuntimeSiteConfig({ ...runtimeDocument, sso: { enabled: true } });
+    expect(resolved.features).not.toHaveProperty('sso');
+    expect(() =>
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        features: { ...runtimeDocument.features, sso: true },
+      }),
+    ).toThrow(SiteConfigLoadError);
+  });
+
+  it('ignores what a later gateway adds to the single sign-on block', () => {
+    expect(
+      resolveRuntimeSiteConfig({
+        ...runtimeDocument,
+        sso: { enabled: true, providers: [{ id: 'example-univ' }] },
+      }).sso,
+    ).toEqual({ enabled: true });
+  });
+
+  it.each([{ sso: { enabled: 'yes' } }, { sso: true }, { sso: {} }])(
+    'refuses a malformed single sign-on block rather than guessing: %j',
+    (state) => {
+      expect(() => resolveRuntimeSiteConfig({ ...runtimeDocument, ...state })).toThrow(
+        SiteConfigLoadError,
+      );
+    },
+  );
+
+  it('keeps single sign-on off for the legacy document', () => {
+    const {
+      schema_version: _schemaVersion,
+      branding: _branding,
+      ...legacyDocument
+    } = runtimeDocument;
+    expect(resolveRuntimeSiteConfig(legacyDocument).sso).toEqual({ enabled: false });
+  });
+
   it('only enables phone authentication when the server advertises it', () => {
     expect(resolveRuntimeSiteConfig(runtimeDocument).features.phoneAuth).toBe(false);
     expect(
@@ -497,4 +549,17 @@ describe('first-run setup and configuration health', () => {
       SiteConfigLoadError,
     );
   });
+});
+
+it('reads the accounting currency while preserving older USD deployments', () => {
+  expect(resolveRuntimeSiteConfig(runtimeDocument).accounting).toEqual({ currency: 'USD' });
+  expect(
+    resolveRuntimeSiteConfig({
+      ...runtimeDocument,
+      accounting: { currency: 'CNY', usd_to_currency_rate: '6.8' },
+    }).accounting,
+  ).toEqual({ currency: 'CNY', usd_to_currency_rate: '6.8' });
+  expect(() =>
+    resolveRuntimeSiteConfig({ ...runtimeDocument, accounting: { currency: 'RMB' } }),
+  ).toThrow(SiteConfigLoadError);
 });

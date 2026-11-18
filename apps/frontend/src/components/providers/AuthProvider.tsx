@@ -21,6 +21,7 @@ import {
   logout as logoutApi,
   logoutAll as logoutAllApi,
   removeAccount as removeAccountApi,
+  resumeSession as resumeSessionApi,
   switchAccount as switchAccountApi,
   type AccountSummary,
 } from '@/lib/api/auth';
@@ -36,6 +37,7 @@ import {
   type AccountChangeReason,
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
+import type { SsoProviderRef } from '@/lib/api/sso';
 import { getMe } from '@/lib/api/user';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 import { AccountToastContext, type AccountToastScope } from '@/lib/hooks/useAccountToast';
@@ -65,6 +67,11 @@ export interface AuthUser {
   is_admin: boolean;
   /** The interface language this account last chose; `null` when it never chose. */
   locale?: AccountLocaleChoice | null;
+  /**
+   * The identity provider this account confirms sensitive actions through:
+   * set only when it has no password and no verified phone to confirm with.
+   */
+  sso_reauth_provider?: SsoProviderRef | null;
 }
 
 export interface AuthState {
@@ -83,6 +90,13 @@ interface AuthContextValue {
    * administrator is signed in by the request that created the account.
    */
   adoptSession: (accessToken: string) => Promise<void>;
+  /**
+   * Finish a sign-in whose session a redirect set: the way back from an
+   * identity provider. The cookie is already the new account's; this gets its
+   * token and starts the session as `login()` does. Throws, and signs nobody
+   * in, when the browser holds no such session.
+   */
+  completeExternalSignIn: () => Promise<void>;
   loginPhone: (phone: string, code: string) => Promise<void>;
   /** Sign the current account out of this browser; its other accounts stay. */
   logout: () => Promise<void>;
@@ -204,6 +218,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           role: me.role || 'free',
           is_admin: me.is_admin,
           locale: me.locale ?? null,
+          sso_reauth_provider: me.sso_reauth_provider ?? null,
         },
       });
     } catch (error) {
@@ -218,17 +233,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   }, [activateAccountToasts, invalidateAccountToasts]);
 
-  const refreshAccounts = useCallback(async () => {
+  // The listing as it was read, for a caller that decides on it at once; null
+  // when it could not be read.
+  const loadAccounts = useCallback(async () => {
     try {
       const listing = await listAccounts();
       setAccounts(listing.accounts);
       setMaxAccounts(listing.max_accounts);
+      return listing;
     } catch {
       // The chooser is a convenience; signing in with a password still works.
+      return null;
     } finally {
       setAccountsReady(true);
     }
   }, []);
+
+  const refreshAccounts = useCallback(async () => {
+    await loadAccounts();
+  }, [loadAccounts]);
 
   useEffect(() => {
     // In turn, not at once: both can replace a cookie issued before browser
@@ -352,6 +375,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     [agentsUrl, forgetPreviousAccount, refreshAccounts, refreshUser],
   );
 
+  // A sign-in the gateway finished on a redirect. Nothing here saw the browser
+  // before it: the page was loaded by that redirect, and the cookie already
+  // lists the new account. So whether the browser had accounts is read from
+  // the listing -- anyone else signed in -- and when that cannot be read the
+  // Agent session ends, as on a browser that had none.
+  //
+  // One at a time: the page that asks is drawn again when the account under it
+  // changes, and asks again.
+  const completing = useRef<Promise<void> | null>(null);
+  const completeExternalSignIn = useCallback(() => {
+    if (completing.current) return completing.current;
+    const completion = (async () => {
+      const userId = await resumeSessionApi();
+      // The tab may have met the new cookie before this ran: its first look for
+      // a user, still holding the token of the account it showed before the
+      // round trip, reads the answer as another tab's switch and covers the
+      // page. The switch is this tab's own sign-in, and the session is now its.
+      setAccountChanged(null);
+      forgetPreviousAccount();
+      const listing = await loadAccounts();
+      const hadAccounts =
+        listing?.accounts.some((account) => account.signed_in && account.id !== userId) ?? false;
+      if (!hadAccounts) await endAgentSession(agentsUrl);
+      await refreshUser();
+      announceAccounts({ type: 'active', userId });
+    })().finally(() => {
+      completing.current = null;
+    });
+    completing.current = completion;
+    return completion;
+  }, [agentsUrl, forgetPreviousAccount, loadAccounts, refreshUser]);
+
   const loginPhone = useCallback(
     async (phone: string, code: string) => {
       const hadAccounts = signedInHere();
@@ -431,6 +486,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     state,
     login,
     adoptSession,
+    completeExternalSignIn,
     loginPhone,
     logout,
     refreshUser,

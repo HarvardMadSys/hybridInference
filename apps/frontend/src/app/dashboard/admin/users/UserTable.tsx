@@ -3,6 +3,7 @@
 import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { CHECKBOX } from '@/components/features/admin/adminStyles';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
+import { useMoney } from '@/lib/hooks/useMoney';
 import type {
   AdminModelVisibilityItem,
   AdminUser,
@@ -12,7 +13,7 @@ import type {
   UserDetail,
   UserTurnAverages,
 } from '@/lib/api/admin';
-import { getUserDetail, listModelVisibility } from '@/lib/api/admin';
+import { getUserDetail, listModelVisibility, unlinkUserSsoIdentity } from '@/lib/api/admin';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
@@ -104,6 +105,7 @@ function median(nums: number[]): number {
 }
 
 export function UserTable(props: UserTableProps) {
+  const money = useMoney();
   const {
     users,
     costHistories,
@@ -131,8 +133,8 @@ export function UserTable(props: UserTableProps) {
   }, [users]);
 
   const pageMedianToday = useMemo(
-    () => median(users.map((u) => Number(u.usage_today_usd)).filter((n) => n > 0)),
-    [users],
+    () => median(users.map((u) => money.amount(u, 'usage_today') ?? 0).filter((n) => n > 0)),
+    [users, money],
   );
 
   // Pending rows ticked for a batch approval. Only rows on this page that are
@@ -170,7 +172,7 @@ export function UserTable(props: UserTableProps) {
   // needs the comfortable density (compact rows don't fetch the history).
   const hidden = new Set(hiddenColumns);
   const visibleGroups = COLUMN_GROUPS.map((g) => ({
-    label: g.label,
+    label: g.label === 'Spend (USD)' ? `Spend (${money.currency})` : g.label,
     ids: g.columns
       .map((c) => c.id)
       .filter((id) => !hidden.has(id) && (id !== 'trend' || showSparkline)),
@@ -278,6 +280,16 @@ export function UserTable(props: UserTableProps) {
           ? {
               ...prev,
               ...(patch.role !== undefined ? { role: patch.role } : {}),
+              // The native amount is in the detail's own currency; the USD
+              // field is only rewritten when that currency is USD.
+              ...(patch.quota_daily_cost !== undefined
+                ? {
+                    quota_daily: patch.quota_daily_cost,
+                    ...(patch.currency === 'USD'
+                      ? { quota_daily_usd: patch.quota_daily_cost }
+                      : {}),
+                  }
+                : {}),
               ...(patch.quota_daily_cost_usd !== undefined
                 ? { quota_daily_usd: patch.quota_daily_cost_usd }
                 : {}),
@@ -295,6 +307,32 @@ export function UserTable(props: UserTableProps) {
           : prev,
       );
     }
+  };
+
+  // Unlinking a single sign-on identity from the open row. It changes nothing
+  // the list shows, so only the detail is read again.
+  const unlinkSsoIdentity = async (identityId: string, password?: string) => {
+    if (!expandedId || !detail) return;
+    const userId = expandedId;
+    ensureListed(userId, userAccountLabel(detail) || userId);
+    await unlinkUserSsoIdentity(userId, identityId, password);
+    try {
+      const refreshed = await getUserDetail(userId);
+      setDetail((prev) => (prev && prev.id === userId ? refreshed : prev));
+    } catch {
+      // Unlinked, but the refetch failed: show the identities that are left.
+      setDetail((prev) =>
+        prev && prev.id === userId
+          ? {
+              ...prev,
+              sso_identities: (prev.sso_identities ?? []).filter(
+                (identity) => identity.id !== identityId,
+              ),
+            }
+          : prev,
+      );
+    }
+    toast.success('Single sign-on identity unlinked.');
   };
 
   // Approve, Reactivate and Resume act on the click. A failure is toasted, as
@@ -650,6 +688,10 @@ export function UserTable(props: UserTableProps) {
             )}
             {users.map((u) => {
               const asAdminUser: AdminUser = {
+                currency: u.currency,
+                usage_today: money.amount(u, 'usage_today') ?? undefined,
+                usage_month: money.amount(u, 'usage_month') ?? undefined,
+                usage_alltime: money.amount(u, 'usage_alltime') ?? undefined,
                 id: u.id,
                 email: u.email,
                 login_name: u.login_name ?? null,
@@ -712,6 +754,7 @@ export function UserTable(props: UserTableProps) {
                               availableModels={availableModels}
                               confirmation={confirmation}
                               onUpdate={updateDetail}
+                              onUnlinkSsoIdentity={unlinkSsoIdentity}
                               onSuspend={requestSuspend}
                               onReactivate={reactivate}
                               onResume={resume}

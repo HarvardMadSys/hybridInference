@@ -42,6 +42,8 @@ ACCOUNT_INSERTS = {
     "serving.storage.postgres_operational.PostgresOperationalStore.create_user",
     "serving.storage.postgres_operational.PostgresOperationalStore.create_first_admin",
     "serving.storage.phone_auth.PostgresPhoneAuthMixin.create_phone_user",
+    # A first single sign-on creates the account with its identity.
+    "serving.storage.sso.PostgresSsoMixin.create_sso_user",
 }
 
 # Every caller of those methods outside the store, with the public route it
@@ -53,6 +55,12 @@ ACCOUNT_CREATORS: dict[str, str | None] = {
     # code, and whose store transaction creates the administrator only while
     # no account exists (tests/servers/test_setup_routes.py).
     "serving.setup_state.complete_setup": None,
+    # Reached only from the single sign-on callback, which is a navigation back
+    # from an identity provider and cannot be driven by a request body. It
+    # refuses while setup is pending itself (tests/unit/auth/test_sso_accounts.py),
+    # and so does everything before it: a sign-in cannot be started at all, which
+    # is what POST /auth/sso/discover shows below.
+    "serving.auth.sso_accounts._resolve": None,
 }
 
 # A request each public registration route would otherwise accept. The phone
@@ -72,6 +80,8 @@ REGISTRATION_REQUESTS: dict[str, dict[str, Any]] = {
         "user_name": "Stranger",
         "accepted_tos": True,
     },
+    # Starts the sign-in whose callback may create an account.
+    "/auth/sso/discover": {"email": "stranger@example.com"},
 }
 
 # ``INSERT INTO users`` in any case or spacing, schema-qualified or quoted, but

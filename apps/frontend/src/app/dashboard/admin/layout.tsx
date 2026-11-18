@@ -6,7 +6,9 @@ import { useRouter } from 'next/navigation';
 import { ProtectedRoute } from '@/components/features/auth/ProtectedRoute';
 import { useAuth } from '@/components/providers';
 import { LocaleProvider } from '@/components/providers/LocaleProvider';
+import { AdminSsoReturn } from '@/components/features/admin/AdminSsoReturn';
 import { AdminTabNav } from '@/components/features/admin/AdminTabNav';
+import { AdminTwoFactorGate } from '@/components/features/twoFactor/AdminTwoFactorGate';
 
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   const { state } = useAuth();
@@ -74,11 +76,16 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
               <h1 className="text-[18px] font-semibold tracking-tight text-gray-900">Admin</h1>
             </header>
 
-            {/* Top-level tab toggle */}
-            <AdminTabNav />
+            <AdminTwoFactorGate>
+              {/* A guarded change confirmed at the identity provider comes back here. */}
+              <AdminSsoReturn userId={state.user.id ?? ''}>
+                {/* Top-level tab toggle */}
+                <AdminTabNav />
 
-            {/* Tab content */}
-            <main>{children}</main>
+                {/* Tab content */}
+                <main>{children}</main>
+              </AdminSsoReturn>
+            </AdminTwoFactorGate>
           </div>
         )}
       </ProtectedRoute>

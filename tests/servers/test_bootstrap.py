@@ -29,8 +29,16 @@ from tests.fixtures.application_documents import seed_models
 
 @pytest.fixture(autouse=True)
 def _schema_is_current(monkeypatch):
-    """These boots run on fake connections; the schema check has tests of its own."""
+    """These boots run on fake connections; the schema check has tests of its own.
+
+    So does the read of the spend accounting mode, which these leave local.
+    """
+    from serving.shared_spend import mode as spend_mode
+
     monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+    monkeypatch.setattr(spend_mode, "load", AsyncMock(return_value="local"))
+    # So has the native accounting schema check (test_accounting_currency_postgres).
+    monkeypatch.setattr(bootstrap, "require_accounting_schema", AsyncMock())
 
 
 def _mock_routewise(*, config: RouteWiseConfig | None = None) -> MagicMock:
@@ -50,6 +58,8 @@ def _provider_stats_startup(*, scheduler, backfill_missing, backfill_token_colum
     """
     db_logger = AsyncMock()
     db_logger.pool = object()
+    cached_store = MagicMock()
+    cached_store.get_setting = AsyncMock(return_value=None)
     with (
         patch("serving.servers.bootstrap._init_db_logger", return_value=db_logger),
         patch(
@@ -58,7 +68,7 @@ def _provider_stats_startup(*, scheduler, backfill_missing, backfill_token_colum
         ),
         patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
         patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=AsyncMock()),
-        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=MagicMock()),
+        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
         patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
         patch("serving.servers.bootstrap.BatchStore", return_value=AsyncMock()),
         patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
@@ -89,6 +99,25 @@ async def _until_awaited(mock: AsyncMock) -> None:
 
 class TestBootstrapInitialization:
     """Test bootstrap initialization functions."""
+
+    @pytest.mark.asyncio
+    async def test_missing_accounting_schema_aborts_before_serving(self, mock_env, monkeypatch):
+        """A ledger without its native columns stops startup at once: no retry, no serving."""
+        from serving.storage.accounting_schema import AccountingSchemaUnavailable
+
+        logger = AsyncMock()
+        check = AsyncMock(side_effect=AccountingSchemaUnavailable("native columns missing"))
+        monkeypatch.setattr(bootstrap, "require_accounting_schema", check)
+        with (
+            patch("serving.servers.bootstrap._init_db_logger", return_value=logger),
+            patch("serving.servers.bootstrap._init_router_and_models", new=AsyncMock()) as models,
+            pytest.raises(AccountingSchemaUnavailable, match="native columns missing"),
+        ):
+            await bootstrap.initialize()
+        logger.initialize.assert_awaited_once()
+        check.assert_awaited_once_with(logger.pool)
+        logger.cleanup.assert_awaited_once()
+        models.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_routewise_settings_apply_continues_after_one_router_fails(
@@ -237,6 +266,7 @@ class TestBootstrapInitialization:
             MockDBLogger.return_value = mock_logger
 
             mock_pg_op = AsyncMock()
+            mock_pg_op.get_setting.return_value = None
             MockPGOp.return_value = mock_pg_op
 
             services = await bootstrap.initialize()
@@ -269,6 +299,7 @@ class TestBootstrapInitialization:
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
             cached_store = MagicMock()
+            cached_store.get_setting = AsyncMock(return_value=None)
             MockCachedStore.return_value = cached_store
 
             services = await bootstrap.initialize()
@@ -304,7 +335,9 @@ class TestBootstrapInitialization:
         ):
             mock_pg_op = AsyncMock()
             MockPGOp.return_value = mock_pg_op
-            MockCachedStore.return_value = MagicMock()
+            cached_store = MagicMock()
+            cached_store.get_setting = AsyncMock(return_value=None)
+            MockCachedStore.return_value = cached_store
 
             services = await bootstrap.initialize()
 
@@ -1233,6 +1266,7 @@ async def test_initialize_keeps_route_states_when_their_first_load_fails(mock_en
     db_logger = AsyncMock()
     db_logger.pool = object()
     store = MagicMock()
+    store.get_setting = AsyncMock(return_value=None)
     store.list_all_provider_route_states = AsyncMock(
         side_effect=ConnectionError("database unavailable")
     )
@@ -1301,10 +1335,17 @@ async def test_initialize_keeps_route_states_when_their_first_load_fails(mock_en
 def _database_boot(batch_store):
     """Stub a database-backed initialize() whose batch store is ``batch_store``.
 
-    Yields the pool and the ``BatchStore`` class double.
+    The cached operational store is a ``MagicMock`` whose async ``get_setting``
+    returns ``None``, the absent-policy state startup's accounting-policy load
+    reads as legacy USD. Yields the pool and the ``BatchStore`` class double.
     """
     db_logger = AsyncMock()
     db_logger.pool = object()
+    # Startup loads the accounting policy through the operational store's async
+    # ``get_setting``; a bare MagicMock would make that await raise TypeError.
+    # ``None`` is the absent-policy state: legacy USD with an identity rate.
+    cached_store = MagicMock()
+    cached_store.get_setting = AsyncMock(return_value=None)
     with (
         patch("serving.servers.bootstrap._init_db_logger", return_value=db_logger),
         patch(
@@ -1313,7 +1354,7 @@ def _database_boot(batch_store):
         ),
         patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
         patch("serving.servers.bootstrap.PostgresOperationalStore", return_value=AsyncMock()),
-        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=MagicMock()),
+        patch("serving.servers.bootstrap.CachedOperationalStore", return_value=cached_store),
         patch("serving.servers.bootstrap.ResponseStore", return_value=AsyncMock()),
         patch("serving.servers.bootstrap.email_scheduler.start_scheduler"),
         patch(
@@ -1526,3 +1567,62 @@ async def _until(condition) -> None:
         if condition():
             return
         await asyncio.sleep(0)
+
+
+@pytest.mark.asyncio
+async def test_fresh_cny_boot_binds_before_schedulers_and_capability_snapshot(
+    mock_env, monkeypatch
+):
+    """Fresh-process USD defaults cannot leak into a CNY instance registration."""
+    import json
+    from decimal import Decimal
+
+    from serving.accounting import AccountingPolicy, bind_accounting_policy, get_accounting_policy
+    from serving.config.distribution import DistributionConfig
+    from serving.shared_spend import mode
+
+    policy = AccountingPolicy("CNY", Decimal("6.7180"), "2026-11-05", "synthetic rate")
+    bind_accounting_policy(None)
+    assert get_accounting_policy().currency == "USD"
+    store = MagicMock()
+    store.get_setting = AsyncMock(
+        side_effect=lambda key: (
+            {"value": json.dumps(policy.as_dict()), "value_type": "json"}
+            if key in {"accounting:policy", "accounting:migration"}
+            else None
+        )
+    )
+    observed = []
+    with (
+        _provider_stats_startup(
+            scheduler=None, backfill_missing=AsyncMock(), backfill_token_columns=AsyncMock()
+        ),
+        monkeypatch.context() as scoped,
+    ):
+        scoped.setattr(bootstrap, "CachedOperationalStore", lambda *_: store)
+        scoped.setattr(
+            "serving.config.distribution.get_active_distribution_config",
+            lambda: DistributionConfig(
+                schema_version=1, distribution={"id": "synthetic"}, accounting={"currency": "CNY"}
+            ),
+        )
+        scoped.setattr(
+            bootstrap.email_scheduler,
+            "start_scheduler",
+            lambda _: observed.append(("scheduler", mode.capability())),
+        )
+        scoped.setattr(
+            bootstrap,
+            "_start_live_config",
+            lambda _: observed.append(("reporter", mode.capability())),
+        )
+        services = await bootstrap.initialize()
+        try:
+            assert [kind for kind, _ in observed] == ["scheduler", "reporter"]
+            assert all(
+                cap["currency"] == "CNY" and cap["usd_to_currency_rate"] == "6.7180"
+                for _, cap in observed
+            )
+        finally:
+            await bootstrap.shutdown(services)
+            bind_accounting_policy(None)

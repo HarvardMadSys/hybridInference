@@ -12,6 +12,7 @@ import {
 } from '@/lib/api/admin';
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
+import { useMoney } from '@/lib/hooks/useMoney';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const compact = new Intl.NumberFormat('en-US', {
@@ -21,12 +22,6 @@ const compact = new Intl.NumberFormat('en-US', {
 
 function fmtCount(n: number): string {
   return n >= 10_000 ? compact.format(n) : n.toLocaleString();
-}
-
-function fmtCost(usd: number): string {
-  if (usd === 0) return '$0';
-  if (Math.abs(usd) < 1) return `$${usd.toFixed(4)}`;
-  return `$${usd.toFixed(2)}`;
 }
 
 function fmtUtcHour(iso: string): string {
@@ -73,6 +68,7 @@ function groupByProvider(
 
 /** Token totals per provider and model; the Analytics overview picks the range. */
 export function TokenUsageSection({ range }: { range: TokenUsageRange }) {
+  const money = useMoney();
   const [data, setData] = useState<ProviderTokenUsageResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -131,7 +127,10 @@ export function TokenUsageSection({ range }: { range: TokenUsageRange }) {
             <Kpi label="Cached" value={fmtCount(shown.totals.cached_tokens)} />
             <Kpi label="Reasoning" value={fmtCount(shown.totals.reasoning_tokens)} />
             <Kpi label="Requests" value={fmtCount(shown.totals.request_count)} />
-            <Kpi label="Cost USD" value={fmtCost(shown.totals.cost_usd)} />
+            <Kpi
+              label={`Cost ${money.sourceCurrency(shown.totals)}`}
+              value={money.tokenCost(shown.totals)}
+            />
           </div>
 
           {groups.length === 0 ? (
@@ -176,6 +175,7 @@ function Kpi({ label, value }: { label: string; value: string }) {
 }
 
 function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTokenUsageRow[] }) {
+  const money = useMoney();
   return (
     <div className="rounded-xl border overflow-hidden">
       <div className="bg-gray-50 px-4 py-2 text-[13px] font-semibold text-gray-900">{provider}</div>
@@ -200,7 +200,7 @@ function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTok
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.cached_tokens)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.reasoning_tokens)}</td>
               <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.request_count)}</td>
-              <td className="px-4 py-2 text-right tabular-nums">{fmtCost(r.cost_usd)}</td>
+              <td className="px-4 py-2 text-right tabular-nums">{money.tokenCost(r)}</td>
             </tr>
           ))}
         </tbody>

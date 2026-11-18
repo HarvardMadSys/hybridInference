@@ -9,8 +9,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import Currency, accounting_currency
 from serving.utils.messages import merge_leading_system_messages
 
 # Maps a multimodal content block "type" to the input modality it requires.
@@ -93,6 +95,11 @@ class ChatCompletionRequest(BaseModel):  # type: ignore[no-any-unimported]
     frequency_penalty: float | None = None
     presence_penalty: float | None = None
 
+    # Log probabilities of the output tokens, and how many alternatives to
+    # return for each (OpenAI caps it at 20, as does vLLM by default).
+    logprobs: bool | None = None
+    top_logprobs: int | None = Field(default=None, ge=0, le=20)
+
     # Reasoning effort: "low", "medium", "high"
     reasoning_effort: str | None = None
 
@@ -165,6 +172,7 @@ class ChatCompletionChoice(BaseModel):  # type: ignore[no-any-unimported]
     index: int
     message: ChoiceMessage
     finish_reason: str | None = None
+    logprobs: dict[str, Any] | None = None
 
 
 class Usage(BaseModel):  # type: ignore[no-any-unimported]
@@ -208,6 +216,8 @@ class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
     context_length: int
     max_output_length: int
     pricing: dict[str, str]
+    prices: dict[str, str] = Field(default_factory=dict)
+    currency: Currency = Field(default_factory=accounting_currency)
     supported_sampling_parameters: list[str] = []
     supported_features: list[str] = []
     # True for models served lazily on shared GPUs (loaded on first request,
@@ -221,6 +231,15 @@ class ModelItem(BaseModel):  # type: ignore[no-any-unimported]
     # does not forward the parameter itself, or a missing or malformed domain).
     # See ``serving.model_effort_capabilities``.
     reasoning: dict[str, Any] | None = None
+
+    @model_serializer(mode="wrap")
+    def _usd_shape(self, handler: Any) -> Any:
+        """A USD ledger lists exactly the fields it always has: no ``prices``, no ``currency``."""
+        result = handler(self)
+        if isinstance(result, dict) and not get_accounting_policy().native:
+            result.pop("prices", None)
+            result.pop("currency", None)
+        return result
 
 
 class ModelList(BaseModel):  # type: ignore[no-any-unimported]

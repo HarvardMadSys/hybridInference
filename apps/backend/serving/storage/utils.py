@@ -13,6 +13,8 @@ import re
 from collections import Counter
 from typing import Any
 
+from serving.accounting import Money, get_accounting_policy
+
 
 def json_safe(value: Any) -> Any:
     """Recursively replace non-finite floats with ``None`` for JSON storage."""
@@ -637,8 +639,14 @@ def billable_output_tokens(
 def calculate_cost(
     usage: dict[str, Any] | None,
     pricing: dict[str, str] | None,
-) -> float | None:
-    """Compute request cost in USD based on usage and pricing tables.
+) -> Money | None:
+    """Compute request cost in the supplied pricing table's currency.
+
+    In the ledger's arithmetic (:meth:`serving.accounting.AccountingPolicy.number`):
+    binary floats on a USD ledger, exactly as before other ledgers existed, and
+    exact decimals of the configured prices on a native one, so a price far
+    below a cent per token is charged as written. Token counts stay floats;
+    they are integers.
 
     Uses OpenAI semantics: ``prompt_tokens`` is the *total* input including
     any cached portion. The cached subset is reported separately in
@@ -676,10 +684,11 @@ def calculate_cost(
         cache_read_tokens = float(cache_read_raw) if cache_read_raw is not None else 0.0
         cache_write_tokens = float(cache_write_raw) if cache_write_raw is not None else 0.0
 
-        prompt_price = float(pricing.get("prompt", "0"))
-        completion_price = float(pricing.get("completion", "0"))
-        cache_read_price = float(pricing.get("input_cache_reads", "0"))
-        cache_write_price = float(pricing.get("input_cache_writes", "0"))
+        number = get_accounting_policy().number
+        prompt_price = number(pricing.get("prompt", "0"))
+        completion_price = number(pricing.get("completion", "0"))
+        cache_read_price = number(pricing.get("input_cache_reads", "0"))
+        cache_write_price = number(pricing.get("input_cache_writes", "0"))
 
         billable_prompt_tokens = prompt_tokens
         if cache_read_price > 0:
@@ -696,10 +705,10 @@ def calculate_cost(
         )
 
         return (
-            (billable_prompt_tokens * prompt_price / 1_000_000)
-            + (output_tokens * completion_price / 1_000_000)
-            + (cache_read_tokens * cache_read_price / 1_000_000)
-            + (cache_write_tokens * cache_write_price / 1_000_000)
+            (number(billable_prompt_tokens) * prompt_price / 1_000_000)
+            + (number(output_tokens) * completion_price / 1_000_000)
+            + (number(cache_read_tokens) * cache_read_price / 1_000_000)
+            + (number(cache_write_tokens) * cache_write_price / 1_000_000)
         )
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, ArithmeticError):
         return None

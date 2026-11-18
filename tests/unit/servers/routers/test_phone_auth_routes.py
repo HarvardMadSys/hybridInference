@@ -16,6 +16,7 @@ from serving.schemas_auth import (
 from serving.servers.deps import get_current_user
 from serving.servers.routers import auth_routes, phone_auth_routes as routes, reauth, user_routes
 from serving.setup_state import init_setup_state
+from serving.storage.phone_auth import UNRESOLVED_IP
 from serving.utils.jwt import create_access_token, verify_access_token
 from serving.utils.phone_auth import hash_phone_code
 from tests.fixtures import browser_sessions
@@ -366,6 +367,45 @@ async def test_code_quotas_count_an_ipv6_client_by_its_slash_64(enabled, monkeyp
     sends = {call.kwargs["ip"] for call in store.reserve_phone_code.await_args_list}
     checks = {call.kwargs["ip"] for call in store.consume_phone_code.await_args_list}
     assert sends == checks == {"2001:4860:1:2::/64"}
+
+
+@pytest.mark.asyncio
+async def test_unresolved_clients_share_a_budget_of_their_own_not_one_address(enabled, monkeypatch):
+    """Behind an untrusted proxy every client reads "unknown"; none may use up the rest's quota."""
+    monkeypatch.setattr(routes, "run_in_threadpool", AsyncMock(return_value=True))
+    monkeypatch.setattr(routes.settings, "sms_otp_send_unresolved_per_hour", 200)
+    monkeypatch.setattr(routes.settings, "sms_otp_send_unresolved_per_day", 1000)
+    store = Store()
+
+    await routes.send_phone_code(
+        request(client="127.0.0.1"), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+    )
+    await routes.verify_phone_code(
+        request(client="127.0.0.1"), PhoneVerifyRequest(phone=PHONE, code="123456"), "signup", store
+    )
+
+    send = store.reserve_phone_code.await_args.kwargs
+    assert send["ip"] == UNRESOLVED_IP != "unknown"
+    assert (send["limits"]["ip_hour"], send["limits"]["ip_day"]) == (200, 1000)
+    # Each number's own limits are untouched.
+    assert send["limits"]["phone_hour"] == routes.settings.sms_otp_send_per_phone_hour
+    # A verification is not counted per address at all.
+    assert store.consume_phone_code.await_args.kwargs["ip"] is None
+
+
+@pytest.mark.asyncio
+async def test_a_public_ipv4_client_keeps_its_own_address_quota(enabled, monkeypatch):
+    monkeypatch.setattr(routes, "run_in_threadpool", AsyncMock(return_value=True))
+    store = Store()
+
+    await routes.send_phone_code(
+        request(client="8.8.8.8"), PhoneCodeRequest(phone=PHONE, purpose="signup"), store
+    )
+
+    send = store.reserve_phone_code.await_args.kwargs
+    assert send["ip"] == "8.8.8.8"
+    assert send["limits"]["ip_hour"] == routes.settings.sms_otp_send_per_ip_hour
+    assert send["limits"]["ip_day"] == routes.settings.sms_otp_send_per_ip_day
 
 
 @pytest.mark.asyncio

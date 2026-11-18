@@ -30,7 +30,6 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.background import BackgroundTask
 
@@ -40,6 +39,7 @@ from serving.rag.embedder import HashEmbedder
 from serving.rag.pipeline import build_messages, sources_payload
 from serving.rag.store import VectorStore
 from serving.servers.deps import get_current_user
+from serving.servers.streaming_response import ClosingStreamingResponse
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -455,7 +455,7 @@ async def rag_chat(
         finally:
             await aclose()
 
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         _generate(),
         media_type="text/event-stream",
         headers={

@@ -11,9 +11,7 @@ import uuid
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-import anyio
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
 
 from routing.endpoint_health import http_status_of
 from routing.endpoints import endpoint_id_for_adapter
@@ -64,6 +62,7 @@ from serving.servers.routers.routing_info import (
     build_initial_routing_info,
     merge_adapter_routing,
 )
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.storage.utils import billable_output_tokens, json_safe
@@ -86,6 +85,8 @@ from serving.utils.tokens import estimate_prompt_tokens_bounded
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+
+    from fastapi.responses import StreamingResponse
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -198,14 +199,12 @@ _FORCE_STREAMING_KEEPALIVE_S = 15
 
 
 async def _close_stream_quietly(stream: Any) -> None:
-    aclose = getattr(stream, "aclose", None)
-    if not callable(aclose):
+    # Shielded and bounded, like the response's own close around it: a shield
+    # with no deadline here would keep that deadline from ever reaching a hung
+    # upstream close (serving.servers.streaming_response.close_body).
+    if not callable(getattr(stream, "aclose", None)):
         return
-    try:
-        with anyio.CancelScope(shield=True):
-            await aclose()
-    except (Exception, asyncio.CancelledError):
-        pass
+    await close_body(stream, quiet=True)
 
 
 def _pre_commit_error(chunk: str | None) -> tuple[int, str | None] | None:
@@ -254,6 +253,8 @@ async def _streaming_response_with_keepalive(
     content_parts: list[str] = []
     reasoning_parts: list[str] = []
     tool_calls = ToolCallAccumulator()
+    # Per-token logprobs, for a request that asked for them.
+    logprob_tokens: list[Any] = []
     usage: dict[str, Any] | None = None
     finish_reason: str | None = None
     response_id = request_id
@@ -307,11 +308,14 @@ async def _streaming_response_with_keepalive(
             # byte would commit a 200 and downgrade the clean HTTPException
             # (real status code) into a 200-with-error-body.
             error = chunk_json.get("error") if isinstance(chunk_json, dict) else None
-            if isinstance(error, dict):
-                code = error.get("code")
-                status_code = code if isinstance(code, int) else 500
+            frame_error = _pre_commit_error(chunk) if isinstance(error, dict) else None
+            if frame_error is not None:
+                status_code, message = frame_error
                 logger.error(f"Upstream error in stream: {error}", extra={"request_id": request_id})
-                detail = scrub_error_for_user(None, request_id, status_code)
+                # The session already scrubbed the frame's message for the user, and
+                # the streaming path relays it: a "queued, retry later" has to reach
+                # a non-streaming caller too, not a generic server error.
+                detail = message or scrub_error_for_user(None, request_id, status_code)
                 if yielded_any:
                     # A keepalive byte already committed a 200 response --
                     # raising now would abort the connection mid-body with no
@@ -358,6 +362,9 @@ async def _streaming_response_with_keepalive(
                 reasoning_parts.append(reasoning)
             if delta.get("tool_calls"):
                 tool_calls.add(delta["tool_calls"])
+            logprobs = choice.get("logprobs")
+            if isinstance(logprobs, dict) and isinstance(logprobs.get("content"), list):
+                logprob_tokens.extend(logprobs["content"])
     finally:
         reader_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -386,6 +393,8 @@ async def _streaming_response_with_keepalive(
             }
         ],
     }
+    if logprob_tokens:
+        response["choices"][0]["logprobs"] = {"content": logprob_tokens}
     if usage:
         # The client's body only (billing ran in the stream session): give it the
         # totals the response model requires.
@@ -894,7 +903,7 @@ async def _render_chat_stream(
             streaming_headers["X-Provider"] = stream.provider_header
 
         stream.adopt(first_chunk, keepalive_gen)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             stream.frames(),
             media_type="application/json",
             headers=streaming_headers or None,
@@ -909,7 +918,7 @@ async def _render_chat_stream(
     }
     if stream.provider_header:
         response_headers["X-Provider"] = stream.provider_header
-    return StreamingResponse(
+    return ClosingStreamingResponse(
         stream.frames(),
         media_type="text/event-stream",
         headers=response_headers,
@@ -1303,6 +1312,10 @@ async def execute_chat(
         params["frequency_penalty"] = payload.frequency_penalty
     if payload.presence_penalty is not None:
         params["presence_penalty"] = payload.presence_penalty
+    if payload.logprobs is not None:
+        params["logprobs"] = payload.logprobs
+    if payload.top_logprobs is not None:
+        params["top_logprobs"] = payload.top_logprobs
     if payload.reasoning_effort is not None:
         params["reasoning_effort"] = payload.reasoning_effort
     if payload.thinking is not None:

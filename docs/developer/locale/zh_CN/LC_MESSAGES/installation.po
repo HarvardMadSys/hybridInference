@@ -354,17 +354,9 @@ msgid ""
 "the database container:"
 msgstr "如果想连着 Postgres 开发、又不想启动整套服务栈，可以只起数据库容器："
 
-#: ../developer/installation.md:179
-msgid ""
-"For a local gateway without accounts or a database, set both "
-"`DB_ENABLED=false` and `USER_AUTH_ENABLED=false` in `.env`. It still "
-"routes requests, and `/health` reports `\"database_configured\": false`. "
-"Accounts, API keys, request history and the settings stored in the "
-"database all need the database."
-msgstr ""
-"如果本地网关不需要账号或数据库，在 `.env` 中同时设置 `DB_ENABLED=false` 和 "
-"`USER_AUTH_ENABLED=false`。它仍能路由请求，`/health` 会报告 `\"database_configured\":"
-" false`。账号、API key、请求历史以及存储在数据库中的设置项，都需要数据库。"
+#: ../developer/installation.md
+msgid "For a local gateway without accounts or a database, set both `DB_ENABLED=false` and `USER_AUTH_ENABLED=false` in `.env`. It still routes requests, and `/health` reports `\"database_configured\": false` to a caller with `ADMIN_TOKEN`. Accounts, API keys, request history and the settings stored in the database all need the database."
+msgstr "如果本地网关不需要账号和数据库，请在 `.env` 中同时设置 `DB_ENABLED=false` 和 `USER_AUTH_ENABLED=false`。它仍然可以路由请求，并且 `/health` 会向携带 `ADMIN_TOKEN` 的调用方报告 `\"database_configured\": false`。账号、API 密钥、请求历史以及存储在数据库中的设置都需要数据库。"
 
 #: ../developer/installation.md:184
 msgid "Configuration"

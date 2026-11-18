@@ -10,6 +10,7 @@ import pytest_asyncio
 from migrations.baseline.api_logs import ensure_api_logs_schema
 from serving.storage.postgres_operational import PostgresOperationalStore
 from tests.fixtures import postgres
+from tests.fixtures.accounting_schema import add_native_columns
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
@@ -28,6 +29,8 @@ async def store():
                 await db.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
             # api_logs with the daily usage rollup the totals read.
             await ensure_api_logs_schema(db)
+            # The gateway's log writers name the native accounting columns.
+            await add_native_columns(db, ("api_logs",))
             await db.execute("""
                 INSERT INTO users (id, email, password_hash, status, created_at)
                 VALUES ('empty', 'empty@example.test', 'fixture', 'active', '2026-01-03'),

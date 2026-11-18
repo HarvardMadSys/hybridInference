@@ -218,3 +218,82 @@ async def test_stores_without_the_merged_lookup_keep_the_two_query_path(monkeypa
     store.get_auth_context_by_key_hash.assert_awaited_once()
     store.get_user_cost_today.assert_awaited_once_with("user123")
     store.update_key_last_used.assert_awaited_once_with(1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("balance_only", [False, True])
+async def test_cny_reads_native_spend_in_the_same_auth_query(
+    monkeypatch, mock_request, balance_only
+):
+    from decimal import Decimal
+
+    from serving import accounting
+    from serving.accounting import AccountingPolicy
+
+    monkeypatch.setattr(
+        accounting, "_policy", AccountingPolicy("CNY", Decimal("6.7180"), "2026-10-23", "fixture")
+    )
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    store = _merged_store(cost_usd=0.0)
+    # Native precision must win over the deliberately different legacy counter.
+    store.get_auth_context_with_spend.return_value.update(
+        quota_daily_cost_amount=Decimal("1.000000001"),
+        cost_amount=Decimal("0.123456789"),
+        accounting_currency="CNY",
+    )
+    store.get_user_cost_today_amount = AsyncMock(side_effect=AssertionError("extra native query"))
+    if balance_only:
+        result = await verify_api_key_for_balance(
+            request=mock_request, authorization="Bearer hyi-cny-hot", op_store=store
+        )
+        assert result["spent_today"] == Decimal("0.123456789")
+        assert result["quota_daily_cost"] == Decimal("1.000000001")
+    else:
+        result = await verify_api_key(
+            request=mock_request,
+            authorization="Bearer hyi-cny-hot",
+            x_on_behalf_of=None,
+            op_store=store,
+            log_store=MagicMock(),
+        )
+        assert result["spent_today_usd"] == pytest.approx(
+            float(Decimal("0.123456789") / Decimal("6.7180"))
+        )
+    await _settle_background_writes()
+    store.get_auth_context_with_spend.assert_awaited_once()
+    store.get_user_cost_today.assert_not_awaited()
+    store.get_user_cost_today_amount.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cny_native_join_rejects_when_legacy_spend_would_allow(monkeypatch, mock_request):
+    from decimal import Decimal
+
+    from serving import accounting
+    from serving.accounting import AccountingPolicy
+
+    monkeypatch.setattr(
+        accounting, "_policy", AccountingPolicy("CNY", Decimal("6.7180"), "2026-10-23", "fixture")
+    )
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    monkeypatch.setenv("API_KEY_SECRET", "test-secret")
+    store = _merged_store(cost_usd=0.0)
+    store.get_auth_context_with_spend.return_value.update(
+        quota_daily_cost_amount=Decimal("1"),
+        cost_amount=Decimal("1.000000001"),
+        accounting_currency="CNY",
+    )
+    with pytest.raises(HTTPException) as exc:
+        await verify_api_key(
+            request=mock_request,
+            authorization="Bearer hyi-cny-hot",
+            x_on_behalf_of=None,
+            op_store=store,
+            log_store=MagicMock(),
+        )
+    await _settle_background_writes()
+    assert exc.value.status_code == 429
+    assert exc.value.detail["currency"] == "CNY"
+    store.get_user_cost_today.assert_not_awaited()
+    store.update_key_last_used.assert_not_awaited()

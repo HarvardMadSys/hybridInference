@@ -19,11 +19,13 @@ from typing import Any
 
 from fastapi import APIRouter, Request
 
+from serving.accounting import get_accounting_policy
 from serving.auth.signup_policy import is_public_signup_enabled
 from serving.config.app_config import get_config_health
 from serving.config.distribution import DistributionConfigError, get_active_distribution_config
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
+from serving.config.sso import enabled_providers
 from serving.setup_state import refresh_setup_state
 from serving.utils.sms import is_sms_enabled
 
@@ -55,6 +57,7 @@ async def _deployment_state(
         "configuration": {
             "incomplete": site_invalid or no_models or get_config_health().incomplete
         },
+        "accounting": {"currency": get_accounting_policy().currency},
     }
 
 
@@ -109,6 +112,10 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
         if phone_auth_enabled
         else {}
     )
+    # A top-level key, like the phone policy: ``features`` is parsed strictly by
+    # consoles, and one that predates single sign-on must ignore this, not fail
+    # on it. It says only that single sign-on is offered, never by whom.
+    sso = {"sso": {"enabled": True}} if enabled_providers() else {}
     if config is None:
         return {
             **_NEUTRAL,
@@ -123,6 +130,7 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
             ),
             **deployment_state,
             **phone_policy,
+            **sso,
         }
     site_identity = get_site_identity()
     branding = config.branding_config
@@ -147,4 +155,5 @@ async def get_site_config(request: Request = None) -> dict[str, Any]:
         ),
         **deployment_state,
         **phone_policy,
+        **sso,
     }

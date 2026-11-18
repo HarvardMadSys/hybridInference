@@ -69,5 +69,30 @@ def tracked_task(coro: Awaitable[None], *, name: str) -> asyncio.Task[None]:
 
     task = asyncio.ensure_future(_runner())
     _TRACKED_TASKS.add(task)
-    task.add_done_callback(_TRACKED_TASKS.discard)
+    _NAMES[task] = name
+    task.add_done_callback(_forget)
     return task
+
+
+#: The name each running tracked task was given, for :func:`pending_tracked_tasks`.
+_NAMES: dict[asyncio.Task[None], str] = {}
+
+
+def _forget(task: asyncio.Task[None]) -> None:
+    _TRACKED_TASKS.discard(task)
+    _NAMES.pop(task, None)
+
+
+def pending_tracked_tasks() -> dict[str, int]:
+    """How many tracked tasks are still running, by the name each was given.
+
+    Read by the release handoff (:mod:`serving.servers.handoff`): a process is
+    not finished while a cost increment or a request-log write it started is
+    still running.
+    """
+    counts: dict[str, int] = {}
+    for task in list(_TRACKED_TASKS):
+        if not task.done():
+            name = _NAMES.get(task, "unnamed")
+            counts[name] = counts.get(name, 0) + 1
+    return counts

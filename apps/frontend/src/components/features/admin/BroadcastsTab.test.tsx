@@ -39,6 +39,8 @@ import {
   type BroadcastPreviewResponse,
   type CreateBroadcastResponse,
 } from '@/lib/api/admin';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import { chooseOption, openOptions } from '@/test-utils/select';
 import { BroadcastsTab } from './BroadcastsTab';
 import { escapingScreenReaderText, uncontainedGrids } from './__tests__/layoutContainment';
@@ -89,7 +91,9 @@ const BASE_REQUEST = {
   body_text: '',
   target_roles: ['free', 'pro', 'internal', 'admin'],
   target_statuses: ['active'],
-  min_spend_today_usd: null,
+  // A native threshold in the runtime's accounting currency (USD by default).
+  min_spend_today: null,
+  currency: 'USD',
 };
 
 let nativeConfirm: ReturnType<typeof vi.fn>;
@@ -130,9 +134,11 @@ function expectNoWrites() {
   expect(cancelBroadcast).not.toHaveBeenCalled();
 }
 
+const cnyConfig = { ...buildTimeSiteConfig, accounting: { currency: 'CNY' as const } };
+
 /** Open the composer and write the subject and body of BASE_REQUEST. */
-async function renderComposed() {
-  render(<BroadcastsTab />);
+async function renderComposed(ui: React.ReactElement = <BroadcastsTab />) {
+  render(ui);
   await waitFor(() => expect(listBroadcasts).toHaveBeenCalled());
   fireEvent.click(screen.getByRole('button', { name: 'Compose email' }));
   fireEvent.change(screen.getByPlaceholderText('Email subject'), { target: { value: 'Hello' } });
@@ -489,9 +495,42 @@ describe('BroadcastsTab', () => {
       clickInDialog('Schedule');
       await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
       expect(vi.mocked(createBroadcast).mock.calls).toEqual([
-        [{ ...BASE_REQUEST, min_spend_today_usd: 5, scheduled_at: when.toISOString() }],
+        [{ ...BASE_REQUEST, min_spend_today: 5, scheduled_at: when.toISOString() }],
       ]);
       expect(toast.success).toHaveBeenCalledWith('Broadcast scheduled');
+    });
+  });
+
+  describe('in a CNY runtime', () => {
+    it('labels, reviews and sends the spend threshold in CNY', async () => {
+      vi.mocked(previewBroadcast).mockResolvedValue(previewOf(3));
+      vi.mocked(createBroadcast).mockResolvedValue(CREATED);
+      await renderComposed(
+        <SiteConfigProvider initialConfig={cnyConfig}>
+          <BroadcastsTab />
+        </SiteConfigProvider>,
+      );
+
+      expect(screen.queryByLabelText('Minimum spend today (USD)')).toBeNull();
+      fireEvent.change(screen.getByLabelText('Minimum spend today (CNY)'), {
+        target: { value: '35' },
+      });
+      fireEvent.click(screen.getByRole('button', { name: 'Send Now' }));
+
+      const review = await screen.findByRole('dialog', {
+        name: 'Send this broadcast to 3 recipients now?',
+      });
+      expect(review).toHaveTextContent('Spend today (UTC)More than ¥35');
+      expect(review).not.toHaveTextContent('$');
+      expect(vi.mocked(previewBroadcast).mock.calls).toEqual([
+        [{ ...BASE_REQUEST, min_spend_today: 35, currency: 'CNY' }],
+      ]);
+
+      clickInDialog('Send to 3 recipients');
+      await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+      expect(vi.mocked(createBroadcast).mock.calls).toEqual([
+        [{ ...BASE_REQUEST, min_spend_today: 35, currency: 'CNY', scheduled_at: null }],
+      ]);
     });
   });
 

@@ -3,11 +3,12 @@
 import re
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, EmailStr, Field, StringConstraints, field_validator
 from pydantic.networks import validate_email
 
+from serving.accounting_api import MoneyInput, MoneyResponse
 from serving.config.site_identity import get_site_identity
 from serving.utils.password import validate_password_strength
 from serving.utils.phone_auth import normalize_phone
@@ -207,6 +208,13 @@ class LocalePreferenceUpdate(BaseModel):
     chosen_at: datetime | None = None
 
 
+class SsoProviderRef(BaseModel):
+    """An identity provider, as much of it as an account's own pages may show."""
+
+    id: str
+    name: str
+
+
 class UserInfo(BaseModel):
     """User information (public).
 
@@ -220,6 +228,9 @@ class UserInfo(BaseModel):
     phone: str | None = None
     phone_verified: bool = False
     has_password: bool = True
+    #: The provider an account with no password and no verified phone confirms
+    #: sensitive actions through; None for every other account.
+    sso_reauth_provider: SsoProviderRef | None = None
     user_name: str | None = None
     avatar_url: str | None = None
     role: str = "free"
@@ -248,6 +259,10 @@ class AccountSummary(BaseModel):
     agent_access: bool | None = Field(
         default=None,
         description="Whether it may use the Cloud Agent; None when signed out or unknown.",
+    )
+    sso_provider: SsoProviderRef | None = Field(
+        default=None,
+        description="The provider an account without a password signs in through.",
     )
 
 
@@ -396,14 +411,20 @@ API_KEY_BUDGET_MAX_USD = Decimal("1000000")
 API_KEY_ALLOWED_MODELS_MAX = 200
 
 
-class APIKeyUpdateRequest(BaseModel):
+class APIKeyUpdateRequest(MoneyInput):
     """Settings to change on one of the owner's API keys.
 
     A field that is not sent stays as it is; ``null`` clears it. A cleared
     budget is no limit at the key (the account's quota still applies); a
     cleared allowlist is every model the account may use. A budget of 0 pauses
     the key without revoking it.
+
+    A budget is either the USD ``budget_*_usd`` or the native ``budget_*``
+    with the accounting ``currency``, never both; the native amount is stored
+    exactly and its USD equivalent beside it.
     """
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str | None = Field(default=None, max_length=API_KEY_NAME_MAX_LENGTH)
     budget_daily_usd: Decimal | None = Field(
@@ -415,6 +436,9 @@ class APIKeyUpdateRequest(BaseModel):
     allowed_models: list[Annotated[str, Field(min_length=1, max_length=256)]] | None = Field(
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
+
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
 
 
 class APIKeyResponse(BaseModel):
@@ -443,7 +467,7 @@ class APIKeyInfo(BaseModel):
     project_name: str | None = None
 
 
-class APIKeyListItem(BaseModel):
+class APIKeyListItem(MoneyResponse):
     """Single API key record for the current user."""
 
     #: Always null: the listing never carries a full key. One saved key is
@@ -469,6 +493,12 @@ class APIKeyListItem(BaseModel):
     budget_monthly_usd: float | None = None
     allowed_models: list[str] | None = None
 
+    #: The same spend and limits in the accounting ``currency``.
+    spent_today: float | None = None
+    spent_month: float | None = None
+    budget_daily: float | None = None
+    budget_monthly: float | None = None
+
 
 class APIKeyListResponse(BaseModel):
     """All API keys owned by the current user."""
@@ -483,7 +513,7 @@ class APIKeyRevealResponse(BaseModel):
     api_key: str
 
 
-class APIKeyUpdateResponse(BaseModel):
+class APIKeyUpdateResponse(MoneyResponse):
     """The owner's settings on an API key after a change."""
 
     key_prefix: str
@@ -491,6 +521,10 @@ class APIKeyUpdateResponse(BaseModel):
     budget_daily_usd: float | None = None
     budget_monthly_usd: float | None = None
     allowed_models: list[str] | None = None
+
+    #: The budgets in the accounting ``currency``.
+    budget_daily: float | None = None
+    budget_monthly: float | None = None
 
 
 class APIKeyDeleteResponse(BaseModel):
@@ -511,7 +545,7 @@ class APIKeyRegenerateResponse(BaseModel):
 
 
 # Usage statistics schemas
-class QuotaInfo(BaseModel):
+class QuotaInfo(MoneyResponse):
     """User quota information."""
 
     has_key: bool
@@ -525,6 +559,12 @@ class QuotaInfo(BaseModel):
     reset_timezone: str = "UTC"
     contact_email: str = Field(default_factory=lambda: get_site_identity().support_email)
     increase_request_message: str = Field(default_factory=lambda: _quota_message())
+
+    daily_limit: float | None = None
+    monthly_limit: float | None = None
+    spent_today: float | None = None
+    spent_month: float | None = None
+    remaining_today: float | None = None
 
 
 def _quota_message() -> str:
@@ -542,7 +582,7 @@ def _quota_message() -> str:
     return "Need more quota? Contact the operator of this deployment and explain your use case."
 
 
-class UsageStats(BaseModel):
+class UsageStats(MoneyResponse):
     """User usage statistics."""
 
     requests: int = 0
@@ -570,6 +610,8 @@ class UsageStats(BaseModel):
         ),
     )
     cost_usd: float = 0.0
+
+    cost: float | None = None
 
 
 class UsageResponse(BaseModel):
@@ -651,7 +693,7 @@ class DeleteAccountResponse(BaseModel):
 
 
 # Recent requests schemas
-class RecentRequestItem(BaseModel):
+class RecentRequestItem(MoneyResponse):
     """A single API request log entry (user-facing)."""
 
     request_id: str
@@ -678,6 +720,8 @@ class RecentRequestItem(BaseModel):
     # before usage was attributed to keys, or made without one of its keys.
     key_prefix: str | None = None
 
+    cost: float | None = None
+
 
 class RecentRequestsResponse(BaseModel):
     """Paginated list of recent requests for the current user."""
@@ -691,8 +735,12 @@ class RecentRequestsResponse(BaseModel):
     offset: int
 
 
-class ProjectResponse(BaseModel):
-    """A project with its budgets, keys and current spend."""
+class ProjectResponse(MoneyResponse):
+    """A project with its budgets, keys and current spend.
+
+    On a USD deployment exactly its USD fields; on another, the native budgets
+    and spend with the accounting ``currency`` beside them.
+    """
 
     id: str
     name: str
@@ -707,9 +755,21 @@ class ProjectResponse(BaseModel):
     key_count: int = 0
     created_at: datetime
 
+    #: The same budgets and spend in the accounting ``currency``.
+    budget_daily: Decimal | None = None
+    budget_monthly: Decimal | None = None
+    spent_today: Decimal | None = None
+    spent_month: Decimal | None = None
 
-class ProjectCreateRequest(BaseModel):
-    """Create a project under the caller's personal organization."""
+
+class ProjectCreateRequest(MoneyInput):
+    """Create a project owned by the caller.
+
+    A budget is either the USD ``budget_*_usd`` or the native ``budget_*``
+    with the accounting ``currency``, never both, as for an API key.
+    """
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str = Field(..., min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -724,9 +784,14 @@ class ProjectCreateRequest(BaseModel):
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
 
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
 
-class ProjectUpdateRequest(BaseModel):
-    """Patch a project; omitted fields are unchanged."""
+
+class ProjectUpdateRequest(MoneyInput):
+    """Patch a project; omitted fields are unchanged. Budgets as :class:`ProjectCreateRequest`."""
+
+    usd_places: ClassVar[dict[str, int]] = {"budget_daily_usd": 4, "budget_monthly_usd": 4}
 
     name: str | None = Field(default=None, min_length=1, max_length=80)
     description: str | None = Field(default=None, max_length=500)
@@ -740,3 +805,140 @@ class ProjectUpdateRequest(BaseModel):
         default=None, min_length=1, max_length=API_KEY_ALLOWED_MODELS_MAX
     )
     max_concurrent_requests: int | None = Field(default=None, ge=1)
+
+    budget_daily: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+    budget_monthly: Decimal | None = Field(default=None, ge=0, decimal_places=4, exclude=True)
+
+
+# Single sign-on schemas
+class SsoDiscoverRequest(BaseModel):
+    """Find the identity provider for an email and start a sign-in there."""
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoStartResponse(BaseModel):
+    """Where to send the browser to sign in at an identity provider.
+
+    ``available`` is False, with no URL, when no provider answers for the
+    email. It says nothing about whether an account exists.
+    """
+
+    available: bool = True
+    authorization_url: str | None = None
+
+
+class SsoPendingLinkResponse(BaseModel):
+    """An identity waiting for the owner of the account it matched to accept it."""
+
+    provider_id: str
+    provider_name: str
+    email: str
+
+
+class SsoMessageResponse(BaseModel):
+    """Result of a single sign-on account operation."""
+
+    message: str
+
+
+class SsoReauthStartRequest(BaseModel):
+    """Confirm a sensitive action by signing in at the account's identity provider again."""
+
+    #: ``admin_action``: one guarded administrator change
+    #: (``serving.servers.routers.admin.reauthentication``).
+    purpose: Literal[
+        "set_password", "delete_account", "bind_email", "link_sso", "unlink_sso", "admin_action"
+    ]
+    return_to: str | None = Field(default=None, max_length=2048)
+
+
+class SsoIdentity(BaseModel):
+    """One identity linked to an account."""
+
+    id: str
+    provider_id: str
+    provider_name: str
+    email: str | None = None
+    linked_at: datetime
+    last_login_at: datetime | None = None
+    available: bool = Field(description="False when its provider is no longer offered.")
+
+
+class SsoIdentitiesResponse(BaseModel):
+    """The identities linked to the signed-in account."""
+
+    identities: list[SsoIdentity]
+
+
+class SsoLinkIdentityRequest(BaseModel):
+    """Link an identity to the signed-in account, confirmed by its owner.
+
+    An account with a password confirms with it; one that signs in only
+    through an identity provider confirms there first (purpose ``link_sso``).
+    """
+
+    email: EmailStr
+    return_to: str | None = Field(default=None, max_length=2048)
+    password: str | None = Field(default=None, max_length=1024)
+
+
+class SsoUnlinkIdentityRequest(BaseModel):
+    """Remove an identity from the signed-in account, confirmed by its owner."""
+
+    password: str | None = Field(default=None, max_length=1024)
+
+
+# -- second factor (serving.auth.two_factor) ----------------------------------
+
+
+class TwoFactorStatusResponse(BaseModel):
+    """An account's second factor, and what the asking session has proved."""
+
+    enabled: bool = Field(description="The account has an authenticator app")
+    pending: bool = Field(description="A secret was shown and awaits its first code")
+    required: bool = Field(
+        description="This account has administrator access only from a verified session"
+    )
+    session_verified: bool = Field(
+        description="This session has given a code, from the client it is used from now"
+    )
+    recovery_codes_left: int = Field(description="Unspent recovery codes")
+
+
+class TwoFactorSetupRequest(BaseModel):
+    """Start adding an authenticator app."""
+
+    password: str | None = Field(
+        None,
+        max_length=1024,
+        description="The account's password; not needed to replace an authenticator, "
+        "which a recent code confirms instead",
+    )
+
+
+class TwoFactorSetupResponse(BaseModel):
+    """The secret to put into an authenticator app, shown once."""
+
+    secret: str = Field(description="Base32 secret, for typing in by hand")
+    otpauth_uri: str = Field(description="The same as a link, for a QR code")
+
+
+class TwoFactorCodeRequest(BaseModel):
+    """A code from the authenticator app, or a recovery code."""
+
+    code: str = Field(min_length=6, max_length=32)
+
+
+class TwoFactorRecoveryCodesResponse(BaseModel):
+    """A new set of recovery codes, shown once; every earlier one stops working."""
+
+    recovery_codes: list[str]
+
+
+class TwoFactorVerifyResponse(BaseModel):
+    """The session is verified."""
+
+    verified: bool = True
+    recovery_codes_left: int

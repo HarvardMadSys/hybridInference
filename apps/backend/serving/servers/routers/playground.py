@@ -18,8 +18,7 @@ from serving.model_access import model_access_denial
 from serving.model_effort_capabilities import model_effort_domain
 from serving.servers.auth import (
     _account_quotas,
-    _daily_quota_usd,
-    _spend_check,
+    _gate,
     publish_caller_role,
 )
 from serving.servers.concurrency import (
@@ -68,6 +67,7 @@ from serving.servers.routers.responses import (
     ResponsesStream,
     execute_responses,
 )
+from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.surfaces.context import (
@@ -191,32 +191,40 @@ async def _reserve_playground_spend(
     request's own model, so the reservation is its estimate rather than the flat
     minimum. ``_playground_slot`` releases it once the response, stream
     included, has been sent.
+
+    The check is :func:`~serving.servers.auth._gate`'s, in the ledger currency
+    like the estimate it reserves: a non-USD ledger compares the native limits
+    and counters, a USD one exactly what it always has.
     """
     if op_store is None:
         return None
     user_id = str(user["user_id"])
     read_at = time.monotonic()
-    daily, monthly = await _account_quotas(op_store, {"id": user_id, "role": role})
+    daily, monthly, daily_amount, monthly_amount = await _account_quotas(
+        op_store, {"id": user_id, "role": role}
+    )
     identity = {
         "user_id": user_id,
         "role": role,
         "quota_daily_cost_usd": daily,
         "quota_monthly_cost_usd": monthly,
+        "quota_daily_cost_amount": daily_amount,
+        "quota_monthly_cost_amount": monthly_amount,
     }
-    user[SPEND_CHECK_KEY] = await _spend_check(
+    user[SPEND_CHECK_KEY], *_ = await _gate(
         identity,
         api_key_id=None,
         op_store=op_store,
-        quota_daily_cost_usd=_daily_quota_usd(identity),
-        spent_today_usd=await op_store.get_user_cost_today(user_id) or 0.0,
+        spent_usd=None,
         read_at=read_at,
     )
-    return _admit_spend(
+    return await _admit_spend(
         request,
         user,
         model=model,
         router=router,
         embedding_adapters=embedding_adapters,
+        operation="playground",
     )
 
 
@@ -486,13 +494,18 @@ def _with_route_frame(
 
     async def frames() -> AsyncIterator[Any]:
         sent = False
-        async for frame in inner:
-            if not sent and _is_done_frame(frame):
-                badge = _route_frame(stream, show_host=show_host)
-                if badge is not None:
-                    yield badge
-                sent = True
-            yield frame
+        try:
+            async for frame in inner:
+                if not sent and _is_done_frame(frame):
+                    badge = _route_frame(stream, show_host=show_host)
+                    if badge is not None:
+                        yield badge
+                    sent = True
+                yield frame
+        finally:
+            # Closed when the response ends (ClosingStreamingResponse); the
+            # stream it wraps is closed with it, not left to the collector.
+            await close_body(inner)
         if not sent:
             badge = _route_frame(stream, show_host=show_host)
             if badge is not None:
@@ -652,7 +665,7 @@ async def playground_responses(
     if isinstance(result, ResponsesStream):
         if result.chat_stream is not None:
             _streams.append(result.chat_stream)
-        return StreamingResponse(
+        return ClosingStreamingResponse(
             result.events,
             media_type="text/event-stream",
             headers=_RESPONSES_SSE_HEADERS,

@@ -37,6 +37,8 @@ export const AUTH_DATA = {
   consent: 'consent',
   /** One numbered section of the sign-up confirmations. */
   consentSection: 'consent-section',
+  /** The single sign-on entry under the sign-in form: its divider and its button. */
+  sso: 'sso',
   loading: 'loading',
 } as const;
 

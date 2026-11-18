@@ -24,6 +24,7 @@ DOCUMENT_KEYS = {
     "alerts": "ALERT_RULES",
     "distribution": "SITE_CONFIGURATION",
     "branding": "SITE_BRANDING",
+    "sso": "SSO_PROVIDERS",
 }
 KEY_KINDS = {key: kind for kind, key in DOCUMENT_KEYS.items()}
 _REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
@@ -34,6 +35,7 @@ _TITLES = {
     "alerts": "alert rules document",
     "distribution": "site configuration",
     "branding": "site branding",
+    "sso": "single sign-on providers document",
 }
 
 
@@ -210,8 +212,10 @@ def _check(kind: str, value: dict[str, Any]) -> None:
 
         alert_config_from_data(value)
     elif kind == "distribution":
+        from serving.accounting import declared_currency_problem
         from serving.config.distribution import DistributionConfig
 
+        currency = "USD"
         if value:
             # Its root refuses a key it does not define; a section ignores one.
             config = DistributionConfig.model_validate(value)
@@ -219,6 +223,9 @@ def _check(kind: str, value: dict[str, Any]) -> None:
                 raise DocumentError(
                     "file paths are retired; configure application documents in Admin"
                 )
+            currency = config.accounting.currency
+        if problem := declared_currency_problem(currency):
+            raise DocumentError(problem)
         # A public document: no credential belongs in it, not even under a
         # key a section ignores.
         _credentials(value, references=False)
@@ -227,6 +234,10 @@ def _check(kind: str, value: dict[str, Any]) -> None:
 
         if value:
             BrandingConfig.model_validate(value)
+    elif kind == "sso":
+        from serving.config.sso import SsoProvidersDocument
+
+        SsoProvidersDocument.model_validate(value)
 
 
 def separate_secrets(

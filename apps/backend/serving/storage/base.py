@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from decimal import Decimal
 
+    from serving.accounting import AccountingPolicy
     from serving.audit import AuditActor, AuditTarget
 
 
@@ -70,6 +71,11 @@ class CostIncrement(NamedTuple):
     *cost_usd* and *requests* are added to the user's counter for *day*, and
     to the key's when *api_key_id* is set. *requests* counts the requests the
     cost sums, so coalescing several into one increment keeps the counts.
+
+    *cost_amount* is the exact native amount on a non-USD ledger, which the
+    native counters (``cost_amount``) are written with; *cost_usd* is then its
+    USD equivalent. None means the increment is USD only, and a non-USD store
+    records it at the fixed policy rate.
     """
 
     user_id: str
@@ -77,8 +83,20 @@ class CostIncrement(NamedTuple):
     api_key_id: int | None
     cost_usd: Decimal | float
     requests: int = 1
-    org_id: str | None = None
     project_id: str | None = None
+    cost_amount: Decimal | None = None
+
+    def ledger_amount(self, policy: AccountingPolicy) -> Any:
+        """What this increment adds to the counters *policy*'s ledger keeps its record in.
+
+        A USD ledger adds :attr:`cost_usd`, as it always has. A native one adds
+        the exact :attr:`cost_amount`, or a USD-only increment at the fixed rate.
+        """
+        if not policy.native:
+            return self.cost_usd
+        if self.cost_amount is not None:
+            return self.cost_amount
+        return policy.from_usd(self.cost_usd)
 
 
 class CostWriteOutcomeUnknown(Exception):
@@ -138,6 +156,8 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
     "status": "status",
     "quota_daily_cost_usd": "quota_daily_cost_usd",
     "quota_monthly_cost_usd": "quota_monthly_cost_usd",
+    "quota_daily_cost_amount": "quota_daily_cost_amount",
+    "quota_monthly_cost_amount": "quota_monthly_cost_amount",
     "expires_at": "expires_at",
     "last_used_at": "last_used_at",
     "notes": "notes",
@@ -213,6 +233,64 @@ class OperationalStore(ABC):
     async def record_phone_login_event(self, **fields: Any) -> None:
         """Record phone login outcomes without fabricating an email."""
         raise RuntimeError("Phone authentication is unavailable in this store")
+
+    # -- single sign-on (optional for legacy store implementations) ----------
+
+    async def get_user_identity(self, issuer: str, subject: str) -> Row | None:
+        """Fetch the identity an identity provider vouches for, if it is linked."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def list_user_identities(self, user_id: str) -> list[Row]:
+        """List an account's linked identities, oldest first."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def link_user_identity(self, **fields: Any) -> str:
+        """Link an identity to an active account; say why not when it cannot be."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def touch_user_identity(self, identity_id: str) -> None:
+        """Record that an identity just signed in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def unlink_user_identity(self, **fields: Any) -> str:
+        """Remove one of an account's identities, optionally keeping its last way in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_user(self, **fields: Any) -> bool:
+        """Create an account for a first single sign-on and link the identity to it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_flow(self, **fields: Any) -> None:
+        """Record one redirect to an identity provider."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_flow(self, state_hash: str, **fields: Any) -> Row | None:
+        """Atomically claim an unused, unexpired flow for its provider and its browser."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def mark_sso_reauth_verified(self, state_hash: str) -> None:
+        """Record that a claimed re-authentication flow ended in a fresh sign-in."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_reauth_proof(self, **fields: Any) -> bool:
+        """Spend a recent re-authentication for one account, session and purpose."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def create_sso_pending_link(self, **fields: Any) -> None:
+        """Hold an identity until the owner of the account it matched accepts it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def get_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Read a pending link that is still waiting, without claiming it."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def consume_sso_pending_link(self, token_hash: str) -> Row | None:
+        """Atomically claim a pending link."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
+
+    async def delete_sso_pending_link(self, token_hash: str) -> None:
+        """Drop a pending link its browser declined."""
+        raise RuntimeError("Single sign-on is unavailable in this store")
 
     # -- users ---------------------------------------------------------------
 
@@ -603,14 +681,14 @@ class OperationalStore(ABC):
         """Auth context plus today's spend, for one round-trip (issue #185).
 
         Same projection and the same active-key/active-user filters as
-        :meth:`get_auth_context_by_key_hash`, plus a ``cost_usd`` field: the
+        :meth:`get_auth_context_by_key_hash`, plus legacy ``cost_usd`` and native ``cost_amount`` fields: the
         ``user_daily_cost`` counter for the key's owner, UTC-midnight day,
         ``0.0`` when no counter row exists. ``None`` means the key did not
         resolve, exactly like the identity-only lookup. When the account has a
         monthly quota, ``account_spent_month_usd`` is the owner's spend this
         UTC month (the sum :meth:`get_user_cost_period` returns); 0 otherwise.
 
-        Not cached: the quota gate reads ``cost_usd`` on every request, and
+        Not cached: the quota gate reads the live monetary counter on every request, and
         caching the merged row would stale the gate by the auth TTL. The
         identity-only lookup above keeps its cache; this one stays fresh.
         """
@@ -667,6 +745,10 @@ class OperationalStore(ABC):
         common path :meth:`get_auth_context_with_spend` already carries it.
         """
 
+    async def get_key_spend_amount(self, key_id: int) -> tuple[Decimal, Decimal]:
+        """:meth:`get_key_spend` in the native ledger amount, ``(today, month)``."""
+        raise NotImplementedError
+
     @abstractmethod
     async def create_key(
         self,
@@ -677,6 +759,8 @@ class OperationalStore(ABC):
         user_name: str | None = None,
         quota_daily_cost_usd: Decimal | float = 1000.0,
         quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
         expires_at: datetime | None = None,
         notes: str | None = None,
         api_key_encrypted: str | None = None,
@@ -731,7 +815,7 @@ class OperationalStore(ABC):
 
     # -- projects ------------------------------------------------------------
     #
-    # A project belongs to the owner's personal organization. Its budgets are
+    # A project belongs to one account. Its budgets are
     # sub-limits of the account ceiling, and its allowlist narrows the models
     # its keys may call. The Default project of each account is where keys go
     # when the caller names none.
@@ -748,8 +832,13 @@ class OperationalStore(ABC):
         budget_monthly_usd: Decimal | float | None = None,
         allowed_models: list[str] | None = None,
         max_concurrent_requests: int | None = None,
+        budget_daily_amount: Decimal | None = None,
+        budget_monthly_amount: Decimal | None = None,
     ) -> Row:
-        """Insert a project under the user's personal organization."""
+        """Insert a project owned by the user.
+
+        ``budget_*_amount`` are the exact native budgets on a non-USD ledger.
+        """
 
     @abstractmethod
     async def list_projects(self, user_id: str) -> list[Row]:
@@ -777,25 +866,25 @@ class OperationalStore(ABC):
     async def get_project_spend(self, project_id: str) -> tuple[float, float]:
         """The project's spend on the current UTC day and month, ``(today, month)``."""
 
+    async def get_project_spend_amount(self, project_id: str) -> tuple[Decimal, Decimal]:
+        """:meth:`get_project_spend` in the native ledger amount."""
+        raise NotImplementedError
+
     @abstractmethod
     async def count_project_keys(self, project_id: str) -> int:
         """Return how many active keys the project holds."""
 
     @abstractmethod
-    async def update_org(self, org_id: str, changes: dict[str, Any]) -> Row | None:
-        """Update an organization's ceilings or status; return the row."""
-
-    @abstractmethod
-    async def get_personal_org_status(self, user_id: str) -> str | None:
-        """Return the status of the account's personal organization, or None."""
-
-    @abstractmethod
     async def get_account_budgets(self, user_id: str) -> tuple[float, float | None]:
         """Return ``(daily, monthly)`` ceilings for the account, monthly None when unset.
 
-        Reads the personal organization first and falls back to the legacy key
-        quota while the organization has no ceiling of its own.
+        The account quota is the one every key of the account carries, and the
+        one its next key would inherit.
         """
+
+    async def get_account_budget_amounts(self, user_id: str) -> tuple[Decimal, Decimal | None]:
+        """:meth:`get_account_budgets` in the native ledger amount."""
+        raise NotImplementedError
 
     @abstractmethod
     async def update_key_settings(
@@ -949,6 +1038,137 @@ class OperationalStore(ABC):
 
         Whichever browser holds it can no longer refresh it. Returns whether a
         session was still live to revoke.
+        """
+
+    # -- second factor ---------------------------------------------------------
+    #
+    # An account's authenticator (``user_two_factor``), its recovery codes, and
+    # what each of its sessions has proved (two columns of ``auth_sessions``).
+    # See ``serving.auth.two_factor``.
+
+    @abstractmethod
+    async def get_two_factor(self, user_id: str) -> Row | None:
+        """Fetch an account's second factor, or None when it has never started one.
+
+        Returns: ``secret_encrypted, confirmed_at, last_used_step,
+        failed_attempts, locked_until, recovery_codes_left`` and
+        ``pending_session_id``, the session whose setup still waits for its
+        first code (NULL when none does). ``confirmed_at`` is NULL until the
+        account has given a first code.
+        """
+
+    @abstractmethod
+    async def set_pending_two_factor(
+        self,
+        user_id: str,
+        pending_secret_encrypted: str,
+        *,
+        sid: str,
+        ttl_seconds: int,
+        attempts: int,
+    ) -> None:
+        """Record a secret session *sid* has been shown and not yet proved.
+
+        Replaces an earlier pending one, whoever started it. It waits
+        *ttl_seconds* for its first code and allows *attempts* tries at it. A
+        confirmed secret keeps working until :meth:`confirm_two_factor` swaps
+        the pending one in.
+        """
+
+    @abstractmethod
+    async def begin_two_factor_setup_attempt(self, user_id: str, sid: str) -> str | None:
+        """Take one of the tries session *sid*'s pending setup has left; return its secret.
+
+        None when that session has no setup waiting: none was started, it ran
+        out of time or of tries, or another session's replaced it. Taking the
+        try and deciding are one statement, so guesses sent together get no
+        more tries than are left.
+        """
+
+    @abstractmethod
+    async def cancel_pending_two_factor(self, user_id: str, sid: str) -> bool:
+        """Drop the setup session *sid* started; False when it has none."""
+
+    @abstractmethod
+    async def confirm_two_factor(
+        self,
+        user_id: str,
+        *,
+        pending_secret_encrypted: str,
+        step: int,
+        recovery_code_hashes: Sequence[str],
+        sid: str,
+        environment: str,
+    ) -> bool:
+        """Make the pending secret the account's authenticator, in one transaction.
+
+        *pending_secret_encrypted* must still be the pending value, so of two
+        confirmations racing only one wins. Sets ``last_used_step`` to *step*,
+        replaces every recovery code, forgets what the account's sessions
+        proved with an earlier authenticator, and marks session *sid* verified
+        from *environment*. Returns whether it did.
+        """
+
+    @abstractmethod
+    async def begin_two_factor_attempt(
+        self, user_id: str, *, lock_every: int, lock_seconds: int, max_lock_seconds: int
+    ) -> datetime | None:
+        """Count one attempt at the account's codes; return when it may next try, or None.
+
+        None means the attempt was counted and may be checked. Every
+        *lock_every*-th attempt in a row holds the account's codes off, for
+        *lock_seconds* the first time and twice as long each time after, up to
+        *max_lock_seconds*; an attempt made during a hold is not counted and
+        gets the time it ends. Counting and deciding are one statement, so
+        guesses sent together are let through one run at a time. A code that
+        is accepted (:meth:`verify_session_two_factor`) ends the run.
+        """
+
+    @abstractmethod
+    async def verify_session_two_factor(
+        self,
+        user_id: str,
+        sid: str,
+        environment: str,
+        *,
+        secret_encrypted: str | None = None,
+        step: int | None = None,
+        recovery_code_hash: str | None = None,
+    ) -> str:
+        """Accept a code and mark session *sid* verified by it, or do neither.
+
+        For a code from the app give *secret_encrypted*, the stored secret
+        the caller checked it against, and *step*, the time step it matched;
+        for a recovery code give *recovery_code_hash*. One transaction under
+        the lock every change of authenticator takes: a code is good once, and
+        one accepted for an authenticator that has since been replaced or
+        removed marks nothing.
+
+        Returns ``"verified"``, ``"rejected"`` (no such authenticator any
+        more, a step no newer than the last accepted, an unknown or spent
+        recovery code), or ``"session_ended"`` (a good code, not spent,
+        because no live session was there to mark).
+        """
+
+    @abstractmethod
+    async def replace_recovery_codes(self, user_id: str, code_hashes: Sequence[str]) -> bool:
+        """Replace a confirmed account's recovery codes; False when it has no authenticator."""
+
+    @abstractmethod
+    async def delete_two_factor(self, user_id: str) -> bool:
+        """Remove an account's authenticator, its recovery codes and what its sessions proved.
+
+        Returns whether there was one. The account's sessions stay signed in;
+        none of them counts as verified any longer.
+        """
+
+    @abstractmethod
+    async def get_session_two_factor(self, user_id: str, sid: str) -> Row | None:
+        """Fetch what session *sid* of *user_id* has proved, or None for no such live session.
+
+        Returns: ``enrolled`` (the account has a confirmed authenticator),
+        ``verified_at``, ``environment``. Never cached: a code given, or an
+        authenticator removed, counts on the very next request.
         """
 
     # -- browser sessions ----------------------------------------------------
@@ -1303,6 +1523,32 @@ class OperationalStore(ABC):
 
     # -- cost counters (user_daily_cost table) ---------------------------------
 
+    async def increment_user_cost_amount(
+        self,
+        user_id: str,
+        cost: Decimal | float,
+        *,
+        day: str | None = None,
+        api_key_id: int | None = None,
+        requests: int = 1,
+        org_id: str | None = None,
+        project_id: str | None = None,
+    ) -> None:
+        """Write native accounting money; implementations must persist it atomically.
+
+        :meth:`increment_user_cost` in the ledger currency: the same counters,
+        keys and scopes, written in their native columns.
+        """
+        raise NotImplementedError
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        """Read today's primary native accounting amount."""
+        raise NotImplementedError
+
+    async def get_user_cost_month_amount(self, user_id: str) -> Decimal:
+        """Read this UTC month's primary native accounting amount."""
+        raise NotImplementedError
+
     @abstractmethod
     async def increment_user_cost(
         self,
@@ -1312,7 +1558,6 @@ class OperationalStore(ABC):
         day: str | None = None,
         api_key_id: int | None = None,
         requests: int = 1,
-        org_id: str | None = None,
         project_id: str | None = None,
     ) -> None:
         """Atomically increment the daily cost counter for *user_id*.
@@ -1330,7 +1575,6 @@ class OperationalStore(ABC):
         writes them.
 
         Args:
-            org_id: Organization attributed at request admission.
             project_id: Project attributed at request admission.
             user_id: The user whose cost to increment.
             cost_usd: Amount to add (must be >= 0).
@@ -1355,13 +1599,23 @@ class OperationalStore(ABC):
         applies the increments one after another.
         """
         for increment in increments:
+            if increment.cost_amount is not None:
+                await self.increment_user_cost_amount(
+                    increment.user_id,
+                    increment.cost_amount,
+                    day=increment.day,
+                    api_key_id=increment.api_key_id,
+                    requests=increment.requests,
+                    org_id=increment.org_id,
+                    project_id=increment.project_id,
+                )
+                continue
             await self.increment_user_cost(
                 increment.user_id,
                 float(increment.cost_usd),
                 day=increment.day,
                 api_key_id=increment.api_key_id,
                 requests=increment.requests,
-                org_id=increment.org_id,
                 project_id=increment.project_id,
             )
 
@@ -1427,6 +1681,12 @@ class OperationalStore(ABC):
                 truncated, so a day that overflows it is visible rather than
                 silently cut off.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(
@@ -1576,6 +1836,12 @@ class OperationalStore(ABC):
         self, key: str, value: str, value_type: str, updated_by: str | None
     ) -> None:
         """Upsert a site_settings row."""
+
+    async def set_settings(
+        self, rows: Sequence[tuple[str, str, str]], updated_by: str | None
+    ) -> None:
+        """Upsert several ``(key, value, value_type)`` site_settings rows: all of them or none."""
+        raise NotImplementedError("This operational store does not support atomic settings")
 
     async def compare_and_set_setting(
         self,
@@ -2231,6 +2497,12 @@ class LogStore(ABC):
         those rows. An implementation may answer from a cache a few seconds
         old.
         """
+
+    async def get_batch_usage_amount(
+        self, user_ids: list[str], period: Literal["today", "month"]
+    ) -> dict[str, Decimal]:
+        """Return native monetary totals for a batch of users."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_batch_usage(

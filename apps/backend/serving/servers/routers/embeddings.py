@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from pydantic import ValidationError
 
 from routing.endpoints import endpoint_id_for_config
+from serving.accounting import Money, get_accounting_policy
 from serving.adapters.key_pool import KeyPoolExhausted
 from serving.batch.attempts import note_request_id, observe_billing
 from serving.config.batch_routes import batch_embedding_adapter, batch_route_refusal
@@ -64,7 +65,7 @@ def _schedule_cost_increment(
     pricing: dict[str, str] | None,
     *,
     api_key_id: int | None = None,
-) -> None:
+) -> Money | None:
     """Record the daily quota cost of a billed embedding in the spend ledger.
 
     Mirrors the chat path's ``CostTracker.schedule_increment`` effect: the
@@ -73,18 +74,29 @@ def _schedule_cost_increment(
     counter. Uses the same ``calculate_cost`` helper as the log row, so the
     increment and the logged cost stay in lockstep. No-ops for unauthenticated
     callers, missing stores, or zero-cost (free) models.
-    """
-    if op_store is None or not user_id:
-        return
-    normalized_usage = normalize_usage(usage)
-    cost = calculate_cost(normalized_usage if normalized_usage is not None else usage, pricing)
-    if not cost or cost <= 0:
-        return
 
+    Returns the charge in the configured accounting currency (the exact amount
+    this function bills, or would log when no counter is available), or ``None``
+    when pricing is unknown. The callers use it to report the USD-compatible
+    observer charge without recomputing a second, possibly divergent amount.
+    """
+    normalized_usage = normalize_usage(usage)
+    if not pricing:
+        # No resolvable price (missing or empty): the charge is unknown, never a
+        # fabricated zero.
+        return None
+    cost = calculate_cost(normalized_usage if normalized_usage is not None else usage, pricing)
+    if op_store is None or not user_id:
+        return cost
+    if not cost or cost <= 0:
+        return cost
+
+    # In the ledger currency, as priced (``effective_pricing``).
     task = ledger_for(op_store).record(user_id, cost, api_key_id=api_key_id)
     if task is not None:
         _increment_tasks.add(task)
         task.add_done_callback(_increment_tasks.discard)
+    return cost
 
 
 def _response_summary(response: Any, model: str) -> dict[str, Any]:
@@ -502,13 +514,15 @@ async def execute_embeddings(
         # header is caller-controlled, so exempting it from billing would let
         # any authenticated client bypass quota by setting it. The probe flag
         # affects log suppression only — never cost/quota.
-        _schedule_cost_increment(
+        charged = _schedule_cost_increment(
             op_store, user_ctx.get("user_id"), usage, pricing, api_key_id=user_ctx.get("api_key_id")
         )
-        # What this request is charged, for a batch attempt watching it; the
-        # same inputs as the increment above. Unpriced reads as unknown.
+        # What this request is charged, for a batch attempt watching it. The
+        # increment above is native; the observer contract is USD, so report the
+        # USD equivalent of that same charge through the accounting policy.
+        # Unknown pricing stays unknown (None), and a zero charge stays zero.
         observe_billing(
-            cost_usd=calculate_cost(normalize_usage(usage) or usage, pricing) if pricing else None,
+            cost_usd=(get_accounting_policy().usd_value(charged) if charged is not None else None),
             usage=usage,
             request_id=request_id,
         )

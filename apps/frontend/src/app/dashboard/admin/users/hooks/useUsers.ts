@@ -1,5 +1,6 @@
 'use client';
 
+import { useMoney } from '@/lib/hooks/useMoney';
 import { useQuery } from '@tanstack/react-query';
 import { listUsers } from '@/lib/api/admin';
 import type { FilterState } from '../types';
@@ -12,10 +13,12 @@ const THIRTY_S = 30 * 1000;
 export const USERS_LIST_QUERY_KEY = ['admin', 'users', 'list'] as const;
 
 export function useUsers(state: FilterState, limit = 100, offset = 0) {
+  const { currency } = useMoney();
   return useQuery({
-    queryKey: [...USERS_LIST_QUERY_KEY, state, limit, offset],
+    queryKey: [...USERS_LIST_QUERY_KEY, state, limit, offset, currency],
     queryFn: () =>
       listUsers({
+        currency,
         status: state.status ?? undefined,
         search: state.search || undefined,
         sortBy: state.sortBy,

@@ -48,6 +48,17 @@ async def _refused(url: str) -> str:
         "http://[fe80::1]/v1",
         "http://[::ffff:169.254.169.254]/latest",  # IPv4-mapped
         "http://2852039166/latest",  # 169.254.169.254 as one integer
+        # IPv4 carried in IPv6 that Python calls global and does not "map".
+        "http://[::169.254.169.254]/latest",  # IPv4-compatible
+        "http://[::a9fe:a9fe]/latest",
+        "http://[::ffff:0:169.254.169.254]/latest",  # IPv4-translated
+        "http://[64:ff9b::169.254.169.254]/latest",  # NAT64 well-known prefix
+        "http://[64:ff9b::169.254.0.23]/meta-data",  # NAT64 to Tencent Cloud
+        "http://[64:ff9b:1::a9fe:a9fe]/latest",  # RFC 8215 local-use NAT64, /96
+        "http://[64:ff9b:1:a9fe:a9:fe00::]/latest",  # local-use NAT64, /48 layout
+        "http://[2002:a9fe:a9fe::1]/latest",  # 6to4
+        "http://[64:ff9b::6464:64c8]/latest",  # NAT64 to Alibaba's 100.100.100.200
+        "http://[::169.254.169.254%25eth0]/latest",  # with a zone
     ],
 )
 async def test_a_metadata_address_is_refused_in_every_spelling(url):
@@ -173,3 +184,90 @@ async def test_a_resolver_answer_that_is_not_an_address_is_refused(monkeypatch):
         await _refused("https://odd.example.com/v1")
         == "base_url host resolved to an invalid address"
     )
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["::169.254.169.254", "64:ff9b::169.254.169.254", "2002:a9fe:a9fe::", "64:ff9b::a9fe:17"],
+)
+async def test_a_name_resolving_to_embedded_metadata_is_refused(monkeypatch, address):
+    def fake_getaddrinfo(host, port, *args, **kwargs):
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", (address, port or 443, 0, 0))]
+
+    monkeypatch.setattr(provider_routes.socket, "getaddrinfo", fake_getaddrinfo)
+
+    assert await _refused("https://rebind.example/v1") == "base_url host is not allowed"
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://[2606:4700::6810:84e5]/v1",  # public IPv6
+        "https://[64:ff9b::808:808]/v1",  # NAT64 to a public IPv4
+        "https://[2002:808:808::1]/v1",  # 6to4 of a public IPv4
+    ],
+)
+async def test_a_public_ipv6_upstream_is_accepted(url):
+    assert await provider_routes._validate_base_url(url) == url
+
+
+class TestPrivateUpstreamsSwitchedOff:
+    """``ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0``: only public upstreams are accepted."""
+
+    @pytest.fixture(autouse=True)
+    def _switched_off(self, monkeypatch):
+        monkeypatch.setenv("ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS", "0")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://127.0.0.1:8001/v1",
+            "http://10.0.0.5:8000/v1",
+            "http://192.168.1.10/v1",
+            "http://100.64.0.1/v1",
+            "http://[::1]:8001/v1",
+            "http://[fd00::1]/v1",
+            "http://[::ffff:10.0.0.5]/v1",
+            "http://[64:ff9b::10.0.0.5]/v1",  # NAT64 to a private IPv4
+            "http://[2002:a00:5::1]/v1",  # 6to4 of 10.0.0.5
+            "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/v1",  # Teredo
+        ],
+    )
+    async def test_a_private_or_loopback_address_is_refused(self, url):
+        assert "ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS" in await _refused(url)
+
+    async def test_a_name_resolving_privately_is_refused(self, monkeypatch):
+        monkeypatch.setattr(provider_routes.socket, "getaddrinfo", _resolves_to("10.20.30.40"))
+
+        assert "ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS" in await _refused("http://localhost:8001/v1")
+
+    async def test_a_public_upstream_is_still_accepted(self, monkeypatch):
+        monkeypatch.setattr(provider_routes.socket, "getaddrinfo", _resolves_to("93.184.216.34"))
+
+        assert (
+            await provider_routes._validate_base_url("https://api.example.com/v1")
+            == "https://api.example.com/v1"
+        )
+        assert (
+            await provider_routes._validate_base_url("https://[2606:4700::6810:84e5]/v1")
+            == "https://[2606:4700::6810:84e5]/v1"
+        )
+
+    async def test_metadata_keeps_its_own_answer(self):
+        assert await _refused("http://169.254.169.254/latest") == "base_url host is not allowed"
+
+
+@pytest.mark.parametrize("value", ["1", "true", "", "yes", "anything"])
+async def test_private_upstreams_stay_allowed_unless_explicitly_off(monkeypatch, value):
+    from serving.utils.admin_upstreams import private_upstreams_allowed
+
+    monkeypatch.setenv("ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS", value)
+    assert private_upstreams_allowed()
+
+
+@pytest.mark.parametrize("value", ["0", "false", "FALSE", " off ", "no"])
+async def test_private_upstreams_can_be_switched_off(monkeypatch, value):
+    from serving.utils.admin_upstreams import private_upstreams_allowed
+
+    monkeypatch.setenv("ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS", value)
+    assert not private_upstreams_allowed()

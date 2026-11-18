@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import Money, get_accounting_policy
 from serving.batch.attempts import observe_billing
 from serving.pricing import effective_pricing, has_scheduled_pricing
 from serving.servers.routers.routing_info import Pricing, RoutingInfo
@@ -197,12 +198,15 @@ def _pricing_from_dict(raw: dict[str, Any]) -> Pricing | None:
     when any value fails to parse as a float. A dict with only one of the two
     keys present is accepted (the missing key defaults to 0).
     """
+    # In the ledger's arithmetic: floats on USD as always, exact decimals of
+    # the configured strings on a native ledger.
+    number = get_accounting_policy().number
     try:
-        prompt = float(raw.get("prompt", "0"))
-        completion = float(raw.get("completion", "0"))
-        cache_read = float(raw.get("input_cache_reads", "0") or 0)
-        cache_write = float(raw.get("input_cache_writes", "0") or 0)
-    except (TypeError, ValueError):
+        prompt = number(raw.get("prompt", "0"))
+        completion = number(raw.get("completion", "0"))
+        cache_read = number(raw.get("input_cache_reads", "0") or 0)
+        cache_write = number(raw.get("input_cache_writes", "0") or 0)
+    except (TypeError, ValueError, ArithmeticError):
         return None
     if "prompt" not in raw and "completion" not in raw:
         return None
@@ -333,18 +337,24 @@ class CostTracker:
 
         # Reflect cost back into routing regardless of whether we schedule
         # the increment, so the log payload sees a consistent value.
+        # ``_compute_cost`` is in the ledger currency; ``upstream_cost_usd`` and
+        # the batch observer are USD contracts, so both carry the USD
+        # equivalent of exactly this charge (the charge itself on a USD ledger,
+        # as before other ledgers existed).
         import dataclasses as _dc
 
-        enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=cost)
+        charged_usd = None if cost is None else get_accounting_policy().usd_value(cost)
+        enriched = _dc.replace(routing, pricing=pricing, upstream_cost_usd=charged_usd)
         # What this request is charged, reported to a batch attempt watching it
         # (serving/batch/attempts.py); nothing outside a batch attempt listens.
-        observe_billing(cost_usd=cost if cost is not None else None, usage=usage)
+        observe_billing(cost_usd=charged_usd, usage=usage)
 
         if cost is None or cost <= 0 or self._op_store is None:
             return enriched
 
-        # Recorded in the spend ledger, which counts it against the quota at
-        # once and writes it to the counters with whatever else is pending.
+        # Recorded in the spend ledger, in the ledger currency, which counts it
+        # against the quota at once and writes it to the counters with whatever
+        # else is pending.
         task = ledger_for(self._op_store).record(user_id, cost, api_key_id=api_key_id)
         if task is not None:
             self._background_tasks.add(task)
@@ -361,7 +371,7 @@ class CostTracker:
         cache_read_tokens: int | None = 0,
         cache_write_tokens: int | None = 0,
         reasoning_tokens: int = 0,
-    ) -> float | None:
+    ) -> Money | None:
         """Mirror :func:`serving.storage.utils.calculate_cost` byte-for-byte.
 
         Cache-read / cache-write tokens are subtracted from the billable
@@ -383,10 +393,11 @@ class CostTracker:
             cache_r = float(cache_read_tokens or 0)
             cache_w = float(cache_write_tokens or 0)
 
-            prompt_p = float(pricing.prompt_price)
-            completion_p = float(pricing.completion_price)
-            cache_r_p = float(pricing.cache_read_price)
-            cache_w_p = float(pricing.cache_write_price)
+            number = get_accounting_policy().number
+            prompt_p = number(pricing.prompt_price)
+            completion_p = number(pricing.completion_price)
+            cache_r_p = number(pricing.cache_read_price)
+            cache_w_p = number(pricing.cache_write_price)
 
             billable_prompt = prompt
             if cache_r_p > 0:
@@ -403,10 +414,10 @@ class CostTracker:
             )
 
             return (
-                (billable_prompt * prompt_p / 1_000_000)
-                + (output * completion_p / 1_000_000)
-                + (cache_r * cache_r_p / 1_000_000)
-                + (cache_w * cache_w_p / 1_000_000)
+                (number(billable_prompt) * prompt_p / 1_000_000)
+                + (number(output) * completion_p / 1_000_000)
+                + (number(cache_r) * cache_r_p / 1_000_000)
+                + (number(cache_w) * cache_w_p / 1_000_000)
             )
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, ArithmeticError):
             return None

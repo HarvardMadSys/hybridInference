@@ -245,7 +245,11 @@ async def test_the_429_body_and_headers_match_the_direct_path(store, token) -> N
         "X-RateLimit-Limit-Cost",
         "X-RateLimit-Remaining-Cost",
         "X-RateLimit-Reset",
+        "X-Accounting-Currency",
+        "X-RateLimit-Cost-Currency",
     }
+    assert headers["X-Accounting-Currency"] == "USD"
+    assert headers["X-RateLimit-Cost-Currency"] == "USD"
 
 
 async def test_a_null_quota_still_means_the_documented_default(store, token) -> None:
@@ -458,7 +462,6 @@ def test_ordinary_traffic_gains_no_attribution_keys() -> None:
 async def test_grant_uses_default_project_attribution_and_limits(store, token) -> None:
     store.keys[0].update(
         {
-            "org_id": "org_personal",
             "project_id": "proj_default",
             "project_name": "Default",
             "project_budget_daily_usd": 1.0,
@@ -469,7 +472,6 @@ async def test_grant_uses_default_project_attribution_and_limits(store, token) -
     )
     context = await authenticate_grant_model_call(token, op_store=store)
     assert context["project_id"] == "proj_default"
-    assert context["org_id"] == "org_personal"
     assert context["project_allowed_models"] == ["glm-5.1"]
     assert context["project_max_concurrent_requests"] == 2
     store.keys[0]["project_spent_today_usd"] = 1.0

@@ -207,6 +207,60 @@ ALERT_TYPES: tuple[AlertType, ...] = (
         key_pattern="cost_counter_write_refused",
     ),
     AlertType(
+        id="spend_settlement_refused",
+        label="Spend settlement refused an entry",
+        description=(
+            "In the shared spend accounting mode, the counters refused a settlement entry for "
+            "its own values; it was kept counted, and its reservation quarantined, for an "
+            "operator to reconcile."
+        ),
+        group="Cost",
+        key_pattern="spend_settlement_refused",
+    ),
+    AlertType(
+        id="spend_settlement_unaccounted",
+        label="Spend settlement found reservations not held as recorded",
+        description=(
+            "In the shared spend accounting mode, a settlement found reservations missing or "
+            "held otherwise than recorded; their costs were not added and stay counted in the "
+            "process that recorded them."
+        ),
+        group="Cost",
+        key_pattern="spend_settlement_unaccounted",
+    ),
+    AlertType(
+        id="spend_admission_unavailable",
+        label="Spend admission unavailable",
+        description=(
+            "In the shared spend accounting mode, the database did not answer an admission in "
+            "time, so requests are being answered 503 until it does."
+        ),
+        group="Cost",
+        key_pattern="spend_admission_unavailable",
+    ),
+    AlertType(
+        id="spend_settlement_stalled",
+        label="Spend settlement is failing",
+        description=(
+            "In the shared spend accounting mode, no settlement has been written for a minute; "
+            "requests that ended keep their whole estimate held, so callers near a limit are "
+            "refused for budget they have."
+        ),
+        group="Cost",
+        key_pattern="spend_settlement_stalled",
+    ),
+    AlertType(
+        id="spend_reservations_stranded",
+        label="Spend reservations held by a process no longer heard from",
+        description=(
+            "In the shared spend accounting mode, reservations are held by a gateway process "
+            "that stopped without settling them; they keep counting against their accounts "
+            "until an operator reconciles them."
+        ),
+        group="Cost",
+        key_pattern="spend_reservations_stranded",
+    ),
+    AlertType(
         id="cost_above_request_ceiling",
         label="Request cost above the per-request ceiling",
         description=(

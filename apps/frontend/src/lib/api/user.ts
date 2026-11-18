@@ -2,6 +2,7 @@ import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 import { sortModelsById } from '@/lib/utils/modelOrder';
+import type { SsoProviderRef } from './sso';
 
 const API_BASE = config.apiBase;
 
@@ -22,6 +23,11 @@ interface User {
   created_at: string;
   /** The interface language this account last chose; absent when it never chose. */
   locale?: AccountLocaleChoice | null;
+  /**
+   * Set only for an account with no password and no verified phone that has an
+   * identity at an enabled provider: it confirms sensitive actions there.
+   */
+  sso_reauth_provider?: SsoProviderRef | null;
 }
 
 interface ApiKeyResponse {
@@ -60,6 +66,13 @@ export interface ApiKeyListItem {
   /** The project the key belongs to. */
   project_id?: string | null;
   project_name?: string | null;
+  /** The ledger currency of the native amounts below. */
+  currency?: 'USD' | 'CNY';
+  /** The same spend and limits in `currency`; the `*_usd` fields stay USD. */
+  spent_today?: number;
+  spent_month?: number;
+  budget_daily?: number | null;
+  budget_monthly?: number | null;
 }
 
 interface ApiKeyListResponse {
@@ -76,6 +89,10 @@ export interface ApiKeyUpdate {
   name?: string | null;
   budget_daily_usd?: number | null;
   budget_monthly_usd?: number | null;
+  /** A budget in the ledger `currency`, sent instead of its `*_usd` field. */
+  budget_daily?: number | null;
+  budget_monthly?: number | null;
+  currency?: 'USD' | 'CNY';
   allowed_models?: string[] | null;
 }
 
@@ -85,6 +102,9 @@ interface ApiKeyUpdateResponse {
   budget_daily_usd?: number | null;
   budget_monthly_usd?: number | null;
   allowed_models?: string[] | null;
+  currency?: 'USD' | 'CNY';
+  budget_daily?: number | null;
+  budget_monthly?: number | null;
 }
 
 interface ApiKeyRegenerateResponse {
@@ -101,13 +121,20 @@ interface ApiKeyDeleteResponse {
 }
 
 interface UsageStats {
+  currency?: 'USD' | 'CNY';
   period: 'today' | 'month' | 'all';
   quota: {
+    currency?: 'USD' | 'CNY';
     has_key: boolean;
+    daily_limit?: number;
     daily_limit_usd?: number;
+    monthly_limit?: number;
     monthly_limit_usd?: number;
+    spent_today?: number;
     spent_today_usd?: number;
+    spent_month?: number;
     spent_month_usd?: number;
+    remaining_today?: number;
     remaining_today_usd?: number;
     max_concurrency?: number;
     reset_at?: string | null;
@@ -116,6 +143,7 @@ interface UsageStats {
     increase_request_message?: string;
   };
   usage: {
+    currency?: 'USD' | 'CNY';
     requests: number;
     prompt_tokens: number;
     completion_tokens: number;
@@ -130,11 +158,13 @@ interface UsageStats {
     reasoning_tokens?: number | null;
     /** How many of `requests` reported a reasoning count; fewer means a partial sum. */
     reasoning_tokens_known_requests?: number;
+    cost?: number;
     cost_usd: number;
   };
 }
 
 export interface ModelCatalogItem {
+  currency?: 'USD' | 'CNY';
   id: string;
   name: string;
   object: 'model';
@@ -146,12 +176,14 @@ export interface ModelCatalogItem {
   context_length: number;
   max_output_length: number;
   pricing: Record<string, string>;
+  prices?: Record<string, string>;
   supported_sampling_parameters: string[];
   supported_features: string[];
   openrouter?: Record<string, unknown> | null;
 }
 
 interface ModelCatalogResponse {
+  currency?: 'USD' | 'CNY';
   object: 'list';
   data: ModelCatalogItem[];
 }
@@ -275,7 +307,9 @@ export async function updateProfile(data: {
 
 /**
  * Change the password, or set a first one. An account without a password
- * confirms its owner with `phoneCode`, a `set_password` code.
+ * confirms its owner with `phoneCode`, a `set_password` code; one with neither
+ * a password nor a phone has confirmed at its identity provider just before,
+ * and sends neither.
  */
 export async function updatePassword(
   currentPassword: string,
@@ -296,6 +330,7 @@ export async function updatePassword(
 
 // Recent requests types and API
 export interface RecentRequestItem {
+  currency?: 'USD' | 'CNY';
   request_id: string;
   model_id: string;
   provider: string;
@@ -310,6 +345,7 @@ export interface RecentRequestItem {
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
+  cost?: number | null;
   cost_usd?: number | null;
   error?: string | null;
   routewise?: RouteWiseDecision | null;
@@ -332,6 +368,7 @@ export interface RouteWiseDecision {
 }
 
 interface RecentRequestsResponse {
+  currency?: 'USD' | 'CNY';
   requests: RecentRequestItem[];
   total: number;
   /** The account has requests older than the ones listed; `total` is a lower bound. */
@@ -366,14 +403,28 @@ export interface Project {
   spent_month_usd: number;
   key_count: number;
   created_at: string;
+  /** The ledger currency of the native amounts below, on a non-USD ledger. */
+  currency?: 'USD' | 'CNY';
+  /** The same budgets and spend in `currency`; the `*_usd` fields stay USD. */
+  budget_daily?: number | null;
+  budget_monthly?: number | null;
+  spent_today?: number;
+  spent_month?: number;
 }
 
-/** Settings to change on a project: a field left out is unchanged, `null` clears it. */
+/**
+ * Settings to change on a project: a field left out is unchanged, `null` clears it.
+ * A budget is sent either as `budget_*_usd` or, on a non-USD ledger, as the
+ * native `budget_*` with its `currency`, never both.
+ */
 export interface ProjectUpdate {
   name?: string;
   description?: string | null;
   budget_daily_usd?: number | null;
   budget_monthly_usd?: number | null;
+  budget_daily?: number | null;
+  budget_monthly?: number | null;
+  currency?: 'USD' | 'CNY';
   allowed_models?: string[] | null;
   max_concurrent_requests?: number | null;
 }

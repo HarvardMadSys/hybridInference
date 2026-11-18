@@ -9,7 +9,12 @@ import {
   NOT_A_LOGIN_FIELD,
 } from '@/components/features/configuration/ConfigEntryField';
 import { ChangeList } from '@/components/features/admin/confirm/ChangeList';
-import { ReauthPassword } from '@/components/features/admin/confirm/ReauthPassword';
+import {
+  ReauthPassword,
+  useConfirmMode,
+  useConfirmsWithoutPassword,
+} from '@/components/features/admin/confirm/ReauthPassword';
+import { useSpendAdminSso } from '@/components/features/admin/confirm/adminSsoReauth';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import {
@@ -250,6 +255,10 @@ export function useConfigurationEditor({
   const backupPassword = useRef('');
   // A save that changes a security-relevant setting asks for it the same way.
   const settingsPassword = useRef('');
+  // An administrator with an authenticator app confirms with its code instead.
+  const withoutPassword = useConfirmsWithoutPassword();
+  const confirmMode = useConfirmMode();
+  const spendSso = useSpendAdminSso();
   const saveInFlight = useRef(false);
   // The version each category's unsaved changes were made on (draftVersions).
   const [draftVersions, setDraftVersions] = useState<DraftVersions>({});
@@ -470,6 +479,22 @@ export function useConfigurationEditor({
       void commitSave(save);
       return;
     }
+    // A fresh single sign-on confirms one request, and a save sends its values
+    // in one and each reset in another. Asked to confirm more than one, it would
+    // save the first and be refused the rest, so nothing is sent.
+    const guardedRequests =
+      (Object.keys(values).some((key) => guarded.includes(key)) ? 1 : 0) +
+      resets.filter((key) => guarded.includes(key)).length;
+    if (confirmMode === 'sso' && guardedRequests > 1) {
+      setGroupErrors((prev) => ({
+        ...prev,
+        [group.id]:
+          'A sign-in at your identity provider confirms one change at a time. Save the reset of ' +
+          `${resets.filter((key) => guarded.includes(key)).join(', ')} and the other changes to ` +
+          `${group.label} one by one: undo all but one, save it, then do the next.`,
+      }));
+      return;
+    }
     // A signing secret, the trusted networks, where mail and users go: a stolen
     // session must not change them on its own, so the backend asks for the
     // password, and the admin token cannot give one.
@@ -483,14 +508,16 @@ export function useConfigurationEditor({
           <p>
             {guarded.length === 1 ? 'This setting decides' : 'These settings decide'} who can sign
             in or administer the gateway, what it trusts, or where it sends requests, keys, mail and
-            users: <KeyList keys={guarded} />. Confirm the change with your password.
+            users: <KeyList keys={guarded} />.
+            {withoutPassword ? null : ' Confirm the change with your password.'}
           </p>
           <ReauthPassword valueRef={settingsPassword} label="Your password" />
         </div>
       ),
       run: async () => {
         const password = settingsPassword.current;
-        if (!password) throw new Error('Enter your password to save these settings.');
+        if (!password && !withoutPassword)
+          throw new Error('Enter your password to save these settings.');
         settingsPassword.current = '';
         // A refusal, a wrong password included, is shown beside the save.
         await commitSave({ ...save, guarded, password });
@@ -538,18 +565,20 @@ export function useConfigurationEditor({
     try {
       if (keys.length > 0 || secrets.length > 0) {
         attempted = [...new Set([...keys, ...secrets])];
-        const next = await patchConfig(
-          {
-            values,
-            ...(secrets.length > 0
-              ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
-              : {}),
-            ...(password !== undefined && keys.some((key) => guarded.includes(key))
-              ? { password }
-              : {}),
-          },
-          ...versioned(base),
-        );
+        const confirms = password !== undefined && keys.some((key) => guarded.includes(key));
+        const write = () =>
+          patchConfig(
+            {
+              values,
+              ...(secrets.length > 0
+                ? { secrets: Object.fromEntries(secrets.map((key) => [key, true])) }
+                : {}),
+              ...(confirms ? { password } : {}),
+            },
+            ...versioned(base),
+          );
+        // A guarded save spends a single sign-on confirmation, accepted or refused.
+        const next = confirms ? await spendSso(write) : await write();
         const committed = committedVersion(next, base);
         chain(base, committed);
         base = committed;
@@ -573,7 +602,9 @@ export function useConfigurationEditor({
         failedReset = key;
         const next =
           password !== undefined && guarded.includes(key)
-            ? await resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password })
+            ? await spendSso(() =>
+                resetConfigKey(key, { ...(base ? { expectedVersion: base } : {}), password }),
+              )
             : await resetConfigKey(key, ...versioned(base));
         const committed = committedVersion(next, base);
         chain(base, committed);
@@ -763,8 +794,12 @@ export function useConfigurationEditor({
       ),
       run: async () => {
         const password = backupPassword.current;
-        if (!password) throw new Error('Enter your password to include secret values.');
-        downloadBackupJson(await exportConfigBackup({ includeSecrets: true, password }));
+        if (!password && !withoutPassword) {
+          throw new Error('Enter your password to include secret values.');
+        }
+        downloadBackupJson(
+          await spendSso(() => exportConfigBackup({ includeSecrets: true, password })),
+        );
         backupPassword.current = '';
         toast.success(
           'Downloaded configuration backup with secret values. It holds API keys and secrets in plain text: store it securely.',
@@ -870,7 +905,7 @@ export function useConfigurationEditor({
             <div className="space-y-2">
               <p className="font-medium text-red-800">
                 It also changes security settings. A backup file is not signed, so check that you
-                expect each of these, then confirm with your password:
+                expect each of these{withoutPassword ? ':' : ', then confirm with your password:'}
               </p>
               <BackupItemList items={securityChanges} />
               <ReauthPassword valueRef={backupPassword} label="Your password" />
@@ -882,10 +917,14 @@ export function useConfigurationEditor({
         let confirmation: { securityChanges: string[]; password: string } | undefined;
         if (securityChanges.length > 0) {
           const password = backupPassword.current;
-          if (!password) throw new Error('Enter your password to restore security settings.');
+          if (!password && !withoutPassword) {
+            throw new Error('Enter your password to restore security settings.');
+          }
           confirmation = { securityChanges, password };
         }
-        const res = await restoreConfigBackup(parsed, confirmation);
+        const res = confirmation
+          ? await spendSso(() => restoreConfigBackup(parsed, confirmation))
+          : await restoreConfigBackup(parsed, confirmation);
         backupPassword.current = '';
         setConfig(res.config);
         setDrafts({});

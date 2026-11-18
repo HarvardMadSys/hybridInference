@@ -1,6 +1,5 @@
 """API key authentication and quota enforcement."""
 
-import asyncio
 import hashlib
 import hmac
 import secrets
@@ -9,12 +8,14 @@ import weakref
 from base64 import urlsafe_b64encode
 from collections import OrderedDict
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
 from serving import grants, quota
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
 from serving.config.settings import get_settings, has_role
@@ -29,6 +30,7 @@ from serving.model_access import (
     PROJECT_ALLOWED_MODELS_KEY,
     get_disabled_models_from_preferences,
 )
+from serving.observability import detached_tasks
 from serving.observability.rejection_log import (
     bounded_enrichment,
     capture_rejected_prompt,
@@ -391,7 +393,7 @@ async def _auth_context_with_spend(
     user = await op_store.get_auth_context_by_key_hash(key_hash)
     if user is None:
         return None, 0.0
-    if want_spend and op_store:
+    if want_spend and op_store and not get_accounting_policy().native:
         return user, float(await op_store.get_user_cost_today(user["user_id"]))
     return user, None
 
@@ -549,6 +551,147 @@ async def _quota_counters(
     }
 
 
+async def _native_spend_check(
+    identity: dict[str, Any],
+    *,
+    user_id: str,
+    api_key_id: int | None,
+    op_store: Any,
+    spent_usd: float | None,
+    read_at: float,
+) -> tuple[SpendCheck, Decimal, Decimal]:
+    """:func:`_spend_check` in the native ledger, for a non-USD deployment.
+
+    The same limits, spends and conditions, read from the primary native
+    columns (``budget_*_amount``, the organization's or the key's
+    ``quota_*_cost_amount``, the project's ``budget_*_amount``) and counters
+    (``api_key_daily_cost``, ``user_daily_cost`` and ``spend_counters``
+    ``cost_amount``) as exact decimals, so a native limit is never judged
+    through its rounded USD equivalent. Returns the check with the account's
+    daily limit and today's spend, which the context reports.
+    """
+    limit_amount, spent_amount = await quota.daily_amounts(
+        op_store, user_id, identity, spent_usd=spent_usd
+    )
+    daily = monthly = project_daily = project_monthly = None
+    if api_key_id is not None:
+        daily = quota.native_limit(identity, "budget_daily_amount", "budget_daily_usd")
+        monthly = quota.native_limit(identity, "budget_monthly_amount", "budget_monthly_usd")
+        project_daily = quota.native_limit(
+            identity, "project_budget_daily_amount", "project_budget_daily_usd"
+        )
+        project_monthly = quota.native_limit(
+            identity, "project_budget_monthly_amount", "project_budget_monthly_usd"
+        )
+    key_today = key_month = Decimal(0)
+    if daily is not None or monthly is not None:
+        if identity.get("key_spent_today_amount") is not None:
+            key_today = money_decimal(identity["key_spent_today_amount"])
+            key_month = money_decimal(identity.get("key_spent_month_amount") or 0)
+        elif op_store:
+            key_today, key_month = await op_store.get_key_spend_amount(api_key_id)
+    monthly_quota = quota.native_limit(
+        identity, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
+    )
+    account_month = Decimal(0)
+    if monthly_quota is not None:
+        if identity.get("account_spent_month_amount") is not None:
+            account_month = money_decimal(identity["account_spent_month_amount"])
+        elif op_store:
+            account_month = await op_store.get_user_cost_month_amount(identity["user_id"])
+    project_today = project_month = Decimal(0)
+    if project_daily is not None or project_monthly is not None:
+        if identity.get("project_spent_today_amount") is not None:
+            project_today = money_decimal(identity["project_spent_today_amount"])
+            project_month = money_decimal(identity.get("project_spent_month_amount") or 0)
+        elif op_store and identity.get("project_id"):
+            project_today, project_month = await op_store.get_project_spend_amount(
+                identity["project_id"]
+            )
+    check = SpendCheck(
+        ledger=ledger_for(op_store),
+        user_id=identity["user_id"],
+        key_id=api_key_id,
+        read_at=read_at,
+        account_quota_usd=limit_amount,
+        account_spent_usd=spent_amount,
+        account_quota_monthly_usd=monthly_quota,
+        account_spent_month_usd=money_decimal(account_month),
+        key_budget_daily_usd=daily,
+        key_budget_monthly_usd=monthly,
+        key_spent_today_usd=money_decimal(key_today),
+        key_spent_month_usd=money_decimal(key_month),
+        key_prefix=identity.get("key_prefix"),
+        key_label=_key_label(identity),
+        project_budget_daily_usd=project_daily,
+        project_budget_monthly_usd=project_monthly,
+        project_spent_today_usd=money_decimal(project_today),
+        project_spent_month_usd=money_decimal(project_month),
+        project_id=identity.get("project_id"),
+        project_name=identity.get("project_name"),
+    )
+    return check, limit_amount, spent_amount
+
+
+async def _gate(
+    identity: dict[str, Any],
+    *,
+    api_key_id: int | None,
+    op_store: Any,
+    spent_usd: float | None,
+    read_at: float,
+) -> tuple[SpendCheck, float, float, Decimal, Decimal]:
+    """The check a request is admitted on, in the ledger currency, and the account's day.
+
+    Returns ``(check, quota_daily_cost_usd, spent_today_usd, quota_daily_cost,
+    spent_today)``: the account's daily limit and today's spend in USD, which
+    the context's ``*_usd`` fields keep, and in the ledger currency. A USD
+    ledger reads exactly what it always has; a non-USD one compares the native
+    amounts (:func:`_native_spend_check`), and the USD values are their
+    equivalents at the fixed policy rate. ``spent_usd`` is today's spend when
+    the auth lookup carried it, else None and it is read here.
+    """
+    policy = get_accounting_policy()
+    user_id = identity["user_id"]
+    if policy.native:
+        check, limit_amount, spent_amount = await _native_spend_check(
+            identity,
+            user_id=user_id,
+            api_key_id=api_key_id,
+            op_store=op_store,
+            spent_usd=spent_usd,
+            read_at=read_at,
+        )
+        return (
+            check,
+            float(policy.to_usd(limit_amount)),
+            float(policy.to_usd(spent_amount)),
+            limit_amount,
+            spent_amount,
+        )
+    cost_spent = 0.0
+    if op_store:
+        cost_spent = (
+            spent_usd if spent_usd is not None else await op_store.get_user_cost_today(user_id)
+        )
+    quota_daily_cost_usd = _daily_quota_usd(identity)
+    check = await _spend_check(
+        identity,
+        api_key_id=api_key_id,
+        op_store=op_store,
+        quota_daily_cost_usd=quota_daily_cost_usd,
+        spent_today_usd=cost_spent,
+        read_at=read_at,
+    )
+    return (
+        check,
+        quota_daily_cost_usd,
+        cost_spent,
+        policy.from_usd(quota_daily_cost_usd),
+        policy.from_usd(cost_spent),
+    )
+
+
 def _anonymous_context() -> dict[str, Any]:
     """Return the user context of every caller while user auth is disabled.
 
@@ -627,8 +770,6 @@ def _user_context(
         "project_id": identity.get("project_id"),
         "project_name": identity.get("project_name"),
         "project_max_concurrent_requests": identity.get("project_max_concurrent_requests"),
-        "org_max_concurrent_requests": identity.get("org_max_concurrent_requests"),
-        "org_id": identity.get("org_id"),
         "project_budget_daily_usd": identity.get("project_budget_daily_usd"),
         "project_budget_monthly_usd": identity.get("project_budget_monthly_usd"),
         "project_spent_today_usd": identity.get("project_spent_today_usd"),
@@ -636,6 +777,30 @@ def _user_context(
         "quota_monthly_cost_usd": identity.get("quota_monthly_cost_usd"),
         "account_spent_month_usd": identity.get("account_spent_month_usd"),
     }
+    if get_accounting_policy().native:
+        # The same limits and spends in the ledger currency, exact (a limit
+        # whose native column predates it reads its USD value at the rate);
+        # None where the lookup carried no spend.
+        for name, amount, usd in (
+            ("budget_daily", "budget_daily_amount", "budget_daily_usd"),
+            ("budget_monthly", "budget_monthly_amount", "budget_monthly_usd"),
+            ("project_budget_daily", "project_budget_daily_amount", "project_budget_daily_usd"),
+            (
+                "project_budget_monthly",
+                "project_budget_monthly_amount",
+                "project_budget_monthly_usd",
+            ),
+            ("quota_monthly_cost", "quota_monthly_cost_amount", "quota_monthly_cost_usd"),
+        ):
+            context[name] = quota.native_limit(identity, amount, usd)
+        for name in (
+            "key_spent_today",
+            "key_spent_month",
+            "project_spent_today",
+            "project_spent_month",
+            "account_spent_month",
+        ):
+            context[name] = identity.get(f"{name}_amount")
     allowed = identity.get("allowed_models")
     if api_key_id is not None and allowed is not None:
         context[KEY_ALLOWED_MODELS_KEY] = list(allowed)
@@ -713,7 +878,7 @@ async def _authenticate_by_api_key(
         # fire-and-forget, so without a bound on how many captured prompts sit
         # queued behind it, a flood would grow worker memory by up to a megabyte
         # per rejection while rows drain.
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             queue_rejection_log(
                 request=request,
                 status_code=429,
@@ -751,7 +916,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -827,7 +992,7 @@ async def _authenticate_by_api_key(
             },
         )
         await record_auth_failure(ip_info)
-        asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+        detached_tasks.rejection_log(  # its row is written after the 4xx is sent
             log_rejection(
                 request=request,
                 status_code=401,
@@ -850,17 +1015,6 @@ async def _authenticate_by_api_key(
             status_code=403,
             detail="Email not verified. Please verify your email to continue.",
         )
-    if user.get("org_status") == "suspended":
-        raise HTTPException(
-            status_code=403,
-            detail={
-                "error": {
-                    "type": "organization_suspended",
-                    "message": "This organization has been suspended by the operator.",
-                }
-            },
-        )
-
     _remember_key_privilege(key_hash, user.get("role"))
     return user, key_hash, spend_today
 
@@ -927,29 +1081,24 @@ async def _resolve_effective_identity(
             on_behalf_of,
         )
         return caller
-    if await op_store.get_personal_org_status(target["id"]) == "suspended":
-        logger.warning(
-            "X-On-Behalf-Of target %r belongs to a suspended organization; "
-            "attributing request to the service account",
-            on_behalf_of,
-        )
-        return caller
     # The end user's own quotas, daily and monthly, gate what is spent on their
     # behalf; their spend counters are keyed by user_id, so they meet the same
     # limits as their own key would.
-    daily, monthly = await _account_quotas(op_store, target)
+    daily, monthly, daily_amount, monthly_amount = await _account_quotas(op_store, target)
     return {
         "user_id": target["id"],
         "user_name": target.get("user_name"),
         "role": target.get("role"),
         "quota_daily_cost_usd": daily,
         "quota_monthly_cost_usd": monthly,
+        "quota_daily_cost_amount": daily_amount,
+        "quota_monthly_cost_amount": monthly_amount,
         "preferences": target.get("preferences"),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
     }
 
 
-async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any]:
+async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
     """The daily and monthly cost quotas of *user*'s account, for spending on their behalf.
 
     The account's quotas are stored on each of its API keys (any live one
@@ -960,7 +1109,13 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
     """
     rows = await op_store.get_quota_context_for_user(user["id"])
     if rows:
-        return rows[0].get("quota_daily_cost_usd"), rows[0].get("quota_monthly_cost_usd")
+        row = rows[0]
+        return (
+            row.get("quota_daily_cost_usd"),
+            row.get("quota_monthly_cost_usd"),
+            quota.native_limit(row, "quota_daily_cost_amount", "quota_daily_cost_usd"),
+            quota.native_limit(row, "quota_monthly_cost_amount", "quota_monthly_cost_usd"),
+        )
     # Imported here: the router imports this module.
     from serving.config.runtime_settings import get_runtime_settings_instance
     from serving.servers.routers.user_routes import get_default_daily_quota_for_role
@@ -970,7 +1125,8 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
     except RuntimeError:
         runtime_settings = None
     role = user.get("role") or "free"
-    return await get_default_daily_quota_for_role(role, runtime_settings), None
+    daily = await get_default_daily_quota_for_role(role, runtime_settings)
+    return daily, None, get_accounting_policy().from_usd(daily), None
 
 
 # The only routes an agent-job token may reach. An allowlist rather than a
@@ -1024,7 +1180,6 @@ def publish_caller_role(user_ctx: dict[str, Any]) -> dict[str, Any]:
         {
             req_ctx.USER_ROLE: user_ctx.get("role") or "free",
             req_ctx.PROJECT_ID: user_ctx.get("project_id") or "",
-            req_ctx.ORG_ID: user_ctx.get("org_id") or "",
         }
     )
     return user_ctx
@@ -1037,18 +1192,29 @@ def _quota_exceeded(
     role: str,
     refusal: quota.BudgetRefusal,
 ) -> HTTPException:
-    """Log the budget rejection and return the 429 every quota-gated route answers."""
+    """Log the budget rejection and return the 429 every quota-gated route answers.
+
+    The refusal's ``*_usd`` values keep their USD meaning; a refusal decided in
+    the native ledger also carries the exact native amounts, which the shared
+    builder reports with the ``X-Accounting-Currency`` header.
+    """
     error_code = (
         "quota_exceeded" if refusal.scope == "account" else f"{refusal.scope}_budget_exceeded"
     )
-    asyncio.create_task(  # noqa: RUF006 — fire-and-forget rejection log
+    native = (
+        f" quota={refusal.limit_amount} spent={refusal.spent_amount} "
+        f"currency={get_accounting_policy().currency}"
+        if refusal.limit_amount is not None
+        else ""
+    )
+    detached_tasks.rejection_log(  # its row is written after the 4xx is sent
         log_rejection(
             request=request,
             status_code=429,
             error_code=error_code,
             reason=(
                 f"scope={refusal.scope} window={refusal.window} "
-                f"quota_usd={refusal.limit_usd:.4f} spent_usd={refusal.spent_usd:.4f}"
+                f"quota_usd={refusal.limit_usd:.4f} spent_usd={refusal.spent_usd:.4f}{native}"
             ),
             user={
                 "user_id": user_id,
@@ -1150,26 +1316,19 @@ async def verify_api_key(
     # common path (no X-On-Behalf-Of) the spend arrived with the auth lookup in
     # one round-trip (issue #185); an impersonated identity reads its own
     # counter, since the key lookup joined the caller's spend.
-    cost_spent = 0.0
-    if op_store:
-        if caller_spend is not None:
-            cost_spent = caller_spend
-        else:
-            cost_spent = await op_store.get_user_cost_today(effective_user_id)
-
-    quota_daily_cost_usd = _daily_quota_usd(identity)
     api_key_id = caller_key_id if identity is caller else None
 
-    # Check the key's budgets, then the account's quota, counting requests in
-    # flight and costs not yet written as well. This refuses early; the
-    # request's admission (enforce_user_concurrency) checks again and reserves
-    # its estimate in one step, against the check carried in the context.
-    check = await _spend_check(
+    # Check the key's budgets, then the project's and the account's quota,
+    # counting requests in flight and costs not yet written as well. This
+    # refuses early; the request's admission (enforce_user_concurrency) checks
+    # again and reserves its estimate in one step, against the check carried
+    # in the context. A non-USD ledger compares the native limits and counters;
+    # the USD values in the context are their exact equivalents at the rate.
+    check, quota_daily_cost_usd, cost_spent, limit_amount, spent_amount = await _gate(
         identity,
         api_key_id=api_key_id,
         op_store=op_store,
-        quota_daily_cost_usd=quota_daily_cost_usd,
-        spent_today_usd=cost_spent,
+        spent_usd=caller_spend,
         read_at=spend_read_at,
     )
     refusal = check.refusal()
@@ -1187,7 +1346,9 @@ async def verify_api_key(
     # through the tracked-task alert rule.
     touch_key_last_used(op_store, caller_key_id)
 
-    # Return user context for the attributed identity.
+    # Return user context for the attributed identity. The native amounts ride
+    # along so surfaces that need exact ledger precision (the Anthropic balance
+    # endpoint) do not have to round-trip the USD compatibility fields.
     context = _user_context(
         identity,
         key_hash=key_hash,
@@ -1196,6 +1357,8 @@ async def verify_api_key(
         spent_today_usd=cost_spent,
     )
     context[SPEND_CHECK_KEY] = check
+    context["quota_daily_cost"] = limit_amount
+    context["spent_today"] = spent_amount
     return publish_caller_role(context)
 
 
@@ -1255,24 +1418,30 @@ async def authenticate_stored_key(
         )
     if await _verification_pending(user):
         raise StoredKeyRejected("the account's email or phone is not verified")
-    if user.get("org_status") == "suspended":
-        raise StoredKeyRejected("the organization has been suspended by the operator")
 
-    quota_daily_cost_usd = _daily_quota_usd(user)
-    cost_spent = spend_today or 0.0
     check: SpendCheck | None = None
     if check_quota:
-        check = await _spend_check(
+        check, quota_daily_cost_usd, cost_spent, limit_amount, spent_amount = await _gate(
             user,
             api_key_id=user.get("id"),
             op_store=op_store,
-            quota_daily_cost_usd=quota_daily_cost_usd,
-            spent_today_usd=cost_spent,
+            spent_usd=spend_today,
             read_at=spend_read_at,
         )
         refusal = check.refusal()
         if refusal is not None:
             raise stored_key_quota_exceeded(refusal, check=check)
+    else:
+        policy = get_accounting_policy()
+        limit_amount, spent_amount = await quota.daily_amounts(
+            op_store, user["user_id"], user, spent_usd=spend_today
+        )
+        if not policy.native:
+            quota_daily_cost_usd = _daily_quota_usd(user)
+            cost_spent = spend_today or 0.0
+        else:
+            quota_daily_cost_usd = float(policy.to_usd(limit_amount))
+            cost_spent = float(policy.to_usd(spent_amount))
     context = _user_context(
         user,
         key_hash=key_hash,
@@ -1283,6 +1452,8 @@ async def authenticate_stored_key(
     if check is not None:
         # The worker admits the work against it (SpendCheck.admit).
         context[SPEND_CHECK_KEY] = check
+    context["quota_daily_cost"] = limit_amount
+    context["spent_today"] = spent_amount
     return context
 
 
@@ -1347,8 +1518,14 @@ async def verify_batch_management_identity(
         request, authorization, x_api_key, op_store, want_spend=True
     )
     touch_key_last_used(op_store, user["id"])
-    quota_daily_cost_usd = _daily_quota_usd(user)
-    cost_spent = spend_today or 0.0
+    check, quota_daily_cost_usd, cost_spent, limit_amount, spent_amount = await _gate(
+        user,
+        api_key_id=user["id"],
+        op_store=op_store,
+        spent_usd=spend_today,
+        read_at=spend_read_at,
+    )
+    refusal = check.refusal()
     context = _user_context(
         user,
         key_hash=key_hash,
@@ -1356,15 +1533,10 @@ async def verify_batch_management_identity(
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
-    check = await _spend_check(
-        user,
-        api_key_id=user["id"],
-        op_store=op_store,
-        quota_daily_cost_usd=quota_daily_cost_usd,
-        spent_today_usd=cost_spent,
-        read_at=spend_read_at,
-    )
-    refusal = check.refusal()
+    # Carry the native amounts too so the route-level gate below reports the
+    # ledger currency without a lossy USD round trip.
+    context["quota_daily_cost"] = limit_amount
+    context["spent_today"] = spent_amount
     context["quota_exceeded"] = refusal is not None
     context[_BUDGET_REFUSAL_KEY] = refusal
     return publish_caller_role(context)
@@ -1374,16 +1546,38 @@ async def verify_batch_management_identity(
 _BUDGET_REFUSAL_KEY = "budget_refusal"
 
 
+def _daily_refusal_from_context(user_ctx: dict[str, Any]) -> quota.BudgetRefusal:
+    """The account's daily refusal for a context that did not record its refusal.
+
+    On a non-USD ledger the context's native ``quota_daily_cost`` and
+    ``spent_today`` are the amounts reported; their USD equivalents follow.
+    """
+    policy = get_accounting_policy()
+    limit_amount = user_ctx.get("quota_daily_cost")
+    spent_amount = user_ctx.get("spent_today")
+    if not policy.native or limit_amount is None or spent_amount is None:
+        return quota.BudgetRefusal(
+            "account",
+            "day",
+            float(user_ctx.get("quota_daily_cost_usd") or 0.0),
+            float(user_ctx.get("spent_today_usd") or 0.0),
+        )
+    limit_amount, spent_amount = money_decimal(limit_amount), money_decimal(spent_amount)
+    return quota.BudgetRefusal(
+        "account",
+        "day",
+        float(policy.to_usd(limit_amount)),
+        float(policy.to_usd(spent_amount)),
+        limit_amount=limit_amount,
+        spent_amount=spent_amount,
+    )
+
+
 def enforce_daily_quota(request: Request, user_ctx: dict[str, Any]) -> None:
     """Refuse with the budget 429 when a management identity has spent a limit."""
     if not user_ctx.get("quota_exceeded"):
         return
-    refusal = user_ctx.get(_BUDGET_REFUSAL_KEY) or quota.BudgetRefusal(
-        "account",
-        "day",
-        float(user_ctx.get("quota_daily_cost_usd") or 0.0),
-        float(user_ctx.get("spent_today_usd") or 0.0),
-    )
+    refusal = user_ctx.get(_BUDGET_REFUSAL_KEY) or _daily_refusal_from_context(user_ctx)
     raise _quota_exceeded(
         request,
         user_id=user_ctx.get("user_id") or "anonymous",
@@ -1407,19 +1601,33 @@ async def verify_api_key_for_balance(
     if not is_user_auth_enabled():
         return {"user_id": "anonymous", "authenticated": False}
 
-    user, key_hash, cost_spent = await _authenticate_by_api_key(
+    user, key_hash, caller_spend = await _authenticate_by_api_key(
         request, authorization, x_api_key, op_store, want_spend=True
     )
 
-    quota_daily_cost_usd = _daily_quota_usd(user)
+    limit_amount, spent_amount = await quota.daily_amounts(
+        op_store, user["user_id"], user, spent_usd=caller_spend
+    )
+    policy = get_accounting_policy()
 
-    return _user_context(
+    if not policy.native:
+        quota_daily_cost_usd = _daily_quota_usd(user)
+        cost_spent = caller_spend
+    else:
+        quota_daily_cost_usd = float(policy.to_usd(limit_amount))
+        cost_spent = float(policy.to_usd(spent_amount))
+    context = _user_context(
         user,
         key_hash=key_hash,
         api_key_id=user.get("id"),
         quota_daily_cost_usd=quota_daily_cost_usd,
         spent_today_usd=cost_spent,
     )
+    # The balance in the ledger currency, exact, beside its USD equivalents.
+    context["currency"] = policy.currency
+    context["quota_daily_cost"] = limit_amount
+    context["spent_today"] = spent_amount
+    return context
 
 
 async def read_balance_limits(
@@ -1500,7 +1708,7 @@ async def optional_verify_api_key(
         logger.exception("optional_verify_api_key: DB query failed")
         raise HTTPException(status_code=500, detail="Database error during authentication") from exc
 
-    if not row or row.get("org_status") == "suspended":
+    if not row:
         return None  # Key invalid or expired — treat as anonymous
 
     require_verification = get_settings().signup_require_email_verification

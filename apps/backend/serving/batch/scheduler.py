@@ -83,6 +83,7 @@ from serving.config.batch_routes import (
     batch_route_available,
     batch_route_refusal,
 )
+from serving.observability import detached_tasks
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
@@ -95,8 +96,10 @@ from serving.servers.concurrency import (
     canonical_model_id,
     scope_concurrency_limits,
 )
+from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import spend_check_of
 from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
+from serving.storage.pools import DatabaseBusyError
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -295,6 +298,10 @@ class BatchScheduler:
         self._background: dict[str, asyncio.Task[Any]] = {}
         self._stopping = False
         self._in_flight: dict[int, _InFlight] = {}
+        # Every item's task until it ends, whether or not its item has been
+        # handed back: what it does after the hand-back (failing the batch,
+        # pausing the owner) is still this process's work (handoff_report).
+        self._item_tasks: set[asyncio.Task[None]] = set()
         self._running: Counter[str] = Counter()
         # Per owner: their items in flight here, the batch quota slots those
         # hold, and the role they last authenticated with, which says what
@@ -325,6 +332,12 @@ class BatchScheduler:
         self._next_webhooks = 0.0
         self._enabled: bool | None = None
         self._shared_unavailable = False
+        # This process claims nothing while paused (a release handoff drains
+        # it); what it runs goes on, its leases kept.
+        self._paused = False
+        # Claims under way: their items are in the database's hands and not
+        # yet in _in_flight, so a handoff must wait for them too.
+        self._claiming = 0
 
     @property
     def worker_id(self) -> str:
@@ -353,6 +366,56 @@ class BatchScheduler:
     def notify(self) -> None:
         """Wake the loop now, e.g. because a batch was just created."""
         self._wake.set()
+
+    def pause_claims(self) -> None:
+        """Claim nothing more, and start no validation, sealing, delivery or sweep, until resumed.
+
+        Only this process. Items it runs go on to their end, their leases kept
+        by the heartbeat; a round under way claims for no further model. The
+        other processes' workers take what is queued.
+        """
+        if not self._paused:
+            self._paused = True
+            logger.info(
+                "batch worker %s paused: claims nothing until resumed",
+                self._worker_id,
+                extra={"event": "batch_worker_paused"},
+            )
+
+    def resume_claims(self) -> None:
+        """Claim again after :meth:`pause_claims`."""
+        if self._paused:
+            self._paused = False
+            logger.info(
+                "batch worker %s resumed", self._worker_id, extra={"event": "batch_worker_resumed"}
+            )
+            self._wake.set()
+
+    def handoff_report(self) -> dict[str, Any]:
+        """What this worker still runs, for a release handoff (:mod:`serving.servers.handoff`).
+
+        ``items`` are the item tasks still running, however far along -- an
+        item handed back may still have its batch to fail or its owner to
+        pause -- plus claimed items not yet handed back that have no task
+        running. ``jobs`` are the validation, sealing, delivery and sweep tasks
+        running. Finished when all are none.
+        """
+        running = {task for task in self._item_tasks if not task.done()}
+        waiting = sum(
+            1
+            for entry in self._in_flight.values()
+            if not entry.settled and (entry.task is None or entry.task not in running)
+        )
+        items = len(running) + waiting
+        jobs = sum(1 for task in self._background.values() if not task.done())
+        return {
+            "running": self._task is not None and not self._task.done(),
+            "paused": self._paused,
+            "items": items,
+            "claiming": self._claiming,
+            "jobs": jobs,
+            "finished": items == 0 and jobs == 0 and self._claiming == 0,
+        }
 
     async def stop(self) -> None:
         """Stop claiming, let running items finish briefly, release the rest.
@@ -480,7 +543,7 @@ class BatchScheduler:
         """Claim what every model has room for; return how long to wait next."""
         cfg = batch_config()
         self._note_enabled(cfg.enabled)
-        if not cfg.enabled:
+        if not cfg.enabled or self._paused:
             return self._timings.idle_poll_seconds
         now = self._clock()
         sweep = now >= self._next_sweep
@@ -509,8 +572,9 @@ class BatchScheduler:
                 )
             self._shared_unavailable = False
         for model_id in models:
-            if self._stopping:
+            if self._stopping or self._paused:
                 break
+            self._claiming += 1
             try:
                 await self._top_up(model_id, cfg, now, interactive)
             except Exception:
@@ -520,6 +584,8 @@ class BatchScheduler:
                     extra={"event": "batch_claim_failed", "model": model_id},
                     exc_info=True,
                 )
+            finally:
+                self._claiming -= 1
         return self._timings.poll_seconds
 
     def _note_enabled(self, enabled: bool) -> None:
@@ -631,7 +697,7 @@ class BatchScheduler:
     async def _work_phase(self, phase: str, cfg: BatchConfig) -> None:
         """Validate or seal what is waiting, one batch at a time."""
         for _ in range(10):
-            if self._stopping:
+            if self._stopping or self._paused:
                 return
             leased = await self._store.claim_batch_work(
                 phase=phase,
@@ -707,8 +773,9 @@ class BatchScheduler:
                 await self._adopt(running, item)
                 continue
             entry = self._track(item)
-            if self._stopping:
-                # Stopping while the claim was in flight: hand them straight back.
+            if self._stopping or self._paused:
+                # Stopping, or paused, while the claim was in flight: hand them
+                # straight back, unstarted, for another process to run.
                 await self._release(entry)
                 self._forget(entry)
                 continue
@@ -718,6 +785,8 @@ class BatchScheduler:
                 context=contextvars.Context(),
             )
             entry.task.add_done_callback(lambda _task, entry=entry: self._forget(entry))
+            self._item_tasks.add(entry.task)
+            entry.task.add_done_callback(self._item_tasks.discard)
 
     async def _adopt(self, entry: _InFlight, item: dict[str, Any]) -> None:
         """Take over a new claim of an item this process is still running.
@@ -984,6 +1053,7 @@ class BatchScheduler:
         )
         self._alerts.add(task)
         task.add_done_callback(self._alerts.discard)
+        detached_tasks.track(task, name="alert_send")
 
     def _backoff(self, attempt: int) -> float:
         ceiling = min(
@@ -1118,7 +1188,20 @@ class BatchScheduler:
             # check in authenticate_stored_key may since have been overtaken.
             check = spend_check_of(user_ctx)
             if check is not None:
-                reservation, refusal = check.admit()
+                try:
+                    reservation, refusal = await check.reserve(operation="batch")
+                except (DatabaseBusyError, AccountErased):
+                    # The shared admission could not be made (the database did
+                    # not answer in time) or the owner was erased meanwhile:
+                    # nothing ran, the item is tried again later.
+                    logger.warning(
+                        "batch item %s: spend admission unavailable; retrying later",
+                        entry.item_id,
+                        extra={"event": "batch_spend_admission_unavailable"},
+                        exc_info=True,
+                    )
+                    await self._release(entry, delay=self._timings.owner_retry_seconds)
+                    return
                 if refusal is not None:
                     await self._refused_spend(
                         entry, item, stored_key_quota_exceeded(refusal), check
@@ -1135,6 +1218,13 @@ class BatchScheduler:
                 entry.settled = True
                 return
             entry.dispatched = True
+            # A shared reservation rides into the attempt's request scope, so
+            # the costs it records are settled with it.
+            shared = (
+                {"spend_reservation": reservation}
+                if getattr(reservation, "charge", None) is not None
+                else {}
+            )
             result = await dispatch_item(
                 app=self._app,
                 services=self._services,
@@ -1146,9 +1236,12 @@ class BatchScheduler:
                 attempt=entry.attempt,
                 protocol_profile=item.get("protocol_profile"),
                 timeout_s=self._timings.attempt_timeout_seconds,
+                **shared,
             )
         finally:
-            # The item's real cost, if any, is recorded by now.
+            # The item's real cost, if any, is recorded by now. An attempt
+            # whose charge could not be told is recorded as such by the batch
+            # itself (``cost_status``); its reservation is given back either way.
             if reservation is not None:
                 reservation.release()
             give_back()

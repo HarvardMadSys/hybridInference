@@ -24,6 +24,7 @@ from serving.exceptions import (
     UpstreamStreamIdleError,
     operator_safe_error,
 )
+from serving.observability import detached_tasks
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition, interrupt_settle
 from serving.observability.state_alert_policy import circuit_open_policy
@@ -70,6 +71,48 @@ _CALLERS_IN_ALERT = 10
 # The count is an upper bound on harm, not a measure of it: a failure is
 # recorded against the endpoint before fallback is attempted, so a caller named
 # here may still have been served a complete response by another endpoint.
+
+# One caller cannot open a circuit that is serving everybody else.
+#
+# A breaker counts failures, and on its own a failure cannot say whether the
+# endpoint broke or the request did. Most request faults announce themselves as
+# a 4xx and never reach the breaker (``client_error_skip_breaker``), but not all
+# of them do: a prompt the engine falls over on comes back as a 5xx or a dropped
+# connection, a generation that outruns a timeout as no status at all. And the
+# caller whose request it was sends it again -- coding agents retry exactly
+# those failures, after a short backoff. Three of them were enough to open the
+# circuit, and on a model whose only live route was that endpoint every other
+# caller got ``AllCircuitsOpenError`` for a cooldown, then again whenever the
+# same caller's next retry took the half-open probe and failed it: one account
+# could keep a model off the air for everyone.
+#
+# So the breaker tells callers apart, by the identity ``_caller_key`` reads. A
+# caller's failure on an endpoint counts, as before. Until the endpoint next
+# serves that caller, and for at most ``CIRCUIT_CALLER_WINDOW_SECONDS`` after
+# that counted failure, its further failures there are skipped if the endpoint
+# has served somebody else since: an endpoint that served others in between
+# has said something about that caller, not about itself. A skipped failure is
+# logged as ``caller_repeat_skip_breaker`` and leaves availability, the streak
+# and the circuit alone, as a client error does. Once the window is up the
+# caller's next failure counts again, so it is heard at most once a window.
+#
+# The evidence has to come after the counted failure. A success from before it
+# says nothing about whether the endpoint is up now, and taking it as evidence
+# would excuse every failure for a window after an outage began. An outage
+# serves nobody, so every failure in it counts, whoever sends it: the circuit
+# opens, and a failed half-open probe reopens it, as fast as they always did.
+# The exception is a caller whose failure the endpoint had already served
+# others around before the outage, whose repeats stay skipped: a probe it
+# fails passes to the next caller. Equally, a caller's failures with nobody
+# served in between all count -- a burst from one caller looks, from here,
+# like the start of an outage. A failure with no caller attached always
+# counts, and so does a credential rejection, which is never the caller's
+# (``_AUTH_MISCONFIG_STATUSES``).
+#
+# Bound on the callers one endpoint remembers as charged and not yet served
+# since. Past it the oldest is forgotten, which only makes that caller's next
+# failure count again -- what every failure did before callers were told apart.
+_MAX_CHARGED_CALLERS = 1024
 
 # Upstream statuses that can only mean the *gateway's* configured credential was
 # rejected, whoever the provider is. The client's own credential is validated by
@@ -409,7 +452,17 @@ def _fire_and_forget(coro: Any) -> bool:
     task = loop.create_task(coro)
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
+    detached_tasks.track(task, name="alert_send")
     return True
+
+
+def _monotonic() -> float:
+    """Return the clock caller attribution reads.
+
+    A seam so tests can age it: patching ``time.monotonic`` itself would move
+    the event loop's clock as well.
+    """
+    return time.monotonic()
 
 
 def _caller_key() -> str | None:
@@ -418,7 +471,8 @@ def _caller_key() -> str | None:
     Every inference surface publishes ``affinity_key`` (the presented key's
     hash, a grant, or an anonymous client's address bucket). Hashed again and
     cut short here: enough to tell callers apart in a log line and count them
-    (``client_error_burst``), and no way back to the key's hash.
+    (``client_error_burst``), and in the breaker (``counts_caller_failure``),
+    and no way back to the key's hash.
     """
     affinity = req_ctx.get().get("affinity_key")
     if not affinity:
@@ -561,6 +615,7 @@ class _CircuitBreaker:
         failure_threshold: int | None = None,
         cooldown_seconds: float | None = None,
         min_availability: float | None = None,
+        caller_window_seconds: float | None = None,
     ) -> None:
         self.provider = provider
         self.state = _CircuitState.CLOSED
@@ -585,6 +640,26 @@ class _CircuitBreaker:
             )
             or ""
         )
+        # How long after a caller's counted failure its repeats can be skipped,
+        # when this endpoint has served somebody else since; 0 counts every
+        # failure. See the module comment above ``_MAX_CHARGED_CALLERS``.
+        self.caller_window_seconds = float(
+            config_value(
+                "CIRCUIT_CALLER_WINDOW_SECONDS",
+                str(caller_window_seconds if caller_window_seconds is not None else 60.0),
+            )
+            or ""
+        )
+        # The endpoint's most recent successes for its two most recently served
+        # callers, newest first, as ``(caller, _monotonic() instant)``. Two are
+        # enough to answer "served anyone other than this caller, and when" for
+        # every caller. A None caller is a success with no identity attached (an
+        # internal probe, say), which is somebody else to every caller.
+        self._served: list[tuple[str | None, float]] = []
+        # Callers with a failure here that counted and no success here since, by
+        # the ``_monotonic()`` instant of that failure, oldest first. Bounded by
+        # ``_MAX_CHARGED_CALLERS``.
+        self._charged_callers: dict[str, float] = {}
         self.consecutive_failures = 0
         self.last_opened: float | None = None
         # ``time.perf_counter()`` instant at which the live half-open probe claim
@@ -713,6 +788,74 @@ class _CircuitBreaker:
             if self._probe_claim_live_locked(now):
                 return False, None
             return True, self._claim_probe_locked(now)
+
+    def note_served(self, caller: str | None) -> None:
+        """Remember that this endpoint just served ``caller``.
+
+        Serving a caller also ends its run of failures here, so its next failure
+        counts again whoever else is being served.
+        """
+        now = _monotonic()
+        with self._lock:
+            if caller is not None:
+                self._charged_callers.pop(caller, None)
+            if self._served and self._served[0][0] == caller:
+                self._served[0] = (caller, now)
+            else:
+                self._served = [(caller, now), *self._served[:1]]
+
+    def counts_caller_failure(self, caller: str | None, *, always: bool = False) -> bool:
+        """Return whether a failure from ``caller`` counts against this endpoint.
+
+        False only for a caller whose earlier failure here counted less than a
+        window ago and who has not been served here since, while somebody else
+        has been, after that counted failure: the endpoint served others while
+        failing this caller, so this failure is about the caller. Anything else
+        counts, and is remembered as this caller's counted failure. See the
+        module comment above ``_MAX_CHARGED_CALLERS``.
+
+        Args:
+            caller: The current request's ``_caller_key``; None always counts.
+            always: Count the failure whatever the caller's history, and
+                remember it. Set for a credential rejection, which is never the
+                caller's fault.
+        """
+        window = self.caller_window_seconds
+        if caller is None or not window > 0:
+            return True
+        now = _monotonic()
+        with self._lock:
+            charged_at = self._charged_callers.get(caller)
+            if (
+                not always
+                and charged_at is not None
+                and now - charged_at < window
+                # Since the counted failure, not merely within the window: a
+                # success from before it is no evidence the endpoint is up now.
+                and self._served_other_since_locked(caller, charged_at)
+            ):
+                return False
+            # Re-inserted rather than updated so the dict stays oldest first,
+            # which is the order both bounds below drop entries in.
+            self._charged_callers.pop(caller, None)
+            self._charged_callers[caller] = now
+            while self._charged_callers:
+                oldest_caller, oldest_at = next(iter(self._charged_callers.items()))
+                if now - oldest_at < window and len(self._charged_callers) <= _MAX_CHARGED_CALLERS:
+                    break
+                del self._charged_callers[oldest_caller]
+            return True
+
+    def _served_other_since_locked(self, caller: str, since: float) -> bool:
+        """Return whether a caller other than ``caller`` was served after ``since``.
+
+        Strictly after: a success stamped with the same instant cannot be told
+        apart from one just before, and that one would excuse nothing.
+        """
+        for served, at in self._served:
+            if served != caller:
+                return at > since
+        return False
 
     def on_success(self) -> None:
         with self._lock:
@@ -1203,6 +1346,7 @@ class EndpointHealthRegistry:
 
     def record_success(self, endpoint_id: str) -> None:
         """Record a successful endpoint request."""
+        caller = _caller_key()
         with self._lock:
             self.ensure(endpoint_id)
             auth_run_ended = self._health[endpoint_id].record(True)
@@ -1210,7 +1354,9 @@ class EndpointHealthRegistry:
                 # Re-arm scheduling: a later outage must page on its first
                 # rejection instead of serving out a window this one opened.
                 self._auth_alert_at.pop(endpoint_id, None)
-            self._circuits[endpoint_id].on_success()
+            circuit = self._circuits[endpoint_id]
+            circuit.note_served(caller)
+            circuit.on_success()
         if auth_run_ended:
             # Reported after the accounting, like the failure path: the report only
             # logs and schedules, and the delivery it schedules must not run while
@@ -1225,7 +1371,13 @@ class EndpointHealthRegistry:
         detail: str | None = None,
         exc: BaseException | None = None,
     ) -> None:
-        """Record a failed endpoint request unless it is a client error."""
+        """Record a failed endpoint request, unless it is not the endpoint's failure.
+
+        Not recorded: a failure nothing was sent for, or one the endpoint answered
+        as designed (``_uncharged_failure_event``); a client error; and a caller's
+        repeat failure while the endpoint is serving other callers
+        (``_CircuitBreaker.counts_caller_failure``).
+        """
         uncharged = _uncharged_failure_event(exc) if exc is not None else None
         if uncharged is not None:
             fields: dict[str, Any] = {"event": uncharged, "endpoint_id": endpoint_id}
@@ -1260,18 +1412,39 @@ class EndpointHealthRegistry:
         if detail is None and exc is not None:
             detail = operator_safe_error(exc)
         safe_detail = _detail_str(detail)
+        caller = _caller_key()
         with self._lock:
             self.ensure(endpoint_id)
-            health = self._health[endpoint_id]
-            health.record(False)
-            auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
-            availability = health.availability
-            self._circuits[endpoint_id].on_failure(
-                availability=availability,
-                reason=_reason_str(reason),
-                detail=safe_detail,
-                caller=_caller_str(),
+            circuit = self._circuits[endpoint_id]
+            # Asked before anything is recorded: a failure that is about its
+            # caller must not reach availability either, or the same caller
+            # would open the circuit through the availability floor instead.
+            counted = circuit.counts_caller_failure(caller, always=auth_misconfig)
+            if counted:
+                health = self._health[endpoint_id]
+                health.record(False)
+                auth_rejections = health.note_failure(status=status, auth_misconfig=auth_misconfig)
+                availability = health.availability
+                circuit.on_failure(
+                    availability=availability,
+                    reason=_reason_str(reason),
+                    detail=safe_detail,
+                    caller=_caller_str(),
+                )
+        if not counted:
+            logger.info(
+                "caller_repeat_skip_breaker",
+                extra={
+                    "event": "caller_repeat_skip_breaker",
+                    "endpoint_id": endpoint_id,
+                    "status": status,
+                    "reason": _reason_str(reason),
+                    "detail": safe_detail,
+                    "caller": caller,
+                    "window_sec": circuit.caller_window_seconds,
+                },
             )
+            return
         # No ``else`` branch: a failure of any other kind leaves both the rejection
         # run and any open incident alone (see ``note_failure``) — whatever is
         # failing now is the breaker's ``circuit_open`` incident to report.

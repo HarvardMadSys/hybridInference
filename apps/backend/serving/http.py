@@ -14,7 +14,8 @@ import json as jsonlib
 import logging
 import re
 import sys
-from contextlib import aclosing
+from contextlib import aclosing, asynccontextmanager
+from contextvars import ContextVar
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -448,6 +449,59 @@ class _LineSplitter:
         return text
 
 
+class UpstreamRedirectRefused(aiohttp.ClientResponseError):
+    """An upstream probe was answered with a redirect, which is never followed.
+
+    A ``ClientResponseError`` carrying the redirect's status, so callers that
+    report an upstream's status report this one; where it pointed is not kept,
+    since it may name an internal address no one validated.
+    """
+
+
+async def _refuse_redirect(
+    _session: aiohttp.ClientSession, _ctx: Any, params: aiohttp.TraceRequestRedirectParams
+) -> None:
+    raise UpstreamRedirectRefused(
+        request_info=params.response.request_info,
+        history=(),
+        status=params.response.status,
+        message="redirect not followed",
+    )
+
+
+#: The session of the upstream probe the current task is running, if any.
+_PROBE_SESSION: ContextVar[aiohttp.ClientSession | None] = ContextVar(
+    "upstream_probe_session", default=None
+)
+
+
+@asynccontextmanager
+async def probe_session(socket_factory: Any) -> AsyncIterator[None]:
+    """Send this task's upstream requests through a short-lived probe session.
+
+    For an admin checking an upstream before it is saved: every request any
+    adapter makes in the block (they all reach the network through
+    :meth:`AsyncHTTPClient._ensure_session`) uses a session of its own, whose
+    connector opens each socket through *socket_factory* and never reuses one
+    (``force_close``), and which follows no redirect
+    (:class:`UpstreamRedirectRefused`). The shared session and its pool, which
+    serve inference, are untouched.
+    """
+    trace = aiohttp.TraceConfig()
+    trace.on_request_redirect.append(_refuse_redirect)
+    session = aiohttp.ClientSession(
+        timeout=connect_bounded(aiohttp.ClientTimeout(total=60)),
+        connector=aiohttp.TCPConnector(socket_factory=socket_factory, force_close=True),
+        trace_configs=[trace],
+    )
+    token = _PROBE_SESSION.set(session)
+    try:
+        yield
+    finally:
+        _PROBE_SESSION.reset(token)
+        await session.close()
+
+
 class AsyncHTTPClient:
     """Shared async HTTP client with a single underlying session."""
 
@@ -464,6 +518,10 @@ class AsyncHTTPClient:
         return cls._shared
 
     async def _ensure_session(self) -> aiohttp.ClientSession:
+        probe = _PROBE_SESSION.get()
+        if probe is not None:
+            # An admin's probe of an upstream not yet saved (see probe_session).
+            return probe
         if self._session is None or self._session.closed:
             # Set a conservative default timeout; callers can override per request.
             timeout = connect_bounded(aiohttp.ClientTimeout(total=60))

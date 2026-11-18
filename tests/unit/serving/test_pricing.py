@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import datetime as dt
+from decimal import Decimal
 
 import pytest
 
+from serving import pricing
+from serving.accounting import AccountingPolicy
 from serving.adapters.base import ModelConfig
 from serving.pricing import PricingSchedule, effective_pricing
 from serving.utils import context as req_ctx
@@ -79,6 +82,35 @@ def test_static_pricing_keeps_existing_dictionary_behavior() -> None:
         "input_cache_reads": "0.0028",
         "input_cache_writes": "0",
     }
+
+
+@pytest.mark.unit
+def test_static_usd_prices_convert_once_to_deployment_currency(monkeypatch) -> None:
+    policy = AccountingPolicy("CNY", Decimal("6.7"), "2026-11-05", "synthetic")
+    monkeypatch.setattr(pricing, "get_accounting_policy", lambda: policy)
+    config = _config(pricing_schedule=_schedule())
+    resolved = effective_pricing(config, at=_at(17, 2))
+    assert resolved["prompt"] == "2.948"
+    assert resolved["completion"] == "8.844"
+    assert config.pricing["prompt"] == "0.14"
+    assert effective_pricing(config, at=_at(17, 2)) == resolved
+
+
+@pytest.mark.unit
+def test_native_cny_prices_are_not_converted_again(monkeypatch) -> None:
+    policy = AccountingPolicy("CNY", Decimal("6.7"), "2026-11-05", "synthetic")
+    monkeypatch.setattr(pricing, "get_accounting_policy", lambda: policy)
+    config = _config()
+    config.pricing_currency = "CNY"
+    assert effective_pricing(config) is config.pricing
+
+
+@pytest.mark.unit
+def test_usd_deployment_cannot_guess_conversion_for_cny_static_prices() -> None:
+    config = _config()
+    config.pricing_currency = "CNY"
+    with pytest.raises(ValueError, match="incompatible"):
+        effective_pricing(config)
 
 
 @pytest.mark.unit

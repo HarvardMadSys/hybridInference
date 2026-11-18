@@ -28,6 +28,7 @@ def _make_adapter(
     config.base_url = base_url
     config.endpoint_id = endpoint_id
     config.pricing = pricing
+    config.pricing_currency = "USD"
     adapter = MagicMock()
     adapter.config = config
     return adapter
@@ -377,7 +378,7 @@ async def test_cost_tracker_no_pricing_no_increment(op_store, empty_lookup):
 async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_lookup):
     from serving.utils import context as req_ctx
 
-    req_ctx.update({req_ctx.PROJECT_ID: "proj_admitted", req_ctx.ORG_ID: "org_admitted"})
+    req_ctx.update({req_ctx.PROJECT_ID: "proj_admitted"})
     tracker = CostTracker(op_store=op_store, pricing=empty_lookup)
     pricing = Pricing(prompt_price=0.5, completion_price=1.5)
     routing = RoutingInfo(request_id="rid", model="gpt-4", pricing=pricing)
@@ -404,7 +405,6 @@ async def test_cost_tracker_uses_typed_routing_pricing_first(op_store, empty_loo
         "api_key_id": 12,
         "day": ANY,
         "requests": 1,
-        "org_id": "org_admitted",
         "project_id": "proj_admitted",
     }
 

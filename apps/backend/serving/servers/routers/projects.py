@@ -1,7 +1,7 @@
 """Console API for projects.
 
-A project groups the account's keys under budgets below the organization's
-ceiling and an optional model allowlist. Every account has a Default project
+A project groups the account's keys under budgets below the account's quota
+and an optional model allowlist. Every account has a Default project
 that cannot be archived.
 """
 
@@ -13,7 +13,9 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.accounting import get_accounting_policy
 from serving.audit import AuditTarget
+from serving.quota import native_limit
 from serving.schemas_auth import (
     ProjectCreateRequest,
     ProjectResponse,
@@ -35,14 +37,37 @@ from serving.utils.logging import get_logger
 if TYPE_CHECKING:
     from decimal import Decimal
 
+    from pydantic import BaseModel
+
 logger = get_logger(__name__)
 router = APIRouter(prefix="/user/projects", tags=["User Dashboard"])
 
 _MAX_PROJECTS = 100
 
+#: The unique index on an account's active project names. It is on
+#: ``projects.org_id``, which holds one value per account (``legacy_org_id``).
+_NAME_INDEX = "idx_projects_org_name"
 
-async def _project_response(op_store: Any, row: dict[str, Any]) -> ProjectResponse:
+
+def _is_duplicate_name(exc: Exception) -> bool:
+    """Whether *exc* is a write refused for reusing an active project's name."""
+    return _NAME_INDEX in str(exc)
+
+
+async def project_response(op_store: Any, row: dict[str, Any]) -> ProjectResponse:
+    """A project row as the console API shows it, with its spend and live key count."""
     today, month = await op_store.get_project_spend(row["id"])
+    native: dict[str, Any] = {}
+    if get_accounting_policy().native:
+        # The native ledger budgets and spend, exact; a budget whose native
+        # column predates it shows its USD value at the fixed policy rate.
+        today_amount, month_amount = await op_store.get_project_spend_amount(row["id"])
+        native = {
+            "budget_daily": native_limit(row, "budget_daily_amount", "budget_daily_usd"),
+            "budget_monthly": native_limit(row, "budget_monthly_amount", "budget_monthly_usd"),
+            "spent_today": today_amount,
+            "spent_month": month_amount,
+        }
     return ProjectResponse(
         id=row["id"],
         name=row["name"],
@@ -56,7 +81,60 @@ async def _project_response(op_store: Any, row: dict[str, Any]) -> ProjectRespon
         spent_month_usd=month,
         key_count=await op_store.count_project_keys(row["id"]),
         created_at=row["created_at"],
+        **native,
     )
+
+
+def _native_budgets(payload: BaseModel) -> dict[str, Decimal | None]:
+    """The native budgets a request sent with the accounting ``currency``, to store exactly.
+
+    Nothing on a USD ledger, whose record is the ``*_usd`` columns.
+    """
+    if not get_accounting_policy().native:
+        return {}
+    return {
+        f"{name}_amount": getattr(payload, name)
+        for name in ("budget_daily", "budget_monthly")
+        if name in payload.model_fields_set
+    }
+
+
+async def _check_budgets(
+    op_store: Any,
+    user_id: str,
+    *,
+    daily_usd: Decimal | float | None,
+    monthly_usd: Decimal | float | None,
+    daily_amount: Decimal | None,
+    monthly_amount: Decimal | None,
+) -> None:
+    """Refuse project budgets above the account's ceilings, in the ledger currency.
+
+    A USD ledger compares the USD values, as before. Another compares the
+    native budgets (the USD value at the fixed rate where none was sent) with
+    the account's native ceilings, so a native budget is never judged through
+    its rounded USD equivalent.
+    """
+    policy = get_accounting_policy()
+    if not policy.native:
+        account_daily, account_monthly = await op_store.get_account_budgets(user_id)
+        _validate_budgets(account_daily, account_monthly, daily_usd, monthly_usd)
+        return
+    ceiling_daily, ceiling_monthly = await op_store.get_account_budget_amounts(user_id)
+    for window, budget, usd, ceiling in (
+        ("daily", daily_amount, daily_usd, ceiling_daily),
+        ("monthly", monthly_amount, monthly_usd, ceiling_monthly),
+    ):
+        if budget is None and usd is not None:
+            budget = policy.from_usd(usd)
+        if budget is not None and ceiling is not None and budget > ceiling:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"A project {window} budget cannot exceed the account's "
+                    f"{ceiling:.2f} {policy.currency}."
+                ),
+            )
 
 
 def _validate_budgets(
@@ -86,7 +164,7 @@ async def list_projects(
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
     rows = await op_store.list_projects(current_user["user_id"])
-    return [await _project_response(op_store, row) for row in rows]
+    return [await project_response(op_store, row) for row in rows]
 
 
 @router.post("", response_model=ProjectResponse, status_code=201)
@@ -100,7 +178,7 @@ async def create_project(
     model_visibility_resolver=Depends(get_model_visibility_resolver),
     db_logger=Depends(get_db_logger),
 ) -> ProjectResponse:
-    """Create a project under the caller's personal organization."""
+    """Create a project owned by the caller."""
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
     name = payload.name.strip()
@@ -114,9 +192,14 @@ async def create_project(
         )
     if any(row["name"].casefold() == name.casefold() for row in existing):
         raise HTTPException(status_code=409, detail="A project with that name already exists.")
-    account_daily, account_monthly = await op_store.get_account_budgets(current_user["user_id"])
-    _validate_budgets(
-        account_daily, account_monthly, payload.budget_daily_usd, payload.budget_monthly_usd
+    native = _native_budgets(payload)
+    await _check_budgets(
+        op_store,
+        current_user["user_id"],
+        daily_usd=payload.budget_daily_usd,
+        monthly_usd=payload.budget_monthly_usd,
+        daily_amount=native.get("budget_daily_amount"),
+        monthly_amount=native.get("budget_monthly_amount"),
     )
     allowed_models = payload.allowed_models
     if allowed_models is not None:
@@ -139,9 +222,10 @@ async def create_project(
             budget_monthly_usd=payload.budget_monthly_usd,
             allowed_models=allowed_models,
             max_concurrent_requests=payload.max_concurrent_requests,
+            **native,
         )
     except Exception as exc:
-        if "idx_projects_org_name" in str(exc):
+        if _is_duplicate_name(exc):
             raise HTTPException(
                 status_code=409, detail="A project with that name already exists."
             ) from exc
@@ -153,7 +237,7 @@ async def create_project(
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.get("/{project_id}", response_model=ProjectResponse)
@@ -168,7 +252,7 @@ async def get_project(
     row = await op_store.get_project(current_user["user_id"], project_id)
     if not row:
         raise HTTPException(status_code=404, detail="Project not found")
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.patch("/{project_id}", response_model=ProjectResponse)
@@ -194,12 +278,26 @@ async def update_project(
         changes["name"] = (changes["name"] or "").strip()
         if not changes["name"]:
             raise HTTPException(status_code=422, detail="Project name is required.")
-    account_daily, account_monthly = await op_store.get_account_budgets(current_user["user_id"])
-    _validate_budgets(
-        account_daily,
-        account_monthly,
-        changes.get("budget_daily_usd", existing.get("budget_daily_usd")),
-        changes.get("budget_monthly_usd", existing.get("budget_monthly_usd")),
+    native = _native_budgets(payload)
+    changes.update(native)
+
+    def kept(name: str) -> tuple[Any, Any]:
+        """The budget after the change: (USD, native), the native None where not sent."""
+        if f"{name}_usd" in changes:
+            return changes[f"{name}_usd"], changes.get(f"{name}_amount")
+        return existing.get(f"{name}_usd"), existing.get(f"{name}_amount")
+
+    (daily_usd, daily_amount), (monthly_usd, monthly_amount) = (
+        kept("budget_daily"),
+        kept("budget_monthly"),
+    )
+    await _check_budgets(
+        op_store,
+        current_user["user_id"],
+        daily_usd=daily_usd,
+        monthly_usd=monthly_usd,
+        daily_amount=daily_amount,
+        monthly_amount=monthly_amount,
     )
     allowed_models = payload.allowed_models
     if allowed_models is not None:
@@ -216,7 +314,7 @@ async def update_project(
     try:
         row = await op_store.update_project(current_user["user_id"], project_id, changes)
     except Exception as exc:
-        if "idx_projects_org_name" in str(exc):
+        if _is_duplicate_name(exc):
             raise HTTPException(
                 status_code=409, detail="A project with that name already exists."
             ) from exc
@@ -230,7 +328,7 @@ async def update_project(
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
-    return await _project_response(op_store, row)
+    return await project_response(op_store, row)
 
 
 @router.post("/{project_id}/archive")

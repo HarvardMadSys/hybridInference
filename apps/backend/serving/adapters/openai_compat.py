@@ -707,6 +707,10 @@ class OpenAICompatAdapter(BaseAdapter):
             "min_p",
             "frequency_penalty",
             "presence_penalty",
+            # Self-hosted vLLM/sglang return them; most hosted APIs do not, so
+            # only models whose supported_params declare them send them.
+            "logprobs",
+            "top_logprobs",
             "reasoning_effort",
             "thinking",
             "tool_stream",
@@ -1629,6 +1633,9 @@ class OpenAICompatAdapter(BaseAdapter):
                 return self._format_passthrough_chunk(processed_chunk)
 
             if isinstance(content, str) and content:
+                if choices[0].get("logprobs") is not None:
+                    # Rebuilding the chunk from its text would drop them.
+                    return self._format_passthrough_chunk(processed_chunk)
                 return self.format_stream_chunk(
                     content=content,
                     model=self.config.id,
@@ -1928,7 +1935,7 @@ class OpenAICompatAdapter(BaseAdapter):
 
         usage = self._parse_usage(response.get("usage", {}))
 
-        return self.format_response(
+        formatted = self.format_response(
             content=message.get("content", ""),
             model=self.config.id,
             usage=usage,
@@ -1936,6 +1943,9 @@ class OpenAICompatAdapter(BaseAdapter):
             reasoning_content=message.get("reasoning_content"),
             finish_reason=choice.get("finish_reason", "stop"),
         )
+        if choice.get("logprobs") is not None:
+            formatted["choices"][0]["logprobs"] = choice["logprobs"]
+        return formatted
 
     def _parse_usage(self, usage_data: dict[str, Any]) -> UsageInfo:
         """Parse usage information from response using the adapter's profile."""

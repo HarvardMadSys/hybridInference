@@ -79,6 +79,12 @@ Model/routing file paths and a branding file path are not accepted here. Use
 `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES` and `SITE_BRANDING` in the same
 Admin category instead.
 
+`accounting.currency` defaults to `USD`. Selecting `CNY` requires an offline
+ledger migration first; changing this field alone does not convert prices,
+usage or quotas, and once the gateway runs on a ledger, Admin refuses a change
+to it. Follow [Accounting Currency](accounting.md) for the migration,
+fixed-rate policy and backup-based rollback procedure.
+
 ### Activating a manifest
 
 Save the site document in Admin Settings. It applies when backend settings

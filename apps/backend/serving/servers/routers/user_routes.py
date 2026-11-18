@@ -7,9 +7,12 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import get_accounting_policy
+from serving.accounting_api import primary_amounts
 from serving.config.runtime_settings import get_runtime_settings_instance
 from serving.config.settings import get_settings
 from serving.config.site_identity import get_site_identity
+from serving.quota import native_limit
 
 if TYPE_CHECKING:
     from serving.config.runtime_settings import RuntimeSettings
@@ -17,6 +20,7 @@ if TYPE_CHECKING:
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditTarget
+from serving.auth import sso_accounts
 from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
@@ -397,6 +401,13 @@ async def get_current_user_info(
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
 
+    # Only an account with neither a password nor a verified phone confirms
+    # sensitive actions at its identity provider, so only it is looked up.
+    reauth_provider = (
+        await sso_accounts.account_provider(op_store, user_row["id"])
+        if sso_accounts.confirms_through_provider(user_row)
+        else None
+    )
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
@@ -404,6 +415,7 @@ async def get_current_user_info(
         phone=user_row.get("phone"),
         phone_verified=user_row.get("phone_verified", False),
         has_password=bool(user_row.get("password_hash")),
+        sso_reauth_provider=sso_accounts.provider_ref(reauth_provider),
         user_name=user_row["user_name"],
         avatar_url=await op_store.get_user_avatar(user_row["id"]),
         role=user_row["role"] or "free",
@@ -702,26 +714,35 @@ async def list_api_keys(
 
     rows = await op_store.list_account_keys(current_user["user_id"])
 
-    keys: list[APIKeyListItem] = []
-    for row in rows:
-        keys.append(
-            APIKeyListItem(
-                key_prefix=row["key_prefix"],
-                key_masked=mask_key_prefix(row["key_prefix"]),
+    return APIKeyListResponse(
+        keys=[
+            key_list_item(
+                row,
                 revealable=row["status"] in _REVEALABLE_STATUSES
                 and bool(row.get("api_key_encrypted")),
-                name=row.get("name"),
-                created_at=row["created_at"],
-                last_used_at=row["last_used_at"],
-                status=row["status"],
-                spent_today_usd=float(row.get("spent_today_usd") or 0),
-                spent_month_usd=float(row.get("spent_month_usd") or 0),
-                project_id=row.get("project_id"),
-                project_name=row.get("project_name"),
-                **_key_limits(row),
             )
-        )
-    return APIKeyListResponse(keys=keys)
+            for row in rows
+        ]
+    )
+
+
+def key_list_item(row: dict[str, Any], *, revealable: bool) -> APIKeyListItem:
+    """One ``list_account_keys`` row as the key listings show it: masked, never the key."""
+    return APIKeyListItem(
+        key_prefix=row["key_prefix"],
+        key_masked=mask_key_prefix(row["key_prefix"]),
+        revealable=revealable,
+        name=row.get("name"),
+        created_at=row["created_at"],
+        last_used_at=row["last_used_at"],
+        status=row["status"],
+        spent_today_usd=float(row.get("spent_today_usd") or 0),
+        spent_month_usd=float(row.get("spent_month_usd") or 0),
+        project_id=row.get("project_id"),
+        project_name=row.get("project_name"),
+        **_key_limits(row),
+        **_key_spend_amounts(row),
+    )
 
 
 @router.post("/api-keys/{key_prefix}/reveal", response_model=APIKeyRevealResponse)
@@ -778,6 +799,16 @@ async def reveal_api_key(
     return APIKeyRevealResponse(key_prefix=key_prefix, api_key=api_key)
 
 
+def _key_spend_amounts(row: dict[str, Any]) -> dict[str, Any]:
+    """A key row's spend in the native ledger, on a non-USD deployment."""
+    if not get_accounting_policy().native:
+        return {}
+    return {
+        "spent_today": row.get("spent_today_amount") or 0,
+        "spent_month": row.get("spent_month_amount") or 0,
+    }
+
+
 def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
     """A key row's own limits as the API shows them."""
 
@@ -785,11 +816,17 @@ def _key_limits(row: dict[str, Any]) -> dict[str, Any]:
         return None if value is None else float(value)
 
     allowed = row.get("allowed_models")
-    return {
+    limits = {
         "budget_daily_usd": usd(row.get("budget_daily_usd")),
         "budget_monthly_usd": usd(row.get("budget_monthly_usd")),
         "allowed_models": None if allowed is None else list(allowed),
     }
+    if get_accounting_policy().native:
+        # The native ledger budgets, exact; a row whose native column predates
+        # it shows the USD budget at the fixed policy rate.
+        for name in ("budget_daily", "budget_monthly"):
+            limits[name] = native_limit(row, f"{name}_amount", f"{name}_usd")
+    return limits
 
 
 async def _canonical_allowlist(
@@ -872,6 +909,11 @@ async def update_api_key(
     for field in ("budget_daily_usd", "budget_monthly_usd"):
         if field in sent:
             changes[field] = getattr(payload, field)
+            native = field.removesuffix("_usd")
+            if native in sent and get_accounting_policy().native:
+                # Sent in the accounting currency: store that exact amount, with
+                # its USD equivalent above.
+                changes[f"{native}_amount"] = getattr(payload, native)
     if "allowed_models" in sent:
         changes["allowed_models"] = (
             None
@@ -895,6 +937,14 @@ async def update_api_key(
         return {"name": row.get("name"), **_key_limits(row)}
 
     old, new = shown(before), shown(after)
+    # The audited fields are the ones shown: a native amount is recorded under
+    # its shown name, beside its USD equivalent.
+    audited = [field for field in changes if field in old]
+    audited += [
+        native
+        for native in ("budget_daily", "budget_monthly")
+        if native in old and f"{native}_usd" in changes
+    ]
     await log_admin_action(
         db_logger,
         # A rename alone keeps the action it has always been audited as.
@@ -903,7 +953,7 @@ async def update_api_key(
             "actor": "user",
             "key_prefix": key_prefix,
             **({"name": new["name"]} if "name" in changes else {}),
-            "changed": {field: {"from": old[field], "to": new[field]} for field in changes},
+            "changed": {field: {"from": old[field], "to": new[field]} for field in audited},
         },
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
@@ -1208,6 +1258,7 @@ async def get_usage(
 
     # Fetch usage from log store (for period breakdown) and op store (for today's quota counter)
     _zero = {"cost_usd": 0.0, "requests": 0, "prompt_tokens": 0, "completion_tokens": 0}
+    all_usage = {}
     try:
         if log_store:
             period_key = {"today": "today", "week": "week", "month": "month"}.get(period, "alltime")
@@ -1245,6 +1296,23 @@ async def get_usage(
         spent_today = 0.0
 
     remaining_today = max(0, daily_limit - spent_today)
+    native_quota = {}
+    policy = get_accounting_policy()
+    if policy.native:
+        native_daily = key_row.get("quota_daily_cost_amount")
+        if native_daily is None:
+            native_daily = policy.from_usd(daily_limit)
+        native_spent = await op_store.get_user_cost_today_amount(current_user["user_id"])
+        native_quota = {
+            "daily_limit": native_daily,
+            "spent_today": native_spent,
+            "remaining_today": max(0, native_daily - native_spent),
+            "spent_month": (
+                all_usage.get("month", {}).get("cost_amount")
+                if log_store
+                else policy.from_usd(spent_month)
+            ),
+        }
 
     return UsageResponse(
         period=period,
@@ -1255,6 +1323,7 @@ async def get_usage(
             spent_today_usd=spent_today,
             spent_month_usd=spent_month,
             remaining_today_usd=remaining_today,
+            **native_quota,
             max_concurrency=max_concurrency,
             reset_at=quota_reset_at,
             reset_timezone="UTC",
@@ -1271,6 +1340,7 @@ async def get_usage(
                 period_data.get("reasoning_tokens_known_requests") or 0
             ),
             cost_usd=float(period_data.get("cost_usd") or 0),
+            **primary_amounts(period_data),
         ),
     )
 
@@ -1362,6 +1432,7 @@ async def change_password(
         password=body.old_password,
         phone_code=body.phone_code,
         purpose="set_password",
+        sid=current_user.get("sid"),
     )
     if not first_password and body.new_password == body.old_password:
         raise HTTPException(
@@ -1526,6 +1597,7 @@ async def get_recent_requests(
             routewise=None if row["is_auto"] else coerce_json_object(row["routewise"]),
             request_type=row["request_type"],
             key_prefix=prefixes.get(row["api_key_id"]) if row["api_key_id"] else None,
+            **primary_amounts(row),
         )
         for row in rows
     ]

@@ -13,7 +13,9 @@ The DB log payload (kwargs to ``LogStore.log_request``) is preserved
 byte-for-byte — admin/recent-requests UI, billing reports, and the Slack
 alert rules from PR #372 all read these rows and must keep working — except
 that a refused request's large fields are stored as a bounded summary (see
-``CompletionsLogger.schedule_log``).
+``CompletionsLogger.schedule_log``), and that in the shared spend accounting
+mode the row's metadata names the reservation the request ran under and what
+was charged to it (``_with_spend_reservation``).
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from routing.routers import RoutingObservation
 from serving.observability.tracked_tasks import tracked_task
 from serving.servers.routers.routing_info import RoutingInfo, merge_strategy_metadata
 from serving.storage.bounded_log import bound_log_payload
+from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +54,47 @@ _LOG_DROP_WARN_EVERY = 100
 # This adds at most one time-based warning per interval; the first-drop and
 # every-100th warnings still fire independently.
 _LOG_DROP_WARN_INTERVAL_S = 60.0
+
+
+def _with_spend_reservation(log_data: dict[str, Any]) -> dict[str, Any]:
+    """*log_data*, its metadata naming the request's shared spend reservation and its charge.
+
+    Only in the shared accounting mode, where the request's context holds its
+    reservation (``req_ctx.SPEND_RESERVATION``). Called as the row is written,
+    in the row's own context, it adds ``spend_reservation`` (the reservation's
+    id), ``spend_charged_usd`` (what the billing points have recorded under
+    that reservation by now, which is what its settlement will add to the
+    counters) and ``spend_charged_days`` (that amount by the UTC day each part
+    was recorded on, which is the day its settlement will count it on). Should
+    the process die before that settlement, an operator's reconciliation
+    charges the reservation this amount, on those days, instead of giving it
+    back whole (:mod:`serving.shared_spend.reconcile`). The row is written
+    after the charge is recorded -- on the next day, for a charge recorded
+    just before midnight -- so the row's own date is not the charge's.
+
+    It is the ledger's own record, not the row's ``cost_usd``: a failed
+    request's row can carry a cost its billing point never charged. Nothing
+    else reads either field.
+    """
+    reservation = (req_ctx.get() or {}).get(req_ctx.SPEND_RESERVATION)
+    reservation_id = getattr(reservation, "reservation_id", None)
+    if not isinstance(reservation_id, str):
+        return log_data
+    from serving.accounting import get_accounting_policy
+
+    policy = get_accounting_policy()
+    metadata = {
+        **(log_data.get("metadata") or {}),
+        "spend_reservation": reservation_id,
+        "spend_charged_usd": str(policy.as_usd(reservation.cost())),
+        "spend_charged_amount": str(reservation.cost()),
+        "spend_currency": policy.currency,
+        "spend_charged_days": [
+            {"day": day, "amount": str(cost), "usd": str(policy.as_usd(cost)), "requests": requests}
+            for day, cost, requests in reservation.charged_by_day()
+        ],
+    }
+    return {**log_data, "metadata": metadata}
 
 
 class _Lifecycle(enum.Enum):
@@ -120,6 +164,9 @@ class CompletionsLogger:
         self._in_flight = 0
         self._stop_done: concurrent.futures.Future[None] | None = None
         self._dropped_count = 0
+        # Rows that reached no table otherwise: a write that failed, or a
+        # payload refused because the worker pool died on another loop.
+        self._failed_count = 0
         self._last_drop_warn_at: float | None = None
         self._lifecycle: _Lifecycle = _Lifecycle.RUNNING
 
@@ -190,6 +237,7 @@ class CompletionsLogger:
             # here would hand that loop's queue to a second event loop; keep
             # the pending rows and refuse instead.
             if self._queue_loop is not loop:
+                self._failed_count += 1
                 logger.error(
                     f"Request-log workers died on their original loop; refusing "
                     f"payload for {request_id} with {self._queue.qsize() if self._queue else 0} "
@@ -307,14 +355,36 @@ class CompletionsLogger:
 
     async def _log_to_db(self, request_id: str, log_data: dict[str, Any]) -> None:
         try:
-            await self._log_store.log_request(**log_data)
+            # In the row's own context (see _drain_loop): the request's
+            # reservation, and what was charged to it by now.
+            await self._log_store.log_request(**_with_spend_reservation(log_data))
             logger.debug(f"Background DB logging completed for request {request_id}")
         except Exception as exc:
+            self._failed_count += 1
             logger.error(
                 f"Background DB logging failed for request {request_id}: {exc}",
                 exc_info=True,
             )
             raise  # let tracked_task record the failure
+
+    def pending(self) -> dict[str, Any]:
+        """Rows still to be written, for the release handoff (:mod:`serving.servers.handoff`).
+
+        ``queued`` rows wait for a worker, ``writing`` ones are being written;
+        ``dropped`` counts every row lost to a full queue since the process
+        started, and ``failed`` every row whose write failed or that was
+        refused for want of a worker. ``finished`` is true when nothing is
+        queued or being written. A row dropped or failed is never written: the
+        handoff refuses to seal a process with any.
+        """
+        queued = self._queue.qsize() if self._queue is not None else 0
+        return {
+            "queued": queued,
+            "writing": self._in_flight,
+            "dropped": self._dropped_count,
+            "failed": self._failed_count,
+            "finished": queued == 0 and self._in_flight == 0,
+        }
 
     async def stop(self, *, timeout: float = _LOG_DRAIN_TIMEOUT_S) -> None:
         """Drain queued log rows, then end the worker pool.

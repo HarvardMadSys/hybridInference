@@ -1021,7 +1021,9 @@ def _discover(rows: Mapping[str, ConfigRow] | None = None) -> dict[str, Discover
         except ValueError:
             return {}
 
-    return registry.discover_documents(document("models"), document("routing"), document("alerts"))
+    return registry.discover_documents(
+        document("models"), document("routing"), document("alerts"), document("sso")
+    )
 
 
 def _build_entries(

@@ -315,7 +315,3 @@ async def test_optional_lookup_carries_project_allowlist(keyed):
         LightStore(_row(project_allowed_models=["m-project"])), bearer="hyi-project"
     )
     assert context[auth.PROJECT_ALLOWED_MODELS_KEY] == ["m-project"]
-
-
-async def test_optional_lookup_does_not_recognise_suspended_org(keyed):
-    assert await _optional(LightStore(_row(org_status="suspended")), bearer="hyi-project") is None

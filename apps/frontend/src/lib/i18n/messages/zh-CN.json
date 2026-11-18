@@ -827,6 +827,122 @@
     "source": "Nickname",
     "text": "昵称"
   },
+  "auth.sso.back": {
+    "source": "Back to log in",
+    "text": "返回登录"
+  },
+  "auth.sso.button": {
+    "source": "Log in with SSO",
+    "text": "SSO 登录"
+  },
+  "auth.sso.completing": {
+    "source": "Signing you in…",
+    "text": "正在登录…"
+  },
+  "auth.sso.continue": {
+    "source": "Continue",
+    "text": "继续"
+  },
+  "auth.sso.divider": {
+    "source": "or",
+    "text": "或"
+  },
+  "auth.sso.email_label": {
+    "source": "Work or school email",
+    "text": "工作或学校邮箱"
+  },
+  "auth.sso.error.browser_full": {
+    "source": "This browser is already signed in to the maximum number of accounts. Sign one of them out first.",
+    "text": "这个浏览器登录的账号数已达上限，请先退出其中一个。"
+  },
+  "auth.sso.error.cancelled": {
+    "source": "Single sign-on was cancelled.",
+    "text": "已取消 SSO 登录。"
+  },
+  "auth.sso.error.email_in_use": {
+    "source": "The email of this organization account already belongs to another account here. Sign in to that account to connect it.",
+    "text": "这个机构账号的邮箱已经属于另一个平台账号。请登录那个账号再关联。"
+  },
+  "auth.sso.error.email_untrusted": {
+    "source": "We could not confirm the email of this organization account. Contact your administrator.",
+    "text": "无法确认这个机构账号的邮箱，请联系管理员。"
+  },
+  "auth.sso.error.expired": {
+    "source": "The sign-in took too long. Start again.",
+    "text": "登录已超时，请重新开始。"
+  },
+  "auth.sso.error.failed": {
+    "source": "Single sign-on failed. Try again later.",
+    "text": "SSO 登录失败，请稍后再试。"
+  },
+  "auth.sso.error.identity_conflict": {
+    "source": "This account is already connected to a different identity from the same organization. Contact your administrator.",
+    "text": "这个账号已经关联了同一机构的另一个身份，请联系管理员。"
+  },
+  "auth.sso.error.identity_in_use": {
+    "source": "This organization account is already connected to another account.",
+    "text": "这个机构账号已经关联了另一个平台账号。"
+  },
+  "auth.sso.error.inactive": {
+    "source": "This account is not active. Please contact support.",
+    "text": "这个账号当前不可用，请联系支持人员。"
+  },
+  "auth.sso.error.no_account": {
+    "source": "This organization account has no account here yet. Contact your administrator.",
+    "text": "这个机构账号还没有对应的平台账号，请联系管理员。"
+  },
+  "auth.sso.error.pending": {
+    "source": "Your registration is pending admin approval.",
+    "text": "注册已提交，正在等待审批。"
+  },
+  "auth.sso.error.rate_limited": {
+    "source": "Too many sign-in attempts. Please try again later.",
+    "text": "登录尝试过于频繁，请稍后再试。"
+  },
+  "auth.sso.error.suspended": {
+    "source": "This account is suspended.",
+    "text": "这个账号已被停用。"
+  },
+  "auth.sso.error.unavailable": {
+    "source": "Single sign-on is unavailable right now. Use another sign-in method.",
+    "text": "SSO 登录暂时不可用，请改用其他方式登录。"
+  },
+  "auth.sso.link_body": {
+    "source": "{email} will be able to sign in to this account through {name}.",
+    "text": "关联后，{email} 可以通过 {name} 登录当前账号。"
+  },
+  "auth.sso.link_cancel": {
+    "source": "Not now",
+    "text": "暂不关联"
+  },
+  "auth.sso.link_confirm": {
+    "source": "Connect",
+    "text": "关联"
+  },
+  "auth.sso.link_keys_hint": {
+    "source": "If you did not create this account yourself, review its API keys after connecting.",
+    "text": "如果这个账号不是你自己创建的，关联后请检查账号下的 API key。"
+  },
+  "auth.sso.link_notice": {
+    "source": "An account already exists for this email. Sign in the way you usually do to connect your {name} account.",
+    "text": "这个邮箱已有账号。请用原来的方式登录一次，完成和 {name} 账号的关联。"
+  },
+  "auth.sso.link_title": {
+    "source": "Connect your {name} account?",
+    "text": "关联 {name} 账号？"
+  },
+  "auth.sso.linked_toast": {
+    "source": "Single sign-on connected.",
+    "text": "SSO 账号已关联。"
+  },
+  "auth.sso.not_available": {
+    "source": "Your organization has not set up single sign-on here. Use another sign-in method.",
+    "text": "你的机构还没有开通 SSO 登录，请改用其他方式登录。"
+  },
+  "auth.sso.subtitle": {
+    "source": "Enter your work or school email. We will send you to your organization to sign in.",
+    "text": "输入工作或学校邮箱，我们会带你去所在机构的登录页。"
+  },
   "auth.validation.combined_max": {
     "source": "Combined use case and discovery response is too long (max 2000 characters)",
     "text": "用途和来源加起来太长了（最多 2000 个字符）"
@@ -2480,16 +2596,16 @@
     "text": "API key"
   },
   "dashboard.key_detail.budget_invalid": {
-    "source": "Enter an amount in USD, such as 5 or 12.50, or leave it blank.",
-    "text": "请输入美元金额，例如 5 或 12.50；留空表示不限。"
+    "source": "Enter an amount in {currency}, such as 5 or 12.50, or leave it blank.",
+    "text": "请输入 {currency} 金额，例如 5 或 12.50；留空表示不限。"
   },
   "dashboard.key_detail.created": {
     "source": "Created {date}",
     "text": "创建于 {date}"
   },
   "dashboard.key_detail.daily_budget": {
-    "source": "Daily budget (USD)",
-    "text": "每日预算（美元）"
+    "source": "Daily budget ({currency})",
+    "text": "每日预算（{currency}）"
   },
   "dashboard.key_detail.last_used": {
     "source": "Last used {date}",
@@ -2512,8 +2628,8 @@
     "text": "模型"
   },
   "dashboard.key_detail.monthly_budget": {
-    "source": "Monthly budget (USD)",
-    "text": "每月预算（美元）"
+    "source": "Monthly budget ({currency})",
+    "text": "每月预算（{currency}）"
   },
   "dashboard.key_detail.no_limit": {
     "source": "No limit",
@@ -2586,6 +2702,66 @@
   "dashboard.keys.more_actions": {
     "source": "Actions for {name}",
     "text": "{name} 的操作"
+  },
+  "settings.reauth.sso_button": {
+    "source": "Confirm with {name}",
+    "text": "去 {name} 确认身份"
+  },
+  "settings.reauth.sso_confirmed": {
+    "source": "Identity confirmed. You can continue.",
+    "text": "身份已确认，可以继续。"
+  },
+  "settings.reauth.sso_required": {
+    "source": "Confirm your identity with {name} to continue.",
+    "text": "请先去 {name} 确认身份，再继续。"
+  },
+  "settings.sso.connect": {
+    "source": "Connect an SSO account",
+    "text": "关联 SSO 账号"
+  },
+  "settings.sso.connected_on": {
+    "source": "Connected {date}",
+    "text": "关联于 {date}"
+  },
+  "settings.sso.connected_toast": {
+    "source": "Single sign-on connected.",
+    "text": "SSO 账号已关联。"
+  },
+  "settings.sso.description": {
+    "source": "Organization accounts that can sign in to this account.",
+    "text": "可以登录当前账号的机构账号。"
+  },
+  "settings.sso.disconnect": {
+    "source": "Disconnect",
+    "text": "解除关联"
+  },
+  "settings.sso.disconnected_toast": {
+    "source": "Single sign-on disconnected.",
+    "text": "已解除 SSO 关联。"
+  },
+  "settings.sso.dismiss_error": {
+    "source": "Dismiss",
+    "text": "关闭"
+  },
+  "settings.sso.empty": {
+    "source": "No organization account is connected.",
+    "text": "还没有关联机构账号。"
+  },
+  "settings.sso.last_method": {
+    "source": "This is the only way to sign in to this account. Set a password before disconnecting it.",
+    "text": "这是当前账号唯一的登录方式。请先设置密码，再解除关联。"
+  },
+  "settings.sso.needs_password": {
+    "source": "Set a password before changing single sign-on.",
+    "text": "请先设置密码，再修改 SSO 关联。"
+  },
+  "settings.sso.title": {
+    "source": "Single sign-on",
+    "text": "SSO 登录"
+  },
+  "settings.sso.unavailable_badge": {
+    "source": "No longer available",
+    "text": "已不可用"
   },
   "dashboard.keys.col_actions": {
     "source": "Actions",
@@ -2776,8 +2952,12 @@
     "text": "模型"
   },
   "dashboard.models.col_price": {
-    "source": "USD / 1M tokens",
-    "text": "美元 / 百万 token"
+    "source": "{currency} / 1M tokens",
+    "text": "{currency} / 百万 token"
+  },
+  "dashboard.models.col_price_any": {
+    "source": "Price / 1M tokens",
+    "text": "价格 / 百万 token"
   },
   "dashboard.models.copied_toast": {
     "source": "Model ID copied to clipboard",
@@ -3012,7 +3192,7 @@
     "text": "根据请求日志估算出的内部成本。“今天”和“本月”都从 UTC 时间 00:00 开始算，也就是每日额度重置的时刻。这不是账单，只是让你心里有数。"
   },
   "dashboard.usage.footnote": {
-    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; dollar amounts are attribution from logs, not invoices.",
+    "source": "All prompts and responses are logged and may be open-sourced after anonymization. Free within plan limits; amounts are attribution from logs, not invoices.",
     "text": "所有提示词和回复都会被记录，匿名化处理后可能会开源。套餐额度内免费；这里的金额只是根据日志做的成本归属，不是账单。"
   },
   "dashboard.usage.help_label": {
@@ -4185,10 +4365,6 @@
     "source": "9. Changes to These Terms",
     "text": "9. 条款变更"
   },
-  "console.nav.projects": {
-    "source": "Projects",
-    "text": "项目"
-  },
   "dashboard.keys.project_label": {
     "source": "Project",
     "text": "项目"
@@ -4217,13 +4393,9 @@
     "source": "Project created.",
     "text": "项目已创建。"
   },
-  "dashboard.projects.daily_budget": {
-    "source": "Daily {amount}",
-    "text": "每日 {amount}"
-  },
   "dashboard.projects.daily_label": {
-    "source": "Daily budget (USD)",
-    "text": "每日预算（美元）"
+    "source": "Daily budget ({currency})",
+    "text": "每日预算（{currency}）"
   },
   "dashboard.projects.default_badge": {
     "source": "Default",
@@ -4233,29 +4405,13 @@
     "source": "Edit Project",
     "text": "编辑项目"
   },
-  "dashboard.projects.empty": {
-    "source": "No projects yet.",
-    "text": "暂无项目。"
-  },
   "dashboard.projects.invalid_limits": {
     "source": "Enter non-negative budgets and a positive whole concurrency limit.",
     "text": "请输入非负预算和正整数并发限制。"
   },
-  "dashboard.projects.key_count": {
-    "source": "{count} key(s)",
-    "text": "{count} 个密钥"
-  },
-  "dashboard.projects.load_failed": {
-    "source": "Failed to load projects. Please try again later.",
-    "text": "无法加载项目，请稍后重试。"
-  },
-  "dashboard.projects.monthly_budget": {
-    "source": "Monthly {amount}",
-    "text": "每月 {amount}"
-  },
   "dashboard.projects.monthly_label": {
-    "source": "Monthly budget (USD)",
-    "text": "每月预算（美元）"
+    "source": "Monthly budget ({currency})",
+    "text": "每月预算（{currency}）"
   },
   "dashboard.projects.name_label": {
     "source": "Name",
@@ -4265,17 +4421,9 @@
     "source": "Name is required.",
     "text": "请输入名称。"
   },
-  "dashboard.projects.no_daily_budget": {
-    "source": "No daily budget",
-    "text": "未设置每日预算"
-  },
   "dashboard.projects.no_limit": {
     "source": "No limit",
     "text": "无限制"
-  },
-  "dashboard.projects.no_monthly_budget": {
-    "source": "No monthly budget",
-    "text": "未设置每月预算"
   },
   "dashboard.projects.spend_month": {
     "source": "{amount} this month",
@@ -4285,21 +4433,9 @@
     "source": "{amount} today",
     "text": "今日 {amount}"
   },
-  "dashboard.projects.subtitle": {
-    "source": "Group API keys under a shared budget and model allowlist. Keys without a project use your Default project.",
-    "text": "将 API 密钥分组，共享预算和模型允许列表。未指定项目的密钥使用默认项目。"
-  },
-  "dashboard.projects.title": {
-    "source": "Projects",
-    "text": "项目"
-  },
   "dashboard.projects.updated_toast": {
     "source": "Project updated.",
     "text": "项目已更新。"
-  },
-  "common.edit": {
-    "source": "Edit",
-    "text": "编辑"
   },
   "dashboard.keys.project_default": {
     "source": "Default",
@@ -4348,5 +4484,205 @@
   "dashboard.projects.pick_a_model": {
     "source": "Pick at least one model, or allow all models.",
     "text": "至少选择一个模型，或允许全部模型。"
+  },
+  "dashboard.key_detail.project_limits": {
+    "source": "Project {name} limits this key too, together with its other keys: {summary}.",
+    "text": "项目 {name} 的限额也作用于这个 Key，与项目里的其他 Key 共用：{summary}。"
+  },
+  "dashboard.keys.add_key": {
+    "source": "Add key",
+    "text": "添加 Key"
+  },
+  "dashboard.keys.archived_projects": {
+    "source": "Archived projects",
+    "text": "已归档的项目"
+  },
+  "dashboard.keys.new_project": {
+    "source": "New project",
+    "text": "新建项目"
+  },
+  "dashboard.keys.project_actions": {
+    "source": "Actions for {name}",
+    "text": "{name} 的操作"
+  },
+  "dashboard.keys.project_empty": {
+    "source": "No keys in this project yet.",
+    "text": "这个项目里还没有 Key。"
+  },
+  "dashboard.projects.concurrency_cap": {
+    "source": "Up to {count} at once",
+    "text": "最多同时 {count} 个"
+  },
+  "dashboard.projects.create_intro": {
+    "source": "A project groups keys under one budget and model allowlist. Keys you create without picking a project go to Default.",
+    "text": "项目把多个 Key 归到同一份预算和模型白名单下。创建 Key 时不选项目，就会放进 Default。"
+  },
+  "dashboard.projects.edit_limits": {
+    "source": "Edit limits",
+    "text": "编辑限额"
+  },
+  "dashboard.projects.models_count": {
+    "source": "{count} model(s)",
+    "text": "{count} 个模型"
+  },
+  "dashboard.projects.spend_month_of": {
+    "source": "{amount} of {budget} this month",
+    "text": "本月 {amount} / {budget}"
+  },
+  "dashboard.projects.spend_today_of": {
+    "source": "{amount} of {budget} today",
+    "text": "今日 {amount} / {budget}"
+  },
+  "dashboard.projects.load_failed": {
+    "source": "Failed to load projects. Please try again later.",
+    "text": "无法加载项目，请稍后重试。"
+  },
+  "dashboard.keys.default_project_hint": {
+    "source": "Your keys share the Default project, which has no limits of its own.",
+    "text": "你的 Key 都在 Default 项目里，这个项目目前没有设自己的限额。"
+  },
+  "dashboard.keys.default_project_limits": {
+    "source": "Set limits for Default",
+    "text": "为 Default 设置限额"
+  },
+  "two_factor.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "two_factor.code.hint": {
+    "source": "Six digits from your authenticator app. Without your device, enter one of your recovery codes.",
+    "text": "验证器应用中的 6 位数字。设备不在身边时，可以输入一个恢复码。"
+  },
+  "two_factor.code.label": {
+    "source": "Authentication code",
+    "text": "验证码"
+  },
+  "two_factor.codes.copied": {
+    "source": "Copied",
+    "text": "已复制"
+  },
+  "two_factor.codes.copy": {
+    "source": "Copy",
+    "text": "复制"
+  },
+  "two_factor.codes.done": {
+    "source": "I have saved them",
+    "text": "我已保存"
+  },
+  "two_factor.codes.keep": {
+    "source": "Save these recovery codes somewhere safe, away from your phone. Each one works once in place of a code from the app, and they are not shown again.",
+    "text": "请把这些恢复码保存在安全的地方，不要只存在手机里。每个恢复码可以代替验证器的验证码使用一次，之后不会再显示。"
+  },
+  "two_factor.codes.label": {
+    "source": "Recovery codes",
+    "text": "恢复码"
+  },
+  "two_factor.prompt.environment_changed": {
+    "source": "This session was verified in a different browser or app. Enter a code to keep using it here.",
+    "text": "这个登录状态是在另一个浏览器或应用中验证的。请输入验证码，才能在这里继续使用。"
+  },
+  "two_factor.prompt.stale": {
+    "source": "This change needs a code from the last few minutes. Enter one to continue.",
+    "text": "这项更改需要最近几分钟内输入过的验证码。请输入验证码以继续。"
+  },
+  "two_factor.prompt.title": {
+    "source": "Two-factor authentication",
+    "text": "两步验证"
+  },
+  "two_factor.prompt.unverified": {
+    "source": "Enter a code from your authenticator app to continue.",
+    "text": "请输入验证器应用中的验证码以继续。"
+  },
+  "two_factor.remove.body": {
+    "source": "The authenticator app and every recovery code stop working for this account.",
+    "text": "此账户的验证器应用和所有恢复码都将失效。"
+  },
+  "two_factor.remove.busy": {
+    "source": "Turning off…",
+    "text": "关闭中…"
+  },
+  "two_factor.remove.confirm": {
+    "source": "Turn off",
+    "text": "关闭"
+  },
+  "two_factor.remove.keep": {
+    "source": "Keep it on",
+    "text": "保持开启"
+  },
+  "two_factor.remove.title": {
+    "source": "Turn off two-factor authentication?",
+    "text": "关闭两步验证？"
+  },
+  "two_factor.settings.begin": {
+    "source": "Add authenticator app",
+    "text": "添加验证器应用"
+  },
+  "two_factor.settings.description": {
+    "source": "A code from an authenticator app on your phone, asked for before administrator access. A copied session or password is not enough without it.",
+    "text": "使用管理员权限前，需要输入手机上验证器应用的验证码。没有它，仅凭被复制的登录状态或密码无法使用管理员权限。"
+  },
+  "two_factor.settings.few_codes": {
+    "source": "Few recovery codes are left. Make a new set, so that losing your device does not lock you out.",
+    "text": "恢复码所剩不多。请生成一组新的，以免丢失设备后无法登录管理后台。"
+  },
+  "two_factor.settings.needs_password": {
+    "source": "Adding an authenticator app is confirmed with your password, and this account has none. Set a password first.",
+    "text": "添加验证器应用需要用密码确认，而此账户还没有密码。请先设置密码。"
+  },
+  "two_factor.settings.new_codes": {
+    "source": "New recovery codes",
+    "text": "生成新的恢复码"
+  },
+  "two_factor.settings.on": {
+    "source": "Authenticator app added. Recovery codes left: {count}",
+    "text": "已添加验证器应用。剩余恢复码：{count}"
+  },
+  "two_factor.settings.on_badge": {
+    "source": "On",
+    "text": "已开启"
+  },
+  "two_factor.settings.password": {
+    "source": "Your password",
+    "text": "你的密码"
+  },
+  "two_factor.settings.remove": {
+    "source": "Turn off",
+    "text": "关闭"
+  },
+  "two_factor.settings.replace": {
+    "source": "Change authenticator app",
+    "text": "更换验证器应用"
+  },
+  "two_factor.settings.required": {
+    "source": "Administrator access is off for this account until it has an authenticator app.",
+    "text": "此账户添加验证器应用之前，无法使用管理员权限。"
+  },
+  "two_factor.settings.title": {
+    "source": "Two-Factor Authentication",
+    "text": "两步验证"
+  },
+  "two_factor.setup.confirm": {
+    "source": "Turn on",
+    "text": "开启"
+  },
+  "two_factor.setup.manual": {
+    "source": "Cannot scan it? Enter this key in the app:",
+    "text": "无法扫描？请在应用中手动输入此密钥："
+  },
+  "two_factor.setup.qr_title": {
+    "source": "QR code for your authenticator app",
+    "text": "用于验证器应用的二维码"
+  },
+  "two_factor.setup.scan": {
+    "source": "Scan this code with an authenticator app, such as Duo Mobile, Google Authenticator or 1Password. Then enter the six digits the app shows.",
+    "text": "用验证器应用（如 Duo Mobile、Google Authenticator 或 1Password）扫描此二维码，然后输入应用显示的 6 位数字。"
+  },
+  "two_factor.verify": {
+    "source": "Verify",
+    "text": "验证"
+  },
+  "two_factor.verifying": {
+    "source": "Verifying…",
+    "text": "验证中…"
   }
 }

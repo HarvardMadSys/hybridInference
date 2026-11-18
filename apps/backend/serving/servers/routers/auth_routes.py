@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
 from serving.audit import AuditActor, AuditTarget
+from serving.auth import sso_accounts
 from serving.auth.browser_sessions import (
     MAX_ACCOUNTS_PER_BROWSER,
     BrowserSession,
@@ -34,6 +35,7 @@ from serving.config.settings import get_signup_notify_emails, is_admin_email, se
 from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
 from serving.schemas_auth import (
     AccountsResponse,
+    AccountSummary,
     BindEmailRequest,
     BindEmailResponse,
     DeleteAccountRequest,
@@ -85,7 +87,7 @@ from serving.utils.logging import get_logger
 from serving.utils.login_rate_limit import check_and_record_login, refusal_worth_recording
 from serving.utils.mail_rate_limit import MailKind, check_and_record_mail_request
 from serving.utils.phone_auth import phone_identity_unverified
-from serving.utils.request_ip import get_client_ip, get_client_ip_info
+from serving.utils.request_ip import get_client_ip_info
 from serving.utils.signup_rate_limit import check_and_record_signup
 from serving.utils.turnstile import verify_turnstile_token
 
@@ -409,6 +411,9 @@ async def login(
     A browser presenting a device cookie entry for the identifier, from an
     earlier sign-in, is limited to 5 attempts per 15 minutes of its own instead,
     and the account's recognized browsers to 50 per 15 minutes together.
+    A client whose address could not be resolved is counted per account only,
+    never as one address with every other such client (see
+    :mod:`serving.utils.login_rate_limit`).
     """
     if not op_store:
         raise HTTPException(status_code=500, detail="Database not available")
@@ -416,7 +421,8 @@ async def login(
     identifier = body.email
 
     # Record on entry so probing varied passwords cannot bypass the limit.
-    client_ip = get_client_ip(request)
+    client = get_client_ip_info(request)
+    client_ip = client.client_ip
 
     async def _record(
         outcome: str,
@@ -453,7 +459,7 @@ async def login(
         # refuse before counting the attempt or looking the name up. The same
         # for every name; and a recognized browser is never refused this way.
         password_utils.ensure_password_capacity()
-    allowed, reason = await check_and_record_login(identifier, client_ip, device=device)
+    allowed, reason = await check_and_record_login(identifier, client, device=device)
     if not allowed:
         # "ip" is the hourly per-IP window; "email" (this account from this
         # address), "account" (from every address) and "device" (this
@@ -706,6 +712,7 @@ async def delete_own_account(
         password=body.password,
         phone_code=body.phone_code,
         purpose="delete_account",
+        sid=current_user.get("sid"),
     )
 
     browser = await resolve_browser_session(op_store, request)
@@ -806,6 +813,27 @@ async def refresh(
     )
 
 
+async def _with_sso_providers(
+    op_store: Any, browser: BrowserSession | None, summaries: list[AccountSummary]
+) -> list[AccountSummary]:
+    """Name the provider each account without a password signs in through.
+
+    The chooser sends such an account to its provider to sign in again,
+    rather than asking for a password it does not have.
+    """
+    if browser is None:
+        return summaries
+    without_password = {
+        account["user_id"] for account in browser.accounts if account.get("has_password") is False
+    }
+    for summary in summaries:
+        if summary.id in without_password:
+            summary.sso_provider = sso_accounts.provider_ref(
+                await sso_accounts.account_provider(op_store, summary.id)
+            )
+    return summaries
+
+
 @router.get("/accounts", response_model=AccountsResponse)
 async def list_accounts(
     request: Request,
@@ -823,8 +851,10 @@ async def list_accounts(
     send_pending_cookie(response, browser)
     return AccountsResponse(
         active_user_id=browser.active_user_id if browser else None,
-        accounts=account_summaries(
-            browser, require_verification=await email_verification_required()
+        accounts=await _with_sso_providers(
+            op_store,
+            browser,
+            account_summaries(browser, require_verification=await email_verification_required()),
         ),
         max_accounts=MAX_ACCOUNTS_PER_BROWSER,
     )
@@ -898,7 +928,11 @@ async def remove_account(
         left = None
     return AccountsResponse(
         active_user_id=left.active_user_id if left else None,
-        accounts=account_summaries(left, require_verification=await email_verification_required()),
+        accounts=await _with_sso_providers(
+            op_store,
+            left,
+            account_summaries(left, require_verification=await email_verification_required()),
+        ),
         max_accounts=MAX_ACCOUNTS_PER_BROWSER,
     )
 
@@ -1218,6 +1252,7 @@ async def bind_email(
         password=body.password,
         phone_code=body.phone_code,
         purpose="bind_email",
+        sid=current_user.get("sid"),
     )
 
     existing_user = await op_store.get_user_by_email(normalized_email)

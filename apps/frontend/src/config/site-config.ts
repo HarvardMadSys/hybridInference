@@ -163,11 +163,20 @@ const featuresSchema = z
 // that predates them has no setup flow and no configuration registry, which is
 // "not required" and "complete". The inner objects are not strict, so a later
 // field (a count, say) does not take this console down either.
+const accountingSchema = z.object({
+  currency: z.enum(['USD', 'CNY']),
+  usd_to_currency_rate: z.string().optional(),
+});
+
 const setupStateSchema = z.object({ required: z.boolean() });
 const configurationStateSchema = z.object({ incomplete: z.boolean() });
 const phoneAuthPolicySchema = z.object({
   default_country_code: z.string().regex(/^(?:[1-9][0-9]{0,2})?$/),
 });
+// Single sign-on. The gateway sends the block only while a provider is
+// enabled, and it names none of them: which organizations sign in here is not
+// public. A top-level sibling of `features` for the reason given above.
+const ssoStateSchema = z.object({ enabled: z.boolean() });
 
 const versionedSiteConfigDocumentSchema = z
   .object({
@@ -183,6 +192,8 @@ const versionedSiteConfigDocumentSchema = z
     configuration: configurationStateSchema.nullish(),
     // Public number-input policy; transport credentials remain server-only.
     phone_auth_policy: phoneAuthPolicySchema.nullish(),
+    sso: ssoStateSchema.nullish(),
+    accounting: accountingSchema.optional(),
   })
   // Unknown *top-level* keys are ignored rather than refused, and the asymmetry
   // with the branding object below is deliberate. This envelope is what a
@@ -208,6 +219,7 @@ const siteConfigDocumentSchema = z.union([
 ]);
 
 export interface RuntimeSiteConfig {
+  accounting?: { currency: 'USD' | 'CNY'; usd_to_currency_rate?: string };
   branding: Branding;
   agentsUrl: string;
   distribution: {
@@ -233,15 +245,24 @@ export interface RuntimeSiteConfig {
   phoneAuthPolicy?: {
     defaultCountryCode: string;
   };
+  /**
+   * Single sign-on through an organization's identity provider. Off for a
+   * gateway that does not say otherwise, which includes every older one.
+   */
+  sso: {
+    enabled: boolean;
+  };
 }
 
 export const buildTimeSiteConfig: RuntimeSiteConfig = {
   branding: buildTimeBranding,
+  accounting: { currency: 'USD' },
   agentsUrl: '',
   distribution: { id: 'legacy', release: '' },
   features: { publicSignup: true, phoneAuth: false, rag: true, agents: false, publicStats: false },
   setup: { required: false },
   configuration: { incomplete: false },
+  sso: { enabled: false },
 };
 
 function resolveBranding(input: unknown, displayName: string, supportEmail: string): Branding {
@@ -334,6 +355,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
   let setupRequired = false;
   let configurationIncomplete = false;
   let phoneAuthPolicy: RuntimeSiteConfig['phoneAuthPolicy'];
+  let ssoEnabled = false;
   if ('schema_version' in document) {
     branding = resolveBranding(
       document.branding,
@@ -345,6 +367,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     if (document.phone_auth_policy) {
       phoneAuthPolicy = { defaultCountryCode: document.phone_auth_policy.default_country_code };
     }
+    ssoEnabled = document.sso?.enabled === true;
   } else {
     branding = resolveLegacyBranding(
       document.distribution.display_name,
@@ -355,6 +378,10 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
 
   return {
     branding,
+    accounting:
+      'schema_version' in document
+        ? (document.accounting ?? { currency: 'USD' })
+        : { currency: 'USD' },
     agentsUrl: '',
     distribution: {
       id: document.distribution.id,
@@ -373,6 +400,7 @@ export function resolveRuntimeSiteConfig(input: unknown): RuntimeSiteConfig {
     setup: { required: setupRequired },
     configuration: { incomplete: configurationIncomplete },
     ...(phoneAuthPolicy ? { phoneAuthPolicy } : {}),
+    sso: { enabled: ssoEnabled },
   };
 }
 

@@ -4,9 +4,13 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DangerZone, confirmationMatches, deletionProof } from './DeleteAccount';
+import { SsoReauthProvider } from './SsoReauth';
+import { APIError } from '@/lib/utils/errors';
 
 const deleteAccount = vi.fn();
 const sendPhoneCode = vi.fn();
+const startSsoReauth = vi.hoisted(() => vi.fn());
+const navigateTo = vi.hoisted(() => vi.fn());
 
 type TestUser = {
   id: string;
@@ -17,6 +21,7 @@ type TestUser = {
   has_password?: boolean;
   role: string;
   is_admin: boolean;
+  sso_reauth_provider?: { id: string; name: string } | null;
 };
 
 let user: TestUser;
@@ -40,6 +45,17 @@ vi.mock('@/lib/api/auth', () => ({
   sendPhoneCode: (...args: unknown[]) => sendPhoneCode(...args),
 }));
 
+vi.mock('@/lib/api/sso', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/api/sso')>()),
+  startSsoReauth,
+}));
+
+// jsdom's location cannot be watched; the page leaves through this.
+vi.mock('@/lib/utils/navigation', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/utils/navigation')>()),
+  navigateTo,
+}));
+
 function passwordUser(extra: Partial<TestUser> = {}): TestUser {
   return {
     id: 'owner',
@@ -60,6 +76,15 @@ function phoneUser(): TestUser {
   });
 }
 
+/** An account created by single sign-on: no password, and no phone to send a code to. */
+function ssoUser(): TestUser {
+  return passwordUser({
+    email: 'carol@example.edu',
+    has_password: false,
+    sso_reauth_provider: { id: 'example-univ', name: 'Example University' },
+  });
+}
+
 function openDialog() {
   render(<DangerZone />);
   fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
@@ -74,6 +99,9 @@ beforeEach(() => {
   features = {};
   deleteAccount.mockReset().mockResolvedValue(undefined);
   sendPhoneCode.mockReset().mockResolvedValue({ message: 'sent', retry_after: 60 });
+  startSsoReauth.mockReset().mockResolvedValue('https://idp.example.edu/authorize?prompt=login');
+  navigateTo.mockReset();
+  window.sessionStorage.clear();
 });
 
 afterEach(cleanup);
@@ -92,6 +120,18 @@ describe('deletionProof', () => {
     expect(deletionProof(passwordUser({ role: 'admin', is_admin: true }) as never, true)).toBe(
       'admin',
     );
+  });
+
+  it('sends an account with neither a password nor a phone to its identity provider', () => {
+    expect(deletionProof(ssoUser() as never, false)).toBe('sso');
+    expect(deletionProof(ssoUser() as never, true)).toBe('sso');
+    // Without a provider to confirm with there is nothing it can prove here.
+    expect(
+      deletionProof(
+        passwordUser({ has_password: false, sso_reauth_provider: null }) as never,
+        true,
+      ),
+    ).toBe('unavailable');
   });
 });
 
@@ -186,5 +226,127 @@ describe('DangerZone', () => {
     openDialog();
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+});
+
+// The account has no password and no phone: it confirms by signing in at its
+// identity provider again, and the page that comes back finishes the deletion.
+describe('DangerZone, confirming through the identity provider', () => {
+  const spend = vi.fn();
+
+  /**
+   * The settings page as it is when the provider has sent the browser back.
+   * `draft` is what this tab typed before it left; `null` when it never left.
+   */
+  function renderConfirmed(draft: string | null) {
+    return render(
+      <SsoReauthProvider
+        value={{
+          confirmed: 'delete_account',
+          draft: draft === null ? null : { purpose: 'delete_account', value: draft },
+          spend,
+          returnTo: '/dashboard/settings',
+        }}
+      >
+        <DangerZone />
+      </SsoReauthProvider>,
+    );
+  }
+
+  beforeEach(() => {
+    user = ssoUser();
+    spend.mockReset();
+  });
+
+  it('offers the provider in place of a password, and deletes nothing before it confirms', () => {
+    openDialog();
+
+    expect(screen.queryByLabelText('Your password')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Verification code')).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Confirm with Example University' }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(confirmBox(), { target: { value: 'carol@example.edu' } });
+    expect(deleteButton()).toBeDisabled();
+  });
+
+  it('leaves for the provider for this action, keeping what was typed', async () => {
+    window.history.replaceState(null, '', '/dashboard/settings');
+    openDialog();
+    fireEvent.change(confirmBox(), { target: { value: 'carol@example.edu' } });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm with Example University' }));
+
+    await waitFor(() =>
+      expect(navigateTo).toHaveBeenCalledWith('https://idp.example.edu/authorize?prompt=login'),
+    );
+    expect(startSsoReauth).toHaveBeenCalledExactlyOnceWith('delete_account', '/dashboard/settings');
+    expect(JSON.parse(window.sessionStorage.getItem('sso-reauth-draft')!)).toMatchObject({
+      purpose: 'delete_account',
+      userId: 'owner',
+      value: 'carol@example.edu',
+    });
+    expect(deleteAccount).not.toHaveBeenCalled();
+  });
+
+  it('opens the dialog again when the provider sends the browser back, confirmed', async () => {
+    renderConfirmed('carol@example.edu');
+
+    // No click: the dialog that was left is open, with what was typed in it.
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByText('Identity confirmed. You can continue.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Confirm with/ })).not.toBeInTheDocument();
+    expect(confirmBox()).toHaveValue('carol@example.edu');
+    expect(deleteButton()).toBeEnabled();
+
+    fireEvent.click(deleteButton());
+
+    // Neither a password nor a code: the provider's confirmation is the proof.
+    await waitFor(() =>
+      expect(deleteAccount).toHaveBeenCalledExactlyOnceWith({ confirm: 'carol@example.edu' }),
+    );
+  });
+
+  it('still asks for the identifier when nothing was typed before leaving', () => {
+    renderConfirmed('');
+
+    expect(confirmBox()).toHaveValue('');
+    expect(deleteButton()).toBeDisabled();
+    fireEvent.change(confirmBox(), { target: { value: 'carol@example.edu' } });
+    expect(deleteButton()).toBeEnabled();
+  });
+
+  // A link someone was sent can name a confirmation; only the gateway holds one.
+  it('opens nothing for an address that names a confirmation this tab did not leave for', () => {
+    renderConfirmed(null);
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    // Opened by hand, it is the confirmed dialog: the gateway decides if it holds.
+    fireEvent.click(screen.getByRole('button', { name: 'Delete account' }));
+    expect(screen.getByText('Identity confirmed. You can continue.')).toBeInTheDocument();
+  });
+
+  it('gives the confirmation up when the gateway refuses, since it holds only once', async () => {
+    deleteAccount.mockRejectedValue(
+      new APIError('UNKNOWN_ERROR', 'Confirm your identity with your organization first.', 400),
+    );
+    renderConfirmed('carol@example.edu');
+
+    fireEvent.click(deleteButton());
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Confirm your identity with your organization first.',
+    );
+    expect(spend).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('stays closed on an ordinary visit', () => {
+    render(<DangerZone />);
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete account' })).toBeEnabled();
   });
 });

@@ -9,10 +9,11 @@ from typing import TYPE_CHECKING, Any
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, Response, status
 
 from serving.config.settings import get_settings, has_role
+from serving.observability import detached_tasks
 from serving.observability.alert_history import hooks as alert_history
 from serving.observability.alerts import AlertSeverity, alert_on_transition
 from serving.observability.state_alert_policy import db_disconnect_policy
-from serving.servers import restart
+from serving.servers import handoff, restart
 from serving.servers.auth import is_user_auth_enabled, optional_verify_api_key
 from serving.servers.deps import (
     database_enabled,
@@ -65,6 +66,7 @@ def _report_in_background(coro: Coroutine[Any, Any, bool]) -> None:
         return
     _ALERT_TASKS.add(task)
     task.add_done_callback(_ALERT_TASKS.discard)
+    detached_tasks.track(task, name="alert_send")
 
 
 def _route_is_published(route: Any) -> bool:
@@ -306,12 +308,28 @@ async def root() -> dict[str, Any]:
     }
 
 
+def _for_caller(body: dict[str, Any], admin: bool) -> dict[str, Any]:
+    """*body* for an administrator; for anyone else, only its ``status``.
+
+    The liveness and readiness probes are anonymous, and what they need is the
+    status code and ``status``. The rest names this process (``instance``), the
+    number of routes and how the stores are built (``postgres``, an in-memory
+    cache): an outline of the deployment that only an administrator
+    (:func:`_admin_caller`) is shown. ``admin`` counts only when it is ``True``,
+    so a direct call that leaves out the dependency gets the public answer.
+    """
+    if admin is True:
+        return body
+    return {"status": body["status"]}
+
+
 @router.get("/health")
 async def health(
     response: Response,
     router_exec=Depends(get_router),
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
     """Liveness check endpoint with active database connection test.
 
@@ -331,7 +349,19 @@ async def health(
     The store probe behind it is shared: one probe answers every caller for
     :data:`HEALTH_PROBE_TTL_SEC`, and callers arriving while it runs wait for
     it rather than starting their own.
+
+    Anyone is answered ``{"status": ...}`` with the status code; only an
+    administrator is also shown the reason, this process's ``instance``, the
+    route count and each store's state (:func:`_for_caller`).
     """
+    body = await _health_body(response, router_exec, op_store, log_store)
+    return _for_caller(body, admin)
+
+
+async def _health_body(
+    response: Response, router_exec: Any, op_store: Any, log_store: Any
+) -> dict[str, Any]:
+    """The full ``/health`` answer, setting the status code on *response*."""
     routes_count = sum(_route_is_published(route) for route in router_exec.routes.values())
 
     store_health = await _cached_store_health(op_store, log_store)
@@ -404,6 +434,7 @@ async def health_ready(
     response: Response,
     op_store=Depends(get_operational_store),
     log_store=Depends(get_log_store),
+    admin: bool = Depends(_admin_caller),
 ) -> dict[str, Any]:
     """Strict readiness probe: every configured store must be reachable.
 
@@ -413,7 +444,23 @@ async def health_ready(
     instance from a load balancer on partial-DB degradation. Distinct
     from ``/health`` (liveness), which stays 200 with ``status:
     "degraded"`` to avoid container restart loops.
+
+    Like ``/health``, anyone is answered ``{"status": ...}``; an administrator
+    is also shown the reason and the stores (:func:`_for_caller`).
     """
+    return _for_caller(await _ready_body(request, response, op_store, log_store), admin)
+
+
+async def _ready_body(
+    request: Request, response: Response, op_store: Any, log_store: Any
+) -> dict[str, Any]:
+    """The full ``/health/ready`` answer, setting the status code on *response*."""
+    # A process handing its traffic to another one (serving/servers/handoff.py)
+    # still serves what reaches it, but should be given nothing more.
+    if handoff.HANDOFF.state is not handoff.State.SERVING:
+        response.status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+        return {"status": "not_ready", "reason": handoff.HANDOFF.state.value}
+
     # Membership gates readiness only while it gates identity: with the master
     # TRUST_PROXY_HEADERS switch off, discovery is skipped and identities stay
     # unknown, so the store checks below decide alone.
@@ -524,7 +571,29 @@ async def deep_health(
         "providers": provider_status,
         "route_exclusions": route_exclusions,
         "config_groups": config_groups,
+        "spend_accounting": _spend_accounting(admin is True),
     }
+
+
+def _spend_accounting(admin: bool) -> dict[str, Any]:
+    """The spend accounting mode this process runs in and, for an administrator, its numbers.
+
+    In the shared mode each ledger of this process reports what it observed
+    since it started and what it holds
+    (:meth:`serving.shared_spend.ledger.SharedSpendLedger.stats`): admission
+    latency and outcomes, what is held and for how long, how settlements are
+    going, and its last hourly survey of what every process holds. They name
+    no account, but they are operating figures, so only an administrator is
+    shown them. Like the route exclusions, they do not feed ``status``: a
+    stalled settlement is alerted on its own and is not a reason to take a
+    serving gateway out of a load balancer.
+    """
+    from serving.shared_spend import ledger as shared_ledger, mode as spend_mode
+
+    report: dict[str, Any] = {"mode": spend_mode.current()}
+    if admin and spend_mode.is_shared():
+        report["ledgers"] = [ledger.stats() for ledger in shared_ledger.all_ledgers()]
+    return report
 
 
 @router.get("/health/model-activity")

@@ -262,6 +262,11 @@ async def test_get_api_key_detail_success(admin_client):
     assert payload["user_id"] == "alice"
     assert payload["usage"]["today"]["quota_remaining_usd"] == 80.0
     assert payload["usage"]["models_used"] == ["model-a"]
+    # A USD ledger answers with exactly the fields it always had, nested ones
+    # included: no native ``cost`` or ``quota_remaining``, no ``currency``.
+    for window in ("today", "this_month"):
+        assert set(payload["usage"][window]) == {"cost_usd", "requests", "quota_remaining_usd"}
+    assert "currency" not in payload and "quota_daily_cost" not in payload
 
 
 @pytest.mark.asyncio

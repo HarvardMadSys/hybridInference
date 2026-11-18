@@ -1,10 +1,12 @@
 import { fetchWithAuth, jsonOrThrow } from './client';
+import { readJson } from './detail';
 import { config } from '@/config/env';
 import type {
   CostHistoryPoint,
   QuotaStateFilter,
   UsersSummary,
 } from '@/app/dashboard/admin/users/types';
+import type { ApiKeyListItem, Project } from './user';
 
 const API_BASE = config.apiBase;
 
@@ -13,6 +15,7 @@ const API_BASE = config.apiBase;
 // ========================================
 
 export interface AdminUser {
+  currency?: 'USD' | 'CNY';
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -32,8 +35,11 @@ export interface AdminUser {
   has_key: boolean;
   key_prefix: string | null;
   key_status: string | null;
+  usage_today?: number;
   usage_today_usd: number;
+  usage_month?: number;
   usage_month_usd: number;
+  usage_alltime?: number;
   usage_alltime_usd: number;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
@@ -58,6 +64,7 @@ interface StatusCounts {
 }
 
 interface ListUsersResponse {
+  currency?: 'USD' | 'CNY';
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
@@ -72,6 +79,7 @@ interface ApproveRejectResponse {
 }
 
 interface ListUsersOptions {
+  currency?: 'USD' | 'CNY';
   status?: string;
   search?: string;
   sortBy?: UserSortBy;
@@ -93,6 +101,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
   if (opts.sortBy) params.set('sort_by', opts.sortBy);
   params.set('limit', String(opts.limit ?? 100));
   params.set('offset', String(opts.offset ?? 0));
+  if (opts.currency) params.set('currency', opts.currency);
   if (opts.minCostToday !== undefined) params.set('min_cost_today', String(opts.minCostToday));
   if (opts.minCostMonth !== undefined) params.set('min_cost_month', String(opts.minCostMonth));
   if (opts.quotaState) params.set('quota_state', opts.quotaState);
@@ -113,6 +122,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
 // ========================================
 
 interface BulkCostHistoryResponse {
+  currency?: 'USD' | 'CNY';
   days: number;
   histories: Record<string, CostHistoryPoint[]>;
 }
@@ -205,7 +215,19 @@ export async function rejectUser(userId: string, reason: string): Promise<Approv
 // User Detail & Edit
 // ========================================
 
+/** One single sign-on identity linked to a user, as an administrator sees it. */
+export interface UserSsoIdentity {
+  id: string;
+  provider_id: string;
+  provider_name: string;
+  /** The email the identity carried when it was linked. */
+  email: string | null;
+  linked_at: string;
+  last_login_at: string | null;
+}
+
 export interface UserDetail {
+  currency?: 'USD' | 'CNY';
   id: string;
   email: string | null;
   login_name?: string | null;
@@ -216,12 +238,18 @@ export interface UserDetail {
   email_verified: boolean;
   created_at: string;
   last_login_at: string | null;
+  /** The account has an authenticator app. Absent from a gateway older than the feature. */
+  two_factor_enabled?: boolean;
   has_key: boolean;
   key_prefix: string | null;
+  quota_daily?: number | null;
   quota_daily_usd: number | null;
+  quota_monthly?: number | null;
   quota_monthly_usd: number | null;
+  usage_today?: number;
   usage_today_usd: number;
   usage_today_requests: number;
+  usage_month?: number;
   usage_month_usd: number;
   usage_month_requests: number;
   models_used: string[];
@@ -233,6 +261,30 @@ export interface UserDetail {
   avg_turns: number | null;
   avg_user_turns: number | null;
   ask_question_fraction: number | null;
+  /** The identities that can sign in to the account; absent from an older gateway. */
+  sso_identities?: UserSsoIdentity[];
+}
+
+/**
+ * Remove another account's authenticator app and recovery codes, for someone
+ * who lost their device. Confirmed like any guarded change: by a recent code,
+ * or by `password` when the administrator's own account has no authenticator.
+ * 409 for the administrator's own account.
+ */
+export async function resetUserTwoFactor(
+  userId: string,
+  password?: string,
+): Promise<{ user_id: string; removed: boolean }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/two-factor/reset`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return readJson(resp);
 }
 
 export async function getUserDetail(
@@ -249,6 +301,40 @@ export async function getUserDetail(
     `/admin/users/${encodeURIComponent(userId)}/detail${qs}`,
   );
   return jsonOrThrow<UserDetail>(resp);
+}
+
+/** An account's projects and every key it holds, as an administrator reads them. */
+export interface AdminUserProjects {
+  projects: Project[];
+  keys: ApiKeyListItem[];
+}
+
+export async function getUserProjects(userId: string): Promise<AdminUserProjects> {
+  const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/projects`);
+  return jsonOrThrow<AdminUserProjects>(resp);
+}
+
+/**
+ * Remove one single sign-on identity from a user's account. Confirmed like any
+ * guarded change: by a recent code, or by `password` when the administrator's
+ * own account has no authenticator. The admin token cannot stand in for either.
+ * The account's sessions and API keys are untouched.
+ */
+export async function unlinkUserSsoIdentity(
+  userId: string,
+  identityId: string,
+  password?: string,
+): Promise<{ message: string }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `/admin/users/${encodeURIComponent(userId)}/sso-identities/${encodeURIComponent(identityId)}/unlink`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(password ? { password } : {}),
+    },
+  );
+  return jsonOrThrow<{ message: string }>(resp);
 }
 
 export interface UserUsageTotals {
@@ -354,9 +440,12 @@ export async function getBulkAutomationScores(
 }
 
 export interface UpdateUserData {
+  currency?: 'USD' | 'CNY';
   role?: string;
   status?: string;
+  quota_daily_cost?: number;
   quota_daily_cost_usd?: number;
+  quota_monthly_cost?: number;
   quota_monthly_cost_usd?: number;
   disabled_models?: string[];
   max_concurrent_requests?: number | null;
@@ -375,7 +464,10 @@ export async function updateUser(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(data),
   });
-  return jsonOrThrow<{ user_id: string; updated_fields: string[]; message: string }>(resp);
+  // The gateway's own reason for a refusal ("Cannot demote your own admin
+  // role.", an account with no authenticator): the shared mapping would read
+  // these 409s as a signup conflict.
+  return readJson<{ user_id: string; updated_fields: string[]; message: string }>(resp);
 }
 
 export async function deleteUser(userId: string, reason: string): Promise<ApproveRejectResponse> {
@@ -654,6 +746,7 @@ export async function getTtftScatter({
 }
 
 export interface AdminRecentRequestItem {
+  currency?: 'USD' | 'CNY';
   request_id: string;
   user_id: string | null;
   user_name?: string | null;
@@ -694,6 +787,7 @@ export interface AdminRecentRequestItem {
   cache_read_tokens?: number | null;
   cache_write_tokens?: number | null;
   total_tokens?: number | null;
+  cost?: number | null;
   cost_usd?: number | null;
   error?: string | null;
   routewise?: AdminRouteWiseDecision | null;
@@ -736,6 +830,7 @@ export interface AdminRecentRequestItem {
 // lib/utils/routewise.ts); the second group mirrors the real persisted keys used
 // by the RouteWise decisions panel.
 export interface AdminRouteWiseDecision {
+  currency?: 'USD' | 'CNY';
   // --- legacy / compatibility fields (do not remove) ---
   selected_provider_type?: string | null;
   selected_provider?: string | null;
@@ -745,6 +840,7 @@ export interface AdminRouteWiseDecision {
   hedge_backup_endpoint_id?: string | null;
   backup_won?: boolean | null;
   // --- raw persisted metadata fields ---
+  candidate_costs?: Record<string, number>;
   candidate_costs_usd?: Record<string, number>;
   candidate_mean_ttft_sec?: Record<string, number>;
   candidate_provider_types?: Record<string, string>;
@@ -752,6 +848,7 @@ export interface AdminRouteWiseDecision {
   candidate_quota_remaining?: Record<string, number>;
   lp_weights?: Record<string, number>;
   lp_status?: string | null;
+  budget?: number | null;
   budget_usd?: number | null;
   selected_endpoint?: string | null;
   final_endpoint?: string | null;
@@ -763,6 +860,7 @@ export interface AdminRouteWiseDecision {
 }
 
 export interface AdminRecentRequestsResponse {
+  currency?: 'USD' | 'CNY';
   requests: AdminRecentRequestItem[];
   // Every matching row when `total_exact`. Otherwise counting them took longer
   // than the backend allows, and this is the rows through this page: a lower
@@ -1433,6 +1531,7 @@ export async function updateUsageInsightsSettings(
 // ========================================
 
 export interface BroadcastPreviewRequest {
+  currency?: 'USD' | 'CNY';
   template_key?: string | null;
   template_vars?: Record<string, string>;
   subject?: string;
@@ -1443,6 +1542,7 @@ export interface BroadcastPreviewRequest {
   target_statuses: string[];
   // When set, restrict recipients to users who have spent more than this many
   // USD today (UTC). Omit/null for no spend filter.
+  min_spend_today?: number | null;
   min_spend_today_usd?: number | null;
 }
 
@@ -1893,6 +1993,7 @@ export async function getProviderObservability(params: {
 export type TokenUsageRange = '1h' | '24h' | '7d' | '30d';
 
 export interface ProviderTokenUsageRow {
+  currency?: 'USD' | 'CNY';
   provider: string;
   provider_display_name?: string | null;
   model_id: string;
@@ -1900,20 +2001,24 @@ export interface ProviderTokenUsageRow {
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost?: number;
   cost_usd: number;
   request_count: number;
 }
 
 export interface ProviderTokenUsageTotals {
+  currency?: 'USD' | 'CNY';
   input_tokens: number;
   output_tokens: number;
   cached_tokens: number;
   reasoning_tokens: number;
+  cost?: number;
   cost_usd: number;
   request_count: number;
 }
 
 export interface ProviderTokenUsageResponse {
+  currency?: 'USD' | 'CNY';
   range: TokenUsageRange;
   window: { from: string; to: string };
   refreshed_at: string;
@@ -1989,7 +2094,26 @@ export interface RuntimeSettingItem {
   description: string;
   min?: number | null;
   max?: number | null;
+  /**
+   * Changing it needs the signed-in administrator's confirmation: a recent
+   * authenticator code, the account's password, or a fresh single sign-on.
+   * The admin token cannot give one. Absent from an older gateway.
+   */
+  security_relevant?: boolean;
+  /**
+   * A role quota on a ledger kept in another currency than USD: `value`,
+   * `default_value`, `min` and `max` stay USD figures, and these give the same
+   * in `currency`, the unit the quota is edited and sent in.
+   */
+  currency?: LedgerCurrency;
+  amount?: number | null;
+  default_amount?: number | null;
+  min_amount?: number | null;
+  max_amount?: number | null;
 }
+
+/** The units a deployment's ledger can be kept in. */
+export type LedgerCurrency = 'USD' | 'CNY';
 
 export interface ListSettingsResponse {
   settings: RuntimeSettingItem[];
@@ -2000,16 +2124,51 @@ export async function listRuntimeSettings(): Promise<ListSettingsResponse> {
   return jsonOrThrow<ListSettingsResponse>(resp);
 }
 
+/**
+ * Change one runtime setting. A `security_relevant` one is confirmed like any
+ * guarded change: by a recent code (the console asks for one when the gateway
+ * wants it), by `password` when the administrator's account has no
+ * authenticator, or by a fresh sign-in at its identity provider.
+ */
 export async function updateRuntimeSetting(
   key: string,
   value: unknown,
+  password?: string,
+  currency?: LedgerCurrency,
 ): Promise<RuntimeSettingItem> {
   const resp = await fetchWithAuth(API_BASE, `/admin/settings/${encodeURIComponent(key)}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ value }),
+    body: JSON.stringify({
+      value,
+      ...(currency ? { currency } : {}),
+      ...(password ? { password } : {}),
+    }),
   });
   return jsonOrThrow<RuntimeSettingItem>(resp);
+}
+
+/**
+ * Change several runtime settings behind one confirmation. Every value is
+ * checked first, and nothing is written when one is refused. Resolves to the
+ * settings as written. `currency` is the unit the role quotas among `values`
+ * are given in; without it the gateway reads them as USD.
+ */
+export async function updateRuntimeSettings(
+  values: Record<string, unknown>,
+  password?: string,
+  currency?: LedgerCurrency,
+): Promise<RuntimeSettingItem[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/settings', {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      values,
+      ...(currency ? { currency } : {}),
+      ...(password ? { password } : {}),
+    }),
+  });
+  return (await jsonOrThrow<ListSettingsResponse>(resp)).settings;
 }
 
 // ========================================
@@ -2112,15 +2271,19 @@ interface ListAdminModelVisibilityResponse {
 }
 
 export interface RoleQuotaPreview {
+  currency?: 'USD' | 'CNY';
   role: Role;
   quota: number;
+  amount?: number;
   keys_affected: number;
   users_affected: number;
 }
 
-interface RoleQuotaApplyResult {
+export interface RoleQuotaApplyResult {
+  currency?: 'USD' | 'CNY';
   role: Role;
   quota: number;
+  amount?: number;
   keys_updated: number;
 }
 
@@ -2132,11 +2295,14 @@ export async function previewRoleQuotaApply(role: Role): Promise<RoleQuotaPrevie
   return jsonOrThrow<RoleQuotaPreview>(resp);
 }
 
-export async function applyRoleQuota(role: Role): Promise<RoleQuotaApplyResult> {
+export async function applyRoleQuota(
+  role: Role,
+  currency?: 'USD' | 'CNY',
+): Promise<RoleQuotaApplyResult> {
   const resp = await fetchWithAuth(API_BASE, '/admin/quota/role-apply', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ role }),
+    body: JSON.stringify({ role, ...(currency ? { currency } : {}) }),
   });
   return jsonOrThrow<RoleQuotaApplyResult>(resp);
 }
@@ -2589,6 +2755,7 @@ export interface OpenRouterProviderOption {
 export type OpenRouterSortPolicy = 'price' | 'throughput' | 'latency';
 
 export interface ProviderRoute {
+  currency?: 'USD' | 'CNY';
   model_id: string;
   strategy: string;
   route_id: string;
@@ -2656,6 +2823,7 @@ export interface RouteCapabilities {
 }
 
 interface ListProviderRoutesResponse {
+  currency?: 'USD' | 'CNY';
   model_id?: string;
   strategy?: string;
   provider_options: ProviderRouteOption[];
@@ -2742,10 +2910,13 @@ export interface RuntimeModelCapabilities {
 }
 
 interface CreateProviderRouteModelPayload extends CreateProviderRoutePayload {
+  currency?: 'USD' | 'CNY';
   model_id: string;
   strategy: ProviderRouteStrategy;
   required_role?: Role;
-  pricing: Record<string, string>;
+  /** Legacy USD price strings; a native-currency runtime sends `prices` with `currency`. */
+  pricing?: Record<string, string>;
+  prices?: Record<string, string>;
 }
 
 interface VerifyProviderRouteResponse {
