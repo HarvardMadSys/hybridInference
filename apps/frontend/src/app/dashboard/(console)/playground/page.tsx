@@ -159,10 +159,7 @@ function applyToolDeltas(current: ToolCall[] | undefined, deltas: ToolCallDelta[
       ...(delta.id ? { id: delta.id } : {}),
       ...(delta.name
         ? {
-            name:
-              delta.nameMode === 'append'
-                ? (existing?.name ?? '') + delta.name
-                : delta.name,
+            name: delta.nameMode === 'append' ? (existing?.name ?? '') + delta.name : delta.name,
           }
         : {}),
       ...(delta.arguments ? { arguments: (existing?.arguments ?? '') + delta.arguments } : {}),
