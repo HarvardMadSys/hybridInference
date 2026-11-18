@@ -73,12 +73,14 @@ The tables come from the schema migrations (:mod:`migrations`).
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import math
 import secrets
 from collections import OrderedDict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 import asyncpg
 
@@ -86,6 +88,7 @@ from serving.storage.pools import SingleConnectionPool
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from datetime import datetime
 
 logger = get_logger(__name__)
@@ -155,6 +158,9 @@ SURFACE_OPENAI_FILE = "openai_file"
 #: Batches the retired Message Batches API (``/v1/messages/batches``) stored.
 #: Nothing creates one any more; they are still run, read and purged.
 SURFACE_ANTHROPIC = "anthropic"
+#: The ``/v1/batches`` input methods, which share one ``Idempotency-Key``
+#: namespace per account: a key names at most one batch across them.
+_KEY_SHARING_SURFACES = (SURFACE_OPENAI_INLINE, SURFACE_OPENAI_FILE)
 
 TARGET_CHAT = "chat"
 TARGET_EMBEDDINGS = "embeddings"
@@ -213,6 +219,38 @@ _PURGE_LIMIT = 100
 # Batches whose result count (see BatchStore.result_budget_spent) a process
 # keeps; one it has forgotten is read again from its rows.
 _RESULT_BYTES_TRACKED = 4096
+
+# How every failure a batch's spent result budget causes begins (the store's,
+# for a response that did not fit, and the scheduler's, for a request it then
+# did not run). The response that did not fit was never stored, so these
+# failures are the only lasting record that the budget was spent.
+RESULT_BUDGET_SPENT_MESSAGE = "The batch's responses reached their storage limit of {budget} bytes"
+_RESULT_BUDGET_SPENT_PATTERN = (
+    RESULT_BUDGET_SPENT_MESSAGE.split("{", 1)[0].replace("%", r"\%").replace("_", r"\_") + "%"
+)
+
+
+class _ResultCount(NamedTuple):
+    """A batch's result budget as committed: what its stored responses take up, and whether spent.
+
+    *spent* is set once a response that did not fit has had its failure
+    committed. It is not derived from *stored*: that response was never
+    stored, so no sum of the stored ones gives it back.
+    """
+
+    stored: int
+    spent: bool
+
+
+class _BudgetTurn:
+    """One batch's turn at its result budget in this process, and who holds or awaits it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
 
 # Items an erasure deletes per statement (see BatchStore.delete_user_batches).
 _ERASE_ITEMS_PER_STATEMENT = 500
@@ -761,10 +799,15 @@ class BatchStore:
     def __init__(self, pool: Any) -> None:
         """Wrap an asyncpg pool."""
         self._pool = pool
-        # What each batch's responses come to, serialized, as this process
-        # counts them (see result_budget_spent): read from the database the
-        # first time a batch needs it, then raised by every response stored.
-        self._result_bytes: OrderedDict[str, int] = OrderedDict()
+        # Each batch's result budget as this process counts it (see
+        # result_budget_spent): read from the database the first time a batch
+        # needs it, then moved on by every completion that commits. Only
+        # committed state is ever written here.
+        self._result_counts: OrderedDict[str, _ResultCount] = OrderedDict()
+        # Per batch, this process's completions that judge its result budget,
+        # taken one at a time (see _budget_turn); a batch is listed only while
+        # one of them holds or awaits its turn.
+        self._budget_turns: dict[str, _BudgetTurn] = {}
 
     @property
     def pool(self) -> Any:
@@ -1468,19 +1511,39 @@ class BatchStore:
     async def _idempotent_replay(
         self, conn: Any, owner_id: str, api_surface: str, key: str, digest: str
     ) -> dict[str, Any] | None:
-        """Under the user's admission lock: the batch a key already made, or None."""
-        record = await conn.fetchrow(
+        """Under the user's admission lock: the batch a key already made, or None.
+
+        An ``Idempotency-Key`` belongs to the account, not to one input method:
+        a live record of the key under the other ``/v1/batches`` surface (an
+        inline batch for a file create, or the reverse) is a different request.
+        It is read here, under the admission lock the create transaction
+        holds, so two creates racing with one key across the input methods
+        make one batch, and the other is refused.
+
+        Raises:
+            IdempotencyConflict: The key was used for a different request, by
+                this input method or the other.
+            IdempotencyTombstoned: The key's batch (for this request) was deleted.
+        """
+        surfaces = list(_KEY_SHARING_SURFACES) if api_surface in _KEY_SHARING_SURFACES else []
+        records = await conn.fetch(
             f"""
-            SELECT r.batch_id, r.request_digest, r.deleted_at
+            SELECT r.api_surface, r.batch_id, r.request_digest, r.deleted_at
             FROM batch_idempotency AS r
-            WHERE r.owner_id = $1 AND r.api_surface = $2 AND r.idem_key = $3
+            WHERE r.owner_id = $1 AND r.idem_key = $3
+              AND (r.api_surface = $2 OR r.api_surface = ANY($4::text[]))
               AND {_IDEMPOTENCY_LIVE}
             FOR UPDATE OF r
             """,
             owner_id,
             api_surface,
             key,
+            surfaces,
         )
+        record = next((r for r in records if r["api_surface"] == api_surface), None)
+        other = next((r for r in records if r["api_surface"] != api_surface), None)
+        if record is None and other is not None:
+            raise IdempotencyConflict(other["batch_id"])
         if record is None:
             # An expired record may still be there; it no longer counts.
             await conn.execute(
@@ -2302,8 +2365,13 @@ class BatchStore:
             max_batch_result_bytes: What the batch's responses may come to in
                 all, serialized (see :meth:`result_budget_spent`). A response
                 that does not fit is not stored: the item fails with
-                ``result_too_large`` (its cost still counts), and the batch's
-                budget counts as spent from then on.
+                ``result_too_large`` (its cost still counts), and once that
+                failure is committed the batch's budget counts as spent from
+                then on, whatever a later write does. The count changes only
+                once a write commits: one the claim guard refuses, or one
+                rolled back or cancelled, leaves it as it was.
+                This process's completions of one batch judge the budget one
+                at a time, each after the previous one's outcome is counted.
 
         Returns:
             False, changing nothing, when the item is no longer running under
@@ -2334,86 +2402,105 @@ class BatchStore:
                 "status": 500,
             }
             status_code = 500
-        async with self._pool.acquire() as conn, conn.transaction():
-            counted: str | None = None
-            if stored_response is not None and max_batch_result_bytes:
-                budget = int(max_batch_result_bytes)
-                # The batch's row lock (taken again by the write below)
-                # orders every completion of the batch, so its count is read
-                # and raised by one of them at a time.
-                locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
-                if locked is not None:
-                    stored = await self._stored_result_bytes(conn, locked["id"])
-                    if stored + len(stored_response) > budget:
-                        self._result_bytes[locked["id"]] = max(stored, budget)
-                        stored_response = None
-                        response = None
-                        error = {
-                            "code": "result_too_large",
-                            "message": "The batch's responses reached their storage limit "
-                            f"of {budget} bytes.",
-                            "status": 500,
-                        }
-                        status_code = 500
-                    else:
-                        counted = locked["id"]
-            status = "completed" if error is None else "failed"
-            batch = await self._guarded_item_write(
-                conn,
-                _COMPLETE_ITEM_SQL,
-                item_id,
-                worker_id,
-                attempt,
-                status,
-                stored_response,
-                _dump_json(error),
-                status_code,
-                prompt_tokens,
-                completion_tokens,
-                cost_usd,
-                request_id,
-                _dump_json(usage),
-                cost_status,
-            )
-            if batch is None:
-                return False
-            batch_id, batch_status, _owner = batch
-            if counted is not None and stored_response is not None:
-                self._count_result_bytes(counted, len(stored_response))
-            await conn.execute(
-                _CLOSE_ATTEMPT_SQL,
-                item_id,
-                attempt,
-                "succeeded" if error is None else "failed",
-                status_code,
-                request_id,
-                _dump_json(usage),
-                cost_usd,
-                cost_status,
-                _dump_json(error),
-            )
-            await conn.execute(
-                """
-                UPDATE batch_jobs
-                SET completed_count = completed_count + $2,
-                    failed_count = failed_count + $3,
-                    cost_usd = cost_usd + $4,
-                    prompt_tokens = prompt_tokens + $5,
-                    completion_tokens = completion_tokens + $6,
-                    unknown_cost_count = unknown_cost_count + $7,
-                    cache_read_tokens = cache_read_tokens + $8
-                WHERE id = $1
-                """,
-                batch_id,
-                int(error is None),
-                int(error is not None),
-                float(cost_usd or 0.0),
-                int(prompt_tokens or 0),
-                int(completion_tokens or 0),
-                int(cost_status == "unknown"),
-                int(cached_tokens or 0),
-            )
-            await self._settle(conn, batch_id, batch_status)
+        budget = int(max_batch_result_bytes or 0)
+        judged = stored_response is not None and budget > 0
+        budget_batch = await self._item_batch_id(item_id) if judged else None
+        # The batch's budget count is judged, written and published in one turn
+        # per batch in this process: the next completion of the batch judges
+        # only after this one's outcome is published (or dropped), and the
+        # count, which the scheduler also reads, only ever holds what has
+        # committed. Another process keeps a count of its own (see
+        # result_budget_spent); the batch's row lock orders them in the database.
+        async with self._budget_turn(budget_batch):
+            publish: _ResultCount | None = None
+            try:
+                async with self._pool.acquire() as conn, conn.transaction():
+                    if judged:
+                        locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
+                        if locked is not None:
+                            count = await self._result_count(conn, locked["id"])
+                            if count.spent or count.stored + len(stored_response) > budget:
+                                # Once this failure commits, the budget is spent.
+                                publish = _ResultCount(count.stored, spent=True)
+                                stored_response = None
+                                response = None
+                                error = {
+                                    "code": "result_too_large",
+                                    "message": RESULT_BUDGET_SPENT_MESSAGE.format(budget=budget)
+                                    + ".",
+                                    "status": 500,
+                                }
+                                status_code = 500
+                            else:
+                                publish = _ResultCount(count.stored + len(stored_response), False)
+                    status = "completed" if error is None else "failed"
+                    batch = await self._guarded_item_write(
+                        conn,
+                        _COMPLETE_ITEM_SQL,
+                        item_id,
+                        worker_id,
+                        attempt,
+                        status,
+                        stored_response,
+                        _dump_json(error),
+                        status_code,
+                        prompt_tokens,
+                        completion_tokens,
+                        cost_usd,
+                        request_id,
+                        _dump_json(usage),
+                        cost_status,
+                    )
+                    if batch is None:
+                        # Another claim owns the item now: this write changed
+                        # nothing, so neither does it change the count.
+                        return False
+                    batch_id, batch_status, _owner = batch
+                    await conn.execute(
+                        _CLOSE_ATTEMPT_SQL,
+                        item_id,
+                        attempt,
+                        "succeeded" if error is None else "failed",
+                        status_code,
+                        request_id,
+                        _dump_json(usage),
+                        cost_usd,
+                        cost_status,
+                        _dump_json(error),
+                    )
+                    await conn.execute(
+                        """
+                        UPDATE batch_jobs
+                        SET completed_count = completed_count + $2,
+                            failed_count = failed_count + $3,
+                            cost_usd = cost_usd + $4,
+                            prompt_tokens = prompt_tokens + $5,
+                            completion_tokens = completion_tokens + $6,
+                            unknown_cost_count = unknown_cost_count + $7,
+                            cache_read_tokens = cache_read_tokens + $8
+                        WHERE id = $1
+                        """,
+                        batch_id,
+                        int(error is None),
+                        int(error is not None),
+                        float(cost_usd or 0.0),
+                        int(prompt_tokens or 0),
+                        int(completion_tokens or 0),
+                        int(cost_status == "unknown"),
+                        int(cached_tokens or 0),
+                    )
+                    await self._settle(conn, batch_id, batch_status)
+            except BaseException:
+                # Rolled back, cancelled, or a commit whose outcome is unknown:
+                # nothing is published. What committed before stays counted
+                # (a spent budget stays spent); only the stored size, which
+                # this write may have changed, is read again by the next
+                # completion that judges the batch.
+                if budget_batch is not None:
+                    self._forget_stored_size(budget_batch)
+                raise
+            if publish is not None:
+                self._set_result_count(budget_batch, publish)
         return True
 
     def result_budget_spent(self, batch_id: str, budget: int) -> bool:
@@ -2421,34 +2508,87 @@ class BatchStore:
 
         The count is this process's own: what the batch's responses already
         stored take up when the process first needs it (their stored size,
-        read once), then the serialized size of every response it stores, and
-        the whole budget once a response has not fit. False for a batch it has
-        no count for yet. Several processes count apart, so between them a
-        batch may store up to that many budgets.
+        read once, and whether a stored failure says the budget was spent),
+        then the serialized size of every response it stores -- each counted
+        once its write has committed, never while it is in flight. Once a
+        response that did not fit has its failure committed, the budget is
+        spent for good: a later write that fails or is cancelled does not
+        reopen it. False for a batch it has no count for yet. Several
+        processes count apart, so between them a batch may store up to that
+        many budgets.
         """
-        stored = self._result_bytes.get(batch_id)
-        return stored is not None and stored >= budget
+        count = self._result_counts.get(batch_id)
+        return count is not None and (count.spent or count.stored >= budget)
 
-    async def _stored_result_bytes(self, conn: Any, batch_id: str) -> int:
-        """The batch's count for the result budget, read from its rows the first time."""
-        stored = self._result_bytes.get(batch_id)
-        if stored is None:
-            stored = int(
-                await conn.fetchval(
-                    "SELECT COALESCE(sum(pg_column_size(response)), 0) FROM batch_items "
-                    "WHERE batch_id = $1 AND response IS NOT NULL",
-                    batch_id,
-                )
-                or 0
+    async def _result_count(self, conn: Any, batch_id: str) -> _ResultCount:
+        """The batch's result budget count, read from its rows the first time.
+
+        Read under the batch's row lock, so from committed rows only: the
+        stored responses' size, and whether a failure says the budget was
+        spent (see RESULT_BUDGET_SPENT_MESSAGE).
+        """
+        count = self._result_counts.get(batch_id)
+        if count is None:
+            row = await conn.fetchrow(
+                """
+                SELECT COALESCE(sum(pg_column_size(response)), 0) AS stored,
+                       COALESCE(bool_or(status = 'failed'
+                                        AND error->>'code' = 'result_too_large'
+                                        AND error->>'message' LIKE $2), FALSE) AS spent
+                FROM batch_items
+                WHERE batch_id = $1 AND (response IS NOT NULL OR status = 'failed')
+                """,
+                batch_id,
+                _RESULT_BUDGET_SPENT_PATTERN,
             )
-            self._count_result_bytes(batch_id, 0, start=stored)
-        return stored
+            count = _ResultCount(int(row["stored"] or 0), bool(row["spent"]))
+            self._set_result_count(batch_id, count)
+        return count
 
-    def _count_result_bytes(self, batch_id: str, size: int, *, start: int | None = None) -> None:
-        stored = self._result_bytes.pop(batch_id, 0) if start is None else start
-        self._result_bytes[batch_id] = stored + size
-        while len(self._result_bytes) > _RESULT_BYTES_TRACKED:
-            self._result_bytes.popitem(last=False)
+    async def _item_batch_id(self, item_id: int) -> str | None:
+        """The batch an item belongs to (which never changes), or None when it is gone."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT batch_id FROM batch_items WHERE id = $1", item_id)
+
+    @contextlib.asynccontextmanager
+    async def _budget_turn(self, batch_id: str | None) -> AsyncIterator[None]:
+        """Take the batch's turn to judge and publish its result budget in this process.
+
+        Held from before the completion's transaction until its outcome is
+        published, so the batch's next completion here never judges a count
+        that a committed write has not reached yet. No turn without a batch.
+        """
+        if batch_id is None:
+            yield
+            return
+        turn = self._budget_turns.get(batch_id)
+        if turn is None:
+            turn = self._budget_turns[batch_id] = _BudgetTurn()
+        turn.users += 1
+        try:
+            async with turn.lock:
+                yield
+        finally:
+            turn.users -= 1
+            if turn.users == 0:
+                del self._budget_turns[batch_id]
+
+    def _set_result_count(self, batch_id: str, count: _ResultCount) -> None:
+        """Set a batch's budget count, as its most recently used; forget the oldest past the cap."""
+        self._result_counts.pop(batch_id, None)
+        self._result_counts[batch_id] = count
+        while len(self._result_counts) > _RESULT_BYTES_TRACKED:
+            self._result_counts.popitem(last=False)
+
+    def _forget_stored_size(self, batch_id: str) -> None:
+        """Drop a batch's stored size, which a write of unknown outcome may have changed.
+
+        A spent budget is kept as it is: it was committed, and stays spent
+        whatever a later write did.
+        """
+        count = self._result_counts.get(batch_id)
+        if count is not None and not count.spent:
+            del self._result_counts[batch_id]
 
     async def retry_item(
         self,

@@ -98,7 +98,11 @@ from serving.servers.concurrency import (
 )
 from serving.shared_spend.ledger import AccountErased
 from serving.spend_ledger import spend_check_of
-from serving.storage.batch_store import TARGET_CHAT, TARGET_EMBEDDINGS
+from serving.storage.batch_store import (
+    RESULT_BUDGET_SPENT_MESSAGE,
+    TARGET_CHAT,
+    TARGET_EMBEDDINGS,
+)
 from serving.storage.pools import DatabaseBusyError
 from serving.utils.logging import get_logger
 
@@ -627,9 +631,15 @@ class BatchScheduler:
         except Exception:
             logger.warning("batch: settling abandoned validations failed", exc_info=True)
         if self._webhook_store is not None:
-            with contextlib.suppress(Exception):
+            # Separately: one failing must not keep the other from running.
+            try:
                 await self._webhook_store.fail_exhausted()
+            except Exception:
+                logger.warning("batch: failing exhausted webhook events failed", exc_info=True)
+            try:
                 await self._webhook_store.purge_old_events()
+            except Exception:
+                logger.warning("batch: purging old webhook events failed", exc_info=True)
         try:
             backlog = await self._store.seal_backlog()
         except Exception:
@@ -1101,8 +1111,8 @@ class BatchScheduler:
                 entry,
                 error={
                     "code": "result_too_large",
-                    "message": "The batch's responses reached their storage limit of "
-                    f"{budget} bytes; this request did not run.",
+                    "message": RESULT_BUDGET_SPENT_MESSAGE.format(budget=budget)
+                    + "; this request did not run.",
                     "status": 500,
                 },
                 status_code=500,
@@ -1343,9 +1353,21 @@ class BatchScheduler:
             self._owner_slots[owner] -= 1
             if self._owner_slots[owner] <= 0:
                 del self._owner_slots[owner]
-            try:
-                for slot in reversed(acquired_scopes):
+            for slot in reversed(acquired_scopes):
+                try:
                     scoped_limiter.release(slot)
+                except Exception:
+                    logger.exception(
+                        "batch: releasing a scoped concurrency slot failed",
+                        extra={
+                            "event": "batch_slot_release_failed",
+                            "user_id": user_ctx.get("user_id"),
+                            "model": model,
+                        },
+                    )
+            # Given back whatever happened to the scoped slots: a leaked role
+            # slot would hold one of the owner's batch slots for good.
+            try:
                 self._role_slots.release(user_id)
             except Exception:
                 logger.exception(

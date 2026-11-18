@@ -315,7 +315,6 @@ export function BatchesTab() {
     void loadSummary();
   }, [loadSummary]);
 
-  const error = summaryError ?? listError;
   const ownerUsage = summary?.users.find((user) => user.user_id === owner);
   const ownerLabel = ownerUsage?.user_name || ownerUsage?.email || owner;
 
@@ -338,7 +337,9 @@ export function BatchesTab() {
       cancelLabel: 'Keep running',
       tone: 'danger',
       run: async () => {
-        replace(await adminCancelBatch(batch.id));
+        // The cancel answer is the bare batch: keep the owner labels the list added.
+        const updated = await adminCancelBatch(batch.id);
+        replace({ ...updated, user_name: batch.user_name, user_email: batch.user_email });
       },
     });
   }
@@ -355,10 +356,10 @@ export function BatchesTab() {
           </button>
         }
       >
-        {error && <AdminNotice tone="error">{error}</AdminNotice>}
+        {summaryError && <AdminNotice tone="error">{summaryError}</AdminNotice>}
         {!summary && !summaryError ? (
           <AdminLoading label="Loading batch usage" />
-        ) : !summary || summary.users.length === 0 ? (
+        ) : !summary ? null : summary.users.length === 0 ? (
           <AdminEmptyState title="No batches">No user has a stored batch.</AdminEmptyState>
         ) : (
           <div className="space-y-4">
@@ -482,10 +483,13 @@ export function BatchesTab() {
           </div>
         }
       >
+        {listError && <AdminNotice tone="error">{listError}</AdminNotice>}
         {loading && batches.length === 0 ? (
           <AdminLoading label="Loading batches" />
         ) : batches.length === 0 ? (
-          <AdminEmptyState title="No batches">No batch matches these filters.</AdminEmptyState>
+          listError ? null : (
+            <AdminEmptyState title="No batches">No batch matches these filters.</AdminEmptyState>
+          )
         ) : (
           <div className={`${PANEL} relative overflow-x-auto`}>
             <table className="min-w-full divide-y divide-gray-200">

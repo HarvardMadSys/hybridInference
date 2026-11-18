@@ -1914,6 +1914,371 @@ async def test_a_batch_stores_responses_up_to_its_budget_then_none(pool, store):
     assert batch["cost_usd"] == pytest.approx(0.04)
 
 
+def _budget_completion(store: BatchStore, budget: int):
+    """``complete_item`` for a successful response under a batch result *budget*."""
+
+    async def complete(item: dict[str, Any], body: dict[str, Any], *, attempt=None) -> bool:
+        return await store.complete_item(
+            item_id=item["id"],
+            worker_id="worker-1",
+            attempt=item["attempt_seq"] if attempt is None else attempt,
+            response=body,
+            error=None,
+            status_code=200,
+            cost_usd=0.01,
+            max_batch_result_bytes=budget,
+        )
+
+    return complete
+
+
+def _size(body: dict[str, Any]) -> int:
+    """What a response counts against its batch's result budget."""
+    return len(batch_store._dump_json(body))
+
+
+def _fail_first_settle(store: BatchStore, monkeypatch, *, hold: asyncio.Event | None = None):
+    """Make the first completion's transaction fail at its last step, after every write.
+
+    With *hold*, that completion waits there (holding the batch's row lock)
+    until *hold* is set. Returns an event set once it got there, and a list
+    that receives the backend pid of its connection.
+    """
+    real_settle = store._settle
+    reached = asyncio.Event()
+    holder: list[int] = []
+
+    async def settle(conn: Any, batch_id: str, status: str) -> str | None:
+        if not reached.is_set():
+            holder.append(conn.get_server_pid())
+            reached.set()
+            if hold is not None:
+                await hold.wait()
+            raise RuntimeError("the completion's transaction fails after its writes")
+        return await real_settle(conn, batch_id, status)
+
+    monkeypatch.setattr(store, "_settle", settle)
+    return reached, holder
+
+
+async def test_an_overflow_rolled_back_leaves_the_batch_budget_unspent(pool, store, monkeypatch):
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    small, big = {"text": "s" * 100}, {"text": "b" * 2000}
+    budget = _size(small) + _size(big) - 1
+    complete = _budget_completion(store, budget)
+    assert await complete(first, small)
+
+    _fail_first_settle(store, monkeypatch)
+    with pytest.raises(RuntimeError):
+        await complete(overflow, big)
+
+    # Rolled back, the overflow was never recorded: the budget is not spent,
+    # and a later response that fits is stored.
+    assert not store.result_budget_spent(created["id"], budget)
+    assert await complete(later, small)
+    results = {r["id"]: r for r in await store.list_results(created["id"])}
+    assert results[later["id"]]["status"] == "completed"
+    assert results[later["id"]]["response"] == small
+    assert results[overflow["id"]]["status"] == "running"
+
+
+async def test_an_overflow_from_a_stale_claim_leaves_the_batch_budget_unspent(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    first, reclaimed = await _claim(store, model, limit=2)
+    small, big = {"text": "s" * 100}, {"text": "b" * 2000}
+    budget = _size(small) + _size(big) - 1
+    complete = _budget_completion(store, budget)
+    assert await complete(first, small)
+
+    # A worker whose claim was superseded (a later attempt owns the item)
+    # writes nothing, so its overflow changes nothing either.
+    await _execute(
+        pool, "UPDATE batch_items SET attempt_seq = attempt_seq + 1 WHERE id = $1", reclaimed["id"]
+    )
+    assert not await complete(reclaimed, big)
+    assert not store.result_budget_spent(created["id"], budget)
+
+    # The current claim's response, which fits, is stored.
+    assert await complete(reclaimed, small, attempt=reclaimed["attempt_seq"] + 1)
+    results = {r["id"]: r for r in await store.list_results(created["id"])}
+    assert results[reclaimed["id"]]["status"] == "completed"
+    assert results[reclaimed["id"]]["response"] == small
+
+
+@pytest.mark.parametrize("waiter", ["same_process", "other_process"])
+async def test_a_rolled_back_response_is_not_counted_by_the_completion_waiting_on_it(
+    pool, store, monkeypatch, waiter
+):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    failing, waiting = await _claim(store, model, limit=2)
+    response = {"text": "r" * 500}
+    budget = _size(response)  # room for exactly one response
+    complete = _budget_completion(store, budget)
+    # Another process has a store (and a budget count) of its own.
+    complete_waiting = (
+        complete if waiter == "same_process" else _budget_completion(BatchStore(pool), budget)
+    )
+    release = asyncio.Event()
+    reached, holder = _fail_first_settle(store, monkeypatch, hold=release)
+
+    first = asyncio.create_task(complete(failing, response))
+    await asyncio.wait_for(reached.wait(), timeout=10)
+    second = asyncio.create_task(complete_waiting(waiting, response))
+    try:
+        if waiter == "same_process":
+            # It waits for the first completion's turn at the batch's budget.
+            done, _ = await asyncio.wait({second}, timeout=0.3)
+            assert second not in done
+        else:
+            # It queues on the batch's row lock the first completion holds.
+            async with pool.acquire() as conn:
+                for _ in range(200):
+                    if await conn.fetchval(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE $1 = ANY(pg_blocking_pids(pid))",
+                        holder[0],
+                    ):
+                        break
+                    await asyncio.sleep(0.02)
+                else:
+                    raise AssertionError("the second completion never waited for the batch's lock")
+    finally:
+        release.set()
+    with pytest.raises(RuntimeError):
+        await first
+
+    # The first rolled back and counted nothing: the second finds the whole
+    # budget free and stores its response.
+    assert await second
+    results = {r["id"]: r for r in await store.list_results(created["id"])}
+    assert results[waiting["id"]]["status"] == "completed"
+    assert results[waiting["id"]]["response"] == response
+    assert results[failing["id"]]["status"] == "running"
+
+
+class _PauseReleaseAfterTransaction:
+    """A pool that, once armed, holds back the next connection that ran a transaction.
+
+    The connection's transaction has committed (or rolled back) by then; the
+    caller is paused while the connection is being handed back, until
+    ``resume`` is set. Armed with ``lose_answer``, the caller instead gets an
+    error once the connection is back, as when a commit's answer is lost.
+    """
+
+    def __init__(self, pool: Any) -> None:
+        self._pool = pool
+        self._armed = False
+        self._lose_answer = False
+        self.paused = asyncio.Event()
+        self.resume = asyncio.Event()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._pool, name)
+
+    def arm(self, *, lose_answer: bool = False) -> None:
+        self._armed = True
+        self._lose_answer = lose_answer
+
+    def acquire(self) -> Any:
+        return _PausingAcquire(self)
+
+
+class _PausingAcquire:
+    def __init__(self, owner: _PauseReleaseAfterTransaction) -> None:
+        self._owner = owner
+        self._inner = owner._pool.acquire()
+        self._transacted = False
+
+    async def __aenter__(self) -> Any:
+        conn = await self._inner.__aenter__()
+        acquire = self
+
+        class _Conn:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(conn, name)
+
+            def transaction(self, *args: Any, **kwargs: Any) -> Any:
+                acquire._transacted = True
+                return conn.transaction(*args, **kwargs)
+
+        return _Conn()
+
+    async def __aexit__(self, *exc: Any) -> Any:
+        owner = self._owner
+        if self._transacted and owner._armed:
+            owner._armed = False
+            if owner._lose_answer:
+                await self._inner.__aexit__(*exc)
+                raise ConnectionResetError("the connection dropped before the commit was answered")
+            owner.paused.set()
+            await owner.resume.wait()
+        return await self._inner.__aexit__(*exc)
+
+
+async def test_a_committed_overflow_spends_the_budget_before_the_next_completion_judges(pool):
+    pausing = _PauseReleaseAfterTransaction(pool)
+    store = BatchStore(pausing)
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    small, big = {"text": "s" * 100}, {"text": "b" * 2000}
+    budget = _size(small) + _size(big) - 1
+    complete = _budget_completion(store, budget)
+    assert await complete(first, small)
+
+    # The overflow's failure commits; its completion is then held while it
+    # hands its connection back, before it can say the budget is spent.
+    pausing.arm()
+    overflowing = asyncio.create_task(complete(overflow, big))
+    following = None
+    try:
+        await asyncio.wait_for(pausing.paused.wait(), timeout=10)
+        async with pool.acquire() as conn:
+            code = await conn.fetchval(
+                "SELECT error->>'code' FROM batch_items WHERE id = $1", overflow["id"]
+            )
+        assert code == "result_too_large"
+
+        # The next completion of the batch in this process is judged only
+        # after that committed state is published: its small response is
+        # refused too.
+        following = asyncio.create_task(complete(later, small))
+        done, _ = await asyncio.wait({following}, timeout=0.5)
+        judged_early = following in done
+    finally:
+        # Always let the held completion hand its connection back.
+        pausing.resume.set()
+        assert await overflowing
+        if following is not None:
+            assert await following
+    assert not judged_early, "the next completion was judged before the overflow published"
+
+    results = {r["id"]: r for r in await store.list_results(created["id"])}
+    assert results[later["id"]]["status"] == "failed"
+    assert results[later["id"]]["error"]["code"] == "result_too_large"
+    assert results[later["id"]]["response"] is None
+    assert store.result_budget_spent(created["id"], budget)
+
+
+async def _spend_the_budget(complete, first, overflow) -> None:
+    """Store *first*'s small response, then commit *overflow*'s ``result_too_large``."""
+    assert await complete(first, {"text": "s" * 100})
+    assert await complete(overflow, {"text": "b" * 2000})
+
+
+def _spendable_budget() -> int:
+    """Room for the small response of :func:`_spend_the_budget` and two more, not the big one."""
+    return 3 * _size({"text": "s" * 100}) + 10
+
+
+async def _assert_refused_small(store: BatchStore, complete, batch_id: str, item) -> None:
+    small = {"text": "s" * 100}
+    assert await complete(item, small)
+    results = {r["id"]: r for r in await store.list_results(batch_id)}
+    assert results[item["id"]]["status"] == "failed"
+    assert results[item["id"]]["error"]["code"] == "result_too_large"
+    assert results[item["id"]]["response"] is None
+
+
+@pytest.mark.parametrize("failure", ["rolled_back", "cancelled", "answer_lost"])
+async def test_a_later_failed_completion_keeps_the_committed_spent_budget(
+    pool, monkeypatch, failure
+):
+    pausing = _PauseReleaseAfterTransaction(pool)
+    store = BatchStore(pausing)
+    model = _model()
+    created = await _create(store, _items(model, 4))
+    first, overflow, in_flight, later = await _claim(store, model, limit=4)
+    budget = _spendable_budget()
+    complete = _budget_completion(store, budget)
+    await _spend_the_budget(complete, first, overflow)
+    assert store.result_budget_spent(created["id"], budget)
+
+    # Another request already in flight records its (small) response, and
+    # that completion fails: rolled back at its last step, cancelled while
+    # there, or committed with its answer lost on the way back.
+    small = {"text": "s" * 100}
+    if failure == "rolled_back":
+        _fail_first_settle(store, monkeypatch)
+        with pytest.raises(RuntimeError):
+            await complete(in_flight, small)
+    elif failure == "cancelled":
+        reached, _ = _fail_first_settle(store, monkeypatch, hold=asyncio.Event())
+        task = asyncio.create_task(complete(in_flight, small))
+        await asyncio.wait_for(reached.wait(), timeout=10)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    else:
+        pausing.arm(lose_answer=True)
+        with pytest.raises(ConnectionResetError):
+            await complete(in_flight, small)
+        # The scheduler records again; the write it lost track of had committed.
+        assert not await complete(in_flight, small)
+
+    # The spent budget was committed before, and stays spent: the scheduler
+    # still sees it, and a later small response is still refused.
+    assert store.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(store, complete, created["id"], later)
+
+
+async def test_an_overflow_whose_commit_answer_was_lost_spends_the_budget_on_retry(pool):
+    pausing = _PauseReleaseAfterTransaction(pool)
+    store = BatchStore(pausing)
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    budget = _spendable_budget()
+    complete = _budget_completion(store, budget)
+    assert await complete(first, {"text": "s" * 100})
+
+    # The overflow's failure commits, but its answer is lost: this process
+    # cannot tell whether it did, so it says nothing until it reads again.
+    pausing.arm(lose_answer=True)
+    with pytest.raises(ConnectionResetError):
+        await complete(overflow, {"text": "b" * 2000})
+    # The scheduler's retry finds the write already made, and reads the
+    # committed state while judging it: the budget is spent.
+    assert not await complete(overflow, {"text": "b" * 2000})
+    assert store.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(store, complete, created["id"], later)
+
+
+async def test_a_new_process_finds_a_spent_budget_in_the_stored_failures(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 3))
+    first, overflow, later = await _claim(store, model, limit=3)
+    budget = _spendable_budget()
+    await _spend_the_budget(_budget_completion(store, budget), first, overflow)
+
+    # The stored responses alone fit the budget; the failure says it was spent.
+    fresh = BatchStore(pool)
+    assert not fresh.result_budget_spent(created["id"], budget)
+    await _assert_refused_small(fresh, _budget_completion(fresh, budget), created["id"], later)
+    assert fresh.result_budget_spent(created["id"], budget)
+
+
+async def test_concurrent_completions_of_a_batch_share_its_budget(pool, store):
+    model = _model()
+    created = await _create(store, _items(model, 2))
+    one, two = await _claim(store, model, limit=2)
+    response = {"text": "r" * 500}
+    budget = _size(response) + _size(response) // 2  # one fits, two do not
+    complete = _budget_completion(store, budget)
+
+    assert all(await asyncio.gather(complete(one, response), complete(two, response)))
+
+    results = await store.list_results(created["id"])
+    assert sorted(r["status"] for r in results) == ["completed", "failed"]
+    (refused,) = [r for r in results if r["status"] == "failed"]
+    assert refused["error"]["code"] == "result_too_large"
+    assert store.result_budget_spent(created["id"], budget)
+
+
 async def test_a_new_process_counts_the_responses_a_batch_already_stored(pool, store):
     model = _model()
     created = await _create(store, _items(model, 2))

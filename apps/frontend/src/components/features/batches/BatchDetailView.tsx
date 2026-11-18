@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
@@ -22,7 +22,7 @@ import {
   type ResultKind,
 } from '@/lib/api/batches';
 import { useBatchCapabilities } from '@/lib/hooks/queries/useBatchCapabilities';
-import { getErrorMessage } from '@/lib/utils/errors';
+import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 
 import {
@@ -65,6 +65,9 @@ function sourceStateText(state: string, t: Translate): string {
   }
 }
 
+/** The pause between one read of a followed batch answering and the next. */
+const POLL_INTERVAL_MS = 5000;
+
 function Row({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="grid grid-cols-1 gap-1 py-2 sm:grid-cols-3 sm:gap-4">
@@ -85,44 +88,90 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
   const [detail, setDetail] = useState<BatchDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [gone, setGone] = useState(false);
+  // Which answers may be shown. ``generation`` changes with the account or the
+  // batch, so an answer for the previous one (a switch in another tab, say) is
+  // dropped. Every read is numbered in the order it was sent, and an answer
+  // older than the one on screen is dropped: a poll still in flight when the
+  // page refreshes itself (after a cancel) cannot overwrite the fresher state.
+  // A newer read never discards an older one before it lands, so a server
+  // slower than the polling interval still moves the page forward. The
+  // generation also changes when the page goes away (the console route mounts
+  // a new page for another batch), and an action's follow-up -- the refresh
+  // after a cancel, leaving for the list after a delete -- happens only while
+  // it is the generation the action started in.
+  const generation = useRef(0);
+  const sent = useRef(0);
+  const shown = useRef(0);
 
   const load = useCallback(async () => {
+    const mine = ++sent.current;
+    const forGeneration = generation.current;
     const forUser = userId;
+    const current = () => forGeneration === generation.current && mine > shown.current;
     try {
       const found = await getMyBatch(batchId);
-      // An answer for another account (a switch in another tab) is never shown here.
-      if (forUser !== userId || (found.user_id && found.user_id !== forUser)) return;
+      if (!current() || (found.user_id && found.user_id !== forUser)) return;
+      shown.current = mine;
       setDetail(found);
       setError(null);
     } catch (err) {
+      if (!current()) return;
+      shown.current = mine;
+      // A deleted batch (or one of another account) is not polled any longer.
+      if (err instanceof APIError && err.statusCode === 404) setGone(true);
       setError(getErrorMessage(err));
     }
   }, [batchId, userId]);
 
   useEffect(() => {
+    generation.current += 1;
     setDetail(null);
+    setError(null);
+    setGone(false);
+    setBusy(false);
     if (userId) void load();
+    return () => {
+      generation.current += 1;
+    };
   }, [load, userId]);
 
+  // An expired or failed batch can still be finishing its running requests:
+  // follow it until its results are sealed, not only until its status is final.
+  const following =
+    detail !== null && !gone && (!FINAL_STATUSES.has(detail.status) || !detail.results_available);
   useEffect(() => {
-    // Follow an unfinished batch while the page is open.
-    if (!detail || FINAL_STATUSES.has(detail.status)) return;
-    const timer = setInterval(() => void load(), 5000);
-    return () => clearInterval(timer);
-  }, [detail, load]);
+    // Follow an unfinished batch while the page is open: one read at a time,
+    // the next sent 5 s after the previous one answered.
+    if (!following) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const poll = async () => {
+      await load();
+      if (!stopped) timer = setTimeout(poll, POLL_INTERVAL_MS);
+    };
+    timer = setTimeout(poll, POLL_INTERVAL_MS);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+    };
+  }, [following, load]);
 
-  async function act(run: () => Promise<void>) {
+  /** Run an action; *run* is told whether the page still shows what it started on. */
+  async function act(run: (stillHere: () => boolean) => Promise<void>) {
+    const started = generation.current;
+    const stillHere = () => started === generation.current;
     setBusy(true);
     try {
-      await run();
+      await run(stillHere);
     } catch (err) {
       toast.error(getErrorMessage(err));
     } finally {
-      setBusy(false);
+      if (stillHere()) setBusy(false);
     }
   }
 
-  if (error && !detail) {
+  if (error && (!detail || gone)) {
     return (
       <div className="space-y-4">
         <Link href="/dashboard/batches" className="text-sm text-gray-500 hover:text-gray-900">
@@ -184,9 +233,9 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
                   )
                 )
                   return;
-                void act(async () => {
+                void act(async (stillHere) => {
                   await cancelMyBatch(detail.id);
-                  await load();
+                  if (stillHere()) await load();
                 });
               }}
             >
@@ -214,10 +263,10 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
                 )
               )
                 return;
-              void act(async () => {
+              void act(async (stillHere) => {
                 await deleteMyBatch(detail.id);
                 toast.success(t('batches.toast.deleted', 'Batch deleted.'));
-                router.push('/dashboard/batches');
+                if (stillHere()) router.push('/dashboard/batches');
               });
             }}
           >
@@ -226,6 +275,22 @@ export function BatchDetailView({ batchId }: { batchId: string }) {
         </div>
       </div>
 
+      {error && (
+        // A read after the details loaded failed (the page keeps polling, and
+        // the next read that answers clears this).
+        <p
+          role="alert"
+          className="rounded-lg bg-red-50 p-3 text-sm text-red-800 ring-1 ring-inset ring-red-200"
+        >
+          {fill(
+            t(
+              'batches.detail.refresh_failed',
+              'Could not refresh this batch ({error}). The details below are from the last successful update.',
+            ),
+            { error },
+          )}
+        </p>
+      )}
       {paused && (
         <div
           role="note"

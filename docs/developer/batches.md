@@ -596,7 +596,9 @@ Send an `Idempotency-Key` header with a create call (either input method) to
 make it safe to retry. The same key with the same request — for a Messages
 batch, the same `anthropic-version` header too — returns the batch
 the first call created, even if your quota has since run out or your role
-changed; the same key with a different request answers `409`. After the batch
+changed; the same key with a different request answers `409`. A key names one
+batch across both input methods: a key already used for an inline batch answers
+`409` to a file batch, and the reverse, even when the two calls race. After the batch
 is deleted the key answers `410` for at least a day; a key is remembered until a
 day after its batch ends. The key belongs to your account, so any of your API
 keys can replay it, and a replay never changes which key the batch runs under.
@@ -840,7 +842,7 @@ and to the worker's next round.
 | `BATCH_INTERACTIVE_RESERVE` | 0 | Slots of every model's batch cap kept free for interactive requests, on top of those in flight. Applies only while `BATCH_YIELD_TO_INTERACTIVE` is on |
 | `BATCH_MAX_LINE_KB` | 4096 | Largest line of an input file |
 | `BATCH_MAX_RESULT_KB` | 4096 | Largest response one batch request may store |
-| `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records; after a restart, what a batch already stored counts at its stored, compressed size. `0` removes the limit |
+| `BATCH_MAX_RESULTS_MB_PER_BATCH` | 8192 | Responses one batch may store in all, in MiB. Once they reach it, a response that does not fit fails with `result_too_large`, and so does every request of that batch still to run, without running. Counted in each gateway process from the results it records, once they are committed; after a restart, what a batch already stored counts at its stored, compressed size, and a batch whose budget was already spent stays spent. `0` removes the limit |
 | `BATCH_FILES_MAX_TOTAL_MB_PER_USER` | 512 | Uploaded input files one user may keep |
 | `BATCH_FILE_UPLOADS_PER_HOUR` | 60 | Input files one user may upload per hour, uploads that failed included (those counted in each gateway process on its own) |
 | `BATCH_FILE_RETENTION_DAYS` | 30 | Days an uploaded input file is kept |
@@ -898,8 +900,9 @@ A running batch shows when it should finish at its pace so far (from its
 first. **Prompts** opens a batch's stored requests with their answers (`GET
 /admin/batch/jobs/{batch_id}/requests`), a page at a time. It is offered only
 where the gateway keeps prompts in its request log (`db_store_full_content`);
-elsewhere it answers `403`. Opening a batch's requests is audited as
-`batch.requests.read` against the batch's owner.
+elsewhere it answers `403`. Every page that returns a batch's requests is
+audited as `batch.requests.read` against the batch's owner, with the item ids it
+returned; a page whose read cannot be recorded is not returned.
 
 The tab's **Requests** page lists the requests the batch worker ran, newest
 first: one row per attempt, from the request log, with the batch it belongs
