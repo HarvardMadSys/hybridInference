@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
 
@@ -22,10 +23,8 @@ TARGET = mcp_client._Target("https://mcp.example/rpc", "mcp.example", "mcp.examp
 @pytest.fixture(autouse=True)
 def _clear_mcp_sessions():
     mcp_client._session_cache.clear()
-    mcp_client._session_locks.clear()
     yield
     mcp_client._session_cache.clear()
-    mcp_client._session_locks.clear()
 
 
 def _client(user: dict[str, Any]) -> AsyncClient:
@@ -296,6 +295,58 @@ async def test_metadata_is_refused_even_when_the_host_is_allowed(
     )
     with pytest.raises(mcp_client.McpError, match="not allowed"):
         await mcp_client._resolve_target("http://mcp.internal/rpc")
+
+
+@pytest.mark.asyncio
+async def test_the_clients_ignore_proxy_environment_variables(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[dict[str, Any]] = []
+
+    class _CaptureClient:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.append(kwargs)
+
+        async def __aenter__(self) -> _CaptureClient:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+    async def _target(_url: str) -> mcp_client._Target:
+        return TARGET
+
+    async def _tools(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        return []
+
+    async def _call(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"content": "", "isError": False}
+
+    monkeypatch.setattr(mcp_client.httpx, "AsyncClient", _CaptureClient)
+    monkeypatch.setattr(mcp_client, "_resolve_target", _target)
+    monkeypatch.setattr(mcp_client, "_with_session", _tools)
+    await mcp_client.list_tools("https://mcp.example/rpc")
+    monkeypatch.setattr(mcp_client, "_with_session", _call)
+    await mcp_client.call_tool("https://mcp.example/rpc", "search", {})
+
+    assert len(captured) == 2
+    assert all(client.get("trust_env") is False for client in captured)
+
+
+@pytest.mark.asyncio
+async def test_a_slow_server_is_bounded_by_a_deadline(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _target(_url: str) -> mcp_client._Target:
+        return TARGET
+
+    async def _slow(*_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        await asyncio.sleep(1)
+        return []
+
+    monkeypatch.setattr(mcp_client, "_CALL_TIMEOUT_S", 0.01)
+    monkeypatch.setattr(mcp_client, "_resolve_target", _target)
+    monkeypatch.setattr(mcp_client, "_with_session", _slow)
+    with pytest.raises(mcp_client.McpError, match="too long"):
+        await mcp_client.list_tools("https://mcp.example/rpc")
 
 
 @pytest.mark.asyncio

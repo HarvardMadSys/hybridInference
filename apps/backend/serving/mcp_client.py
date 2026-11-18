@@ -40,6 +40,7 @@ _MAX_BODY_BYTES = 2 * 1024 * 1024
 _MAX_TOOL_PAGES = 100
 _MAX_TOOLS = 5000
 _SESSION_TTL_S = 600.0
+_CALL_TIMEOUT_S = 60.0
 _FORBIDDEN_HEADERS = frozenset(
     {
         "host",
@@ -308,7 +309,7 @@ class _CachedSession:
 
 _SessionKey = tuple[str, tuple[tuple[str, str], ...]]
 _session_cache: dict[_SessionKey, _CachedSession] = {}
-_session_locks: dict[_SessionKey, asyncio.Lock] = {}
+_init_lock = asyncio.Lock()
 
 
 def _session_key(scope: str, target: _Target, headers: dict[str, str]) -> _SessionKey:
@@ -324,8 +325,7 @@ async def _open_session(
 ) -> _Session:
     """Reuse a server's session, or initialize one and remember it."""
     key = _session_key(scope, target, headers)
-    lock = _session_locks.setdefault(key, asyncio.Lock())
-    async with lock:
+    async with _init_lock:
         now = time.monotonic()
         for stale in [
             cached_key
@@ -364,7 +364,7 @@ async def _with_session(
     try:
         return await action(session)
     except McpError as exc:
-        if exc.status != 404:
+        if exc.status != 404 or session.session_id is None:
             raise
         _session_cache.pop(key, None)
         session = await _open_session(client, target, headers, scope=scope)
@@ -377,8 +377,14 @@ async def list_tools(
     """Return every tool definition a paginated MCP server publishes."""
     target = await _resolve_target(url)
     clean = _clean_headers(headers)
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        return await _with_session(client, target, clean, _list_all_tools, scope=scope)
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT_S, follow_redirects=False, trust_env=False
+    ) as client:
+        try:
+            async with asyncio.timeout(_CALL_TIMEOUT_S):
+                return await _with_session(client, target, clean, _list_all_tools, scope=scope)
+        except TimeoutError as exc:
+            raise McpError("The MCP server took too long to answer.") from exc
 
 
 async def _list_all_tools(session: _Session) -> list[dict[str, Any]]:
@@ -421,8 +427,14 @@ async def call_tool(
     async def _call(session: _Session) -> Any:
         return await session.request("tools/call", {"name": name, "arguments": arguments})
 
-    async with httpx.AsyncClient(timeout=_TIMEOUT_S, follow_redirects=False) as client:
-        result = await _with_session(client, target, clean, _call, scope=scope)
+    async with httpx.AsyncClient(
+        timeout=_TIMEOUT_S, follow_redirects=False, trust_env=False
+    ) as client:
+        try:
+            async with asyncio.timeout(_CALL_TIMEOUT_S):
+                result = await _with_session(client, target, clean, _call, scope=scope)
+        except TimeoutError as exc:
+            raise McpError("The MCP server took too long to answer.") from exc
     return {
         "content": _flatten_result(result),
         "isError": bool(result.get("isError")) if isinstance(result, dict) else False,
