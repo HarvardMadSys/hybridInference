@@ -73,7 +73,9 @@ The tables come from the schema migrations (:mod:`migrations`).
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import contextlib
 import json
 import math
 import secrets
@@ -86,6 +88,7 @@ from serving.storage.pools import SingleConnectionPool
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
     from datetime import datetime
 
 logger = get_logger(__name__)
@@ -216,6 +219,17 @@ _PURGE_LIMIT = 100
 # Batches whose result count (see BatchStore.result_budget_spent) a process
 # keeps; one it has forgotten is read again from its rows.
 _RESULT_BYTES_TRACKED = 4096
+
+
+class _BudgetTurn:
+    """One batch's turn at its result budget in this process, and who holds or awaits it."""
+
+    __slots__ = ("lock", "users")
+
+    def __init__(self) -> None:
+        self.lock = asyncio.Lock()
+        self.users = 0
+
 
 # Items an erasure deletes per statement (see BatchStore.delete_user_batches).
 _ERASE_ITEMS_PER_STATEMENT = 500
@@ -767,7 +781,12 @@ class BatchStore:
         # What each batch's responses come to, serialized, as this process
         # counts them (see result_budget_spent): read from the database the
         # first time a batch needs it, then raised by every response stored.
+        # Only committed state is ever written here.
         self._result_bytes: OrderedDict[str, int] = OrderedDict()
+        # Per batch, this process's completions that judge its result budget,
+        # taken one at a time (see _budget_turn); a batch is listed only while
+        # one of them holds or awaits its turn.
+        self._budget_turns: dict[str, _BudgetTurn] = {}
 
     @property
     def pool(self) -> Any:
@@ -2327,8 +2346,10 @@ class BatchStore:
                 that does not fit is not stored: the item fails with
                 ``result_too_large`` (its cost still counts), and once that
                 failure is committed the batch's budget counts as spent from
-                then on. A write the claim guard refuses, or one rolled back,
-                leaves the count as it was.
+                then on. The count changes only once a write commits: one the
+                claim guard refuses, or one rolled back, leaves it as it was.
+                This process's completions of one batch judge the budget one
+                at a time, each after the previous one's outcome is counted.
 
         Returns:
             False, changing nothing, when the item is no longer running under
@@ -2360,27 +2381,25 @@ class BatchStore:
             }
             status_code = 500
         budget = int(max_batch_result_bytes or 0)
-        # The batch's budget count is changed only for a write that passed the
-        # claim guard, and kept only once it commits: a response that fits is
-        # counted while the batch's row lock is held (so the next completion of
-        # the batch, waiting on that lock, sees it) and the count put back
-        # before a rollback releases the lock; a response that does not fit
-        # marks the budget spent only after its failure is committed.
-        fits: tuple[str, int] | None = None  # (batch id, its count before this response)
-        counted: tuple[str, int] | None = None
-        overflowed: str | None = None
-        try:
-            async with self._pool.acquire() as conn, conn.transaction():
-                try:
-                    if stored_response is not None and budget:
-                        # The batch's row lock (taken again by the write below)
-                        # orders every completion of the batch, so its count is
-                        # read and raised by one of them at a time.
+        judged = stored_response is not None and budget > 0
+        budget_batch = await self._item_batch_id(item_id) if judged else None
+        # The batch's budget count is judged, written and published in one turn
+        # per batch in this process: the next completion of the batch judges
+        # only after this one's outcome is published (or dropped), and the
+        # count, which the scheduler also reads, only ever holds what has
+        # committed. Another process keeps a count of its own (see
+        # result_budget_spent); the batch's row lock orders them in the database.
+        async with self._budget_turn(budget_batch):
+            publish: tuple[str, int] | None = None
+            try:
+                async with self._pool.acquire() as conn, conn.transaction():
+                    if judged:
                         locked = await conn.fetchrow(_LOCK_ITEM_BATCH_SQL, item_id)
                         if locked is not None:
                             stored = await self._stored_result_bytes(conn, locked["id"])
                             if stored + len(stored_response) > budget:
-                                overflowed = locked["id"]
+                                # Once this failure commits, the budget is spent.
+                                publish = (locked["id"], max(stored, budget))
                                 stored_response = None
                                 response = None
                                 error = {
@@ -2391,7 +2410,7 @@ class BatchStore:
                                 }
                                 status_code = 500
                             else:
-                                fits = (locked["id"], stored)
+                                publish = (locked["id"], stored + len(stored_response))
                     status = "completed" if error is None else "failed"
                     batch = await self._guarded_item_write(
                         conn,
@@ -2415,9 +2434,6 @@ class BatchStore:
                         # nothing, so neither does it change the count.
                         return False
                     batch_id, batch_status, _owner = batch
-                    if fits is not None and stored_response is not None:
-                        self._set_result_bytes(fits[0], fits[1] + len(stored_response))
-                        counted = fits
                     await conn.execute(
                         _CLOSE_ATTEMPT_SQL,
                         item_id,
@@ -2452,24 +2468,15 @@ class BatchStore:
                         int(cached_tokens or 0),
                     )
                     await self._settle(conn, batch_id, batch_status)
-                except BaseException:
-                    # Rolling back: the response is not stored. Still holding
-                    # the row lock, put the count back to what it was, before
-                    # the next completion of the batch can read it.
-                    if counted is not None:
-                        self._set_result_bytes(*counted)
-                        counted = None
-                    raise
-        except BaseException:
-            # The commit itself failed, after the lock was released: the count
-            # may no longer be put back exactly, so it is forgotten and read
-            # from the stored rows again by the batch's next completion.
-            if counted is not None:
-                self._result_bytes.pop(counted[0], None)
-            raise
-        if overflowed is not None:
-            spent = max(self._result_bytes.get(overflowed, 0), budget)
-            self._set_result_bytes(overflowed, spent)
+            except BaseException:
+                # Rolled back, or a commit whose outcome is unknown: nothing is
+                # published, and the count is read from the stored rows again
+                # by the batch's next completion.
+                if budget_batch is not None:
+                    self._result_bytes.pop(budget_batch, None)
+                raise
+            if publish is not None:
+                self._set_result_bytes(*publish)
         return True
 
     def result_budget_spent(self, batch_id: str, budget: int) -> bool:
@@ -2478,8 +2485,9 @@ class BatchStore:
         The count is this process's own: what the batch's responses already
         stored take up when the process first needs it (their stored size,
         read once), then the serialized size of every response it stores, and
-        the whole budget once a response has not fit. False for a batch it has
-        no count for yet. Several processes count apart, so between them a
+        the whole budget once a response has not fit -- each counted once its
+        write has committed, never while it is in flight. False for a batch it
+        has no count for yet. Several processes count apart, so between them a
         batch may store up to that many budgets.
         """
         stored = self._result_bytes.get(batch_id)
@@ -2499,6 +2507,34 @@ class BatchStore:
             )
             self._set_result_bytes(batch_id, stored)
         return stored
+
+    async def _item_batch_id(self, item_id: int) -> str | None:
+        """The batch an item belongs to (which never changes), or None when it is gone."""
+        async with self._pool.acquire() as conn:
+            return await conn.fetchval("SELECT batch_id FROM batch_items WHERE id = $1", item_id)
+
+    @contextlib.asynccontextmanager
+    async def _budget_turn(self, batch_id: str | None) -> AsyncIterator[None]:
+        """Take the batch's turn to judge and publish its result budget in this process.
+
+        Held from before the completion's transaction until its outcome is
+        published, so the batch's next completion here never judges a count
+        that a committed write has not reached yet. No turn without a batch.
+        """
+        if batch_id is None:
+            yield
+            return
+        turn = self._budget_turns.get(batch_id)
+        if turn is None:
+            turn = self._budget_turns[batch_id] = _BudgetTurn()
+        turn.users += 1
+        try:
+            async with turn.lock:
+                yield
+        finally:
+            turn.users -= 1
+            if turn.users == 0:
+                del self._budget_turns[batch_id]
 
     def _set_result_bytes(self, batch_id: str, stored: int) -> None:
         """Set a batch's budget count, as its most recently used; forget the oldest past the cap."""

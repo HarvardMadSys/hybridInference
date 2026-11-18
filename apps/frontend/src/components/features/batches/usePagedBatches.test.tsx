@@ -166,4 +166,60 @@ describe('usePagedBatches', () => {
     expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'c']);
     expect(result.current.hasMore).toBe(false);
   });
+  it('continues from the last remaining row when the empty page beat the delete confirmation', async () => {
+    const fetchPage = vi.fn(async (after: string | null) => {
+      if (after === null) return page(['a', 'b'], true);
+      // The gateway already deleted "b": the page asked after it is an empty end.
+      if (after === 'b') return page([], false);
+      return page(['c', 'd'], true);
+    });
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'mine'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'b']));
+
+    await act(async () => result.current.loadMore());
+    expect(fetchPage).toHaveBeenLastCalledWith('b');
+    // Only now does the console hear that its delete of "b" succeeded.
+    await act(async () => result.current.remove('b'));
+
+    await waitFor(() =>
+      expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'c', 'd']),
+    );
+    expect(fetchPage).toHaveBeenLastCalledWith('a');
+    expect(result.current.hasMore).toBe(true);
+    await act(async () => result.current.loadMore());
+    expect(fetchPage).toHaveBeenLastCalledWith('d');
+  });
+
+  it('starts over when the empty page beat the delete confirmation of the only row', async () => {
+    let firstPage = page(['a'], true);
+    const fetchPage = vi.fn(async (after: string | null) =>
+      after === null ? firstPage : page([], false),
+    );
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'mine'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['a']));
+
+    await act(async () => result.current.loadMore());
+    expect(fetchPage).toHaveBeenLastCalledWith('a');
+    firstPage = page(['b', 'c'], true);
+    await act(async () => result.current.remove('a'));
+
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['b', 'c']));
+    expect(fetchPage).toHaveBeenLastCalledWith(null);
+    expect(result.current.hasMore).toBe(true);
+  });
+
+  it('keeps a real end of the list when an earlier row is removed', async () => {
+    const fetchPage = vi.fn(async (after: string | null) =>
+      after === null ? page(['a', 'b'], true) : page([], false),
+    );
+    const { result } = renderHook(() => usePagedBatches(fetchPage, 'mine'));
+    await waitFor(() => expect(result.current.batches.map((row) => row.id)).toEqual(['a', 'b']));
+
+    await act(async () => result.current.loadMore());
+    await act(async () => result.current.remove('a'));
+
+    expect(fetchPage).toHaveBeenCalledTimes(2);
+    expect(result.current.batches.map((row) => row.id)).toEqual(['b']);
+    expect(result.current.hasMore).toBe(false);
+  });
 });

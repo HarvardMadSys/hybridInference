@@ -601,3 +601,124 @@ async def test_a_worker_never_reclaims_an_item_it_is_still_running(
         lambda: _charged_at_least(pool, owner["user_id"], _ITEM_COST),
         what="the charge to land",
     )
+
+
+async def test_an_uncommitted_response_does_not_spend_the_budget_the_scheduler_reads(
+    gateway, owner, pool, monkeypatch
+):
+    """The scheduler's own result-budget check sees only committed responses.
+
+    Both requests are claimed by one worker. The first one's response fills
+    the batch's result budget exactly, and its completion stops at its last
+    step, before it commits. Meanwhile the worker runs the second request the
+    way it runs every claimed item (``_run_item``, which judges the budget
+    with ``_results_full`` before calling upstream). Then the first completion
+    rolls back: nothing was stored, so the second must have run and kept its
+    response, not been failed as ``result_too_large`` without running.
+    """
+    import dataclasses
+
+    from fastapi import FastAPI
+
+    from serving.batch import scheduler as scheduler_module
+    from serving.storage import batch_store as batch_store_module
+
+    store, upstream = gateway.store, gateway.models["a"]
+    budget = 4096
+    real_config = scheduler_module.batch_config
+    monkeypatch.setattr(
+        scheduler_module,
+        "batch_config",
+        lambda: dataclasses.replace(real_config(), max_results_per_batch_bytes=budget),
+    )
+    app = FastAPI()
+    app.state.services = gateway.services
+    worker = BatchScheduler(
+        app=app,
+        services=gateway.services,
+        store=store,
+        limits=gateway.services.batch_model_limits,
+        worker_id=f"budget-{uuid.uuid4().hex[:6]}",
+        timings=_TIMINGS,
+    )
+    batch_id = await _create(
+        store, owner, [("one", upstream.config.id), ("two", upstream.config.id)]
+    )
+    claimed = await store.claim_items(
+        model_id=upstream.config.id,
+        worker_id=worker._worker_id,
+        limit=2,
+        max_running=10,
+        lease_seconds=_TIMINGS.lease_seconds,
+    )
+    first, second = sorted(claimed, key=lambda item: item["id"])
+
+    # A response of exactly the budget's size.
+    filler = {"text": ""}
+    filler["text"] = "x" * (budget - len(batch_store_module._dump_json(filler)))
+    assert len(batch_store_module._dump_json(filler)) == budget
+
+    held, release = asyncio.Event(), asyncio.Event()
+    real_settle = store._settle
+
+    async def settle(conn, settled_batch, status):
+        if not held.is_set():
+            held.set()
+            await release.wait()
+            raise RuntimeError("the first completion rolls back after writing its response")
+        return await real_settle(conn, settled_batch, status)
+
+    monkeypatch.setattr(store, "_settle", settle)
+    judged_full: list[str] = []
+    real_complete = worker._complete
+
+    async def complete(entry, **kwargs):
+        if (kwargs.get("error") or {}).get("code") == "result_too_large":
+            judged_full.append(str(entry.item_id))
+        return await real_complete(entry, **kwargs)
+
+    monkeypatch.setattr(worker, "_complete", complete)
+
+    filling = asyncio.create_task(
+        store.complete_item(
+            item_id=first["id"],
+            worker_id=worker._worker_id,
+            attempt=first["attempt_seq"],
+            response=filler,
+            error=None,
+            status_code=200,
+            max_batch_result_bytes=budget,
+        )
+    )
+    running = None
+    try:
+        await asyncio.wait_for(held.wait(), timeout=10)
+        entry = worker._track(second)
+        running = asyncio.create_task(worker._run_item(entry, second))
+        # The worker has judged the second request: it called upstream, or it
+        # failed it on the budget the first completion has not committed.
+        await _until(
+            lambda: upstream.calls["two"] > 0 or judged_full,
+            what="the worker to judge the second request",
+        )
+    finally:
+        release.set()
+    with pytest.raises(RuntimeError):
+        await filling
+    if running is not None:
+        await asyncio.wait_for(running, timeout=20)
+
+    assert judged_full == []
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT status, error, response FROM batch_items WHERE id = $1", second["id"]
+        )
+        first_status = await conn.fetchval(
+            "SELECT status FROM batch_items WHERE id = $1", first["id"]
+        )
+    assert row["status"] == "completed", dict(row)
+    assert row["response"] is not None
+    assert upstream.calls["two"] == 1
+    # The rolled-back completion stored nothing: the first is still running.
+    assert first_status == "running"
+    assert batch_id == first["batch_id"] == second["batch_id"]

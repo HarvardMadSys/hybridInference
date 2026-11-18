@@ -50,12 +50,18 @@ export function usePagedBatches(
   rowsRef.current = batches;
   const hasMoreRef = useRef(hasMore);
   hasMoreRef.current = hasMore;
+  // The row whose next page came back as an empty end of the list. Until that
+  // row's removal is confirmed the end is taken at its word; once it is, the
+  // gateway had already deleted the row, so the end said nothing about the
+  // rows after it (see remove).
+  const endedAfter = useRef<string | null>(null);
 
   const reload = useCallback(async () => {
     const mine = ++generation.current;
     // Until the first page is back there is no valid cursor: a "next page"
     // asked for meanwhile would continue the old list after the new first page.
     cursor.current = null;
+    endedAfter.current = null;
     reloading.current = true;
     moreInFlight.current = false;
     setLoadingMore(false);
@@ -112,6 +118,7 @@ export function usePagedBatches(
         });
         setHasMore(page.has_more);
         cursor.current = page.last_id;
+        endedAfter.current = page.data.length === 0 && !page.has_more ? after : null;
         return;
       }
     } catch (err) {
@@ -131,22 +138,34 @@ export function usePagedBatches(
   const remove = useCallback(
     (batchId: string) => {
       const rest = rowsRef.current.filter((row) => row.id !== batchId);
-      if (cursor.current === batchId && hasMoreRef.current && !reloading.current) {
-        // The next page is found from the cursor row; once that row is gone
-        // the gateway ends the listing, so continue from the new last row
-        // (rows listed twice are not appended again) or start over. A next
-        // page already in flight from the removed row is asked again from
-        // this one if it comes back empty (see loadMore).
+      // The next page is found from the cursor row; once that row is gone the
+      // gateway ends the listing. Removed before its next page was asked for
+      // (or while it loads), continue from the new last row: rows listed
+      // twice are not appended again, and an empty page from the removed row
+      // is asked again from there (see loadMore). Removed after its next page
+      // already came back as that empty end, the list is resumed from the new
+      // last row at once. With no row left, start over.
+      const cursorRemoved = cursor.current === batchId && hasMoreRef.current;
+      const endedOnRemoved = endedAfter.current === batchId;
+      let resume = false;
+      if ((cursorRemoved || endedOnRemoved) && !reloading.current) {
         if (rest.length === 0) {
           void reload();
           return;
         }
         cursor.current = rest[rest.length - 1].id;
+        if (endedOnRemoved) {
+          endedAfter.current = null;
+          hasMoreRef.current = true;
+          setHasMore(true);
+          resume = true;
+        }
       }
       rowsRef.current = rest;
       setBatches((current) => current.filter((row) => row.id !== batchId));
+      if (resume) void loadMore();
     },
-    [reload],
+    [loadMore, reload],
   );
 
   return { batches, hasMore, loading, loadingMore, error, reload, loadMore, replace, remove };
