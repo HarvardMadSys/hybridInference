@@ -31,6 +31,7 @@ from serving.servers.routers import admin
 from serving.servers.routers.admin import metrics as admin_metrics
 from serving.storage.postgres_log import PostgresLogStore
 from tests.fixtures import postgres
+from tests.fixtures.accounting_schema import add_native_columns
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -70,6 +71,8 @@ async def pool(pg_dsn: str, request: pytest.FixtureRequest) -> AsyncGenerator[as
     assert created is not None
     async with created.acquire() as conn:
         await ensure_api_logs_schema(conn)
+        # The gateway's log writers name the native accounting columns.
+        await add_native_columns(conn, ("api_logs",))
         # The list joins users for each row's name and email.
         await conn.execute(
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT UNIQUE, user_name TEXT, "

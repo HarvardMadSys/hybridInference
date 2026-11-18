@@ -137,13 +137,13 @@ async def test_what_is_held_is_reported_with_its_amount_and_how_long_it_has_been
 
     held = ledger.stats()["held"]
     assert held["active"]["reservations"] == 1
-    assert held["active"]["amount_usd"] == pytest.approx(0.30)
+    assert held["active"]["amount"] == pytest.approx(0.30)
     assert held["active"]["oldest_seconds"] >= 0
     assert held["awaiting_settlement"]["reservations"] == 1
-    assert held["awaiting_settlement"]["amount_usd"] == pytest.approx(0.45)
+    assert held["awaiting_settlement"]["amount"] == pytest.approx(0.45)
     assert held["awaiting_settlement"]["oldest_seconds"] >= 0
-    assert held["quarantined"] == {"reservations": 0, "amount_usd": 0.0, "oldest_seconds": None}
-    assert ledger.stats()["settlement"]["unwritten_usd"] == pytest.approx(0.45)
+    assert held["quarantined"] == {"reservations": 0, "amount": 0.0, "oldest_seconds": None}
+    assert ledger.stats()["settlement"]["unwritten_amount"] == pytest.approx(0.45)
 
     backend.settle_gate.set()
     assert await ledger.flush(5)
@@ -195,7 +195,7 @@ async def test_a_settlement_failing_for_a_minute_is_reported_once_until_one_is_a
     assert _keys(alerts) == ["spend_settlement_stalled"]  # once for the stall
     title, context, _ = alerts[0]
     assert title == "Spend settlement is failing"
-    assert context["reservations_waiting"] == 1 and context["amount_held_usd"] == "0.3"
+    assert context["reservations_waiting"] == 1 and context["amount_held"] == "0.3"
     assert context["error"] == "ConnectionRefusedError"
     stalled = [r for r in caplog.records if getattr(r, "event", None) == "spend_settlement_stalled"]
     assert len(stalled) == 1 and stalled[0].reservations == 1
@@ -231,7 +231,7 @@ async def test_an_entry_the_counters_refuse_is_an_answer_not_a_stall(alerts):
     assert settlement["entries_refused"] == 1 and settlement["write_failures"] == 0
     assert settlement["failing_for_seconds"] is None
     assert _keys(alerts) == ["spend_settlement_refused"]
-    assert ledger.stats()["held"]["quarantined"]["amount_usd"] == pytest.approx(0.50)
+    assert ledger.stats()["held"]["quarantined"]["amount"] == pytest.approx(0.50)
 
 
 # -- closure --------------------------------------------------------------------
@@ -356,7 +356,7 @@ def _row(instance: str, owner: str, *, n: int, amount: str, age: float, state: s
         "instance_id": instance,
         "state": state,
         "n": n,
-        "amount_usd": Decimal(amount),
+        "amount": Decimal(amount),
         "oldest_age_seconds": age,
         "owner": owner,
     }
@@ -374,12 +374,12 @@ async def test_reservations_held_by_a_process_no_longer_heard_from_are_alerted(a
 
     assert _keys(alerts) == ["spend_reservations_stranded"]
     context = alerts[0][1]
-    assert context["reservations"] == 3 and context["amount_held_usd"] == "0.70"
+    assert context["reservations"] == 3 and context["amount_held"] == "0.70"
     assert context["instances"] == "inst-closed, inst-dead"
     database = ledger.stats()["database"]
     assert database["stranded"]["instances"] == ["inst-closed", "inst-dead"]
     assert database["active"]["reservations"] == 4
-    assert database["quarantined"]["amount_usd"] == Decimal("0.50")
+    assert database["quarantined"]["amount"] == Decimal("0.50")
     assert database["age_seconds"] >= 0
     stranded_lines = [
         r for r in caplog.records if getattr(r, "event", None) == "spend_reservations_stranded"
@@ -444,14 +444,14 @@ def test_the_survey_adds_up_what_every_process_holds_and_what_is_stranded():
     found = survey({"reservations": rows, "receipts": {"batches": 7, "members": 9}})
     assert found["active"] == {
         "reservations": 5,
-        "amount_usd": Decimal("1.30"),
+        "amount": Decimal("1.30"),
         "oldest_age_seconds": 700.0,
     }
     assert found["quarantined"]["reservations"] == 1
     assert found["stranded"] == stranded(rows)
     assert found["stranded"] == {
         "reservations": 2,
-        "amount_usd": Decimal("0.40"),
+        "amount": Decimal("0.40"),
         "oldest_age_seconds": 700.0,
         "instances": ["b"],
     }
@@ -511,9 +511,13 @@ async def test_a_request_log_row_names_the_reservation_its_request_ran_under():
     assert by_id["req_1"]["metadata"] == {
         "user_id": USER,
         "spend_reservation": reservation.reservation_id,
+        "spend_charged_amount": "0.120000",
         "spend_charged_usd": "0.120000",
+        "spend_currency": "USD",
         # And the day the charge was recorded on, which its settlement counts it on.
-        "spend_charged_days": [{"day": spend_ledger.utc_day(), "usd": "0.120000", "requests": 1}],
+        "spend_charged_days": [
+            {"day": spend_ledger.utc_day(), "amount": "0.120000", "usd": "0.120000", "requests": 1}
+        ],
     }
     assert by_id["req_2"]["metadata"] == {"user_id": USER}
     assert row["metadata"] == {"user_id": USER}  # the caller's dict is not modified
@@ -528,7 +532,9 @@ async def test_a_row_for_a_request_that_was_charged_nothing_says_so():
     with req_ctx.push(**{req_ctx.SPEND_RESERVATION: reservation}):
         assert _with_spend_reservation(row)["metadata"] == {
             "spend_reservation": reservation.reservation_id,
+            "spend_charged_amount": "0",
             "spend_charged_usd": "0",
+            "spend_currency": "USD",
             "spend_charged_days": [],
         }
     assert _with_spend_reservation(row) is row  # outside a request with a reservation
@@ -552,9 +558,9 @@ async def test_a_row_says_on_which_day_each_part_of_its_charge_was_recorded(monk
         ("2031-03-31", Decimal("0.120000"), 2),
         ("2031-04-01", Decimal("0.050000"), 1),
     ]
-    assert metadata["spend_charged_usd"] == "0.170000"
+    assert metadata["spend_charged_amount"] == "0.170000"
     assert metadata["spend_charged_days"] == [
-        {"day": "2031-03-31", "usd": "0.120000", "requests": 2},
-        {"day": "2031-04-01", "usd": "0.050000", "requests": 1},
+        {"day": "2031-03-31", "amount": "0.120000", "usd": "0.120000", "requests": 2},
+        {"day": "2031-04-01", "amount": "0.050000", "usd": "0.050000", "requests": 1},
     ]
     json.dumps(metadata)  # what the log store does with it

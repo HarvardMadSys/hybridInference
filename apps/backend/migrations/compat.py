@@ -108,6 +108,41 @@ def raise_compat_floor(oldest: str, *, by: str) -> None:
     )
 
 
+async def raise_floor_outside_revision(
+    conn: Any, oldest: str, *, by: str, chain: Sequence[str] | None = None
+) -> bool:
+    """Raise the floor to *oldest* on an asyncpg connection, from a maintenance operation.
+
+    For a change of the data, not of the schema, that older code would
+    misread: the offline accounting-currency migration, whose ledger code
+    older than the revision that introduced it does not know. Like
+    :func:`raise_compat_floor` it only ever rises; *by* names the operation in
+    ``set_by_revision``. Runs in the caller's transaction.
+
+    Returns:
+        Whether the floor was raised (False: it already was at or above *oldest*).
+
+    Raises:
+        ValueError: *oldest* is not a revision of this code's chain.
+    """
+    chain = tuple(chain) if chain is not None else code_chain()
+    if oldest not in chain:
+        raise ValueError(f"the compatibility floor {oldest!r} is not a revision of this code")
+    current = await conn.fetchval(f"SELECT oldest_compatible_revision FROM {COMPAT_TABLE}")
+    if current in chain and chain.index(current) >= chain.index(oldest):
+        return False
+    await conn.execute(
+        f"INSERT INTO {COMPAT_TABLE} (id, oldest_compatible_revision, set_by_revision) "
+        "VALUES (TRUE, $1, $2) "
+        "ON CONFLICT (id) DO UPDATE SET "
+        "oldest_compatible_revision = EXCLUDED.oldest_compatible_revision, "
+        "set_by_revision = EXCLUDED.set_by_revision, updated_at = NOW()",
+        oldest,
+        by,
+    )
+    return True
+
+
 @dataclass(frozen=True)
 class SchemaState:
     """What a database records about its schema."""

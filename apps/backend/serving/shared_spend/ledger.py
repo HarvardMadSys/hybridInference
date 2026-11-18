@@ -71,6 +71,7 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
+from serving.accounting import get_accounting_policy
 from serving.observability.tracked_tasks import tracked_task
 from serving.shared_spend.stats import LedgerStats, survey
 from serving.shared_spend.store import (
@@ -82,7 +83,7 @@ from serving.shared_spend.store import (
     SettlementResult,
     SharedSpendStore,
     SpendSnapshot,
-    usd,
+    quantized_amount,
 )
 from serving.storage.pools import REQUEST_ACQUIRE_TIMEOUT_SEC, DatabaseBusyError
 from serving.utils import context as req_ctx
@@ -157,6 +158,12 @@ _RETRY_ADMISSION_SQLSTATES = frozenset({"23505", "40001", "40P01"})
 #: Settlement outcomes after which a member's liability is no longer held
 #: anywhere this process can see: kept here, counted and reported.
 _UNACCOUNTED_OUTCOMES = frozenset({"missing", "mismatch"})
+
+
+def _display_amount(value: float | Decimal) -> float | str:
+    """A ledger amount in a report: dollars to six places on USD, exact on a native ledger."""
+    policy = get_accounting_policy()
+    return str(policy.quantize(value)) if policy.native else round(float(value), 6)
 
 
 class SpendAdmissionUnavailable(DatabaseBusyError):
@@ -254,7 +261,7 @@ class SharedReservation:
 
     def cost(self) -> Decimal:
         """What the costs recorded under it add up to."""
-        return sum((line.cost_usd for line in self.charges), Decimal(0))
+        return sum((line.cost_amount for line in self.charges), Decimal(0))
 
     def charged_by_day(self) -> list[tuple[str, Decimal, int]]:
         """Its recorded costs by the UTC day each was recorded on: (day, cost, requests).
@@ -266,7 +273,7 @@ class SharedReservation:
         days: dict[str, tuple[Decimal, int]] = {}
         for line in self.charges:
             cost, requests = days.get(line.day, (Decimal(0), 0))
-            days[line.day] = (cost + line.cost_usd, requests + line.requests)
+            days[line.day] = (cost + line.cost_amount, requests + line.requests)
         return [(day, cost, requests) for day, (cost, requests) in days.items()]
 
     def member(self) -> Member:
@@ -417,12 +424,13 @@ class SharedSpendLedger:
 
         today = utc_day()
         month = today[:7]
-        totals = [0.0] * 6
+        number = get_accounting_policy().number
+        totals = [number(0)] * 6
 
         def add(line_user: str, line_key: int | None, line_project: str | None, day: str, cost):
             if not day.startswith(month):
                 return
-            value = float(cost)
+            value = number(cost)
             is_today = day == today
             if line_user == user_id:
                 totals[1] += value
@@ -441,7 +449,7 @@ class SharedSpendLedger:
         for batch in self._unsettled_batches():
             lines.extend(batch.increments)
         for line in lines:
-            add(line.user_id, line.api_key_id, line.project_id, line.day, line.cost_usd)
+            add(line.user_id, line.api_key_id, line.project_id, line.day, line.cost_amount)
 
         held_here = [*self._active.values(), *self._queued_reservations.values()]
         for reservation in held_here:
@@ -565,7 +573,9 @@ class SharedSpendLedger:
             user_id=check.user_id,
             api_key_id=check.key_id,
             project_id=check.project_id,
-            requested_usd=usd(max(float(amount), 0.0)),
+            requested_amount=quantized_amount(
+                max(get_accounting_policy().number(amount), get_accounting_policy().zero)
+            ),
             check_day=utc_day(),
             operation=operation,
             check_key=check.key_id is not None
@@ -596,39 +606,40 @@ class SharedSpendLedger:
                 reserved=False,
                 read_from=read_from[0],
             )
+            number = get_accounting_policy().number
             read = dataclasses.replace(
                 check,
                 ledger=None,
-                account_spent_usd=float(snapshot.account_day),
-                account_spent_month_usd=float(snapshot.account_month),
-                key_spent_today_usd=float(snapshot.key_day)
+                account_spent_usd=number(snapshot.account_day),
+                account_spent_month_usd=number(snapshot.account_month),
+                key_spent_today_usd=number(snapshot.key_day)
                 if request.check_key
                 else check.key_spent_today_usd,
-                key_spent_month_usd=float(snapshot.key_month)
+                key_spent_month_usd=number(snapshot.key_month)
                 if request.check_key
                 else check.key_spent_month_usd,
-                project_spent_today_usd=float(snapshot.project_day)
+                project_spent_today_usd=number(snapshot.project_day)
                 if request.check_project
                 else check.project_spent_today_usd,
-                project_spent_month_usd=float(snapshot.project_month)
+                project_spent_month_usd=number(snapshot.project_month)
                 if request.check_project
                 else check.project_spent_month_usd,
             )
             extra = (
-                float(snapshot.reserved_account_day) + local[0],
-                float(snapshot.reserved_account_month) + local[1],
-                float(snapshot.reserved_key_day) + local[2],
-                float(snapshot.reserved_key_month) + local[3],
+                number(snapshot.reserved_account_day) + number(local[0]),
+                number(snapshot.reserved_account_month) + number(local[1]),
+                number(snapshot.reserved_key_day) + number(local[2]),
+                number(snapshot.reserved_key_month) + number(local[3]),
             )
             project_extra = (
-                float(snapshot.reserved_project_day) + local[4],
-                float(snapshot.reserved_project_month) + local[5],
+                number(snapshot.reserved_project_day) + number(local[4]),
+                number(snapshot.reserved_project_month) + number(local[5]),
             )
-            decided, refusal = decide_admission(read, float(amount), extra, project_extra)
+            decided, refusal = decide_admission(read, amount, extra, project_extra)
             if refusal is not None or decided is None:
                 refused[:] = [refusal] if refusal is not None else []
                 return None
-            return usd(decided)
+            return quantized_amount(decided)
 
         from serving.storage.pools import request_connection
 
@@ -685,7 +696,7 @@ class SharedSpendLedger:
                 user_id=request.user_id,
                 key_id=request.api_key_id,
                 project_id=request.project_id,
-                amount=Decimal(outcome.reserved_usd or 0),
+                amount=Decimal(outcome.reserved_amount or 0),
                 check_day=request.check_day,
                 operation=operation,
             )
@@ -795,15 +806,16 @@ class SharedSpendLedger:
         """
         from serving.spend_ledger import capped_cost, utc_day
 
-        if not user_id or not cost_usd > 0:
+        cost_amount = cost_usd  # historical caller name; already in native ledger currency
+        if not user_id or not cost_amount > 0:
             return None
-        cost_usd = capped_cost(user_id, cost_usd, api_key_id=api_key_id)
+        cost_amount = capped_cost(user_id, cost_amount, api_key_id=api_key_id)
         context = req_ctx.get() or {}
         line = CostLine(
             user_id=user_id,
             day=utc_day(),
             api_key_id=api_key_id,
-            cost_usd=usd(cost_usd),
+            cost_amount=quantized_amount(cost_amount),
             requests=1,
             project_id=context.get(req_ctx.PROJECT_ID) or None,
         )
@@ -1149,7 +1161,7 @@ class SharedSpendLedger:
                     extra={
                         "event": "spend_settlement_unaccounted",
                         "reservations": [(member.reservation_id, outcome)],
-                        "amount_usd": str(member.cost_usd()),
+                        "amount": str(member.cost_amount()),
                     },
                 )
                 context = {
@@ -1218,7 +1230,7 @@ class SharedSpendLedger:
                 "event": "spend_settlement_duplicate",
                 "batch_id": batch_id,
                 "reservations": [m.reservation_id for m in dropped],
-                "amount_usd": str(sum((m.cost_usd() for m in dropped), Decimal(0))),
+                "amount": str(sum((m.cost_amount() for m in dropped), Decimal(0))),
             },
         )
 
@@ -1247,7 +1259,7 @@ class SharedSpendLedger:
         # counters: its plain costs, and the part of each request's cost above
         # the estimate its row held (see _local_extra's read_from).
         moved: list[tuple[Any, ...]] = [
-            (line.user_id, line.api_key_id, line.project_id, line.day, line.cost_usd)
+            (line.user_id, line.api_key_id, line.project_id, line.day, line.cost_amount)
             for line in batch.increments
         ]
         unaccounted: list[Member] = []
@@ -1289,7 +1301,7 @@ class SharedSpendLedger:
                     "reservations": [
                         (m.reservation_id, result.outcome_of(m.reservation_id)) for m in unaccounted
                     ],
-                    "amount_usd": str(sum((m.cost_usd() for m in unaccounted), Decimal(0))),
+                    "amount": str(sum((m.cost_amount() for m in unaccounted), Decimal(0))),
                 },
             )
             context = {
@@ -1387,14 +1399,14 @@ class SharedSpendLedger:
                 "failing_for_seconds": round(failing_for, 1),
                 "error_type": self._last_error,
                 "reservations": waiting["reservations"],
-                "amount_usd": str(waiting["amount_usd"]),
+                "amount": str(waiting["amount"]),
             },
         )
         context = {
             "failing_for_seconds": round(failing_for),
             "error": self._last_error,
             "reservations_waiting": waiting["reservations"],
-            "amount_held_usd": str(waiting["amount_usd"]),
+            "amount_held": str(waiting["amount"]),
             "logs": "event spend_settlement_failed has each attempt",
         }
         _send_alert(
@@ -1540,14 +1552,14 @@ class SharedSpendLedger:
             extra={
                 "event": "spend_reservations_stranded",
                 "reservations": found["reservations"],
-                "amount_usd": str(found["amount_usd"]),
+                "amount": str(found["amount"]),
                 "oldest_age_seconds": oldest,
                 "instances": found["instances"],
             },
         )
         context = {
             "reservations": found["reservations"],
-            "amount_held_usd": str(found["amount_usd"]),
+            "amount_held": str(found["amount"]),
             "oldest_hours": round(oldest / 3600, 1),
             "instances": ", ".join(found["instances"][:5]),
             "next": "python -m serving.shared_spend status, then reconcile INSTANCE_ID",
@@ -1584,6 +1596,7 @@ class SharedSpendLedger:
             database = {"age_seconds": round(now - self._surveyed_at, 1), **self._survey}
         return {
             "instance_id": self._instance_id,
+            "currency": get_accounting_policy().currency,
             "uptime_seconds": round(now - self._started, 1),
             "admissions": dict(self._stats.admissions),
             "admission_latency": self._stats.admission.snapshot(),
@@ -1602,7 +1615,7 @@ class SharedSpendLedger:
                 "refused_awaiting_mark": len(self._marking),
                 "failing_for_seconds": round(now - failing, 1) if failing is not None else None,
                 "last_error": self._last_error,
-                "unwritten_usd": round(cost, 6),
+                "unwritten_amount": _display_amount(cost),
                 "unwritten_records": records,
             },
             "receipts_purged": self._stats.receipts_purged,
@@ -1623,7 +1636,8 @@ class SharedSpendLedger:
             lines.extend(member.costs)
         for reservation in self._every_liability():
             lines.extend(reservation.charges)
-        return float(sum((line.cost_usd for line in lines), Decimal(0))), len(lines)
+        total = sum((line.cost_amount for line in lines), Decimal(0))
+        return get_accounting_policy().number(total), len(lines)
 
     def _every_liability(self) -> list[SharedReservation]:
         """Every liability this process holds, those of earlier months included."""
@@ -1666,14 +1680,15 @@ class SharedSpendLedger:
         unconfirmed = [*self._set_aside, *(c for r in liabilities for c in r.charges)]
         return {
             "mode": "shared",
+            "currency": get_accounting_policy().currency,
             "holdings": held,
-            "not_settled_usd": round(cost, 6),
+            "not_settled_amount": _display_amount(cost),
             "not_settled_records": records,
             "writing": self._writer is not None,
             "unconfirmed_reservations": len(liabilities),
             "unconfirmed_increments": len(self._set_aside),
-            "unconfirmed_usd": round(
-                float(sum((line.cost_usd for line in unconfirmed), Decimal(0))), 6
+            "unconfirmed_amount": _display_amount(
+                sum((line.cost_amount for line in unconfirmed), Decimal(0))
             ),
             "finished": (
                 self._writer is None
@@ -1699,7 +1714,7 @@ def _held(reservations: Any, since: str, now: float) -> dict[str, Any]:
     starts = [start for r in reservations if (start := getattr(r, since)) is not None]
     return {
         "reservations": len(reservations),
-        "amount_usd": float(sum((max(r.amount, r.cost()) for r in reservations), Decimal(0))),
+        "amount": _display_amount(sum((max(r.amount, r.cost()) for r in reservations), Decimal(0))),
         "oldest_seconds": round(now - min(starts), 1) if starts else None,
     }
 
@@ -1710,7 +1725,7 @@ def _coalesce(lines: list[CostLine]) -> list[CostLine]:
     for line in lines:
         key = (line.user_id, line.day, line.api_key_id, line.project_id)
         entry = sums.setdefault(key, [Decimal(0), 0])
-        entry[0] += line.cost_usd
+        entry[0] += line.cost_amount
         entry[1] += line.requests
     return [
         CostLine(user, day, key_id, total, requests, project)

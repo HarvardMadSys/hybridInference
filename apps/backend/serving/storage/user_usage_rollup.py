@@ -64,6 +64,7 @@ from __future__ import annotations
 import hashlib
 import time
 from datetime import UTC, date
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving.utils.logging import get_logger
@@ -182,6 +183,10 @@ USAGE_METRICS: tuple[tuple[str, str], ...] = (
     ("cache_write_tokens", "COALESCE(SUM(l.cache_write_tokens), 0)"),
     ("reasoning_tokens", "COALESCE(SUM(l.reasoning_tokens), 0)"),
     ("reasoning_tokens_known", "COUNT(l.reasoning_tokens)"),
+    # The native ledger amount of ``cost_usd`` (``0022_ledger_currency``):
+    # what the dashboard reports on a non-USD ledger, exact. A row the
+    # offline currency migration predates carries its USD value.
+    ("cost_amount", "COALESCE(SUM(COALESCE(l.cost_amount, l.cost_usd)), 0)"),
 )
 
 # Fingerprint of :data:`USAGE_METRICS`, recorded with each counted day in the
@@ -551,6 +556,8 @@ def _usage_window(row: Any, window: str) -> dict[str, Any]:
 
     stats: dict[str, Any] = {"requests": int(value("request_count") or 0)}
     stats["cost_usd"] = float(value("cost_usd") or 0)
+    # The native ledger amount, exact; ``cost_usd`` stays its USD equivalent.
+    stats["cost_amount"] = Decimal(value("cost_amount") or 0)
     for column in ("prompt_tokens", "completion_tokens", "cache_read_tokens", "cache_write_tokens"):
         stats[column] = int(value(column) or 0)
     known = int(value("reasoning_tokens_known") or 0)
@@ -564,7 +571,7 @@ async def fetch_usage_windows(
 ) -> dict[str, dict[str, Any]]:
     """*user_id*'s requests, cost and token sums over each of *windows*, from one snapshot.
 
-    Each window holds ``requests``, ``cost_usd``, ``prompt_tokens``,
+    Each window holds ``requests``, ``cost_usd``, ``cost_amount``, ``prompt_tokens``,
     ``completion_tokens``, ``cache_read_tokens``, ``cache_write_tokens``,
     ``reasoning_tokens`` and ``reasoning_tokens_known_requests``, equal to what
     summing the user's ``api_logs`` rows in the window gives.

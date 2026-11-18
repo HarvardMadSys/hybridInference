@@ -16,10 +16,10 @@ refused; it retires its own.
 **What a reservation is charged.** What its billing points had recorded
 under it when its request was logged. A request's log row names the
 reservation it ran under and that amount (``metadata.spend_reservation``,
-``metadata.spend_charged_usd``): the ledger's own record of what the
+``metadata.spend_charged_amount``): the ledger's own record of what the
 reservation's settlement would have added to the counters. So a request that
 ended, and was logged before its process died, is charged exactly what it
-would have been. The row's own ``cost_usd`` is shown beside it and not used: a
+would have been. The row's own ``cost_amount`` is shown beside it and not used: a
 failed request's row can carry a cost that no billing point charged. When a
 reservation has several rows, each carries the total recorded when it was
 written, and the largest is the charge.
@@ -60,13 +60,14 @@ from datetime import UTC, date, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import TYPE_CHECKING, Any
 
+from serving.accounting import get_accounting_policy
 from serving.shared_spend.store import (
     OWNER_GONE,
     CostLine,
     Member,
     OwnerHeardFrom,
     Reconciliation,
-    usd,
+    quantized_amount,
 )
 
 if TYPE_CHECKING:
@@ -91,11 +92,11 @@ class UnknownInstance(LookupError):
 
 
 def _recorded_charge(value: Any) -> Decimal | None:
-    """The charge a log row records (``metadata.spend_charged_usd``), or None if it has none."""
+    """The charge a log row records (``metadata.spend_charged_amount``), or None if it has none."""
     if value is None:
         return None
     try:
-        charge = usd(Decimal(str(value)))
+        charge = quantized_amount(Decimal(str(value)))
     except (InvalidOperation, ValueError):
         return None
     return charge if charge >= 0 else None
@@ -119,7 +120,7 @@ def _recorded_days(
         if not isinstance(entry, dict):
             return None
         day, requests = entry.get("day"), entry.get("requests")
-        cost = _recorded_charge(entry.get("usd"))
+        cost = _recorded_charge(entry.get("amount"))
         if not isinstance(day, str) or not cost or type(requests) is not int or requests < 0:
             return None
         try:
@@ -164,7 +165,7 @@ async def plan(
         evidence: list[dict[str, Any]] = []
         charge, lines = Decimal(0), []
         for found in logged.get(row["reservation_id"], []):
-            recorded = _recorded_charge(found["charged_usd"])
+            recorded = _recorded_charge(found["charged_amount"])
             days = None
             if recorded:
                 days = _recorded_days(
@@ -178,13 +179,15 @@ async def plan(
                     "request_id": found["request_id"],
                     "day": found["day"],
                     "status_code": found["status_code"],
-                    "charged_usd": str(recorded) if recorded is not None else None,
+                    "charged_amount": str(recorded) if recorded is not None else None,
                     # The days the row says the charge was recorded on, which
                     # it is counted on; None where it does not say.
                     "charged_days": {day: str(cost) for day, cost, _ in days} if days else None,
                     # The row's own price for the request, beside it for an
                     # operator to compare; not what is charged.
-                    "cost_usd": str(found["cost_usd"]) if found["cost_usd"] is not None else None,
+                    "cost_amount": str(found["cost_amount"])
+                    if found["cost_amount"] is not None
+                    else None,
                 }
             )
             if recorded is not None and recorded >= charge:
@@ -195,7 +198,7 @@ async def plan(
                     user_id=row["user_id"],
                     day=day,
                     api_key_id=row["api_key_id"],
-                    cost_usd=cost,
+                    cost_amount=cost,
                     requests=requests,
                     project_id=row["project_id"],
                 )
@@ -207,7 +210,7 @@ async def plan(
         planned.append(
             Reconciliation(
                 reservation_id=row["reservation_id"],
-                amount_usd=Decimal(row["amount_usd"]),
+                amount=quantized_amount(Decimal(row["amount"])),
                 operation=row["operation"],
                 admitted_at=row["created_at"],
                 member=Member(
@@ -226,15 +229,16 @@ async def plan(
 
 def describe(entry: Reconciliation) -> dict[str, Any]:
     """One planned reservation as the command prints it; no account is named."""
-    cost = entry.member.cost_usd()
+    cost = entry.member.cost_amount()
     return {
         "reservation_id": entry.reservation_id,
-        "held_usd": str(entry.amount_usd),
+        "held_amount": str(entry.amount),
+        "currency": get_accounting_policy().currency,
         "operation": entry.operation,
         "admitted_at": entry.admitted_at,
         "would": "charge" if cost else "release",
-        "charge_usd": str(cost),
-        "charge_days": {line.day: str(line.cost_usd) for line in entry.member.costs},
+        "charge_amount": str(cost),
+        "charge_days": {line.day: str(line.cost_amount) for line in entry.member.costs},
         "request_log": list(entry.evidence),
     }
 
@@ -244,9 +248,9 @@ def totals(planned: list[Reconciliation]) -> dict[str, Any]:
     charged = [entry for entry in planned if entry.member.costs]
     return {
         "reservations": len(planned),
-        "held_usd": str(sum((entry.amount_usd for entry in planned), Decimal(0))),
+        "held_amount": str(sum((entry.amount for entry in planned), Decimal(0))),
         "to_charge": len(charged),
-        "charge_usd": str(sum((entry.member.cost_usd() for entry in charged), Decimal(0))),
+        "charge_amount": str(sum((entry.member.cost_amount() for entry in charged), Decimal(0))),
         "to_release": len(planned) - len(charged),
     }
 
@@ -302,9 +306,9 @@ async def apply(
         "owner": owner,
         "applied": True,
         "charged": 0,
-        "charge_usd": Decimal(0),
+        "charge_amount": Decimal(0),
         "released": 0,
-        "released_usd": Decimal(0),
+        "released_amount": Decimal(0),
         "not_retired": {},
         "batches": [],
     }
@@ -342,11 +346,11 @@ async def apply(
             done["batches"].append(result.batch_id)
             for rid in result.members.get("settled", []):
                 done["charged"] += 1
-                done["charge_usd"] += by_id[rid].member.cost_usd()
+                done["charge_amount"] += by_id[rid].member.cost_amount()
                 retired += 1
             for rid in result.members.get("released", []):
                 done["released"] += 1
-                done["released_usd"] += by_id[rid].amount_usd
+                done["released_amount"] += by_id[rid].amount
                 retired += 1
             for outcome, ids in result.members.items():
                 if outcome not in ("settled", "released"):
@@ -367,6 +371,6 @@ async def apply(
         done["closed_now"] = await backend.close_instance(
             instance_id, closed_by="operator", operator=operator, reason=reason
         )
-    done["charge_usd"] = str(done["charge_usd"])
-    done["released_usd"] = str(done["released_usd"])
+    done["charge_amount"] = str(done["charge_amount"])
+    done["released_amount"] = str(done["released_amount"])
     return done

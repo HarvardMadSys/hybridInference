@@ -28,6 +28,7 @@ def _make_adapter(
     config.base_url = base_url
     config.endpoint_id = endpoint_id
     config.pricing = pricing
+    config.pricing_currency = "USD"
     adapter = MagicMock()
     adapter.config = config
     return adapter

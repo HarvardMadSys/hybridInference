@@ -17,6 +17,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving.accounting import get_accounting_policy
 from serving.audit import AuditActor, AuditTarget
 from serving.auth.signup_policy import (
     distribution_allows_public_signup,
@@ -111,8 +112,11 @@ def _security_action(keys: list[str]) -> str:
     return f"Changing {named}"
 
 
-def _checked_value(key: str, value: Any) -> tuple[dict[str, Any], Any]:
-    """Return *key*'s registry entry and *value*, or raise why it cannot be stored.
+def _checked_value(key: str, value: Any, currency: str | None = None) -> tuple[dict[str, Any], Any]:
+    """Return *key*'s registry entry and the value to store, or raise why it cannot be.
+
+    A role quota sent in *currency* (the deployment's accounting unit) is
+    stored in USD.
 
     Everything is checked here, before any confirmation is asked for and
     before anything is written: a value that would be refused never spends a
@@ -125,6 +129,14 @@ def _checked_value(key: str, value: Any) -> tuple[dict[str, Any], Any]:
         raise HTTPException(status_code=404, detail=f"Unknown setting: {key}")
 
     expected_type = entry["type"]
+    if key.startswith("user_daily_quota_") and currency is not None:
+        policy = get_accounting_policy()
+        if currency != policy.currency:
+            raise HTTPException(409, "Accounting currency changed; reload before saving")
+        try:
+            value = float(policy.to_usd(value))
+        except (ValueError, TypeError, ArithmeticError) as exc:
+            raise HTTPException(400, "Quota must be a finite non-negative amount") from exc
     if expected_type == "bool" and not isinstance(value, bool):
         raise HTTPException(status_code=400, detail=f"Setting '{key}' expects a boolean value")
     # ``bool`` is a subclass of ``int`` in Python; without the explicit check, a
@@ -274,7 +286,7 @@ async def update_runtime_setting_endpoint(
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_runtime_settings(rt)
-    entry, value = _checked_value(key, payload.value)
+    entry, value = _checked_value(key, payload.value, payload.currency)
     await _confirm_if_guarded(request, op_store, [key], payload.password)
     return await _write(key, entry, value, admin_id=admin_id, actor=actor, op_store=op_store, rt=rt)
 
@@ -297,7 +309,9 @@ async def update_runtime_settings_endpoint(
     if not op_store:
         raise HTTPException(500, "Database not configured")
     rt = _require_runtime_settings(rt)
-    checked = {key: _checked_value(key, value) for key, value in payload.values.items()}
+    checked = {
+        key: _checked_value(key, value, payload.currency) for key, value in payload.values.items()
+    }
     await _confirm_if_guarded(request, op_store, list(checked), payload.password)
     return ListSettingsResponse(
         settings=[

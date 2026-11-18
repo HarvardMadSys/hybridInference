@@ -389,3 +389,52 @@ async def test_the_admin_token_batch_of_display_switches_is_written(client, op_s
 
     assert response.status_code == 200
     op_store.set_setting.assert_awaited_once()
+
+
+@pytest.fixture
+def cny_ledger(monkeypatch):
+    from decimal import Decimal
+
+    from serving import accounting
+
+    monkeypatch.setattr(
+        accounting,
+        "_policy",
+        accounting.AccountingPolicy(
+            currency="CNY",
+            usd_to_currency_rate=Decimal("8"),
+            rate_date="2026-10-23",
+            rate_source="https://example.test/fixed-rate",
+        ),
+    )
+
+
+async def test_a_batch_stores_quotas_given_in_the_ledger_currency_in_usd(
+    client, op_store, console_admin, cny_ledger
+):
+    response = await client.patch(
+        "/admin/settings",
+        json={
+            "values": {"user_daily_quota_free": 40, "analytics_growth_rate_enabled": True},
+            "currency": "CNY",
+            "password": PASSWORD,
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert op_store.rows["user_daily_quota_free"]["value"] == "5.0"
+    assert op_store.rows["analytics_growth_rate_enabled"]["value"] == "True"
+    quota = response.json()["settings"][0]
+    assert (quota["currency"], quota["amount"]) == ("CNY", 40.0)
+
+
+async def test_a_batch_in_a_stale_currency_writes_nothing_and_spends_no_password(
+    client, op_store, console_admin, cny_ledger
+):
+    response = await client.patch(
+        "/admin/settings",
+        json={"values": {"user_daily_quota_free": 5}, "currency": "USD", "password": "wrong"},
+    )
+
+    assert response.status_code == 409
+    op_store.set_setting.assert_not_awaited()

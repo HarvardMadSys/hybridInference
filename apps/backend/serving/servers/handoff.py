@@ -362,6 +362,7 @@ def status(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     """The state, what is left and whether a seal would succeed now."""
     from serving.config.instances import build_id
     from serving.servers import restart
+    from serving.shared_spend import mode as spend_mode
 
     handoff = handoff or HANDOFF
     report = leftovers(services, handoff)
@@ -369,6 +370,9 @@ def status(services: Any, handoff: Handoff | None = None) -> dict[str, Any]:
     return {
         "instance": restart.INSTANCE_ID,
         "build": build_id(),
+        # The accounting this process reserves and settles in: a release
+        # compares the process it starts with this one before handing over.
+        "capabilities": {"spend_accounting": spend_mode.capability()},
         "state": handoff.state.value,
         "draining_since": handoff.draining_since,
         "sealed_at": handoff.sealed_at,

@@ -22,6 +22,7 @@ from routing.model_router_registry import StaleRouterStrategyChangeError
 from routing.model_selection import is_auto_model_id
 from routing.protocols import RouteTableRefreshable
 from routing.routers import ManagedRouter
+from serving.accounting import USD, get_accounting_policy
 from serving.adapters import ModelConfig, dynamic_keys, provider_registry
 from serving.adapters.openrouter import openrouter_attribution_headers
 from serving.adapters.reasoning_effort import (
@@ -1618,6 +1619,10 @@ async def _apply_openrouter_endpoint_pricing(
             cfg["route_metadata"] = route_metadata
         return
     cfg["pricing"] = endpoint_pricing.pricing
+    if get_accounting_policy().native:
+        # OpenRouter quotes USD; on another ledger the route says so, whatever
+        # its model declares. A USD ledger's routes keep the shape they had.
+        cfg["pricing_currency"] = USD
     # OpenRouter's endpoint-specific price is authoritative for this route; a
     # model-level provider schedule must not overwrite it later.
     cfg["pricing_schedule"] = None

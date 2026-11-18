@@ -19,7 +19,10 @@ from typing import Any, Literal
 Mode = Literal["local", "shared"]
 
 #: Version of the shared protocol, reported in ``config_instances`` capabilities.
-PROTOCOL_VERSION = 1
+#: 2: amounts are in the ledger's accounting currency (``serving.accounting``),
+#: reported beside the protocol with the fixed rate; a process of version 1
+#: knows only USD and cannot take part in a ledger it might misread.
+PROTOCOL_VERSION = 2
 
 #: Where a process reports its mode among its capabilities.
 CAPABILITY = "spend_accounting"
@@ -62,4 +65,13 @@ async def load(pool: Any) -> Mode:
 
 def capability() -> dict[str, Any]:
     """What this process reports about its accounting in ``config_instances``."""
-    return {"protocol": PROTOCOL_VERSION, "mode": _mode}
+    from serving.accounting import get_accounting_policy
+
+    policy = get_accounting_policy()
+    return {
+        "protocol": PROTOCOL_VERSION,
+        "mode": _mode,
+        "currency": policy.currency,
+        "native_amounts": 1,
+        "usd_to_currency_rate": str(policy.usd_to_currency_rate),
+    }

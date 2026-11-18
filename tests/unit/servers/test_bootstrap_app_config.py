@@ -20,6 +20,8 @@ from tests.fixtures.app_config_store import FakeAppConfigStore, row
 def _schema_is_current(monkeypatch):
     """These boots run on fake connections; the schema check has tests of its own."""
     monkeypatch.setattr(bootstrap, "require_schema", AsyncMock())
+    # So has the native accounting schema check (test_accounting_currency_postgres).
+    monkeypatch.setattr(bootstrap, "require_accounting_schema", AsyncMock())
 
 
 @pytest.fixture
@@ -150,6 +152,7 @@ async def test_boot_wires_runtime_import_setup_state_and_refresh_loops(
     monkeypatch.setattr(bootstrap, "PostgresOperationalStore", MagicMock(return_value=AsyncMock()))
     operational_store = MagicMock()
     operational_store.list_settings = AsyncMock(return_value=[])
+    operational_store.get_setting = AsyncMock(return_value=None)
     monkeypatch.setattr(
         bootstrap, "CachedOperationalStore", MagicMock(return_value=operational_store)
     )

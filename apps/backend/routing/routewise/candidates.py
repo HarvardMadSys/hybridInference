@@ -14,7 +14,7 @@ from enum import Enum
 from typing import TYPE_CHECKING, Any
 
 from routing.endpoints import endpoint_id_for_adapter as _canonical_endpoint_id_for_adapter
-from serving.pricing import effective_pricing
+from serving.pricing import effective_pricing_usd
 
 if TYPE_CHECKING:
     from serving.adapters.base import BaseAdapter
@@ -158,7 +158,7 @@ class ProviderCandidate:
     def effective_pricing(self) -> CandidatePricing:
         """Resolve pricing for the current request's fixed pricing instant."""
         return CandidatePricing.from_raw(
-            effective_pricing(self.adapter.config) or {},
+            effective_pricing_usd(self.adapter.config) or {},
             context=f"{self.endpoint_id}.pricing",
         )
 
