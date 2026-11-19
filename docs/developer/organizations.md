@@ -88,21 +88,25 @@ connection and shows it as not available. The members stay. Attach the new
 
 ## What an organization administrator sees
 
-An organization administrator calls the routes below `/user/organization`
-with the access token of its own console session. The organization is always
-the one of the caller's membership: no call names it. Every other caller gets
-a 403.
+An organization administrator has an entry in the navigation of the console,
+under **Organization**, with the name of the organization. The entry opens
+the organization console. No other account sees the entry.
 
-| Route | Shows |
-|---|---|
-| `GET /user/organization` | The organization: name, SSO connections, administrators, limits and the spend of this month |
-| `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day, or of each hour for one day. The spend of each model |
-| `GET /user/organization/members` | One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of this month with the monthly limit. Takes `search`, `status`, `sort_by`, `order`, `limit` and `offset` |
-| `GET /user/organization/members/{user_id}` | One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests |
-| `GET /user/organization/usage/requests` | One row for each request, newest first: time, member, project, name of the API key, model, status code, tokens and cost. Takes `search`, `model`, `status`, `limit`, and `before` for the next page |
-| `GET /user/organization/usage/models` | Requests, errors, tokens and spend of each model |
-| `GET /user/organization/usage/members` | Requests, tokens and spend of each member |
-| `GET /user/organization/audit-log` | The management actions of this organization. Takes `category`, `search`, `limit` and `offset` |
+The pages of the organization console read the routes below
+`/user/organization`. A script can call the same routes with the access token
+of the administrator's console session. The organization is always the one of
+the caller's membership: no call names it. Every other caller gets a 403.
+
+| Page | Route | Shows |
+|---|---|---|
+| **Settings** | `GET /user/organization` | The organization: name, SSO connections, administrators, limits and the spend of this month |
+| **Overview** | `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day, or of each hour for one day. The spend of each model |
+| **Members** | `GET /user/organization/members` | One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of this month with the monthly limit. Takes `search`, `status`, `sort_by`, `order`, `limit` and `offset` |
+| **Members**, in the panel of a member | `GET /user/organization/members/{user_id}` | One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests |
+| **Usage → Requests** | `GET /user/organization/usage/requests` | One row for each request, newest first: time, member, project, name of the API key, model, status code, tokens and cost. Takes `search`, `model`, `status`, `limit`, and `before` for the next page |
+| **Usage → By model** | `GET /user/organization/usage/models` | Requests, errors, tokens and spend of each model |
+| **Usage → By member** | `GET /user/organization/usage/members` | Requests, tokens and spend of each member |
+| **Audit log** | `GET /user/organization/audit-log` | The management actions of this organization. Takes `category`, `search`, `limit` and `offset` |
 
 The routes that show figures take `period`: `1d`, `7d` or `30d`, the last 1, 7
 or 30 days in UTC, with today. The audit log takes it too, and shows every row
@@ -124,6 +128,11 @@ No route shows these:
 
 ## What an organization administrator can change
 
+On **Members**, a click on a row opens a panel with the details of the member
+and the actions on that member: **Set monthly limit**, **Remove from
+organization** and **Restore member**. **Settings** has the default monthly
+limit for a member. The actions call these routes:
+
 | Route | What it does |
 |---|---|
 | `PUT /user/organization/members/{user_id}/monthly-limit` | Sets the monthly limit of a member. `{"monthly_limit_usd": null}` clears it |
@@ -132,7 +141,8 @@ No route shows these:
 | `POST /user/organization/members/{user_id}/restore` | Restores a member that the organization removed |
 
 None of these applies to an organization administrator, to an account with
-the `admin` role, or to the caller. The answer is a 409.
+the `admin` role, or to the caller. The answer is a 409. The console shows no
+action in the panel of an organization administrator.
 
 ### Remove and restore a member
 

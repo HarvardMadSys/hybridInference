@@ -488,9 +488,11 @@ Notes:
 - **Guard.** The layout sends a signed-out visitor to the sign-in page and an account without the role to
   `/dashboard`, as the Admin layout does. The gateway decides access. The guard only chooses what to show.
 - **Building blocks.** The pages use what the Admin Console has: `adminStyles.ts`, `AdminPrimitives`,
-  the table, filter and page patterns of **Admin → Users**, `useConfirmAction` for the dialogs,
-  `useAccountToast`, and `recharts` for the charts. A member row opens in place, as a user row does in
-  **Admin → Users**.
+  the table, filter and page patterns of **Admin → Users**, `ConfirmDialog` for the dialogs,
+  `useAccountToast`, and `recharts` for the charts.
+- **Member details.** A member row opens a panel at the right side of the window, as the prototype of
+  #1829 shows. The list stays behind the panel. On a phone the panel has the width of the screen. The
+  panel is new: a row in **Admin → Users** opens in place.
 - **Dialogs.** "Set monthly limit", "Remove from organization" and "Restore member" say what changes, as the
   prototype of #1829 shows.
 - **Language.** The Admin Console is in English only. The organization console is for the staff of an
@@ -518,9 +520,9 @@ Notes:
   - `audit.py`: the target type; `storage/audit_schema.py`: the column;
   - `storage/base.py`, `storage/cache.py`, `storage/accounting_schema.py`.
 - **Console, new:** `app/dashboard/organization/` (layout, tabs, five pages); `lib/api/organization.ts`;
-  components in `components/features/organization/`.
-- **Console, changed:** `ConsoleNav.tsx`, `AuthProvider.tsx`, `lib/api/user.ts`,
-  `components/ui/consoleWidth.ts`, `site-ui/PublicRouteBoundary.tsx`, `lib/i18n/messages/zh-CN.json`.
+  `lib/hooks/queries/useOrganization.ts`; components in `components/features/organization/`.
+- **Console, changed:** `ConsoleNav.tsx`, `AuthProvider.tsx`, `lib/api/user.ts`, `lib/hooks/index.ts`,
+  `components/ui/consoleWidth.ts`, `lib/i18n/messages/zh-CN.json`.
 - **Documentation:** a new `docs/developer/organizations.md` for operators (make an organization, attach a
   connection, give the role, set limits, remove a member), with its Chinese translation and an entry in
   `index.rst`; the two changes of §4.3 and a pointer in `sso.md`; four terms in the glossary; the new

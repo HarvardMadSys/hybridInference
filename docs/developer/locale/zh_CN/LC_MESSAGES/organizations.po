@@ -112,14 +112,44 @@ msgstr "机构保存的是每个 SSO 连接的 `id`。如果你修改了 `SSO_PR
 msgid "What an organization administrator sees"
 msgstr "机构管理员能看到什么"
 
-msgid "An organization administrator calls the routes below `/user/organization` with the access token of its own console session. The organization is always the one of the caller's membership: no call names it. Every other caller gets a 403."
-msgstr "机构管理员用自己控制台会话的访问令牌调用 `/user/organization` 下的路由。机构永远是调用者自己所属的那个：没有任何调用会指定机构。其他调用者一律得到 403。"
+msgid "An organization administrator has an entry in the navigation of the console, under **Organization**, with the name of the organization. The entry opens the organization console. No other account sees the entry."
+msgstr "机构管理员在控制台的导航里、**Organization** 分组下有一个以机构名称命名的入口。这个入口打开机构控制台。其他账号看不到这个入口。"
+
+msgid "The pages of the organization console read the routes below `/user/organization`. A script can call the same routes with the access token of the administrator's console session. The organization is always the one of the caller's membership: no call names it. Every other caller gets a 403."
+msgstr "机构控制台的页面读取 `/user/organization` 下的路由。脚本可以用这位管理员控制台会话的访问令牌调用同样的路由。机构永远是调用者自己所属的那个：没有任何调用会指定机构。其他调用者一律得到 403。"
+
+msgid "Page"
+msgstr "页面"
 
 msgid "Route"
 msgstr "路由"
 
 msgid "Shows"
 msgstr "显示内容"
+
+msgid "**Settings**"
+msgstr "**Settings**"
+
+msgid "**Overview**"
+msgstr "**Overview**"
+
+msgid "**Members**"
+msgstr "**Members**"
+
+msgid "**Members**, in the panel of a member"
+msgstr "**Members**，成员的面板里"
+
+msgid "**Usage → Requests**"
+msgstr "**Usage → Requests**"
+
+msgid "**Usage → By model**"
+msgstr "**Usage → By model**"
+
+msgid "**Usage → By member**"
+msgstr "**Usage → By member**"
+
+msgid "**Audit log**"
+msgstr "**Audit log**"
 
 msgid "`GET /user/organization`"
 msgstr "`GET /user/organization`"
@@ -193,6 +223,9 @@ msgstr "部署的配置，或者 SSO 连接的 client secret。"
 msgid "What an organization administrator can change"
 msgstr "机构管理员能修改什么"
 
+msgid "On **Members**, a click on a row opens a panel with the details of the member and the actions on that member: **Set monthly limit**, **Remove from organization** and **Restore member**. **Settings** has the default monthly limit for a member. The actions call these routes:"
+msgstr "在 **Members** 页，点一行会打开一个面板，里面有这位成员的详情和对这位成员的操作：**Set monthly limit**、**Remove from organization** 和 **Restore member**。**Settings** 页有成员的默认每月上限。这些操作调用下面的路由："
+
 msgid "`PUT /user/organization/members/{user_id}/monthly-limit`"
 msgstr "`PUT /user/organization/members/{user_id}/monthly-limit`"
 
@@ -217,8 +250,8 @@ msgstr "`POST /user/organization/members/{user_id}/restore`"
 msgid "Restores a member that the organization removed"
 msgstr "恢复一个被机构移除的成员"
 
-msgid "None of these applies to an organization administrator, to an account with the `admin` role, or to the caller. The answer is a 409."
-msgstr "这些操作都不能用于机构管理员、拥有 `admin` 角色的账号，以及调用者自己。此时返回 409。"
+msgid "None of these applies to an organization administrator, to an account with the `admin` role, or to the caller. The answer is a 409. The console shows no action in the panel of an organization administrator."
+msgstr "这些操作都不能用于机构管理员、拥有 `admin` 角色的账号，以及调用者自己。此时返回 409。在机构管理员的面板里，控制台不显示任何操作。"
 
 msgid "Remove and restore a member"
 msgstr "移除和恢复成员"
