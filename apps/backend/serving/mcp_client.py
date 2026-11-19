@@ -235,9 +235,8 @@ class _Session:
     def protocol_version(self) -> str:
         return self._protocol_version
 
-    async def _post(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+    def _request_headers(self) -> dict[str, str]:
         headers = {
-            "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
             "Mcp-Protocol-Version": self._protocol_version,
             "Host": self._target.host_header,
@@ -245,9 +244,30 @@ class _Session:
         }
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
-        extensions = (
-            {"sni_hostname": self._target.sni_hostname} if self._target.sni_hostname else {}
-        )
+        return headers
+
+    @property
+    def _extensions(self) -> dict[str, str]:
+        return {"sni_hostname": self._target.sni_hostname} if self._target.sni_hostname else {}
+
+    async def close(self) -> None:
+        """End this session on the server, best effort."""
+        if self._session_id is None:
+            return
+        try:
+            async with self._client.stream(
+                "DELETE",
+                self._target.url,
+                headers=self._request_headers(),
+                extensions=self._extensions,
+            ):
+                pass
+        except httpx.HTTPError:
+            pass
+
+    async def _post(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        headers = {"Content-Type": "application/json", **self._request_headers()}
+        extensions = self._extensions
         try:
             async with self._client.stream(
                 "POST",
@@ -355,18 +375,19 @@ async def _open_session(
     await session.initialize()
     async with _init_lock:
         raced = _cached_session(key)
-        if raced is not None:
-            return _Session(
-                client,
-                target,
-                headers,
-                session_id=raced.session_id,
-                protocol_version=raced.protocol_version,
-            )
-        if session.session_id:
+        if raced is None and session.session_id:
             _session_cache[key] = _CachedSession(
                 session.session_id, session.protocol_version, time.monotonic()
             )
+    if raced is not None:
+        await session.close()
+        return _Session(
+            client,
+            target,
+            headers,
+            session_id=raced.session_id,
+            protocol_version=raced.protocol_version,
+        )
     return session
 
 
@@ -386,7 +407,9 @@ async def _with_session(
     except McpError as exc:
         if exc.status != 404 or session.session_id is None:
             raise
-        _session_cache.pop(key, None)
+        cached = _session_cache.get(key)
+        if cached is not None and cached.session_id == session.session_id:
+            _session_cache.pop(key, None)
         session = await _open_session(client, target, headers, scope=scope)
         return await action(session)
 

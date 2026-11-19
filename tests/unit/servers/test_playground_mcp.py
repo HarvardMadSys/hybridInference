@@ -231,6 +231,77 @@ async def test_a_blocked_initialize_does_not_serialize_other_servers() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_racing_initialize_ends_the_losing_session() -> None:
+    gate = asyncio.Event()
+    both_initializing = asyncio.Event()
+
+    class _GatedStream:
+        def __init__(self, payload: dict[str, Any], session_id: str) -> None:
+            self._payload = payload
+            self._session_id = session_id
+
+        async def __aenter__(self) -> httpx.Response:
+            await gate.wait()
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._payload["id"],
+                    "result": {"protocolVersion": "2025-06-18"},
+                },
+                headers={"mcp-session-id": self._session_id},
+            )
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+    class _RacingClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.initialized = 0
+            self.deleted: list[str] = []
+
+        def stream(
+            self,
+            method: str,
+            url: str,
+            *,
+            json: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ) -> Any:
+            if method == "DELETE":
+                self.deleted.append((headers or {}).get("Mcp-Session-Id", ""))
+                return _FakeStream(httpx.Response(204))
+            assert json is not None
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            if json.get("method") == "initialize":
+                self.initialized += 1
+                if self.initialized == 2:
+                    both_initializing.set()
+                return _GatedStream(json, f"s-{self.initialized}")
+            return _FakeStream(httpx.Response(202))
+
+    client = _RacingClient()
+    first = asyncio.create_task(
+        mcp_client._open_session(client, TARGET, {}, scope="race")  # type: ignore[arg-type]
+    )
+    second = asyncio.create_task(
+        mcp_client._open_session(client, TARGET, {}, scope="race")  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(both_initializing.wait(), timeout=1)
+    gate.set()
+    sessions = await asyncio.gather(first, second)
+
+    winner = sessions[0].session_id
+    assert winner == sessions[1].session_id
+    assert [cached.session_id for cached in mcp_client._session_cache.values()] == [winner]
+    loser = "s-2" if winner == "s-1" else "s-1"
+    assert client.deleted == [loser]
+
+
+@pytest.mark.asyncio
 async def test_an_sse_answer_is_parsed() -> None:
     server = _FakeClient(
         [{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}],
