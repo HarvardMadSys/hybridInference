@@ -48,7 +48,7 @@ async def test_reports_the_role_cap():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": 3, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": 3}
 
 
 @pytest.mark.asyncio
@@ -60,7 +60,7 @@ async def test_reports_an_account_override():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": 8, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": 8}
 
 
 @pytest.mark.asyncio
@@ -73,7 +73,7 @@ async def test_unlimited_is_reported_as_null():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": None, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": None}
 
 
 @pytest.mark.asyncio
@@ -82,7 +82,7 @@ async def test_no_limiter_means_inference_is_unguarded():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": None, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": None}
 
 
 @pytest.mark.asyncio
@@ -97,12 +97,12 @@ async def test_on_behalf_of_reports_the_target_cap(monkeypatch):
 
     body = await _get(app, headers={"X-On-Behalf-Of": "u2"})
 
-    assert body["concurrency"] == {"max_in_flight": 5, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": 5}
     resolve.assert_awaited_once()
 
 
 @pytest.mark.asyncio
-async def test_reports_the_project_shared_cap():
+async def test_reports_the_tighter_project_shared_cap():
     app = _app(
         {
             "user_id": "u1",
@@ -116,11 +116,48 @@ async def test_reports_the_project_shared_cap():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": 3, "project_max_in_flight": 2}
+    assert body["concurrency"] == {"max_in_flight": 2}
 
 
 @pytest.mark.asyncio
-async def test_an_unlimited_project_cap_is_reported_as_null():
+async def test_keeps_the_user_cap_when_the_project_cap_is_higher():
+    app = _app(
+        {
+            "user_id": "u1",
+            "role": "free",
+            "authenticated": True,
+            "project_id": "proj-1",
+            "project_max_concurrent_requests": 5,
+        },
+        limiter=object(),
+    )
+
+    body = await _get(app)
+
+    assert body["concurrency"] == {"max_in_flight": 3}
+
+
+@pytest.mark.asyncio
+async def test_project_cap_bounds_an_unlimited_user():
+    app = _app(
+        {
+            "user_id": "u1",
+            "role": "admin",
+            "authenticated": True,
+            "project_id": "proj-1",
+            "project_max_concurrent_requests": 2,
+        },
+        limiter=object(),
+        cap=0,
+    )
+
+    body = await _get(app)
+
+    assert body["concurrency"] == {"max_in_flight": 2}
+
+
+@pytest.mark.asyncio
+async def test_an_unlimited_project_cap_is_ignored():
     app = _app(
         {
             "user_id": "u1",
@@ -134,4 +171,4 @@ async def test_an_unlimited_project_cap_is_reported_as_null():
 
     body = await _get(app)
 
-    assert body["concurrency"] == {"max_in_flight": 3, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": 3}

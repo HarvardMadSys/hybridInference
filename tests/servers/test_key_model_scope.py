@@ -244,7 +244,7 @@ async def test_the_key_description_reports_the_project_and_effective_models(mock
     assert body["key_prefix"] == "hyi-abc"
     assert body["project"] == {"id": "proj_eval", "name": "Eval"}
     assert body["models"] == ["canonical-model"]
-    assert body["concurrency"] == {"max_in_flight": None, "project_max_in_flight": None}
+    assert body["concurrency"] == {"max_in_flight": None}
     assert body["budgets"]["project"]["day"] == {
         "limit_usd": 5.0,
         "spent_usd": 1.0,
