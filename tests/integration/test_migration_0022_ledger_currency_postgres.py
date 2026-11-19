@@ -104,10 +104,19 @@ async def _seed(conn, *, shared: bool = False) -> None:
     )
 
 
+async def _money_tables(conn) -> dict[str, dict[str, str]]:
+    """The tables that hold money and exist: a later revision's are absent before it."""
+    return {
+        table: pairs
+        for table, pairs in {**AMOUNT_COLUMNS, **ROLLUP_AMOUNT_COLUMNS}.items()
+        if await conn.fetchval("SELECT to_regclass($1)", table)
+    }
+
+
 async def _amounts(conn) -> dict[str, list[dict]]:
     """Every USD and native amount, by table, in a stable order."""
     found: dict[str, list[dict]] = {}
-    for table, pairs in {**AMOUNT_COLUMNS, **ROLLUP_AMOUNT_COLUMNS}.items():
+    for table, pairs in (await _money_tables(conn)).items():
         columns = sorted({*pairs, *pairs.values()})
         rows = await conn.fetch(
             f"SELECT {', '.join(columns)} FROM {table} ORDER BY {', '.join(columns)}"
@@ -118,7 +127,7 @@ async def _amounts(conn) -> dict[str, list[dict]]:
 
 async def _usd_amounts(conn) -> dict[str, list[dict]]:
     found: dict[str, list[dict]] = {}
-    for table, pairs in {**AMOUNT_COLUMNS, **ROLLUP_AMOUNT_COLUMNS}.items():
+    for table, pairs in (await _money_tables(conn)).items():
         columns = sorted(pairs)
         rows = await conn.fetch(
             f"SELECT {', '.join(columns)} FROM {table} ORDER BY {', '.join(columns)}"
@@ -145,7 +154,10 @@ async def test_a_usd_database_upgrades_without_changing_an_amount():
         before = await _usd_amounts(conn)
         await mig.upgrade(name)
         assert await accounting_schema_problems(conn) == []
-        assert await _usd_amounts(conn) == before
+        after = await _usd_amounts(conn)
+        # The tables that were there keep every amount; a later revision's are new and empty.
+        assert {table: after[table] for table in before} == before
+        assert all(rows == [] for table, rows in after.items() if table not in before)
         # Rows older than the revision have no native amount, except the
         # shared rows, which take theirs at the identity rate.
         assert await conn.fetchval("SELECT cost_amount FROM api_logs WHERE request_id='r1'") is None

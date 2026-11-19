@@ -358,8 +358,18 @@ class OperationalStore(ABC):
         """Make a member the organization removed active again."""
         raise RuntimeError("Organizations are unavailable in this store")
 
+    async def set_organization_member_limit(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear the monthly quota of a member's account."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed an account."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def get_organization_spend_scope(self, user_id: str) -> Row | None:
+        """The organization of an account as the request path checks it; None for none."""
         raise RuntimeError("Organizations are unavailable in this store")
 
     async def list_organization_administrators(self, organization_id: str) -> list[Row]:

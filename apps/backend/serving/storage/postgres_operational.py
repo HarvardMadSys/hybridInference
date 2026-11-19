@@ -69,6 +69,14 @@ logger = get_logger(__name__)
 # a coalesced batch adds exactly what the separate increments would have.
 # The counter writes of a cost batch, from its ``batch`` rows: shared by both
 # statements below.
+#
+# ``scope_rows`` counts each increment under its project, for the day and the
+# month, and, for the account of a member, under its organization
+# (``o:<organization id>``) for the month: the one period an organization has
+# a limit for. The membership is read here, when the cost is written, so the
+# organization's counter holds what its members were charged while they were
+# its members. The rows go in one order, so two batches that share an
+# organization lock its counter alike.
 _COST_INCREMENT_WRITES = """
 account_rows AS (
     INSERT INTO user_daily_cost AS c (user_id, day, cost_usd, requests, last_request_at)
@@ -95,10 +103,15 @@ scope_rows AS (
     INSERT INTO spend_counters AS c (scope_id, period, cost_usd, requests, last_request_at)
     SELECT scope_id, period, SUM(cost_usd), SUM(requests), NOW()
     FROM batch
-    CROSS JOIN LATERAL (VALUES (project_id)) scopes(scope_id)
-    CROSS JOIN LATERAL (VALUES ('d:' || day), ('m:' || left(day, 7))) periods(period)
+    LEFT JOIN sso_organization_members om ON om.user_id = batch.user_id
+    CROSS JOIN LATERAL (VALUES
+        (project_id, 'd:' || day),
+        (project_id, 'm:' || left(day, 7)),
+        ('o:' || om.organization_id, 'm:' || left(day, 7))
+    ) scopes(scope_id, period)
     WHERE scope_id IS NOT NULL
     GROUP BY scope_id, period
+    ORDER BY scope_id, period
     ON CONFLICT (scope_id, period) DO UPDATE SET
         cost_usd = c.cost_usd + EXCLUDED.cost_usd,
         requests = c.requests + EXCLUDED.requests,
@@ -180,10 +193,15 @@ scope_rows AS (
     SELECT scope_id, period, NULL::numeric, SUM(cost_amount), {currency}::text, SUM(requests),
            NOW()
     FROM batch
-    CROSS JOIN LATERAL (VALUES (project_id)) scopes(scope_id)
-    CROSS JOIN LATERAL (VALUES ('d:' || day), ('m:' || left(day, 7))) periods(period)
+    LEFT JOIN sso_organization_members om ON om.user_id = batch.user_id
+    CROSS JOIN LATERAL (VALUES
+        (project_id, 'd:' || day),
+        (project_id, 'm:' || left(day, 7)),
+        ('o:' || om.organization_id, 'm:' || left(day, 7))
+    ) scopes(scope_id, period)
     WHERE scope_id IS NOT NULL
     GROUP BY scope_id, period
+    ORDER BY scope_id, period
     ON CONFLICT (scope_id, period) DO UPDATE SET
         cost_amount = {total},
         accounting_currency = EXCLUDED.accounting_currency,
@@ -440,16 +458,69 @@ _KEY_SPEND_JOIN = (
 #: its account's ``account_quotas`` row ``aq`` (:data:`_ACCOUNT_QUOTA_JOIN`).
 #: The row is the record; the key's own copy stands in for an account without
 #: one, and for a daily quota the row leaves unset.
+#:
+#: A member of an organization that has no monthly quota of its own takes the
+#: organization's default (``o``, joined with the quota row): the default is
+#: read here, with the lookup, and never copied onto the account, so a change
+#: of it reaches every such member at once.
 _ACCOUNT_DAILY_QUOTA = "COALESCE(aq.quota_daily_cost_usd, k.quota_daily_cost_usd)"
-_ACCOUNT_MONTHLY_QUOTA = (
+_OWN_MONTHLY_QUOTA = (
     "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_usd "
     "ELSE k.quota_monthly_cost_usd END"
+)
+_OWN_MONTHLY_QUOTA_AMOUNT = (
+    "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_amount "
+    "ELSE k.quota_monthly_cost_amount END"
+)
+#: Whether the account has a monthly quota of its own, in either column: a row
+#: that predates its native column has only the USD one.
+_HAS_OWN_MONTHLY_QUOTA = (
+    f"({_OWN_MONTHLY_QUOTA} IS NOT NULL OR {_OWN_MONTHLY_QUOTA_AMOUNT} IS NOT NULL)"
+)
+_ACCOUNT_MONTHLY_QUOTA = (
+    f"CASE WHEN {_HAS_OWN_MONTHLY_QUOTA} THEN {_OWN_MONTHLY_QUOTA} "
+    "ELSE o.default_member_monthly_limit_usd END"
+)
+_ACCOUNT_MONTHLY_QUOTA_AMOUNT = (
+    f"CASE WHEN {_HAS_OWN_MONTHLY_QUOTA} THEN {_OWN_MONTHLY_QUOTA_AMOUNT} "
+    "ELSE o.default_member_monthly_limit_amount END"
 )
 _ACCOUNT_QUOTA_COLUMNS = (
     f"{_ACCOUNT_DAILY_QUOTA} AS quota_daily_cost_usd, "
     f"{_ACCOUNT_MONTHLY_QUOTA} AS quota_monthly_cost_usd"
 )
-_ACCOUNT_QUOTA_JOIN = "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
+_ACCOUNT_QUOTA_JOIN = (
+    "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
+    "LEFT JOIN sso_organization_members om ON om.user_id = k.user_id "
+    "LEFT JOIN sso_organizations o ON o.id = om.organization_id "
+)
+
+#: The organization of key ``k``'s account (``o``, from
+#: :data:`_ACCOUNT_QUOTA_JOIN`), as the request path checks it. NULL throughout
+#: for an account in no organization.
+#:
+#: Its monthly limit is identity, like a budget: every lookup carries it. What
+#: its counter holds for this UTC month (``oc``, :data:`_ORGANIZATION_SPEND_JOIN`,
+#: read through the counter's primary key) is spend: only the lookups that read
+#: spend carry it, never the cached identity lookup, and the gate reads it for
+#: an identity that came without (``serving.organizations.check_fields``). An
+#: organization's counter is always written with its native amount, so it
+#: needs no rate.
+_ORGANIZATION_SCOPE_COLUMNS = (
+    "o.id AS organization_id, o.name AS organization_name, "
+    "o.monthly_limit_usd AS organization_limit_usd, "
+    "o.monthly_limit_amount AS organization_limit_amount"
+)
+_ORGANIZATION_COLUMNS = (
+    f"{_ORGANIZATION_SCOPE_COLUMNS}, "
+    "COALESCE(oc.cost_usd, 0) AS organization_spent_month_usd, "
+    "COALESCE(oc.cost_amount, 0) AS organization_spent_month_amount"
+)
+_ORGANIZATION_SPEND_JOIN = (
+    "LEFT JOIN spend_counters oc "
+    "  ON oc.scope_id = 'o:' || o.id "
+    " AND oc.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
+)
 
 _ACCOUNT_MONTH_SPEND_JOIN = (
     "LEFT JOIN LATERAL ("
@@ -483,8 +554,7 @@ _PROJECT_SCOPE_COLUMNS = (
 _ACCOUNT_QUOTA_NATIVE_COLUMNS = (
     "CASE WHEN aq.quota_daily_cost_usd IS NOT NULL THEN aq.quota_daily_cost_amount "
     "ELSE k.quota_daily_cost_amount END AS quota_daily_cost_amount, "
-    "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_amount "
-    "ELSE k.quota_monthly_cost_amount END AS quota_monthly_cost_amount"
+    f"{_ACCOUNT_MONTHLY_QUOTA_AMOUNT} AS quota_monthly_cost_amount"
 )
 _PROJECT_SCOPE_NATIVE_COLUMNS = (
     "p.budget_daily_amount AS project_budget_daily_amount, "
@@ -1120,6 +1190,32 @@ class PostgresOperationalStore(
     async def _lock_account_on(self, conn: asyncpg.Connection, user_id: str) -> None:
         """Take the lock every write to *user_id*'s keys takes first."""
         await _lock_account_keys(conn, user_id)
+
+    async def _set_account_monthly_quota_on(
+        self, conn: asyncpg.Connection, user_id: str, *, usd: Any, amount: Any
+    ) -> None:
+        """Write *user_id*'s monthly quota, in the caller's transaction.
+
+        As :meth:`update_key` writes it: the copies on the account's unrevoked
+        keys and the account's record together, so the two never differ. The
+        daily quota stays as it is. None in both clears the monthly quota. The
+        caller holds the account's key lock (:meth:`_lock_account_on`).
+        """
+        policy = get_accounting_policy()
+        if amount is None and usd is not None:
+            amount = policy.from_usd(usd)
+        if usd is None and amount is not None:
+            usd = policy.to_usd(amount)
+        await conn.execute(
+            "UPDATE api_keys SET quota_monthly_cost_usd = $2, quota_monthly_cost_amount = $3 "
+            "WHERE user_id = $1 AND status <> 'revoked'",
+            user_id,
+            usd,
+            amount,
+        )
+        await _set_account_quota(
+            conn, user_id, quota_monthly_cost_usd=usd, quota_monthly_cost_amount=amount
+        )
 
     async def _suspend_user_on(self, conn: asyncpg.Connection, user_id: str, **fields: Any) -> None:
         """Suspend *user_id* and revoke its keys and sessions, in the caller's transaction."""
@@ -1994,7 +2090,7 @@ class PostgresOperationalStore(
             row = await conn.fetchrow(
                 "SELECT k.id, k.user_id, k.user_name, "
                 f"{_PROJECT_SCOPE_COLUMNS}, {_PROJECT_SCOPE_NATIVE_COLUMNS}, {_AUTH_KEY_COLUMNS}, "
-                f"{_KEY_NATIVE_COLUMNS}, "
+                f"{_KEY_NATIVE_COLUMNS}, {_ORGANIZATION_SCOPE_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -2035,6 +2131,7 @@ class PostgresOperationalStore(
                 f"{_PROJECT_SCOPE_NATIVE_COLUMNS}, {_SCOPE_SPEND_NATIVE_COLUMNS}, "
                 f"{_KEY_NATIVE_COLUMNS}, am.account_spent_month_amount, "
                 "ks.key_spent_today_amount, ks.key_spent_month_amount, "
+                f"{_ORGANIZATION_COLUMNS}, "
                 f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd, "
                 "COALESCE(s.cost_amount, s.cost_usd * $2::numeric, 0) AS cost_amount "
@@ -2047,6 +2144,7 @@ class PostgresOperationalStore(
                 f"{_KEY_SPEND_JOIN}"
                 f"{_ACCOUNT_MONTH_SPEND_JOIN}"
                 f"{_SCOPE_SPEND_JOIN}"
+                f"{_ORGANIZATION_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -3478,6 +3576,7 @@ class PostgresOperationalStore(
                 f"{_ACCOUNT_QUOTA_COLUMNS}, u.role, "
                 # The native amounts beside them (``$2``: the fixed policy rate).
                 f"{_PROJECT_SCOPE_NATIVE_COLUMNS}, {_SCOPE_SPEND_NATIVE_COLUMNS}, "
+                f"{_ORGANIZATION_COLUMNS}, "
                 "k.accounting_currency "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
@@ -3485,6 +3584,7 @@ class PostgresOperationalStore(
                 "LEFT JOIN projects p "
                 "  ON p.user_id = k.user_id AND p.is_default AND p.status = 'active' "
                 f"{_SCOPE_SPEND_JOIN.replace('k.project_id', 'p.id')}"
+                f"{_ORGANIZATION_SPEND_JOIN}"
                 "WHERE k.user_id = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "

@@ -702,6 +702,12 @@ async def create_console_batch(
         elif exc.scope == "project":
             code = "project_budget_exceeded"
             message = f"The project this batch runs under has spent its {period} budget; raise it on the project's page, or submit after it renews"
+        elif exc.scope == "organization":
+            code = "monthly_quota_exceeded"
+            message = (
+                "Your organization has reached its monthly limit; submit after it renews, or "
+                "ask an administrator of your organization"
+            )
         else:
             code = "quota_exceeded" if exc.window == "day" else "monthly_quota_exceeded"
             message = f"Your {period} quota is spent; submit after it renews"

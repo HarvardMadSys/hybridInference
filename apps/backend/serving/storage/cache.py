@@ -1310,9 +1310,21 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_user_auth_caches(user_id)
         return result
 
+    async def set_organization_member_limit(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear a member's monthly quota, then evict its keys' cached auth entries."""
+        result = await self._store.set_organization_member_limit(organization_id, user_id, **fields)
+        await self.invalidate_user_auth_caches(user_id)
+        return result
+
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed an account."""
         return await self._store.clear_organization_member_removal(user_id)
+
+    async def get_organization_spend_scope(self, user_id: str) -> Row | None:
+        """The organization of an account as the request path checks it; None for none."""
+        return await self._store.get_organization_spend_scope(user_id)
 
     async def list_organization_administrators(self, organization_id: str) -> list[Row]:
         """The members that have the administrator role, by email."""

@@ -18,6 +18,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 
 from serving import organizations
+from serving.accounting import get_accounting_policy
 from serving.schemas_organization import (
     ListMembersResponse,
     ListOrganizationAuditResponse,
@@ -29,6 +30,7 @@ from serving.schemas_organization import (
     OrganizationOverviewResponse,
     OrganizationResponse,
     Period,
+    SetMonthlyLimitRequest,
 )
 from serving.servers.deps import (
     OrganizationAdmin,
@@ -46,6 +48,20 @@ MemberStatus = Literal["active", "suspended", "removed", "pending_approval"]
 AuditCategory = Literal["membership", "limits", "organization"]
 
 _NOT_A_MEMBER = "This account is not a member of your organization."
+_ABOVE_LIMIT = "A member's limit cannot be greater than the limit of the organization."
+
+
+def _limit(payload: SetMonthlyLimitRequest) -> tuple[Any, Any]:
+    """The limit a request sent, as ``(USD, native)``: the native amount only when it sent one.
+
+    Raises:
+        HTTPException: 400 when the request names no limit at all; ``null`` clears one.
+    """
+    sent = payload.model_fields_set
+    if not sent & {"monthly_limit_usd", "monthly_limit"}:
+        raise HTTPException(400, "Send monthly_limit_usd, or null for no limit.")
+    native = get_accounting_policy().native and "monthly_limit" in sent
+    return payload.monthly_limit_usd, payload.monthly_limit if native else None
 
 
 @router.get("", response_model=OrganizationResponse)
@@ -179,6 +195,69 @@ async def restore_member(
             "restores an account they suspended.",
         )
     return OrganizationMessageResponse(message="Member restored.")
+
+
+@router.put("/members/{user_id}/monthly-limit", response_model=OrganizationMessageResponse)
+async def set_member_monthly_limit(
+    user_id: str,
+    payload: SetMonthlyLimitRequest,
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+) -> OrganizationMessageResponse:
+    """Set the monthly limit of a member, or clear it with ``null``.
+
+    The limit is the monthly quota of the member's account, the one the
+    gateway already enforces. A member without one takes the default of the
+    organization. Not for an administrator.
+
+    Raises:
+        HTTPException: 400 when the limit is above the organization's own;
+            404 when the account is not a member of the caller's
+            organization; 409 for an administrator.
+    """
+    usd, native = _limit(payload)
+    outcome, _old, _new = await op_store.set_organization_member_limit(
+        admin.organization_id, user_id, usd=usd, amount=native, actor=admin.actor
+    )
+    if outcome == org_store.NOT_FOUND:
+        raise HTTPException(404, _NOT_A_MEMBER)
+    if outcome == org_store.PROTECTED:
+        raise HTTPException(409, "The limit of an administrator is not set here.")
+    if outcome == org_store.ABOVE_LIMIT:
+        raise HTTPException(400, _ABOVE_LIMIT)
+    if usd is None and native is None:
+        return OrganizationMessageResponse(message="Monthly limit cleared.")
+    return OrganizationMessageResponse(message="Monthly limit saved.")
+
+
+@router.put("/default-member-limit", response_model=OrganizationResponse)
+async def set_default_member_limit(
+    payload: SetMonthlyLimitRequest,
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+) -> OrganizationResponse:
+    """Set the default monthly limit of a member, or clear it with ``null``.
+
+    It applies at once to every member that has no monthly limit of its own.
+
+    Raises:
+        HTTPException: 400 when the default is above the organization's own limit.
+    """
+    usd, native = _limit(payload)
+    outcome, _old, _new = await op_store.set_organization_limit(
+        admin.organization_id,
+        "default_member_monthly_limit",
+        usd=usd,
+        amount=native,
+        action="organization.default_member_limit.set",
+        actor=admin.actor,
+    )
+    if outcome == org_store.ABOVE_LIMIT:
+        raise HTTPException(400, _ABOVE_LIMIT)
+    view = await organizations.organization_view(op_store, admin.organization_id)
+    if view is None or outcome == org_store.NOT_FOUND:
+        raise HTTPException(404, "No such organization.")
+    return OrganizationResponse(**view)
 
 
 @router.get("/usage/requests", response_model=ListOrganizationRequestsResponse)

@@ -9,15 +9,22 @@ shown what its members sent.
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import UTC, datetime
+from decimal import Decimal
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 import pytest_asyncio
+from fastapi import HTTPException, Request
 
+from serving import organizations as organization_rules, quota
 from serving.audit import AuditActor
+from serving.servers.auth import generate_api_key, hash_api_key, verify_api_key
 from serving.servers.routers import organization
+from serving.storage.base import CostIncrement
 from tests.fixtures.oidc_provider import ISSUER
 from tests.fixtures.sso_app import (
     EMAIL,
@@ -51,6 +58,7 @@ async def clean_organizations(auth_backend, clean_auth_tables):
     async def _wipe() -> None:
         async with db_logger.pool.acquire() as conn:
             await conn.execute("DELETE FROM sso_organizations")
+            await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'o:%'")
             await conn.execute("DELETE FROM admin_audit_log WHERE organization_id IS NOT NULL")
             await conn.execute("DELETE FROM api_logs WHERE request_id LIKE 'org-itest-%'")
             await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'org-itest-%'")
@@ -813,3 +821,227 @@ async def test_the_platform_administrator_filters_the_audit_log_by_organization(
     assert listed.status_code == 200, listed.text
     actions = {entry["action"] for entry in listed.json()["entries"]}
     assert actions == {"organization.create", "organization.admin.add"}
+
+
+# -- limits ----------------------------------------------------------------------------
+
+
+async def _carol(app, idp, store):
+    return await _member(app, idp, store, email="carol@example.edu", sub="subject-3")
+
+
+async def test_an_administrator_sets_the_limit_of_a_member_and_the_default(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    alice, headers, alice_id = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    _carol_browser, _carol_headers, carol_id = await _carol(app, idp, store)
+    await root.patch(
+        f"/admin/organizations/{state['organization_id']}",
+        json={"monthly_limit_usd": "100"},
+        headers=root_headers,
+    )
+    limit = f"/user/organization/members/{bob_id}/monthly-limit"
+
+    own = await alice.put(limit, json={"monthly_limit_usd": "20"}, headers=headers)
+    default = await alice.put(
+        "/user/organization/default-member-limit", json={"monthly_limit_usd": "5"}, headers=headers
+    )
+
+    assert own.status_code == 200, own.text
+    assert default.status_code == 200, default.text
+    assert default.json()["default_member_monthly_limit_usd"] == 5.0
+    assert default.json()["monthly_limit_usd"] == 100.0
+    listed = (await alice.get("/user/organization/members", headers=headers)).json()["members"]
+    limits = {m["user_id"]: (m["monthly_limit_usd"], m["monthly_limit_source"]) for m in listed}
+    assert limits[bob_id] == (20.0, "member")
+    assert limits[carol_id] == (5.0, "default")
+    async with clean_organizations.acquire() as conn:
+        stored = await conn.fetch(
+            "SELECT user_id, quota_monthly_cost_usd FROM account_quotas "
+            "WHERE user_id = ANY($1::text[])",
+            [bob_id, carol_id],
+        )
+    # The member's own limit is its account's quota; the default is copied to no account.
+    assert {row["user_id"]: row["quota_monthly_cost_usd"] for row in stored} == {
+        bob_id: Decimal("20.0000")
+    }
+
+    cleared = await alice.put(limit, json={"monthly_limit_usd": None}, headers=headers)
+    assert cleared.status_code == 200
+    listed = (await alice.get("/user/organization/members", headers=headers)).json()["members"]
+    assert {m["user_id"]: m["monthly_limit_source"] for m in listed}[bob_id] == "default"
+
+    above = await alice.put(limit, json={"monthly_limit_usd": "100.01"}, headers=headers)
+    default_above = await alice.put(
+        "/user/organization/default-member-limit",
+        json={"monthly_limit_usd": "200"},
+        headers=headers,
+    )
+    on_admin = await alice.put(
+        f"/user/organization/members/{alice_id}/monthly-limit",
+        json={"monthly_limit_usd": "1"},
+        headers=headers,
+    )
+    stranger = await alice.put(
+        "/user/organization/members/no-such-account/monthly-limit",
+        json={"monthly_limit_usd": "1"},
+        headers=headers,
+    )
+    nothing = await alice.put(limit, json={}, headers=headers)
+    negative = await alice.put(limit, json={"monthly_limit_usd": "-1"}, headers=headers)
+
+    assert (above.status_code, default_above.status_code) == (400, 400)
+    assert (on_admin.status_code, stranger.status_code) == (409, 404)
+    assert (nothing.status_code, negative.status_code) == (400, 422)
+    actions = await _audit_actions(clean_organizations, state["organization_id"])
+    assert actions[-4:] == [
+        "organization.limit.set",
+        "organization.member_limit.set",
+        "organization.default_member_limit.set",
+        "organization.member_limit.set",
+    ]
+
+
+async def test_a_member_without_a_limit_of_its_own_is_held_to_the_default_at_the_door(
+    app, idp, store, members_sign_straight_in
+):
+    state = await _organization_with_an_administrator(app, idp, store)
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    key = generate_api_key()
+    await store.create_key(
+        key_hash=hash_api_key(key), key_prefix=key[:12], user_id=bob_id, account_id=bob_id
+    )
+    outsider_id = await existing_user(store, "someone@elsewhere.org")
+    outsider_key = generate_api_key()
+    await store.create_key(
+        key_hash=hash_api_key(outsider_key),
+        key_prefix=outsider_key[:12],
+        user_id=outsider_id,
+        account_id=outsider_id,
+    )
+
+    async def monthly_quota(api_key: str):
+        row = await store._store.get_auth_context_with_spend(hash_api_key(api_key))
+        return row["quota_monthly_cost_usd"]
+
+    before = await monthly_quota(key)
+    await alice.put(
+        "/user/organization/default-member-limit", json={"monthly_limit_usd": "5"}, headers=headers
+    )
+    with_default = await monthly_quota(key)
+    await alice.put(
+        f"/user/organization/members/{bob_id}/monthly-limit",
+        json={"monthly_limit_usd": "20"},
+        headers=headers,
+    )
+    with_own = await monthly_quota(key)
+
+    # No limit, then the organization's default, then the member's own.
+    assert (before, with_default, with_own) == (None, Decimal("5.0000"), Decimal("20.0000"))
+    # An account in no organization is not given anyone's default.
+    assert await monthly_quota(outsider_key) is None
+
+
+async def test_what_a_member_is_charged_counts_against_the_organization_and_its_limit_refuses(
+    app, idp, store, clean_organizations, members_sign_straight_in, monkeypatch
+):
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    organization_id = state["organization_id"]
+    await root.patch(
+        f"/admin/organizations/{organization_id}",
+        json={"monthly_limit_usd": "1"},
+        headers=root_headers,
+    )
+    key = generate_api_key()
+    created = await store.create_key(
+        key_hash=hash_api_key(key), key_prefix=key[:12], user_id=bob_id, account_id=bob_id
+    )
+    outsider_id = await existing_user(store, "someone@elsewhere.org")
+    today = datetime.now(UTC).strftime("%Y-%m-%d")
+
+    async def charge(user_id: str, cost: str, key_id: int | None = None) -> None:
+        await store.increment_user_costs(
+            [CostIncrement(user_id=user_id, day=today, api_key_id=key_id, cost_usd=Decimal(cost))]
+        )
+
+    async def door():
+        return await verify_api_key(
+            request=MagicMock(spec=Request),
+            authorization=f"Bearer {key}",
+            x_api_key=None,
+            x_on_behalf_of=None,
+            op_store=store._store,
+        )
+
+    try:
+        await charge(bob_id, "0.60", created["id"])
+        # What an account in no organization is charged reaches no organization.
+        await charge(outsider_id, "5.00")
+        first = (await alice.get("/user/organization", headers=headers)).json()
+        admitted = await door()
+
+        await charge(bob_id, "0.60", created["id"])
+        second = (await alice.get("/user/organization/overview", headers=headers)).json()
+        with pytest.raises(HTTPException) as refused:
+            await door()
+        await asyncio.sleep(0)  # let the fire-and-forget rejection log run
+
+        row = await store._store.get_auth_context_with_spend(hash_api_key(key))
+        by_hash = await store._store.get_auth_context_by_key_hash(hash_api_key(key))
+        by_user = (await store.get_quota_context_for_user(bob_id))[0]
+        scope = await store.get_organization_spend_scope(bob_id)
+        fresh = await organization_rules.check_fields(store, by_hash, native=False)
+        async with clean_organizations.acquire() as conn:
+            counters = await conn.fetch(
+                "SELECT period, cost_usd, requests FROM spend_counters "
+                "WHERE scope_id = $1 ORDER BY period",
+                f"o:{organization_id}",
+            )
+    finally:
+        async with clean_organizations.acquire() as conn:
+            await conn.execute(
+                "DELETE FROM user_daily_cost WHERE user_id = ANY($1::text[])",
+                [bob_id, outsider_id],
+            )
+            await conn.execute("DELETE FROM api_key_daily_cost WHERE user_id = $1", bob_id)
+
+    assert first["spent_month_usd"] == 0.6
+    assert admitted["user_id"] == bob_id
+    assert (second["spent_month_usd"], second["monthly_limit_usd"]) == (1.2, 1.0)
+    # One row, for the month: the one period an organization has a limit for.
+    assert [(c["period"][:2], c["cost_usd"], c["requests"]) for c in counters] == [
+        ("m:", Decimal("1.200000"), 2),
+    ]
+
+    body = refused.value.detail
+    assert refused.value.status_code == 429
+    assert (body["code"], body["scope"], body["window"]) == (
+        "budget_exceeded",
+        "organization",
+        "month",
+    )
+    assert body["organization"] == "Example University"
+    assert (body["quota_usd"], body["spent_usd"]) == (1.0, 1.2)
+
+    # Every lookup an identity is built from carries the same organization.
+    expected = {
+        "organization_id": organization_id,
+        "organization_name": "Example University",
+        "organization_limit_usd": 1.0,
+        "organization_spent_month_usd": 1.2,
+    }
+    for lookup in (row, by_user, scope):
+        assert quota.organization_fields(lookup, native=False) == expected
+    # The cached identity lookup carries the organization and its limit, never
+    # its spend: the gate reads the counter for an identity that came without.
+    assert "organization_spent_month_usd" not in by_hash
+    assert by_hash["organization_limit_usd"] == Decimal("1.0000")
+    assert fresh == expected

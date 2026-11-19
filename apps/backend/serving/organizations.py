@@ -11,10 +11,15 @@ document, and tells the audit log when an account joined.
 
 from __future__ import annotations
 
+import inspect
 import json
+from collections.abc import Mapping
 from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
+from serving import quota
+from serving.accounting import money_decimal
 from serving.audit import AuditActor, AuditTarget
 from serving.config import sso as sso_config
 from serving.utils.logging import get_logger
@@ -71,6 +76,80 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     except RuntimeError:
         return None
     return dict(row) if row else None
+
+
+#: The columns an identity carries of the organization its requests are checked
+#: against (:func:`serving.quota.organization_fields` reads them).
+ORGANIZATION_COLUMNS = (
+    "organization_id",
+    "organization_name",
+    "organization_limit_usd",
+    "organization_limit_amount",
+    "organization_spent_month_usd",
+    "organization_spent_month_amount",
+)
+
+
+async def month_spend_of(op_store: Any, organization_id: str, *, native: bool) -> Any:
+    """What an organization's counter holds for this UTC month, in the ledger currency.
+
+    A float of USD, or the exact native amount on a ledger that is not in USD.
+    Zero from a store that keeps no organizations.
+    """
+    reader = getattr(op_store, "get_organization_month_spend", None)
+    spent = reader(organization_id) if reader is not None else None
+    if inspect.isawaitable(spent):
+        spent = await spent
+    if not isinstance(spent, Mapping):
+        return Decimal(0) if native else 0.0
+    if native:
+        return money_decimal(spent.get("cost_amount") or 0)
+    return float(spent.get("cost_usd") or 0.0)
+
+
+async def check_fields(op_store: Any, identity: Mapping[str, Any], *, native: bool) -> dict:
+    """The organization fields of the spend check for *identity*, with the month's spend.
+
+    The spend arrives with the lookups that read spend. The cached identity
+    lookup (the one a request carrying ``X-On-Behalf-Of`` authenticates
+    through) carries the organization and its limit, not what it spent: that
+    is read here, and only for an organization that has a limit, as a
+    project's spend is. Taken as zero, such a request would pass a limit that
+    is spent.
+    """
+    fields = quota.organization_fields(identity, native=native)
+    if not fields or fields["organization_limit_usd"] is None or not op_store:
+        return fields
+    carried = "organization_spent_month_amount" if native else "organization_spent_month_usd"
+    if identity.get(carried) is None:
+        fields["organization_spent_month_usd"] = await month_spend_of(
+            op_store, fields["organization_id"], native=native
+        )
+    return fields
+
+
+def columns_of(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The organization columns a lookup row carries; none from a lookup that reads none."""
+    return {name: row[name] for name in ORGANIZATION_COLUMNS if name in row}
+
+
+async def spend_scope_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
+    """The organization of an account as the request path checks it, read on its own.
+
+    For an account no API-key lookup answered for (it holds no live key): the
+    organization columns, and the monthly quota of the member, its own or the
+    default of the organization. None for an account in no organization, and
+    in a store that keeps none.
+    """
+    lookup = getattr(op_store, "get_organization_spend_scope", None)
+    if lookup is None:
+        return None
+    try:
+        answer = lookup(user_id)
+        scope = await answer if inspect.isawaitable(answer) else None
+    except RuntimeError:
+        return None
+    return dict(scope) if isinstance(scope, Mapping) else None
 
 
 async def forget_removal(op_store: Any, user_id: str) -> None:

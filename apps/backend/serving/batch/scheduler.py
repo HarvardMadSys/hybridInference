@@ -1299,6 +1299,14 @@ class BatchScheduler:
         if exc.scope == "account":
             await self._pause_owner(owner, until, "monthly cost quota spent", kind="monthly_quota")
             return
+        if exc.scope == "organization":
+            # The owner's organization has no room left this month: every
+            # batch of the owner waits, as for the owner's own monthly quota,
+            # and under the same kind, which the console already explains.
+            await self._pause_owner(
+                owner, until, "organization monthly limit reached", kind="monthly_quota"
+            )
+            return
         # Only this key's batches: the account's other keys still have
         # budget, and their batches keep running.
         await self._pause_owner(

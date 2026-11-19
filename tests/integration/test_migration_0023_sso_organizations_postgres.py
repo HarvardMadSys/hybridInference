@@ -7,11 +7,15 @@ from decimal import Decimal
 import asyncpg
 import pytest
 
+from ops.accounting_currency import migrate_currency
+from serving.accounting import AccountingPolicy, bind_accounting_policy
+from serving.storage.accounting_schema import accounting_schema_problems
 from tests.fixtures import migrations as mig
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
 TABLES = ("sso_organizations", "sso_organization_connections", "sso_organization_members")
+POLICY = AccountingPolicy("CNY", Decimal("6.7180"), "2026-11-05", "synthetic fixed rate")
 
 
 @pytest.fixture
@@ -182,6 +186,91 @@ async def test_a_limit_written_in_usd_gets_its_native_amount(scratch):
     assert created["default_member_monthly_limit_amount"] is None
     assert created["accounting_currency"] == "USD"
     assert updated == Decimal(20)
+
+
+async def test_the_startup_check_of_the_ledger_covers_the_limits(scratch):
+    await mig.upgrade(scratch)
+    async with mig.connected(scratch) as conn:
+        complete = await accounting_schema_problems(conn)
+        await conn.execute("DROP TRIGGER sso_organizations_accounting_amounts ON sso_organizations")
+        without_trigger = await accounting_schema_problems(conn)
+
+    assert complete == []
+    assert without_trigger == ["trigger sso_organizations_accounting_amounts is missing"]
+
+
+async def test_the_offline_currency_migration_converts_the_limits_of_an_organization(
+    scratch, monkeypatch
+):
+    """A USD deployment that has organizations moves its ledger to CNY."""
+
+    async def offline(_conn):
+        return None
+
+    monkeypatch.setattr("ops.accounting_currency._require_offline", offline)
+    await mig.upgrade(scratch)
+    async with mig.connected(scratch) as conn:
+        await conn.execute(
+            "INSERT INTO sso_organizations "
+            "(id, name, monthly_limit_usd, default_member_monthly_limit_usd) "
+            "VALUES ('o-1', 'Example One', 1000, 20)"
+        )
+        await conn.execute("INSERT INTO sso_organizations (id, name) VALUES ('o-2', 'Example Two')")
+        await conn.execute(
+            "INSERT INTO spend_counters (scope_id, period, cost_usd, requests) "
+            "VALUES ('o:o-1', 'm:2026-11', 12.5, 4)"
+        )
+        try:
+            result = await migrate_currency(conn, POLICY, apply=True)
+            one = await conn.fetchrow(
+                "SELECT monthly_limit_usd, monthly_limit_amount, "
+                "default_member_monthly_limit_usd, default_member_monthly_limit_amount, "
+                "accounting_currency FROM sso_organizations WHERE id = 'o-1'"
+            )
+            two = await conn.fetchrow(
+                "SELECT monthly_limit_amount, default_member_monthly_limit_amount, "
+                "accounting_currency FROM sso_organizations WHERE id = 'o-2'"
+            )
+            counter = await conn.fetchrow(
+                "SELECT cost_usd, cost_amount, accounting_currency FROM spend_counters "
+                "WHERE scope_id = 'o:o-1'"
+            )
+            # A converted row takes the writes of the native ledger: a rename,
+            # and a limit written in the native unit, whose USD equivalent follows.
+            await conn.execute("UPDATE sso_organizations SET name = 'Renamed' WHERE id = 'o-1'")
+            await conn.execute(
+                "UPDATE sso_organizations SET monthly_limit_amount = 7000 WHERE id = 'o-1'"
+            )
+            rewritten = await conn.fetchval(
+                "SELECT monthly_limit_usd FROM sso_organizations WHERE id = 'o-1'"
+            )
+        finally:
+            bind_accounting_policy(None)
+
+    assert result["applied"] is True
+    converted = result["tables"]["sso_organizations"]
+    assert Decimal(converted["monthly_limit_amount"]["native_total"]) == Decimal("6718")
+    assert Decimal(converted["default_member_monthly_limit_amount"]["native_total"]) == (
+        Decimal("134.36")
+    )
+    # The USD values stay as they were; the native ones are the USD ones at the rate.
+    assert (one["monthly_limit_usd"], one["monthly_limit_amount"]) == (
+        Decimal("1000"),
+        Decimal("6718"),
+    )
+    assert (
+        one["default_member_monthly_limit_usd"],
+        one["default_member_monthly_limit_amount"],
+    ) == (Decimal("20"), Decimal("134.36"))
+    assert one["accounting_currency"] == "CNY"
+    # No limit stays no limit, and the row is tagged all the same.
+    assert tuple(two) == (None, None, "CNY")
+    assert (counter["cost_usd"], counter["cost_amount"], counter["accounting_currency"]) == (
+        Decimal("12.5"),
+        Decimal("83.975"),
+        "CNY",
+    )
+    assert rewritten == (Decimal(7000) / POLICY.usd_to_currency_rate).quantize(Decimal("0.0001"))
 
 
 async def test_the_audit_rows_of_an_organization_are_found_through_their_index(scratch):

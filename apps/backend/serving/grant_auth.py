@@ -237,6 +237,7 @@ async def _quota_check(
         project_spent_month_usd=float(keys[0].get("project_spent_month_usd") or 0.0),
         project_id=keys[0].get("project_id"),
         project_name=keys[0].get("project_name"),
+        **quota.organization_fields(keys[0], native=False),
     )
 
 
@@ -285,6 +286,7 @@ async def _native_quota_check(op_store: Any, user_id: str, key: Mapping[str, Any
         project_spent_month_usd=money_decimal(key.get("project_spent_month_amount") or 0),
         project_id=key.get("project_id"),
         project_name=key.get("project_name"),
+        **quota.organization_fields(key, native=True),
     )
 
 

@@ -182,7 +182,15 @@ class _Outcome:
 class Reservation:
     """An admitted request's estimated cost, counted until :meth:`release`."""
 
-    __slots__ = ("_ledger", "_open", "amount", "key_id", "project_id", "user_id")
+    __slots__ = (
+        "_ledger",
+        "_open",
+        "amount",
+        "key_id",
+        "organization_id",
+        "project_id",
+        "user_id",
+    )
 
     def __init__(
         self,
@@ -191,12 +199,14 @@ class Reservation:
         key_id: int | None,
         amount: Money,
         project_id: str | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Count *amount* against *user_id* (and *key_id*) until released."""
         self._ledger = ledger
         self.user_id = user_id
         self.key_id = key_id
         self.project_id = project_id
+        self.organization_id = organization_id
         self.amount = amount
         self._open = True
 
@@ -246,6 +256,13 @@ class SpendCheck:
     project_spent_today_usd: Money = 0.0
     project_spent_month_usd: Money = 0.0
 
+    #: The organization the account is a member of, its monthly limit (None
+    #: for no limit) and what its counter held for this UTC month when read.
+    organization_id: str | None = None
+    organization_name: str | None = None
+    organization_limit_usd: Money | None = None
+    organization_spent_month_usd: Money = 0.0
+
     def refusal(self) -> quota.BudgetRefusal | None:
         """The narrowest limit this request does not fit under, counting the ledger too."""
         if self.ledger is None:
@@ -291,6 +308,7 @@ def decide_admission(
     amount: Money | None,
     extra: tuple[Money, Money, Money, Money],
     project_extra: tuple[Money, Money] = (0.0, 0.0),
+    organization_extra: Money = 0.0,
 ) -> tuple[Money | None, quota.BudgetRefusal | None]:
     """The admission policy: refuse, or what to reserve, given *extra* on top of *check*.
 
@@ -300,22 +318,28 @@ def decide_admission(
     never less than that minimum. Both ledgers apply exactly this, in the
     ledger's arithmetic (:meth:`~serving.accounting.AccountingPolicy.number`).
     """
-    refusal = _refusal(check, extra, project_extra)
+    refusal = _refusal(check, extra, project_extra, organization_extra)
     if refusal is not None:
         return None, refusal
     number = get_accounting_policy().number
     minimum = quota.estimated_request_cost()
     if amount is None or number(amount) <= minimum:
         return minimum, None
-    return max(minimum, min(number(amount), _headroom(check, extra, project_extra))), None
+    headroom = _headroom(check, extra, project_extra, organization_extra)
+    return max(minimum, min(number(amount), headroom)), None
 
 
 def _refusal(
     check: SpendCheck,
     extra: tuple[Money, Money, Money, Money],
     project_extra: tuple[Money, Money] = (0.0, 0.0),
+    organization_extra: Money = 0.0,
 ) -> quota.BudgetRefusal | None:
-    """Apply *check*'s limits to what it read plus *extra* (day, month, key day, key month)."""
+    """Apply *check*'s limits to what it read plus *extra* (day, month, key day, key month).
+
+    *project_extra* is the project's day and month on top of what was read;
+    *organization_extra* the organization's month.
+    """
     number = get_accounting_policy().number
     day, month, key_day, key_month = (number(value) for value in extra)
     project_day, project_month = (number(value) for value in project_extra)
@@ -339,6 +363,11 @@ def _refusal(
         project_spent_today_usd=spent(check.project_spent_today_usd) + project_day,
         project_spent_month_usd=spent(check.project_spent_month_usd) + project_month,
         project_name=check.project_name,
+        organization_limit_usd=check.organization_limit_usd,
+        organization_spent_month_usd=(
+            spent(check.organization_spent_month_usd) + number(organization_extra)
+        ),
+        organization_name=check.organization_name,
     )
 
 
@@ -346,6 +375,7 @@ def _headroom(
     check: SpendCheck,
     extra: tuple[Money, Money, Money, Money],
     project_extra: tuple[Money, Money] = (0.0, 0.0),
+    organization_extra: Money = 0.0,
 ) -> Money:
     """What the tightest of *check*'s limits has left, counting *extra* (see :func:`_refusal`)."""
     number = get_accounting_policy().number
@@ -377,6 +407,12 @@ def _headroom(
             - number(check.project_spent_month_usd)
             - project_month
         )
+    if check.organization_limit_usd is not None:
+        left.append(
+            number(check.organization_limit_usd)
+            - number(check.organization_spent_month_usd)
+            - number(organization_extra)
+        )
     return min(left)
 
 
@@ -398,6 +434,11 @@ class SpendLedger:
         self._reserved_projects: dict[str, list[Any]] = {}
         self._reserved_users: dict[str, list[Any]] = {}
         self._reserved_keys: dict[int, list[Any]] = {}
+        self._reserved_organizations: dict[str, list[Any]] = {}
+        # The members of each organization a gate here has checked a request
+        # of. An organization's limit counts the costs all of them have not
+        # yet written; a member this process never served has none.
+        self._organization_users: dict[str, set[str]] = {}
         # Recorded, not yet handed to a write (or handed back by a failed one).
         self._pending: dict[_Key, _Amount] = {}
         # Handed to the write in flight.
@@ -427,7 +468,10 @@ class SpendLedger:
             )
             project_extra = values[:2]
         return _refusal(
-            check, self._extra(check.user_id, check.key_id, check.read_at), project_extra
+            check,
+            self._extra(check.user_id, check.key_id, check.read_at),
+            project_extra,
+            self._organization_extra(check),
         )
 
     def admit(
@@ -454,13 +498,19 @@ class SpendLedger:
             if check.project_id
             else (0.0, 0.0)
         )
-        decided, refusal = decide_admission(check, amount, extra, project_extra)
+        decided, refusal = decide_admission(
+            check, amount, extra, project_extra, self._organization_extra(check)
+        )
         if refusal is not None or decided is None:
             return None, refusal
         amount = decided
-        reservation = Reservation(self, check.user_id, check.key_id, amount, check.project_id)
+        reservation = Reservation(
+            self, check.user_id, check.key_id, amount, check.project_id, check.organization_id
+        )
         if check.project_id is not None:
             _add_reserved(self._reserved_projects, check.project_id, amount)
+        if check.organization_id is not None:
+            _add_reserved(self._reserved_organizations, check.organization_id, amount)
         _add_reserved(self._reserved_users, check.user_id, amount)
         if check.key_id is not None:
             _add_reserved(self._reserved_keys, check.key_id, amount)
@@ -469,6 +519,10 @@ class SpendLedger:
     def _unreserve(self, reservation: Reservation) -> None:
         if reservation.project_id is not None:
             _remove_reserved(self._reserved_projects, reservation.project_id, reservation.amount)
+        if reservation.organization_id is not None:
+            _remove_reserved(
+                self._reserved_organizations, reservation.organization_id, reservation.amount
+            )
         _remove_reserved(self._reserved_users, reservation.user_id, reservation.amount)
         if reservation.key_id is not None:
             _remove_reserved(self._reserved_keys, reservation.key_id, reservation.amount)
@@ -517,6 +571,48 @@ class SpendLedger:
             totals[2] += reserved[0]
             totals[3] += reserved[0]
         return totals[0], totals[1], totals[2], totals[3]
+
+    def _organization_extra(self, check: SpendCheck) -> Money:
+        """What to add to the month of *check*'s organization, for this gate.
+
+        Everything the organization's members have in this process that the
+        organization's counter did not show the gate: their costs not yet
+        confirmed written, those confirmed since the counter was read, and
+        what their requests in flight reserve. The reservations are a running
+        total, as a project's are. The costs are kept by account, so they are
+        summed for the members a gate here has seen: one pass over what is
+        unwritten and what has just landed, however many members there are.
+        """
+        zero = get_accounting_policy().zero
+        organization_id = check.organization_id
+        if organization_id is None:
+            return zero
+        members = self._organization_users.setdefault(organization_id, set())
+        members.add(check.user_id)
+        if check.organization_limit_usd is None:
+            return zero
+        month = utc_day()[:7]
+        total = zero
+        for user_id, entries in self._unconfirmed.items():
+            if user_id in members:
+                for (_key, day, _project), amount in entries.items():
+                    if day.startswith(month):
+                        total += amount.cost
+        now = time.monotonic()
+        self._forget_landed(now)
+        stale = check.read_at < now - LANDED_WINDOW_SECONDS
+        for confirmed_at, by_user in reversed(self._landed):
+            if confirmed_at < check.read_at and not stale:
+                break
+            for user_id, costs in by_user.items():
+                if user_id in members:
+                    for _key, day, cost, _project in costs:
+                        if day.startswith(month):
+                            total += cost
+        reserved = self._reserved_organizations.get(organization_id)
+        if reserved is not None:
+            total += reserved[0]
+        return total
 
     def _forget_landed(self, now: float) -> None:
         while self._landed and self._landed[0][0] < now - LANDED_WINDOW_SECONDS:
