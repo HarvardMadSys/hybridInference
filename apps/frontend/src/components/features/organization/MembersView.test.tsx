@@ -180,11 +180,19 @@ describe('the members of the organization', () => {
     }
     expect(lei).not.toHaveTextContent('Admin');
     expect(lei).not.toHaveTextContent('You');
+    // The limit is the member's own: a change of the default does not move it.
+    expect(lei).not.toHaveTextContent('default');
 
     const yu = rowOf('Yu Chen');
     expect(yu).toHaveTextContent('Admin');
     expect(yu).toHaveTextContent('You');
     expect(yu).toHaveTextContent('16% of $40.00');
+    // The limit is the default of the organization, and the row says so.
+    expect(within(yu).getByText('default')).toHaveAttribute(
+      'title',
+      'Default limit of the organization',
+    );
+    expect(within(rowOf('Mei Song')).getByText('default')).toBeInTheDocument();
 
     // Removed by the organization, against suspended by the platform.
     expect(rowOf('Mei Song')).toHaveTextContent('Removed');
@@ -192,6 +200,7 @@ describe('the members of the organization', () => {
     expect(bo).toHaveTextContent('Suspended');
     expect(bo).toHaveTextContent('Never');
     expect(bo).toHaveTextContent('No limit');
+    expect(bo).not.toHaveTextContent('default');
     // A member with no name is shown by its email once, not twice.
     expect(within(bo).getAllByText('bo.huang@example.edu')).toHaveLength(1);
   });

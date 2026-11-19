@@ -111,35 +111,50 @@ export function StatusPill({ tone }: { tone: StatusTone }) {
 
 const METER_FILL = { ok: 'bg-blue-500', near: 'bg-amber-500', over: 'bg-red-500' } as const;
 
-/** The bar of a limit: how much of it the month's spend has used. */
+/**
+ * The bar of a limit: how much of it the month's spend has used. The track is
+ * always drawn at its full length, so the bars of a list are one length and
+ * only the filled part differs.
+ */
 export function LimitBar({ spent, limit }: { spent: number | null; limit: number | null }) {
   const use = limitUse(spent, limit);
   if (!use) return null;
+  // Nothing spent draws no fill; anything spent draws enough to be seen, also
+  // an amount that rounds to 0%.
+  const filled = (spent ?? 0) > 0 ? Math.max(3, Math.min(100, use.percent)) : 0;
   return (
     <span
       aria-hidden="true"
-      className="block h-1.5 w-full overflow-hidden rounded-full bg-gray-100"
+      className="block h-1.5 w-full overflow-hidden rounded-full bg-gray-300"
     >
       <span
         className={`block h-full rounded-full ${METER_FILL[use.tone]}`}
-        style={{ width: `${Math.max(2, Math.min(100, use.percent))}%` }}
+        style={{ width: `${filled}%` }}
       />
     </span>
   );
 }
 
 /**
- * A member's month against its limit: "59% of $130" with a bar, or the words
+ * A member's month against its limit: a bar, then "59% of $130", or the words
  * for no limit. `limitText` is the limit already formatted in its currency.
+ *
+ * The bar and the figure have fixed places, so they line up down a list.
+ * `isDefault` is for a limit that is the organization's default and not the
+ * member's own: a small word under the figure says so. It hangs below the
+ * line and moves nothing, so a row with it and a row without it look alike
+ * but for that word.
  */
 export function LimitMeter({
   spent,
   limit,
   limitText,
+  isDefault = false,
 }: {
   spent: number | null;
   limit: number | null;
   limitText: string;
+  isDefault?: boolean;
 }) {
   const t = useT();
   const use = limitUse(spent, limit);
@@ -151,16 +166,26 @@ export function LimitMeter({
   const tone =
     use.tone === 'over' ? 'text-red-600' : use.tone === 'near' ? 'text-amber-600' : 'text-gray-500';
   return (
-    <span className="inline-flex items-center justify-end gap-2">
+    <span className="relative inline-flex items-center justify-end gap-2.5">
       <span className="w-16 shrink-0">
         <LimitBar spent={spent} limit={limit} />
       </span>
-      <span className={`whitespace-nowrap text-[12px] tabular-nums ${tone}`}>
+      <span
+        className={`min-w-[7.5rem] whitespace-nowrap text-right text-[12px] tabular-nums ${tone}`}
+      >
         {fill(t('organization.limit.percent_of', '{percent}% of {limit}'), {
           percent: String(use.percent),
           limit: limitText,
         })}
       </span>
+      {isDefault ? (
+        <span
+          title={t('organization.member.limit_default', 'Default limit of the organization')}
+          className="absolute right-0 top-full mt-px text-[11px] leading-none text-gray-400"
+        >
+          {t('organization.limit.default_tag', 'default')}
+        </span>
+      ) : null}
     </span>
   );
 }

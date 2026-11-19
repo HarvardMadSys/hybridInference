@@ -3797,6 +3797,10 @@
     "source": "Organization administrator access required",
     "text": "需要机构管理员权限"
   },
+  "organization.limit.default_tag": {
+    "source": "default",
+    "text": "默认"
+  },
   "organization.limit.none": {
     "source": "No limit",
     "text": "不限"
