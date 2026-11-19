@@ -509,8 +509,18 @@ async def admit_admin_session(request: Request, op_store: Any, payload: dict[str
             account an authenticator.
     """
     user_id = payload.get("sub")
-    if not user_id:
+    sid = payload.get("sid")
+    if not isinstance(user_id, str) or not user_id or not isinstance(sid, str) or not sid:
         raise HTTPException(status_code=401, detail="Invalid token payload.")
+    return await admit_admin_identity(request, op_store, user_id, sid)
+
+
+async def admit_admin_identity(request: Request, op_store: Any, user_id: str, sid: str) -> str:
+    """Apply the authoritative administrator-session policy to an identity.
+
+    Callers that did not obtain identity from a JWT (such as the pgAdmin
+    browser verifier) still have to supply the exact live auth-session ID.
+    """
     if not op_store:
         # DB unavailable — fail closed.  Admin endpoints require
         # authoritative role verification from the database.
@@ -519,7 +529,7 @@ async def admit_admin_session(request: Request, op_store: Any, payload: dict[str
             status_code=503,
             detail="Database unavailable; cannot verify admin role. Try again later.",
         )
-    await require_live_session(op_store, payload)
+    await require_live_session(op_store, {"sub": user_id, "sid": sid})
     user_row = await op_store.get_user_by_id(user_id)
     if not user_row or user_row["status"] != "active":
         raise HTTPException(status_code=403, detail="Admin account is no longer active.")
@@ -547,9 +557,9 @@ async def admit_admin_session(request: Request, op_store: Any, payload: dict[str
         # is using it now. An administrator without an authenticator has no
         # administrator access until it adds one, which it does through its
         # own account's routes (/auth/two-factor), not through these.
-        await require_session_two_factor(request, op_store, user_id, payload.get("sid"))
+        await require_session_two_factor(request, op_store, user_id, sid)
     request.state.admin_user_id = user_id
-    request.state.admin_session_id = payload.get("sid")
+    request.state.admin_session_id = sid
     request.state.audit_actor = AuditActor.admin(user_id, get_client_ip(request))
     return user_row["email"] or user_row.get("login_name") or user_id
 

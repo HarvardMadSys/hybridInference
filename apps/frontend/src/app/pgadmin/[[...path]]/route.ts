@@ -119,13 +119,15 @@ type Verdict = 'admin' | 'unauthenticated' | 'forbidden';
  * slow, or answering something unexpected is not a reason to hand out a
  * database console, and this is the only check standing in front of one.
  */
-async function verifyAdmin(cookie: string | null): Promise<Verdict> {
+async function verifyAdmin(cookie: string | null, userAgent: string | null): Promise<Verdict> {
   if (!cookie) return 'unauthenticated';
 
   let response: Response;
   try {
+    const headers = new Headers({ cookie });
+    if (userAgent) headers.set('user-agent', userAgent);
     response = await fetch(`${BACKEND_INTERNAL_URL}/internal/verify-admin`, {
-      headers: { cookie },
+      headers,
       cache: 'no-store',
       signal: AbortSignal.timeout(VERIFY_TIMEOUT_MS),
     });
@@ -521,7 +523,10 @@ async function pgAdminUpstream(): Promise<PgAdminUpstream> {
 }
 
 async function handle(request: NextRequest): Promise<Response> {
-  const verdict = await verifyAdmin(request.headers.get('cookie'));
+  const verdict = await verifyAdmin(
+    request.headers.get('cookie'),
+    request.headers.get('user-agent'),
+  );
   if (verdict !== 'admin') return denied(request, verdict);
 
   // The console mounts this route at the same prefix pgAdmin serves itself
