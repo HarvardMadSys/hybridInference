@@ -29,6 +29,8 @@ interface NavItem {
   /** Leaves the console: a plain anchor, and a new tab when `newTab`. */
   external?: boolean;
   newTab?: boolean;
+  /** A name the console did not write (an organization's): cut short when it is long. */
+  named?: boolean;
 }
 
 /** Whether `href` is the page being shown; Home matches only itself. */
@@ -43,7 +45,8 @@ const ITEM_CURRENT = 'bg-gray-900 text-white';
 const ITEM_OTHER = 'text-gray-600 hover:bg-gray-100 hover:text-gray-900';
 
 /**
- * Navigation for everyday use, followed by a separate administrator group.
+ * Navigation for everyday use, followed by a group for the administrators of
+ * an organization and a separate one for the deployment's administrators.
  *
  * From `md` up, a rail down the left edge of the window that stays in view
  * while the page scrolls. Below that it is one row that scrolls sideways, as
@@ -80,17 +83,35 @@ export function ConsoleNav() {
       : []),
     { href: '/dashboard/settings', label: t('console.nav.settings', 'Settings') },
   ];
+  // The organization console, for an administrator of the account's own
+  // organization: one entry, named after the organization. The gateway decides
+  // who may read it; this only offers the way in.
+  const organization = state.user?.organization;
+  const organizationPages: NavItem[] =
+    organization?.role === 'admin'
+      ? [{ href: '/dashboard/organization/overview', label: organization.name, named: true }]
+      : [];
   const adminPages: NavItem[] = isAdmin
     ? [
         { href: '/dashboard/admin/users', label: t('console.nav.admin', 'Admin Console') },
         { href: '/pgadmin/', label: 'pgAdmin', external: true, newTab: true },
       ]
     : [];
+  const groups = [
+    {
+      id: 'organization',
+      name: t('console.nav.organization_group', 'Organization'),
+      items: organizationPages,
+    },
+    { id: 'admin', name: t('console.nav.admin_group', 'Admin'), items: adminPages },
+  ].filter((group) => group.items.length > 0);
 
   // On a phone the row is wider than the screen: bring the current page into
   // view on first load, after every navigation, and when an entry that loads
   // later (Batches, after its capabilities arrive) moves it along the row.
-  const entries = [...pages, ...adminPages].map((item) => item.href).join(' ');
+  const entries = [...pages, ...organizationPages, ...adminPages]
+    .map((item) => item.href)
+    .join(' ');
   useEffect(() => {
     const scroller = scrollerRef.current;
     const active = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
@@ -120,9 +141,12 @@ export function ConsoleNav() {
           href={item.href}
           prefetch={false}
           aria-current={current ? 'page' : undefined}
-          className={`${ITEM} ${current ? ITEM_CURRENT : ITEM_OTHER}`}
+          title={item.named ? item.label : undefined}
+          className={`${ITEM} ${current ? ITEM_CURRENT : ITEM_OTHER} ${
+            item.named ? 'max-w-[14rem] md:max-w-full' : ''
+          }`}
         >
-          {item.label}
+          {item.named ? <span className="truncate">{item.label}</span> : item.label}
         </Link>
       </li>
     );
@@ -138,20 +162,23 @@ export function ConsoleNav() {
         <ul className="flex items-center gap-1 md:flex-col md:items-stretch">
           {pages.map(renderItem)}
         </ul>
-        {adminPages.length > 0 && (
-          <div className="flex items-center gap-1 border-gray-200 md:flex-col md:items-stretch md:border-t md:pt-5">
+        {groups.map((group) => (
+          <div
+            key={group.id}
+            className="flex items-center gap-1 border-gray-200 md:flex-col md:items-stretch md:border-t md:pt-5"
+          >
             <span aria-hidden="true" className="mx-1 h-5 w-px bg-gray-200 md:hidden" />
             <h2 className="hidden px-4 pb-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-400 md:block">
-              {t('console.nav.admin_group', 'Admin')}
+              {group.name}
             </h2>
             <ul
-              aria-label={t('console.nav.admin_group', 'Admin')}
+              aria-label={group.name}
               className="flex items-center gap-1 md:flex-col md:items-stretch"
             >
-              {adminPages.map(renderItem)}
+              {group.items.map(renderItem)}
             </ul>
           </div>
-        )}
+        ))}
       </div>
     </nav>
   );

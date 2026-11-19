@@ -1,0 +1,337 @@
+// @vitest-environment jsdom
+import '@testing-library/jest-dom/vitest';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
+import type { Organization, OrganizationMember } from '@/lib/api/organization';
+
+const state = vi.hoisted(() => ({
+  setLimit: vi.fn(),
+  remove: vi.fn(),
+  restore: vi.fn(),
+  success: vi.fn(),
+}));
+vi.mock('@/lib/hooks', () => ({
+  useSetMemberMonthlyLimit: () => ({ mutateAsync: state.setLimit, isPending: false }),
+  useRemoveOrganizationMember: () => ({ mutateAsync: state.remove, isPending: false }),
+  useRestoreOrganizationMember: () => ({ mutateAsync: state.restore, isPending: false }),
+}));
+vi.mock('@/lib/hooks/useAccountToast', () => ({
+  useAccountToast: () => ({ success: state.success, error: vi.fn() }),
+}));
+
+import { MemberDialogs, parseLimit, type MemberDialog } from './MemberDialogs';
+
+const LEI: OrganizationMember = {
+  user_id: 'u-lei',
+  email: 'lei.wang@example.edu',
+  user_name: 'Lei Wang',
+  role: 'member',
+  status: 'active',
+  removed: false,
+  joined_at: '2026-10-09T12:00:00Z',
+  requests: 982,
+  total_tokens: 3_000_000,
+  cost_usd: 24.46,
+  spent_month_usd: 71.66,
+  monthly_limit_usd: 80,
+  monthly_limit_source: 'member',
+};
+
+const ORGANIZATION = {
+  id: 'o-1',
+  name: 'Example University',
+  monthly_limit_usd: 1000,
+  default_member_monthly_limit_usd: 20,
+  spent_month_usd: 298.23,
+} as Organization;
+
+function open(dialog: MemberDialog, organization: Organization | undefined = ORGANIZATION) {
+  const onClose = vi.fn();
+  render(<MemberDialogs dialog={dialog} organization={organization} onClose={onClose} />);
+  return { dialog: screen.getByRole('dialog'), onClose };
+}
+
+/** The limit field. Its label carries the hint too, so it is found by how it starts. */
+function field(dialog: HTMLElement, currency = 'USD'): HTMLElement {
+  return within(dialog).getByLabelText(new RegExp(`^Monthly limit \\(${currency}\\)`));
+}
+
+function type(dialog: HTMLElement, value: string) {
+  fireEvent.change(field(dialog), { target: { value } });
+}
+
+beforeEach(() => {
+  state.setLimit.mockReset().mockResolvedValue(undefined);
+  state.remove.mockReset().mockResolvedValue(undefined);
+  state.restore.mockReset().mockResolvedValue(undefined);
+  state.success.mockReset();
+});
+afterEach(cleanup);
+
+describe('a typed limit', () => {
+  it('is an amount of zero or more, nothing, or not a limit at all', () => {
+    expect(parseLimit('80')).toBe(80);
+    expect(parseLimit(' 12.5 ')).toBe(12.5);
+    expect(parseLimit('0')).toBe(0);
+    expect(parseLimit('')).toBeNull();
+    expect(parseLimit('   ')).toBeNull();
+    expect(parseLimit('-1')).toBeUndefined();
+    expect(parseLimit('ten')).toBeUndefined();
+    expect(parseLimit('Infinity')).toBeUndefined();
+  });
+});
+
+describe('the monthly limit of a member', () => {
+  it('opens with the member’s own limit and says what an empty field means', () => {
+    const { dialog } = open({ mode: 'limit', member: LEI });
+
+    expect(within(dialog).getByRole('heading', { name: 'Set monthly limit' })).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('Lei Wang (lei.wang@example.edu)');
+    expect(field(dialog)).toHaveValue('80');
+    expect(dialog).toHaveTextContent('Leave empty to use the default of the organization, $20.00.');
+  });
+
+  it('opens empty for a member on the default, which is not a limit of its own', () => {
+    const { dialog } = open({
+      mode: 'limit',
+      member: { ...LEI, monthly_limit_usd: 20, monthly_limit_source: 'default' },
+    });
+
+    expect(field(dialog)).toHaveValue('');
+  });
+
+  it('saves a new limit in the ledger currency and says so', async () => {
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '95.5');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: 95.5, currency: 'USD' },
+      }),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('Monthly limit saved.');
+  });
+
+  it('clears the limit when the field is emptied', async () => {
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: null, currency: 'USD' },
+      }),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('Monthly limit cleared.');
+  });
+
+  it('accepts zero, which refuses every request, as a limit and not as none', async () => {
+    const { dialog } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '0');
+    fireEvent.submit(field(dialog).closest('form') as HTMLFormElement);
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: 0, currency: 'USD' },
+      }),
+    );
+  });
+
+  it.each(['-5', 'eighty'])('refuses %j instead of saving no limit', (value) => {
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, value);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Enter an amount of zero or more.');
+  });
+
+  it('refuses a limit above the limit of the organization', () => {
+    const { dialog } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '1000.01');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(
+      'A member cannot have a limit above the limit of the organization, $1,000.00.',
+    );
+  });
+
+  it('has no ceiling when the organization has no limit, and no default to fall back to', async () => {
+    const { dialog } = open(
+      { mode: 'limit', member: LEI },
+      { ...ORGANIZATION, monthly_limit_usd: null, default_member_monthly_limit_usd: null },
+    );
+
+    expect(dialog).toHaveTextContent('Leave empty for no limit of its own.');
+    type(dialog, '5000');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => expect(state.setLimit).toHaveBeenCalled());
+  });
+
+  it('writes nothing when the limit is left as it was', () => {
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('keeps the dialog open with what the gateway said when the save is refused', async () => {
+    state.setLimit.mockRejectedValue(new Error('The limit of an administrator is not set here.'));
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '50');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'The limit of an administrator is not set here.',
+    );
+    expect(onClose).not.toHaveBeenCalled();
+    expect(state.success).not.toHaveBeenCalled();
+  });
+
+  it('types and sends a native limit with its currency on a ledger that is not in USD', async () => {
+    const onClose = vi.fn();
+    const member = {
+      ...LEI,
+      currency: 'CNY',
+      monthly_limit: 500,
+      monthly_limit_usd: 74.4269,
+      spent_month: 480,
+    } as OrganizationMember;
+    const organization = {
+      ...ORGANIZATION,
+      currency: 'CNY',
+      monthly_limit: 7000,
+      default_member_monthly_limit: 140,
+    } as Organization;
+    render(
+      <SiteConfigProvider
+        initialConfig={{ ...buildTimeSiteConfig, accounting: { currency: 'CNY' as const } }}
+      >
+        <MemberDialogs
+          dialog={{ mode: 'limit', member }}
+          organization={organization}
+          onClose={onClose}
+        />
+      </SiteConfigProvider>,
+    );
+    const dialog = screen.getByRole('dialog');
+
+    // The native amount, never its USD equivalent.
+    expect(field(dialog, 'CNY')).toHaveValue('500');
+    expect(dialog).toHaveTextContent(
+      'Leave empty to use the default of the organization, ¥140.00.',
+    );
+    fireEvent.change(field(dialog, 'CNY'), {
+      target: { value: '600' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: 600, currency: 'CNY' },
+      }),
+    );
+  });
+});
+
+describe('removing a member', () => {
+  it('says what the removal does before it is confirmed', () => {
+    const { dialog } = open({ mode: 'remove', member: LEI });
+
+    expect(
+      within(dialog).getByRole('heading', { name: 'Remove from organization' }),
+    ).toBeInTheDocument();
+    expect(dialog).toHaveTextContent(
+      'The account of Lei Wang (lei.wang@example.edu) is suspended:',
+    );
+    expect(
+      within(dialog)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual([
+      'its open sessions end;',
+      'its API keys are revoked;',
+      'it can no longer sign in, through single sign-on either.',
+    ]);
+    expect(dialog).toHaveTextContent('The usage history stays. You can restore the member later.');
+    expect(state.remove).not.toHaveBeenCalled();
+  });
+
+  it('removes the member only when confirmed', async () => {
+    const { dialog, onClose } = open({ mode: 'remove', member: LEI });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove member' }));
+
+    await waitFor(() => expect(state.remove).toHaveBeenCalledWith('u-lei'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('Member removed.');
+  });
+
+  it('removes nobody when it is cancelled', () => {
+    const { dialog, onClose } = open({ mode: 'remove', member: LEI });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    expect(state.remove).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows the refusal of the gateway in the dialog', async () => {
+    state.remove.mockRejectedValue(new Error('An administrator cannot be removed here.'));
+    const { dialog, onClose } = open({ mode: 'remove', member: LEI });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Remove member' }));
+
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+      'An administrator cannot be removed here.',
+    );
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('restoring a member', () => {
+  it('says that the revoked keys stay revoked, and restores when confirmed', async () => {
+    const member = { ...LEI, status: 'suspended', removed: true };
+    const { dialog, onClose } = open({ mode: 'restore', member });
+
+    expect(dialog).toHaveTextContent(
+      'The account of Lei Wang (lei.wang@example.edu) becomes active again, and the member can sign in.',
+    );
+    expect(dialog).toHaveTextContent(
+      'The revoked API keys stay revoked. The member makes new ones.',
+    );
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Restore member' }));
+
+    await waitFor(() => expect(state.restore).toHaveBeenCalledWith('u-lei'));
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('Member restored.');
+  });
+});
+
+it('draws nothing when no dialog is open', () => {
+  const { container } = render(
+    <MemberDialogs dialog={null} organization={ORGANIZATION} onClose={vi.fn()} />,
+  );
+
+  expect(container).toBeEmptyDOMElement();
+});

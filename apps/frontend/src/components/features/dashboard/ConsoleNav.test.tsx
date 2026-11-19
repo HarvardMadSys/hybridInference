@@ -7,13 +7,14 @@ let pathname = '/dashboard';
 let agentsEnabled = false;
 let agentsUrl = '';
 let role = 'internal';
+let organization: { id: string; name: string; role: 'member' | 'admin' } | null = null;
 
 vi.mock('next/navigation', () => ({
   usePathname: () => pathname,
 }));
 
 vi.mock('@/components/providers', () => ({
-  useAuth: () => ({ state: { user: { id: 'internal-user', role } } }),
+  useAuth: () => ({ state: { user: { id: 'internal-user', role, organization } } }),
 }));
 
 vi.mock('@/components/providers/SiteConfigProvider', () => ({
@@ -40,12 +41,21 @@ function reset() {
   agentsEnabled = false;
   agentsUrl = '';
   role = 'internal';
+  organization = null;
   batchEntry = false;
   batchError = null;
 }
 
 function adminLinks(): string[] {
   const list = screen.queryByRole('list', { name: 'Admin' });
+  if (!list) return [];
+  return within(list)
+    .getAllByRole('link')
+    .map((link) => link.textContent?.trim() ?? '');
+}
+
+function organizationLinks(): string[] {
+  const list = screen.queryByRole('list', { name: 'Organization' });
   if (!list) return [];
   return within(list)
     .getAllByRole('link')
@@ -256,5 +266,59 @@ describe('ConsoleNav administration and feature access', () => {
     render(<ConsoleNav />);
 
     expect(screen.queryByRole('list', { name: 'Admin' })).not.toBeInTheDocument();
+  });
+});
+
+describe('ConsoleNav organization console', () => {
+  afterEach(() => cleanup());
+  beforeEach(reset);
+
+  it('offers the organization console to an administrator of the organization, by its name', () => {
+    role = 'free';
+    organization = { id: 'o-1', name: 'Example University', role: 'admin' };
+
+    render(<ConsoleNav />);
+
+    expect(organizationLinks()).toEqual(['Example University']);
+    expect(screen.getByRole('link', { name: 'Example University' })).toHaveAttribute(
+      'href',
+      '/dashboard/organization/overview',
+    );
+    // The role in an organization gives nothing in the deployment's administration.
+    expect(adminLinks()).toEqual([]);
+  });
+
+  it.each([
+    [
+      'a member that is not an administrator',
+      { id: 'o-1', name: 'Example University', role: 'member' },
+    ],
+    ['an account in no organization', null],
+  ] as const)('shows no entry to %s', (_who, membership) => {
+    organization = membership;
+
+    render(<ConsoleNav />);
+
+    expect(organizationLinks()).toEqual([]);
+    expect(screen.queryByText('Example University')).not.toBeInTheDocument();
+  });
+
+  it('keeps the two administrator groups apart for an account that has both roles', () => {
+    role = 'admin';
+    organization = { id: 'o-1', name: 'Example University', role: 'admin' };
+
+    render(<ConsoleNav />);
+
+    expect(organizationLinks()).toEqual(['Example University']);
+    expect(adminLinks()).toEqual(['Admin Console', 'pgAdmin']);
+  });
+
+  it('shows a long name whole to a pointer, cut short in the row', () => {
+    const name = 'The Example University of Applied Sciences and Arts, Northern Campus';
+    organization = { id: 'o-1', name, role: 'admin' };
+
+    render(<ConsoleNav />);
+
+    expect(screen.getByRole('link', { name })).toHaveAttribute('title', name);
   });
 });
