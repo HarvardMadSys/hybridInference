@@ -104,6 +104,9 @@ msgstr "两个参数都必须是字面量（或由字面量组成的 `cond ? 'a'
 msgid "Administration pages (`/dashboard/admin`) are for operators, not users, and stay in English: their layout provides an English `LocaleProvider` without a translation catalog, and their container is marked `lang=\"en\"`. This also keeps shared components using `t()` and React portals in English without changing the reader’s saved language. Admin date/time labels use an explicit `en-US` locale while preserving their existing time zone. The rest of what stays in English is listed below."
 msgstr "管理页面（`/dashboard/admin`）面向运维人员而不是用户，保持英文：其布局提供不带翻译字典的英文 `LocaleProvider`，容器标注为 `lang=\"en\"`。这也让使用 `t()` 的共享组件和 React portal 保持英文，而不改变读者保存的语言偏好。管理页面的日期和时间标签显式使用 `en-US` 语言区域，同时保留原有时区。其他保留英文的内容见下文。"
 
+msgid "The organization console (`/dashboard/organization`) is not an administration page in this sense. Its readers are the staff of an organization, who are users, so it is translated like the rest of the console."
+msgstr "机构控制台（`/dashboard/organization`）不属于这里所说的管理页面。它的读者是机构自己的工作人员，也就是用户，所以它和控制台的其他部分一样有翻译。"
+
 #: ../developer/console-translations.md:51
 msgid "The catalog"
 msgstr "字典"
