@@ -1768,6 +1768,7 @@ async def log_admin_action(
     *,
     actor: AuditActor | None = None,
     target: AuditTarget | None = None,
+    organization_id: str | None = None,
 ) -> None:
     """Log an action to the audit trail.
 
@@ -1790,6 +1791,7 @@ async def log_admin_action(
         success: Whether the action succeeded
         actor: Who acted
         target: What was acted on
+        organization_id: The organization the row belongs to, if any
     """
     if not action:
         raise ValueError("log_admin_action needs an action")
@@ -1798,6 +1800,9 @@ async def log_admin_action(
 
     # Use store method if available (new path)
     if hasattr(db_logger, "log_admin_action"):
+        # Named only for a row that has one, so a store written before
+        # organizations existed keeps receiving the call it knows.
+        scope = {"organization_id": organization_id} if organization_id is not None else {}
         await db_logger.log_admin_action(
             admin_ip=admin_ip,
             action=action,
@@ -1806,6 +1811,7 @@ async def log_admin_action(
             success=success,
             actor=actor,
             target=target,
+            **scope,
         )
         return
 
@@ -1816,7 +1822,11 @@ async def log_admin_action(
     from serving.storage.audit_schema import insert_audit_row
 
     columns = audit_columns(
-        admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+        admin_ip=admin_ip,
+        target_user_id=target_user_id,
+        actor=actor,
+        target=target,
+        organization_id=organization_id,
     )
     async with db_logger.pool.acquire() as conn:
         await insert_audit_row(

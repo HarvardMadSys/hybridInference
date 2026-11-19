@@ -42,6 +42,7 @@ from serving.storage.base import (
     Row,
 )
 from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
+from serving.storage.organizations import PostgresOrganizationsMixin
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.storage.sso import PostgresSsoMixin
@@ -810,7 +811,11 @@ REQUEST_PATH_READS = (
 
 
 class PostgresOperationalStore(
-    PostgresPhoneAuthMixin, PostgresSsoMixin, PostgresTwoFactorMixin, OperationalStore
+    PostgresPhoneAuthMixin,
+    PostgresSsoMixin,
+    PostgresOrganizationsMixin,
+    PostgresTwoFactorMixin,
+    OperationalStore,
 ):
     """OperationalStore backed by an asyncpg connection pool."""
 
@@ -1098,7 +1103,26 @@ class PostgresOperationalStore(
             await conn.execute(sql, *params)
 
     async def suspend_user(self, user_id: str, **fields: Any) -> None:
-        """Suspend *user_id* and revoke its keys and sessions atomically."""
+        """Suspend *user_id* and revoke its keys and sessions atomically.
+
+        A suspension made here is the platform's. If an organization removed
+        this member earlier, the mark of that removal goes, so the
+        organization cannot undo this suspension as its own.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            await self._suspend_user_on(conn, user_id, **fields)
+            await conn.execute(
+                "UPDATE sso_organization_members SET removed_at = NULL, removed_by = NULL "
+                "WHERE user_id = $1 AND removed_at IS NOT NULL",
+                user_id,
+            )
+
+    async def _lock_account_on(self, conn: asyncpg.Connection, user_id: str) -> None:
+        """Take the lock every write to *user_id*'s keys takes first."""
+        await _lock_account_keys(conn, user_id)
+
+    async def _suspend_user_on(self, conn: asyncpg.Connection, user_id: str, **fields: Any) -> None:
+        """Suspend *user_id* and revoke its keys and sessions, in the caller's transaction."""
         from .base import USERS_MUTABLE_COLUMNS
 
         fields = {**fields, "status": "suspended"}
@@ -1110,15 +1134,13 @@ class PostgresOperationalStore(
         for idx, (key, val) in enumerate(fields.items(), start=2):
             set_parts.append(f"{USERS_MUTABLE_COLUMNS[key]} = ${idx}")
             params.append(val)
-        async with self._pool.acquire() as conn, conn.transaction():
-            await _lock_account_keys(conn, user_id)
-            await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
-            await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
-            await conn.execute(
-                "UPDATE auth_sessions SET revoked = TRUE "
-                "WHERE user_id = $1 AND revoked IS NOT TRUE",
-                user_id,
-            )
+        await _lock_account_keys(conn, user_id)
+        await conn.execute(f"UPDATE users SET {', '.join(set_parts)} WHERE id = $1", *params)
+        await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE user_id = $1", user_id)
+        await conn.execute(
+            "UPDATE auth_sessions SET revoked = TRUE WHERE user_id = $1 AND revoked IS NOT TRUE",
+            user_id,
+        )
 
     async def update_user_last_login(self, user_id: str) -> None:
         """Set ``last_login_at`` to the current timestamp."""
@@ -3573,10 +3595,15 @@ class PostgresOperationalStore(
         success: bool = True,
         actor: AuditActor | None = None,
         target: AuditTarget | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Insert a row into admin_audit_log, attributed to *actor* and *target*."""
         columns = audit_columns(
-            admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+            admin_ip=admin_ip,
+            target_user_id=target_user_id,
+            actor=actor,
+            target=target,
+            organization_id=organization_id,
         )
         async with self._pool.acquire() as conn:
             await insert_audit_row(
@@ -3588,6 +3615,7 @@ class PostgresOperationalStore(
         *,
         action: str | None = None,
         target_user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -3601,6 +3629,9 @@ class PostgresOperationalStore(
         if target_user_id:
             where_clauses.append(f"target_user_id = ${len(params) + 1}")
             params.append(target_user_id)
+        if organization_id:
+            where_clauses.append(f"organization_id = ${len(params) + 1}")
+            params.append(organization_id)
 
         where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
         params.append(limit)

@@ -12,6 +12,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from serving.storage.organizations import in_other_organization, join_organization
+
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
@@ -21,6 +23,7 @@ LINKED = "linked"
 IDENTITY_IN_USE = "identity_in_use"
 ISSUER_CONFLICT = "issuer_conflict"
 ACCOUNT_INACTIVE = "inactive"
+OTHER_ORGANIZATION = "other_organization"
 
 #: What :meth:`PostgresSsoMixin.unlink_user_identity` answers.
 UNLINKED = "unlinked"
@@ -92,10 +95,15 @@ class PostgresSsoMixin:
         Returns ``"linked"`` (also when this account already holds this very
         identity), ``"identity_in_use"`` when another account holds it,
         ``"issuer_conflict"`` when this account already holds a different
-        identity from the same issuer, and ``"inactive"`` when the account is
-        missing or not active. The account row is locked first, so a link is
-        never written to an account a concurrent suspension or deletion is
-        closing.
+        identity from the same issuer, ``"inactive"`` when the account is
+        missing or not active, and ``"other_organization"`` when the provider
+        belongs to an organization and the account to another one. The account
+        row is locked first, so a link is never written to an account a
+        concurrent suspension or deletion is closing.
+
+        A new link through a provider of an organization makes the account a
+        member of it, in the same transaction: the caller links only an
+        account whose email the provider answers for.
         """
         async with self._pool.acquire() as conn, conn.transaction():
             status = await conn.fetchval(
@@ -103,6 +111,8 @@ class PostgresSsoMixin:
             )
             if status != "active":
                 return ACCOUNT_INACTIVE
+            if await in_other_organization(conn, user_id=user_id, provider_id=provider_id):
+                return OTHER_ORGANIZATION
             row = await conn.fetchrow(
                 "INSERT INTO user_identities (id, user_id, provider_id, issuer, subject, email) "
                 "VALUES ($1, $2, $3, $4, $5, $6) ON CONFLICT DO NOTHING RETURNING id",
@@ -114,6 +124,7 @@ class PostgresSsoMixin:
                 email.lower() if email else None,
             )
             if row is not None:
+                await join_organization(conn, user_id=user_id, provider_id=provider_id)
                 return LINKED
             owner = await conn.fetchval(
                 "SELECT user_id FROM user_identities WHERE issuer = $1 AND subject = $2",
@@ -194,6 +205,9 @@ class PostgresSsoMixin:
         account has no password and its email counts as verified, because the
         identity provider vouched for it. Returns False, having written
         nothing, when the email or the identity was taken meanwhile.
+
+        When the provider belongs to an organization, the account is created
+        as its member.
         """
         from serving.storage.project_backfill import ensure_default_project
 
@@ -225,6 +239,7 @@ class PostgresSsoMixin:
                 )
                 if linked is None:
                     raise _IdentityTaken
+                await join_organization(conn, user_id=user_id, provider_id=provider_id)
         except _IdentityTaken:
             return False
         return True

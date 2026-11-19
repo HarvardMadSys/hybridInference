@@ -19,10 +19,10 @@ import pytest
 from migrations.baseline.audit_log import COLUMN_MIGRATIONS, ensure_admin_audit_log_schema
 from migrations.baseline.ddl import SchemaLockUnavailable
 from serving.audit import AuditActor
-from serving.storage.audit_schema import ATTRIBUTION_COLUMNS, INSERT_SQL
+from serving.storage.audit_schema import ATTRIBUTION_COLUMNS, INSERT_COLUMNS, INSERT_SQL
 from serving.storage.postgres_operational import PostgresOperationalStore
 
-_COLUMNS = ("admin_ip", "action", "target_user_id", "details", "success", *ATTRIBUTION_COLUMNS)
+_COLUMNS = INSERT_COLUMNS
 
 
 class _Conn:

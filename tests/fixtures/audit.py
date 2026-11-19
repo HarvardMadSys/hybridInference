@@ -19,22 +19,12 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 from serving.audit import AuditActor
-from serving.storage.audit_schema import ATTRIBUTION_COLUMNS, INSERT_SQL
+from serving.storage.audit_schema import INSERT_COLUMNS, INSERT_SQL
 from serving.storage.postgres_operational import PostgresOperationalStore
 
 # Documentation addresses (RFC 5737), never a real client.
 ADMIN_ACTOR = AuditActor.admin("admin-1", "203.0.113.10")
 TOKEN_ACTOR = AuditActor.admin_token("203.0.113.11")
-
-# The columns INSERT_SQL binds, in parameter order.
-INSERT_COLUMNS = (
-    "admin_ip",
-    "action",
-    "target_user_id",
-    "details",
-    "success",
-    *ATTRIBUTION_COLUMNS,
-)
 
 
 class AuditRowRecorder:
