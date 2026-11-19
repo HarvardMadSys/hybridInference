@@ -105,7 +105,10 @@ function Requests({
 
   if (isLoading) return <AdminLoading label={t('common.loading', 'Loading...')} />;
   if (!data) return <Failure error={error} onRetry={() => void refetch()} />;
-  const next = data.next_before;
+  // While the page asked for is on its way, the rows are still those of the
+  // page before, and so is their cursor: a second click would ask for the same
+  // page again and put its cursor on the way back twice.
+  const next = isPlaceholderData ? null : data.next_before;
   return (
     <div className={`space-y-2 transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}>
       <RequestsTable
@@ -121,7 +124,7 @@ function Requests({
           <button
             type="button"
             className={BUTTON_SECONDARY}
-            disabled={cursors.length === 0}
+            disabled={cursors.length === 0 || isPlaceholderData}
             onClick={() => setCursors(cursors.slice(0, -1))}
           >
             {t('organization.usage.newer', 'Newer')}

@@ -82,7 +82,8 @@ function DefaultLimit({ organization }: { organization: Organization }) {
   const submitting = useRef(false);
   const fieldId = useId();
   const noteId = `${fieldId}-note`;
-  // A saved default arrives with the organization: show it, unless something is being typed.
+  // A saved default comes back with the organization: the field then shows it
+  // as the gateway keeps it (a typed 45.50 becomes 45.5), with nothing left to save.
   const shown = useRef(initial);
   useEffect(() => {
     if (shown.current !== initial) {

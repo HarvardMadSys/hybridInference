@@ -202,6 +202,32 @@ describe('the requests of the organization', () => {
     expect(asked()).toMatchObject({ before: undefined });
   });
 
+  it('offers no paging while the page asked for is still on its way', () => {
+    let arrived = false;
+    state.requests.mockImplementation((query: { before?: string }) =>
+      query.before && !arrived
+        ? // The rows shown are still those of the page before, with its cursor.
+          hook({ requests: [request({ id: 3 })], next_before: 'c1' }, { isPlaceholderData: true })
+        : hook({ requests: [request({ id: 2 })], next_before: query.before ? 'c2' : 'c1' }),
+    );
+
+    const { rerender } = render(<UsageView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+
+    expect(asked()).toMatchObject({ before: 'c1' });
+    expect(screen.getByRole('button', { name: 'Older' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled();
+    // A second click must not put the same cursor on the way back twice.
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+
+    arrived = true;
+    rerender(<UsageView />);
+    expect(screen.getByRole('button', { name: 'Older' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'Newer' }));
+    // One step back is the first page.
+    expect(asked()).toMatchObject({ before: undefined });
+  });
+
   it('starts again from the newest request when a filter or the period changes', () => {
     state.requests.mockImplementation(() => hook({ requests: [request({})], next_before: 'c1' }));
 
