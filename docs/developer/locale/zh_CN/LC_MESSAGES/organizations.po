@@ -1,0 +1,374 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-18 20:39-0500\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+msgid "Organizations"
+msgstr "机构"
+
+msgid "This page is for an operator whose gateway serves the members of a university or a company through [single sign-on](sso.md), and who wants that organization to see and manage its own members. After reading it you can make an organization, name its administrators and set its limits, and you know what its administrators see and can change."
+msgstr "本页面向这样的运营方：网关通过[单点登录](sso.md)为某所大学或某家公司的成员提供服务，并且希望由这个机构自己查看和管理它的成员。读完后，你可以创建一个机构、指定它的管理员、设置它的上限，并且知道它的管理员能看到什么、能改什么。"
+
+msgid "A deployment that has no organization behaves as it did before."
+msgstr "没有创建任何机构的部署，行为和以前一样。"
+
+msgid "What an organization is"
+msgstr "机构是什么"
+
+msgid "An organization is a record of its own in the gateway. It owns one or more SSO connections and the accounts of its members. An SSO connection is one entry of `SSO_PROVIDERS`, the provider that [Single Sign-On](sso.md) describes."
+msgstr "机构是网关里一条独立的记录。它拥有一个或多个 SSO 连接，以及成员的账号。一个 SSO 连接就是 `SSO_PROVIDERS` 里的一个条目，也就是[单点登录](sso.md)一页所说的身份提供方。"
+
+msgid "**A member** is an account that has an email in the `domains` of an SSO connection of the organization, and an organization account of that connection linked to it. An account becomes a member at its first sign-in through the connection, when its owner connects the organization account under **Settings → Single sign-on**, or when you attach the connection to the organization."
+msgstr "**成员**是这样的账号：它的邮箱在机构某个 SSO 连接的 `domains` 之内，并且关联了这个连接的机构账号。账号在以下时刻成为成员：第一次通过这个连接登录时；账号的主人在 **Settings → Single sign-on** 下关联机构账号时；或者你把这个连接挂接到机构上时。"
+
+msgid "**An organization administrator** is a member that you give that role. It sees the usage of the members and manages them. The role gives no access to **Admin**, and the `admin` role gives no role in an organization."
+msgstr "**机构管理员**是你授予了这个角色的成员。它能查看成员的用量并管理成员。这个角色不能进入 **Admin**，而 `admin` 角色在机构里也没有任何角色。"
+
+msgid "**An account is in one organization at most, and so is an SSO connection.** A person who also wants a personal account registers a second account with another email."
+msgstr "**一个账号最多属于一个机构，一个 SSO 连接也是**。如果一个人还想要个人账号，就用另一个邮箱再注册一个账号。"
+
+msgid "A membership ends only when the account is deleted permanently. The members stay when you detach an SSO connection, and when the email of an account changes later."
+msgstr "只有账号被永久删除，成员身份才会结束。摘除 SSO 连接之后成员仍然保留；账号之后修改邮箱，成员身份也仍然保留。"
+
+msgid "Set an organization up"
+msgstr "创建并设置一个机构"
+
+msgid "The Admin console has no pages for these steps yet. Call the Admin API. Each call takes `Authorization: Bearer <token>`. The token is `ADMIN_TOKEN`, or the access token of an administrator's console session, which `POST /auth/login` returns as `access_token`."
+msgstr "Admin 控制台里还没有这些步骤对应的页面，请调用 Admin API。每个调用都带 `Authorization: Bearer <token>`。token 可以是 `ADMIN_TOKEN`，也可以是管理员控制台会话的访问令牌，也就是 `POST /auth/login` 返回的 `access_token`。"
+
+msgid "**Connect the identity provider** as [Single Sign-On](sso.md) describes, and note the `id` of its entry in `SSO_PROVIDERS`."
+msgstr "**对接身份提供方**：按[单点登录](sso.md)一页操作，并记下它在 `SSO_PROVIDERS` 里那个条目的 `id`。"
+
+msgid "**Make the organization** from that SSO connection:"
+msgstr "**创建机构**，用上面那个 SSO 连接："
+
+msgid "The answer holds the `id` of the organization, and `members_added`: the number of accounts that had signed in through the connection and are now members. Leave `monthly_limit_usd` out for an organization without a limit."
+msgstr "返回里有机构的 `id`，还有 `members_added`：此前已经通过这个连接登录过、现在成为成员的账号数。机构不设上限时，不要传 `monthly_limit_usd`。"
+
+msgid "**Give the first administrator the role.** The person signs in through the SSO connection once, which makes the account a member. Find the account in **Admin → Users** and copy its user id. Then:"
+msgstr "**把管理员角色授予第一位管理员**。这个人先通过 SSO 连接登录一次，账号就成了成员。在 **Admin → Users** 里找到这个账号，复制它的用户 id。然后："
+
+msgid "This call asks you to confirm who you are, as raising the role of an account does in **Admin → Users**. Send it with the access token of your own console session: `ADMIN_TOKEN` cannot give the role. An account with a password sends it in `password`. An account with an authenticator app gives a code in that session first, and needs no `password`. `{\"role\": \"member\"}` takes the role back and asks for no confirmation."
+msgstr "这个调用要求你确认身份，和在 **Admin → Users** 里提升账号角色时一样。请用你自己控制台会话的访问令牌发送：`ADMIN_TOKEN` 不能授予这个角色。有密码的账号把密码放在 `password` 里。绑定了验证器应用的账号先在这个会话里输入一次验证码，就不需要 `password`。`{\"role\": \"member\"}` 收回这个角色，不需要确认。"
+
+msgid "The other calls:"
+msgstr "其他调用："
+
+msgid "Call"
+msgstr "调用"
+
+msgid "What it does"
+msgstr "作用"
+
+msgid "`GET /admin/organizations`"
+msgstr "`GET /admin/organizations`"
+
+msgid "Lists the organizations: name, number of members, SSO connections, administrators, limits and the spend of this month"
+msgstr "列出所有机构：名称、成员数、SSO 连接、管理员、上限和本月花费"
+
+msgid "`GET /admin/organizations/{id}`"
+msgstr "`GET /admin/organizations/{id}`"
+
+msgid "Shows one organization"
+msgstr "查看一个机构"
+
+msgid "`PATCH /admin/organizations/{id}`"
+msgstr "`PATCH /admin/organizations/{id}`"
+
+msgid "Changes `name` or `monthly_limit_usd`. `null` clears the limit"
+msgstr "修改 `name` 或 `monthly_limit_usd`。传 `null` 清除上限"
+
+msgid "`PUT /admin/organizations/{id}/connections/{provider_id}`"
+msgstr "`PUT /admin/organizations/{id}/connections/{provider_id}`"
+
+msgid "Attaches an SSO connection. Each account that matches the member rule and is in no organization becomes a member"
+msgstr "挂接一个 SSO 连接。符合成员规则、且不属于任何机构的账号都会成为成员"
+
+msgid "`DELETE /admin/organizations/{id}/connections/{provider_id}`"
+msgstr "`DELETE /admin/organizations/{id}/connections/{provider_id}`"
+
+msgid "Detaches an SSO connection. The members stay. New accounts of the connection do not become members"
+msgstr "摘除一个 SSO 连接。成员保留。这个连接之后新建的账号不再成为成员"
+
+msgid "An organization stores the `id` of each of its SSO connections. If you change the `id` of an entry in `SSO_PROVIDERS`, the organization loses that connection and shows it as not available. The members stay. Attach the new `id`."
+msgstr "机构保存的是每个 SSO 连接的 `id`。如果你修改了 `SSO_PROVIDERS` 里某个条目的 `id`，机构就失去这个连接，并把它显示为不可用。成员保留。把新的 `id` 挂接上去即可。"
+
+msgid "What an organization administrator sees"
+msgstr "机构管理员能看到什么"
+
+msgid "An organization administrator calls the routes below `/user/organization` with the access token of its own console session. The organization is always the one of the caller's membership: no call names it. Every other caller gets a 403."
+msgstr "机构管理员用自己控制台会话的访问令牌调用 `/user/organization` 下的路由。机构永远是调用者自己所属的那个：没有任何调用会指定机构。其他调用者一律得到 403。"
+
+msgid "Route"
+msgstr "路由"
+
+msgid "Shows"
+msgstr "显示内容"
+
+msgid "`GET /user/organization`"
+msgstr "`GET /user/organization`"
+
+msgid "The organization: name, SSO connections, administrators, limits and the spend of this month"
+msgstr "机构：名称、SSO 连接、管理员、上限和本月花费"
+
+msgid "`GET /user/organization/overview`"
+msgstr "`GET /user/organization/overview`"
+
+msgid "Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day, or of each hour for one day. The spend of each model"
+msgstr "所选时间段的合计：花费、请求数、token 数、有请求的成员数。按天的序列；时间段为一天时按小时。每个模型的花费"
+
+msgid "`GET /user/organization/members`"
+msgstr "`GET /user/organization/members`"
+
+msgid "One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of this month with the monthly limit. Takes `search`, `status`, `sort_by`, `order`, `limit` and `offset`"
+msgstr "每个成员一行：姓名、邮箱、角色、状态、最近一次请求、请求数、token 数、花费，以及本月花费和每月上限。可带 `search`、`status`、`sort_by`、`order`、`limit` 和 `offset`"
+
+msgid "`GET /user/organization/members/{user_id}`"
+msgstr "`GET /user/organization/members/{user_id}`"
+
+msgid "One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests"
+msgstr "单个成员：同样的数字，最近 30 天每天的花费，每个模型的花费，以及最近的几条请求"
+
+msgid "`GET /user/organization/usage/requests`"
+msgstr "`GET /user/organization/usage/requests`"
+
+msgid "One row for each request, newest first: time, member, project, name of the API key, model, status code, tokens and cost. Takes `search`, `model`, `status`, `limit`, and `before` for the next page"
+msgstr "每条请求一行，最新的在前：时间、成员、项目、API key 的名称、模型、状态码、token 数和费用。可带 `search`、`model`、`status`、`limit`，以及取下一页用的 `before`"
+
+msgid "`GET /user/organization/usage/models`"
+msgstr "`GET /user/organization/usage/models`"
+
+msgid "Requests, errors, tokens and spend of each model"
+msgstr "每个模型的请求数、错误数、token 数和花费"
+
+msgid "`GET /user/organization/usage/members`"
+msgstr "`GET /user/organization/usage/members`"
+
+msgid "Requests, tokens and spend of each member"
+msgstr "每个成员的请求数、token 数和花费"
+
+msgid "`GET /user/organization/audit-log`"
+msgstr "`GET /user/organization/audit-log`"
+
+msgid "The management actions of this organization. Takes `category`, `search`, `limit` and `offset`"
+msgstr "这个机构的管理操作。可带 `category`、`search`、`limit` 和 `offset`"
+
+msgid "The routes that show figures take `period`: `1d`, `7d` or `30d`, the last 1, 7 or 30 days in UTC, with today. The audit log takes it too, and shows every row without it. \"This month\" is the calendar month in UTC, the month that an account's monthly quota uses. The figures include what an account used before it became a member."
+msgstr "显示数字的路由都带 `period`：`1d`、`7d` 或 `30d`，即按 UTC 计、含今天在内的最近 1、7 或 30 天。审计日志也可以带它，不带时显示全部记录。“本月”指 UTC 的自然月，和账号每月配额所用的月份相同。这些数字包含账号成为成员之前的用量。"
+
+msgid "Money fields follow [Accounting Currency](accounting.md): the `*_usd` fields, and the native amounts with `currency` on a ledger that is not in USD."
+msgstr "金额字段遵循[记账币种](accounting.md)：`*_usd` 字段；在非 USD 账本上，还有带 `currency` 的账本币种金额。"
+
+msgid "No route shows these:"
+msgstr "以下内容，任何路由都不显示："
+
+msgid "the content of a request: the prompt, the response, the tools or the error text;"
+msgstr "请求的内容：提示词、回复、工具或错误文本；"
+
+msgid "the value of an API key. A request row shows the name of the key only;"
+msgstr "API key 的值。请求行里只显示 key 的名称；"
+
+msgid "an account that is not a member, or a different organization;"
+msgstr "不是成员的账号，或者别的机构；"
+
+msgid "the configuration of the deployment, or the client secret of an SSO connection."
+msgstr "部署的配置，或者 SSO 连接的 client secret。"
+
+msgid "What an organization administrator can change"
+msgstr "机构管理员能修改什么"
+
+msgid "`PUT /user/organization/members/{user_id}/monthly-limit`"
+msgstr "`PUT /user/organization/members/{user_id}/monthly-limit`"
+
+msgid "Sets the monthly limit of a member. `{\"monthly_limit_usd\": null}` clears it"
+msgstr "设置一个成员的每月上限。传 `{\"monthly_limit_usd\": null}` 清除"
+
+msgid "`PUT /user/organization/default-member-limit`"
+msgstr "`PUT /user/organization/default-member-limit`"
+
+msgid "Sets the default monthly limit for a member. `null` clears it"
+msgstr "设置成员的默认每月上限。传 `null` 清除"
+
+msgid "`POST /user/organization/members/{user_id}/remove`"
+msgstr "`POST /user/organization/members/{user_id}/remove`"
+
+msgid "Removes a member"
+msgstr "移除一个成员"
+
+msgid "`POST /user/organization/members/{user_id}/restore`"
+msgstr "`POST /user/organization/members/{user_id}/restore`"
+
+msgid "Restores a member that the organization removed"
+msgstr "恢复一个被机构移除的成员"
+
+msgid "None of these applies to an organization administrator, to an account with the `admin` role, or to the caller. The answer is a 409."
+msgstr "这些操作都不能用于机构管理员、拥有 `admin` 角色的账号，以及调用者自己。此时返回 409。"
+
+msgid "Remove and restore a member"
+msgstr "移除和恢复成员"
+
+msgid "To remove a member is to suspend its account, as **Admin → Users** does:"
+msgstr "移除成员就是停用它的账号，和 **Admin → Users** 的做法一样："
+
+msgid "the account can no longer sign in, through single sign-on either;"
+msgstr "账号不能再登录，通过单点登录也不行；"
+
+msgid "its sessions end and its API keys are revoked;"
+msgstr "它的会话结束，API key 被吊销；"
+
+msgid "its usage history stays."
+msgstr "它的用量历史保留。"
+
+msgid "To restore a member makes the account active again. The revoked API keys stay revoked, and the member makes new ones."
+msgstr "恢复成员会让账号重新变为可用。已吊销的 API key 仍然是吊销状态，成员需要新建 key。"
+
+msgid "An organization administrator restores only a member that the organization removed. An account that you suspended in **Admin → Users** is yours to make active again. When you make a removed member active again there, the organization sees the member as active too."
+msgstr "机构管理员只能恢复被本机构移除的成员。你在 **Admin → Users** 里停用的账号，只能由你来恢复。当你在那里把一个被移除的成员恢复为可用时，机构那边看到的这个成员也是可用的。"
+
+msgid "The gateway is not told when the identity provider disables an account. Until an administrator removes the member, its open sessions and its API keys keep working."
+msgstr "身份提供方停用账号时，网关不会得到通知。在管理员移除这个成员之前，它已打开的会话和 API key 仍然有效。"
+
+msgid "Limits"
+msgstr "上限"
+
+msgid "A request of a member must fit under the limits of its API key, its project and its account, as every request must, and then under the monthly limit of its organization."
+msgstr "成员的请求和所有请求一样，要先通过它的 API key、项目和账号各自的上限，然后还要通过所属机构的每月上限。"
+
+msgid "Limit"
+msgstr "上限"
+
+msgid "Who sets it"
+msgstr "由谁设置"
+
+msgid "Applies to"
+msgstr "作用于"
+
+msgid "The monthly limit of the organization"
+msgstr "机构的每月上限"
+
+msgid "You, with `monthly_limit_usd`"
+msgstr "你，用 `monthly_limit_usd`"
+
+msgid "What all members are charged in a calendar month in UTC"
+msgstr "全体成员在 UTC 一个自然月内被计的费用"
+
+msgid "The default monthly limit for a member"
+msgstr "成员的默认每月上限"
+
+msgid "An organization administrator"
+msgstr "机构管理员"
+
+msgid "Each member that has no monthly limit of its own"
+msgstr "每个没有单独设置每月上限的成员"
+
+msgid "The monthly limit of a member"
+msgstr "单个成员的每月上限"
+
+msgid "That member. It is the monthly quota of the account, the one **Admin → Users** shows"
+msgstr "这个成员。它就是账号的每月配额，也就是 **Admin → Users** 里显示的那个"
+
+msgid "An organization administrator cannot set a limit of a member, or the default, above the limit of the organization. The daily quota of an account does not change: it comes from the role of the account or from **Admin → Users**."
+msgstr "机构管理员不能把成员的上限或默认上限设得高于机构的上限。账号的每日配额不变：它来自账号的角色，或者来自 **Admin → Users**。"
+
+msgid "A request that the limit of the organization refuses gets the 429 of the other limits, with `scope` set to `organization`:"
+msgstr "被机构上限拒绝的请求，得到的是和其他上限一样的 429，其中 `scope` 为 `organization`："
+
+msgid "A member whose own limit is reached gets the refusal of an account, with `scope` set to `account`."
+msgstr "成员自己的上限用完时，得到的是账号的拒绝响应，其中 `scope` 为 `account`。"
+
+msgid "Things to know:"
+msgstr "需要了解的几点："
+
+msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization. The usage pages show it all the same."
+msgstr "**机构的花费从成为成员时开始计**。账号在成为成员之前被计的费用，不计入机构的上限。用量页面仍然会显示这部分。"
+
+msgid "**A change of a limit applies within 30 seconds.**"
+msgstr "**上限的修改在 30 秒内生效**。"
+
+msgid "**Requests that run at the same time** can take an organization a little past its limit, as they can for the quota of an account."
+msgstr "**同时进行的请求**可能让机构略微超过上限，账号的配额也是这样。"
+
+msgid "**A batch** of a member waits while the organization is at its limit, as it does for the monthly quota of the account. It continues when the limit is raised or the next month starts."
+msgstr "机构达到上限期间，成员的**批量请求**会等待，和账号每月配额用完时一样。上限调高或者下个月开始后，它会继续。"
+
+msgid "**A balance poll**, such as `GET /v1/usage`, reports the limits of the key, the project and the account. It does not report the limit of the organization."
+msgstr "**余额查询**（例如 `GET /v1/usage`）报告的是 key、项目和账号的上限，不报告机构的上限。"
+
+msgid "**On a ledger that is not in USD**, send a limit in the ledger currency as `monthly_limit` with `currency`. The offline currency migration converts the limits of the organizations that exist."
+msgstr "**在非 USD 账本上**，用 `monthly_limit` 加 `currency` 以账本币种传上限。离线的币种迁移会换算已有机构的上限。"
+
+msgid "The audit log"
+msgstr "审计日志"
+
+msgid "Each action on this page writes a row to the audit log, with the organization it belongs to. You read the rows of one organization with `GET /admin/audit-log?organization_id=<id>`. An organization administrator reads the rows of its own organization. A row of yours names its actor `platform_administrator`, without an account id or an email."
+msgstr "本页的每个操作都会在审计日志里写一行，并带上它所属的机构。你可以用 `GET /admin/audit-log?organization_id=<id>` 读某个机构的记录。机构管理员读本机构的记录。由你操作产生的记录，操作者是 `platform_administrator`，不带账号 id，也不带邮箱。"
+
+msgid "Action"
+msgstr "操作"
+
+msgid "Written when"
+msgstr "何时写入"
+
+msgid "`organization.create`, `organization.update`"
+msgstr "`organization.create`, `organization.update`"
+
+msgid "You make an organization or change its name"
+msgstr "你创建机构，或者修改它的名称"
+
+msgid "`organization.connection.attach`, `organization.connection.detach`"
+msgstr "`organization.connection.attach`, `organization.connection.detach`"
+
+msgid "You attach or detach an SSO connection. An attach writes one row with the number of new members"
+msgstr "你挂接或摘除一个 SSO 连接。一次挂接只写一行，其中带有新成员的数量"
+
+msgid "`organization.admin.add`, `organization.admin.remove`"
+msgstr "`organization.admin.add`, `organization.admin.remove`"
+
+msgid "You give the administrator role or take it back"
+msgstr "你授予或收回管理员角色"
+
+msgid "`organization.limit.set`"
+msgstr "`organization.limit.set`"
+
+msgid "You change the monthly limit of the organization"
+msgstr "你修改机构的每月上限"
+
+msgid "`organization.default_member_limit.set`, `organization.member_limit.set`"
+msgstr "`organization.default_member_limit.set`, `organization.member_limit.set`"
+
+msgid "An organization administrator changes the default limit or the limit of a member"
+msgstr "机构管理员修改默认上限或某个成员的上限"
+
+msgid "`organization.member.join`"
+msgstr "`organization.member.join`"
+
+msgid "An account becomes a member at a sign-in or a link"
+msgstr "账号在登录或关联时成为成员"
+
+msgid "`organization.member.remove`, `organization.member.restore`"
+msgstr "`organization.member.remove`, `organization.member.restore`"
+
+msgid "An organization administrator removes or restores a member"
+msgstr "机构管理员移除或恢复一个成员"
+
+msgid "Stop using an organization"
+msgstr "停止使用一个机构"
+
+msgid "Take the administrator role back from each of its administrators and clear its monthly limit. The members keep their accounts and sign in as before."
+msgstr "收回它每一位管理员的管理员角色，并清除它的每月上限。成员保留各自的账号，和以前一样登录。"

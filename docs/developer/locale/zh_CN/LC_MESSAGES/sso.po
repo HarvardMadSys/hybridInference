@@ -280,8 +280,8 @@ msgstr "管理员在 **Admin** 中的修改从不通过身份提供方确认：�
 msgid "When a member leaves the organization"
 msgstr "成员离开机构时"
 
-msgid "The gateway is not told when a provider disables an account. The member can no longer sign in through the provider, but sessions that are already open and API keys keep working. Suspend the account in **Admin → Users** to end both."
-msgstr "身份提供方停用某个账号时，网关不会得到通知。该成员无法再通过身份提供方登录，但已经打开的会话和 API key 仍然有效。在 **Admin → Users** 中停用该账号可以同时结束两者。"
+msgid "The gateway is not told when a provider disables an account. The member can no longer sign in through the provider, but sessions that are already open and API keys keep working. Suspend the account in **Admin → Users** to end both. An administrator of the member's [organization](organizations.md) can remove the member, which does the same."
+msgstr "身份提供方停用某个账号时，网关不会得到通知。该成员无法再通过身份提供方登录，但已经打开的会话和 API key 仍然有效。在 **Admin → Users** 中停用该账号可以同时结束两者。该成员所属[机构](organizations.md)的管理员也可以移除这个成员，效果相同。"
 
 msgid "Stop offering a provider"
 msgstr "停止提供某个身份提供方"
@@ -394,5 +394,8 @@ msgstr "一小时内从同一个客户端地址发起了超过 120 次登录。�
 msgid "Single sign-on failed"
 msgstr "SSO 登录失败"
 
-msgid "The provider's answer did not validate, the account lacks a claim that `required_claims` asks for, or the member was linked through another provider that has the same issuer"
-msgstr "身份提供方的回答没有通过校验，账号没有 `required_claims` 要求的 claim，或者成员是通过 issuer 相同的另一个身份提供方关联的"
+msgid "The provider's answer did not validate, the account lacks a claim that `required_claims` asks for, the member was linked through another provider that has the same issuer, or the account is a member of a different [organization](organizations.md)"
+msgstr "身份提供方的回答没有通过校验，账号没有 `required_claims` 要求的 claim，成员是通过 issuer 相同的另一个身份提供方关联的，或者这个账号是另一个[机构](organizations.md)的成员"
+
+msgid "An account connects an organization account only when the account's own email is in the provider's `domains`. A link that was made before this rule stays. A member of an [organization](organizations.md) cannot disconnect the organization account that its membership rests on."
+msgstr "只有账号自己的邮箱在身份提供方的 `domains` 之内，账号才能关联机构账号。这条规则之前建立的关联保留。[机构](organizations.md)的成员不能解除它的成员身份所依赖的那个机构账号。"
