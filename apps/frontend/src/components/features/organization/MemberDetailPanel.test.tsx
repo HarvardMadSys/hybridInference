@@ -167,6 +167,7 @@ describe('one member, opened in place', () => {
     render(<MemberDetailPanel member={LEI} period="7d" onAction={vi.fn()} />);
 
     expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
+    expect(screen.getByText('Active')).toBeInTheDocument();
     expect(screen.getByText('Joined Oct 9, 2026 · Last sign-in Never')).toBeInTheDocument();
     expect(card('Spend')).toHaveTextContent('$24.46');
     expect(card('Spend')).toHaveTextContent('Last 7 days');
@@ -261,6 +262,9 @@ describe('one member, opened in place', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Restore member' }));
 
     expect(onAction).toHaveBeenCalledWith({ mode: 'restore', member: removed });
+    // Removed by the organization, which is not the same as suspended by the platform.
+    expect(screen.getByText('Removed')).toBeInTheDocument();
+    expect(screen.queryByText('Suspended')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Remove from organization' }),
     ).not.toBeInTheDocument();
@@ -281,6 +285,22 @@ describe('one member, opened in place', () => {
     expect(
       screen.queryByRole('button', { name: 'Remove from organization' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('gives no action on an organization administrator, and says who has them', () => {
+    const administrator = { ...LEI, role: 'admin' as const };
+    answer({ ...DETAIL, member: administrator });
+
+    render(<MemberDetailPanel member={administrator} period="7d" onAction={vi.fn()} />);
+
+    for (const name of ['Set monthly limit', 'Remove from organization', 'Restore member']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    expect(
+      screen.getByText(
+        'The platform administrator sets the limit of an organization administrator and removes one.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('shows the figures of the row at once while the details load', () => {

@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useAuth } from '@/components/providers';
 import { useT } from '@/components/providers/useT';
 import {
@@ -24,6 +24,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { moneyAmount } from '@/lib/utils/money';
 import { MemberDetailPanel } from './MemberDetailPanel';
 import { MemberDialogs, type MemberDialog } from './MemberDialogs';
+import { MemberDrawer } from './MemberDrawer';
 import { LimitMeter, Pager, PeriodControl, StatusPill, useOrganizationPeriod } from './parts';
 import { compactNumber, memberName, memberStatus, relativeTime } from './text';
 
@@ -40,9 +41,9 @@ const BADGE = 'rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase trackin
 
 /**
  * The members of the organization, one row each, with what each used in the
- * period and where its month stands against its limit. A row opens in place,
- * as a user's row does in the admin area, with the member's details and the
- * actions on it.
+ * period and where its month stands against its limit. A row opens a panel at
+ * the right side of the window, with the member's details and the actions on
+ * it; the list stays behind the panel.
  */
 export function MembersView() {
   const t = useT();
@@ -55,7 +56,10 @@ export function MembersView() {
   const [status, setStatus] = useState<StatusChoice>('all');
   const [order, setOrder] = useState<Order>({ by: 'spend', order: 'desc' });
   const [page, setPage] = useState(0);
-  const [openId, setOpenId] = useState<string | null>(null);
+  // The member whose panel is open, as its row had it. The panel reads the
+  // member again itself, so it stays right after an action, and stays open when
+  // a filter no longer lists the member (a removal under "Active").
+  const [opened, setOpened] = useState<OrganizationMember | null>(null);
   const [dialog, setDialog] = useState<MemberDialog | null>(null);
 
   // The list is asked for once typing pauses, from its first page.
@@ -128,99 +132,68 @@ export function MembersView() {
   }
 
   function row(member: OrganizationMember) {
-    const open = openId === member.user_id;
+    const open = opened?.user_id === member.user_id;
     const name = memberName(member);
     const you = member.user_id === state.user?.id;
     return (
-      <Fragment key={member.user_id}>
-        <tr
-          onClick={() => setOpenId(open ? null : member.user_id)}
-          aria-expanded={open}
-          className={`cursor-pointer border-b border-gray-100 transition ${
-            open ? 'bg-gray-50' : 'hover:bg-gray-50'
-          }`}
-        >
-          <td className={TABLE_CELL}>
-            <div className="flex items-center gap-2">
-              <svg
-                className={`h-3.5 w-3.5 shrink-0 text-gray-400 transition ${open ? 'rotate-90' : ''}`}
-                viewBox="0 0 20 20"
-                fill="currentColor"
-                aria-hidden="true"
-              >
-                <path
-                  fillRule="evenodd"
-                  d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
-                  clipRule="evenodd"
-                />
-              </svg>
-              <div className="min-w-0">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {/* The row's one control for the keyboard and a screen reader. */}
-                  <button
-                    type="button"
-                    aria-expanded={open}
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      setOpenId(open ? null : member.user_id);
-                    }}
-                    className="max-w-[18rem] truncate text-left font-medium text-gray-900 hover:underline"
-                  >
-                    {name}
-                  </button>
-                  {member.role === 'admin' ? (
-                    <span className={`${BADGE} bg-gray-900 text-white`}>
-                      {t('organization.members.admin_badge', 'Admin')}
-                    </span>
-                  ) : null}
-                  {you ? (
-                    <span className={`${BADGE} bg-gray-100 text-gray-600`}>
-                      {t('organization.members.you_badge', 'You')}
-                    </span>
-                  ) : null}
-                </div>
-                {member.email && member.email !== name ? (
-                  <div className="max-w-[20rem] truncate text-[12px] text-gray-500">
-                    {member.email}
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          </td>
-          <td className={TABLE_CELL}>
-            <StatusPill tone={memberStatus(member, t)} />
-          </td>
-          <td className={`${TABLE_CELL} whitespace-nowrap text-gray-500`}>
-            {relativeTime(member.last_request_at, t, fmt)}
-          </td>
-          <td className={`${TABLE_CELL} text-right tabular-nums`}>{fmt.number(member.requests)}</td>
-          <td className={`${TABLE_CELL} text-right tabular-nums`}>
-            {compactNumber(member.total_tokens, fmt)}
-          </td>
-          <td className={`${TABLE_CELL} text-right tabular-nums text-gray-900`}>
-            {money.value(member, 'cost', { maximumFractionDigits: 2 })}
-          </td>
-          <td className={`${TABLE_CELL} text-right`}>
-            <LimitMeter
-              spent={moneyAmount(member, 'spent_month')}
-              limit={moneyAmount(member, 'monthly_limit')}
-              limitText={money.value(member, 'monthly_limit', { maximumFractionDigits: 2 })}
-            />
-          </td>
-        </tr>
-        {open ? (
-          <tr className="border-b border-gray-100">
-            <td colSpan={7} className="bg-gray-50 p-0">
-              {/* As wide as the visible part of the table and pinned to its
-                  left edge: on a phone the table scrolls sideways, and the
-                  details would otherwise run off past the right of the screen. */}
-              <div className="sticky left-0 w-[100cqw] p-4">
-                <MemberDetailPanel member={member} period={period} onAction={setDialog} />
-              </div>
-            </td>
-          </tr>
-        ) : null}
-      </Fragment>
+      <tr
+        key={member.user_id}
+        onClick={() => setOpened(member)}
+        className={`cursor-pointer border-b border-gray-100 transition last:border-b-0 ${
+          open ? 'bg-gray-50' : 'hover:bg-gray-50'
+        }`}
+      >
+        <td className={TABLE_CELL}>
+          <div className="flex flex-wrap items-center gap-1.5">
+            {/* The row's one control for the keyboard and a screen reader. */}
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-expanded={open}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpened(member);
+              }}
+              className="max-w-[18rem] truncate text-left font-medium text-gray-900 hover:underline"
+            >
+              {name}
+            </button>
+            {member.role === 'admin' ? (
+              <span className={`${BADGE} bg-gray-900 text-white`}>
+                {t('organization.members.admin_badge', 'Admin')}
+              </span>
+            ) : null}
+            {you ? (
+              <span className={`${BADGE} bg-gray-100 text-gray-600`}>
+                {t('organization.members.you_badge', 'You')}
+              </span>
+            ) : null}
+          </div>
+          {member.email && member.email !== name ? (
+            <div className="max-w-[20rem] truncate text-[12px] text-gray-500">{member.email}</div>
+          ) : null}
+        </td>
+        <td className={TABLE_CELL}>
+          <StatusPill tone={memberStatus(member, t)} />
+        </td>
+        <td className={`${TABLE_CELL} whitespace-nowrap text-gray-500`}>
+          {relativeTime(member.last_request_at, t, fmt)}
+        </td>
+        <td className={`${TABLE_CELL} text-right tabular-nums`}>{fmt.number(member.requests)}</td>
+        <td className={`${TABLE_CELL} text-right tabular-nums`}>
+          {compactNumber(member.total_tokens, fmt)}
+        </td>
+        <td className={`${TABLE_CELL} text-right tabular-nums text-gray-900`}>
+          {money.value(member, 'cost', { maximumFractionDigits: 2 })}
+        </td>
+        <td className={`${TABLE_CELL} text-right`}>
+          <LimitMeter
+            spent={moneyAmount(member, 'spent_month')}
+            limit={moneyAmount(member, 'monthly_limit')}
+            limitText={money.value(member, 'monthly_limit', { maximumFractionDigits: 2 })}
+          />
+        </td>
+      </tr>
     );
   }
 
@@ -285,7 +258,7 @@ export function MembersView() {
       ) : (
         <>
           <div
-            className={`${PANEL} overflow-x-auto transition-opacity [container-type:inline-size] ${
+            className={`${PANEL} overflow-x-auto transition-opacity ${
               isPlaceholderData ? 'opacity-60' : ''
             }`}
           >
@@ -323,6 +296,19 @@ export function MembersView() {
           />
         </>
       )}
+
+      {opened ? (
+        <MemberDrawer
+          key={opened.user_id}
+          title={memberName(opened)}
+          subtitle={opened.email && opened.email !== memberName(opened) ? opened.email : null}
+          // A confirmation opens over the panel and has the keys while it is open.
+          suspended={dialog !== null}
+          onClose={() => setOpened(null)}
+        >
+          <MemberDetailPanel member={opened} period={period} onAction={setDialog} />
+        </MemberDrawer>
+      ) : null}
 
       <MemberDialogs
         dialog={dialog}

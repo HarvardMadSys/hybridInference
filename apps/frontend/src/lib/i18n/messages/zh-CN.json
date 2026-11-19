@@ -3845,6 +3845,10 @@
     "source": "The platform administrator sets the limit of an organization administrator and removes one.",
     "text": "机构管理员的月额度和移除由平台管理员处理。"
   },
+  "organization.member.close": {
+    "source": "Close",
+    "text": "关闭"
+  },
   "organization.member.joined": {
     "source": "Joined {date} · Last sign-in {when}",
     "text": "{date} 加入 · 上次登录：{when}"

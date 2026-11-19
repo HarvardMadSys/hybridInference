@@ -280,61 +280,123 @@ describe('the members of the organization', () => {
     await waitFor(() => expect(asked()).toMatchObject({ offset: 50 }));
   });
 
-  it('opens a member in place with the actions an administrator has on it', () => {
+  it('opens a member in a panel beside the list, with the actions an administrator has on it', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
     expect(state.member).not.toHaveBeenCalled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
 
+    const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
     expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
-    expect(rowOf('Lei Wang')).toHaveAttribute('aria-expanded', 'true');
-    expect(screen.getByText('Joined Oct 9, 2026 · Last sign-in 3 h ago')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set monthly limit' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Remove from organization' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Restore member' })).not.toBeInTheDocument();
+    expect(panel).toHaveTextContent('lei.wang@example.edu');
+    expect(
+      within(panel).getByText('Joined Oct 9, 2026 · Last sign-in 3 h ago'),
+    ).toBeInTheDocument();
+    expect(within(panel).getByRole('button', { name: 'Set monthly limit' })).toBeInTheDocument();
+    expect(
+      within(panel).getByRole('button', { name: 'Remove from organization' }),
+    ).toBeInTheDocument();
+    expect(within(panel).queryByRole('button', { name: 'Restore member' })).not.toBeInTheDocument();
+    // The list stays behind the panel, with the member's row marked.
+    expect(screen.getByRole('button', { name: 'Lei Wang' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(rowOf('Yu Chen')).toBeInTheDocument();
 
-    // A second click closes it.
-    fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
-    expect(screen.queryByRole('button', { name: 'Set monthly limit' })).not.toBeInTheDocument();
-    expect(rowOf('Lei Wang')).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Close' }));
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Lei Wang' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
   });
 
-  it('opens one member at a time, by a click anywhere on its row', () => {
+  it('opens the member of a row by a click anywhere on the row, one member at a time', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
-    fireEvent.click(rowOf('Lei Wang'));
     fireEvent.click(rowOf('Mei Song'));
 
-    expect(rowOf('Lei Wang')).toHaveAttribute('aria-expanded', 'false');
-    expect(rowOf('Mei Song')).toHaveAttribute('aria-expanded', 'true');
+    const mei = screen.getByRole('dialog', { name: 'Mei Song' });
     // Removed by the organization: it can come back, and cannot be removed twice.
-    expect(screen.getByRole('button', { name: 'Restore member' })).toBeInTheDocument();
+    expect(within(mei).getByRole('button', { name: 'Restore member' })).toBeInTheDocument();
     expect(
-      screen.queryByRole('button', { name: 'Remove from organization' }),
+      within(mei).queryByRole('button', { name: 'Remove from organization' }),
     ).not.toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    fireEvent.click(rowOf('Lei Wang'));
+    expect(screen.getAllByRole('dialog')).toHaveLength(1);
+    expect(screen.getByRole('dialog', { name: 'Lei Wang' })).toBeInTheDocument();
+    expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
   });
 
-  it('opens the dialog of the action that was chosen', () => {
+  it('opens the confirmation of the chosen action over the panel', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
     fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Remove from organization' }));
+    const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Remove from organization' }));
 
-    const dialog = screen.getByRole('dialog');
-    expect(dialog).toHaveTextContent(
+    const confirmation = screen.getByRole('dialog', { name: 'Remove from organization' });
+    expect(confirmation).toHaveTextContent(
       'The account of Lei Wang (lei.wang@example.edu) is suspended:',
     );
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: 'Set monthly limit' }));
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Cancel' }));
     expect(
-      within(screen.getByRole('dialog')).getByRole('heading', { name: 'Set monthly limit' }),
-    ).toBeInTheDocument();
+      screen.queryByRole('dialog', { name: 'Remove from organization' }),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(within(panel).getByRole('button', { name: 'Set monthly limit' }));
+    expect(screen.getByRole('dialog', { name: 'Set monthly limit' })).toBeInTheDocument();
+  });
+
+  it('closes only the confirmation on Escape, and the panel on the next one', () => {
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from organization' }));
+    expect(screen.getAllByRole('dialog')).toHaveLength(2);
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    expect(
+      screen.queryByRole('dialog', { name: 'Remove from organization' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Lei Wang' })).toBeInTheDocument();
+
+    fireEvent.keyDown(window, { key: 'Escape' });
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
+  it('keeps the panel of a member that the list no longer shows', () => {
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+    const { rerender } = render(<MembersView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
+
+    // Removed under a filter for active members: the row goes, the panel stays
+    // and shows the member as it now is.
+    state.member.mockReturnValue({
+      data: detail({ ...LEI, status: 'suspended', removed: true }),
+      error: null,
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+    answer({ total: 3, members: [YU, MEI, BO] });
+    rerender(<MembersView />);
+
+    const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
+    expect(panel).toHaveTextContent('Removed');
+    expect(within(panel).getByRole('button', { name: 'Restore member' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Lei Wang' })).not.toBeInTheDocument();
   });
 
   it('gives no action on an organization administrator, and says who has them', () => {

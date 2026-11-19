@@ -17,8 +17,8 @@ import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
 import { RequestsTable, SeriesFigure, SpendByModel } from './figures';
 import type { MemberDialog } from './MemberDialogs';
-import { LimitBar, StatCard } from './parts';
-import { compactNumber, periodLabel, relativeTime } from './text';
+import { LimitBar, StatCard, StatusPill } from './parts';
+import { compactNumber, memberStatus, periodLabel, relativeTime } from './text';
 
 /** What an organization administrator may do to a member, from the member's row. */
 export function memberActions(member: OrganizationMember): {
@@ -37,16 +37,16 @@ export function memberActions(member: OrganizationMember): {
 }
 
 /**
- * One member, opened in place under its row: when it joined, what it may be
- * asked to do, its figures for the period, its spend for each of the last 30
- * days, the models it used and its last requests.
+ * One member, as its panel shows it: its status, when it joined, what an
+ * administrator may do to it, its figures for the period, its spend for each
+ * of the last 30 days, the models it used and its last requests.
  */
 export function MemberDetailPanel({
   member,
   period,
   onAction,
 }: {
-  /** The row that was opened; shown until the member's own details arrive. */
+  /** The member as its row had it; shown until the member's own details arrive. */
   member: OrganizationMember;
   period: OrganizationPeriod;
   onAction: (dialog: MemberDialog) => void;
@@ -57,18 +57,23 @@ export function MemberDetailPanel({
   const { data, error, isLoading, refetch } = useOrganizationMember(member.user_id, period);
   const current = data?.member ?? member;
   const actions = memberActions(current);
+  const hasAction = actions.limit || actions.remove || actions.restore;
   const limit = moneyAmount(current, 'monthly_limit');
   const inPeriod = periodLabel(period, t);
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+        <StatusPill tone={memberStatus(current, t)} />
         <p className="text-[12px] text-gray-500">
           {fill(t('organization.member.joined', 'Joined {date} · Last sign-in {when}'), {
             date: fmt.date(current.joined_at, { year: 'numeric', month: 'short', day: 'numeric' }),
             when: relativeTime(current.last_login_at, t, fmt),
           })}
         </p>
+      </div>
+
+      {hasAction ? (
         <div className="flex flex-wrap items-center gap-2">
           {actions.limit ? (
             <button
@@ -98,7 +103,7 @@ export function MemberDetailPanel({
             </button>
           ) : null}
         </div>
-      </div>
+      ) : null}
 
       {current.role === 'admin' ? (
         <p className="text-[12px] text-gray-500">
@@ -167,31 +172,29 @@ export function MemberDetailPanel({
         </AdminNotice>
       ) : (
         <>
-          <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
-            <SeriesFigure
-              title={fill(t('organization.overview.spend_per_day', 'Spend per day ({currency})'), {
-                currency: money.currency,
-              })}
-              note={t('organization.member.last_30_days', 'Last 30 days')}
-              kind="bar"
-              series={data.days}
-              hourly={false}
-              bucketHeader={t('organization.overview.day', 'Day (UTC)')}
-              valueHeader={t('organization.overview.spend', 'Spend')}
-              valueOf={(point) => moneyAmount(point, 'cost') ?? 0}
-              formatValue={(value) => money.format(value, { maximumFractionDigits: 2 })}
-            />
-            <section
-              className={`${PANEL} p-4`}
-              aria-label={t('organization.overview.by_model', 'Spend by model')}
-            >
-              <h3 className="text-[13px] font-semibold text-gray-900">
-                {t('organization.overview.by_model', 'Spend by model')}
-              </h3>
-              <p className="mb-3 mt-0.5 text-[12px] text-gray-500">{inPeriod}</p>
-              <SpendByModel models={data.models} limit={6} />
-            </section>
-          </div>
+          <SeriesFigure
+            title={fill(t('organization.overview.spend_per_day', 'Spend per day ({currency})'), {
+              currency: money.currency,
+            })}
+            note={t('organization.member.last_30_days', 'Last 30 days')}
+            kind="bar"
+            series={data.days}
+            hourly={false}
+            bucketHeader={t('organization.overview.day', 'Day (UTC)')}
+            valueHeader={t('organization.overview.spend', 'Spend')}
+            valueOf={(point) => moneyAmount(point, 'cost') ?? 0}
+            formatValue={(value) => money.format(value, { maximumFractionDigits: 2 })}
+          />
+          <section
+            className={`${PANEL} p-4`}
+            aria-label={t('organization.overview.by_model', 'Spend by model')}
+          >
+            <h3 className="text-[13px] font-semibold text-gray-900">
+              {t('organization.overview.by_model', 'Spend by model')}
+            </h3>
+            <p className="mb-3 mt-0.5 text-[12px] text-gray-500">{inPeriod}</p>
+            <SpendByModel models={data.models} limit={6} />
+          </section>
           <section aria-label={t('organization.member.recent', 'Recent requests')}>
             <h3 className="mb-2 text-[13px] font-semibold text-gray-900">
               {t('organization.member.recent', 'Recent requests')}
