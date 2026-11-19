@@ -10,6 +10,7 @@ from pydantic.networks import validate_email
 
 from serving.accounting_api import MoneyInput, MoneyResponse
 from serving.config.site_identity import get_site_identity
+from serving.schemas_organization import OrganizationRef
 from serving.utils.password import validate_password_strength
 from serving.utils.phone_auth import normalize_phone
 
@@ -240,6 +241,9 @@ class UserInfo(BaseModel):
     created_at: datetime
     last_login_at: datetime | None = None
     locale: LocalePreference | None = None
+    #: The organization the account is a member of and its role there; None
+    #: for an account in no organization.
+    organization: OrganizationRef | None = None
 
 
 # Accounts signed in on one browser

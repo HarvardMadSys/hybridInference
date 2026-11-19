@@ -39,6 +39,7 @@ MONEY_FIELDS = frozenset(
         "min_spend_today_usd",
         "budget_daily_usd",
         "budget_monthly_usd",
+        "default_member_monthly_limit_usd",
     }
 )
 

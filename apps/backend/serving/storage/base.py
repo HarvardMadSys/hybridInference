@@ -362,6 +362,34 @@ class OperationalStore(ABC):
         """Forget that the organization removed an account."""
         raise RuntimeError("Organizations are unavailable in this store")
 
+    async def list_organization_administrators(self, organization_id: str) -> list[Row]:
+        """The members that have the administrator role, by email."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def get_organization_month_spend(self, organization_id: str) -> Row:
+        """What the organization's counter holds for this UTC month."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def list_organization_members(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of members with their usage in a span of UTC days."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def get_organization_usage(self, organization_id: str, **fields: Any) -> Row:
+        """The organization's totals, series and models in a span of UTC days."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def list_organization_requests(self, organization_id: str, **fields: Any) -> list[Row]:
+        """Requests of the organization's members, newest first, without their content."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
+    async def list_organization_audit(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of the audit rows that belong to an organization, newest first."""
+        raise RuntimeError("Organizations are unavailable in this store")
+
     # -- users ---------------------------------------------------------------
 
     @abstractmethod

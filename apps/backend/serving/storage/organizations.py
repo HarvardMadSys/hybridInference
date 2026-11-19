@@ -13,6 +13,7 @@ transaction, so the methods that change something take the actor.
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
 from serving.accounting import get_accounting_policy
@@ -57,6 +58,99 @@ _MEMBERSHIP_SELECT = (
     "o.name AS organization_name, o.status AS organization_status "
     "FROM sso_organization_members m JOIN sso_organizations o ON o.id = m.organization_id "
 )
+
+
+#: How a member list may be ordered, by the name the route accepts.
+MEMBER_ORDER = {
+    "name": "lower(COALESCE(NULLIF(u.user_name, ''), u.email, ''))",
+    "status": "u.status",
+    "last_request": "seen.last_request_at",
+    "requests": "COALESCE(logged.requests, 0)",
+    "tokens": "COALESCE(logged.total_tokens, 0)",
+    "spend": "COALESCE(spent.cost_amount, 0)",
+    "month": "COALESCE(month.cost_amount, 0)",
+    "joined": "s.joined_at",
+}
+
+#: The member statuses a list may be narrowed to. ``removed`` is a member the
+#: organization removed; ``suspended`` is every suspended account, removed or not.
+MEMBER_STATUS = {
+    "active": "u.status = 'active'",
+    "suspended": "u.status = 'suspended'",
+    "removed": "u.status = 'suspended' AND s.removed_at IS NOT NULL",
+    "pending_approval": "u.status = 'pending_approval'",
+}
+
+
+def _scope(member_parameter: int | None = None) -> str:
+    """The CTE every figure is summed over: the accounts of one organization (``$1``).
+
+    With *member_parameter*, only the member bound at that parameter number.
+    """
+    member = f" AND m.user_id = ${member_parameter}" if member_parameter else ""
+    return (
+        "scope AS (SELECT m.user_id, m.role, m.joined_at, m.removed_at "
+        f"FROM sso_organization_members m WHERE m.organization_id = $1{member})"
+    )
+
+
+_SCOPE = _scope()
+
+#: A counter's native amount; ``$2`` is the fixed policy rate, for a row written
+#: before its native column existed.
+_AMOUNT = "COALESCE(c.cost_amount, c.cost_usd * $2::numeric)"
+_LOG_AMOUNT = "COALESCE(l.cost_amount, l.cost_usd * $2::numeric)"
+
+_THIS_MONTH = "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+
+
+_NO_PARAMETER = object()
+
+
+def _member_filters(
+    status: str | None, user_id: str | None, search: str | None
+) -> list[tuple[str, Any]]:
+    """The conditions a member list is narrowed by, each with the value it binds.
+
+    ``{n}`` in a condition stands for the number its value is bound at, which
+    differs between the statement that counts and the one that pages.
+    """
+    filters: list[tuple[str, Any]] = []
+    if status is not None:
+        filters.append((f"({MEMBER_STATUS[status]})", _NO_PARAMETER))
+    if user_id is not None:
+        filters.append(("s.user_id = ${n}", user_id))
+    if search:
+        filters.append(
+            (
+                "(lower(COALESCE(u.email, '')) LIKE ${n} "
+                "OR lower(COALESCE(u.user_name, '')) LIKE ${n})",
+                f"%{search.lower()}%",
+            )
+        )
+    return filters
+
+
+def _render(filters: list[tuple[str, Any]], params: list[Any]) -> str:
+    """Bind *filters* after *params* and return them as one ``WHERE`` condition."""
+    clauses = ["TRUE"]
+    for template, value in filters:
+        if value is not _NO_PARAMETER:
+            params.append(value)
+        clauses.append(template.replace("${n}", f"${len(params)}"))
+    return " AND ".join(clauses)
+
+
+def organization_scope(organization_id: str) -> str:
+    """The ``spend_counters`` scope an organization's spend is counted under."""
+    return f"o:{organization_id}"
+
+
+def utc_bounds(first_day: date, last_day: date) -> tuple[datetime, datetime]:
+    """The instants a span of UTC days starts at and ends before."""
+    start = datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC)
+    end = datetime(last_day.year, last_day.month, last_day.day, tzinfo=UTC)
+    return start, end + timedelta(days=1)
 
 
 class _ConnectionTaken(Exception):
@@ -584,3 +678,322 @@ class PostgresOrganizationsMixin:
                 "WHERE user_id = $1 AND removed_at IS NOT NULL",
                 user_id,
             )
+
+    # -- what an administrator is shown --------------------------------------
+    #
+    # Every figure is a sum over the accounts that have a membership in the
+    # organization. Spend comes from the cost counters (``user_daily_cost``),
+    # the days the quota gates read; requests, tokens and models come from the
+    # request log, bounded by the period. No statement here selects a
+    # request's content.
+
+    async def list_organization_administrators(self, organization_id: str) -> list[dict]:
+        """The members that have the administrator role, by email."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT m.user_id, u.email, u.user_name, u.last_login_at "
+                "FROM sso_organization_members m JOIN users u ON u.id = m.user_id "
+                "WHERE m.organization_id = $1 AND m.role = 'admin' "
+                "ORDER BY lower(COALESCE(u.email, '')), m.user_id",
+                organization_id,
+            )
+        return [dict(row) for row in rows]
+
+    async def get_organization_month_spend(self, organization_id: str) -> dict:
+        """What the organization's counter holds for this UTC month.
+
+        The row the request path checks the organization's limit against; an
+        organization nothing was charged to this month has none, and reads 0.
+        """
+        rate = get_accounting_policy().usd_to_currency_rate
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "SELECT COALESCE(c.cost_usd, 0) AS cost_usd, "
+                f"COALESCE({_AMOUNT}, 0) AS cost_amount "
+                "FROM spend_counters c WHERE c.scope_id = $1 "
+                "AND c.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM')",
+                organization_scope(organization_id),
+                rate,
+            )
+        return dict(row) if row else {"cost_usd": 0, "cost_amount": 0}
+
+    async def list_organization_members(
+        self,
+        organization_id: str,
+        *,
+        first_day: date,
+        last_day: date,
+        search: str | None = None,
+        status: str | None = None,
+        user_id: str | None = None,
+        sort_by: str = "name",
+        descending: bool = False,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[dict]]:
+        """One page of members with their usage from *first_day* to *last_day* (UTC).
+
+        Returns how many members match with the page. *user_id* keeps one
+        member; *search* matches a name or an email; *status* is a key of
+        :data:`MEMBER_STATUS`; *sort_by* a key of :data:`MEMBER_ORDER`.
+        """
+        if sort_by not in MEMBER_ORDER:
+            raise ValueError(f"unknown member order {sort_by!r}")
+        if status is not None and status not in MEMBER_STATUS:
+            raise ValueError(f"unknown member status {status!r}")
+        start, end = utc_bounds(first_day, last_day)
+        filters = _member_filters(status, user_id, search)
+        count_params: list[Any] = [organization_id]
+        count_where = _render(filters, count_params)
+        params: list[Any] = [
+            organization_id,
+            get_accounting_policy().usd_to_currency_rate,
+            first_day.isoformat(),
+            last_day.isoformat(),
+            start,
+            end,
+        ]
+        where = _render(filters, params)
+        params.extend([limit, offset])
+        direction = "DESC" if descending else "ASC"
+        sql = (
+            f"WITH {_SCOPE}, "
+            "spent AS ("
+            f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
+            "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
+            "  WHERE c.day >= $3 AND c.day <= $4 GROUP BY c.user_id), "
+            "month AS ("
+            f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
+            "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
+            f"  WHERE c.day >= {_THIS_MONTH} GROUP BY c.user_id), "
+            "seen AS ("
+            "  SELECT c.user_id, MAX(c.last_request_at) AS last_request_at "
+            "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id GROUP BY c.user_id), "
+            "logged AS ("
+            "  SELECT l.user_id, COUNT(*) AS requests, "
+            "         COALESCE(SUM(l.total_tokens), 0) AS total_tokens "
+            "  FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+            "  WHERE l.timestamp >= $5 AND l.timestamp < $6 GROUP BY l.user_id) "
+            "SELECT s.user_id, s.role, s.joined_at, s.removed_at, "
+            "       u.email, u.user_name, u.status, u.role AS account_role, u.last_login_at, "
+            "       aq.quota_monthly_cost_usd, aq.quota_monthly_cost_amount, "
+            "       COALESCE(spent.cost_usd, 0) AS cost_usd, "
+            "       COALESCE(spent.cost_amount, 0) AS cost_amount, "
+            "       COALESCE(month.cost_usd, 0) AS spent_month_usd, "
+            "       COALESCE(month.cost_amount, 0) AS spent_month_amount, "
+            "       COALESCE(logged.requests, 0) AS requests, "
+            "       COALESCE(logged.total_tokens, 0) AS total_tokens, "
+            "       seen.last_request_at "
+            "FROM scope s JOIN users u ON u.id = s.user_id "
+            "LEFT JOIN account_quotas aq ON aq.user_id = s.user_id "
+            "LEFT JOIN spent ON spent.user_id = s.user_id "
+            "LEFT JOIN month ON month.user_id = s.user_id "
+            "LEFT JOIN seen ON seen.user_id = s.user_id "
+            "LEFT JOIN logged ON logged.user_id = s.user_id "
+            f"WHERE {where} "
+            f"ORDER BY {MEMBER_ORDER[sort_by]} {direction} NULLS LAST, s.user_id "
+            f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+        )
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval(
+                f"WITH {_SCOPE} SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id "
+                f"WHERE {count_where}",
+                *count_params,
+            )
+            rows = await conn.fetch(sql, *params)
+        return total, [dict(row) for row in rows]
+
+    async def get_organization_usage(
+        self,
+        organization_id: str,
+        *,
+        first_day: date,
+        last_day: date,
+        hourly: bool = False,
+        user_id: str | None = None,
+    ) -> dict:
+        """The organization's totals, series and models from *first_day* to *last_day* (UTC).
+
+        ``spend_days`` has one entry per UTC day with spend, from the cost
+        counters; ``buckets`` one per UTC day (per hour with *hourly*) with
+        requests, from the request log; ``models`` one per model. With
+        *user_id*, the figures of that member alone.
+        """
+        start, end = utc_bounds(first_day, last_day)
+        rate = get_accounting_policy().usd_to_currency_rate
+        bucket = "hour" if hourly else "day"
+
+        def scoped(*values: Any) -> tuple[str, list[Any]]:
+            """The scope CTE and the parameters of a statement that binds *values* after ``$1``."""
+            params = [organization_id, *values]
+            if user_id is None:
+                return _SCOPE, params
+            params.append(user_id)
+            return _scope(len(params)), params
+
+        async with self._pool.acquire() as conn:
+            scope, params = scoped(rate, first_day.isoformat(), last_day.isoformat())
+            spend_days = await conn.fetch(
+                f"WITH {scope} "
+                f"SELECT c.day, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
+                "FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
+                "WHERE c.day >= $3 AND c.day <= $4 GROUP BY c.day ORDER BY c.day",
+                *params,
+            )
+            scope, params = scoped(rate, start, end)
+            logged = await conn.fetch(
+                f"WITH {scope} "
+                f"SELECT date_trunc('{bucket}', l.timestamp AT TIME ZONE 'UTC') AS bucket, "
+                "       COUNT(*) AS requests, COALESCE(SUM(l.total_tokens), 0) AS total_tokens, "
+                "       COUNT(DISTINCT l.user_id) AS members, "
+                "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
+                f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
+                "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+                "WHERE l.timestamp >= $3 AND l.timestamp < $4 GROUP BY 1 ORDER BY 1",
+                *params,
+            )
+            models = await conn.fetch(
+                f"WITH {scope} "
+                "SELECT l.model_id, COUNT(*) AS requests, "
+                "       COUNT(*) FILTER (WHERE l.status_code >= 400) AS errors, "
+                "       COALESCE(SUM(l.prompt_tokens), 0) AS prompt_tokens, "
+                "       COALESCE(SUM(l.completion_tokens), 0) AS completion_tokens, "
+                "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
+                f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
+                "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+                "WHERE l.timestamp >= $3 AND l.timestamp < $4 "
+                "GROUP BY l.model_id ORDER BY 6 DESC, 2 DESC, l.model_id",
+                *params,
+            )
+            scope, params = scoped(start, end)
+            totals = await conn.fetchrow(
+                f"WITH {scope} "
+                "SELECT COUNT(*) AS requests, COALESCE(SUM(l.total_tokens), 0) AS total_tokens, "
+                "       COUNT(DISTINCT l.user_id) AS members_with_requests "
+                "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+                "WHERE l.timestamp >= $2 AND l.timestamp < $3",
+                *params,
+            )
+            member_count = await conn.fetchval(
+                "SELECT COUNT(*) FROM sso_organization_members WHERE organization_id = $1",
+                organization_id,
+            )
+        return {
+            "spend_days": [dict(row) for row in spend_days],
+            "buckets": [dict(row) for row in logged],
+            "requests": totals["requests"],
+            "total_tokens": totals["total_tokens"],
+            "members_with_requests": totals["members_with_requests"],
+            "member_count": member_count,
+            "models": [dict(row) for row in models],
+        }
+
+    async def list_organization_requests(
+        self,
+        organization_id: str,
+        *,
+        first_day: date,
+        last_day: date,
+        search: str | None = None,
+        model: str | None = None,
+        errors: bool | None = None,
+        user_id: str | None = None,
+        before: tuple[datetime, int] | None = None,
+        limit: int = 50,
+    ) -> list[dict]:
+        """Requests of the organization's members, newest first, without their content.
+
+        *errors* keeps only the failed requests (True) or only the others
+        (False). *before* is the ``(timestamp, id)`` of the last row of the
+        page before; rows after it in the order are returned.
+        """
+        start, end = utc_bounds(first_day, last_day)
+        params: list[Any] = [organization_id, start, end]
+        where = ["l.timestamp >= $2", "l.timestamp < $3"]
+        if user_id is not None:
+            params.append(user_id)
+            where.append(f"l.user_id = ${len(params)}")
+        if model:
+            params.append(model)
+            where.append(f"l.model_id = ${len(params)}")
+        if errors is not None:
+            where.append("l.status_code >= 400" if errors else "COALESCE(l.status_code, 0) < 400")
+        if search:
+            params.append(f"%{search.lower()}%")
+            where.append(
+                f"(lower(COALESCE(u.email, '')) LIKE ${len(params)} "
+                f"OR lower(COALESCE(u.user_name, '')) LIKE ${len(params)})"
+            )
+        if before is not None:
+            params.extend(before)
+            where.append(f"(l.timestamp, l.id) < (${len(params) - 1}, ${len(params)})")
+        params.append(limit)
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"WITH {_SCOPE} "
+                "SELECT l.id, l.timestamp, l.user_id, u.email, u.user_name, "
+                "       l.project_id, p.name AS project_name, k.name AS key_name, "
+                "       l.model_id, l.status_code, "
+                "       COALESCE(l.prompt_tokens, 0) AS prompt_tokens, "
+                "       COALESCE(l.completion_tokens, 0) AS completion_tokens, "
+                "       COALESCE(l.cost_usd, 0) AS cost_usd, l.cost_amount "
+                "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+                "JOIN users u ON u.id = l.user_id "
+                "LEFT JOIN projects p ON p.id = l.project_id "
+                "LEFT JOIN api_keys k ON k.id = l.key_id "
+                f"WHERE {' AND '.join(where)} "
+                f"ORDER BY l.timestamp DESC, l.id DESC LIMIT ${len(params)}",
+                *params,
+            )
+        return [dict(row) for row in rows]
+
+    async def list_organization_audit(
+        self,
+        organization_id: str,
+        *,
+        since: datetime | None = None,
+        prefixes: Sequence[str] = (),
+        search: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[dict]]:
+        """One page of the audit rows that belong to an organization, newest first.
+
+        With the emails of the acting account and of a user target. *prefixes*
+        keeps the actions that start with one of them.
+        """
+        params: list[Any] = [organization_id]
+        where = ["a.organization_id = $1"]
+        if since is not None:
+            params.append(since)
+            where.append(f"a.timestamp >= ${len(params)}")
+        if prefixes:
+            params.append([f"{prefix}%" for prefix in prefixes])
+            where.append(f"a.action LIKE ANY(${len(params)}::text[])")
+        if search:
+            params.append(f"%{search.lower()}%")
+            where.append(
+                f"(lower(a.action) LIKE ${len(params)} "
+                f"OR lower(COALESCE(actor.email, '')) LIKE ${len(params)} "
+                f"OR lower(COALESCE(target.email, '')) LIKE ${len(params)} "
+                f"OR lower(COALESCE(a.details::text, '')) LIKE ${len(params)})"
+            )
+        source = (
+            "FROM admin_audit_log a "
+            "LEFT JOIN users actor ON actor.id = a.actor_id "
+            "LEFT JOIN users target ON target.id = a.target_user_id "
+            f"WHERE {' AND '.join(where)}"
+        )
+        async with self._pool.acquire() as conn:
+            total = await conn.fetchval(f"SELECT COUNT(*) {source}", *params)
+            rows = await conn.fetch(
+                "SELECT a.id, a.timestamp, a.action, a.details, a.actor_type, a.actor_id, "
+                "a.target_type, a.target_id, a.target_user_id, "
+                "actor.email AS actor_email, target.email AS target_email "
+                f"{source} ORDER BY a.timestamp DESC, a.id DESC "
+                f"LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}",
+                *params,
+                limit,
+                offset,
+            )
+        return total, [dict(row) for row in rows]

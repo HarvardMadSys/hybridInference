@@ -640,6 +640,8 @@ class AuditLogEntry(BaseModel):
     source_ip: str | None = None
     target_type: str | None = None
     target_id: str | None = None
+    #: The organization the row belongs to; null for a row of none.
+    organization_id: str | None = None
 
 
 class ListAuditLogResponse(BaseModel):

@@ -9,6 +9,7 @@ from typing import Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
+from serving import organizations
 from serving.accounting import get_accounting_policy
 from serving.accounting_api import native_quota_updates, primary_amounts
 from serving.audit import AuditActor, AuditTarget
@@ -1087,6 +1088,11 @@ async def update_user(
         await op_store.suspend_user(user_id, **fields)
     elif user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
+        if new_status == "active":
+            # Made active here, by the platform: if an organization had
+            # removed this member, that removal is over, and the account's
+            # next suspension is not the organization's to undo.
+            await organizations.forget_removal(op_store, user_id)
 
     # Update key-level fields. ``key_fields`` (with the native amounts added by
     # ``native_quota_updates`` above) was validated before any write, so a
@@ -1198,6 +1204,7 @@ async def list_audit_actions(
 async def list_audit_log(
     action: str | None = None,
     target_user_id: str | None = None,
+    organization_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
@@ -1213,6 +1220,7 @@ async def list_audit_log(
     Query Parameters:
     - action: Filter by action type (e.g. approve_user, reject_user)
     - target_user_id: Filter by affected user (matches ``target_user_id``)
+    - organization_id: Only the rows that belong to this organization
     - limit: Max results (default: 50)
     - offset: Pagination offset
 
@@ -1221,8 +1229,9 @@ async def list_audit_log(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    scope = {"organization_id": organization_id} if organization_id else {}
     total, rows = await op_store.list_audit_log(
-        action=action, target_user_id=target_user_id, limit=limit, offset=offset
+        action=action, target_user_id=target_user_id, limit=limit, offset=offset, **scope
     )
 
     entries = []
@@ -1248,6 +1257,7 @@ async def list_audit_log(
                 source_ip=row.get("source_ip"),
                 target_type=row.get("target_type"),
                 target_id=row.get("target_id"),
+                organization_id=row.get("organization_id"),
             )
         )
 

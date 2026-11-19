@@ -24,6 +24,7 @@ from urllib.parse import quote, urlsplit
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
 
+from serving import organizations
 from serving.audit import AuditActor, AuditTarget
 from serving.auth import oidc, sso_accounts
 from serving.auth.browser_sessions import prepare_sign_in
@@ -481,6 +482,16 @@ async def _finish_login(
                         use_case=f"Single sign-on ({provider.display_name})",
                     )
 
+    if resolution.joined_organization is not None:
+        member = resolution.created or resolution.user or {}
+        await organizations.log_join(
+            db_logger,
+            user_id=member["id"],
+            organization_id=resolution.joined_organization,
+            provider=provider,
+            source_ip=client_ip,
+        )
+
     if resolution.refused is not None:
         await _record_login(
             op_store,
@@ -588,7 +599,10 @@ async def _finish_link(
 
     The account's own email need not be the identity's: its owner confirmed
     before the flow started, and has now signed in at the provider, so both
-    sides are theirs. But an address that is already another account's is not
+    sides are theirs. But it must be an email the provider answers for: an
+    account outside the provider's domains gains nothing from its
+    organization, and a sign-in through the organization would open a
+    personal account. And an address that is already another account's is not
     linked here. One address belongs to one account, and that account is where
     its identity is connected.
 
@@ -599,6 +613,11 @@ async def _finish_link(
     sid = flow.get("sid")
     if not sid or not await op_store.session_is_live(flow["user_id"], sid):
         return _flow_error(flow, "expired")
+    account = await op_store.get_user_by_id(flow["user_id"])
+    if account is None or not organizations.may_link(provider, account.get("email")):
+        # Checked when the flow started; the account's email may have changed since.
+        return _flow_error(flow, "failed")
+    membership = await organizations.membership_of(op_store, flow["user_id"])
     unlinked = await op_store.get_user_identity(identity.issuer, identity.subject) is None
     if unlinked and identity.email:
         holder = await op_store.get_user_by_email(identity.email)
@@ -619,13 +638,23 @@ async def _finish_link(
             sso_store.ACCOUNT_INACTIVE: "inactive",
         }
         return _flow_error(flow, codes.get(outcome, "failed"))
+    client_ip = get_client_ip(request)
     await log_admin_action(
         db_logger,
         action="link_sso_identity",
         details={"sso_provider": provider.id, "email": identity.email},
-        actor=AuditActor.user(flow["user_id"], get_client_ip(request)),
+        actor=AuditActor.user(flow["user_id"], client_ip),
         target=AuditTarget.user(flow["user_id"]),
     )
+    joined = await organizations.joined_organization(op_store, flow["user_id"], membership)
+    if joined is not None:
+        await organizations.log_join(
+            db_logger,
+            user_id=flow["user_id"],
+            organization_id=joined,
+            provider=provider,
+            source_ip=client_ip,
+        )
     return _redirect(_with_param(flow["return_to"], "sso_linked", "1"))
 
 
@@ -700,6 +729,7 @@ async def confirm_pending_link(
     if await op_store.consume_sso_pending_link(token_hash) is None:
         raise HTTPException(status_code=404, detail="No single sign-on is waiting to be linked.")
     _clear_cookie(response, _link_cookie())
+    membership = await organizations.membership_of(op_store, current_user["user_id"])
     outcome = await op_store.link_user_identity(
         identity_id=generate_ulid(),
         user_id=current_user["user_id"],
@@ -716,6 +746,16 @@ async def confirm_pending_link(
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
+    joined = await organizations.joined_organization(op_store, current_user["user_id"], membership)
+    provider = organizations.configured_provider(pending["provider_id"])
+    if joined is not None and provider is not None:
+        await organizations.log_join(
+            db_logger,
+            user_id=current_user["user_id"],
+            organization_id=joined,
+            provider=provider,
+            source_ip=get_client_ip(request),
+        )
     return SsoMessageResponse(message="Single sign-on connected.")
 
 
@@ -738,6 +778,11 @@ def _raise_unless_linked(outcome: str) -> None:
         return
     if outcome == sso_store.ACCOUNT_INACTIVE:
         raise HTTPException(status_code=403, detail="Account is not active.")
+    if outcome == sso_store.OTHER_ORGANIZATION:
+        raise HTTPException(
+            status_code=409,
+            detail="This account is a member of another organization.",
+        )
     if outcome == sso_store.ISSUER_CONFLICT:
         raise HTTPException(
             status_code=409,
@@ -889,13 +934,14 @@ async def link_identity(
     """Start linking an identity to the signed-in account, from Settings.
 
     Linking adds a way in to the account, so its owner confirms first, as for
-    binding an email. The provider is found from the email's domain; the
-    account's own email need not match it, but the callback refuses an
-    identity whose address is already another account's.
+    binding an email. The provider is found from the email's domain. Only an
+    account with an email the provider answers for may link it; the callback
+    also refuses an identity whose address is already another account's.
 
     Raises:
         HTTPException: 400 when the confirmation is wrong or missing, or the
-            account must set a password first; 429 and 503 as for starting a
+            account must set a password first; 409 when the account's email is
+            outside the provider's domains; 429 and 503 as for starting a
             sign-in.
     """
     # Before the confirmation: with no provider there is nothing to confirm,
@@ -903,6 +949,12 @@ async def link_identity(
     provider = sso_config.provider_for_email(body.email)
     if provider is None:
         return SsoStartResponse(available=False)
+    if not organizations.may_link(provider, current_user.get("email")):
+        raise HTTPException(
+            status_code=409,
+            detail="Only an account with an email of this organization can connect its "
+            "single sign-on.",
+        )
     await _confirm_owner(
         request, op_store, current_user, password=body.password, purpose="link_sso"
     )
@@ -932,8 +984,15 @@ async def unlink_identity(
     Raises:
         HTTPException: 400 when the confirmation is wrong or missing; 404 when
             the account holds no such identity; 409 when it is the account's
-            only way to sign in.
+            only way to sign in, or the identity a member has from its own
+            organization.
     """
+    if await organizations.is_organization_identity(op_store, current_user["user_id"], identity_id):
+        # Before the confirmation, which is good only once.
+        raise HTTPException(
+            status_code=409,
+            detail="This single sign-on belongs to your organization and cannot be disconnected.",
+        )
     await _confirm_owner(
         request, op_store, current_user, password=body.password, purpose="unlink_sso"
     )

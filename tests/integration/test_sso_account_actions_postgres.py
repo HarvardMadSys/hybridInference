@@ -296,8 +296,8 @@ async def test_the_chooser_names_the_provider_of_an_account_without_a_password(
 
 
 async def test_an_account_links_an_identity_with_another_email_from_settings(browser, idp, store):
-    user_id = await existing_user(store, "personal@elsewhere.org")
-    headers = await _password_session(browser, "personal@elsewhere.org")
+    user_id = await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
     assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {"identities": []}
 
     started = await browser.post(
@@ -326,9 +326,31 @@ async def test_an_account_links_an_identity_with_another_email_from_settings(bro
     assert await store.get_user_by_email(EMAIL) is None
 
 
-async def test_linking_needs_the_owner_to_confirm(browser, idp, store):
+async def test_an_account_outside_the_providers_domains_cannot_link_its_identity(
+    browser, idp, store
+):
+    # Such an account would gain nothing from the organization, and a sign-in
+    # through the organization would then open a personal account.
     await existing_user(store, "personal@elsewhere.org")
     headers = await _password_session(browser, "personal@elsewhere.org")
+
+    refused = await browser.post(
+        "/auth/sso/identities/link",
+        json={"email": EMAIL, "password": PASSWORD},
+        headers=headers,
+    )
+
+    assert refused.status_code == 409
+    assert "email of this organization" in refused.json()["detail"]
+    # Refused before the confirmation and before any redirect.
+    assert "set-cookie" not in refused.headers
+    assert idp.requests == []
+    assert await store.get_user_identity(ISSUER, "subject-1") is None
+
+
+async def test_linking_needs_the_owner_to_confirm(browser, idp, store):
+    await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
 
     for password in (None, "not-the-password"):
         refused = await browser.post(
@@ -413,8 +435,8 @@ async def test_an_identity_whose_email_is_another_accounts_cannot_be_linked(brow
     # One address belongs to one account: the identity is connected from the
     # account that has it, not from somebody else's.
     holder = await existing_user(store)
-    await existing_user(store, "personal@elsewhere.org")
-    headers = await _password_session(browser, "personal@elsewhere.org")
+    await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
 
     started = await browser.post(
         "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
@@ -442,8 +464,8 @@ async def test_an_address_that_is_another_accounts_is_matched_whatever_its_case(
     browser, idp, store
 ):
     await existing_user(store)
-    await existing_user(store, "personal@elsewhere.org")
-    headers = await _password_session(browser, "personal@elsewhere.org")
+    await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
 
     started = await browser.post(
         "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
@@ -460,8 +482,8 @@ async def test_an_identity_that_signs_in_to_another_account_cannot_be_linked(
 ):
     async with new_browser(app) as elsewhere:
         await _sso_session(elsewhere, idp)
-    await existing_user(store, "personal@elsewhere.org")
-    headers = await _password_session(browser, "personal@elsewhere.org")
+    await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
 
     started = await browser.post(
         "/auth/sso/identities/link", json={"email": EMAIL, "password": PASSWORD}, headers=headers
@@ -505,8 +527,8 @@ async def test_an_account_cannot_unlink_another_accounts_identity(
     async with new_browser(app) as elsewhere:
         await _sso_session(elsewhere, idp)
     theirs = (await store.get_user_identity(ISSUER, "subject-1"))["id"]
-    await existing_user(store, "personal@elsewhere.org")
-    headers = await _password_session(browser, "personal@elsewhere.org")
+    await existing_user(store, "personal@example.edu")
+    headers = await _password_session(browser, "personal@example.edu")
 
     response = await browser.post(
         f"/auth/sso/identities/{theirs}/unlink", json={"password": PASSWORD}, headers=headers
