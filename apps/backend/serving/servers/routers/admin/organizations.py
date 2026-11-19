@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from serving import organizations
 from serving.accounting import get_accounting_policy
@@ -26,6 +26,7 @@ from serving.schemas_organization import (
     UpdateOrganizationRequest,
 )
 from serving.servers.deps import get_admin_audit_actor, get_operational_store, verify_admin_access
+from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.storage import organizations as org_store
 from serving.utils.jwt import generate_ulid
 
@@ -225,6 +226,7 @@ async def set_member_role(
     organization_id: str,
     user_id: str,
     payload: SetMemberRoleRequest,
+    request: Request,
     actor: AuditActor = Depends(get_admin_audit_actor),
     op_store=Depends(get_operational_store),
 ) -> OrganizationMessageResponse:
@@ -233,10 +235,35 @@ async def set_member_role(
     The account must be a member already: the first administrator signs in
     through an SSO connection of the organization once before this.
 
+    Giving the role asks the administrator to confirm (a recent code, or the
+    password of an account without an authenticator), as raising the role of
+    an account does: its holder sees the usage of every member and can suspend
+    them, and keeps the role after this session ends. Taking the role back
+    asks for nothing.
+
     Raises:
-        HTTPException: 404 when the account is not a member of the organization.
+        HTTPException: 404 when the account is not a member of the
+            organization; 400 or 403 when the administrator does not confirm
+            (403 for the admin token, which has no account to confirm with).
     """
-    outcome = await _store(op_store).set_organization_member_role(
+    store = _store(op_store)
+    if payload.role == "admin":
+        membership = await store.get_organization_membership(user_id)
+        if membership is None or membership["organization_id"] != organization_id:
+            raise HTTPException(404, "This account is not a member of the organization.")
+        if membership["role"] != "admin":
+            # Last of the checks, so a request refused for another reason
+            # spends no sign-in attempt.
+            await confirm_administrator(
+                request,
+                store,
+                payload.password,
+                action=(
+                    "Giving the administrator role of the organization "
+                    f"{membership['organization_name']}"
+                ),
+            )
+    outcome = await store.set_organization_member_role(
         organization_id, user_id, payload.role, actor=actor
     )
     if outcome == org_store.NOT_FOUND:

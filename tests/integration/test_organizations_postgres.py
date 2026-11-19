@@ -115,9 +115,11 @@ async def _make_organization(browser, headers, **body: Any) -> dict[str, Any]:
 
 
 async def _set_role(browser, headers, organization_id: str, user_id: str, role: str = "admin"):
+    """Give the role, with the administrator's password, or take it back, with nothing."""
+    confirmation = {"password": PASSWORD} if role == "admin" else {}
     response = await browser.put(
         f"/admin/organizations/{organization_id}/members/{user_id}/role",
-        json={"role": role},
+        json={"role": role, **confirmation},
         headers=headers,
     )
     assert response.status_code == 200, response.text
@@ -479,7 +481,7 @@ async def test_the_role_is_given_only_to_a_member(app, idp, store, members_sign_
 
     stranger = await root.put(
         f"/admin/organizations/{organization_id}/members/{outsider_id}/role",
-        json={"role": "admin"},
+        json={"role": "admin", "password": PASSWORD},
         headers=headers,
     )
     bad_role = await root.put(
@@ -498,6 +500,45 @@ async def test_the_role_is_given_only_to_a_member(app, idp, store, members_sign_
     assert (before.status_code, after.status_code, taken_back.status_code) == (403, 200, 403)
     assert me["organization"]["role"] == "admin"
     assert [admin["user_id"] for admin in after.json()["administrators"]] == [alice_id]
+
+
+async def test_giving_the_role_asks_the_platform_administrator_to_confirm(
+    app, idp, store, clean_organizations, members_sign_straight_in, monkeypatch
+):
+    """The role stays after the session that gave it: a session alone does not give it."""
+    from serving.config.settings import get_settings
+
+    monkeypatch.setenv("ADMIN_TOKEN", "org-itest-admin-token")
+    get_settings.cache_clear()
+    token = {"Authorization": "Bearer org-itest-admin-token"}
+    root, headers, _ = await _platform_admin(app, store)
+    made = await _make_organization(root, headers)
+    organization_id = made["organization"]["id"]
+    _alice, _alice_headers, alice_id = await _member(app, idp, store)
+    path = f"/admin/organizations/{organization_id}/members/{alice_id}/role"
+
+    unconfirmed = await root.put(path, json={"role": "admin"}, headers=headers)
+    wrong = await root.put(
+        path, json={"role": "admin", "password": "not-the-password"}, headers=headers
+    )
+    # The admin token has no account to confirm with.
+    by_token = await root.put(path, json={"role": "admin"}, headers=token)
+    before = (await store.get_organization_membership(alice_id))["role"]
+    given = await root.put(path, json={"role": "admin", "password": PASSWORD}, headers=headers)
+    # An administrator already: nothing to confirm, and nothing to write.
+    again = await root.put(path, json={"role": "admin"}, headers=headers)
+    # Taking the role back asks for nothing.
+    taken = await root.put(path, json={"role": "member"}, headers=token)
+
+    assert (unconfirmed.status_code, wrong.status_code, by_token.status_code) == (400, 400, 403)
+    assert before == "member"
+    assert (given.status_code, again.status_code, taken.status_code) == (200, 200, 200)
+    assert (await store.get_organization_membership(alice_id))["role"] == "member"
+    actions = await _audit_actions(clean_organizations, organization_id)
+    assert [action for action in actions if action.startswith("organization.admin.")] == [
+        "organization.admin.add",
+        "organization.admin.remove",
+    ]
 
 
 # -- what an administrator is shown ---------------------------------------------------

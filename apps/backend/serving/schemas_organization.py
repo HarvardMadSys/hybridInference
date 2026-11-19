@@ -137,6 +137,10 @@ class SetMemberRoleRequest(BaseModel):
     """Give a member the administrator role, or take it back."""
 
     role: MemberRole
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: needed to give the role",
+    )
 
 
 class SetMonthlyLimitRequest(MoneyInput):
