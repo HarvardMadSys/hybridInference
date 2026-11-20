@@ -77,7 +77,7 @@ async def test_the_limits_of_an_organization_are_kept_exactly_in_the_native_colu
             name="Example University",
             monthly_limit_usd=None,
             monthly_limit_amount=exact,
-            connections=[("campus", ["u1", "u2"])],
+            connections=[("campus", lambda _identities: ["u1", "u2"])],
             actor=PLATFORM,
         )
         by_usd = await store.set_organization_limit(
@@ -127,7 +127,7 @@ async def test_the_limit_of_a_member_is_kept_exactly_on_its_record_and_its_keys(
             name="Example University",
             monthly_limit_usd=None,
             monthly_limit_amount=Decimal("700"),
-            connections=[("campus", ["u1"])],
+            connections=[("campus", lambda _identities: ["u1"])],
             actor=PLATFORM,
         )
 
@@ -194,7 +194,7 @@ async def test_the_counter_and_the_lookups_of_an_organization_hold_native_amount
             name="Example University",
             monthly_limit_usd=None,
             monthly_limit_amount=limit,
-            connections=[("campus", ["u1", "u2"])],
+            connections=[("campus", lambda _identities: ["u1", "u2"])],
             actor=PLATFORM,
         )
         await store.set_organization_limit(

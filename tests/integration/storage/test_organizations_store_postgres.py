@@ -7,6 +7,7 @@ write is tagged (``o-itest-*`` organizations, ``u-org-*`` accounts,
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -67,13 +68,19 @@ async def _account(store, name: str, *, status: str = "active", role: str = "fre
     return user_id
 
 
+def _only(*user_ids: str):
+    """The rule of a connection that makes exactly *user_ids* members."""
+    return lambda _identities: list(user_ids)
+
+
 async def _organization(store, name: str, *connections, limit=None) -> str:
+    """An organization; *connections* pairs each provider id with its members."""
     organization_id = f"o-itest-{name}"
     outcome, _added = await store.create_organization(
         organization_id=organization_id,
         name=f"Itest {name}",
         monthly_limit_usd=limit,
-        connections=connections,
+        connections=[(provider_id, _only(*user_ids)) for provider_id, user_ids in connections],
         actor=PLATFORM,
     )
     assert outcome == orgs.CREATED
@@ -100,7 +107,7 @@ async def test_an_organization_is_created_with_its_connections_and_members(store
         organization_id="o-itest-a",
         name="Itest A",
         monthly_limit_usd=Decimal("1000"),
-        connections=[("itest-a-campus", [first, second, "u-org-nobody"])],
+        connections=[("itest-a-campus", _only(first, second, "u-org-nobody"))],
         actor=PLATFORM,
     )
 
@@ -138,7 +145,7 @@ async def test_a_name_and_a_connection_are_taken_once(store):
     same_provider = await op_store.create_organization(
         organization_id="o-itest-b3",
         name="Itest b3",
-        connections=[("itest-b-campus", [])],
+        connections=[("itest-b-campus", _only())],
         actor=PLATFORM,
     )
 
@@ -160,16 +167,16 @@ async def test_attaching_adds_only_accounts_that_are_in_no_organization(store):
     await _organization(op_store, "c2")
 
     attached = await op_store.attach_organization_connection(
-        "o-itest-c2", "itest-c-two", user_ids=[first, second], actor=PLATFORM
+        "o-itest-c2", "itest-c-two", accounts_of=_only(first, second), actor=PLATFORM
     )
     taken = await op_store.attach_organization_connection(
-        "o-itest-c2", "itest-c-one", user_ids=[], actor=PLATFORM
+        "o-itest-c2", "itest-c-one", accounts_of=_only(), actor=PLATFORM
     )
     missing = await op_store.attach_organization_connection(
-        "o-itest-nowhere", "itest-c-three", user_ids=[], actor=PLATFORM
+        "o-itest-nowhere", "itest-c-three", accounts_of=_only(), actor=PLATFORM
     )
     again = await op_store.attach_organization_connection(
-        "o-itest-c2", "itest-c-two", user_ids=[second], actor=PLATFORM
+        "o-itest-c2", "itest-c-two", accounts_of=_only(second), actor=PLATFORM
     )
 
     assert attached == (orgs.UPDATED, 1)
@@ -260,7 +267,7 @@ async def test_a_link_makes_a_member_and_a_second_organization_is_refused(store)
     assert [row["issuer"] for row in issuers] == ["https://itest-f-one.example.edu"]
 
 
-async def test_identities_outside_every_organization_are_listed_for_the_member_rule(store):
+async def test_the_rule_of_a_connection_is_given_the_identities_outside_every_organization(store):
     op_store, _pool = store
     inside, outside = await _account(op_store, "g1"), await _account(op_store, "g2")
     await _organization(op_store, "g", ("itest-g-campus", []))
@@ -273,18 +280,170 @@ async def test_identities_outside_every_organization_are_listed_for_the_member_r
             subject=account,
             email=f"{account}@elsewhere.example.org",
         )
+    given: dict[str, dict] = {}
 
-    listed = {
-        row["user_id"]: row
-        for row in await op_store.list_identities_without_organization()
-        if row["user_id"].startswith("u-org-g")
-    }
+    def rule(identities):
+        given.update(
+            (row["user_id"], row) for row in identities if row["user_id"].startswith("u-org-g")
+        )
+        return [outside]
+
+    attached = await op_store.attach_organization_connection(
+        "o-itest-g", "itest-g-other", accounts_of=rule, actor=PLATFORM
+    )
 
     # The linked account became a member with its link, so only the other is left.
-    assert set(listed) == {outside}
-    assert listed[outside]["provider_id"] == "itest-g-other"
-    assert listed[outside]["email"] == f"{outside}@elsewhere.example.org"
-    assert listed[outside]["account_email"] == "g2@org-itest.example.edu"
+    assert set(given) == {outside}
+    assert given[outside]["provider_id"] == "itest-g-other"
+    assert given[outside]["issuer"] == "https://itest-g-other.example.edu"
+    assert given[outside]["email"] == f"{outside}@elsewhere.example.org"
+    assert given[outside]["account_email"] == "g2@org-itest.example.edu"
+    # And the rule's answer is who the connection makes members.
+    assert attached == (orgs.UPDATED, 1)
+    assert (await op_store.get_organization_membership(outside))["organization_id"] == "o-itest-g"
+
+
+# -- a sign-in and an attach at the same time ----------------------------------------
+#
+# Each looks for what the other writes, so one that reads while the other is
+# still writing would miss it: the account would have the identity, the
+# organization the connection, and nobody the membership. These hold one of the
+# two open at the moment it has read and not yet committed, and start the other.
+
+
+def _of(provider_id: str):
+    """The rule of *provider_id* in these tests: the accounts with an identity of it."""
+    return lambda identities: [
+        row["user_id"] for row in identities if row["provider_id"] == provider_id
+    ]
+
+
+async def _waits_for_the_other(pool, task: asyncio.Task) -> bool:
+    """Whether *task* comes to wait for the membership lock, rather than to its end."""
+    for _ in range(500):
+        if task.done():
+            return False
+        async with pool.acquire() as conn:
+            waiting = await conn.fetchval(
+                "SELECT 1 FROM pg_locks l JOIN pg_database d ON d.oid = l.database "
+                "WHERE l.locktype = 'advisory' AND NOT l.granted "
+                "AND d.datname = current_database()"
+            )
+        if waiting:
+            return True
+        await asyncio.sleep(0.01)
+    return False
+
+
+def _sign_in(op_store, kind: str, name: str, provider_id: str):
+    """A sign-in that makes account *name* (``first``) or links it (``link``)."""
+    identity = {
+        "identity_id": f"i-org-{name}",
+        "provider_id": provider_id,
+        "issuer": f"https://{provider_id}.example.edu",
+        "subject": f"sub-{name}",
+    }
+    if kind == "link":
+        return op_store.link_user_identity(
+            user_id=f"u-org-{name}", email=f"{name}@org-itest.example.edu", **identity
+        )
+    return op_store.create_sso_user(
+        user_id=f"u-org-{name}",
+        email=f"{name}@org-itest.example.edu",
+        user_name=name,
+        role="free",
+        status="active",
+        **identity,
+    )
+
+
+@pytest.mark.parametrize("kind", ["first", "link"])
+async def test_a_sign_in_during_an_attach_waits_and_becomes_a_member(store, monkeypatch, kind):
+    op_store, pool = store
+    if kind == "link":
+        await _account(op_store, "x1")
+    await _organization(op_store, "x")
+    attach_connection = orgs._attach
+    read, go_on = asyncio.Event(), asyncio.Event()
+
+    async def read_then_wait(conn, *arguments):
+        read.set()
+        await go_on.wait()
+        return await attach_connection(conn, *arguments)
+
+    monkeypatch.setattr(orgs, "_attach", read_then_wait)
+    attach = asyncio.create_task(
+        op_store.attach_organization_connection(
+            "o-itest-x", "itest-x", accounts_of=_of("itest-x"), actor=PLATFORM
+        )
+    )
+    try:
+        # The attach has read the identities, without this one, and not written the connection.
+        await asyncio.wait_for(read.wait(), 10)
+        sign_in = asyncio.create_task(_sign_in(op_store, kind, "x1", "itest-x"))
+        waited = await _waits_for_the_other(pool, sign_in)
+    finally:
+        go_on.set()
+
+    assert await attach == (orgs.UPDATED, 0)
+    assert await sign_in in (True, sso_store.LINKED)
+    assert waited
+    # It then found the connection, and joined by itself.
+    assert (await op_store.get_organization_membership("u-org-x1"))["organization_id"] == (
+        "o-itest-x"
+    )
+
+
+@pytest.mark.parametrize("kind", ["first", "link"])
+@pytest.mark.parametrize("write", ["attach", "create"])
+async def test_an_attach_during_a_sign_in_waits_and_finds_the_account(
+    store, monkeypatch, kind, write
+):
+    op_store, pool = store
+    if kind == "link":
+        await _account(op_store, "y1")
+    if write == "attach":
+        await _organization(op_store, "y")
+    join = sso_store.join_organization
+    looked, go_on = asyncio.Event(), asyncio.Event()
+
+    async def look_then_wait(conn, **who):
+        made = await join(conn, **who)
+        looked.set()
+        await go_on.wait()
+        return made
+
+    monkeypatch.setattr(sso_store, "join_organization", look_then_wait)
+    sign_in = asyncio.create_task(_sign_in(op_store, kind, "y1", "itest-y"))
+    try:
+        # The sign-in has looked for the connection, found none, and not committed.
+        await asyncio.wait_for(looked.wait(), 10)
+        if write == "attach":
+            attach = asyncio.create_task(
+                op_store.attach_organization_connection(
+                    "o-itest-y", "itest-y", accounts_of=_of("itest-y"), actor=PLATFORM
+                )
+            )
+        else:
+            attach = asyncio.create_task(
+                op_store.create_organization(
+                    organization_id="o-itest-y",
+                    name="Itest y",
+                    connections=[("itest-y", _of("itest-y"))],
+                    actor=PLATFORM,
+                )
+            )
+        waited = await _waits_for_the_other(pool, attach)
+    finally:
+        go_on.set()
+
+    assert await sign_in in (True, sso_store.LINKED)
+    # It then read the identity the sign-in committed, and made the member.
+    assert await attach == (orgs.UPDATED if write == "attach" else orgs.CREATED, 1)
+    assert waited
+    assert (await op_store.get_organization_membership("u-org-y1"))["organization_id"] == (
+        "o-itest-y"
+    )
 
 
 async def test_the_administrator_role_is_given_and_taken_back(store):
@@ -784,7 +943,7 @@ async def test_a_charge_is_added_to_the_counter_of_the_members_organization_only
         first = await counter()
         # An account that becomes a member afterwards adds from then on only.
         await op_store.attach_organization_connection(
-            "o-itest-w", "itest-w", user_ids=[late], actor=PLATFORM
+            "o-itest-w", "itest-w", accounts_of=_only(late), actor=PLATFORM
         )
         await op_store.increment_user_costs([charge(late, "1")])
         second = await counter()

@@ -332,10 +332,6 @@ class OperationalStore(ABC):
         """Detach a provider from its organization; the members stay."""
         raise RuntimeError("Organizations are unavailable in this store")
 
-    async def list_identities_without_organization(self) -> list[Row]:
-        """Every linked identity of an account that is in no organization."""
-        raise RuntimeError("Organizations are unavailable in this store")
-
     async def get_organization_membership(self, user_id: str) -> Row | None:
         """The organization an account belongs to and its role there, if any."""
         raise RuntimeError("Organizations are unavailable in this store")

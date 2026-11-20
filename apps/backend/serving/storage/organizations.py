@@ -5,7 +5,8 @@ organization at most (the primary key of ``sso_organization_members``), and an
 ``SSO_PROVIDERS`` entry belongs to one organization at most (the primary key of
 ``sso_organization_connections``). Nothing here reads the provider document;
 which accounts a connection makes members is decided by the caller, which
-knows the provider's domains (:mod:`serving.organizations`).
+knows the provider's domains (:mod:`serving.organizations`): it gives the rule
+(:data:`AccountsOf`), and the attach applies it to the identities it reads.
 
 Every change an administrator makes is written with its audit row in one
 transaction, so the methods that change something take the actor.
@@ -13,6 +14,7 @@ transaction, so the methods that change something take the actor.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -22,9 +24,13 @@ from serving.quota import native_limit
 from serving.storage.audit_schema import insert_audit_row
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-
     from serving.audit import AuditActor
+
+#: The rule of one connection: from every linked identity of an account that is
+#: in no organization (:func:`_identities_without_organization`), the accounts
+#: the connection makes members. An attach calls it inside its transaction, on
+#: what it reads there, so the rule must only compute.
+AccountsOf = Callable[[Sequence[Mapping[str, Any]]], Sequence[str]]
 
 #: What the writers here answer.
 CREATED = "created"
@@ -39,6 +45,23 @@ NOT_REMOVED = "not_removed"
 ABOVE_LIMIT = "above_limit"
 
 ROLES = ("member", "admin")
+
+# Two events make an account a member: a sign-in that makes or links an identity
+# of a connection, and the attach of a connection to an organization. Each looks
+# for what the other writes -- the sign-in for the connection, the attach for
+# the identity -- so two that overlap can each read before the other commits.
+# The account then has the identity, the organization has the connection, and
+# there is no membership; nothing later would make one.
+#
+# So both take one advisory lock, until their transaction ends: an attach
+# alone, a sign-in together with other sign-ins. The second of the two then
+# reads after the first has committed -- every statement of a READ COMMITTED
+# transaction, the default here, sees what was committed before it began.
+# The lock is the first statement of both, so that neither waits for it while
+# it holds a row the other needs.
+_MEMBERSHIP_LOCK = "hashtext('hybridinference:organization-membership')"
+ATTACH_LOCK_SQL = f"SELECT pg_advisory_xact_lock({_MEMBERSHIP_LOCK})"
+SIGN_IN_LOCK_SQL = f"SELECT pg_advisory_xact_lock_shared({_MEMBERSHIP_LOCK})"
 
 #: The two limits an organization holds, by the name its column pair starts with.
 LIMITS = ("monthly_limit", "default_member_monthly_limit")
@@ -220,11 +243,22 @@ def _inserted(tag: str) -> int:
     return int(tag.rsplit(" ", 1)[-1])
 
 
+async def lock_for_sign_in(conn: Any) -> None:
+    """Keep an attach out until this sign-in's transaction ends.
+
+    The first statement of a transaction that makes or links an identity, so
+    that :func:`join_organization` finds a connection attached before it, and
+    an attach after it finds the identity (see :data:`ATTACH_LOCK_SQL`).
+    """
+    await conn.execute(SIGN_IN_LOCK_SQL)
+
+
 async def join_organization(conn: Any, *, user_id: str, provider_id: str) -> str | None:
     """Make *user_id* a member of the organization *provider_id* belongs to.
 
     Returns the organization's id when this call made the membership, None when
     the provider belongs to no organization or the account is a member already.
+    Its transaction took :func:`lock_for_sign_in` first.
     """
     return await conn.fetchval(
         "INSERT INTO sso_organization_members (user_id, organization_id) "
@@ -247,6 +281,21 @@ async def in_other_organization(conn: Any, *, user_id: str, provider_id: str) ->
             provider_id,
         )
     )
+
+
+async def _identities_without_organization(conn: Any) -> list[dict]:
+    """Every linked identity of an account that is in no organization.
+
+    With the account's own email, which the member rule is checked on. Read
+    under :data:`ATTACH_LOCK_SQL`, so no sign-in is adding to it.
+    """
+    rows = await conn.fetch(
+        "SELECT i.user_id, i.provider_id, i.issuer, i.email, u.email AS account_email "
+        "FROM user_identities i JOIN users u ON u.id = i.user_id "
+        "WHERE NOT EXISTS ("
+        "SELECT 1 FROM sso_organization_members m WHERE m.user_id = i.user_id)"
+    )
+    return [dict(row) for row in rows]
 
 
 async def _attach(
@@ -305,13 +354,15 @@ class PostgresOrganizationsMixin:
         name: str,
         monthly_limit_usd: Any = None,
         monthly_limit_amount: Any = None,
-        connections: Sequence[tuple[str, Sequence[str]]] = (),
+        connections: Sequence[tuple[str, AccountsOf]] = (),
         actor: AuditActor,
     ) -> tuple[str, int]:
         """Create an organization with its SSO connections and their members.
 
-        *connections* pairs each provider id with the accounts it makes
-        members. One transaction with the audit row. Returns the outcome
+        *connections* pairs each provider id with the rule that says which
+        accounts it makes members. One transaction with the audit row, and with
+        the read the rules are applied to: no sign-in comes between that read
+        and the connections (:data:`ATTACH_LOCK_SQL`). Returns the outcome
         (``"created"``, ``"name_taken"`` or ``"connection_taken"``, nothing
         written for the last two) and how many accounts became members.
         """
@@ -325,6 +376,8 @@ class PostgresOrganizationsMixin:
         )
         try:
             async with self._pool.acquire() as conn, conn.transaction():
+                if connections:
+                    await conn.execute(ATTACH_LOCK_SQL)
                 created = await conn.fetchval(
                     f"INSERT INTO sso_organizations (id, name, {column}) VALUES ($1, $2, $3) "
                     "ON CONFLICT DO NOTHING RETURNING id",
@@ -335,8 +388,11 @@ class PostgresOrganizationsMixin:
                 if created is None:
                     return NAME_TAKEN, 0
                 added = 0
-                for provider_id, user_ids in connections:
-                    added += await _attach(conn, organization_id, provider_id, user_ids)
+                identities = await _identities_without_organization(conn) if connections else []
+                for provider_id, accounts_of in connections:
+                    added += await _attach(
+                        conn, organization_id, provider_id, accounts_of(identities)
+                    )
                 await insert_audit_row(
                     conn,
                     columns=audit,
@@ -480,15 +536,18 @@ class PostgresOrganizationsMixin:
         organization_id: str,
         provider_id: str,
         *,
-        user_ids: Sequence[str] = (),
+        accounts_of: AccountsOf,
         actor: AuditActor,
     ) -> tuple[str, int]:
-        """Attach a provider to an organization and make *user_ids* its members.
+        """Attach a provider to an organization and make its accounts members.
 
-        An account that is a member of another organization stays there.
-        Attaching a provider the organization has already only adds the
-        members it lacks. Returns the outcome (``"updated"``, ``"not_found"``
-        or ``"connection_taken"``) and how many memberships are new.
+        *accounts_of* says which accounts those are, of the identities read in
+        this transaction: no sign-in comes between that read and the connection
+        (:data:`ATTACH_LOCK_SQL`). An account that is a member of another
+        organization stays there. Attaching a provider the organization has
+        already only adds the members it lacks. Returns the outcome
+        (``"updated"``, ``"not_found"`` or ``"connection_taken"``) and how many
+        memberships are new.
         """
         audit = audit_columns(
             admin_ip=None,
@@ -499,11 +558,13 @@ class PostgresOrganizationsMixin:
         )
         try:
             async with self._pool.acquire() as conn, conn.transaction():
+                await conn.execute(ATTACH_LOCK_SQL)
                 found = await conn.fetchval(
                     "SELECT 1 FROM sso_organizations WHERE id = $1 FOR UPDATE", organization_id
                 )
                 if found is None:
                     return NOT_FOUND, 0
+                user_ids = accounts_of(await _identities_without_organization(conn))
                 added = await _attach(conn, organization_id, provider_id, user_ids)
                 await insert_audit_row(
                     conn,
@@ -547,20 +608,6 @@ class PostgresOrganizationsMixin:
                 success=True,
             )
         return True
-
-    async def list_identities_without_organization(self) -> list[dict]:
-        """Every linked identity of an account that is in no organization.
-
-        With the account's own email, which the member rule is checked on.
-        """
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT i.user_id, i.provider_id, i.issuer, i.email, u.email AS account_email "
-                "FROM user_identities i JOIN users u ON u.id = i.user_id "
-                "WHERE NOT EXISTS ("
-                "SELECT 1 FROM sso_organization_members m WHERE m.user_id = i.user_id)"
-            )
-        return [dict(row) for row in rows]
 
     # -- members -------------------------------------------------------------
 

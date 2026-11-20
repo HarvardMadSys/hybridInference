@@ -12,7 +12,11 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
-from serving.storage.organizations import in_other_organization, join_organization
+from serving.storage.organizations import (
+    in_other_organization,
+    join_organization,
+    lock_for_sign_in,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -106,6 +110,7 @@ class PostgresSsoMixin:
         account whose email the provider answers for.
         """
         async with self._pool.acquire() as conn, conn.transaction():
+            await lock_for_sign_in(conn)
             status = await conn.fetchval(
                 "SELECT status FROM users WHERE id = $1 FOR UPDATE", user_id
             )
@@ -213,6 +218,7 @@ class PostgresSsoMixin:
 
         try:
             async with self._pool.acquire() as conn, conn.transaction():
+                await lock_for_sign_in(conn)
                 row = await conn.fetchrow(
                     "INSERT INTO users (id, email, password_hash, user_name, "
                     "email_verified, status, role) VALUES ($1, $2, NULL, $3, TRUE, $4, $5) "

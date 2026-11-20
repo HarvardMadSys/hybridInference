@@ -8,6 +8,7 @@ its own organization is in :mod:`serving.servers.routers.organization`.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -92,7 +93,7 @@ async def create_organization(
     store = _store(op_store)
     provider_ids = list(dict.fromkeys(payload.provider_ids))
     connections = [
-        (provider_id, await organizations.accounts_of_connection(store, _provider(provider_id)))
+        (provider_id, partial(organizations.accounts_of_connection, _provider(provider_id)))
         for provider_id in provider_ids
     ]
     organization_id = generate_ulid()
@@ -181,9 +182,11 @@ async def attach_connection(
             connection belongs to another organization.
     """
     store = _store(op_store)
-    accounts = await organizations.accounts_of_connection(store, _provider(provider_id))
     outcome, added = await store.attach_organization_connection(
-        organization_id, provider_id, user_ids=accounts, actor=actor
+        organization_id,
+        provider_id,
+        accounts_of=partial(organizations.accounts_of_connection, _provider(provider_id)),
+        actor=actor,
     )
     if outcome == org_store.NOT_FOUND:
         raise HTTPException(404, "No such organization.")

@@ -1275,10 +1275,6 @@ class CachedOperationalStore(OperationalStore):
             organization_id, provider_id, **fields
         )
 
-    async def list_identities_without_organization(self) -> list[Row]:
-        """Every linked identity of an account that is in no organization."""
-        return await self._store.list_identities_without_organization()
-
     async def get_organization_membership(self, user_id: str) -> Row | None:
         """The organization an account belongs to and its role there, if any."""
         return await self._store.get_organization_membership(user_id)

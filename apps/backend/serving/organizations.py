@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import inspect
 import json
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -49,14 +49,20 @@ def may_link(provider: SsoProvider, account_email: str | None) -> bool:
     return provider.answers_for(account_email)
 
 
-async def accounts_of_connection(op_store: Any, provider: SsoProvider) -> list[str]:
+def accounts_of_connection(
+    provider: SsoProvider, identities: Iterable[Mapping[str, Any]]
+) -> list[str]:
     """The accounts attaching *provider* to an organization makes members.
 
-    Every account that is in no organization, has an identity that signs in
-    through *provider*, and has an email *provider* answers for.
+    Every account with an identity among *identities* that signs in through
+    *provider*, and with an email *provider* answers for. *identities* is every
+    linked identity of an account that is in no organization, as the store
+    reads it while it attaches the connection: it calls this as the rule of
+    the connection (:data:`serving.storage.organizations.AccountsOf`), so that
+    no sign-in comes between that read and the connection.
     """
     accounts: list[str] = []
-    for row in await op_store.list_identities_without_organization():
+    for row in identities:
         served = sso_config.serves_identity(
             provider, row["provider_id"], row["issuer"], row.get("email")
         )

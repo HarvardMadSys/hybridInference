@@ -85,6 +85,9 @@ true:
 | An account with an email in the `domains` links an identity of the connection: automatic linking, guided linking, or **Settings → Single sign-on** | `link_user_identity` |
 | The platform administrator attaches an SSO connection to an organization | §9. Each account that has an identity of the connection and an email in its `domains` becomes a member |
 
+A sign-in and an attach of the same connection can run at the same time. One database lock puts the two in
+order, so the account becomes a member in each order.
+
 A new membership has the role `member`. If the account is a member of a different organization, the
 gateway refuses the link.
 
@@ -537,8 +540,8 @@ Notes:
   with an identity that came without the spend, and with a member that has no key; the pause of a batch.
 - **Database** (`make test-db-local`):
   - the revision;
-  - membership at account creation, at link and at attach, the two refusals of §4.3, and the refusal for a
-    second organization;
+  - membership at account creation, at link and at attach, and for a sign-in and an attach that run at the
+    same time; the two refusals of §4.3, and the refusal for a second organization;
   - each route of §11 for each kind of caller: no session, an account that is not a member, a member, an
     administrator of a different organization, an organization administrator, the platform administrator;
   - a test that no response of §11.1 has a content field or a key value;
