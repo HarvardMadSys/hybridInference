@@ -13,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ops.admin import gateway_ops
 
@@ -300,12 +301,16 @@ def test_the_restore_drill_server_shares_nothing_with_the_deployment_database(
     Its own volume and an internal network that only the migrating one-off
     backend joins; no published port; the deployment's image and credentials.
     """
+    # What `gateway_ops restore-check` passes: the deployment's own image, read
+    # from the Compose file rather than restated, so a version bump there
+    # (by hand or by Dependabot) does not leave this test behind.
+    image = yaml.safe_load(COMPOSE.read_text())["services"]["postgres"]["image"]
     config = _render(
         tmp_path,
         docker_cli,
         None,
         overlays=(COMPOSE.parent / "docker-compose.restore-check.yml",),
-        extra=("RESTORE_CHECK_NAME=gateway-restore-test", "RESTORE_CHECK_IMAGE=postgres:16.15"),
+        extra=("RESTORE_CHECK_NAME=gateway-restore-test", f"RESTORE_CHECK_IMAGE={image}"),
     )
     scratch = config["services"]["restore-check"]
     deployment = config["services"]["postgres"]
