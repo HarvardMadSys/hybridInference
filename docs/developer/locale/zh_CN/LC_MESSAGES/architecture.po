@@ -1230,6 +1230,28 @@ msgid "API key. A spent quota still answers; these routes do not admit work"
 msgstr "API key。额度用完时仍会应答；这些路由不接收推理请求"
 
 #: ../developer/architecture.md
+msgid "API key description"
+msgstr "API 密钥说明"
+
+#: ../developer/architecture.md
+msgid "`GET /v1/key`"
+msgstr "`GET /v1/key`"
+
+#: ../developer/architecture.md
+msgid ""
+"`GET /v1/key` describes the calling key: its project, models, budgets and "
+"`concurrency.max_in_flight`, the effective in-flight cap the limiter "
+"enforces for it, or `null` when unlimited. When a project cap is the "
+"tighter one, that slot is shared across every key in the project, so a key "
+"can still receive `429` below `max_in_flight` while sibling keys hold the "
+"slot."
+msgstr ""
+"`GET /v1/key` 描述调用方密钥：其项目、模型、预算以及 "
+"`concurrency.max_in_flight`，即限流器对该密钥实际生效的并发在途上限，无限制时为 `null`。"
+"当项目上限更紧时，该名额由项目内所有密钥共享，因此同级密钥占用名额时，客户端仍可能在低于 "
+"`max_in_flight` 的情况下收到 `429`。"
+
+#: ../developer/architecture.md
 msgid "Health"
 msgstr "健康检查"
 

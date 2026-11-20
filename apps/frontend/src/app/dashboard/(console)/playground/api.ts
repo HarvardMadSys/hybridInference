@@ -1,6 +1,13 @@
 /** Pure request, stream and code helpers for the Playground's API selector. */
 
-import type { Message, RoutingInfo } from './turns';
+import type { HistoryMessage, RoutingInfo } from './turns';
+import {
+  chatTools,
+  formatHistory,
+  messagesTools,
+  responsesTools,
+  type SelectedTool,
+} from './tools';
 
 export type PlaygroundApi = 'chat' | 'responses' | 'messages';
 
@@ -29,26 +36,29 @@ export function endpointFor(api: PlaygroundApi): string {
 
 export interface RequestOptions {
   model: string;
-  history: { role: Message['role']; content: string }[];
+  history: HistoryMessage[];
   systemPrompt: string;
   temperature: number;
   maxTokens: number;
   reasoningEffort: string | null;
   provider: string | null;
+  tools?: SelectedTool[];
 }
 
 /** The body each API format expects, from the same session state. */
 export function buildRequest(api: PlaygroundApi, options: RequestOptions): Record<string, unknown> {
   const { model, history, systemPrompt, temperature, maxTokens, reasoningEffort, provider } =
     options;
+  const tools = options.tools ?? [];
   if (api === 'responses') {
     return {
       model,
       ...(systemPrompt.trim() ? { instructions: systemPrompt.trim() } : {}),
-      input: history,
+      input: formatHistory('responses', history),
       temperature,
       max_output_tokens: maxTokens,
       ...(reasoningEffort ? { reasoning: { effort: reasoningEffort } } : {}),
+      ...(tools.length ? { tools: responsesTools(tools) } : {}),
       store: false,
       stream: true,
     };
@@ -57,22 +67,34 @@ export function buildRequest(api: PlaygroundApi, options: RequestOptions): Recor
     return {
       model,
       ...(systemPrompt.trim() ? { system: systemPrompt.trim() } : {}),
-      messages: history,
+      messages: formatHistory('messages', history),
       temperature,
       max_tokens: maxTokens,
       ...(reasoningEffort ? { output_config: { effort: reasoningEffort } } : {}),
+      ...(tools.length ? { tools: messagesTools(tools) } : {}),
       stream: true,
     };
   }
   return {
     model,
     system_prompt: systemPrompt,
-    messages: history,
+    messages: formatHistory('chat', history),
     temperature,
     max_tokens: maxTokens,
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
+    ...(tools.length ? { tools: chatTools(tools) } : {}),
     ...(provider ? { provider } : {}),
   };
+}
+
+/** One streamed piece of a tool call the model is assembling. */
+export interface ToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  /** Chat Completions streams names in fragments; whole names replace. */
+  nameMode?: 'append' | 'replace';
+  arguments?: string;
 }
 
 export interface StreamEvent {
@@ -82,6 +104,7 @@ export interface StreamEvent {
   finishReason?: string;
   error?: string;
   routing?: RoutingInfo;
+  toolCalls?: ToolCallDelta[];
 }
 
 function errorMessage(raw: unknown): string | null {
@@ -150,10 +173,55 @@ export function parseStreamEvent(api: PlaygroundApi, parsed: unknown): StreamEve
     const delta = asRecord(choice.delta);
     if (typeof delta.content === 'string') result.content = delta.content;
     if (typeof delta.reasoning_content === 'string') result.reasoning = delta.reasoning_content;
+    const rawCalls = Array.isArray(delta.tool_calls) ? delta.tool_calls : [];
+    const calls: ToolCallDelta[] = [];
+    rawCalls.forEach((raw, fallbackIndex) => {
+      const call = asRecord(raw);
+      const fn = asRecord(call.function);
+      const index = typeof call.index === 'number' ? call.index : fallbackIndex;
+      calls.push({
+        index,
+        ...(typeof call.id === 'string' && call.id ? { id: call.id } : {}),
+        ...(typeof fn.name === 'string' && fn.name
+          ? { name: fn.name, nameMode: 'append' as const }
+          : {}),
+        ...(typeof fn.arguments === 'string' && fn.arguments ? { arguments: fn.arguments } : {}),
+      });
+    });
+    if (calls.length > 0) result.toolCalls = calls;
   } else if (api === 'responses') {
     const response = asRecord(event.response);
     if (event.type === 'response.output_text.delta' && typeof event.delta === 'string') {
       result.content = event.delta;
+    } else if (event.type === 'response.output_item.added') {
+      const item = asRecord(event.item);
+      if (item.type === 'function_call') {
+        const index = typeof event.output_index === 'number' ? event.output_index : 0;
+        result.toolCalls = [
+          {
+            index,
+            ...(typeof item.call_id === 'string' && item.call_id ? { id: item.call_id } : {}),
+            ...(typeof item.name === 'string' && item.name ? { name: item.name } : {}),
+          },
+        ];
+      }
+    } else if (event.type === 'response.function_call_arguments.delta') {
+      const index = typeof event.output_index === 'number' ? event.output_index : 0;
+      if (typeof event.delta === 'string') {
+        result.toolCalls = [{ index, arguments: event.delta }];
+      }
+    } else if (event.type === 'response.output_item.done') {
+      const item = asRecord(event.item);
+      if (item.type === 'function_call') {
+        const index = typeof event.output_index === 'number' ? event.output_index : 0;
+        result.toolCalls = [
+          {
+            index,
+            ...(typeof item.call_id === 'string' && item.call_id ? { id: item.call_id } : {}),
+            ...(typeof item.name === 'string' && item.name ? { name: item.name } : {}),
+          },
+        ];
+      }
     } else if (event.type === 'response.completed' || event.type === 'response.incomplete') {
       const usage = asRecord(response.usage);
       if (typeof usage.output_tokens === 'number' && usage.output_tokens) {
@@ -173,6 +241,21 @@ export function parseStreamEvent(api: PlaygroundApi, parsed: unknown): StreamEve
         result.content = delta.text;
       } else if (delta.type === 'thinking_delta' && typeof delta.thinking === 'string') {
         result.reasoning = delta.thinking;
+      } else if (delta.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+        const index = typeof event.index === 'number' ? event.index : 0;
+        result.toolCalls = [{ index, arguments: delta.partial_json }];
+      }
+    } else if (event.type === 'content_block_start') {
+      const block = asRecord(event.content_block);
+      if (block.type === 'tool_use') {
+        const index = typeof event.index === 'number' ? event.index : 0;
+        result.toolCalls = [
+          {
+            index,
+            ...(typeof block.id === 'string' && block.id ? { id: block.id } : {}),
+            ...(typeof block.name === 'string' && block.name ? { name: block.name } : {}),
+          },
+        ];
       }
     } else if (event.type === 'message_delta') {
       if (typeof usage.output_tokens === 'number' && usage.output_tokens) {
@@ -193,16 +276,56 @@ function singleQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-function pyMessages(history: RequestOptions['history'], systemPrompt: string): string[] {
-  const lines = history.map(
-    (message) =>
-      `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
-  );
-  if (systemPrompt.trim()) {
-    lines.unshift(`        {"role": "system", "content": ${JSON.stringify(systemPrompt.trim())}},`);
+/** Render a value as a Python literal, using SDK-friendly dict/list shapes. */
+function pyLiteral(value: unknown, indent = 0): string {
+  const pad = ' '.repeat(indent);
+  if (value === null) return 'None';
+  if (value === true) return 'True';
+  if (value === false) return 'False';
+  if (typeof value === 'number') return String(value);
+  if (typeof value === 'string') return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return '[]';
+    const items = value.map((item) => pyLiteral(item, indent + 4));
+    if (items.every((item) => !item.includes('\n'))) return `[${items.join(', ')}]`;
+    return `[\n${items.map((item) => `${' '.repeat(indent + 4)}${item},`).join('\n')}\n${pad}]`;
   }
-  if (lines.length === 0) return ['    messages=[],'];
-  return ['    messages=[', ...lines, '    ],'];
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) return '{}';
+    const items = entries.map(
+      ([key, item]) => `${JSON.stringify(key)}: ${pyLiteral(item, indent + 4)}`,
+    );
+    if (items.length <= 3 && items.every((item) => !item.includes('\n'))) {
+      return `{${items.join(', ')}}`;
+    }
+    return `{\n${items.map((item) => `${' '.repeat(indent + 4)}${item},`).join('\n')}\n${pad}}`;
+  }
+  return 'None';
+}
+
+function pyBlock(name: string, value: unknown, indent = 4): string[] {
+  return [`${' '.repeat(indent)}${name}=${pyLiteral(value, indent)},`];
+}
+
+function pyHistory(
+  api: 'chat' | 'responses' | 'messages',
+  history: RequestOptions['history'],
+  systemPrompt: string,
+): string[] {
+  if (api === 'chat') {
+    const system = systemPrompt.trim() ? [{ role: 'system', content: systemPrompt.trim() }] : [];
+    return pyBlock('messages', [...system, ...formatHistory('chat', history)]);
+  }
+  if (api === 'responses') return pyBlock('input', formatHistory('responses', history));
+  return pyBlock('messages', formatHistory('messages', history));
+}
+
+function pyTools(api: 'chat' | 'responses' | 'messages', tools: SelectedTool[]): string[] {
+  if (tools.length === 0) return [];
+  if (api === 'chat') return pyBlock('tools', chatTools(tools));
+  if (api === 'responses') return pyBlock('tools', responsesTools(tools));
+  return pyBlock('tools', messagesTools(tools));
 }
 
 /** A runnable Python call with the official SDK, for the selected API format. */
@@ -235,7 +358,8 @@ export function buildPythonCode(
         ? [`    output_config={"effort": ${JSON.stringify(options.reasoningEffort)}},`]
         : []),
       ...system,
-      ...pyMessages(options.history, ''),
+      ...pyHistory('messages', options.history, ''),
+      ...pyTools('messages', options.tools ?? []),
       '    stream=True,',
       ')',
       '',
@@ -253,12 +377,8 @@ export function buildPythonCode(
           ...(options.systemPrompt.trim()
             ? [`    instructions=${JSON.stringify(options.systemPrompt.trim())},`]
             : []),
-          '    input=[',
-          ...options.history.map(
-            (message) =>
-              `        {"role": ${JSON.stringify(message.role)}, "content": ${JSON.stringify(message.content)}},`,
-          ),
-          '    ],',
+          ...pyHistory('responses', options.history, ''),
+          ...pyTools('responses', options.tools ?? []),
           `    temperature=${options.temperature},`,
           `    max_output_tokens=${options.maxTokens},`,
           ...(options.reasoningEffort
@@ -275,7 +395,8 @@ export function buildPythonCode(
       : [
           'stream = client.chat.completions.create(',
           `    model=${JSON.stringify(options.model)},`,
-          ...pyMessages(options.history, options.systemPrompt),
+          ...pyHistory('chat', options.history, options.systemPrompt),
+          ...pyTools('chat', options.tools ?? []),
           `    temperature=${options.temperature},`,
           `    max_tokens=${options.maxTokens},`,
           ...(options.reasoningEffort
@@ -310,12 +431,17 @@ export function buildPythonCode(
  */
 export function publicChatBody(options: RequestOptions): Record<string, unknown> {
   const system = options.systemPrompt.trim();
+  const tools = options.tools ?? [];
   return {
     model: options.model,
-    messages: [...(system ? [{ role: 'system', content: system }] : []), ...options.history],
+    messages: [
+      ...(system ? [{ role: 'system', content: system }] : []),
+      ...formatHistory('chat', options.history),
+    ],
     temperature: options.temperature,
     max_tokens: options.maxTokens,
     ...(options.reasoningEffort ? { reasoning_effort: options.reasoningEffort } : {}),
+    ...(tools.length ? { tools: chatTools(tools) } : {}),
     stream: true,
   };
 }

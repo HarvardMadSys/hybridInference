@@ -1,5 +1,5 @@
 # ---- Stage 1: dependencies ----
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85 AS deps
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a AS deps
 WORKDIR /app
 COPY apps/frontend/package.json apps/frontend/package-lock.json ./
 RUN npm ci
@@ -139,7 +139,7 @@ RUN node scripts/site-ui/prepare-module.mjs merge --repo-root . --app . \
  && node scripts/site-ui/prepare-module.mjs check --repo-root . --app .
 
 # ---- Stage 4: runtime ----
-FROM node:22-alpine@sha256:b6f26b36c8ff49624cfdac716b8ea1138d606df02586a77d364bb5536a634f85
+FROM node:22-alpine@sha256:1314fb30ec37592d5845e5a160d522c0e680972aa534549940b8d73bde88481a
 WORKDIR /app
 
 # `PORT` and `HOSTNAME` are what the standalone server binds. Without them Next
