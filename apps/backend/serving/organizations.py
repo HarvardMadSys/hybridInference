@@ -23,6 +23,7 @@ from serving.accounting import money_decimal
 from serving.audit import AuditActor, AuditTarget
 from serving.config import sso as sso_config
 from serving.storage.base import OrganizationsUnavailableError
+from serving.storage.organizations import is_protected
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -345,6 +346,7 @@ def member_view(row: dict[str, Any], organization: dict[str, Any]) -> dict[str, 
         "email": row.get("email"),
         "user_name": row.get("user_name"),
         "role": row["role"],
+        "protected": is_protected(row),
         "status": row["status"],
         "removed": row.get("removed_at") is not None and row["status"] == "suspended",
         "joined_at": row["joined_at"],
@@ -432,18 +434,25 @@ async def organization_view(op_store: Any, organization_id: str) -> dict[str, An
 
 
 def _series(
-    usage: dict[str, Any], first_day: date, last_day: date, *, hourly: bool
+    usage: dict[str, Any],
+    first_day: date,
+    last_day: date,
+    *,
+    hourly: bool,
+    now: datetime | None = None,
 ) -> list[dict[str, Any]]:
     """One point per UTC day of the span, or per hour of its last day; quiet ones included.
 
     A day's spend is the cost counters'; an hour's is the request log's, the
-    only place an hour is recorded.
+    only place an hour is recorded. An hour that has not begun has no point:
+    a zero for it would read as a fall to nothing, not as a time to come.
     """
     logged = {row["bucket"].replace(tzinfo=UTC): row for row in usage["buckets"]}
     spent = {row["day"]: row for row in usage["spend_days"]}
     if hourly:
         start = datetime(last_day.year, last_day.month, last_day.day, tzinfo=UTC)
-        buckets = [start + timedelta(hours=hour) for hour in range(24)]
+        begun = ((now or datetime.now(UTC)) - start) // timedelta(hours=1) + 1
+        buckets = [start + timedelta(hours=hour) for hour in range(max(0, min(24, begun)))]
     else:
         days = (last_day - first_day).days + 1
         start = datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC)

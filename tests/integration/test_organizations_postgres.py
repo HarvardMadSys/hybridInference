@@ -627,6 +627,7 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
         models = await alice.get("/user/organization/usage/models", headers=headers)
         by_member = await alice.get("/user/organization/usage/members", headers=headers)
         searched = await alice.get("/user/organization/members?search=BOB", headers=headers)
+        asked_at = datetime.now(UTC)
         hourly = await alice.get("/user/organization/overview?period=1d", headers=headers)
     finally:
         async with clean_organizations.acquire() as conn:
@@ -657,7 +658,9 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
         "model-b": 3,
     }
     assert sum(model["errors"] for model in body["models"]) == 2
-    assert (hourly.json()["bucket"], len(hourly.json()["series"])) == ("hour", 24)
+    # One point for each hour of the UTC day that has begun, and none for one to come.
+    assert hourly.json()["bucket"] == "hour"
+    assert len(hourly.json()["series"]) in {asked_at.hour + 1, datetime.now(UTC).hour + 1}
     assert sum(point["requests"] for point in hourly.json()["series"]) == 6
 
     listed = members.json()
@@ -671,6 +674,8 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
     assert first["removed"] is False
     assert first["last_request_at"] is not None
     assert listed["members"][1]["role"] == "admin"
+    # The organization manages a member; an administrator is the platform's.
+    assert [member["protected"] for member in listed["members"]] == [False, True]
     assert [member["user_id"] for member in searched.json()["members"]] == [bob_id]
     assert [member["user_id"] for member in by_member.json()["members"]] == [bob_id, alice_id]
 
@@ -756,6 +761,14 @@ async def test_a_removed_member_cannot_sign_in_until_the_organization_restores_i
     assert location(refused)[1].get("sso_error") == ["suspended"]
     listed = await alice.get("/user/organization/members?status=removed", headers=headers)
     assert [(m["user_id"], m["removed"]) for m in listed.json()["members"]] == [(bob_id, True)]
+    # It is shown as removed, so the list of the suspended members does not have it.
+    suspended = await alice.get("/user/organization/members?status=suspended", headers=headers)
+    assert suspended.json() == {"total": 0, "members": []}
+    by_use = await alice.get(
+        "/user/organization/members?sort_by=limit_use&order=desc", headers=headers
+    )
+    assert by_use.status_code == 200, by_use.text
+    assert by_use.json()["total"] == 2
     twice = await alice.post(f"/user/organization/members/{bob_id}/remove", headers=headers)
     assert twice.status_code == 409
 

@@ -129,3 +129,77 @@ async def test_a_store_that_cannot_answer_is_not_a_store_with_no_organization(er
         await organizations.membership_of(store, "u1")
     with pytest.raises(type(error)):
         await organizations.forget_removal(store, "u1")
+
+
+# -- a member's row -------------------------------------------------------------------
+
+
+def _member_row(**fields):
+    return {
+        "user_id": "u-1",
+        "role": "member",
+        "account_role": "free",
+        "status": "active",
+        "joined_at": datetime(2026, 11, 1, tzinfo=UTC),
+        **fields,
+    }
+
+
+@pytest.mark.parametrize(
+    ("fields", "protected"),
+    [
+        ({}, False),
+        # An administrator of the organization, and one of the platform.
+        ({"role": "admin"}, True),
+        ({"account_role": "admin"}, True),
+    ],
+)
+def test_a_member_row_says_whether_the_organization_manages_the_account(fields, protected):
+    view = organizations.member_view(_member_row(**fields), {})
+
+    assert view["protected"] is protected
+
+
+# -- the series of a day by its hours ------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("now", "hours"),
+    [
+        # The first hour of the day has begun, and no other.
+        (datetime(2026, 11, 20, 0, 0, tzinfo=UTC), 1),
+        (datetime(2026, 11, 20, 9, 30, tzinfo=UTC), 10),
+        (datetime(2026, 11, 20, 23, 59, 59, tzinfo=UTC), 24),
+        # A day that is over has all of its hours, and one to come has none.
+        (datetime(2026, 11, 21, 3, 0, tzinfo=UTC), 24),
+        (datetime(2026, 11, 19, 22, 0, tzinfo=UTC), 0),
+    ],
+)
+def test_a_day_by_its_hours_has_a_point_for_each_hour_that_has_begun(now, hours):
+    day = datetime(2026, 11, 20, tzinfo=UTC).date()
+    usage = {
+        "buckets": [
+            {"bucket": datetime(2026, 11, 20, 8), "requests": 3, "total_tokens": 90, "members": 2}
+        ],
+        "spend_days": [],
+    }
+
+    series = organizations._series(usage, day, day, hourly=True, now=now)
+
+    assert [point["bucket"].hour for point in series] == list(range(hours))
+    # A quiet hour that has begun is a point of zero; the logged one has its figures.
+    assert [point["requests"] for point in series] == [
+        3 if hour == 8 else 0 for hour in range(hours)
+    ]
+
+
+def test_a_period_by_its_days_has_a_point_for_each_day():
+    first, last = (
+        datetime(2026, 11, 14, tzinfo=UTC).date(),
+        datetime(2026, 11, 20, tzinfo=UTC).date(),
+    )
+
+    series = organizations._series({"buckets": [], "spend_days": []}, first, last, hourly=False)
+
+    # Today is one of them, as far as it has come.
+    assert [point["bucket"].day for point in series] == [14, 15, 16, 17, 18, 19, 20]

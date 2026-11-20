@@ -89,6 +89,26 @@ _MEMBERSHIP_SELECT = (
 )
 
 
+#: The monthly quota an account has of its own (:func:`_own_quota_join`); NULL
+#: in both columns is none.
+_OWN_QUOTA_USD = "COALESCE(aq.quota_monthly_cost_usd, ak.quota_monthly_cost_usd)"
+_OWN_QUOTA_AMOUNT = "COALESCE(aq.quota_monthly_cost_amount, ak.quota_monthly_cost_amount)"
+
+#: The monthly limit that applies to a member, in the ledger currency: its own
+#: quota, else the default of its organization (``o``). NULL is no limit.
+#: ``$2`` is the fixed policy rate, for a row written before its native column.
+_MEMBER_LIMIT = (
+    f"COALESCE({_OWN_QUOTA_AMOUNT}, {_OWN_QUOTA_USD} * $2::numeric, "
+    "o.default_member_monthly_limit_amount, o.default_member_monthly_limit_usd * $2::numeric)"
+)
+
+#: How far the month's spend of a member is into that limit: 0.59 for 59%. A
+#: limit of zero is used up. NULL, which every order puts last, is no limit.
+_LIMIT_USE = (
+    f"CASE WHEN {_MEMBER_LIMIT} IS NULL THEN NULL WHEN {_MEMBER_LIMIT} <= 0 THEN 1 "
+    f"ELSE COALESCE(month.cost_amount, 0) / {_MEMBER_LIMIT} END"
+)
+
 #: How a member list may be ordered, by the name the route accepts.
 MEMBER_ORDER = {
     "name": "lower(COALESCE(NULLIF(u.user_name, ''), u.email, ''))",
@@ -98,14 +118,16 @@ MEMBER_ORDER = {
     "tokens": "COALESCE(logged.total_tokens, 0)",
     "spend": "COALESCE(spent.cost_amount, 0)",
     "month": "COALESCE(month.cost_amount, 0)",
+    "limit_use": _LIMIT_USE,
     "joined": "s.joined_at",
 }
 
-#: The member statuses a list may be narrowed to. ``removed`` is a member the
-#: organization removed; ``suspended`` is every suspended account, removed or not.
+#: The member statuses a list may be narrowed to, one for each word a member is
+#: shown with: ``removed`` is a member the organization removed, ``suspended``
+#: an account that is suspended in another way. No member is in two of them.
 MEMBER_STATUS = {
     "active": "u.status = 'active'",
-    "suspended": "u.status = 'suspended'",
+    "suspended": "u.status = 'suspended' AND s.removed_at IS NULL",
     "removed": "u.status = 'suspended' AND s.removed_at IS NOT NULL",
     "pending_approval": "u.status = 'pending_approval'",
 }
@@ -229,12 +251,20 @@ def _own_quota_join(account: str) -> str:
     )
 
 
-#: The two columns of that quota (:func:`_own_quota_join`); NULL in both is none.
-_OWN_QUOTA_USD = "COALESCE(aq.quota_monthly_cost_usd, ak.quota_monthly_cost_usd)"
-_OWN_QUOTA_AMOUNT = "COALESCE(aq.quota_monthly_cost_amount, ak.quota_monthly_cost_amount)"
+#: The two columns of that quota, as a list of members and a limit read select them.
 _OWN_QUOTA_COLUMNS = (
     f"{_OWN_QUOTA_USD} AS quota_monthly_cost_usd, {_OWN_QUOTA_AMOUNT} AS quota_monthly_cost_amount"
 )
+
+
+def is_protected(member: Mapping[str, Any]) -> bool:
+    """Whether a member is the platform administrator's to manage, not its organization's.
+
+    An administrator, of the organization (``role``) or of the platform
+    (``account_role``): the organization sets no limit of it and does not
+    remove it.
+    """
+    return member["role"] == "admin" or member["account_role"] == "admin"
 
 
 def _above(value: Any, ceiling: Any) -> bool:
@@ -704,7 +734,7 @@ class PostgresOrganizationsMixin:
             )
             if member is None:
                 return NOT_FOUND
-            if member["role"] == "admin" or member["account_role"] == "admin":
+            if is_protected(member):
                 return PROTECTED
             if member["status"] != "active":
                 return NOT_ACTIVE
@@ -815,7 +845,7 @@ class PostgresOrganizationsMixin:
             )
             if member is None:
                 return NOT_FOUND, None, None
-            if member["role"] == "admin" or member["account_role"] == "admin":
+            if is_protected(member):
                 return PROTECTED, None, None
             old = (
                 native_limit(member, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
@@ -995,6 +1025,7 @@ class PostgresOrganizationsMixin:
             "       COALESCE(logged.total_tokens, 0) AS total_tokens, "
             "       seen.last_request_at "
             "FROM scope s JOIN users u ON u.id = s.user_id "
+            "JOIN sso_organizations o ON o.id = $1 "
             f"{_own_quota_join('s.user_id')}"
             "LEFT JOIN spent ON spent.user_id = s.user_id "
             "LEFT JOIN month ON month.user_id = s.user_id "

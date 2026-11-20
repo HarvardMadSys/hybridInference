@@ -252,3 +252,51 @@ async def test_the_counter_and_the_lookups_of_an_organization_hold_native_amount
         assert quota.native_limit(
             lookup, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
         ) == Decimal("50.5")
+
+
+async def test_the_order_by_the_share_of_the_limit_compares_native_amounts():
+    day = datetime.now(UTC).strftime("%Y-%m-%d")
+    today = datetime.now(UTC).date()
+
+    def charge(user_id: str, yuan: str) -> CostIncrement:
+        amount = Decimal(yuan)
+        return CostIncrement(
+            user_id=user_id, day=day, api_key_id=None, cost_usd=amount / RATE, cost_amount=amount
+        )
+
+    async with cny_store() as (store, _pool):
+        await _accounts(store, "u1", "u2", "u3")
+        await store.create_organization(
+            organization_id="o-1",
+            name="Example University",
+            monthly_limit_usd=None,
+            monthly_limit_amount=Decimal("7000"),
+            connections=[("campus", lambda _identities: ["u1", "u2", "u3"])],
+            actor=PLATFORM,
+        )
+        # A limit of its own for one member, in yuan; the default for the other two.
+        await store.set_organization_member_limit(
+            "o-1", "u1", usd=None, amount=Decimal("100"), actor=ORG_ADMIN
+        )
+        await store.set_organization_limit(
+            "o-1",
+            "default_member_monthly_limit",
+            usd=None,
+            amount=Decimal("500"),
+            action="organization.default_member_limit.set",
+            actor=ORG_ADMIN,
+        )
+        # 30 of 100 yuan, 400 of 500, and a charge in USD only that the store
+        # takes at the rate: 10 USD is 67.18 of 500 yuan.
+        await store.increment_user_costs(
+            [
+                charge("u1", "30"),
+                charge("u3", "400"),
+                CostIncrement(user_id="u2", day=day, api_key_id=None, cost_usd=Decimal("10")),
+            ]
+        )
+        _total, rows = await store.list_organization_members(
+            "o-1", first_day=today, last_day=today, sort_by="limit_use", descending=True
+        )
+
+    assert [row["user_id"] for row in rows] == ["u3", "u1", "u2"]

@@ -15,6 +15,7 @@ from decimal import Decimal
 import pytest
 import pytest_asyncio
 
+from serving import organizations as organization_rules
 from serving.audit import AuditActor
 from serving.storage import organizations as orgs, sso as sso_store
 from serving.storage.base import CostIncrement
@@ -605,6 +606,103 @@ async def test_removal_is_refused_for_administrators_and_accounts_that_are_not_a
         "pending_approval",
         "active",
     ]
+
+
+async def test_a_member_row_says_which_accounts_the_organization_cannot_manage(store):
+    op_store, _pool = store
+    org_admin = await _account(op_store, "x1")
+    platform_admin = await _account(op_store, "x2", role="admin")
+    plain = await _account(op_store, "x3")
+    await _organization(op_store, "x", ("itest-x", [org_admin, platform_admin, plain]))
+    await op_store.set_organization_member_role("o-itest-x", org_admin, "admin", actor=PLATFORM)
+
+    _total, members = await organization_rules.members_view(op_store, "o-itest-x", "7d")
+
+    # The same accounts that a removal and a limit refuse with "protected".
+    assert {member["user_id"]: member["protected"] for member in members} == {
+        org_admin: True,
+        platform_admin: True,
+        plain: False,
+    }
+
+
+async def test_a_status_lists_the_members_that_are_shown_with_its_word(store):
+    op_store, _pool = store
+    active = await _account(op_store, "y1")
+    removed = await _account(op_store, "y2")
+    suspended = await _account(op_store, "y3")
+    pending = await _account(op_store, "y4", status="pending_approval")
+    await _organization(op_store, "y", ("itest-y", [active, removed, suspended, pending]))
+    await op_store.remove_organization_member("o-itest-y", removed, actor=ORG_ADMIN)
+    # Suspended in Admin, not removed by the organization.
+    await op_store.suspend_user(suspended)
+    today = datetime.now(UTC).date()
+
+    async def listed(status: str | None) -> tuple[int, set[str]]:
+        total, rows = await op_store.list_organization_members(
+            "o-itest-y", first_day=today, last_day=today, status=status
+        )
+        return total, {row["user_id"] for row in rows}
+
+    assert await listed(None) == (4, {active, removed, suspended, pending})
+    assert await listed("active") == (1, {active})
+    # A removed member is shown as "Removed": the suspended ones do not list it.
+    assert await listed("suspended") == (1, {suspended})
+    assert await listed("removed") == (1, {removed})
+    assert await listed("pending_approval") == (1, {pending})
+
+
+async def test_the_members_are_ordered_by_the_share_of_the_limit_that_the_month_used(store):
+    op_store, pool = store
+    nearly, quarter, zero, unlimited = [
+        await _account(op_store, name) for name in ("z1", "z2", "z3", "z4")
+    ]
+    await _organization(
+        op_store, "z", ("itest-z", [nearly, quarter, zero, unlimited]), limit=Decimal("5000")
+    )
+    for member, limit in ((nearly, "10"), (quarter, "200"), (zero, "0")):
+        outcome, _old, _new = await op_store.set_organization_member_limit(
+            "o-itest-z", member, usd=Decimal(limit), actor=ORG_ADMIN
+        )
+        assert outcome == orgs.UPDATED
+    today = datetime.now(UTC).date()
+    day = today.isoformat()
+
+    async def order(*, descending: bool) -> list[str]:
+        _total, rows = await op_store.list_organization_members(
+            "o-itest-z", first_day=today, last_day=today, sort_by="limit_use", descending=descending
+        )
+        return [row["user_id"] for row in rows]
+
+    try:
+        # 9 of 10, 50 of 200, nothing of a limit of zero, and 500 with no limit.
+        await op_store.increment_user_costs(
+            [
+                CostIncrement(user_id=user, day=day, api_key_id=None, cost_usd=Decimal(cost))
+                for user, cost in ((nearly, "9"), (quarter, "50"), (unlimited, "500"))
+            ]
+        )
+        largest_first = await order(descending=True)
+        smallest_first = await order(descending=False)
+        # The default of the organization is the limit of the member that had none.
+        await op_store.set_organization_limit(
+            "o-itest-z",
+            "default_member_monthly_limit",
+            usd=Decimal("1000"),
+            action="organization.default_member_limit.set",
+            actor=ORG_ADMIN,
+        )
+        with_a_default = await order(descending=True)
+    finally:
+        async with pool.acquire() as conn:
+            await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-org-z%'")
+
+    # A limit of zero is used up. No limit is last, whichever way the order goes:
+    # the largest spend of the four is not the largest share of a limit.
+    assert largest_first == [zero, nearly, quarter, unlimited]
+    assert smallest_first == [quarter, nearly, zero, unlimited]
+    # 500 of 1,000 is between 90% and 25%.
+    assert with_a_default == [zero, nearly, unlimited, quarter]
 
 
 async def test_the_limits_are_set_cleared_and_audited(store):

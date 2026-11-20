@@ -178,6 +178,8 @@ class OrganizationMember(MoneyResponse):
 
     ``status`` is the account's status. ``removed`` is True for a member the
     organization removed: only such a member is the organization's to restore.
+    ``protected`` is True for an administrator, of the organization or of the
+    platform: the organization sets no limit of it and does not remove it.
     ``monthly_limit_source`` says where the limit comes from: the member's own
     quota (``member``), the organization's default (``default``) or no limit
     (``none``).
@@ -187,6 +189,7 @@ class OrganizationMember(MoneyResponse):
     email: str | None = None
     user_name: str | None = None
     role: MemberRole
+    protected: bool = False
     status: str
     removed: bool = False
     joined_at: datetime

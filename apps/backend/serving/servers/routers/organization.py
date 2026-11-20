@@ -42,7 +42,7 @@ from serving.storage import organizations as org_store
 router = APIRouter(prefix="/user/organization", tags=["Organization"])
 
 MemberOrder = Literal[
-    "name", "status", "last_request", "requests", "tokens", "spend", "month", "joined"
+    "name", "status", "last_request", "requests", "tokens", "spend", "month", "limit_use", "joined"
 ]
 MemberStatus = Literal["active", "suspended", "removed", "pending_approval"]
 AuditCategory = Literal["membership", "limits", "organization"]
