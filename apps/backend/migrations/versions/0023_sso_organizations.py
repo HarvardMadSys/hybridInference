@@ -10,7 +10,10 @@
 - ``sso_organization_members``: which organization an account belongs to, and
   its role there. The account is the key: one organization at most. A removal
   by the organization marks the row (``removed_at``, ``removed_by``) and leaves
-  it; the row goes only with its account.
+  it; the row goes only with its account. The monthly limit the organization
+  sets for the member is here, a money pair with the same trigger, and not in
+  ``account_quotas``: that quota is the platform administrator's, and the
+  request path takes the lower of the two.
 - ``admin_audit_log.organization_id``: the organization an audit row belongs
   to, NULL for every row that belongs to none.
 
@@ -44,15 +47,16 @@ LIMIT_PAIRS = {
     "monthly_limit_usd": "monthly_limit_amount",
     "default_member_monthly_limit_usd": "default_member_monthly_limit_amount",
 }
+#: The pair of a member's row: the limit its organization sets for it.
+MEMBER_LIMIT_PAIRS = {"monthly_limit_usd": "monthly_limit_amount"}
 
 
 def upgrade() -> None:
-    """Add the three tables, the limits' trigger and the audit column."""
+    """Add the three tables, the limits' triggers and the audit column."""
     op.execute(
         "CREATE TABLE IF NOT EXISTS sso_organizations ("
         "id TEXT PRIMARY KEY, "
         "name TEXT NOT NULL, "
-        "status TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'suspended')), "
         "monthly_limit_usd DECIMAL(14, 4), "
         "monthly_limit_amount NUMERIC(24, 12), "
         "default_member_monthly_limit_usd DECIMAL(10, 4), "
@@ -90,12 +94,21 @@ def upgrade() -> None:
         "role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')), "
         "joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
         "removed_at TIMESTAMPTZ, "
-        "removed_by TEXT"
+        "removed_by TEXT, "
+        "monthly_limit_usd DECIMAL(10, 4), "
+        "monthly_limit_amount NUMERIC(24, 12), "
+        "accounting_currency TEXT"
         ")"
     )
     op.execute(
         "CREATE INDEX IF NOT EXISTS idx_sso_organization_members_organization "
         "ON sso_organization_members (organization_id)"
+    )
+    member_mapping = json.dumps(MEMBER_LIMIT_PAIRS, separators=(",", ":"))
+    op.execute(
+        "CREATE OR REPLACE TRIGGER sso_organization_members_accounting_amounts "
+        "BEFORE INSERT OR UPDATE ON sso_organization_members "
+        f"FOR EACH ROW EXECUTE FUNCTION accounting_sync_amounts('{member_mapping}')"
     )
     op.execute("ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS organization_id TEXT")
     op.execute(

@@ -70,13 +70,13 @@ class OrganizationResponse(MoneyResponse):
 
     id: str
     name: str
-    status: str
     created_at: datetime
     member_count: int
     #: NULL is no limit.
     monthly_limit_usd: float | None = None
     monthly_limit: Decimal | None = None
-    #: What a member without a monthly quota of its own gets; NULL is none.
+    #: What a member gets that the organization set no limit for; NULL is none.
+    #: Not an administrator, of the organization or of the platform.
     default_member_monthly_limit_usd: float | None = None
     default_member_monthly_limit: Decimal | None = None
     #: What the organization's counter holds for this UTC month.
@@ -180,9 +180,18 @@ class OrganizationMember(MoneyResponse):
     organization removed: only such a member is the organization's to restore.
     ``protected`` is True for an administrator, of the organization or of the
     platform: the organization sets no limit of it and does not remove it.
-    ``monthly_limit_source`` says where the limit comes from: the member's own
-    quota (``member``), the organization's default (``default``) or no limit
-    (``none``).
+
+    Two parties can limit a member, and the lower limit applies:
+
+    - its organization, with the limit it set for the member
+      (``own_monthly_limit``), else with its default;
+    - the platform administrator, with the monthly quota of the account
+      (``platform_monthly_limit``), which the organization can read and not
+      change.
+
+    ``monthly_limit`` is the limit that applies, and ``monthly_limit_source``
+    says which one it is: ``member``, ``default``, ``platform``, or ``none``
+    for no limit.
     """
 
     user_id: str
@@ -203,7 +212,11 @@ class OrganizationMember(MoneyResponse):
     spent_month: Decimal | None = None
     monthly_limit_usd: float | None = None
     monthly_limit: Decimal | None = None
-    monthly_limit_source: Literal["member", "default", "none"] = "none"
+    monthly_limit_source: Literal["member", "default", "platform", "none"] = "none"
+    own_monthly_limit_usd: float | None = None
+    own_monthly_limit: Decimal | None = None
+    platform_monthly_limit_usd: float | None = None
+    platform_monthly_limit: Decimal | None = None
 
 
 class ListMembersResponse(BaseModel):

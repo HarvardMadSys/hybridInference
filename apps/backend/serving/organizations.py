@@ -145,8 +145,9 @@ async def spend_scope_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     """The organization of an account as the request path checks it, read on its own.
 
     For an account no API-key lookup answered for (it holds no live key): the
-    organization columns, and the monthly quota of the member, its own or the
-    default of the organization. None for an account in no organization, and
+    organization columns, and the monthly quota of the account, the lower of
+    its own and what its organization has for it (the limit it set for the
+    member, else its default). None for an account in no organization, and
     in a store that keeps none. A store that cannot answer now raises: a
     request whose organization is unknown is not one without a limit.
     """
@@ -326,21 +327,56 @@ def _total(rows: list[dict[str, Any]], key: str) -> Any:
     return sum((row[key] or 0 for row in rows), 0)
 
 
-def member_view(row: dict[str, Any], organization: dict[str, Any]) -> dict[str, Any]:
-    """A member as its organization is shown it, with where its monthly limit comes from.
+def _has(limit: tuple[Any, Any]) -> bool:
+    """Whether a limit, a USD value and a native one, is set in either."""
+    return limit[0] is not None or limit[1] is not None
 
-    A member's own monthly quota wins; without one the organization's default
-    applies, and without that there is no limit.
+
+def _organization_limit_applies(limit: tuple[Any, Any], own: tuple[Any, Any]) -> bool:
+    """Whether the organization's *limit* is the one the request path enforces, not *own*.
+
+    The rule of :func:`serving.storage.organizations.member_quota_join`, on the
+    same two pairs: the lower applies, the organization's when they are equal,
+    compared in the native amounts where both have one, else in USD.
     """
-    own_usd, own_amount = row.get("quota_monthly_cost_usd"), row.get("quota_monthly_cost_amount")
-    default_usd = organization.get("default_member_monthly_limit_usd")
-    default_amount = organization.get("default_member_monthly_limit_amount")
-    if own_usd is not None or own_amount is not None:
-        source, limit_usd, limit_amount = "member", own_usd, own_amount
-    elif default_usd is not None or default_amount is not None:
-        source, limit_usd, limit_amount = "default", default_usd, default_amount
+    if not _has(limit):
+        return False
+    if not _has(own):
+        return True
+    if limit[1] is not None and own[1] is not None:
+        return limit[1] <= own[1]
+    return limit[0] is not None and own[0] is not None and limit[0] <= own[0]
+
+
+def member_view(row: dict[str, Any], organization: dict[str, Any]) -> dict[str, Any]:
+    """A member as its organization is shown it, with the monthly limit that applies to it.
+
+    Two parties can limit a member. Its organization: the limit it set for the
+    member, else its default, and nothing for an administrator, whose limit
+    is not the organization's to set. The platform administrator: the monthly
+    quota of the account. The lower of the two applies, as the request path
+    enforces it, and ``monthly_limit_source`` names it.
+
+    A limit the organization set before the member became an administrator
+    stays on its row and is not shown: it applies again when the role goes.
+    """
+    platform = (row.get("quota_monthly_cost_usd"), row.get("quota_monthly_cost_amount"))
+    own: tuple[Any, Any] = (row.get("member_limit_usd"), row.get("member_limit_amount"))
+    default = (
+        organization.get("default_member_monthly_limit_usd"),
+        organization.get("default_member_monthly_limit_amount"),
+    )
+    if is_protected(row):
+        own, source, limit = (None, None), "none", (None, None)
+    elif _has(own):
+        source, limit = "member", own
+    elif _has(default):
+        source, limit = "default", default
     else:
-        source, limit_usd, limit_amount = "none", None, None
+        source, limit = "none", (None, None)
+    if _has(platform) and not _organization_limit_applies(limit, platform):
+        source, limit = "platform", platform
+    limit_usd, limit_amount = limit
     return {
         "user_id": row["user_id"],
         "email": row.get("email"),
@@ -361,6 +397,10 @@ def member_view(row: dict[str, Any], organization: dict[str, Any]) -> dict[str, 
         "monthly_limit_usd": limit_usd,
         "monthly_limit_amount": limit_amount,
         "monthly_limit_source": source,
+        "own_monthly_limit_usd": own[0],
+        "own_monthly_limit_amount": own[1],
+        "platform_monthly_limit_usd": platform[0],
+        "platform_monthly_limit_amount": platform[1],
     }
 
 
@@ -546,10 +586,12 @@ async def member_detail_view(
     spent = {
         row["day"]: row for row in await op_store.get_user_cost_history(user_id, MEMBER_SPEND_DAYS)
     }
+    # As every figure of a member: from the day its account became one.
+    joined = found[1][0]["joined_at"].astimezone(UTC).date()
     days = []
     for offset in range(MEMBER_SPEND_DAYS - 1, -1, -1):
         day = today - timedelta(days=offset)
-        row = spent.get(day.isoformat()) or {}
+        row = (spent.get(day.isoformat()) or {}) if day >= joined else {}
         days.append(
             {
                 "bucket": datetime(day.year, day.month, day.day, tzinfo=UTC),

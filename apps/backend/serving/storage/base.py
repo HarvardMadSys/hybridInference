@@ -372,7 +372,7 @@ class OperationalStore(ABC):
     async def set_organization_member_limit(
         self, organization_id: str, user_id: str, **fields: Any
     ) -> tuple[str, Any, Any]:
-        """Set or clear the monthly quota of a member's account."""
+        """Set or clear the monthly limit an organization has for one member."""
         raise OrganizationsUnavailableError
 
     async def clear_organization_member_removal(self, user_id: str) -> None:

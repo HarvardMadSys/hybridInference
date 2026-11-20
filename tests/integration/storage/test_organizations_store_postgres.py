@@ -43,6 +43,8 @@ async def store():
             )
             await conn.execute("DELETE FROM sso_organizations WHERE id LIKE 'o-itest-%'")
             await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'o:o-itest-%'")
+            await conn.execute("DELETE FROM api_logs WHERE user_id LIKE 'u-org-%'")
+            await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-org-%'")
             await conn.execute("DELETE FROM api_keys WHERE user_id LIKE 'u-org-%'")
             # No foreign key takes a session away with its account.
             await conn.execute("DELETE FROM auth_sessions WHERE user_id LIKE 'u-org-%'")
@@ -117,7 +119,6 @@ async def test_an_organization_is_created_with_its_connections_and_members(store
     assert (outcome, added) == (orgs.CREATED, 2)
     organization = await op_store.get_organization("o-itest-a")
     assert organization["name"] == "Itest A"
-    assert organization["status"] == "active"
     assert organization["member_count"] == 2
     assert organization["provider_ids"] == ["itest-a-campus"]
     assert organization["monthly_limit_usd"] == Decimal("1000")
@@ -874,14 +875,32 @@ async def _monthly_quotas(pool, user_id: str) -> tuple[list, list]:
     return [tuple(row) for row in record], [tuple(row) for row in keys]
 
 
-async def test_a_members_limit_is_the_quota_of_its_account_on_the_record_and_every_key(store):
+async def _member_limit(pool, user_id: str) -> tuple:
+    """The limit an organization set for a member: both columns of its membership."""
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(
+            "SELECT monthly_limit_usd, monthly_limit_amount FROM sso_organization_members "
+            "WHERE user_id = $1",
+            user_id,
+        )
+    return tuple(row)
+
+
+async def _key_hash(pool, key_id: int) -> str:
+    async with pool.acquire() as conn:
+        return await conn.fetchval("SELECT key_hash FROM api_keys WHERE id = $1", key_id)
+
+
+async def test_a_members_limit_is_the_organizations_own_and_leaves_the_quota_of_the_account(store):
     op_store, pool = store
     member = await _account(op_store, "q1")
     first, _second = await _key(op_store, member), await _key(op_store, member)
-    revoked = await _key(op_store, member)
-    async with pool.acquire() as conn:
-        await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE id = $1", revoked)
     await _organization(op_store, "q", ("itest-q", [member]), limit=Decimal("100"))
+    key_hash = await _key_hash(pool, first)
+    account_quota = await _monthly_quotas(pool, member)
+
+    async def enforced():
+        return (await op_store.get_auth_context_with_spend(key_hash))["quota_monthly_cost_usd"]
 
     saved = await op_store.set_organization_member_limit(
         "o-itest-q", member, usd=Decimal("20"), actor=ORG_ADMIN
@@ -889,32 +908,27 @@ async def test_a_members_limit_is_the_quota_of_its_account_on_the_record_and_eve
     same = await op_store.set_organization_member_limit(
         "o-itest-q", member, usd=Decimal("20"), actor=ORG_ADMIN
     )
-    record, keys = await _monthly_quotas(pool, member)
 
     assert saved == (orgs.UPDATED, None, Decimal("20"))
     assert same == (orgs.UNCHANGED, Decimal("20"), Decimal("20"))
-    # The record and the copy on each key that is not revoked; the daily quota stays.
-    assert record == [(Decimal("50"), Decimal("20"))]
-    assert keys == [
-        ("active", Decimal("50"), Decimal("20")),
-        ("active", Decimal("50"), Decimal("20")),
-        ("revoked", Decimal("50"), None),
-    ]
-    # A lookup by one of the keys now carries it, in the same statement as the spend.
-    async with pool.acquire() as conn:
-        key_hash = await conn.fetchval("SELECT key_hash FROM api_keys WHERE id = $1", first)
-    assert (await op_store.get_auth_context_with_spend(key_hash))[
-        "quota_monthly_cost_usd"
-    ] == Decimal("20")
+    # On the member's row, in both columns. The quota of the account, on its
+    # record and on its keys, is the platform administrator's: not written.
+    assert await _member_limit(pool, member) == (Decimal("20"), Decimal("20"))
+    assert await _monthly_quotas(pool, member) == account_quota
+    assert account_quota == (
+        [(Decimal("50"), None)],
+        [("active", Decimal("50"), None), ("active", Decimal("50"), None)],
+    )
+    # A lookup by one of the keys enforces it, in the same statement as the spend.
+    assert await enforced() == Decimal("20")
 
     cleared = await op_store.set_organization_member_limit(
         "o-itest-q", member, usd=None, actor=ORG_ADMIN
     )
-    record, keys = await _monthly_quotas(pool, member)
 
     assert cleared == (orgs.UPDATED, Decimal("20"), None)
-    assert record == [(Decimal("50"), None)]
-    assert [key[2] for key in keys] == [None, None, None]
+    assert await _member_limit(pool, member) == (None, None)
+    assert await enforced() is None
     rows = [
         row for row in await _audit(pool, "o-itest-q") if row["action"].endswith("member_limit.set")
     ]
@@ -925,6 +939,131 @@ async def test_a_members_limit_is_the_quota_of_its_account_on_the_record_and_eve
     assert '"new": "20' in rows[0]["details"]
     assert '"old": "20' in rows[1]["details"]
     assert '"new": null' in rows[1]["details"]
+
+
+async def test_the_lower_of_the_quota_of_the_account_and_the_organizations_limit_is_enforced(
+    store,
+):
+    """An organization brings the quota of a member down, never above the platform's."""
+    op_store, pool = store
+    member = await _account(op_store, "p1")
+    key_hash = await _key_hash(pool, await _key(op_store, member))
+    # What the platform administrator sets in Admin: 10 a month for this account.
+    await op_store.update_key(member, quota_monthly_cost_usd=Decimal("10"))
+    await _organization(op_store, "p", ("itest-p", [member]), limit=Decimal("1000"))
+
+    async def enforced() -> tuple:
+        by_key = (await op_store.get_auth_context_with_spend(key_hash))["quota_monthly_cost_usd"]
+        by_account = (await op_store.get_organization_spend_scope(member))["quota_monthly_cost_usd"]
+        return by_key, by_account
+
+    async def shown() -> tuple:
+        _total, [row] = await organization_rules.members_view(op_store, "o-itest-p", "7d")
+        return (
+            row["monthly_limit_usd"],
+            row["monthly_limit_source"],
+            row["own_monthly_limit_usd"],
+            row["platform_monthly_limit_usd"],
+        )
+
+    async def limit(usd):
+        outcome, _old, _new = await op_store.set_organization_member_limit(
+            "o-itest-p", member, usd=usd, actor=ORG_ADMIN
+        )
+        return outcome
+
+    assert await enforced() == (Decimal("10"), Decimal("10"))
+    assert await shown() == (Decimal("10"), "platform", None, Decimal("10"))
+
+    # Above the platform's: saved as the organization's wish, and not enforced.
+    assert await limit(Decimal("80")) == orgs.UPDATED
+    assert await enforced() == (Decimal("10"), Decimal("10"))
+    assert await shown() == (Decimal("10"), "platform", Decimal("80"), Decimal("10"))
+    # The record of the account still has what the platform administrator set.
+    record, keys = await _monthly_quotas(pool, member)
+    assert [row[1] for row in record] == [Decimal("10")]
+    assert [key[2] for key in keys] == [Decimal("10")]
+
+    # Below it: the organization's limit is the one that applies.
+    assert await limit(Decimal("5")) == orgs.UPDATED
+    assert await enforced() == (Decimal("5"), Decimal("5"))
+    assert await shown() == (Decimal("5"), "member", Decimal("5"), Decimal("10"))
+    # Equal: the organization's, the one its administrator just set.
+    assert await limit(Decimal("10")) == orgs.UPDATED
+    assert await shown() == (Decimal("10"), "member", Decimal("10"), Decimal("10"))
+
+    # Without a limit of its own the member has the default, again not above the platform's.
+    assert await limit(None) == orgs.UPDATED
+    await op_store.set_organization_limit(
+        "o-itest-p",
+        "default_member_monthly_limit",
+        usd=Decimal("40"),
+        action="organization.default_member_limit.set",
+        actor=ORG_ADMIN,
+    )
+    assert await enforced() == (Decimal("10"), Decimal("10"))
+    assert await shown() == (Decimal("10"), "platform", None, Decimal("10"))
+    # The platform administrator takes the quota away: the default is what is left.
+    await op_store.update_key(member, quota_monthly_cost_usd=None)
+    assert await enforced() == (Decimal("40"), Decimal("40"))
+    assert await shown() == (Decimal("40"), "default", None, None)
+
+
+async def test_the_default_of_an_organization_does_not_reach_an_administrator(store):
+    """An organization administrator cannot stop another administrator with the default."""
+    op_store, pool = store
+    plain, lead = await _account(op_store, "n1"), await _account(op_store, "n2")
+    root = await _account(op_store, "n3", role="admin")
+    limited = await _account(op_store, "n4", role="admin")
+    hashes = {
+        user_id: await _key_hash(pool, await _key(op_store, user_id))
+        for user_id in (plain, lead, root, limited)
+    }
+    # The platform administrator's own quota still holds for an administrator.
+    await op_store.update_key(limited, quota_monthly_cost_usd=Decimal("30"))
+    await _organization(op_store, "n", ("itest-n", [plain, lead, root, limited]))
+    await op_store.set_organization_member_role("o-itest-n", lead, "admin", actor=PLATFORM)
+
+    async def enforced() -> dict:
+        quotas = {}
+        for user_id, key_hash in hashes.items():
+            by_key = await op_store.get_auth_context_with_spend(key_hash)
+            by_account = await op_store.get_organization_spend_scope(user_id)
+            assert by_key["quota_monthly_cost_usd"] == by_account["quota_monthly_cost_usd"]
+            quotas[user_id] = by_key["quota_monthly_cost_usd"]
+        return quotas
+
+    async def shown() -> dict:
+        _total, rows = await organization_rules.members_view(op_store, "o-itest-n", "7d")
+        return {
+            row["user_id"]: (row["monthly_limit_usd"], row["monthly_limit_source"]) for row in rows
+        }
+
+    for default in (Decimal("5"), Decimal("0")):
+        await op_store.set_organization_limit(
+            "o-itest-n",
+            "default_member_monthly_limit",
+            usd=default,
+            action="organization.default_member_limit.set",
+            actor=ORG_ADMIN,
+        )
+        assert await enforced() == {plain: default, lead: None, root: None, limited: Decimal("30")}
+        assert await shown() == {
+            plain: (default, "default"),
+            lead: (None, "none"),
+            root: (None, "none"),
+            limited: (Decimal("30"), "platform"),
+        }
+
+    # A limit the organization set before the member got the role does not hold it either.
+    await op_store.set_organization_member_role("o-itest-n", lead, "member", actor=PLATFORM)
+    await op_store.set_organization_member_limit(
+        "o-itest-n", lead, usd=Decimal("1"), actor=ORG_ADMIN
+    )
+    assert (await enforced())[lead] == Decimal("1")
+    await op_store.set_organization_member_role("o-itest-n", lead, "admin", actor=PLATFORM)
+    assert (await enforced())[lead] is None
+    assert (await shown())[lead] == (None, "none")
 
 
 async def test_a_members_limit_is_refused_above_the_organizations_and_for_administrators(store):
@@ -980,7 +1119,7 @@ async def test_the_default_of_a_member_cannot_be_above_the_limit_of_the_organiza
     ] == Decimal("100")
 
 
-async def test_a_quota_that_only_the_keys_carry_is_the_members_own(store):
+async def test_a_quota_that_only_the_keys_carry_is_the_accounts_own_and_stays(store):
     """An account whose record an earlier release never wrote: its keys still answer."""
     op_store, pool = store
     member = await _account(op_store, "t1")
@@ -990,21 +1129,31 @@ async def test_a_quota_that_only_the_keys_carry_is_the_members_own(store):
     await _organization(op_store, "t", ("itest-t", [member]), limit=Decimal("100"))
     today = datetime.now(UTC).date()
 
+    async def enforced():
+        return (await op_store.get_organization_spend_scope(member))["quota_monthly_cost_usd"]
+
     _total, [listed] = await op_store.list_organization_members(
         "o-itest-t", first_day=today, last_day=today
     )
-    scope = await op_store.get_organization_spend_scope(member)
+    alone = await enforced()
+    lowered = await op_store.set_organization_member_limit(
+        "o-itest-t", member, usd=Decimal("20"), actor=ORG_ADMIN
+    )
+    with_a_limit = await enforced()
     cleared = await op_store.set_organization_member_limit(
         "o-itest-t", member, usd=None, actor=ORG_ADMIN
     )
     record, keys = await _monthly_quotas(pool, member)
 
     assert listed["quota_monthly_cost_usd"] == Decimal("30")
-    assert scope["quota_monthly_cost_usd"] == Decimal("30")
-    # The old value is the one the keys carried, and clearing reaches them.
-    assert cleared == (orgs.UPDATED, Decimal("30"), None)
-    assert [row[1] for row in record] == [None]
-    assert [key[2] for key in keys] == [None]
+    assert (listed["member_limit_usd"], listed["member_limit_amount"]) == (None, None)
+    assert (alone, with_a_limit, await enforced()) == (Decimal("30"), Decimal("20"), Decimal("30"))
+    # The organization's limit had no value before, whatever the keys carry.
+    assert lowered == (orgs.UPDATED, None, Decimal("20"))
+    assert cleared == (orgs.UPDATED, Decimal("20"), None)
+    # Clearing it takes nothing from the keys, and writes no record for the account.
+    assert record == []
+    assert [key[2] for key in keys] == [Decimal("30")]
 
 
 async def test_a_member_without_a_key_has_its_own_limit_or_the_default_on_the_read_by_account(
@@ -1091,3 +1240,147 @@ async def test_a_charge_is_added_to_the_counter_of_the_members_organization_only
     assert first == [(f"m:{day[:7]}", Decimal("0.750000"), Decimal("0.75"), 2)]
     assert second == [(f"m:{day[:7]}", Decimal("1.750000"), Decimal("1.75"), 3)]
     assert month["cost_usd"] == Decimal("1.750000")
+
+
+# -- what an organization is shown of a member -----------------------------------------
+
+
+async def _request(pool, user_id: str, at: datetime, *, model: str, cost: str = "0.10") -> None:
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO api_logs (request_id, timestamp, model_id, provider, user_id, "
+            "status_code, prompt_tokens, completion_tokens, total_tokens, cost_usd) "
+            "VALUES ($1, $2, $3, 'test', $4, 200, 100, 50, 150, $5)",
+            f"org-store-{secrets.token_hex(6)}",
+            at,
+            model,
+            user_id,
+            Decimal(cost),
+        )
+
+
+async def _day_cost(pool, user_id: str, at: datetime, cost: str) -> None:
+    """The counter row of the UTC day of *at*, with *at* as its last request."""
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "INSERT INTO user_daily_cost (user_id, day, cost_usd, requests, last_request_at) "
+            "VALUES ($1, $2, $3, 1, $4)",
+            user_id,
+            at.date().isoformat(),
+            Decimal(cost),
+            at,
+        )
+
+
+async def test_the_figures_of_a_member_start_when_its_account_became_a_member(store):
+    """An attach enrolls accounts that did nothing for it: their earlier use stays theirs."""
+    op_store, pool = store
+    member, early = await _account(op_store, "j1"), await _account(op_store, "j2")
+    await _organization(op_store, "j", ("itest-j", [member, early]))
+    now = datetime.now(UTC)
+    joined = now - timedelta(days=2)
+    async with pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE sso_organization_members SET joined_at = $1 WHERE user_id LIKE 'u-org-j%'",
+            joined,
+        )
+    before, at_joining, after = joined - timedelta(days=3), joined, now - timedelta(minutes=5)
+    for at, model in (
+        (before, "model-before"),
+        (joined - timedelta(seconds=1), "model-before"),
+        (joined + timedelta(seconds=1), "model-after"),
+        (after, "model-after"),
+    ):
+        await _request(pool, member, at, model=model)
+    for at, cost in ((before, "5"), (at_joining, "2"), (after, "1")):
+        await _day_cost(pool, member, at, cost)
+    # An account that has done nothing since it became a member.
+    await _request(pool, early, before, model="model-before")
+    await _day_cost(pool, early, before, "7")
+    first_day, last_day = (now - timedelta(days=29)).date(), now.date()
+    month_start = now.date().replace(day=1)
+    whole_month = sum(
+        Decimal(cost)
+        for at, cost in ((before, "5"), (at_joining, "2"), (after, "1"))
+        if at.date() >= month_start
+    )
+
+    _total, rows = await op_store.list_organization_members(
+        "o-itest-j", first_day=first_day, last_day=last_day
+    )
+    usage = await op_store.get_organization_usage(
+        "o-itest-j", first_day=first_day, last_day=last_day
+    )
+    requests = await op_store.list_organization_requests(
+        "o-itest-j", first_day=first_day, last_day=last_day
+    )
+    detail = await organization_rules.member_detail_view(op_store, "o-itest-j", member, "30d")
+
+    listed = {row["user_id"]: row for row in rows}
+    # The request log has the instant: one second before the joining is before it.
+    assert (listed[member]["requests"], listed[member]["total_tokens"]) == (2, 300)
+    assert listed[member]["last_request_at"] == after
+    # A day counter is one row for a day: the day of the joining counts whole,
+    # the days before it do not count.
+    assert listed[member]["cost_usd"] == Decimal("3")
+    # What the monthly limit is compared with is the whole month, as the request path counts it.
+    assert listed[member]["spent_month_usd"] == whole_month
+    assert (listed[early]["requests"], listed[early]["cost_usd"]) == (0, 0)
+    assert listed[early]["last_request_at"] is None
+
+    assert (usage["requests"], usage["total_tokens"], usage["members_with_requests"]) == (2, 300, 1)
+    assert {row["model_id"]: row["requests"] for row in usage["models"]} == {"model-after": 2}
+    assert [row["day"] for row in usage["spend_days"]] == sorted(
+        {at_joining.date().isoformat(), after.date().isoformat()}
+    )
+    assert sum(row["cost_usd"] for row in usage["spend_days"]) == Decimal("3")
+    assert [row["model_id"] for row in requests] == ["model-after", "model-after"]
+
+    days = {point["bucket"].date(): point["cost_usd"] for point in detail["days"]}
+    assert (days[before.date()], days[at_joining.date()], days[after.date()]) == (0, 2, 1)
+    assert {row["model_id"] for row in detail["models"]} == {"model-after"}
+    assert [row["model_id"] for row in detail["requests"]] == ["model-after", "model-after"]
+
+
+async def test_a_search_takes_a_percent_sign_and_an_underscore_as_they_are(store):
+    op_store, pool = store
+    exact, other = await _account(op_store, "under_score"), await _account(op_store, "underxscore")
+    await _organization(op_store, "k", ("itest-k", [exact, other]))
+    now = datetime.now(UTC)
+    async with pool.acquire() as conn:
+        # Members for an hour: a request is shown from the joining on.
+        await conn.execute(
+            "UPDATE sso_organization_members SET joined_at = $1 WHERE organization_id = $2",
+            now - timedelta(hours=1),
+            "o-itest-k",
+        )
+    for user_id in (exact, other):
+        await _request(pool, user_id, now - timedelta(minutes=1), model="model-a")
+
+    async def members(search: str) -> tuple[int, set[str]]:
+        total, rows = await op_store.list_organization_members(
+            "o-itest-k", first_day=now.date(), last_day=now.date(), search=search
+        )
+        return total, {row["user_id"] for row in rows}
+
+    async def requests(search: str) -> set[str]:
+        rows = await op_store.list_organization_requests(
+            "o-itest-k", first_day=now.date(), last_day=now.date(), search=search
+        )
+        return {row["user_id"] for row in rows}
+
+    async def audit(search: str) -> int:
+        total, _rows = await op_store.list_organization_audit("o-itest-k", search=search)
+        return total
+
+    assert await members("UNDER") == (2, {exact, other})
+    # An underscore is that character, not "any one character".
+    assert await members("r_s") == (1, {exact})
+    assert await members("_") == (1, {exact})
+    assert await requests("r_s") == {exact}
+    # A percent sign is that character, not "anything": nothing here has one.
+    assert await members("%") == (0, set())
+    assert await requests("%") == set()
+    assert await audit("%") == 0
+    assert await audit("organization.create") == 1
+    assert orgs.contains_pattern("50%_a\\b") == "%50\\%\\_a\\\\b%"

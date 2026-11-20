@@ -1128,10 +1128,11 @@ async def _account_quotas(
 
     The last element is the organization the account is a member of, as the
     columns an identity carries it in (:data:`serving.organizations.ORGANIZATION_COLUMNS`),
-    empty for an account in none. A member has the monthly quota its
-    organization gave it, or the default of the organization: from the same
-    row for an account with a key, read on its own for one without -- an
-    administrator of the organization sets it for a member that has no key too.
+    empty for an account in none. The monthly quota of a member is the lower
+    of the account's own and what its organization has for it (the limit it
+    set for the member, else its default): from the same row for an account
+    with a key, read on its own for one without -- an administrator of the
+    organization sets a limit for a member that has no key too.
     """
     rows = await op_store.get_quota_context_for_user(user["id"])
     if rows:

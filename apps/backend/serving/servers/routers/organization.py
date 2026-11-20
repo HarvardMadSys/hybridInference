@@ -206,9 +206,11 @@ async def set_member_monthly_limit(
 ) -> OrganizationMessageResponse:
     """Set the monthly limit of a member, or clear it with ``null``.
 
-    The limit is the monthly quota of the member's account, the one the
-    gateway already enforces. A member without one takes the default of the
-    organization. Not for an administrator.
+    The limit is the organization's own. The monthly quota of the member's
+    account is the platform administrator's and is not changed: the gateway
+    enforces the lower of the two, so this lowers what a member may spend and
+    never raises it above that quota. A member without a limit takes the
+    default of the organization. Not for an administrator.
 
     Raises:
         HTTPException: 400 when the limit is above the organization's own;
@@ -238,7 +240,8 @@ async def set_default_member_limit(
 ) -> OrganizationResponse:
     """Set the default monthly limit of a member, or clear it with ``null``.
 
-    It applies at once to every member that has no monthly limit of its own.
+    It applies at once to every member the organization set no limit for,
+    and not to an administrator, of the organization or of the platform.
 
     Raises:
         HTTPException: 400 when the default is above the organization's own limit.

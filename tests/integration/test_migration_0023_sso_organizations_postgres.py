@@ -70,7 +70,6 @@ async def test_the_tables_arrive_empty_and_existing_rows_are_untouched(scratch):
     assert organization_columns == {
         "id",
         "name",
-        "status",
         "monthly_limit_usd",
         "monthly_limit_amount",
         "default_member_monthly_limit_usd",
@@ -87,6 +86,9 @@ async def test_the_tables_arrive_empty_and_existing_rows_are_untouched(scratch):
         "joined_at",
         "removed_at",
         "removed_by",
+        "monthly_limit_usd",
+        "monthly_limit_amount",
+        "accounting_currency",
     }
 
 
@@ -144,7 +146,7 @@ async def test_a_membership_leaves_with_its_account_and_everything_with_its_orga
     assert accounts == 1
 
 
-async def test_a_role_a_status_and_a_name_are_constrained(scratch):
+async def test_a_role_and_a_name_are_constrained(scratch):
     await mig.upgrade(scratch)
     async with mig.connected(scratch) as conn:
         await _seed(conn)
@@ -154,8 +156,6 @@ async def test_a_role_a_status_and_a_name_are_constrained(scratch):
                 "INSERT INTO sso_organization_members (user_id, organization_id, role) "
                 "VALUES ('u-1', 'o-1', 'owner')"
             )
-        with pytest.raises(asyncpg.CheckViolationError):
-            await conn.execute("UPDATE sso_organizations SET status = 'deleted' WHERE id = 'o-1'")
         # Names differ by more than their case.
         with pytest.raises(asyncpg.UniqueViolationError):
             await conn.execute(
@@ -180,12 +180,35 @@ async def test_a_limit_written_in_usd_gets_its_native_amount(scratch):
         updated = await conn.fetchval(
             "SELECT default_member_monthly_limit_amount FROM sso_organizations WHERE id = 'o-1'"
         )
+        # The limit an organization sets for one member is a pair on its membership.
+        await conn.execute("INSERT INTO users (id, email) VALUES ('u-1', 'a@example.edu')")
+        await conn.execute(
+            "INSERT INTO sso_organization_members (user_id, organization_id) VALUES ('u-1', 'o-1')"
+        )
+        member = "SELECT monthly_limit_usd, monthly_limit_amount, accounting_currency "
+        member += "FROM sso_organization_members WHERE user_id = 'u-1'"
+        joined = await conn.fetchrow(member)
+        await conn.execute(
+            "UPDATE sso_organization_members SET monthly_limit_usd = 30 WHERE user_id = 'u-1'"
+        )
+        limited = await conn.fetchrow(member)
+        # A write that names neither column leaves the pair as it is.
+        await conn.execute("UPDATE sso_organization_members SET role = 'admin'")
+        after_role = await conn.fetchrow(member)
+        await conn.execute(
+            "UPDATE sso_organization_members SET monthly_limit_usd = NULL WHERE user_id = 'u-1'"
+        )
+        cleared = await conn.fetchrow(member)
 
     # A USD ledger: the native amount is the USD amount, and no limit stays no limit.
     assert created["monthly_limit_amount"] == Decimal(1000)
     assert created["default_member_monthly_limit_amount"] is None
     assert created["accounting_currency"] == "USD"
     assert updated == Decimal(20)
+    assert tuple(joined) == (None, None, "USD")
+    assert tuple(limited) == (Decimal(30), Decimal(30), "USD")
+    assert tuple(after_role) == tuple(limited)
+    assert tuple(cleared) == (None, None, "USD")
 
 
 async def test_the_startup_check_of_the_ledger_covers_the_limits(scratch):
@@ -193,10 +216,16 @@ async def test_the_startup_check_of_the_ledger_covers_the_limits(scratch):
     async with mig.connected(scratch) as conn:
         complete = await accounting_schema_problems(conn)
         await conn.execute("DROP TRIGGER sso_organizations_accounting_amounts ON sso_organizations")
-        without_trigger = await accounting_schema_problems(conn)
+        await conn.execute(
+            "DROP TRIGGER sso_organization_members_accounting_amounts ON sso_organization_members"
+        )
+        without_triggers = await accounting_schema_problems(conn)
 
     assert complete == []
-    assert without_trigger == ["trigger sso_organizations_accounting_amounts is missing"]
+    assert without_triggers == [
+        "trigger sso_organizations_accounting_amounts is missing",
+        "trigger sso_organization_members_accounting_amounts is missing",
+    ]
 
 
 async def test_the_offline_currency_migration_converts_the_limits_of_an_organization(
@@ -220,6 +249,12 @@ async def test_the_offline_currency_migration_converts_the_limits_of_an_organiza
             "INSERT INTO spend_counters (scope_id, period, cost_usd, requests) "
             "VALUES ('o:o-1', 'm:2026-11', 12.5, 4)"
         )
+        await conn.execute("INSERT INTO users (id, email) VALUES ('u-1', 'a@example.edu')")
+        await conn.execute("INSERT INTO users (id, email) VALUES ('u-2', 'b@example.edu')")
+        await conn.execute(
+            "INSERT INTO sso_organization_members (user_id, organization_id, monthly_limit_usd) "
+            "VALUES ('u-1', 'o-1', 30), ('u-2', 'o-1', NULL)"
+        )
         try:
             result = await migrate_currency(conn, POLICY, apply=True)
             one = await conn.fetchrow(
@@ -234,6 +269,10 @@ async def test_the_offline_currency_migration_converts_the_limits_of_an_organiza
             counter = await conn.fetchrow(
                 "SELECT cost_usd, cost_amount, accounting_currency FROM spend_counters "
                 "WHERE scope_id = 'o:o-1'"
+            )
+            members = await conn.fetch(
+                "SELECT monthly_limit_usd, monthly_limit_amount, accounting_currency "
+                "FROM sso_organization_members ORDER BY user_id"
             )
             # A converted row takes the writes of the native ledger: a rename,
             # and a limit written in the native unit, whose USD equivalent follows.
@@ -271,6 +310,13 @@ async def test_the_offline_currency_migration_converts_the_limits_of_an_organiza
         "CNY",
     )
     assert rewritten == (Decimal(7000) / POLICY.usd_to_currency_rate).quantize(Decimal("0.0001"))
+    # The limit of a member converts as the limits of its organization do.
+    converted = result["tables"]["sso_organization_members"]
+    assert Decimal(converted["monthly_limit_amount"]["native_total"]) == Decimal("201.54")
+    assert [tuple(row) for row in members] == [
+        (Decimal("30"), Decimal("201.54"), "CNY"),
+        (None, None, "CNY"),
+    ]
 
 
 async def test_the_audit_rows_of_an_organization_are_found_through_their_index(scratch):

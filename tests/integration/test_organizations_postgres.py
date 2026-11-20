@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
@@ -165,7 +165,8 @@ async def test_making_an_organization_makes_the_accounts_of_its_connection_membe
     assert made["members_added"] == 1
     body = made["organization"]
     assert body["name"] == "Example University"
-    assert body["status"] == "active"
+    # An organization has no status until a route can change one.
+    assert "status" not in body
     assert body["member_count"] == 1
     assert body["monthly_limit_usd"] == 1000.0
     assert body["default_member_monthly_limit_usd"] is None
@@ -564,9 +565,11 @@ async def test_giving_the_role_asks_the_platform_administrator_to_confirm(
 # -- what an administrator is shown ---------------------------------------------------
 
 
-async def _seed_usage(pool, store, user_id: str, *, requests: int, cost: str) -> None:
-    """Requests of *user_id* today, with content an organization must never be shown."""
-    now = datetime.now(UTC)
+async def _seed_usage(
+    pool, store, user_id: str, *, requests: int, cost: str, at: datetime | None = None
+) -> None:
+    """Requests of *user_id* at *at*, by default now, with content an organization is never shown."""
+    now = at or datetime.now(UTC)
     key = await store.create_key(
         key_hash=secrets.token_hex(16),
         key_prefix=f"sk-{secrets.token_hex(3)}",
@@ -627,6 +630,9 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
         models = await alice.get("/user/organization/usage/models", headers=headers)
         by_member = await alice.get("/user/organization/usage/members", headers=headers)
         searched = await alice.get("/user/organization/members?search=BOB", headers=headers)
+        everything = await alice.get(
+            "/user/organization/members", params={"search": "%"}, headers=headers
+        )
         asked_at = datetime.now(UTC)
         hourly = await alice.get("/user/organization/overview?period=1d", headers=headers)
     finally:
@@ -677,6 +683,8 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
     # The organization manages a member; an administrator is the platform's.
     assert [member["protected"] for member in listed["members"]] == [False, True]
     assert [member["user_id"] for member in searched.json()["members"]] == [bob_id]
+    # A percent sign is searched for as it is: no member has one.
+    assert (everything.status_code, everything.json()["total"]) == (200, 0)
     assert [member["user_id"] for member in by_member.json()["members"]] == [bob_id, alice_id]
 
     page = requests.json()
@@ -726,6 +734,40 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
     assert sum(model["requests"] for model in shown["models"]) == 4
     assert len(shown["requests"]) == 4
     assert {request["user_id"] for request in shown["requests"]} == {bob_id}
+
+
+async def test_what_an_account_did_before_it_became_a_member_is_not_shown(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    """Making an organization enrolls accounts that did nothing for it."""
+    root, root_headers, _ = await _platform_admin(app, store)
+    alice, headers, alice_id = await _member(app, idp, store)
+    _bob, _bob_headers, bob_id = await _member(app, idp, store, email=BOB, sub="subject-2")
+    earlier = datetime.now(UTC) - timedelta(days=3)
+    # Bob used the gateway on its own before there was an organization.
+    await _seed_usage(clean_organizations, store, bob_id, requests=3, cost="6.00", at=earlier)
+    made = await _make_organization(root, root_headers)
+    await _set_role(root, root_headers, made["organization"]["id"], alice_id)
+    await _seed_usage(clean_organizations, store, bob_id, requests=2, cost="1.00")
+    try:
+        overview = await alice.get("/user/organization/overview?period=30d", headers=headers)
+        members = await alice.get("/user/organization/members?period=30d", headers=headers)
+        requests = await alice.get("/user/organization/usage/requests?period=30d", headers=headers)
+        detail = await alice.get(f"/user/organization/members/{bob_id}?period=30d", headers=headers)
+        own = await _bob.get("/user/usage?days=30", headers=_bob_headers)
+    finally:
+        async with clean_organizations.acquire() as conn:
+            await conn.execute("DELETE FROM user_daily_cost WHERE user_id = $1", bob_id)
+
+    assert (overview.json()["requests"], overview.json()["cost_usd"]) == (2, 1.0)
+    bob = next(m for m in members.json()["members"] if m["user_id"] == bob_id)
+    assert (bob["requests"], bob["cost_usd"]) == (2, 1.0)
+    assert len(requests.json()["requests"]) == 2
+    shown = detail.json()
+    assert len(shown["requests"]) == 2
+    assert sum(day["cost_usd"] for day in shown["days"]) == 1.0
+    # The account itself still has all of it.
+    assert own.status_code == 200, own.text
 
 
 # -- removing and restoring a member ---------------------------------------------------
@@ -989,16 +1031,31 @@ async def test_an_administrator_sets_the_limit_of_a_member_and_the_default(
     limits = {m["user_id"]: (m["monthly_limit_usd"], m["monthly_limit_source"]) for m in listed}
     assert limits[bob_id] == (20.0, "member")
     assert limits[carol_id] == (5.0, "default")
+    # The default is for the members an organization manages: not for its administrator.
+    assert limits[alice_id] == (None, "none")
+    assert {m["user_id"]: m["own_monthly_limit_usd"] for m in listed} == {
+        alice_id: None,
+        bob_id: 20.0,
+        carol_id: None,
+    }
+    assert all(m["platform_monthly_limit_usd"] is None for m in listed)
     async with clean_organizations.acquire() as conn:
         stored = await conn.fetch(
-            "SELECT user_id, quota_monthly_cost_usd FROM account_quotas "
+            "SELECT user_id, monthly_limit_usd FROM sso_organization_members "
             "WHERE user_id = ANY($1::text[])",
             [bob_id, carol_id],
         )
-    # The member's own limit is its account's quota; the default is copied to no account.
-    assert {row["user_id"]: row["quota_monthly_cost_usd"] for row in stored} == {
-        bob_id: Decimal("20.0000")
+        quotas = await conn.fetch(
+            "SELECT quota_monthly_cost_usd FROM account_quotas WHERE user_id = ANY($1::text[])",
+            [bob_id, carol_id],
+        )
+    # The limit of a member is on its membership, and the default is copied to no member.
+    assert {row["user_id"]: row["monthly_limit_usd"] for row in stored} == {
+        bob_id: Decimal("20.0000"),
+        carol_id: None,
     }
+    # The quota of an account is the platform administrator's: the organization writes none.
+    assert all(row["quota_monthly_cost_usd"] is None for row in quotas)
 
     cleared = await alice.put(limit, json={"monthly_limit_usd": None}, headers=headers)
     assert cleared.status_code == 200
@@ -1036,6 +1093,64 @@ async def test_an_administrator_sets_the_limit_of_a_member_and_the_default(
     ]
 
 
+async def test_an_organization_lowers_the_quota_of_a_member_and_never_raises_it(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    """What the platform administrator sets in Admin is not the organization's to loosen."""
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    alice, headers, _alice_id = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    key = generate_api_key()
+    await store.create_key(
+        key_hash=hash_api_key(key), key_prefix=key[:12], user_id=bob_id, account_id=bob_id
+    )
+    limited = await root.patch(
+        f"/admin/users/{bob_id}", json={"quota_monthly_cost_usd": "10"}, headers=root_headers
+    )
+    assert limited.status_code == 200, limited.text
+    limit = f"/user/organization/members/{bob_id}/monthly-limit"
+
+    async def at_the_door():
+        row = await store._store.get_auth_context_with_spend(hash_api_key(key))
+        return row["quota_monthly_cost_usd"]
+
+    async def shown() -> tuple:
+        listed = (await alice.get("/user/organization/members", headers=headers)).json()
+        bob = next(m for m in listed["members"] if m["user_id"] == bob_id)
+        return (
+            bob["monthly_limit_usd"],
+            bob["monthly_limit_source"],
+            bob["own_monthly_limit_usd"],
+            bob["platform_monthly_limit_usd"],
+        )
+
+    async def in_admin():
+        async with clean_organizations.acquire() as conn:
+            return await conn.fetchval(
+                "SELECT quota_monthly_cost_usd FROM account_quotas WHERE user_id = $1", bob_id
+            )
+
+    assert await shown() == (10.0, "platform", None, 10.0)
+
+    raised = await alice.put(limit, json={"monthly_limit_usd": "80"}, headers=headers)
+    assert raised.status_code == 200, raised.text
+    # The organization's wish is kept, and the lower limit is still the platform's.
+    assert await shown() == (10.0, "platform", 80.0, 10.0)
+    assert (await at_the_door(), await in_admin()) == (Decimal("10.0000"), Decimal("10.0000"))
+
+    cleared = await alice.put(limit, json={"monthly_limit_usd": None}, headers=headers)
+    assert cleared.status_code == 200, cleared.text
+    # Clearing the organization's limit does not clear the platform's.
+    assert await shown() == (10.0, "platform", None, 10.0)
+    assert (await at_the_door(), await in_admin()) == (Decimal("10.0000"), Decimal("10.0000"))
+
+    lowered = await alice.put(limit, json={"monthly_limit_usd": "5"}, headers=headers)
+    assert lowered.status_code == 200, lowered.text
+    assert await shown() == (5.0, "member", 5.0, 10.0)
+    assert (await at_the_door(), await in_admin()) == (Decimal("5.0000"), Decimal("10.0000"))
+
+
 async def test_a_member_without_a_limit_of_its_own_is_held_to_the_default_at_the_door(
     app, idp, store, members_sign_straight_in
 ):
@@ -1045,6 +1160,13 @@ async def test_a_member_without_a_limit_of_its_own_is_held_to_the_default_at_the
     key = generate_api_key()
     await store.create_key(
         key_hash=hash_api_key(key), key_prefix=key[:12], user_id=bob_id, account_id=bob_id
+    )
+    admin_key = generate_api_key()
+    await store.create_key(
+        key_hash=hash_api_key(admin_key),
+        key_prefix=admin_key[:12],
+        user_id=state["alice"][2],
+        account_id=state["alice"][2],
     )
     outsider_id = await existing_user(store, "someone@elsewhere.org")
     outsider_key = generate_api_key()
@@ -1073,6 +1195,8 @@ async def test_a_member_without_a_limit_of_its_own_is_held_to_the_default_at_the
 
     # No limit, then the organization's default, then the member's own.
     assert (before, with_default, with_own) == (None, Decimal("5.0000"), Decimal("20.0000"))
+    # The default does not hold the administrator that set it.
+    assert await monthly_quota(admin_key) is None
     # An account in no organization is not given anyone's default.
     assert await monthly_quota(outsider_key) is None
 

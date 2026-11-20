@@ -42,7 +42,7 @@ from serving.storage.base import (
     Row,
 )
 from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
-from serving.storage.organizations import PostgresOrganizationsMixin
+from serving.storage.organizations import PostgresOrganizationsMixin, member_quota_join
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.storage.sso import PostgresSsoMixin
@@ -459,10 +459,14 @@ _KEY_SPEND_JOIN = (
 #: The row is the record; the key's own copy stands in for an account without
 #: one, and for a daily quota the row leaves unset.
 #:
-#: A member of an organization that has no monthly quota of its own takes the
-#: organization's default (``o``, joined with the quota row): the default is
-#: read here, with the lookup, and never copied onto the account, so a change
-#: of it reaches every such member at once.
+#: The monthly quota of a member of an organization is the lower of two: this
+#: quota of the account, which the platform administrator sets, and what the
+#: organization has for the member -- the limit it set on the membership
+#: (``om``), else its default (``o``), and nothing for an administrator
+#: (``ou`` is the member's account). An organization so brings a quota down
+#: and never above the platform administrator's. Its limits are read here,
+#: with the lookup, and never copied onto the account, so a change of one
+#: reaches its members at once.
 _ACCOUNT_DAILY_QUOTA = "COALESCE(aq.quota_daily_cost_usd, k.quota_daily_cost_usd)"
 _OWN_MONTHLY_QUOTA = (
     "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_usd "
@@ -472,19 +476,9 @@ _OWN_MONTHLY_QUOTA_AMOUNT = (
     "CASE WHEN aq.user_id IS NOT NULL THEN aq.quota_monthly_cost_amount "
     "ELSE k.quota_monthly_cost_amount END"
 )
-#: Whether the account has a monthly quota of its own, in either column: a row
-#: that predates its native column has only the USD one.
-_HAS_OWN_MONTHLY_QUOTA = (
-    f"({_OWN_MONTHLY_QUOTA} IS NOT NULL OR {_OWN_MONTHLY_QUOTA_AMOUNT} IS NOT NULL)"
-)
-_ACCOUNT_MONTHLY_QUOTA = (
-    f"CASE WHEN {_HAS_OWN_MONTHLY_QUOTA} THEN {_OWN_MONTHLY_QUOTA} "
-    "ELSE o.default_member_monthly_limit_usd END"
-)
-_ACCOUNT_MONTHLY_QUOTA_AMOUNT = (
-    f"CASE WHEN {_HAS_OWN_MONTHLY_QUOTA} THEN {_OWN_MONTHLY_QUOTA_AMOUNT} "
-    "ELSE o.default_member_monthly_limit_amount END"
-)
+#: The quota the lookups enforce: ``mq``, joined with :data:`_ACCOUNT_QUOTA_JOIN`.
+_ACCOUNT_MONTHLY_QUOTA = "mq.usd"
+_ACCOUNT_MONTHLY_QUOTA_AMOUNT = "mq.amount"
 _ACCOUNT_QUOTA_COLUMNS = (
     f"{_ACCOUNT_DAILY_QUOTA} AS quota_daily_cost_usd, "
     f"{_ACCOUNT_MONTHLY_QUOTA} AS quota_monthly_cost_usd"
@@ -493,6 +487,13 @@ _ACCOUNT_QUOTA_JOIN = (
     "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
     "LEFT JOIN sso_organization_members om ON om.user_id = k.user_id "
     "LEFT JOIN sso_organizations o ON o.id = om.organization_id "
+    "LEFT JOIN users ou ON ou.id = om.user_id "
+    + member_quota_join(
+        own=(_OWN_MONTHLY_QUOTA, _OWN_MONTHLY_QUOTA_AMOUNT),
+        member="om",
+        organization="o",
+        account_role="ou.role",
+    )
 )
 
 #: The organization of key ``k``'s account (``o``, from
@@ -1192,32 +1193,6 @@ class PostgresOperationalStore(
     async def _lock_account_on(self, conn: asyncpg.Connection, user_id: str) -> None:
         """Take the lock every write to *user_id*'s keys takes first."""
         await _lock_account_keys(conn, user_id)
-
-    async def _set_account_monthly_quota_on(
-        self, conn: asyncpg.Connection, user_id: str, *, usd: Any, amount: Any
-    ) -> None:
-        """Write *user_id*'s monthly quota, in the caller's transaction.
-
-        As :meth:`update_key` writes it: the copies on the account's unrevoked
-        keys and the account's record together, so the two never differ. The
-        daily quota stays as it is. None in both clears the monthly quota. The
-        caller holds the account's key lock (:meth:`_lock_account_on`).
-        """
-        policy = get_accounting_policy()
-        if amount is None and usd is not None:
-            amount = policy.from_usd(usd)
-        if usd is None and amount is not None:
-            usd = policy.to_usd(amount)
-        await conn.execute(
-            "UPDATE api_keys SET quota_monthly_cost_usd = $2, quota_monthly_cost_amount = $3 "
-            "WHERE user_id = $1 AND status <> 'revoked'",
-            user_id,
-            usd,
-            amount,
-        )
-        await _set_account_quota(
-            conn, user_id, quota_monthly_cost_usd=usd, quota_monthly_cost_amount=amount
-        )
 
     async def _suspend_user_on(self, conn: asyncpg.Connection, user_id: str, **fields: Any) -> None:
         """Suspend *user_id* and revoke its keys and sessions, in the caller's transaction."""

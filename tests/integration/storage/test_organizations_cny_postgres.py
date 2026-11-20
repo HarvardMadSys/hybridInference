@@ -117,7 +117,7 @@ async def test_the_limits_of_an_organization_are_kept_exactly_in_the_native_colu
     assert row["accounting_currency"] == "CNY"
 
 
-async def test_the_limit_of_a_member_is_kept_exactly_on_its_record_and_its_keys():
+async def test_the_limit_of_a_member_is_kept_exactly_on_its_membership():
     exact = Decimal("100.000000000001")
     async with cny_store() as (store, pool):
         await _accounts(store, "u1")
@@ -132,15 +132,30 @@ async def test_the_limit_of_a_member_is_kept_exactly_on_its_record_and_its_keys(
         )
 
         async def stored() -> tuple:
-            record = await pool.fetchrow(
-                "SELECT quota_monthly_cost_amount, quota_monthly_cost_usd, accounting_currency "
-                "FROM account_quotas WHERE user_id = 'u1'"
+            row = await pool.fetchrow(
+                "SELECT monthly_limit_amount, monthly_limit_usd, accounting_currency "
+                "FROM sso_organization_members WHERE user_id = 'u1'"
             )
-            key = await pool.fetchrow(
-                "SELECT quota_monthly_cost_amount, quota_monthly_cost_usd, accounting_currency "
-                "FROM api_keys WHERE user_id = 'u1'"
+            return tuple(row)
+
+        async def account_quota() -> tuple:
+            record = await pool.fetchval(
+                "SELECT quota_monthly_cost_amount FROM account_quotas WHERE user_id = 'u1'"
             )
-            return tuple(record), tuple(key)
+            key = await pool.fetchval(
+                "SELECT quota_monthly_cost_amount FROM api_keys WHERE user_id = 'u1'"
+            )
+            return record, key
+
+        async def enforced():
+            looked_up = await store.get_auth_context_with_spend("h-u1")
+            by_account = await store.get_organization_spend_scope("u1")
+            limits = {
+                quota.native_limit(row, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
+                for row in (looked_up, by_account)
+            }
+            assert len(limits) == 1
+            return limits.pop()
 
         # As the route sends it: the native amount, and its USD equivalent to four places.
         saved = await store.set_organization_member_limit(
@@ -158,7 +173,25 @@ async def test_the_limit_of_a_member_is_kept_exactly_on_its_record_and_its_keys(
             "o-1", "u1", usd=Decimal("10"), amount=None, actor=ORG_ADMIN
         )
         after_usd = await stored()
-        looked_up = await store.get_auth_context_with_spend("h-u1")
+        alone = await enforced()
+        untouched = await account_quota()
+
+        # The platform administrator's quota of the account, in the native unit.
+        await pool.execute(
+            "UPDATE account_quotas SET quota_monthly_cost_amount = 50 WHERE user_id = 'u1'"
+        )
+        under_the_platform = await enforced()
+        # One part in 10^12 above it: both are 7.4427 in USD to four places, and
+        # the native amounts still say which is the lower.
+        await store.set_organization_member_limit(
+            "o-1", "u1", usd=None, amount=Decimal("50.000000000001"), actor=ORG_ADMIN
+        )
+        a_hair_above = await enforced()
+        await store.set_organization_member_limit(
+            "o-1", "u1", usd=None, amount=Decimal("49.999999999999"), actor=ORG_ADMIN
+        )
+        a_hair_below = await enforced()
+
         cleared = await store.set_organization_member_limit(
             "o-1", "u1", usd=None, amount=None, actor=ORG_ADMIN
         )
@@ -166,18 +199,18 @@ async def test_the_limit_of_a_member_is_kept_exactly_on_its_record_and_its_keys(
 
     usd = (exact / RATE).quantize(FOUR_PLACES)
     assert saved == (orgs.UPDATED, None, exact)
-    assert after_native == ((exact, usd, "CNY"), (exact, usd, "CNY"))
+    assert after_native == (exact, usd, "CNY")
     assert above == (orgs.ABOVE_LIMIT, exact, None)
     assert by_usd == (orgs.UPDATED, exact, Decimal("67.18"))
-    assert after_usd == (
-        (Decimal("67.18"), Decimal("10"), "CNY"),
-        (Decimal("67.18"), Decimal("10"), "CNY"),
-    )
-    assert quota.native_limit(
-        looked_up, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
-    ) == Decimal("67.18")
-    assert cleared == (orgs.UPDATED, Decimal("67.18"), None)
-    assert after_clear == ((None, None, "CNY"), (None, None, "CNY"))
+    assert after_usd == (Decimal("67.18"), Decimal("10"), "CNY")
+    assert alone == Decimal("67.18")
+    # The quota of the account is not the organization's to write.
+    assert untouched == (None, None)
+    assert under_the_platform == Decimal("50")
+    assert a_hair_above == Decimal("50")
+    assert a_hair_below == Decimal("49.999999999999")
+    assert cleared == (orgs.UPDATED, Decimal("49.999999999999"), None)
+    assert after_clear == (None, None, "CNY")
 
 
 async def test_the_counter_and_the_lookups_of_an_organization_hold_native_amounts():

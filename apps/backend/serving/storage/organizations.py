@@ -22,7 +22,6 @@ import asyncpg
 
 from serving.accounting import get_accounting_policy
 from serving.audit import AuditTarget, audit_columns
-from serving.quota import native_limit
 from serving.storage.audit_schema import insert_audit_row
 
 if TYPE_CHECKING:
@@ -71,7 +70,7 @@ SIGN_IN_LOCK_SQL = f"SELECT pg_advisory_xact_lock_shared({_MEMBERSHIP_LOCK})"
 LIMITS = ("monthly_limit", "default_member_monthly_limit")
 
 _ORGANIZATION_SELECT = (
-    "SELECT o.id, o.name, o.status, o.monthly_limit_usd, o.monthly_limit_amount, "
+    "SELECT o.id, o.name, o.monthly_limit_usd, o.monthly_limit_amount, "
     "o.default_member_monthly_limit_usd, o.default_member_monthly_limit_amount, "
     "o.accounting_currency, o.created_at, o.updated_at, "
     "(SELECT COUNT(*) FROM sso_organization_members m WHERE m.organization_id = o.id) "
@@ -84,22 +83,83 @@ _ORGANIZATION_SELECT = (
 
 _MEMBERSHIP_SELECT = (
     "SELECT m.user_id, m.organization_id, m.role, m.joined_at, m.removed_at, m.removed_by, "
-    "o.name AS organization_name, o.status AS organization_status "
+    "o.name AS organization_name "
     "FROM sso_organization_members m JOIN sso_organizations o ON o.id = m.organization_id "
 )
 
 
 #: The monthly quota an account has of its own (:func:`_own_quota_join`); NULL
-#: in both columns is none.
+#: in both columns is none. The platform administrator sets it, and an
+#: organization never writes it.
 _OWN_QUOTA_USD = "COALESCE(aq.quota_monthly_cost_usd, ak.quota_monthly_cost_usd)"
 _OWN_QUOTA_AMOUNT = "COALESCE(aq.quota_monthly_cost_amount, ak.quota_monthly_cost_amount)"
 
-#: The monthly limit that applies to a member, in the ledger currency: its own
-#: quota, else the default of its organization (``o``). NULL is no limit.
-#: ``$2`` is the fixed policy rate, for a row written before its native column.
+
+def member_quota_join(
+    *, own: tuple[str, str], member: str, organization: str, account_role: str
+) -> str:
+    """Join ``mq``: the monthly quota the request path enforces for an account.
+
+    ``mq.usd`` and ``mq.amount``, NULL in both for none. It is the lower of
+    two:
+
+    - *own*, the quota of the account itself, a USD expression and a native
+      one. The platform administrator sets it.
+    - what its organization has for it: the limit it set for the member
+      (*member*, the alias of the row of ``sso_organization_members``), else
+      its default (*organization*, the alias of its own row). Nothing for an
+      account that is no member, and nothing for an administrator, of the
+      organization or of the platform (*account_role* is the SQL of the
+      account's role): the organization sets no limit of those
+      (:func:`is_protected`), so its default does not reach them either.
+
+    So an organization can bring the quota of a member down, and never above
+    what the platform administrator set. The two are compared in the native
+    amounts where both have one, else in USD: a quota row from before its
+    native column has only the USD one, and a native amount is not judged
+    through its rounded USD equivalent when it need not be.
+    """
+    own_usd, own_amount = own
+    has = f"({member}.monthly_limit_usd IS NOT NULL OR {member}.monthly_limit_amount IS NOT NULL)"
+    none = f"({member}.user_id IS NULL OR {member}.role = 'admin' OR {account_role} = 'admin')"
+
+    def limit(suffix: str) -> str:
+        return (
+            f"CASE WHEN {none} THEN NULL WHEN {has} THEN {member}.monthly_limit_{suffix} "
+            f"ELSE {organization}.default_member_monthly_limit_{suffix} END AS {suffix}"
+        )
+
+    applies = (
+        "(lim.usd IS NOT NULL OR lim.amount IS NOT NULL) "
+        "AND ((own.usd IS NULL AND own.amount IS NULL) "
+        "OR CASE WHEN lim.amount IS NOT NULL AND own.amount IS NOT NULL "
+        "THEN lim.amount <= own.amount ELSE lim.usd <= own.usd END)"
+    )
+    return (
+        "LEFT JOIN LATERAL ("
+        f"  SELECT CASE WHEN {applies} THEN lim.usd ELSE own.usd END AS usd, "
+        f"         CASE WHEN {applies} THEN lim.amount ELSE own.amount END AS amount "
+        f"  FROM (SELECT {limit('usd')}, {limit('amount')}) lim, "
+        f"       (SELECT {own_usd} AS usd, {own_amount} AS amount) own"
+        ") mq ON TRUE "
+    )
+
+
+#: What an organization has for a member of a member list (``s``, ``u``, ``o``),
+#: in the ledger currency: the limit it set for the member, else its default;
+#: NULL for an administrator. ``$2`` is the fixed policy rate.
+_ORGANIZATION_LIMIT = (
+    "CASE WHEN s.role = 'admin' OR u.role = 'admin' THEN NULL ELSE "
+    "COALESCE(s.monthly_limit_amount, s.monthly_limit_usd * $2::numeric, "
+    "o.default_member_monthly_limit_amount, o.default_member_monthly_limit_usd * $2::numeric) END"
+)
+
+#: The monthly limit that applies to a member, in the ledger currency: the
+#: lower of the account's own quota and what its organization has for it
+#: (``LEAST`` leaves a NULL out). NULL is no limit. ``$2`` is the fixed policy
+#: rate, for a row written before its native column.
 _MEMBER_LIMIT = (
-    f"COALESCE({_OWN_QUOTA_AMOUNT}, {_OWN_QUOTA_USD} * $2::numeric, "
-    "o.default_member_monthly_limit_amount, o.default_member_monthly_limit_usd * $2::numeric)"
+    f"LEAST(COALESCE({_OWN_QUOTA_AMOUNT}, {_OWN_QUOTA_USD} * $2::numeric), {_ORGANIZATION_LIMIT})"
 )
 
 #: How far the month's spend of a member is into that limit: 0.59 for 59%. A
@@ -140,7 +200,8 @@ def _scope(member_parameter: int | None = None) -> str:
     """
     member = f" AND m.user_id = ${member_parameter}" if member_parameter else ""
     return (
-        "scope AS (SELECT m.user_id, m.role, m.joined_at, m.removed_at "
+        "scope AS (SELECT m.user_id, m.role, m.joined_at, m.removed_at, "
+        "m.monthly_limit_usd, m.monthly_limit_amount "
         f"FROM sso_organization_members m WHERE m.organization_id = $1{member})"
     )
 
@@ -153,6 +214,28 @@ _AMOUNT = "COALESCE(c.cost_amount, c.cost_usd * $2::numeric)"
 _LOG_AMOUNT = "COALESCE(l.cost_amount, l.cost_usd * $2::numeric)"
 
 _THIS_MONTH = "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
+
+#: The figures of a member start when its account became a member (``s`` is its
+#: scope row): what the account did before is not its organization's to see. An
+#: attach makes accounts members that did nothing for it, and their earlier
+#: requests name models, projects and keys. A request has its instant. A cost
+#: counter is one row for a UTC day, so the day of the joining counts whole.
+_SINCE_JOINED_LOG = "l.timestamp >= s.joined_at"
+_SINCE_JOINED_DAY = "c.day >= to_char(s.joined_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
+
+
+def contains_pattern(text: str) -> str:
+    """A ``LIKE`` pattern that finds *text* anywhere, in lower case.
+
+    ``%``, ``_`` and the backslash of the text are escaped (:data:`_LIKE`), so
+    a search for ``50%`` finds that text and not everything that has ``50``.
+    """
+    escaped = text.lower().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
+
+#: ``LIKE`` against a :func:`contains_pattern`; ``{n}`` is its parameter number.
+_LIKE = "LIKE ${n} ESCAPE '\\'"
 
 
 _NO_PARAMETER = object()
@@ -174,9 +257,9 @@ def _member_filters(
     if search:
         filters.append(
             (
-                "(lower(COALESCE(u.email, '')) LIKE ${n} "
-                "OR lower(COALESCE(u.user_name, '')) LIKE ${n})",
-                f"%{search.lower()}%",
+                f"(lower(COALESCE(u.email, '')) {_LIKE} "
+                f"OR lower(COALESCE(u.user_name, '')) {_LIKE})",
+                contains_pattern(search),
             )
         )
     return filters
@@ -254,6 +337,13 @@ def _own_quota_join(account: str) -> str:
 #: The two columns of that quota, as a list of members and a limit read select them.
 _OWN_QUOTA_COLUMNS = (
     f"{_OWN_QUOTA_USD} AS quota_monthly_cost_usd, {_OWN_QUOTA_AMOUNT} AS quota_monthly_cost_amount"
+)
+
+
+#: :func:`member_quota_join` for a membership ``om`` of organization ``o`` with
+#: its account ``u`` and that account's own quota (:func:`_own_quota_join`).
+_MEMBER_QUOTA_JOIN = member_quota_join(
+    own=(_OWN_QUOTA_USD, _OWN_QUOTA_AMOUNT), member="om", organization="o", account_role="u.role"
 )
 
 
@@ -374,11 +464,6 @@ class PostgresOrganizationsMixin:
         raise NotImplementedError
 
     async def _suspend_user_on(self, conn: Any, user_id: str, **fields: Any) -> None:
-        raise NotImplementedError
-
-    async def _set_account_monthly_quota_on(
-        self, conn: Any, user_id: str, *, usd: Any, amount: Any
-    ) -> None:
         raise NotImplementedError
 
     # -- the organization ----------------------------------------------------
@@ -809,20 +894,20 @@ class PostgresOrganizationsMixin:
         amount: Any = None,
         actor: AuditActor,
     ) -> tuple[str, Any, Any]:
-        """Set or clear the monthly quota of a member's account.
+        """Set or clear the monthly limit an organization has for one member.
 
-        The quota the request path already enforces for an account
-        (``account_quotas``), written as an administrator's quota edit writes
-        it, with the audit row: one transaction. None clears it, and the
-        organization's default then applies. Not for an administrator
-        (``"protected"``), nor above the organization's own limit
-        (``"above_limit"``). Returns the outcome with the old and the new
-        value in the ledger currency.
+        The limit is the organization's own, on the member's row. The quota of
+        the account (``account_quotas``) is the platform administrator's: it
+        is not read and not written here, and the request path enforces the
+        lower of the two (:func:`member_quota_join`). So this can bring the
+        quota of a member down and never above what the platform administrator
+        set. None clears the limit, and the organization's default then
+        applies. Not for an administrator (``"protected"``), nor above the
+        organization's own limit (``"above_limit"``). One transaction with the
+        audit row. Returns the outcome with the old and the new value in the
+        ledger currency.
         """
-        policy = get_accounting_policy()
-        value = amount if policy.native else usd
-        if policy.native and value is None and usd is not None:
-            value = policy.from_usd(usd)
+        column, value = limit_write("monthly_limit", usd, amount)
         audit = audit_columns(
             admin_ip=None,
             target_user_id=None,
@@ -831,14 +916,14 @@ class PostgresOrganizationsMixin:
             organization_id=organization_id,
         )
         async with self._pool.acquire() as conn, conn.transaction():
-            await self._lock_account_on(conn, user_id)
             member = await conn.fetchrow(
                 "SELECT m.role, u.role AS account_role, u.email, "
-                f"o.monthly_limit_usd, o.monthly_limit_amount, {_OWN_QUOTA_COLUMNS} "
+                "m.monthly_limit_usd AS member_limit_usd, "
+                "m.monthly_limit_amount AS member_limit_amount, "
+                "o.monthly_limit_usd, o.monthly_limit_amount "
                 "FROM sso_organization_members m "
                 "JOIN users u ON u.id = m.user_id "
                 "JOIN sso_organizations o ON o.id = m.organization_id "
-                f"{_own_quota_join('m.user_id')}"
                 "WHERE m.user_id = $1 AND m.organization_id = $2 FOR UPDATE OF m",
                 user_id,
                 organization_id,
@@ -847,16 +932,19 @@ class PostgresOrganizationsMixin:
                 return NOT_FOUND, None, None
             if is_protected(member):
                 return PROTECTED, None, None
-            old = (
-                native_limit(member, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
-                if policy.native
-                else member["quota_monthly_cost_usd"]
-            )
+            old = limit_value(member, "member_limit")
             if _above(value, limit_value(member, "monthly_limit")):
                 return ABOVE_LIMIT, old, None
-            if old == value:
-                return UNCHANGED, old, value
-            await self._set_account_monthly_quota_on(conn, user_id, usd=usd, amount=amount)
+            after = await conn.fetchrow(
+                f"UPDATE sso_organization_members SET {column} = $2 WHERE user_id = $1 "
+                "RETURNING monthly_limit_usd AS member_limit_usd, "
+                "monthly_limit_amount AS member_limit_amount",
+                user_id,
+                value,
+            )
+            new = limit_value(after, "member_limit")
+            if old == new:
+                return UNCHANGED, old, new
             await insert_audit_row(
                 conn,
                 columns=audit,
@@ -864,12 +952,12 @@ class PostgresOrganizationsMixin:
                 details={
                     "email": member["email"],
                     "old": str(old) if old is not None else None,
-                    "new": str(value) if value is not None else None,
-                    "currency": policy.currency,
+                    "new": str(new) if new is not None else None,
+                    "currency": get_accounting_policy().currency,
                 },
                 success=True,
             )
-        return UPDATED, old, value
+        return UPDATED, old, new
 
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed *user_id*.
@@ -890,26 +978,25 @@ class PostgresOrganizationsMixin:
         """The organization of an account as the request path checks it; None for none.
 
         The ``organization_*`` columns the API-key lookups carry, with the
-        monthly quota of the member under the names those lookups give it: its
-        own, else the default of the organization. For an identity resolved by
-        account rather than by key, whose lookup read neither. A request-path
-        read (:data:`~serving.storage.postgres_operational.REQUEST_PATH_READS`).
+        monthly quota of the account under the names those lookups give it:
+        the lower of its own and what its organization has for it
+        (:func:`member_quota_join`). For an identity resolved by account rather
+        than by key, whose lookup read neither. A request-path read
+        (:data:`~serving.storage.postgres_operational.REQUEST_PATH_READS`).
         """
-        own = f"({_OWN_QUOTA_USD} IS NOT NULL OR {_OWN_QUOTA_AMOUNT} IS NOT NULL)"
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT o.id AS organization_id, o.name AS organization_name, "
                 "o.monthly_limit_usd AS organization_limit_usd, "
                 "o.monthly_limit_amount AS organization_limit_amount, "
-                f"CASE WHEN {own} THEN {_OWN_QUOTA_USD} "
-                "ELSE o.default_member_monthly_limit_usd END AS quota_monthly_cost_usd, "
-                f"CASE WHEN {own} THEN {_OWN_QUOTA_AMOUNT} "
-                "ELSE o.default_member_monthly_limit_amount END AS quota_monthly_cost_amount, "
+                "mq.usd AS quota_monthly_cost_usd, mq.amount AS quota_monthly_cost_amount, "
                 "COALESCE(oc.cost_usd, 0) AS organization_spent_month_usd, "
                 "COALESCE(oc.cost_amount, 0) AS organization_spent_month_amount "
                 "FROM sso_organization_members om "
                 "JOIN sso_organizations o ON o.id = om.organization_id "
+                "JOIN users u ON u.id = om.user_id "
                 f"{_own_quota_join('om.user_id')}"
+                f"{_MEMBER_QUOTA_JOIN}"
                 "LEFT JOIN spend_counters oc ON oc.scope_id = 'o:' || o.id "
                 " AND oc.period = 'm:' || to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM') "
                 "WHERE om.user_id = $1",
@@ -920,10 +1007,13 @@ class PostgresOrganizationsMixin:
     # -- what an administrator is shown --------------------------------------
     #
     # Every figure is a sum over the accounts that have a membership in the
-    # organization. Spend comes from the cost counters (``user_daily_cost``),
-    # the days the quota gates read; requests, tokens and models come from the
-    # request log, bounded by the period. No statement here selects a
-    # request's content.
+    # organization, from when each became a member (:data:`_SINCE_JOINED_LOG`).
+    # Spend comes from the cost counters (``user_daily_cost``), the days the
+    # quota gates read; requests, tokens and models come from the request log,
+    # bounded by the period. One figure is not cut at the joining: what a
+    # member spent this month, because that is what its monthly limit is
+    # compared with, and the request path counts the whole month. No statement
+    # here selects a request's content.
 
     async def list_organization_administrators(self, organization_id: str) -> list[dict]:
         """The members that have the administrator role, by email."""
@@ -1001,22 +1091,26 @@ class PostgresOrganizationsMixin:
             "spent AS ("
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-            "  WHERE c.day >= $3 AND c.day <= $4 GROUP BY c.user_id), "
+            f"  WHERE c.day >= $3 AND c.day <= $4 AND {_SINCE_JOINED_DAY} GROUP BY c.user_id), "
             "month AS ("
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
             f"  WHERE c.day >= {_THIS_MONTH} GROUP BY c.user_id), "
             "seen AS ("
-            "  SELECT c.user_id, MAX(c.last_request_at) AS last_request_at "
+            "  SELECT c.user_id, MAX(c.last_request_at) "
+            "         FILTER (WHERE c.last_request_at >= s.joined_at) AS last_request_at "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id GROUP BY c.user_id), "
             "logged AS ("
             "  SELECT l.user_id, COUNT(*) AS requests, "
             "         COALESCE(SUM(l.total_tokens), 0) AS total_tokens "
             "  FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-            "  WHERE l.timestamp >= $5 AND l.timestamp < $6 GROUP BY l.user_id) "
+            f"  WHERE l.timestamp >= $5 AND l.timestamp < $6 AND {_SINCE_JOINED_LOG} "
+            "  GROUP BY l.user_id) "
             "SELECT s.user_id, s.role, s.joined_at, s.removed_at, "
             "       u.email, u.user_name, u.status, u.role AS account_role, u.last_login_at, "
             f"       {_OWN_QUOTA_COLUMNS}, "
+            "       s.monthly_limit_usd AS member_limit_usd, "
+            "       s.monthly_limit_amount AS member_limit_amount, "
             "       COALESCE(spent.cost_usd, 0) AS cost_usd, "
             "       COALESCE(spent.cost_amount, 0) AS cost_amount, "
             "       COALESCE(month.cost_usd, 0) AS spent_month_usd, "
@@ -1078,7 +1172,8 @@ class PostgresOrganizationsMixin:
                 f"WITH {scope} "
                 f"SELECT c.day, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
                 "FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-                "WHERE c.day >= $3 AND c.day <= $4 GROUP BY c.day ORDER BY c.day",
+                f"WHERE c.day >= $3 AND c.day <= $4 AND {_SINCE_JOINED_DAY} "
+                "GROUP BY c.day ORDER BY c.day",
                 *params,
             )
             scope, params = scoped(rate, start, end)
@@ -1090,7 +1185,8 @@ class PostgresOrganizationsMixin:
                 "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
                 f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                "WHERE l.timestamp >= $3 AND l.timestamp < $4 GROUP BY 1 ORDER BY 1",
+                f"WHERE l.timestamp >= $3 AND l.timestamp < $4 AND {_SINCE_JOINED_LOG} "
+                "GROUP BY 1 ORDER BY 1",
                 *params,
             )
             models = await conn.fetch(
@@ -1102,7 +1198,7 @@ class PostgresOrganizationsMixin:
                 "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
                 f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                "WHERE l.timestamp >= $3 AND l.timestamp < $4 "
+                f"WHERE l.timestamp >= $3 AND l.timestamp < $4 AND {_SINCE_JOINED_LOG} "
                 "GROUP BY l.model_id ORDER BY 6 DESC, 2 DESC, l.model_id",
                 *params,
             )
@@ -1112,7 +1208,7 @@ class PostgresOrganizationsMixin:
                 "SELECT COUNT(*) AS requests, COALESCE(SUM(l.total_tokens), 0) AS total_tokens, "
                 "       COUNT(DISTINCT l.user_id) AS members_with_requests "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                "WHERE l.timestamp >= $2 AND l.timestamp < $3",
+                f"WHERE l.timestamp >= $2 AND l.timestamp < $3 AND {_SINCE_JOINED_LOG}",
                 *params,
             )
             member_count = await conn.fetchval(
@@ -1150,7 +1246,7 @@ class PostgresOrganizationsMixin:
         """
         start, end = utc_bounds(first_day, last_day)
         params: list[Any] = [organization_id, start, end]
-        where = ["l.timestamp >= $2", "l.timestamp < $3"]
+        where = ["l.timestamp >= $2", "l.timestamp < $3", _SINCE_JOINED_LOG]
         if user_id is not None:
             params.append(user_id)
             where.append(f"l.user_id = ${len(params)}")
@@ -1160,10 +1256,10 @@ class PostgresOrganizationsMixin:
         if errors is not None:
             where.append("l.status_code >= 400" if errors else "COALESCE(l.status_code, 0) < 400")
         if search:
-            params.append(f"%{search.lower()}%")
+            params.append(contains_pattern(search))
+            like = _LIKE.replace("${n}", f"${len(params)}")
             where.append(
-                f"(lower(COALESCE(u.email, '')) LIKE ${len(params)} "
-                f"OR lower(COALESCE(u.user_name, '')) LIKE ${len(params)})"
+                f"(lower(COALESCE(u.email, '')) {like} OR lower(COALESCE(u.user_name, '')) {like})"
             )
         if before is not None:
             params.extend(before)
@@ -1216,13 +1312,14 @@ class PostgresOrganizationsMixin:
             params.append([f"{prefix}%" for prefix in prefixes])
             where.append(f"a.action LIKE ANY(${len(params)}::text[])")
         if search:
-            params.append(f"%{search.lower()}%")
+            params.append(contains_pattern(search))
+            like = _LIKE.replace("${n}", f"${len(params)}")
             where.append(
-                f"(lower(a.action) LIKE ${len(params)} "
+                f"(lower(a.action) {like} "
                 f"OR (a.actor_type = 'user' "
-                f"AND lower(COALESCE(actor.email, '')) LIKE ${len(params)}) "
-                f"OR lower(COALESCE(target.email, '')) LIKE ${len(params)} "
-                f"OR lower(COALESCE(a.details::text, '')) LIKE ${len(params)})"
+                f"AND lower(COALESCE(actor.email, '')) {like}) "
+                f"OR lower(COALESCE(target.email, '')) {like} "
+                f"OR lower(COALESCE(a.details::text, '')) {like})"
             )
         source = (
             "FROM admin_audit_log a "
