@@ -10,7 +10,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
-import { SeriesFigure, SpendByModel } from './figures';
+import { SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import { organizationHref } from './OrganizationTabNav';
 import { ChangeNote, LimitBar, PeriodControl, StatCard, useOrganizationPeriod } from './parts';
 import { changePercent, compactNumber, previousPeriodLabel } from './text';
@@ -60,6 +60,7 @@ export function OverviewView() {
   }
 
   const hourly = data.bucket === 'hour';
+  const spendCurrency = seriesCurrency(data.series, data);
   const spent = moneyAmount(data, 'cost') ?? 0;
   const against = previousPeriodLabel(period, t);
   const monthSpent = moneyAmount(data, 'spent_month');
@@ -140,7 +141,7 @@ export function OverviewView() {
             hourly
               ? t('organization.overview.spend_per_hour', 'Spend per hour ({currency})')
               : t('organization.overview.spend_per_day', 'Spend per day ({currency})'),
-            { currency: money.currency },
+            { currency: spendCurrency },
           )}
           kind="bar"
           series={data.series}
@@ -148,7 +149,7 @@ export function OverviewView() {
           bucketHeader={bucketHeader}
           valueHeader={t('organization.overview.spend', 'Spend')}
           valueOf={(point) => moneyAmount(point, 'cost') ?? 0}
-          formatValue={(value) => money.format(value, { maximumFractionDigits: 2 })}
+          formatValue={(value) => money.format(value, { maximumFractionDigits: 2 }, spendCurrency)}
         />
       </div>
 

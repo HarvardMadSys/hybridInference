@@ -5,12 +5,21 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MemberDetail, OrganizationMember } from '@/lib/api/organization';
 
 // The chart is loaded with next/dynamic; jsdom cannot lay out recharts anyway.
+// `data-values` is each value as the chart writes it on its axis and in its tooltip.
 vi.mock('next/dynamic', () => ({
-  default: () => (props: { points: Array<{ label: string; value: number }> }) => (
-    <div data-testid="chart">
-      {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
-    </div>
-  ),
+  default:
+    () =>
+    (props: {
+      points: Array<{ label: string; value: number }>;
+      formatValue: (value: number) => string;
+    }) => (
+      <div
+        data-testid="chart"
+        data-values={props.points.map((point) => props.formatValue(point.value)).join(' ')}
+      >
+        {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
+      </div>
+    ),
 }));
 
 const state = vi.hoisted(() => ({ member: vi.fn(), refetch: vi.fn() }));
@@ -207,6 +216,40 @@ describe('one member, opened in place', () => {
         .getAllByRole('listitem')
         .map((item) => item.textContent),
     ).toEqual(['glm-4.6$14.20', 'deepseek-v3.2$10.26']);
+  });
+
+  it('names and writes the spend of each day in the currency the gateway sent with it', () => {
+    // The page stayed open while the ledger changed: its own configuration
+    // still says USD, and the gateway now answers in yuan.
+    const member = {
+      ...LEI,
+      currency: 'CNY' as const,
+      cost: 171.2,
+      spent_month: 536.9,
+      monthly_limit: 910,
+    };
+    const [first, second] = DETAIL.days;
+    answer({
+      ...DETAIL,
+      member,
+      days: [
+        { ...first, currency: 'CNY', cost: 24.5 },
+        { ...second, currency: 'CNY', cost: 29.75 },
+      ],
+    });
+
+    render(<MemberDetailPanel member={member} period="7d" onAction={vi.fn()} />);
+
+    // The card of the same answer is in yuan, and so is the figure.
+    expect(card('Spend')).toHaveTextContent('¥171.20');
+    const spend = screen.getByRole('region', { name: 'Spend per day (CNY)' });
+    expect(within(spend).getByTestId('chart')).toHaveAttribute('data-values', '¥24.50 ¥29.75');
+    fireEvent.click(within(spend).getByRole('button', { name: 'Table' }));
+    expect(
+      within(spend)
+        .getAllByRole('row')
+        .map((row) => row.textContent),
+    ).toEqual(['Day (UTC)Spend', 'Nov 16¥24.50', 'Nov 17¥29.75']);
   });
 
   it('lists the last requests without a column for the member, and with no content', () => {

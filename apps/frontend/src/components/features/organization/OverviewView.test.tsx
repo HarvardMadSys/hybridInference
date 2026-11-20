@@ -2,15 +2,28 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
+import { buildTimeSiteConfig } from '@/config/site-config';
 import type { OrganizationOverview } from '@/lib/api/organization';
 
 // The chart is loaded with next/dynamic; jsdom cannot lay out recharts anyway.
+// `data-values` is each value as the chart writes it on its axis and in its tooltip.
 vi.mock('next/dynamic', () => ({
-  default: () => (props: { kind: string; points: Array<{ label: string; value: number }> }) => (
-    <div data-testid="chart" data-kind={props.kind}>
-      {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
-    </div>
-  ),
+  default:
+    () =>
+    (props: {
+      kind: string;
+      points: Array<{ label: string; value: number }>;
+      formatValue: (value: number) => string;
+    }) => (
+      <div
+        data-testid="chart"
+        data-kind={props.kind}
+        data-values={props.points.map((point) => props.formatValue(point.value)).join(' ')}
+      >
+        {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
+      </div>
+    ),
 }));
 
 const state = vi.hoisted(() => ({ overview: vi.fn(), refetch: vi.fn() }));
@@ -214,6 +227,52 @@ describe('the organization overview', () => {
     expect(card('Organization limit, this month')).toHaveTextContent('¥2,004.11/ ¥7,000.00');
     // Never the USD equivalents under a yuan sign.
     expect(card('Spend')).not.toHaveTextContent('121.76');
+  });
+
+  it('names and writes the spend of each day in the currency the gateway sent with it', () => {
+    // The page stayed open while the ledger changed: its own configuration
+    // still says USD, and the gateway now answers in yuan.
+    answer({
+      ...WEEK,
+      currency: 'CNY',
+      cost: 92.4,
+      spent_month: 2004.11,
+      monthly_limit: 7000,
+      previous: null,
+      series: [
+        { ...day('2026-11-16', 10, 16), currency: 'CNY', cost: 70 },
+        { ...day('2026-11-17', 3.2, 15), currency: 'CNY', cost: 22.4 },
+      ],
+    });
+
+    render(<OverviewView />);
+
+    // The card of the same answer is in yuan, and so is the figure.
+    expect(card('Spend')).toHaveTextContent('¥92.40');
+    const spend = screen.getByRole('region', { name: 'Spend per day (CNY)' });
+    expect(within(spend).getByTestId('chart')).toHaveAttribute('data-values', '¥70.00 ¥22.40');
+    fireEvent.click(within(spend).getByRole('button', { name: 'Table' }));
+    expect(
+      within(spend)
+        .getAllByRole('row')
+        .map((row) => row.textContent),
+    ).toEqual(['Day (UTC)Spend', 'Nov 16¥70.00', 'Nov 17¥22.40']);
+  });
+
+  it('keeps to the currency of the answer on a page that loaded with another one', () => {
+    // The other way round: the page loaded on a ledger in yuan, the answer is in USD.
+    answer(WEEK);
+
+    render(
+      <SiteConfigProvider
+        initialConfig={{ ...buildTimeSiteConfig, accounting: { currency: 'CNY' as const } }}
+      >
+        <OverviewView />
+      </SiteConfigProvider>,
+    );
+
+    const spend = screen.getByRole('region', { name: 'Spend per day (USD)' });
+    expect(within(spend).getByTestId('chart')).toHaveAttribute('data-values', '$22.50 $25.94');
   });
 
   it('offers to try again when the figures cannot be read', () => {

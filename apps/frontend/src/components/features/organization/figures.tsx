@@ -7,7 +7,7 @@ import { PANEL, TABLE_CELL, TABLE_HEAD_CELL } from '@/components/features/admin/
 import type { ModelUsage, OrganizationRequest, UsagePoint } from '@/lib/api/organization';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useFormatter, type Formatter } from '@/lib/i18n/useFormatter';
-import { moneyAmount } from '@/lib/utils/money';
+import { moneyAmount, moneyCurrency, type Currency } from '@/lib/utils/money';
 import { FigureCard, StatusPill } from './parts';
 import { requestStatus } from './text';
 
@@ -30,6 +30,18 @@ export function bucketLabel(point: UsagePoint, hourly: boolean, fmt: Formatter):
         timeZone: 'UTC',
       })
     : fmt.date(point.bucket, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+/**
+ * The currency of the spend in a series: the one the gateway sent with its
+ * points, or with `holder`, what the series came in, when it has no point.
+ *
+ * Never the currency of the page's own configuration. A page that stayed open
+ * while the ledger changed still holds the old one, and would write the new
+ * amounts under the old sign.
+ */
+export function seriesCurrency(series: UsagePoint[], holder: object): Currency {
+  return moneyCurrency(series[0] ?? holder);
 }
 
 /**

@@ -15,7 +15,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
-import { RequestsTable, SeriesFigure, SpendByModel } from './figures';
+import { RequestsTable, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import type { MemberDialog } from './MemberDialogs';
 import { LimitBar, StatCard, StatusPill } from './parts';
 import { compactNumber, memberStatus, periodLabel, relativeTime } from './text';
@@ -59,6 +59,7 @@ export function MemberDetailPanel({
   const actions = memberActions(current);
   const hasAction = actions.limit || actions.remove || actions.restore;
   const limit = moneyAmount(current, 'monthly_limit');
+  const spendCurrency = seriesCurrency(data?.days ?? [], current);
   const inPeriod = periodLabel(period, t);
 
   return (
@@ -174,7 +175,7 @@ export function MemberDetailPanel({
         <>
           <SeriesFigure
             title={fill(t('organization.overview.spend_per_day', 'Spend per day ({currency})'), {
-              currency: money.currency,
+              currency: spendCurrency,
             })}
             note={t('organization.member.last_30_days', 'Last 30 days')}
             kind="bar"
@@ -183,7 +184,9 @@ export function MemberDetailPanel({
             bucketHeader={t('organization.overview.day', 'Day (UTC)')}
             valueHeader={t('organization.overview.spend', 'Spend')}
             valueOf={(point) => moneyAmount(point, 'cost') ?? 0}
-            formatValue={(value) => money.format(value, { maximumFractionDigits: 2 })}
+            formatValue={(value) =>
+              money.format(value, { maximumFractionDigits: 2 }, spendCurrency)
+            }
           />
           <section
             className={`${PANEL} p-4`}
