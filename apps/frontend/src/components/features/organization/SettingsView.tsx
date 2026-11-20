@@ -27,7 +27,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
-import { parseLimit } from './MemberDialogs';
+import { readLimit } from './limits';
 import { LimitBar, StatusPill } from './parts';
 import { memberName, relativeTime, type StatusTone } from './text';
 
@@ -92,28 +92,33 @@ function DefaultLimit({ organization }: { organization: Organization }) {
     }
   }, [initial]);
 
-  const ceiling = moneyAmount(organization, 'monthly_limit');
-  const unchanged = value.trim() === initial;
+  const read = readLimit(value, stored, currency, moneyAmount(organization, 'monthly_limit'));
+  // The stored amount, also typed another way (40.0 for 40), is nothing to save.
+  const unchanged = 'amount' in read && !read.changed;
 
   async function submit(): Promise<void> {
     if (submitting.current || unchanged) return;
-    const amount = parseLimit(value);
-    if (amount === undefined) {
-      setError(t('organization.limit_dialog.invalid', 'Enter an amount of zero or more.'));
-      return;
-    }
-    if (amount !== null && ceiling !== null && amount > ceiling) {
+    if ('problem' in read) {
       setError(
-        fill(
-          t(
-            'organization.settings.default_above',
-            'The default cannot be above the limit of the organization, {amount}.',
-          ),
-          { amount: money.value(organization, 'monthly_limit') },
-        ),
+        read.problem === 'invalid'
+          ? fill(
+              t(
+                'organization.limit_dialog.invalid',
+                'Enter an amount in {currency}, such as 5 or 12.50, or leave it empty.',
+              ),
+              { currency },
+            )
+          : fill(
+              t(
+                'organization.settings.default_above',
+                'The default cannot be above the limit of the organization, {amount}.',
+              ),
+              { amount: money.value(organization, 'monthly_limit') },
+            ),
       );
       return;
     }
+    const { amount } = read;
     submitting.current = true;
     setError(null);
     try {

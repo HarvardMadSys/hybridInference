@@ -3830,8 +3830,8 @@
     "text": "留空则不单独设月额度。"
   },
   "organization.limit_dialog.invalid": {
-    "source": "Enter an amount of zero or more.",
-    "text": "请输入不小于 0 的金额。"
+    "source": "Enter an amount in {currency}, such as 5 or 12.50, or leave it empty.",
+    "text": "请输入 {currency} 金额，例如 5 或 12.50，或者留空。"
   },
   "organization.limit_dialog.label": {
     "source": "Monthly limit ({currency})",
@@ -3876,6 +3876,10 @@
   "organization.member.no_requests": {
     "source": "No requests in this period.",
     "text": "这段时间没有请求。"
+  },
+  "organization.member.protected_note": {
+    "source": "The platform administrator sets the limit of this account and removes it.",
+    "text": "这个账号的月额度和移除由平台管理员处理。"
   },
   "organization.member.recent": {
     "source": "Recent requests",

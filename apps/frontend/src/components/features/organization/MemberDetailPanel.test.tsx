@@ -5,17 +5,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MemberDetail, OrganizationMember } from '@/lib/api/organization';
 
 // The chart is loaded with next/dynamic; jsdom cannot lay out recharts anyway.
-// `data-values` is each value as the chart writes it on its axis and in its tooltip.
+// `data-values` is each value as the chart writes it in its tooltip, and
+// `data-ticks` as it writes it on its axis.
 vi.mock('next/dynamic', () => ({
   default:
     () =>
     (props: {
       points: Array<{ label: string; value: number }>;
       formatValue: (value: number) => string;
+      formatTick?: (value: number) => string;
     }) => (
       <div
         data-testid="chart"
         data-values={props.points.map((point) => props.formatValue(point.value)).join(' ')}
+        data-ticks={props.points
+          .map((point) => (props.formatTick ?? props.formatValue)(point.value))
+          .join(' ')}
       >
         {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
       </div>
@@ -167,6 +172,20 @@ describe('what an organization administrator may do to a member', () => {
       restore: false,
     });
   });
+
+  it('does nothing to a member that the gateway marks as the platform administrator’s', () => {
+    // An administrator of the platform: the role in the organization is "member".
+    expect(memberActions({ ...LEI, protected: true })).toEqual({
+      limit: false,
+      remove: false,
+      restore: false,
+    });
+    expect(memberActions({ ...LEI, protected: false })).toEqual({
+      limit: true,
+      remove: true,
+      restore: false,
+    });
+  });
 });
 
 describe('one member, opened in place', () => {
@@ -208,6 +227,9 @@ describe('one member, opened in place', () => {
     const spend = screen.getByRole('region', { name: 'Spend per day (USD)' });
     expect(spend).toHaveTextContent('Last 30 days');
     expect(within(spend).getByTestId('chart')).toHaveTextContent('Nov 16=3.5 Nov 17=4.25');
+    // Short on the axis, in full in the tooltip.
+    expect(within(spend).getByTestId('chart')).toHaveAttribute('data-ticks', '$3.5 $4.25');
+    expect(within(spend).getByTestId('chart')).toHaveAttribute('data-values', '$3.50 $4.25');
 
     const models = screen.getByRole('region', { name: 'Spend by model' });
     expect(models).toHaveTextContent('Today (UTC)');
@@ -343,6 +365,22 @@ describe('one member, opened in place', () => {
       screen.getByText(
         'The platform administrator sets the limit of an organization administrator and removes one.',
       ),
+    ).toBeInTheDocument();
+  });
+
+  it('gives no action on a member that is the platform administrator’s, and says who has them', () => {
+    const member = { ...LEI, protected: true };
+    answer({ ...DETAIL, member });
+
+    render(<MemberDetailPanel member={member} period="7d" onAction={vi.fn()} />);
+
+    // The gateway refuses each of them for this account, so none is offered.
+    expect(screen.queryByRole('button', { name: 'Set monthly limit' })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Remove from organization' }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText('The platform administrator sets the limit of this account and removes it.'),
     ).toBeInTheDocument();
   });
 

@@ -1,4 +1,5 @@
-import { fetchWithAuth, jsonOrThrow } from './client';
+import { fetchWithAuth } from './client';
+import { readJson } from './detail';
 import { config } from '@/config/env';
 import type { Currency } from '@/lib/utils/money';
 
@@ -13,6 +14,10 @@ import type { Currency } from '@/lib/utils/money';
  * Money follows the accounting contract: the `*_usd` fields, and on a ledger
  * that is not in USD the native amounts under the same names without the
  * suffix, with `currency`. Read an amount with `moneyAmount(source, field)`.
+ *
+ * A refusal keeps the sentence of the gateway, for the page to show as it is
+ * (`readJson`). `jsonOrThrow` is for the sign-in pages: it reads every 409 as
+ * "This email is already registered".
  */
 
 const API_BASE = config.apiBase;
@@ -78,6 +83,12 @@ export interface OrganizationMember extends Money {
   email?: string | null;
   user_name?: string | null;
   role: OrganizationRole;
+  /**
+   * An administrator, of the organization or of the platform: the organization
+   * sets no limit of it and does not remove it. Absent from a gateway that
+   * does not send it yet.
+   */
+  protected?: boolean;
   /** The account's status. */
   status: string;
   /** The organization removed this member, so the organization can restore it. */
@@ -210,6 +221,8 @@ export type MemberSort =
   | 'tokens'
   | 'spend'
   | 'month'
+  /** The share of the monthly limit that the spend of this month uses; no limit is last. */
+  | 'limit_use'
   | 'joined';
 
 export interface MemberQuery {
@@ -261,7 +274,7 @@ function query(params: Record<string, string | number | undefined>): string {
 }
 
 async function read<T>(path: string): Promise<T> {
-  return jsonOrThrow<T>(await fetchWithAuth(API_BASE, `${ROOT}${path}`));
+  return readJson<T>(await fetchWithAuth(API_BASE, `${ROOT}${path}`));
 }
 
 async function write<T>(method: 'POST' | 'PUT', path: string, body?: unknown): Promise<T> {
@@ -273,7 +286,7 @@ async function write<T>(method: 'POST' | 'PUT', path: string, body?: unknown): P
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(body),
         };
-  return jsonOrThrow<T>(await fetchWithAuth(API_BASE, `${ROOT}${path}`, init));
+  return readJson<T>(await fetchWithAuth(API_BASE, `${ROOT}${path}`, init));
 }
 
 function limitBody(limit: MonthlyLimit): Record<string, unknown> {

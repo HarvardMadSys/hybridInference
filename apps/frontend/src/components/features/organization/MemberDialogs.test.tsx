@@ -21,7 +21,7 @@ vi.mock('@/lib/hooks/useAccountToast', () => ({
   useAccountToast: () => ({ success: state.success, error: vi.fn() }),
 }));
 
-import { MemberDialogs, parseLimit, type MemberDialog } from './MemberDialogs';
+import { MemberDialogs, type MemberDialog } from './MemberDialogs';
 
 const LEI: OrganizationMember = {
   user_id: 'u-lei',
@@ -70,19 +70,6 @@ beforeEach(() => {
 });
 afterEach(cleanup);
 
-describe('a typed limit', () => {
-  it('is an amount of zero or more, nothing, or not a limit at all', () => {
-    expect(parseLimit('80')).toBe(80);
-    expect(parseLimit(' 12.5 ')).toBe(12.5);
-    expect(parseLimit('0')).toBe(0);
-    expect(parseLimit('')).toBeNull();
-    expect(parseLimit('   ')).toBeNull();
-    expect(parseLimit('-1')).toBeUndefined();
-    expect(parseLimit('ten')).toBeUndefined();
-    expect(parseLimit('Infinity')).toBeUndefined();
-  });
-});
-
 describe('the monthly limit of a member', () => {
   it('opens with the member’s own limit and says what an empty field means', () => {
     const { dialog } = open({ mode: 'limit', member: LEI });
@@ -91,6 +78,12 @@ describe('the monthly limit of a member', () => {
     expect(dialog).toHaveTextContent('Lei Wang (lei.wang@example.edu)');
     expect(field(dialog)).toHaveValue('80');
     expect(dialog).toHaveTextContent('Leave empty to use the default of the organization, $20.00.');
+  });
+
+  it('opens with the cursor in the amount, which is what the dialog is for', () => {
+    const { dialog } = open({ mode: 'limit', member: LEI });
+
+    expect(field(dialog)).toHaveFocus();
   });
 
   it('opens empty for a member on the default, which is not a limit of its own', () => {
@@ -148,16 +141,22 @@ describe('the monthly limit of a member', () => {
     );
   });
 
-  it.each(['-5', 'eighty'])('refuses %j instead of saving no limit', (value) => {
-    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+  // Number() reads 0x10 as 16 and 1e3 as 1000; neither is what was typed.
+  it.each(['-5', 'eighty', '0x10', '1e3', '9.12345'])(
+    'refuses %j instead of saving another amount, or no limit',
+    (value) => {
+      const { dialog, onClose } = open({ mode: 'limit', member: LEI });
 
-    type(dialog, value);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+      type(dialog, value);
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
 
-    expect(state.setLimit).not.toHaveBeenCalled();
-    expect(onClose).not.toHaveBeenCalled();
-    expect(within(dialog).getByRole('alert')).toHaveTextContent('Enter an amount of zero or more.');
-  });
+      expect(state.setLimit).not.toHaveBeenCalled();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(within(dialog).getByRole('alert')).toHaveTextContent(
+        'Enter an amount in USD, such as 5 or 12.50, or leave it empty.',
+      );
+    },
+  );
 
   it('refuses a limit above the limit of the organization', () => {
     const { dialog } = open({ mode: 'limit', member: LEI });
@@ -189,6 +188,34 @@ describe('the monthly limit of a member', () => {
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
 
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('writes nothing for the same amount typed another way', () => {
+    const { dialog, onClose } = open({ mode: 'limit', member: LEI });
+
+    type(dialog, '80.0');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it.each([
+    // The platform administrator lowered the limit of the organization below it.
+    ['above the limit of the organization', 1500],
+    // A migrated amount, with more decimal places than a new one may have.
+    ['with six decimal places', 80.123456],
+  ])('closes on a limit %s that is left as it was read', (_what, stored) => {
+    const { dialog, onClose } = open({
+      mode: 'limit',
+      member: { ...LEI, monthly_limit_usd: stored },
+    });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
     expect(state.setLimit).not.toHaveBeenCalled();
     expect(onClose).toHaveBeenCalled();
   });

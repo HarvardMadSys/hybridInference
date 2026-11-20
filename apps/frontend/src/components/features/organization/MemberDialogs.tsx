@@ -15,6 +15,7 @@ import { useMoney } from '@/lib/hooks/useMoney';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
+import { readLimit } from './limits';
 import { memberName } from './text';
 
 /** Which member dialog is open: its monthly limit, its removal, or its return. */
@@ -22,17 +23,6 @@ export type MemberDialog =
   | { mode: 'limit'; member: OrganizationMember }
   | { mode: 'remove'; member: OrganizationMember }
   | { mode: 'restore'; member: OrganizationMember };
-
-/**
- * A typed limit: `null` for an empty field (no limit of its own), a number
- * that is zero or more, or `undefined` for anything else.
- */
-export function parseLimit(value: string): number | null | undefined {
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  const parsed = Number(trimmed);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
-}
 
 /** "Lei Wang (lei.wang@example.edu)", or the one of the two the member has. */
 function who(member: OrganizationMember): string {
@@ -58,10 +48,11 @@ function LimitDialog({
   const currency = moneyCurrency(member);
   const own =
     member.monthly_limit_source === 'member' ? moneyAmount(member, 'monthly_limit') : null;
-  const initial = own === null ? '' : String(own);
-  const [value, setValue] = useState(initial);
+  const [value, setValue] = useState(own === null ? '' : String(own));
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
+  // The dialog is for one amount: the field has the cursor when it opens.
+  const fieldRef = useRef<HTMLInputElement>(null);
 
   const ceiling = moneyAmount(organization, 'monthly_limit');
   const fallback = moneyAmount(organization, 'default_member_monthly_limit');
@@ -78,29 +69,33 @@ function LimitDialog({
 
   async function confirm(): Promise<void> {
     if (submitting.current) return;
-    const amount = parseLimit(value);
-    if (amount === undefined) {
-      setError(t('organization.limit_dialog.invalid', 'Enter an amount of zero or more.'));
-      return;
-    }
-    if (amount !== null && ceiling !== null && amount > ceiling) {
+    const read = readLimit(value, own, currency, ceiling);
+    if ('problem' in read) {
       setError(
-        fill(
-          t(
-            'organization.limit_dialog.above',
-            'A member cannot have a limit above the limit of the organization, {amount}.',
-          ),
-          { amount: money.value(organization, 'monthly_limit') },
-        ),
+        read.problem === 'invalid'
+          ? fill(
+              t(
+                'organization.limit_dialog.invalid',
+                'Enter an amount in {currency}, such as 5 or 12.50, or leave it empty.',
+              ),
+              { currency },
+            )
+          : fill(
+              t(
+                'organization.limit_dialog.above',
+                'A member cannot have a limit above the limit of the organization, {amount}.',
+              ),
+              { amount: money.value(organization, 'monthly_limit') },
+            ),
       );
       return;
     }
-    // A limit left as it was read is not sent again: a migrated amount may
-    // carry more decimal places than a new one may be typed with.
-    if (value.trim() === initial) {
+    // The limit that is stored is not sent again.
+    if (!read.changed) {
       onClose();
       return;
     }
+    const { amount } = read;
     submitting.current = true;
     setError(null);
     try {
@@ -126,6 +121,7 @@ function LimitDialog({
       busyLabel={t('common.loading', 'Loading...')}
       busy={save.isPending}
       error={error}
+      initialFocusRef={fieldRef}
       onConfirm={() => void confirm()}
       onCancel={() => {
         if (!submitting.current) onClose();
@@ -147,6 +143,7 @@ function LimitDialog({
         }}
       >
         <InputField
+          ref={fieldRef}
           label={fill(t('organization.limit_dialog.label', 'Monthly limit ({currency})'), {
             currency,
           })}

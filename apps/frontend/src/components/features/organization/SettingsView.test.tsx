@@ -315,22 +315,39 @@ describe('the default monthly limit of a member', () => {
     await waitFor(() => expect(state.save).toHaveBeenCalledWith({ amount: 0, currency: 'USD' }));
   });
 
-  it.each(['-5', 'forty'])('refuses %j instead of saving no default', (value) => {
+  // Number() reads 0x10 as 16 and 1e3 as 1000; neither is what was typed.
+  it.each(['-5', 'forty', '0x10', '1e3', '9.12345'])(
+    'refuses %j instead of saving another default, or none',
+    (value) => {
+      const invalid = 'Enter an amount in USD, such as 5 or 12.50, or leave it empty.';
+      answer(ORGANIZATION);
+
+      render(<SettingsView />);
+      fireEvent.change(field(), { target: { value } });
+      fireEvent.click(save());
+
+      expect(state.save).not.toHaveBeenCalled();
+      expect(screen.getByRole('alert')).toHaveTextContent(invalid);
+      expect(field()).toHaveAttribute('aria-invalid', 'true');
+      expect(field()).toHaveAccessibleDescription(invalid);
+
+      // The complaint goes when the amount is typed again.
+      fireEvent.change(field(), { target: { value: '5' } });
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+      expect(field()).not.toHaveAttribute('aria-invalid');
+    },
+  );
+
+  it('has nothing to save for the same amount typed another way', () => {
     answer(ORGANIZATION);
 
     render(<SettingsView />);
-    fireEvent.change(field(), { target: { value } });
-    fireEvent.click(save());
+    fireEvent.change(field(), { target: { value: '40.0' } });
 
+    // 40.0 is the 40 that is stored: a click would send it again, each time.
+    expect(save()).toBeDisabled();
+    fireEvent.submit(field().closest('form') as HTMLFormElement);
     expect(state.save).not.toHaveBeenCalled();
-    expect(screen.getByRole('alert')).toHaveTextContent('Enter an amount of zero or more.');
-    expect(field()).toHaveAttribute('aria-invalid', 'true');
-    expect(field()).toHaveAccessibleDescription('Enter an amount of zero or more.');
-
-    // The complaint goes when the amount is typed again.
-    fireEvent.change(field(), { target: { value: '5' } });
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(field()).not.toHaveAttribute('aria-invalid');
   });
 
   it('refuses a default above the limit of the organization', () => {

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { getErrorMessage } from '@/lib/utils/errors';
 import { setAccessToken } from '../client';
 import {
   getOrganization,
@@ -247,5 +248,69 @@ describe('removing and restoring a member', () => {
       statusCode: 409,
       message: 'An administrator cannot be removed here.',
     });
+  });
+});
+
+describe('a refusal of the gateway, as a page shows it', () => {
+  /** The sentence a dialog shows for the failure of *call*. */
+  async function shown(call: () => Promise<unknown>): Promise<string> {
+    return getErrorMessage(await call().catch((error: unknown) => error));
+  }
+
+  function refuse(status: number, message: string) {
+    respond({ error: { message, type: 'invalid_request_error', code: status } }, status);
+  }
+
+  it.each([
+    [
+      'a removal of a member that is no longer active',
+      'Only an active member can be removed.',
+      () => removeOrganizationMember('u-3'),
+    ],
+    [
+      'a removal of an administrator',
+      'An administrator cannot be removed here.',
+      () => removeOrganizationMember('u-1'),
+    ],
+    [
+      'a restore of a member that the platform suspended',
+      'This member was not removed by the organization. A platform administrator restores an account they suspended.',
+      () => restoreOrganizationMember('u-3'),
+    ],
+    [
+      'a limit of an administrator',
+      'The limit of an administrator is not set here.',
+      () => setMemberMonthlyLimit('u-1', { amount: 40, currency: 'USD' }),
+    ],
+  ])('shows the sentence of the gateway for a 409: %s', async (_what, sentence, call) => {
+    refuse(409, sentence);
+
+    // Never the text of the sign-up page for a 409, "This email is already registered".
+    await expect(shown(call)).resolves.toBe(sentence);
+  });
+
+  it('shows the sentence of the gateway for a limit above the limit of the organization', async () => {
+    const sentence = "A member's limit cannot be greater than the limit of the organization.";
+    refuse(400, sentence);
+
+    await expect(
+      shown(() => setDefaultMemberLimit({ amount: 5000, currency: 'USD' })),
+    ).resolves.toBe(sentence);
+  });
+
+  it('shows the sentence of the gateway when a read is refused', async () => {
+    refuse(403, 'Organization administrator access required.');
+
+    await expect(shown(() => listOrganizationMembers({ period: '7d' }))).resolves.toBe(
+      'Organization administrator access required.',
+    );
+  });
+
+  it('says that the service is not available when the answer is not from the gateway', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('<html>Bad gateway</html>', { status: 502 }));
+
+    await expect(shown(() => getOrganization())).resolves.toBe(
+      'Service temporarily unavailable. Please try again shortly',
+    );
   });
 });

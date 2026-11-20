@@ -15,7 +15,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
-import { RequestsTable, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
+import { AXIS_AMOUNT, RequestsTable, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import type { MemberDialog } from './MemberDialogs';
 import { LimitBar, StatCard, StatusPill } from './parts';
 import { compactNumber, memberStatus, periodLabel, relativeTime } from './text';
@@ -26,8 +26,12 @@ export function memberActions(member: OrganizationMember): {
   remove: boolean;
   restore: boolean;
 } {
-  // An administrator's limit and removal are the platform administrator's.
-  if (member.role === 'admin') return { limit: false, remove: false, restore: false };
+  // The limit and the removal of an administrator are the platform
+  // administrator's: the gateway refuses both. It marks such a member, an
+  // administrator of the platform too, which the role here does not show.
+  if (member.protected ?? member.role === 'admin') {
+    return { limit: false, remove: false, restore: false };
+  }
   return {
     limit: true,
     remove: member.status === 'active',
@@ -113,6 +117,13 @@ export function MemberDetailPanel({
             'The platform administrator sets the limit of an organization administrator and removes one.',
           )}
         </p>
+      ) : current.protected ? (
+        <p className="text-[12px] text-gray-500">
+          {t(
+            'organization.member.protected_note',
+            'The platform administrator sets the limit of this account and removes it.',
+          )}
+        </p>
       ) : current.status === 'suspended' && !current.removed ? (
         <p className="text-[12px] text-gray-500">
           {t(
@@ -187,6 +198,7 @@ export function MemberDetailPanel({
             formatValue={(value) =>
               money.format(value, { maximumFractionDigits: 2 }, spendCurrency)
             }
+            formatTick={(value) => money.format(value, AXIS_AMOUNT, spendCurrency)}
           />
           <section
             className={`${PANEL} p-4`}
