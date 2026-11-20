@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     # (raising a role, minting a key for another account, exporting secrets,
     # changing who sees a model) before the console asks for a new one.
     two_factor_step_up_minutes: int = Field(default=10, ge=1, le=120)
+    # Playground MCP: hostnames explicitly allowed to reach private or loopback
+    # destinations. Empty (the default) permits only globally routable hosts;
+    # cloud metadata endpoints are always refused.
+    playground_mcp_allowed_hosts: str = ""
     user_auth_enabled: bool = True
     api_key_secret: str = ""
 

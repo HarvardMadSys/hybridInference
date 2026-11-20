@@ -301,3 +301,133 @@ describe('buildCode', () => {
     expect(buildCode('python', 'messages', 'https://gw.example', options)).not.toContain('system=');
   });
 });
+
+const TOOL = {
+  serverId: 'mcp-1',
+  serverUrl: 'https://mcp.example/mcp',
+  serverHeaders: {},
+  tool: {
+    name: 'search web',
+    description: 'Find pages',
+    inputSchema: { type: 'object', properties: { q: { type: 'string' } } },
+  },
+  wire: 'search_web',
+};
+
+describe('tools', () => {
+  it('sends a selected tool in each format shape under a wire-safe name', () => {
+    const options = { ...OPTIONS, tools: [TOOL] };
+    expect(buildRequest('chat', options).tools).toEqual([
+      {
+        type: 'function',
+        function: {
+          name: 'search_web',
+          description: 'Find pages',
+          parameters: TOOL.tool.inputSchema,
+        },
+      },
+    ]);
+    expect(buildRequest('responses', options).tools).toEqual([
+      {
+        type: 'function',
+        name: 'search_web',
+        description: 'Find pages',
+        parameters: TOOL.tool.inputSchema,
+      },
+    ]);
+    expect(buildRequest('messages', options).tools).toEqual([
+      {
+        name: 'search_web',
+        description: 'Find pages',
+        input_schema: TOOL.tool.inputSchema,
+      },
+    ]);
+  });
+
+  it('omits tools when none are selected', () => {
+    expect(buildRequest('chat', OPTIONS)).not.toHaveProperty('tools');
+    expect(buildRequest('responses', OPTIONS)).not.toHaveProperty('tools');
+    expect(buildRequest('messages', OPTIONS)).not.toHaveProperty('tools');
+  });
+
+  it('reads streamed tool-call fragments from each format', () => {
+    expect(
+      parseStreamEvent('chat', {
+        choices: [
+          {
+            delta: {
+              tool_calls: [
+                { index: 0, id: 'call-1', function: { name: 'search', arguments: '{"q":' } },
+              ],
+            },
+          },
+        ],
+      })?.toolCalls,
+    ).toEqual([{ index: 0, id: 'call-1', name: 'search', nameMode: 'append', arguments: '{"q":' }]);
+
+    expect(
+      parseStreamEvent('responses', {
+        type: 'response.output_item.added',
+        output_index: 1,
+        item: { type: 'function_call', call_id: 'call-2', name: 'search' },
+      })?.toolCalls,
+    ).toEqual([{ index: 1, id: 'call-2', name: 'search' }]);
+    expect(
+      parseStreamEvent('responses', {
+        type: 'response.function_call_arguments.delta',
+        output_index: 1,
+        delta: '{"q":"x"}',
+      })?.toolCalls,
+    ).toEqual([{ index: 1, arguments: '{"q":"x"}' }]);
+
+    expect(
+      parseStreamEvent('messages', {
+        type: 'content_block_start',
+        index: 0,
+        content_block: { type: 'tool_use', id: 'toolu_1', name: 'search' },
+      })?.toolCalls,
+    ).toEqual([{ index: 0, id: 'toolu_1', name: 'search' }]);
+    expect(
+      parseStreamEvent('messages', {
+        type: 'content_block_delta',
+        index: 0,
+        delta: { type: 'input_json_delta', partial_json: '{"q":' },
+      })?.toolCalls,
+    ).toEqual([{ index: 0, arguments: '{"q":' }]);
+  });
+});
+
+describe('Python code with tools', () => {
+  it('includes the selected tools and the executed tool history', () => {
+    const call = {
+      id: 'call-1',
+      name: 'search_web',
+      mcpName: 'search web',
+      arguments: '{"q":"x"}',
+      status: 'done' as const,
+      result: 'found it',
+    };
+    const options = {
+      ...OPTIONS,
+      tools: [TOOL],
+      history: [
+        { role: 'user' as const, content: 'q' },
+        { role: 'assistant' as const, content: '', toolCalls: [call] },
+      ],
+    };
+    const chat = buildCode('python', 'chat', 'https://gw.example', options);
+    expect(chat).toContain('tools=');
+    expect(chat).toContain('"name": "search_web"');
+    expect(chat).toContain('"role": "tool"');
+    expect(chat).toContain('found it');
+
+    const messages = buildCode('python', 'messages', 'https://gw.example', options);
+    expect(messages).toContain('tools=');
+    expect(messages).toContain('"type": "tool_use"');
+    expect(messages).toContain('"type": "tool_result"');
+
+    const responses = buildCode('python', 'responses', 'https://gw.example', options);
+    expect(responses).toContain('tools=');
+    expect(responses).toContain('"type": "function_call"');
+  });
+});
