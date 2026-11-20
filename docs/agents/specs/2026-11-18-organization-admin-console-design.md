@@ -28,7 +28,7 @@ organization cannot be given that page.
 
 Goals:
 
-1. An organization is a record: a name, a status, limits, its SSO connections and its administrators.
+1. An organization is a record: a name, limits, its SSO connections and its administrators.
 2. An organization administrator sees the members of that organization and their usage. The administrator
    does not see request content.
 3. An organization administrator sets the monthly limit of a member, removes a member and restores a member.
@@ -56,7 +56,7 @@ Goals:
 | Term | Meaning |
 |---|---|
 | Platform administrator | An account with the `admin` role. It manages the deployment in `/admin` |
-| Organization | A record with a name, a status, a monthly limit and a default monthly limit for a member |
+| Organization | A record with a name, a monthly limit and a default monthly limit for a member |
 | SSO connection | One `SSO_PROVIDERS` entry. It belongs to one organization at most |
 | Member | An account that has a membership record in one organization |
 | Organization administrator | A member whose membership has the role `admin` |
@@ -132,15 +132,23 @@ A membership ends when the account is deleted permanently. Nothing else ends it:
 Each page has a period: `1d`, `7d` or `30d`. A period is the last 1, 7 or 30 days in UTC, with today.
 "This month" is the calendar month in UTC, the same month as the account quota uses.
 
-Every figure is a sum over the accounts that have a membership in the organization. The usage of an account
-from before it became a member counts too.
+Every figure is a sum over the accounts that have a membership in the organization, from the time each
+account became a member. The pages do not show what an account used before. When the platform administrator
+attaches a connection, accounts become members that did nothing for it, and their earlier requests name
+models, projects and API keys.
+
+- A request row has its instant, thus the request log is cut at the instant of the membership.
+- A day counter is one row for a UTC day. Thus the day on which an account became a member counts as a
+  whole day.
+- The spend of this month of a member is not cut. It is the figure that the monthly limit is compared with,
+  and the gateway counts the whole calendar month.
 
 | Figure | Source |
 |---|---|
 | Spend for each day | `user_daily_cost`, the counters that the quota gates read |
 | Requests and tokens, the figures for each model and for each hour, and the request rows | `api_logs`, through the index on `(user_id, timestamp)`. A period is 30 days at most |
 | Last request of a member | `user_daily_cost.last_request_at` |
-| Monthly limit of a member | The monthly quota of the account, and the default of the organization (§8.1) |
+| Monthly limit of a member | The limit on the membership, the default of the organization, and the monthly quota of the account (§8.1) |
 | Spend of the organization in this month | The counter of the organization (§8.2) |
 
 The requests do not come from `user_daily_cost`, which counts only the requests that had a cost. They do not
@@ -162,7 +170,8 @@ native amounts with `currency` on a ledger that is not in USD.
 
 One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of
 this month with the monthly limit. The list takes a search text (name or email), a status filter, a sort
-column and a page.
+column and a page. A search text is matched as it is, here and on the other pages: `%` and `_` in it have
+no special meaning.
 
 The status is the status of the account. A member that the organization removed shows "Removed". The
 status filter has one value for each word that the list shows. Thus the value `suspended` does not list a
@@ -217,25 +226,31 @@ search text, a category and the period.
 
 ### 7.1 The monthly limit of a member
 
-`PUT /user/organization/members/{user_id}/monthly-limit` sets the monthly quota of the account in
-`account_quotas`. This is the monthly quota that the gateway enforces today. An empty value clears it, and
-the default of the organization then applies.
+`PUT /user/organization/members/{user_id}/monthly-limit` sets the limit of the organization for one
+member. It is a pair of columns on the membership (`sso_organization_members.monthly_limit_usd` and
+`monthly_limit_amount`). An empty value clears it, and the default of the organization then applies.
 
 - The value cannot be negative, and it cannot be greater than the limit of the organization.
-- The write changes the record (`_set_account_quota`) and the copies on the keys of the account that are
-  not revoked, in one transaction with the audit row, as the quota edit in Admin does (`update_key`). The
-  account does not need an API key, which the quota edit in Admin needs today.
+- The monthly quota of the account (`account_quotas`) belongs to the platform administrator, who sets it in
+  **Admin → Users**. This route does not read it and does not write it. The gateway applies the lower of the
+  two values (§8.1). Thus an organization administrator can lower what a member may spend, and cannot raise
+  it above the quota of the platform administrator.
+- The write is one transaction with the audit row. The account does not need an API key.
 - The daily quota of the account does not change.
-- The platform administrator can continue to set the monthly quota of an account in **Admin → Users**. That
-  edit has no upper bound from the organization.
+- The row of a member has the limit that applies and its source (`member`, `default`, `platform` or
+  `none`). It also has the limit that the organization set for the member, and the quota of the platform
+  administrator, which the organization can read.
 - When the platform administrator lowers the limit of the organization, the limits of the members and the
   default stay, also above the new limit. A request must be under each limit, thus the lower limit applies.
 
 ### 7.2 The default monthly limit for a member
 
-`PUT /user/organization/default-member-limit` sets the default. It applies to each member that has no
-monthly quota of its own, at once. The gateway does not copy it to the accounts (§8.1). The same two rules
-on the value apply.
+`PUT /user/organization/default-member-limit` sets the default. It applies at once to each member that the
+organization set no limit for. It does not apply to an organization administrator or to an account with the
+`admin` role. The organization sets no limit of those accounts (§7.1), thus its default must not stop them
+either: one organization administrator could otherwise stop a second one, or the platform administrator,
+with a default of zero. The gateway does not copy the default to the members (§8.1). The same two rules on
+the value apply.
 
 ### 7.3 Remove a member
 
@@ -269,19 +284,30 @@ Today each gate checks three levels in order: the API key, the project, the acco
 
 ### 8.1 The monthly limit of a member
 
-The monthly quota of an account is `account_quotas.quota_monthly_cost_usd`; NULL is no limit. For a member,
-NULL now means the default of the organization. If the organization has no default, the member has no
-monthly limit.
+The monthly quota of an account is `account_quotas.quota_monthly_cost_usd`; NULL is no limit. The platform
+administrator sets it. For a member, the gateway enforces the lower of two values:
+
+- the quota of the account;
+- the limit of the organization for the member: the limit on the membership (§7.1), else the default of the
+  organization (§7.2). An organization administrator and an account with the `admin` role have none.
+
+If neither exists, the member has no monthly limit. The two values are compared in the native amounts when
+both have one, and in USD if not. A native amount is thus not compared through its rounded USD value. A
+refusal by either value has `scope: "account"`.
+
+The two limits have different owners, thus they are in different places. With one field for both, an
+organization administrator could clear or raise a quota that the platform administrator set.
 
 The lookup of an API key reads the membership and the organization through their primary keys, in the same
-round trip. Thus a change of the default applies to every member without a write to each account.
+round trip (`member_quota_join`). Thus a change of a limit of the organization applies to its members
+without a write to each account.
 
-The quota of its own is what the request path reads today: the record of the account, or the copy on a key
-for an account that has no record. The member list and the write of §7.1 read the same two places.
+The quota of the account is what the request path reads today: the record of the account, or the copy on a
+key for an account that has no record. The member list reads the same two places.
 
 A member without an API key spends through the playground, or through a service key that acts on its
 behalf. No key lookup answers for such an account, so one read by account
-(`get_organization_spend_scope`) gives its organization and its monthly quota: its own, or the default.
+(`get_organization_spend_scope`) gives its organization and its monthly quota: the lower of the two values.
 
 ### 8.2 The monthly limit of the organization
 
@@ -415,7 +441,7 @@ the console do not change.
 
 | Route | Returns or does |
 |---|---|
-| `GET /admin/organizations` | The organizations: name, status, number of members, limits, SSO connections |
+| `GET /admin/organizations` | The organizations: name, number of members, limits, SSO connections |
 | `POST /admin/organizations` | Makes an organization |
 | `GET /admin/organizations/{id}` | One organization, in the shape of `GET /user/organization` |
 | `PATCH /admin/organizations/{id}` | Name and monthly limit |
@@ -445,8 +471,6 @@ new column.
 CREATE TABLE sso_organizations (
     id                                  TEXT PRIMARY KEY,
     name                                TEXT NOT NULL,
-    status                              TEXT NOT NULL DEFAULT 'active'
-                                        CHECK (status IN ('active', 'suspended')),
     monthly_limit_usd                   DECIMAL(14, 4),     -- NULL: no limit
     monthly_limit_amount                NUMERIC(24, 12),
     default_member_monthly_limit_usd    DECIMAL(10, 4),     -- NULL: no default
@@ -469,7 +493,10 @@ CREATE TABLE sso_organization_members (
     role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')),
     joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     removed_at      TIMESTAMPTZ,                            -- set by §7.3, cleared by §7.4
-    removed_by      TEXT
+    removed_by      TEXT,
+    monthly_limit_usd    DECIMAL(10, 4),                    -- §7.1; NULL: the default applies
+    monthly_limit_amount NUMERIC(24, 12),
+    accounting_currency  TEXT
 );
 CREATE INDEX idx_sso_organization_connections_organization
     ON sso_organization_connections (organization_id);
@@ -484,12 +511,13 @@ Notes:
 
 - **The primary keys carry two rules.** `user_id` is the key of a membership: one organization for each
   account. `provider_id` is the key of a connection: one organization for each SSO connection.
-- **The status `suspended`** has no effect in this work. #1830 defines it.
+- **No status column.** An organization has no status in this work, because no route changes one and no
+  check reads one. #1830 adds the column with the routes that suspend an organization.
 - **The money columns** are pairs, as in `projects`: a `*_usd` column and a native `*_amount` column that
-  an `accounting_sync_amounts` trigger keeps in step. `storage/accounting_schema.py` gets the table and its
-  trigger. Thus the startup check covers them and the offline currency migration converts them. Without the
-  entry, the trigger would refuse each later write to an organization on a ledger that moved to a new
-  currency.
+  an `accounting_sync_amounts` trigger keeps in step. This applies to the limits of an organization and to
+  the limit on a membership. `storage/accounting_schema.py` gets the two tables and their triggers. Thus
+  the startup check covers them and the offline currency migration converts them. Without the entry, the
+  trigger would refuse each later write to such a row on a ledger that moved to a new currency.
 - **The names.** The tables `organizations` and `org_members` of revision `0015` hold the hidden personal
   organization that §19 of the projects record removed. The service continues to write them, the three
   triggers of revision `0018` connect them to the account quota and to the projects, and a contract revision
@@ -608,7 +636,8 @@ entry.
 | Where the organization is stored | The tables `organizations` and `org_members` of revision `0015`, with the kind `team` | They hold one hidden row for each account, the service continues to write them, a trigger of revision `0018` writes the account quota into them, and a contract revision is planned to drop them. New tables keep this work independent of that revision |
 | Where the membership comes from | A query on `user_identities` and the `domains` at each use | The role needs a record. The key lookup needs one read through a primary key. And a change of `SSO_PROVIDERS` would change the members of the past |
 | One account or two | One account that joins and leaves organizations | #1829 decides that the organization owns the account. Then to remove a member is to suspend the account, and no personal data is in it |
-| How usage is counted for an organization | An organization column on each usage row, written with the request | The usage from before the membership would not show, and each write on the request path would change. Sums over the members need no new write |
+| How usage is counted for an organization | An organization column on each usage row, written with the request | Each write on the request path would change. Sums over the members need no new write, and the time of the membership bounds them (§6.1) |
+| Where the limit of a member is kept | In the monthly quota of the account (`account_quotas`), as the first version of this work did | One field would have two owners. An organization administrator could then clear or raise a quota that the platform administrator set. With two fields the lower value applies (§8.1) |
 | Where the spend of an organization comes from at admission | The sum of `user_daily_cost` over all members, for each request | The cost grows with the number of members and days. A counter row is one read |
 | Where the default limit of a member is kept | A copy in the quota of each member | Each change of the default would write every member, and each account would need a mark that says where its limit came from |
 | The path of the routes | A new prefix `/organization` | A new public prefix needs an entry in `deploy/public-paths.json`, a route handler and a middleware rule in the console. `/user` has all of them |

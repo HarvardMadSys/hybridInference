@@ -114,8 +114,14 @@ the caller's membership: no call names it. Every other caller gets a 403.
 The routes that show figures take `period`: `1d`, `7d` or `30d`, the last 1, 7
 or 30 days in UTC, with today. The audit log takes it too, and shows every row
 without it. "This month" is the calendar month in UTC, the month that an
-account's monthly quota uses. The figures include what an account used before
-it became a member.
+account's monthly quota uses.
+
+The figures of a member start when its account became a member. The pages do
+not show the requests that the account made before, nor their models, projects
+and API key names. Spend comes from a counter for each UTC day, so the day on
+which the account became a member counts as a whole day. One figure counts the
+whole calendar month: the spend of this month, which a row shows beside the
+monthly limit. The gateway compares the limit with the whole month.
 
 Money fields follow [Accounting Currency](accounting.md): the `*_usd` fields,
 and the native amounts with `currency` on a ledger that is not in USD.
@@ -143,9 +149,11 @@ limit for a member. The actions call these routes:
 | `POST /user/organization/members/{user_id}/remove` | Removes a member |
 | `POST /user/organization/members/{user_id}/restore` | Restores a member that the organization removed |
 
-None of these applies to an organization administrator, to an account with
-the `admin` role, or to the caller. The answer is a 409. The row of such a
-member has `protected: true`, and the console shows no action in its panel.
+The three routes that name a member do not apply to an organization
+administrator, to an account with the `admin` role, or to the caller. The
+answer is a 409. The row of such a member has `protected: true`, and the
+console shows no action in its panel. The default monthly limit does not apply
+to these accounts either.
 
 ### Remove and restore a member
 
@@ -181,8 +189,15 @@ its organization.
 | Limit | Who sets it | Applies to |
 |---|---|---|
 | The monthly limit of the organization | You, with `monthly_limit_usd` | What all members are charged in a calendar month in UTC |
-| The default monthly limit for a member | An organization administrator | Each member that has no monthly limit of its own |
-| The monthly limit of a member | An organization administrator | That member. It is the monthly quota of the account, the one **Admin → Users** shows |
+| The default monthly limit for a member | An organization administrator | Each member that the organization set no limit for. Not an organization administrator, and not an account with the `admin` role |
+| The monthly limit of a member | An organization administrator | That member |
+| The monthly quota of an account | You, in **Admin → Users** | That account, a member or not |
+
+A member can thus have two monthly limits: the limit of its organization, and
+the monthly quota that you set in **Admin → Users**. The gateway applies the
+lower one. An organization administrator sees your quota in the row of the
+member and cannot change it. So an organization can bring down what a member
+may spend, and cannot raise it above your quota.
 
 An organization administrator cannot set a limit of a member, or the default,
 above the limit of the organization. The daily quota of an account does not
@@ -212,14 +227,14 @@ answer.
 }
 ```
 
-A member whose own limit is reached gets the refusal of an account, with
-`scope` set to `account`.
+A member that reaches its own limit, the limit of its organization or your
+quota, gets the refusal of an account, with `scope` set to `account`.
 
 Things to know:
 
 - **The spend of an organization starts at membership.** What an account was
   charged before it became a member does not count against the limit of the
-  organization. The usage pages show it all the same.
+  organization, and the usage pages do not show it.
 - **A change of a limit applies within 30 seconds.**
 - **Requests that run at the same time** can take an organization a little
   past its limit, as they can for the quota of an account.
