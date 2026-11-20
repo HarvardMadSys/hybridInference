@@ -10,7 +10,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
-import { SeriesFigure, SpendByModel, seriesCurrency } from './figures';
+import { AXIS_AMOUNT, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import { organizationHref } from './OrganizationTabNav';
 import { ChangeNote, LimitBar, PeriodControl, StatCard, useOrganizationPeriod } from './parts';
 import { changePercent, compactNumber, previousPeriodLabel } from './text';
@@ -150,6 +150,7 @@ export function OverviewView() {
           valueHeader={t('organization.overview.spend', 'Spend')}
           valueOf={(point) => moneyAmount(point, 'cost') ?? 0}
           formatValue={(value) => money.format(value, { maximumFractionDigits: 2 }, spendCurrency)}
+          formatTick={(value) => money.format(value, AXIS_AMOUNT, spendCurrency)}
         />
       </div>
 

@@ -45,6 +45,17 @@ export function seriesCurrency(series: UsagePoint[], holder: object): Currency {
 }
 
 /**
+ * How an amount is written on the axis of a chart: short, 1.35K for 1,350.00,
+ * because the axis has room for a few characters only. The tooltip and the
+ * table have the amount in full.
+ */
+export const AXIS_AMOUNT: Intl.NumberFormatOptions = {
+  notation: 'compact',
+  minimumFractionDigits: 0,
+  maximumFractionDigits: 2,
+};
+
+/**
  * One figure of a usage series over a period, as a chart or as a table of the
  * same numbers.
  */
@@ -58,6 +69,7 @@ export function SeriesFigure({
   valueHeader,
   valueOf,
   formatValue,
+  formatTick,
 }: {
   title: string;
   note?: string;
@@ -68,6 +80,8 @@ export function SeriesFigure({
   valueHeader: string;
   valueOf: (point: UsagePoint) => number;
   formatValue: (value: number) => string;
+  /** A value on the axis of the chart, when the full text is too long for it. */
+  formatTick?: (value: number) => string;
 }) {
   const t = useT();
   const fmt = useFormatter();
@@ -85,7 +99,13 @@ export function SeriesFigure({
             title={t('organization.figure.empty', 'Nothing in this period.')}
           />
         ) : view === 'chart' ? (
-          <SeriesChart kind={kind} points={points} name={valueHeader} formatValue={formatValue} />
+          <SeriesChart
+            kind={kind}
+            points={points}
+            name={valueHeader}
+            formatValue={formatValue}
+            formatTick={formatTick}
+          />
         ) : (
           <div className="max-h-[220px] overflow-y-auto">
             <table className="min-w-full">
@@ -134,12 +154,11 @@ export function SpendByModel({ models, limit = 8 }: { models: ModelUsage[]; limi
   }
   const largest = rows[0].cost;
   return (
-    <ul className="space-y-2">
+    // One grid for the list, and each row on its columns: the amounts then have
+    // one width, so every bar has the same track and the bars are on one scale.
+    <ul className="grid grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto] gap-x-3 gap-y-2 text-[13px]">
       {rows.map(({ model, cost }) => (
-        <li
-          key={model.model_id}
-          className="grid grid-cols-[minmax(0,12rem)_minmax(0,1fr)_auto] items-center gap-3 text-[13px]"
-        >
+        <li key={model.model_id} className="col-span-3 grid grid-cols-subgrid items-center">
           <span className="truncate text-gray-700" title={model.model_id}>
             {model.model_id}
           </span>

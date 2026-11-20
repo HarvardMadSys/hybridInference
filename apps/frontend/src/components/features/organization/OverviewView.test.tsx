@@ -7,7 +7,8 @@ import { buildTimeSiteConfig } from '@/config/site-config';
 import type { OrganizationOverview } from '@/lib/api/organization';
 
 // The chart is loaded with next/dynamic; jsdom cannot lay out recharts anyway.
-// `data-values` is each value as the chart writes it on its axis and in its tooltip.
+// `data-values` is each value as the chart writes it in its tooltip, and
+// `data-ticks` as it writes it on its axis.
 vi.mock('next/dynamic', () => ({
   default:
     () =>
@@ -15,11 +16,15 @@ vi.mock('next/dynamic', () => ({
       kind: string;
       points: Array<{ label: string; value: number }>;
       formatValue: (value: number) => string;
+      formatTick?: (value: number) => string;
     }) => (
       <div
         data-testid="chart"
         data-kind={props.kind}
         data-values={props.points.map((point) => props.formatValue(point.value)).join(' ')}
+        data-ticks={props.points
+          .map((point) => (props.formatTick ?? props.formatValue)(point.value))
+          .join(' ')}
       >
         {props.points.map((point) => `${point.label}=${point.value}`).join(' ')}
       </div>
@@ -143,12 +148,34 @@ describe('the organization overview', () => {
     expect(within(members).getByTestId('chart')).toBeInTheDocument();
   });
 
+  it('writes an amount short on the axis of the chart, and in full in its tooltip and table', () => {
+    answer({ ...WEEK, series: [day('2026-11-16', 1350, 16), day('2026-11-17', 22.5, 15)] });
+
+    render(<OverviewView />);
+
+    const spend = screen.getByRole('region', { name: 'Spend per day (USD)' });
+    const chart = within(spend).getByTestId('chart');
+    // The axis has room for a few characters: $1,350.00 would be cut at its edge.
+    expect(chart).toHaveAttribute('data-ticks', '$1.35K $22.5');
+    expect(chart).toHaveAttribute('data-values', '$1,350.00 $22.50');
+    // A count is short as it is.
+    const members = screen.getByRole('region', { name: 'Members with requests per day' });
+    expect(within(members).getByTestId('chart')).toHaveAttribute('data-ticks', '16 15');
+  });
+
   it('lists the models that cost something, the largest first, with the way to all of them', () => {
     answer(WEEK);
 
     render(<OverviewView />);
 
     const models = screen.getByRole('region', { name: 'Spend by model' });
+    // One grid for the list, each row on its columns: the bars then have one
+    // track, whatever the width of each amount.
+    const list = within(models).getByRole('list');
+    expect(list).toHaveClass('grid');
+    for (const row of within(list).getAllByRole('listitem')) {
+      expect(row).toHaveClass('grid-cols-subgrid');
+    }
     expect(
       within(models)
         .getAllByRole('listitem')

@@ -44,6 +44,7 @@ export default function SeriesChart({
   points,
   name,
   formatValue,
+  formatTick = formatValue,
   height = 220,
 }: {
   kind: 'line' | 'bar';
@@ -51,6 +52,11 @@ export default function SeriesChart({
   /** What the series measures, for the tooltip. */
   name: string;
   formatValue: (value: number) => string;
+  /**
+   * A value on the axis, which has room for a short text only: a long amount
+   * would be cut at the edge of the chart. The tooltip has the value in full.
+   */
+  formatTick?: (value: number) => string;
   height?: number;
 }) {
   const axes = (
@@ -69,7 +75,7 @@ export default function SeriesChart({
         axisLine={false}
         width={52}
         allowDecimals={kind === 'bar'}
-        tickFormatter={(value) => formatValue(Number(value))}
+        tickFormatter={(value) => formatTick(Number(value))}
       />
       <Tooltip
         // Translucent, so the marker reads on the light surface and on the dark one.
@@ -93,7 +99,8 @@ export default function SeriesChart({
               name={name}
               stroke={SERIES_COLOR}
               strokeWidth={2}
-              dot={false}
+              // One point has no line to draw: it is shown as a dot.
+              dot={points.length === 1 ? { r: 3 } : false}
               activeDot={{ r: 3 }}
               isAnimationActive={false}
             />
