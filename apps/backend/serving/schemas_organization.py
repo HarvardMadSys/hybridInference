@@ -11,9 +11,9 @@ send.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from serving.accounting_api import MoneyInput, MoneyResponse
 
@@ -24,6 +24,11 @@ MEMBER_LIMIT_MAX_USD = Decimal("999999.9999")
 
 Period = Literal["1d", "7d", "30d"]
 MemberRole = Literal["member", "admin"]
+
+
+def _without_outer_spaces(value: Any) -> Any:
+    """A name as it is stored; a name of spaces alone is then too short to be one."""
+    return value.strip() if isinstance(value, str) else value
 
 
 class OrganizationRef(BaseModel):
@@ -98,6 +103,8 @@ class CreateOrganizationRequest(MoneyInput):
 
     name: str = Field(..., min_length=1, max_length=80)
     provider_ids: list[str] = Field(..., min_length=1, max_length=20)
+
+    _name = field_validator("name", mode="before")(_without_outer_spaces)
     monthly_limit_usd: Decimal | None = Field(
         default=None, ge=0, le=ORGANIZATION_LIMIT_MAX_USD, decimal_places=4
     )
@@ -117,6 +124,8 @@ class UpdateOrganizationRequest(MoneyInput):
         default=None, ge=0, le=ORGANIZATION_LIMIT_MAX_USD, decimal_places=4
     )
     monthly_limit: Decimal | None = Field(default=None, ge=0, exclude=True)
+
+    _name = field_validator("name", mode="before")(_without_outer_spaces)
 
 
 class OrganizationCreatedResponse(BaseModel):

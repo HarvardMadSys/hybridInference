@@ -9,6 +9,7 @@ yet written in this process -- not only the caller.
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -148,7 +149,6 @@ async def test_the_refusal_names_the_organization_and_when_its_month_starts_agai
         "month",
     )
     assert body["organization"] == "Example University"
-    assert (body["quota_usd"], body["spent_usd"], body["remaining_usd"]) == (1000.0, 1000.02, 0)
     assert "Example University" in body["message"]
     assert "administrator of your organization" in body["message"]
     assert body["reset_at"].endswith("-01T00:00:00+00:00")
@@ -156,6 +156,54 @@ async def test_the_refusal_names_the_organization_and_when_its_month_starts_agai
     # A key and a project are not named: neither is what ran out.
     assert "key_prefix" not in body
     assert "project" not in body
+
+
+def _figures(value: Any) -> str:
+    """Everything a member is sent, as text, to look for an amount in."""
+    return json.dumps(value, default=str)
+
+
+async def test_the_refusal_tells_a_member_no_amount_of_the_organization():
+    """The limit and the spend of an organization are for its administrators to see."""
+    refusal = quota.BudgetRefusal(
+        "organization", "month", 1234.5, 1236.75, scope_name="Example University"
+    )
+
+    body, headers = quota.refusal_payload(refusal, contact_email="support@example.edu")
+
+    assert set(body) == {
+        "error",
+        "code",
+        "scope",
+        "window",
+        "organization",
+        "reset_at",
+        "contact_email",
+        "message",
+        "retry_after",
+    }
+    assert set(headers) == {"Retry-After", "X-RateLimit-Reset"}
+    sent = _figures([body, headers])
+    for figure in ("1234", "1236", "2.25"):
+        assert figure not in sent
+
+
+async def test_the_refusal_tells_no_amount_on_a_native_ledger_either(cny):
+    refusal = quota.BudgetRefusal(
+        "organization",
+        "month",
+        1234.5,
+        1236.75,
+        scope_name="Example University",
+        limit_amount=Decimal("8641.5"),
+        spent_amount=Decimal("8657.25"),
+    )
+
+    body, headers = quota.refusal_payload(refusal)
+
+    sent = _figures([body, headers])
+    for figure in ("1234", "1236", "8641", "8657", "currency", "CNY"):
+        assert figure not in sent
 
 
 # -- what a lookup row carries --------------------------------------------------------

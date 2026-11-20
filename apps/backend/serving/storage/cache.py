@@ -24,6 +24,7 @@ from .cache_backend import (
     InMemoryCache as InMemoryCache,
     _snapshot,
 )
+from .sso import LINKED
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -1169,8 +1170,16 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.list_user_identities(user_id)
 
     async def link_user_identity(self, **fields: Any) -> str:
-        """Link an identity to an active account; say why not when it cannot be."""
-        return await self._store.link_user_identity(**fields)
+        """Link an identity to an active account; say why not when it cannot be.
+
+        A link through an organization's provider makes the account a member,
+        so the cached lookups of its keys are dropped: they carry no
+        organization, and would be checked against none until they expire.
+        """
+        outcome = await self._store.link_user_identity(**fields)
+        if outcome == LINKED:
+            await self.invalidate_user_auth_caches(fields["user_id"])
+        return outcome
 
     async def touch_user_identity(self, identity_id: str) -> None:
         """Record that an identity just signed in."""

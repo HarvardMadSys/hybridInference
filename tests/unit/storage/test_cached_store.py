@@ -433,6 +433,34 @@ class TestWriteInvalidation:
         await cached.get_auth_context_by_key_hash("h1")
         assert inner_store.get_auth_context_by_key_hash.await_count == 2
 
+    async def test_a_link_invalidates_the_auth_of_the_account(self, cached, inner_store):
+        """A link through an organization's provider makes a member: its cached
+        lookups carry no organization, and would be checked against none."""
+        inner_store.link_user_identity = AsyncMock(return_value="linked")
+        await cached.get_auth_context_by_key_hash("h1")
+
+        outcome = await cached.link_user_identity(
+            identity_id="i1",
+            user_id="u1",
+            provider_id="campus",
+            issuer="https://idp.example.edu",
+            subject="s1",
+            email="a@b.com",
+        )
+
+        assert outcome == "linked"
+        await cached.get_auth_context_by_key_hash("h1")
+        assert inner_store.get_auth_context_by_key_hash.await_count == 2
+
+    async def test_a_refused_link_leaves_the_cached_auth(self, cached, inner_store):
+        inner_store.link_user_identity = AsyncMock(return_value="identity_in_use")
+        await cached.get_auth_context_by_key_hash("h1")
+
+        await cached.link_user_identity(identity_id="i1", user_id="u1", provider_id="campus")
+
+        await cached.get_auth_context_by_key_hash("h1")
+        assert inner_store.get_auth_context_by_key_hash.await_count == 1
+
     async def test_revoke_key_invalidates_auth(self, cached, inner_store):
         await cached.get_auth_context_by_key_hash("h1")
         await cached.revoke_key("u1")

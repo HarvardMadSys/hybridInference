@@ -18,12 +18,16 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
+import asyncpg
+
 from serving.accounting import get_accounting_policy
 from serving.audit import AuditTarget, audit_columns
 from serving.quota import native_limit
 from serving.storage.audit_schema import insert_audit_row
 
 if TYPE_CHECKING:
+    from contextlib import AbstractAsyncContextManager
+
     from serving.audit import AuditActor
 
 #: The rule of one connection: from every linked identity of an account that is
@@ -331,6 +335,8 @@ class PostgresOrganizationsMixin:
     """Persist organizations, their SSO connections and their members."""
 
     _pool: Any
+    # The store's bounded-wait connection for request-path lookups.
+    _request_connection: Callable[[], AbstractAsyncContextManager[Any]]
 
     # The operational store's own, shared with its ``suspend_user``.
 
@@ -423,7 +429,12 @@ class PostgresOrganizationsMixin:
     async def rename_organization(
         self, organization_id: str, name: str, *, actor: AuditActor
     ) -> str:
-        """Give an organization another name; ``"name_taken"`` when another holds it."""
+        """Give an organization another name; ``"name_taken"`` when another holds it.
+
+        Also when another organization takes the name while this one is
+        changed: the unique index decides between two renames at once, and the
+        one that comes second is told the same.
+        """
         audit = audit_columns(
             admin_ip=None,
             target_user_id=None,
@@ -431,33 +442,36 @@ class PostgresOrganizationsMixin:
             target=AuditTarget.organization(organization_id),
             organization_id=organization_id,
         )
-        async with self._pool.acquire() as conn, conn.transaction():
-            old = await conn.fetchval(
-                "SELECT name FROM sso_organizations WHERE id = $1 FOR UPDATE", organization_id
-            )
-            if old is None:
-                return NOT_FOUND
-            if old == name:
-                return UNCHANGED
-            taken = await conn.fetchval(
-                "SELECT 1 FROM sso_organizations WHERE lower(name) = lower($1) AND id <> $2",
-                name,
-                organization_id,
-            )
-            if taken:
-                return NAME_TAKEN
-            await conn.execute(
-                "UPDATE sso_organizations SET name = $2, updated_at = NOW() WHERE id = $1",
-                organization_id,
-                name,
-            )
-            await insert_audit_row(
-                conn,
-                columns=audit,
-                action="organization.update",
-                details={"name": {"old": old, "new": name}},
-                success=True,
-            )
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                old = await conn.fetchval(
+                    "SELECT name FROM sso_organizations WHERE id = $1 FOR UPDATE", organization_id
+                )
+                if old is None:
+                    return NOT_FOUND
+                if old == name:
+                    return UNCHANGED
+                taken = await conn.fetchval(
+                    "SELECT 1 FROM sso_organizations WHERE lower(name) = lower($1) AND id <> $2",
+                    name,
+                    organization_id,
+                )
+                if taken:
+                    return NAME_TAKEN
+                await conn.execute(
+                    "UPDATE sso_organizations SET name = $2, updated_at = NOW() WHERE id = $1",
+                    organization_id,
+                    name,
+                )
+                await insert_audit_row(
+                    conn,
+                    columns=audit,
+                    action="organization.update",
+                    details={"name": {"old": old, "new": name}},
+                    success=True,
+                )
+        except asyncpg.UniqueViolationError:
+            return NAME_TAKEN
         return UPDATED
 
     async def set_organization_limit(
@@ -848,10 +862,11 @@ class PostgresOrganizationsMixin:
         The ``organization_*`` columns the API-key lookups carry, with the
         monthly quota of the member under the names those lookups give it: its
         own, else the default of the organization. For an identity resolved by
-        account rather than by key, whose lookup read neither.
+        account rather than by key, whose lookup read neither. A request-path
+        read (:data:`~serving.storage.postgres_operational.REQUEST_PATH_READS`).
         """
         own = f"({_OWN_QUOTA_USD} IS NOT NULL OR {_OWN_QUOTA_AMOUNT} IS NOT NULL)"
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT o.id AS organization_id, o.name AS organization_name, "
                 "o.monthly_limit_usd AS organization_limit_usd, "
@@ -897,9 +912,11 @@ class PostgresOrganizationsMixin:
 
         The row the request path checks the organization's limit against; an
         organization nothing was charged to this month has none, and reads 0.
+        A request-path read
+        (:data:`~serving.storage.postgres_operational.REQUEST_PATH_READS`).
         """
         rate = get_accounting_policy().usd_to_currency_rate
-        async with self._pool.acquire() as conn:
+        async with self._request_connection() as conn:
             row = await conn.fetchrow(
                 "SELECT COALESCE(c.cost_usd, 0) AS cost_usd, "
                 f"COALESCE({_AMOUNT}, 0) AS cost_amount "
@@ -1153,7 +1170,11 @@ class PostgresOrganizationsMixin:
         """One page of the audit rows that belong to an organization, newest first.
 
         With the emails of the acting account and of a user target. *prefixes*
-        keeps the actions that start with one of them.
+        keeps the actions that start with one of them. *search* looks in the
+        action, the details, the email of a user target, and the email of an
+        acting account of the organization -- never that of a platform
+        administrator, which the organization is not shown: a search that
+        matched it would say, one guess at a time, what that address is.
         """
         params: list[Any] = [organization_id]
         where = ["a.organization_id = $1"]
@@ -1167,7 +1188,8 @@ class PostgresOrganizationsMixin:
             params.append(f"%{search.lower()}%")
             where.append(
                 f"(lower(a.action) LIKE ${len(params)} "
-                f"OR lower(COALESCE(actor.email, '')) LIKE ${len(params)} "
+                f"OR (a.actor_type = 'user' "
+                f"AND lower(COALESCE(actor.email, '')) LIKE ${len(params)}) "
                 f"OR lower(COALESCE(target.email, '')) LIKE ${len(params)} "
                 f"OR lower(COALESCE(a.details::text, '')) LIKE ${len(params)})"
             )

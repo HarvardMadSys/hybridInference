@@ -877,6 +877,8 @@ REQUEST_PATH_READS = (
     "get_model_concurrency_exemption",
     "get_user_cost_today",
     "get_user_cost_period",
+    "get_organization_month_spend",
+    "get_organization_spend_scope",
 )
 
 

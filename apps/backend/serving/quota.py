@@ -422,10 +422,14 @@ def refusal_payload(
 
     The account's daily refusal is :func:`exceeded_payload` unchanged plus
     ``code``, ``scope`` and ``window``, so clients reading today's fields keep
-    working. The account's monthly refusal, a key's, a project's and an
-    organization's have the same fields and reset with their window; a key's
-    also names the key, a project's the project, an organization's the
-    organization.
+    working. The account's monthly refusal, a key's and a project's have the
+    same fields and reset with their window; a key's also names the key, a
+    project's the project.
+
+    An organization's names the organization and says when its month starts
+    again, with no amount in the body, the message or the headers: what an
+    organization may spend and has spent is for its administrators to see, in
+    the organization console, and this answer goes to each of its members.
     """
     if refusal.scope == "account" and refusal.window == "day":
         body, headers = exceeded_payload(
@@ -439,6 +443,24 @@ def refusal_payload(
     now = datetime.now(UTC)
     reset_at = refusal.reset_at(now)
     retry_after = max(1, int((reset_at - now).total_seconds()))
+    if refusal.scope == "organization":
+        return {
+            "error": "Organization monthly limit exceeded",
+            "code": "budget_exceeded",
+            "scope": refusal.scope,
+            "window": refusal.window,
+            "organization": refusal.scope_name,
+            "reset_at": reset_at.isoformat(),
+            "contact_email": contact_email,
+            "message": (
+                f"Organization {refusal.scope_name!r} reached its monthly limit. Contact an "
+                "administrator of your organization."
+            ),
+            "retry_after": retry_after,
+        }, {
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Reset": str(int(reset_at.timestamp())),
+        }
     remaining = max(0, refusal.limit_usd - refusal.spent_usd)
     period = "daily" if refusal.window == "day" else "monthly"
     if refusal.scope == "account":
@@ -449,14 +471,6 @@ def refusal_payload(
             else "Monthly quota exhausted. Contact the operator of this deployment."
         )
         named: dict[str, Any] = {}
-    elif refusal.scope == "organization":
-        error = "Organization monthly limit exceeded"
-        message = (
-            f"Organization {refusal.scope_name!r} reached its monthly limit "
-            f"of {_money_label(refusal.limit_usd, refusal.limit_amount)}. Contact an "
-            "administrator of your organization."
-        )
-        named = {"organization": refusal.scope_name}
     elif refusal.scope == "project":
         error = f"Project {period} budget exceeded"
         message = (

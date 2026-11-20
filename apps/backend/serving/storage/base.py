@@ -171,6 +171,21 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 
+class OrganizationsUnavailableError(RuntimeError):
+    """This store keeps no organizations.
+
+    What the organization methods of a store raise when it does not implement
+    them. A caller that treats such a store as one with no organization
+    catches this and nothing wider: a :class:`RuntimeError` is also what a
+    store raises when it cannot answer now
+    (:class:`~serving.storage.pools.DatabaseBusyError`), and an account whose
+    organization could not be read is not an account in none.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Organizations are unavailable in this store")
+
+
 class OperationalStore(ABC):
     """Abstract interface for operational data (users, keys, sessions, tokens, audit).
 
@@ -296,105 +311,105 @@ class OperationalStore(ABC):
 
     async def create_organization(self, **fields: Any) -> tuple[str, int]:
         """Create an organization with its SSO connections and their members."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_organization(self, organization_id: str) -> Row | None:
         """One organization with its member count and the ids of its SSO connections."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def list_organizations(self) -> list[Row]:
         """Every organization, by name."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def rename_organization(self, organization_id: str, name: str, **fields: Any) -> str:
         """Give an organization another name."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def set_organization_limit(
         self, organization_id: str, limit: str, **fields: Any
     ) -> tuple[str, Any, Any]:
         """Set or clear one of an organization's limits."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_provider_organization(self, provider_id: str) -> str | None:
         """The organization an ``SSO_PROVIDERS`` entry belongs to, if any."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def attach_organization_connection(
         self, organization_id: str, provider_id: str, **fields: Any
     ) -> tuple[str, int]:
         """Attach a provider to an organization and make its accounts members."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def detach_organization_connection(
         self, organization_id: str, provider_id: str, **fields: Any
     ) -> bool:
         """Detach a provider from its organization; the members stay."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_organization_membership(self, user_id: str) -> Row | None:
         """The organization an account belongs to and its role there, if any."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def set_organization_member_role(
         self, organization_id: str, user_id: str, role: str, **fields: Any
     ) -> str:
         """Give a member the administrator role, or take it back."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def remove_organization_member(
         self, organization_id: str, user_id: str, **fields: Any
     ) -> str:
         """Suspend a member's account for its organization."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def restore_organization_member(
         self, organization_id: str, user_id: str, **fields: Any
     ) -> str:
         """Make a member the organization removed active again."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def set_organization_member_limit(
         self, organization_id: str, user_id: str, **fields: Any
     ) -> tuple[str, Any, Any]:
         """Set or clear the monthly quota of a member's account."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed an account."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_organization_spend_scope(self, user_id: str) -> Row | None:
         """The organization of an account as the request path checks it; None for none."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def list_organization_administrators(self, organization_id: str) -> list[Row]:
         """The members that have the administrator role, by email."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_organization_month_spend(self, organization_id: str) -> Row:
         """What the organization's counter holds for this UTC month."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def list_organization_members(
         self, organization_id: str, **fields: Any
     ) -> tuple[int, list[Row]]:
         """One page of members with their usage in a span of UTC days."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def get_organization_usage(self, organization_id: str, **fields: Any) -> Row:
         """The organization's totals, series and models in a span of UTC days."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def list_organization_requests(self, organization_id: str, **fields: Any) -> list[Row]:
         """Requests of the organization's members, newest first, without their content."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     async def list_organization_audit(
         self, organization_id: str, **fields: Any
     ) -> tuple[int, list[Row]]:
         """One page of the audit rows that belong to an organization, newest first."""
-        raise RuntimeError("Organizations are unavailable in this store")
+        raise OrganizationsUnavailableError
 
     # -- users ---------------------------------------------------------------
 

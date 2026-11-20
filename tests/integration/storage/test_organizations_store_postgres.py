@@ -43,6 +43,8 @@ async def store():
             await conn.execute("DELETE FROM sso_organizations WHERE id LIKE 'o-itest-%'")
             await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'o:o-itest-%'")
             await conn.execute("DELETE FROM api_keys WHERE user_id LIKE 'u-org-%'")
+            # No foreign key takes a session away with its account.
+            await conn.execute("DELETE FROM auth_sessions WHERE user_id LIKE 'u-org-%'")
             await conn.execute("DELETE FROM users WHERE id LIKE 'u-org-%'")
 
     await _wipe()
@@ -690,6 +692,41 @@ async def test_an_organization_is_renamed_unless_the_name_is_another_ones(store)
         "organization.create",
         "organization.update",
     ]
+
+
+async def test_two_renames_to_one_name_at_once_give_the_name_to_one(store, monkeypatch):
+    """Each finds the name free; the unique index then decides, and the second is told."""
+    op_store, pool = store
+    await _organization(op_store, "n1")
+    await _organization(op_store, "n2")
+    write_audit_row = orgs.insert_audit_row
+    written, go_on = asyncio.Event(), asyncio.Event()
+
+    async def write_then_wait(conn, **row):
+        await write_audit_row(conn, **row)
+        if row["details"] == {"name": {"old": "Itest n1", "new": "Itest N"}}:
+            written.set()
+            await go_on.wait()
+
+    monkeypatch.setattr(orgs, "insert_audit_row", write_then_wait)
+    first = asyncio.create_task(
+        op_store.rename_organization("o-itest-n1", "Itest N", actor=PLATFORM)
+    )
+    try:
+        # The first has the name, and has not committed: the second cannot see that.
+        await asyncio.wait_for(written.wait(), 10)
+        second = asyncio.create_task(
+            op_store.rename_organization("o-itest-n2", "itest n", actor=PLATFORM)
+        )
+        await asyncio.sleep(0.2)
+    finally:
+        go_on.set()
+
+    assert await first == orgs.UPDATED
+    assert await second == orgs.NAME_TAKEN
+    assert (await op_store.get_organization("o-itest-n2"))["name"] == "Itest n2"
+    # The refused rename wrote no audit row.
+    assert [row["action"] for row in await _audit(pool, "o-itest-n2")] == ["organization.create"]
 
 
 async def test_the_audit_log_lists_the_rows_of_one_organization(store):

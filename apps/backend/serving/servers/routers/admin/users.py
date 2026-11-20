@@ -1088,10 +1088,14 @@ async def update_user(
         await op_store.suspend_user(user_id, **fields)
     elif user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
-        if new_status == "active":
+        if new_status == "active" or user_table_updates.get("suspension_message"):
             # Made active here, by the platform: if an organization had
             # removed this member, that removal is over, and the account's
-            # next suspension is not the organization's to undo.
+            # next suspension is not the organization's to undo. The same when
+            # the platform writes why the account is suspended: an account
+            # cannot be suspended twice, so this is how the platform takes a
+            # removal over, and the organization's restore would otherwise
+            # make the account active and erase the reason.
             await organizations.forget_removal(op_store, user_id)
 
     # Update key-level fields. ``key_fields`` (with the native amounts added by

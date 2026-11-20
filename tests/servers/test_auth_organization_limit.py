@@ -67,10 +67,13 @@ async def test_a_spent_organization_limit_refuses_until_next_month():
         "month",
     )
     assert body["organization"] == "Example University"
-    assert (body["quota_usd"], body["spent_usd"], body["remaining_usd"]) == (1000.0, 1000.0, 0)
     assert body["reset_at"] == quota.next_utc_month_start().isoformat()
     assert "key_prefix" not in body
-    assert exc.headers["X-RateLimit-Limit-Cost"] == "1000.0"
+    # What the organization may spend and has spent is not a member's to see.
+    assert not {"quota_usd", "spent_usd", "remaining_usd"} & set(body)
+    assert "1000" not in body["message"]
+    assert "X-RateLimit-Limit-Cost" not in exc.headers
+    assert "X-RateLimit-Remaining-Cost" not in exc.headers
     # The organization came with the auth lookup: no second read.
     store.get_organization_spend_scope.assert_not_awaited()
 
@@ -138,7 +141,8 @@ async def test_an_identity_that_came_without_spend_reads_the_organizations_count
 
     exc = await _refusal(store)
 
-    assert (exc.detail["scope"], exc.detail["spent_usd"]) == ("organization", 1000.0)
+    # Refused for the organization: only the counter that was read is at the limit.
+    assert exc.detail["scope"] == "organization"
     store.get_organization_month_spend.assert_awaited_once_with("o-1")
 
 

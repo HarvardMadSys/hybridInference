@@ -99,7 +99,7 @@ async def create_organization(
     organization_id = generate_ulid()
     outcome, added = await store.create_organization(
         organization_id=organization_id,
-        name=payload.name.strip(),
+        name=payload.name,
         monthly_limit_usd=payload.monthly_limit_usd,
         monthly_limit_amount=_native_limit(payload),
         connections=connections,
@@ -140,9 +140,7 @@ async def update_organization(
     store = _store(op_store)
     sent = payload.model_fields_set
     if "name" in sent and payload.name is not None:
-        outcome = await store.rename_organization(
-            organization_id, payload.name.strip(), actor=actor
-        )
+        outcome = await store.rename_organization(organization_id, payload.name, actor=actor)
         if outcome == org_store.NOT_FOUND:
             raise HTTPException(404, "No such organization.")
         if outcome == org_store.NAME_TAKEN:

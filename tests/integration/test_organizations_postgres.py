@@ -216,10 +216,30 @@ async def test_a_name_a_connection_and_a_provider_are_checked(app, store, sso):
     no_connection = await root.post(
         "/admin/organizations", json={"name": "Fourth", "provider_ids": []}, headers=headers
     )
+    # A name of spaces would be stored as no name at all.
+    no_name = await root.post(
+        "/admin/organizations",
+        json={"name": "   ", "provider_ids": ["example-univ"]},
+        headers=headers,
+    )
+    organization_id = (await root.get("/admin/organizations", headers=headers)).json()[
+        "organizations"
+    ][0]["id"]
+    renamed_to_spaces = await root.patch(
+        f"/admin/organizations/{organization_id}", json={"name": " \t "}, headers=headers
+    )
+    padded = await root.patch(
+        f"/admin/organizations/{organization_id}",
+        json={"name": "  Example University  "},
+        headers=headers,
+    )
 
     assert (same_name.status_code, same_connection.status_code) == (409, 409)
     assert unknown.status_code == 404
     assert no_connection.status_code == 422
+    assert (no_name.status_code, renamed_to_spaces.status_code) == (422, 422)
+    # The spaces around a name are not part of it: this is the name it has.
+    assert (padded.status_code, padded.json()["name"]) == (200, "Example University")
     listed = (await root.get("/admin/organizations", headers=headers)).json()["organizations"]
     assert [item["name"] for item in listed] == ["Example University"]
 
@@ -681,10 +701,18 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
     assert rest.json()["next_before"] is None
     assert not {r["id"] for r in rest.json()["requests"]} & {r["id"] for r in page["requests"]}
     assert len(errors.json()["requests"]) == 2
-    bad_cursor = await alice.get(
-        "/user/organization/usage/requests?before=not-a-cursor", headers=headers
-    )
-    assert bad_cursor.status_code == 400
+    # A value this route did not return is refused, whatever it looks like:
+    # digits that are no number, and an id that no row can have.
+    for value in (
+        "not-a-cursor",
+        "²-5",
+        "1700000000000000-²",
+        "1700000000000000-9223372036854775808",
+    ):
+        bad_cursor = await alice.get(
+            "/user/organization/usage/requests", params={"before": value}, headers=headers
+        )
+        assert bad_cursor.status_code == 400, value
 
     shown = detail.json()
     assert shown["member"]["user_id"] == bob_id
@@ -794,6 +822,42 @@ async def test_what_the_platform_suspends_or_reactivates_is_no_longer_the_organi
     assert (await store.get_user_by_id(bob_id))["status"] == "suspended"
 
 
+async def test_a_reason_the_platform_writes_takes_a_removal_over(
+    app, idp, store, members_sign_straight_in
+):
+    """An account cannot be suspended twice: the platform's reason is how it keeps one."""
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    assert (
+        await alice.post(f"/user/organization/members/{bob_id}/remove", headers=headers)
+    ).status_code == 200
+    # A note for the administrators changes nothing: the removal is still the organization's.
+    noted = await root.patch(
+        f"/admin/users/{bob_id}", json={"admin_note": "asked about it"}, headers=root_headers
+    )
+    assert noted.status_code == 200, noted.text
+    assert (await store.get_organization_membership(bob_id))["removed_at"] is not None
+
+    written = await root.patch(
+        f"/admin/users/{bob_id}",
+        json={"suspension_message": "Suspended by the platform: see ticket 42."},
+        headers=root_headers,
+    )
+
+    assert written.status_code == 200, written.text
+    assert (await store.get_organization_membership(bob_id))["removed_at"] is None
+    restored = await alice.post(f"/user/organization/members/{bob_id}/restore", headers=headers)
+    assert restored.status_code == 409
+    account = await store.get_user_by_id(bob_id)
+    assert account["status"] == "suspended"
+    assert account["suspension_message"] == "Suspended by the platform: see ticket 42."
+    # The organization sees the member as suspended, no longer as removed.
+    listed = await alice.get("/user/organization/members?status=suspended", headers=headers)
+    assert [member["user_id"] for member in listed.json()["members"]] == [bob_id]
+
+
 # -- the audit log ---------------------------------------------------------------------
 
 
@@ -819,6 +883,14 @@ async def test_the_audit_log_shows_the_organizations_rows_and_no_platform_accoun
     searched = (
         await alice.get("/user/organization/audit-log?search=bob@example", headers=headers)
     ).json()
+    by_own_administrator = (
+        await alice.get(f"/user/organization/audit-log?search={EMAIL}", headers=headers)
+    ).json()
+    # The platform administrator made two of the rows; its address is root@elsewhere.org.
+    by_platform_address = [
+        (await alice.get(f"/user/organization/audit-log?search={guess}", headers=headers)).json()
+        for guess in ("root@elsewhere.org", "elsewhere", "root@")
+    ]
     paged = (
         await alice.get("/user/organization/audit-log?limit=1&offset=1", headers=headers)
     ).json()
@@ -845,6 +917,11 @@ async def test_the_audit_log_shows_the_organizations_rows_and_no_platform_accoun
         "organization.admin.add",
     ]
     assert [entry["action"] for entry in searched["entries"]] == ["organization.member.remove"]
+    # A search finds a row by the address of an administrator of the organization...
+    assert "organization.member.remove" in [e["action"] for e in by_own_administrator["entries"]]
+    # ...and never by the address of a platform administrator, which no row shows:
+    # a match would tell, one guess at a time, what that address is.
+    assert [found["total"] for found in by_platform_address] == [0, 0, 0]
     assert (paged["total"], len(paged["entries"])) == (3, 1)
     assert paged["entries"][0]["action"] == "organization.admin.add"
 
@@ -1070,7 +1147,10 @@ async def test_what_a_member_is_charged_counts_against_the_organization_and_its_
         "month",
     )
     assert body["organization"] == "Example University"
-    assert (body["quota_usd"], body["spent_usd"]) == (1.0, 1.2)
+    # The member is told which limit, not how much: the amounts are in the
+    # overview of the organization's administrator, read above.
+    assert not {"quota_usd", "spent_usd", "remaining_usd"} & set(body)
+    assert "X-RateLimit-Limit-Cost" not in refused.value.headers
 
     # Every lookup an identity is built from carries the same organization.
     expected = {

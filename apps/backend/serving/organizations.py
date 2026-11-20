@@ -22,6 +22,7 @@ from serving import quota
 from serving.accounting import money_decimal
 from serving.audit import AuditActor, AuditTarget
 from serving.config import sso as sso_config
+from serving.storage.base import OrganizationsUnavailableError
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -79,7 +80,7 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
         return None
     try:
         row = await lookup(user_id)
-    except RuntimeError:
+    except OrganizationsUnavailableError:
         return None
     return dict(row) if row else None
 
@@ -145,7 +146,8 @@ async def spend_scope_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     For an account no API-key lookup answered for (it holds no live key): the
     organization columns, and the monthly quota of the member, its own or the
     default of the organization. None for an account in no organization, and
-    in a store that keeps none.
+    in a store that keeps none. A store that cannot answer now raises: a
+    request whose organization is unknown is not one without a limit.
     """
     lookup = getattr(op_store, "get_organization_spend_scope", None)
     if lookup is None:
@@ -153,7 +155,7 @@ async def spend_scope_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     try:
         answer = lookup(user_id)
         scope = await answer if inspect.isawaitable(answer) else None
-    except RuntimeError:
+    except OrganizationsUnavailableError:
         return None
     return dict(scope) if isinstance(scope, Mapping) else None
 
@@ -165,7 +167,7 @@ async def forget_removal(op_store: Any, user_id: str) -> None:
         return
     try:
         await forget(user_id)
-    except RuntimeError:
+    except OrganizationsUnavailableError:
         return
 
 
@@ -282,6 +284,8 @@ MEMBER_RECENT_REQUESTS = 6
 MEMBER_SPEND_DAYS = 30
 
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+#: The largest id a ``BIGINT`` row has.
+_BIGINT_MAX = 2**63 - 1
 
 
 def period_span(period: str, today: date | None = None) -> tuple[date, date]:
@@ -297,14 +301,24 @@ def request_cursor(row: dict[str, Any]) -> str:
 
 
 def parse_request_cursor(cursor: str) -> tuple[datetime, int] | None:
-    """Read a cursor :func:`request_cursor` made; None for anything else."""
+    """Read a cursor :func:`request_cursor` made; None for anything else.
+
+    Its two numbers are ASCII digits only (``"²".isdigit()`` is true, and
+    ``int`` refuses it), and the row id is one the column can hold.
+    """
     microseconds, _, row_id = cursor.partition("-")
-    if not (microseconds.isdigit() and row_id.isdigit()):
+    if not (_is_number(microseconds) and _is_number(row_id)):
+        return None
+    if int(row_id) > _BIGINT_MAX:
         return None
     try:
         return _EPOCH + timedelta(microseconds=int(microseconds)), int(row_id)
     except OverflowError:
         return None
+
+
+def _is_number(text: str) -> bool:
+    return text.isascii() and text.isdigit()
 
 
 def _total(rows: list[dict[str, Any]], key: str) -> Any:
