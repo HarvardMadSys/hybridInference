@@ -160,8 +160,8 @@ msgstr "机构：名称、SSO 连接、管理员、上限和本月花费"
 msgid "`GET /user/organization/overview`"
 msgstr "`GET /user/organization/overview`"
 
-msgid "Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day, or of each hour for one day. The spend of each model"
-msgstr "所选时间段的合计：花费、请求数、token 数、有请求的成员数。按天的序列；时间段为一天时按小时。每个模型的花费"
+msgid "Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day. For one day, a series of each hour that has begun. The spend of each model"
+msgstr "所选时间段的合计：花费、请求数、token 数、有请求的成员数。按天的序列；时间段为一天时，按已经开始的小时。每个模型的花费"
 
 msgid "`GET /user/organization/members`"
 msgstr "`GET /user/organization/members`"
@@ -250,8 +250,8 @@ msgstr "`POST /user/organization/members/{user_id}/restore`"
 msgid "Restores a member that the organization removed"
 msgstr "恢复一个被机构移除的成员"
 
-msgid "None of these applies to an organization administrator, to an account with the `admin` role, or to the caller. The answer is a 409. The console shows no action in the panel of an organization administrator."
-msgstr "这些操作都不能用于机构管理员、拥有 `admin` 角色的账号，以及调用者自己。此时返回 409。在机构管理员的面板里，控制台不显示任何操作。"
+msgid "None of these applies to an organization administrator, to an account with the `admin` role, or to the caller. The answer is a 409. The row of such a member has `protected: true`, and the console shows no action in its panel."
+msgstr "这些操作都不能用于机构管理员、拥有 `admin` 角色的账号，以及调用者自己。此时返回 409。这类成员的那一行带有 `protected: true`，控制台在其面板里不显示任何操作。"
 
 msgid "Remove and restore a member"
 msgstr "移除和恢复成员"

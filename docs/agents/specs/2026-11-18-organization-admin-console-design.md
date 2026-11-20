@@ -154,8 +154,8 @@ native amounts with `currency` on a ledger that is not in USD.
 - **Totals for the period:** spend, requests, tokens, the number of members with requests, and the number
   of members. For `1d` and `7d`, also the spend and the requests of the period before.
 - **This month:** the spend of the organization and its limit.
-- **Two series:** members with requests, and spend. One point for each day; one point for each hour for
-  `1d`.
+- **Two series:** members with requests, and spend. One point for each day. For `1d`, one point for each
+  hour of the UTC day that has begun.
 - **Spend for each model** in the period.
 
 ### 6.3 Members
@@ -164,7 +164,16 @@ One row for each member: name, email, role, status, last request, requests, toke
 this month with the monthly limit. The list takes a search text (name or email), a status filter, a sort
 column and a page.
 
-The status is the status of the account. A member that the organization removed shows "Removed".
+The status is the status of the account. A member that the organization removed shows "Removed". The
+status filter has one value for each word that the list shows. Thus the value `suspended` does not list a
+member that the organization removed.
+
+The sort column can be the share of the monthly limit that the spend of this month uses
+(`sort_by=limit_use`). A member without a limit is last.
+
+A row has `protected: true` for an administrator of the organization or of the platform. The organization
+cannot set the limit of such a member or remove it: the routes of §7 answer with a 409. The console shows no
+action for it.
 
 A row opens the details of the member:
 

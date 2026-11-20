@@ -103,7 +103,7 @@ the caller's membership: no call names it. Every other caller gets a 403.
 | Page | Route | Shows |
 |---|---|---|
 | **Settings** | `GET /user/organization` | The organization: name, SSO connections, administrators, limits and the spend of this month |
-| **Overview** | `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day, or of each hour for one day. The spend of each model |
+| **Overview** | `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day. For one day, a series of each hour that has begun. The spend of each model |
 | **Members** | `GET /user/organization/members` | One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of this month with the monthly limit. Takes `search`, `status`, `sort_by`, `order`, `limit` and `offset` |
 | **Members**, in the panel of a member | `GET /user/organization/members/{user_id}` | One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests |
 | **Usage → Requests** | `GET /user/organization/usage/requests` | One row for each request, newest first: time, member, project, name of the API key, model, status code, tokens and cost. Takes `search`, `model`, `status`, `limit`, and `before` for the next page |
@@ -144,8 +144,8 @@ limit for a member. The actions call these routes:
 | `POST /user/organization/members/{user_id}/restore` | Restores a member that the organization removed |
 
 None of these applies to an organization administrator, to an account with
-the `admin` role, or to the caller. The answer is a 409. The console shows no
-action in the panel of an organization administrator.
+the `admin` role, or to the caller. The answer is a 409. The row of such a
+member has `protected: true`, and the console shows no action in its panel.
 
 ### Remove and restore a member
 
