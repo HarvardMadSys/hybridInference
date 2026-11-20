@@ -285,6 +285,22 @@ export function FigureCard({
 
 /* -- paging ------------------------------------------------------------------ */
 
+/**
+ * The position in a paged list: a page number, or the cursors of the pages
+ * before. It belongs to the filters it was reached with.
+ *
+ * With other filters the list starts again from `first`, in the same render,
+ * and the old position is dropped, not only hidden: a reader who puts the
+ * earlier filters back gets their first page, not the page that was open.
+ */
+export function useListPosition<T>(filters: string, first: T): [T, (next: T) => void] {
+  const [held, setHeld] = useState({ filters, position: first });
+  const current = held.filters === filters;
+  // Set while rendering: React renders again at once, before anything is drawn.
+  if (!current) setHeld({ filters, position: first });
+  return [current ? held.position : first, (next) => setHeld({ filters, position: next })];
+}
+
 /** "Showing 1–50 of 132", with Previous and Next. */
 export function Pager({
   page,

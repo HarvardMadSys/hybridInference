@@ -30,7 +30,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { moneyAmount } from '@/lib/utils/money';
 import { RequestsTable } from './figures';
-import { Pager, PeriodControl, useOrganizationPeriod } from './parts';
+import { Pager, PeriodControl, useListPosition, useOrganizationPeriod } from './parts';
 import { compactNumber, memberName } from './text';
 
 type UsageKind = 'requests' | 'models' | 'members';
@@ -84,15 +84,12 @@ function Requests({
 }) {
   const t = useT();
   // The gateway pages by the last row it sent, so the way back is the cursors
-  // of the pages before. They belong to what was asked for: a change of the
-  // period or a filter starts again from the newest row, in the same render.
-  const filters = `${period}|${search}|${model}|${status}`;
-  const [paging, setPaging] = useState<{ filters: string; cursors: string[] }>({
-    filters,
-    cursors: [],
-  });
-  const cursors = paging.filters === filters ? paging.cursors : [];
-  const setCursors = (next: string[]) => setPaging({ filters, cursors: next });
+  // of the pages before. A change of the period or a filter starts again from
+  // the newest row.
+  const [cursors, setCursors] = useListPosition<string[]>(
+    `${period}|${search}|${model}|${status}`,
+    [],
+  );
 
   const { data, error, isLoading, isPlaceholderData, refetch } = useOrganizationRequests({
     period,
@@ -213,11 +210,8 @@ function ByMember({ period, search }: { period: OrganizationPeriod; search: stri
   const t = useT();
   const money = useMoney();
   const fmt = useFormatter();
-  // The page belongs to what was asked for: another period or search starts at the first.
-  const filters = `${period}|${search}`;
-  const [paging, setPaging] = useState({ filters, page: 0 });
-  const page = paging.filters === filters ? paging.page : 0;
-  const setPage = (next: number) => setPaging({ filters, page: next });
+  // Another period or search starts at the first page.
+  const [page, setPage] = useListPosition(`${period}|${search}`, 0);
   const overview = useOrganizationOverview(period);
   const { data, error, isLoading, isPlaceholderData, refetch } = useOrganizationMemberUsage({
     period,

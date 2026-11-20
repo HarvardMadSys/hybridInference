@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { act, cleanup, render, renderHook, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
-import { LimitBar, LimitMeter } from './parts';
+import { LimitBar, LimitMeter, useListPosition } from './parts';
 
 afterEach(cleanup);
 
@@ -79,5 +79,62 @@ describe('the month of a member against its limit', () => {
     expect(screen.getByText('No limit')).toBeInTheDocument();
     expect(container.querySelector('[aria-hidden="true"]')).toBeNull();
     expect(screen.queryByText('default')).not.toBeInTheDocument();
+  });
+});
+
+describe('the position in a paged list', () => {
+  /** The hook as a list uses it, with each render it had: its filters and its position. */
+  function list() {
+    const renders: Array<[string, number]> = [];
+    const hook = renderHook(
+      ({ filters }: { filters: string }) => {
+        const [position, setPosition] = useListPosition(filters, 0);
+        renders.push([filters, position]);
+        return { position, setPosition };
+      },
+      { initialProps: { filters: '7d' } },
+    );
+    return { ...hook, renders };
+  }
+
+  it('is kept while the filters stay as they are', () => {
+    const { result, rerender } = list();
+
+    act(() => result.current.setPosition(2));
+    rerender({ filters: '7d' });
+
+    expect(result.current.position).toBe(2);
+  });
+
+  it('starts again with other filters, and does not come back with the earlier ones', () => {
+    const { result, rerender } = list();
+    act(() => result.current.setPosition(2));
+
+    rerender({ filters: '30d' });
+    expect(result.current.position).toBe(0);
+
+    rerender({ filters: '7d' });
+    expect(result.current.position).toBe(0);
+  });
+
+  it('never gives the old position with other filters, not for one render', () => {
+    // One such render would ask the gateway for a page nobody asked for.
+    const { result, rerender, renders } = list();
+    act(() => result.current.setPosition(2));
+
+    rerender({ filters: '30d' });
+
+    expect(renders).toContainEqual(['30d', 0]);
+    expect(renders).not.toContainEqual(['30d', 2]);
+  });
+
+  it('moves within the other filters from their first position', () => {
+    const { result, rerender } = list();
+    act(() => result.current.setPosition(2));
+    rerender({ filters: '30d' });
+
+    act(() => result.current.setPosition(1));
+
+    expect(result.current.position).toBe(1);
   });
 });

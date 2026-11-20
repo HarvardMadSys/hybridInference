@@ -247,6 +247,36 @@ describe('the requests of the organization', () => {
     expect(asked()).toMatchObject({ status: 'ok', before: undefined });
   });
 
+  it.each([
+    [
+      'a filter',
+      () => chooseOption('Status', 'Errors'),
+      () => chooseOption('Status', 'All statuses'),
+    ],
+    [
+      'the period',
+      () => fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' })),
+      () => fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' })),
+    ],
+  ])('does not go back to an older page when %s is put back', (_what, change, putBack) => {
+    state.requests.mockImplementation(() => hook({ requests: [request({})], next_before: 'c1' }));
+
+    render(<UsageView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+    expect(asked()).toMatchObject({ period: '7d', status: undefined, before: 'c1' });
+
+    const before = state.requests.mock.calls.length;
+    change();
+    putBack();
+
+    // The same filters as at first, and the newest requests: the older page
+    // was left when the filters changed, and it is not asked for again.
+    expect(asked()).toMatchObject({ period: '7d', status: undefined, before: undefined });
+    const since = state.requests.mock.calls.slice(before) as Array<[{ before?: string }]>;
+    expect(since.map(([query]) => query.before)).not.toContain('c1');
+    expect(screen.getByRole('button', { name: 'Newer' })).toBeDisabled();
+  });
+
   it('narrows to one of the models the period has', () => {
     render(<UsageView />);
 
@@ -419,6 +449,19 @@ describe('the usage by member', () => {
       target: { value: 'bo' },
     });
     await waitFor(() => expect(memberQuery()).toMatchObject({ search: 'bo', offset: 0 }));
+  });
+
+  it('does not go back to a later page when the period is put back', () => {
+    render(<UsageView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(memberQuery()).toMatchObject({ period: '7d', offset: 50 });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
+    expect(memberQuery()).toMatchObject({ period: '30d', offset: 0 });
+    fireEvent.click(screen.getByRole('button', { name: 'Last 7 days' }));
+    // The first page of the 7 days, not the second that was open before.
+    expect(memberQuery()).toMatchObject({ period: '7d', offset: 0 });
+    expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
   });
 
   it('says so when no member matches, and when there is none at all', async () => {
