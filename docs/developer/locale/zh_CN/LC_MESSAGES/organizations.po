@@ -25,8 +25,8 @@ msgstr "机构"
 msgid "This page is for an operator whose gateway serves the members of a university or a company through [single sign-on](sso.md), and who wants that organization to see and manage its own members. After reading it you can make an organization, name its administrators and set its limits, and you know what its administrators see and can change."
 msgstr "本页面向这样的运营方：网关通过[单点登录](sso.md)为某所大学或某家公司的成员提供服务，并且希望由这个机构自己查看和管理它的成员。读完后，你可以创建一个机构、指定它的管理员、设置它的上限，并且知道它的管理员能看到什么、能改什么。"
 
-msgid "A deployment that has no organization behaves as it did before."
-msgstr "没有创建任何机构的部署，行为和以前一样。"
+msgid "A deployment that has no organization behaves as it did before, with one exception: an account can connect an organization account under **Settings → Single sign-on** only when its own email is in the `domains` of the provider. [Single Sign-On](sso.md) describes this rule."
+msgstr "没有创建任何机构的部署，行为和以前一样，只有一处例外：只有账号自己的邮箱在身份提供方的 `domains` 之内，账号才能在 **Settings → Single sign-on** 下关联机构账号。[单点登录](sso.md)一页说明了这条规则。"
 
 msgid "What an organization is"
 msgstr "机构是什么"
@@ -274,6 +274,9 @@ msgstr "恢复成员会让账号重新变为可用。已吊销的 API key 仍然
 msgid "An organization administrator restores only a member that the organization removed. An account that you suspended in **Admin → Users** is yours to make active again. When you make a removed member active again there, the organization sees the member as active too."
 msgstr "机构管理员只能恢复被本机构移除的成员。你在 **Admin → Users** 里停用的账号，只能由你来恢复。当你在那里把一个被移除的成员恢复为可用时，机构那边看到的这个成员也是可用的。"
 
+msgid "An account cannot be suspended two times. To keep a removed member suspended on your own authority, write a suspension message for it in **Admin → Users**. The suspension is then yours, and the organization can no longer restore the member."
+msgstr "一个账号不能被停用两次。如果你要以平台的名义让一个被移除的成员保持停用，就在 **Admin → Users** 里给它写一条停用说明。此后这次停用归你，机构不能再恢复这个成员。"
+
 msgid "The gateway is not told when the identity provider disables an account. Until an administrator removes the member, its open sessions and its API keys keep working."
 msgstr "身份提供方停用账号时，网关不会得到通知。在管理员移除这个成员之前，它已打开的会话和 API key 仍然有效。"
 
@@ -319,8 +322,11 @@ msgstr "这个成员。它就是账号的每月配额，也就是 **Admin → Us
 msgid "An organization administrator cannot set a limit of a member, or the default, above the limit of the organization. The daily quota of an account does not change: it comes from the role of the account or from **Admin → Users**."
 msgstr "机构管理员不能把成员的上限或默认上限设得高于机构的上限。账号的每日配额不变：它来自账号的角色，或者来自 **Admin → Users**。"
 
-msgid "A request that the limit of the organization refuses gets the 429 of the other limits, with `scope` set to `organization`:"
-msgstr "被机构上限拒绝的请求，得到的是和其他上限一样的 429，其中 `scope` 为 `organization`："
+msgid "When you lower the limit of the organization, the limits of its members and the default stay as they are, also when they are now above it. A request must be under each limit, so the lower limit decides."
+msgstr "当你调低机构的上限时，成员的上限和默认上限保持原样，即使它们现在高于机构的上限。一个请求必须低于每一个上限，所以起作用的是较低的那个。"
+
+msgid "A request that the limit of the organization refuses gets a 429 with `scope` set to `organization`. The answer names the organization and says when the month starts again. It contains no amount: the limit and the spend of an organization are for its administrators to see, and each member can get this answer."
+msgstr "被机构上限拒绝的请求，得到 `scope` 为 `organization` 的 429。响应里有机构的名称和下个月开始的时间，不含任何金额：机构的上限和花费只给它的管理员看，而每个成员都可能收到这个响应。"
 
 msgid "A member whose own limit is reached gets the refusal of an account, with `scope` set to `account`."
 msgstr "成员自己的上限用完时，得到的是账号的拒绝响应，其中 `scope` 为 `account`。"

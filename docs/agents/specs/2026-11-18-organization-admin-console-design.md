@@ -107,7 +107,8 @@ A membership ends when the account is deleted permanently. Nothing else ends it:
 
 - **Link.** Today **Settings → Single sign-on** lets an account connect an identity of a connection when the
   email of the account is outside its `domains`. The gateway now refuses a new link of this kind. Links of
-  this kind that exist stay, and these accounts are not members.
+  this kind that exist stay, and these accounts are not members. The rule applies to each deployment, also
+  to one that has no organization. Thus no new link of this kind is made before a connection is attached.
 - **Disconnect.** A member cannot disconnect the identity of an SSO connection of its organization in
   **Settings → Single sign-on**. The member rule needs this identity.
 
@@ -218,6 +219,8 @@ the default of the organization then applies.
 - The daily quota of the account does not change.
 - The platform administrator can continue to set the monthly quota of an account in **Admin → Users**. That
   edit has no upper bound from the organization.
+- When the platform administrator lowers the limit of the organization, the limits of the members and the
+  default stay, also above the new limit. A request must be under each limit, thus the lower limit applies.
 
 ### 7.2 The default monthly limit for a member
 
@@ -245,6 +248,10 @@ the removal. The revoked API keys stay revoked. The member makes new keys.
 An organization administrator can restore only a member that the organization removed. If the platform
 administrator suspended the account in **Admin → Users**, the answer is a 409. When the platform
 administrator makes a removed member active again in **Admin → Users**, the gateway clears the mark too.
+
+The gateway also clears the mark when the platform administrator writes a suspension message for a removed
+member. An account cannot be suspended two times, and this is how the platform administrator takes the
+suspension. The organization can then no longer restore the member.
 
 ## 8. Limits at admission
 
@@ -307,7 +314,10 @@ Three properties to know:
 
 ### 8.3 The refusal
 
-The answer is the 429 of the other levels, with `scope: "organization"` and `window: "month"`:
+The answer is a 429 with `scope: "organization"` and `window: "month"`. It names the organization and says
+when the month starts again. It has no amount in the body, the message or the headers: each member can get
+this answer, and the limit and the spend of an organization are for its administrators (as for a balance
+poll, §8.2).
 
 ```json
 {
@@ -316,12 +326,9 @@ The answer is the 429 of the other levels, with `scope: "organization"` and `win
   "scope": "organization",
   "window": "month",
   "organization": "Example University",
-  "quota_usd": 1000.0,
-  "spent_usd": 1000.02,
-  "remaining_usd": 0,
   "reset_at": "2026-12-01T00:00:00+00:00",
   "contact_email": "support@example.edu",
-  "message": "Organization 'Example University' reached its monthly limit of $1,000.00. Contact an administrator of your organization.",
+  "message": "Organization 'Example University' reached its monthly limit. Contact an administrator of your organization.",
   "retry_after": 1123200
 }
 ```

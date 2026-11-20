@@ -6,7 +6,10 @@ to see and manage its own members. After reading it you can make an
 organization, name its administrators and set its limits, and you know what
 its administrators see and can change.
 
-A deployment that has no organization behaves as it did before.
+A deployment that has no organization behaves as it did before, with one
+exception: an account can connect an organization account under
+**Settings → Single sign-on** only when its own email is in the `domains` of
+the provider. [Single Sign-On](sso.md) describes this rule.
 
 ## What an organization is
 
@@ -160,6 +163,11 @@ removed. An account that you suspended in **Admin → Users** is yours to make
 active again. When you make a removed member active again there, the
 organization sees the member as active too.
 
+An account cannot be suspended two times. To keep a removed member suspended
+on your own authority, write a suspension message for it in **Admin → Users**.
+The suspension is then yours, and the organization can no longer restore the
+member.
+
 The gateway is not told when the identity provider disables an account. Until
 an administrator removes the member, its open sessions and its API keys keep
 working.
@@ -180,8 +188,15 @@ An organization administrator cannot set a limit of a member, or the default,
 above the limit of the organization. The daily quota of an account does not
 change: it comes from the role of the account or from **Admin → Users**.
 
-A request that the limit of the organization refuses gets the 429 of the other
-limits, with `scope` set to `organization`:
+When you lower the limit of the organization, the limits of its members and
+the default stay as they are, also when they are now above it. A request must
+be under each limit, so the lower limit decides.
+
+A request that the limit of the organization refuses gets a 429 with `scope`
+set to `organization`. The answer names the organization and says when the
+month starts again. It contains no amount: the limit and the spend of an
+organization are for its administrators to see, and each member can get this
+answer.
 
 ```json
 {
@@ -190,12 +205,9 @@ limits, with `scope` set to `organization`:
   "scope": "organization",
   "window": "month",
   "organization": "Example University",
-  "quota_usd": 1000.0,
-  "spent_usd": 1000.02,
-  "remaining_usd": 0,
   "reset_at": "2026-12-01T00:00:00+00:00",
   "contact_email": "support@your-gateway.example",
-  "message": "Organization 'Example University' reached its monthly limit of $1,000.00. Contact an administrator of your organization.",
+  "message": "Organization 'Example University' reached its monthly limit. Contact an administrator of your organization.",
   "retry_after": 1123200
 }
 ```
