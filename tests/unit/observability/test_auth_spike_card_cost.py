@@ -119,7 +119,7 @@ async def test_alert_history_gets_the_card_when_the_episode_opens(posts, card_bu
     episodes: dict[str, str] = {}
     described: list[dict | None] = []
 
-    def breach(key, *, severity, title, kind, context, now=None):
+    def breach(key, *, severity, title, kind, context, stale_after_sec=None, now=None):
         described.append(context)
         return episodes.setdefault(key, "ep-1")
 

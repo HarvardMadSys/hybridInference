@@ -128,6 +128,24 @@ class ThresholdTransitionTracker:
         """Whether ``key`` currently has an open incident."""
         return key in self._firing
 
+    def restore_firing(
+        self,
+        key: str,
+        *,
+        opened_at: float,
+        restored_at: float | None = None,
+        stale_after: float | None = None,
+    ) -> None:
+        """Restore a durable open incident after restart without emitting an edge."""
+        if key in self._firing:
+            return
+        if stale_after is not None:
+            self._bounds[key] = stale_after
+        self._firing[key] = _KeyState(
+            last_observed_at=opened_at if restored_at is None else restored_at,
+            stale_after=stale_after,
+        )
+
     def observe(
         self,
         key: str,

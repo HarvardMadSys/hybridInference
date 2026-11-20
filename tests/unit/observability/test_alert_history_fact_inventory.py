@@ -18,6 +18,7 @@ from serving.observability.alert_history.redaction import (
     INGEST_LABEL_FACT_KEYS,
     sanitize_facts,
 )
+from serving.observability.alert_history.vocabulary import DecisionReason, decision_reason
 from serving.observability.alert_history.wire import EventIn, SourceStatusIn, to_record
 
 RECEIPT_ACTIONS = [
@@ -43,6 +44,22 @@ OUTBOX_STATES = [
     "manual_reconciliation_required",
 ]
 OMISSION = ["missing", "unsafe", "too_long"]
+
+
+@pytest.mark.parametrize("reason", ["record_only", "already_notified", "below_min_duration"])
+def test_notification_policy_decisions_are_accepted_by_the_ingest_wire(reason):
+    event = EventIn.model_validate(
+        {
+            "origin_record_id": "policy:test",
+            "kind": "notification_decision",
+            "occurred_at": "2026-11-13T12:00:00Z",
+            "target_environment": "test",
+            "decision_reason": reason,
+        }
+    )
+
+    assert event.decision_reason == reason
+
 
 #: Section 1 of the inventory: every string-valued fact key, every value.
 STRING_FACTS: dict[str, list[str]] = {
@@ -159,6 +176,27 @@ def _record(facts):
 def test_every_inventory_string_key_is_recognized():
     recognized = INGEST_CODE_FACT_KEYS | INGEST_IDENTIFIER_FACT_KEYS | INGEST_LABEL_FACT_KEYS
     assert set(STRING_FACTS) <= recognized
+
+
+@pytest.mark.parametrize("reason", list(DecisionReason))
+def test_producer_decision_vocabulary_is_the_ingest_schema(reason):
+    event = EventIn.model_validate(
+        {
+            "origin_record_id": "decision-vocabulary:1",
+            "kind": "notification_decision",
+            "decision_reason": reason.value,
+            "occurred_at": "2026-10-26T08:15:30.125Z",
+            "target_environment": "test",
+            "source_instance_id": "alert-control-plane:vocabulary",
+        }
+    )
+    assert event.decision_reason == reason
+    assert decision_reason(reason.value) is reason
+
+
+def test_producer_rejects_a_reason_missing_from_the_ingest_vocabulary():
+    with pytest.raises(ValueError, match="unknown alert decision reason"):
+        decision_reason("unregistered_reason")
 
 
 @pytest.mark.parametrize(
