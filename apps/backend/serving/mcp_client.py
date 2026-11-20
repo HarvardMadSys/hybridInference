@@ -41,6 +41,7 @@ _MAX_TOOL_PAGES = 100
 _MAX_TOOLS = 5000
 _SESSION_TTL_S = 600.0
 _CALL_TIMEOUT_S = 60.0
+_CLOSE_TIMEOUT_S = 2.0
 _FORBIDDEN_HEADERS = frozenset(
     {
         "host",
@@ -255,14 +256,15 @@ class _Session:
         if self._session_id is None:
             return
         try:
-            async with self._client.stream(
-                "DELETE",
-                self._target.url,
-                headers=self._request_headers(),
-                extensions=self._extensions,
-            ):
-                pass
-        except httpx.HTTPError:
+            async with asyncio.timeout(_CLOSE_TIMEOUT_S):
+                async with self._client.stream(
+                    "DELETE",
+                    self._target.url,
+                    headers=self._request_headers(),
+                    extensions=self._extensions,
+                ):
+                    pass
+        except (httpx.HTTPError, TimeoutError):
             pass
 
     async def _post(self, payload: dict[str, Any]) -> list[dict[str, Any]]:

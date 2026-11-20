@@ -302,6 +302,88 @@ async def test_a_racing_initialize_ends_the_losing_session() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("failure", ["connect", "hang"])
+async def test_a_failing_delete_does_not_fail_the_losing_caller(
+    failure: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(mcp_client, "_CLOSE_TIMEOUT_S", 0.05)
+    gate = asyncio.Event()
+    both_initializing = asyncio.Event()
+
+    class _GatedStream:
+        def __init__(self, payload: dict[str, Any], session_id: str) -> None:
+            self._payload = payload
+            self._session_id = session_id
+
+        async def __aenter__(self) -> httpx.Response:
+            await gate.wait()
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": self._payload["id"],
+                    "result": {"protocolVersion": "2025-06-18"},
+                },
+                headers={"mcp-session-id": self._session_id},
+            )
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+    class _HangingStream:
+        async def __aenter__(self) -> httpx.Response:
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+        async def __aexit__(self, *_args: Any) -> None:
+            pass
+
+    class _RacingClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__([])
+            self.initialized = 0
+
+        def stream(
+            self,
+            method: str,
+            url: str,
+            *,
+            json: dict[str, Any] | None = None,
+            headers: dict[str, str] | None = None,
+            **_kwargs: Any,
+        ) -> Any:
+            if method == "DELETE":
+                if failure == "connect":
+                    raise httpx.ConnectError("refused")
+                return _HangingStream()
+            assert json is not None
+            self.requests.append(json)
+            self.headers.append(headers or {})
+            if json.get("method") == "initialize":
+                self.initialized += 1
+                if self.initialized == 2:
+                    both_initializing.set()
+                return _GatedStream(json, f"s-{self.initialized}")
+            return _FakeStream(httpx.Response(202))
+
+    client = _RacingClient()
+    first = asyncio.create_task(
+        mcp_client._open_session(client, TARGET, {}, scope="race")  # type: ignore[arg-type]
+    )
+    second = asyncio.create_task(
+        mcp_client._open_session(client, TARGET, {}, scope="race")  # type: ignore[arg-type]
+    )
+    await asyncio.wait_for(both_initializing.wait(), timeout=1)
+    gate.set()
+    sessions = await asyncio.wait_for(asyncio.gather(first, second), timeout=1)
+
+    assert sessions[0].session_id == sessions[1].session_id
+    assert [cached.session_id for cached in mcp_client._session_cache.values()] == [
+        sessions[0].session_id
+    ]
+
+
+@pytest.mark.asyncio
 async def test_an_sse_answer_is_parsed() -> None:
     server = _FakeClient(
         [{"protocolVersion": "2025-06-18"}, {"tools": [{"name": "search"}]}],
