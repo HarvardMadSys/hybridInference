@@ -43,6 +43,7 @@ from .routers import (
     internal_lookups,
     models,
     playground,
+    playground_mcp,
     projects,
     public_stats,
     qdrant_proxy,
@@ -195,6 +196,7 @@ def create_app() -> FastAPI:
     app.include_router(projects.router)
     app.include_router(internal.router)
     app.include_router(playground.router)
+    app.include_router(playground_mcp.router)
     app.include_router(identity.router)
     app.include_router(agent_grants.router)
     app.include_router(internal_lookups.router)

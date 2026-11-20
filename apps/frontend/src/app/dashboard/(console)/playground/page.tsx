@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   useSyncExternalStore,
@@ -31,8 +32,10 @@ import {
   parseStreamEvent,
   type CodeLanguage,
   type PlaygroundApi,
+  type ToolCallDelta,
 } from './api';
 import { CodeBlock } from './CodeBlock';
+import { McpConnectDialog, type McpConnectRequest } from './McpConnectDialog';
 import {
   decodeRate,
   finishNote,
@@ -40,7 +43,15 @@ import {
   requestHistory,
   type Message,
   type RoutingInfo,
+  type ToolCall,
 } from './turns';
+import {
+  resolveToolCall,
+  selectedTools as pickTools,
+  type McpServer,
+  type McpTool,
+  type ServerSelection,
+} from './tools';
 
 const API_BASE = config.apiBase;
 
@@ -54,6 +65,8 @@ const UNDO_MS = 8000;
  */
 const STREAM_IDLE_MS = 45_000;
 const NO_MESSAGES: Message[] = [];
+const NO_SERVERS: McpServer[] = [];
+const NO_TOOLS: ServerSelection[] = [];
 
 function isAbsoluteUrl(value: string): boolean {
   return /^https?:\/\//i.test(value);
@@ -61,6 +74,7 @@ function isAbsoluteUrl(value: string): boolean {
 
 interface PlaygroundSession {
   id: string;
+  connectionId: string;
   title: string;
   selectedModelId: string;
   selectedProvider: string | null;
@@ -69,6 +83,8 @@ interface PlaygroundSession {
   maxTokens: number;
   reasoningEffort: string | null;
   api: PlaygroundApi;
+  servers: McpServer[];
+  tools: ServerSelection[];
   messages: Message[];
   input: string;
 }
@@ -87,9 +103,17 @@ function messageId(): string {
   return `m-${messageCounter}`;
 }
 
+function newConnectionId(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return `conn-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
 function createSession(id: string, defaultModelId = ''): PlaygroundSession {
   return {
     id,
+    connectionId: newConnectionId(),
     title: 'New session',
     selectedModelId: defaultModelId,
     selectedProvider: null,
@@ -98,6 +122,8 @@ function createSession(id: string, defaultModelId = ''): PlaygroundSession {
     maxTokens: 4096,
     reasoningEffort: null,
     api: 'chat',
+    servers: [],
+    tools: [],
     messages: [],
     input: '',
   };
@@ -120,6 +146,38 @@ function getMessageCount(messages: Message[]): string {
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
+}
+
+/** Merge streamed tool-call fragments into the calls already shown for a turn. */
+function applyToolDeltas(current: ToolCall[] | undefined, deltas: ToolCallDelta[]): ToolCall[] {
+  const calls = [...(current ?? [])];
+  for (const delta of deltas) {
+    const position = calls.findIndex((call) => call?.index === delta.index);
+    const existing = position >= 0 ? calls[position] : undefined;
+    const merged: ToolCall = {
+      id: existing?.id ?? '',
+      name: existing?.name ?? '',
+      index: delta.index,
+      arguments: existing?.arguments ?? '',
+      ...(existing?.mcpName ? { mcpName: existing.mcpName } : {}),
+      ...(existing?.serverUrl ? { serverUrl: existing.serverUrl } : {}),
+      ...(existing?.serverHeaders ? { serverHeaders: existing.serverHeaders } : {}),
+      ...(existing?.status ? { status: existing.status } : {}),
+      ...(existing?.complete !== undefined ? { complete: existing.complete } : {}),
+      ...(existing?.result !== undefined ? { result: existing.result } : {}),
+      ...(existing?.error !== undefined ? { error: existing.error } : {}),
+      ...(delta.id ? { id: delta.id } : {}),
+      ...(delta.name
+        ? {
+            name: delta.nameMode === 'append' ? (existing?.name ?? '') + delta.name : delta.name,
+          }
+        : {}),
+      ...(delta.arguments ? { arguments: (existing?.arguments ?? '') + delta.arguments } : {}),
+    };
+    if (position >= 0) calls[position] = merged;
+    else calls.push(merged);
+  }
+  return calls;
 }
 
 function routingLines(routing: RoutingInfo): string[] {
@@ -232,6 +290,8 @@ export default function PlaygroundPage() {
   const [models, setModels] = useState<PlaygroundModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
+  const mcpAddRef = useRef<HTMLButtonElement>(null);
   const [sessions, setSessions] = useState<PlaygroundSession[]>([createSession('s-1')]);
   const [activeSessionId, setActiveSessionId] = useState('s-1');
   // Sessions with a turn in flight. Streaming is scoped per session (issue:
@@ -349,6 +409,12 @@ export default function PlaygroundPage() {
   const model = models.find((m) => m.id === modelId) ?? null;
   const selectedProvider = session?.selectedProvider ?? null;
   const modelProviders = model?.providers ?? [];
+  const sessionServers = session?.servers ?? NO_SERVERS;
+  const sessionTools = session?.tools ?? NO_TOOLS;
+  const toolDefs = useMemo(
+    () => pickTools(sessionServers, sessionTools),
+    [sessionServers, sessionTools],
+  );
 
   const activeStreaming = streamingIds.has(session?.id ?? '');
 
@@ -364,6 +430,122 @@ export default function PlaygroundPage() {
       patchSession(activeSessionId, fn);
     },
     [activeSessionId, patchSession],
+  );
+
+  const closeMcpDialog = useCallback(() => {
+    setMcpDialogOpen(false);
+    mcpAddRef.current?.focus();
+  }, []);
+
+  /** Discover a server's tools and add it; rejects with the message the dialog shows. */
+  const connectMcpServer = useCallback(
+    async ({ url, description, headers }: McpConnectRequest) => {
+      const resp = await fetchWithAuth(API_BASE, '/internal/playground/mcp/tools', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          headers,
+          connection_id: session?.connectionId ?? newConnectionId(),
+        }),
+      });
+      const data = await jsonOrThrow<{ tools: McpTool[] }>(resp);
+      const server: McpServer = {
+        id: `mcp-${Date.now()}`,
+        url,
+        ...(description ? { description } : {}),
+        headers,
+        tools: Array.isArray(data.tools) ? data.tools : [],
+      };
+      patch((s) => ({
+        ...s,
+        servers: [...s.servers.filter((candidate) => candidate.url !== url), server],
+        tools: s.tools.filter((pick) =>
+          s.servers.some((candidate) => candidate.id === pick.serverId && candidate.url !== url),
+        ),
+      }));
+      closeMcpDialog();
+    },
+    [patch, session?.connectionId, closeMcpDialog],
+  );
+
+  const toggleMcpTool = useCallback(
+    (serverId: string, name: string) => {
+      patch((s) => {
+        const picked = s.tools.some((pick) => pick.serverId === serverId && pick.name === name);
+        return {
+          ...s,
+          tools: picked
+            ? s.tools.filter((pick) => !(pick.serverId === serverId && pick.name === name))
+            : [...s.tools, { serverId, name }],
+        };
+      });
+    },
+    [patch],
+  );
+
+  const removeMcpServer = useCallback(
+    (serverId: string) => {
+      patch((s) => ({
+        ...s,
+        servers: s.servers.filter((server) => server.id !== serverId),
+        tools: s.tools.filter((pick) => pick.serverId !== serverId),
+      }));
+    },
+    [patch],
+  );
+
+  const runToolCall = useCallback(
+    async (messageId: string, callIndex: number) => {
+      const sessionId = activeSessionId;
+      const connection = sessions.find((candidate) => candidate.id === sessionId);
+      const call = connection?.messages.find((message) => message.id === messageId)?.toolCalls?.[
+        callIndex
+      ];
+      if (!call?.serverUrl || !call.complete) return;
+      const update = (next: Partial<ToolCall>) => {
+        patchSession(sessionId, (s) => ({
+          ...s,
+          messages: s.messages.map((message) =>
+            message.id !== messageId
+              ? message
+              : {
+                  ...message,
+                  toolCalls: (message.toolCalls ?? []).map((candidate, index) =>
+                    index === callIndex ? { ...candidate, ...next } : candidate,
+                  ),
+                },
+          ),
+        }));
+      };
+      update({ status: 'running', error: undefined, result: undefined });
+      try {
+        const args = call.arguments ? JSON.parse(call.arguments) : {};
+        const resp = await fetchWithAuth(API_BASE, '/internal/playground/mcp/call', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: call.serverUrl,
+            headers: call.serverHeaders ?? {},
+            connection_id: connection?.connectionId ?? '',
+            name: call.mcpName ?? call.name,
+            arguments: args,
+          }),
+        });
+        const data = await jsonOrThrow<{ content: string; isError: boolean }>(resp);
+        update(
+          data.isError
+            ? { status: 'error', result: data.content, error: data.content }
+            : { status: 'done', result: data.content, error: undefined },
+        );
+      } catch (err) {
+        update({
+          status: 'error',
+          error: err instanceof Error && err.message ? err.message : 'Tool call failed',
+        });
+      }
+    },
+    [activeSessionId, sessions, patchSession],
   );
 
   const loadModels = useCallback(() => {
@@ -426,18 +608,21 @@ export default function PlaygroundPage() {
     content: string;
     reasoning: string;
     routing: RoutingInfo | null;
+    toolCalls: ToolCallDelta[];
     raf: number | null;
   }
 
   const flushDelta = useCallback(
     (sessionId: string, turn: TurnDeltas) => {
-      if (!turn.content && !turn.reasoning && !turn.routing) return;
+      if (!turn.content && !turn.reasoning && !turn.routing && turn.toolCalls.length === 0) return;
       const contentDelta = turn.content;
       const reasoningDelta = turn.reasoning;
       const routing = turn.routing;
+      const toolDeltas = turn.toolCalls;
       turn.content = '';
       turn.reasoning = '';
       turn.routing = null;
+      turn.toolCalls = [];
       patchSession(sessionId, (s) => {
         const copy = [...s.messages];
         const last = copy[copy.length - 1];
@@ -449,6 +634,7 @@ export default function PlaygroundPage() {
             ? { reasoningContent: (last.reasoningContent || '') + reasoningDelta }
             : {}),
           ...(routing ? { routing } : {}),
+          ...(toolDeltas.length ? { toolCalls: applyToolDeltas(last.toolCalls, toolDeltas) } : {}),
         };
         return { ...s, messages: copy };
       });
@@ -623,7 +809,14 @@ export default function PlaygroundPage() {
       const turnSessionId = activeSessionId;
       if (streamingIds.has(turnSessionId) || !modelId) return;
       const api = session?.api ?? 'chat';
-      const turn: TurnDeltas = { content: '', reasoning: '', routing: null, raf: null };
+      const turn: TurnDeltas = {
+        content: '',
+        reasoning: '',
+        routing: null,
+        toolCalls: [],
+        raf: null,
+      };
+      let sawToolCall = false;
       const timing = {
         start: 0,
         firstToken: 0,
@@ -682,6 +875,7 @@ export default function PlaygroundPage() {
               maxTokens: maxTok,
               reasoningEffort,
               provider: selectedProvider,
+              tools: toolDefs,
             }),
           ),
           signal: ctrl.signal,
@@ -742,6 +936,11 @@ export default function PlaygroundPage() {
                 turn.reasoning += event.reasoning;
                 scheduleFlush(turnSessionId, turn);
               }
+              if (event.toolCalls?.length) {
+                sawToolCall = true;
+                turn.toolCalls.push(...event.toolCalls);
+                scheduleFlush(turnSessionId, turn);
+              }
             } catch {
               /* skip */
             }
@@ -752,7 +951,7 @@ export default function PlaygroundPage() {
             break;
           }
         }
-        if (!failure && !timing.firstToken) {
+        if (!failure && !timing.firstToken && !sawToolCall) {
           failure = { status: 'error', error: 'The model returned an empty response.' };
         }
       } catch (err) {
@@ -780,8 +979,16 @@ export default function PlaygroundPage() {
           const last = s.messages[s.messages.length - 1];
           // Cleared mid-stream: leave the session (and its Undo) untouched.
           if (last?.role !== 'assistant') return s;
+          const toolCalls = [...(last.toolCalls ?? [])]
+            .filter((call): call is ToolCall => Boolean(call))
+            .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+            .map((call, position) => {
+              const withId = call.id ? call : { ...call, id: `${last.id}-call-${position}` };
+              return resolveToolCall({ ...withId, complete: !outcome }, toolDefs);
+            });
           const cleaned: Message = {
             ...last,
+            ...(toolCalls.length ? { toolCalls } : {}),
             durationMs: Math.round(end - start),
             ttftMs: firstToken ? Math.round(firstToken - start) : undefined,
             completionTokens: tokens,
@@ -814,6 +1021,7 @@ export default function PlaygroundPage() {
       reasoningEffort,
       session,
       selectedProvider,
+      toolDefs,
       patchSession,
       flushDelta,
       scheduleFlush,
@@ -826,6 +1034,12 @@ export default function PlaygroundPage() {
     patch((s) => ({ ...s, input: '' }));
     void startTurn([...msgs, { id: messageId(), role: 'user', content: text }]);
   }, [input, activeStreaming, modelId, msgs, patch, startTurn]);
+
+  /** Let the model answer now that the tool results are in the transcript. */
+  const continueWithResults = useCallback(() => {
+    if (activeStreaming || !session || !modelId) return;
+    void startTurn([...msgs]);
+  }, [activeStreaming, session, modelId, msgs, startTurn]);
 
   /** Re-run the last reply: a retry after a failure, a fresh sample otherwise. */
   const regenerate = useCallback(() => {
@@ -936,6 +1150,7 @@ export default function PlaygroundPage() {
     maxTokens: maxTok,
     reasoningEffort,
     provider: selectedProvider,
+    tools: toolDefs,
   });
   const copyCode = async () => {
     setCodeCopied(await copyToClipboard(codeText));
@@ -1227,6 +1442,84 @@ export default function PlaygroundPage() {
               </section>
 
               <section className={railBlock}>
+                <span className={railLabel}>Tools (MCP)</span>
+                {sessionServers.map((server) => (
+                  <div key={server.id} className="mt-2 rounded-lg border border-gray-200 p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="min-w-0">
+                        <span
+                          className="block truncate text-[11px] text-gray-600"
+                          title={server.url}
+                        >
+                          {server.url}
+                        </span>
+                        {server.description && (
+                          <span className="block break-words text-[11px] leading-4 text-gray-400">
+                            {server.description}
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeMcpServer(server.id)}
+                        disabled={activeStreaming}
+                        aria-label={`Remove ${server.url}`}
+                        className="shrink-0 text-gray-400 transition hover:text-gray-800 disabled:opacity-40"
+                      >
+                        ×
+                      </button>
+                    </div>
+                    {server.tools.length === 0 ? (
+                      <p className="mt-1 text-[11px] text-gray-400">No tools published.</p>
+                    ) : (
+                      <ul className="mt-1.5 space-y-1">
+                        {server.tools.map((tool) => {
+                          const picked = sessionTools.some(
+                            (pick) => pick.serverId === server.id && pick.name === tool.name,
+                          );
+                          return (
+                            <li key={tool.name}>
+                              <label className="flex items-start gap-2 text-[12px] text-gray-700">
+                                <input
+                                  type="checkbox"
+                                  checked={picked}
+                                  onChange={() => toggleMcpTool(server.id, tool.name)}
+                                  disabled={activeStreaming}
+                                  className="mt-0.5 accent-crimson"
+                                />
+                                <span className="min-w-0">
+                                  <span className="font-medium">{tool.name}</span>
+                                  {tool.description && (
+                                    <span className="block break-words text-[11px] leading-4 text-gray-400">
+                                      {tool.description}
+                                    </span>
+                                  )}
+                                </span>
+                              </label>
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    )}
+                  </div>
+                ))}
+                <button
+                  ref={mcpAddRef}
+                  type="button"
+                  onClick={() => setMcpDialogOpen(true)}
+                  disabled={activeStreaming}
+                  aria-haspopup="dialog"
+                  className="mt-2 w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-[13px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 disabled:opacity-40"
+                >
+                  + Add MCP server
+                </button>
+                <p className="mt-1.5 text-[11px] leading-4 text-gray-400">
+                  Selected tools are sent with each turn. Run a tool call in the transcript to add
+                  its result.
+                </p>
+              </section>
+
+              <section className={railBlock}>
                 <span className={railLabel}>Parameters</span>
                 <div className="mt-3">
                   <div className={sliderLabelRow}>
@@ -1366,7 +1659,11 @@ export default function PlaygroundPage() {
                     const isLast = i === msgs.length - 1;
                     const isStreamingThis = activeStreaming && isLast && !isUser;
                     const isWaiting =
-                      isStreamingThis && !msg.content && !msg.reasoningContent && !msg.status;
+                      isStreamingThis &&
+                      !msg.content &&
+                      !msg.reasoningContent &&
+                      !msg.toolCalls?.length &&
+                      !msg.status;
                     const copied = copyState?.id === msg.id ? copyState : null;
                     const hasReasoning = !!msg.reasoningContent;
                     const isThinkingExpanded = expandedThinking.has(msg.id);
@@ -1567,6 +1864,90 @@ export default function PlaygroundPage() {
                               ) : (
                                 msg.content && <Markdown text={msg.content} />
                               )}
+                              {!isUser && msg.toolCalls?.length ? (
+                                <div className="mt-3 space-y-2">
+                                  {msg.toolCalls.map((call, callIndex) => (
+                                    <div
+                                      key={`${msg.id}-${callIndex}`}
+                                      className="rounded-lg border border-gray-200 bg-gray-50 px-3 py-2"
+                                    >
+                                      <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <span className="font-mono text-[12px] font-medium text-gray-800">
+                                          {call.name || 'tool call'}
+                                        </span>
+                                        {call.status === 'done' ? (
+                                          <span className="text-[11px] text-emerald-600">
+                                            Result
+                                          </span>
+                                        ) : call.status === 'error' ? (
+                                          <span className="flex items-center gap-2">
+                                            <span className="text-[11px] text-red-600">Failed</span>
+                                            {call.complete && call.serverUrl && (
+                                              <button
+                                                type="button"
+                                                onClick={() => void runToolCall(msg.id, callIndex)}
+                                                disabled={activeStreaming}
+                                                className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 disabled:opacity-40"
+                                              >
+                                                Retry
+                                              </button>
+                                            )}
+                                          </span>
+                                        ) : call.status === 'running' ? (
+                                          <span className="text-[11px] text-gray-500">
+                                            Running...
+                                          </span>
+                                        ) : call.complete && call.serverUrl ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => void runToolCall(msg.id, callIndex)}
+                                            disabled={activeStreaming}
+                                            className="rounded border border-gray-300 px-2 py-0.5 text-[11px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 disabled:opacity-40"
+                                          >
+                                            Run
+                                          </button>
+                                        ) : call.serverUrl ? (
+                                          <span className="text-[11px] text-gray-400">
+                                            Incomplete
+                                          </span>
+                                        ) : (
+                                          <span className="text-[11px] text-gray-400">
+                                            No matching MCP server
+                                          </span>
+                                        )}
+                                      </div>
+                                      <pre className="mt-1.5 overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-5 text-gray-700">
+                                        {call.arguments || '{}'}
+                                      </pre>
+                                      {call.status === 'done' && call.result !== undefined && (
+                                        <pre className="mt-2 overflow-x-auto whitespace-pre-wrap break-words rounded border border-gray-200 bg-white px-2 py-1.5 font-mono text-[11px] leading-5 text-gray-700">
+                                          {call.result}
+                                        </pre>
+                                      )}
+                                      {call.error && call.status === 'error' && (
+                                        <p className="mt-1.5 break-words text-[11px] text-red-600">
+                                          {call.error}
+                                        </p>
+                                      )}
+                                    </div>
+                                  ))}
+                                  {isLast &&
+                                    !activeStreaming &&
+                                    msg.toolCalls.some(
+                                      (call) =>
+                                        (call.status === 'done' || call.status === 'error') &&
+                                        (call.result !== undefined || call.error !== undefined),
+                                    ) && (
+                                      <button
+                                        type="button"
+                                        onClick={continueWithResults}
+                                        className="rounded-lg border border-gray-200 px-3 py-1.5 text-[12px] font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900"
+                                      >
+                                        Continue with results
+                                      </button>
+                                    )}
+                                </div>
+                              ) : null}
                               {msg.status === 'error' && (
                                 <div className="mt-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs leading-5 text-red-700">
                                   <p className="break-words">{`Error: ${msg.error}`}</p>
@@ -1846,6 +2227,10 @@ export default function PlaygroundPage() {
             </>
           )}
         </div>
+
+        {mcpDialogOpen && (
+          <McpConnectDialog onClose={closeMcpDialog} onConnect={connectMcpServer} />
+        )}
 
         {codeOpen && (
           <div
