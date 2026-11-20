@@ -72,6 +72,15 @@ async def test_limit_for_admin_flag_overrides_role():
 
 
 @pytest.mark.asyncio
+async def test_limit_for_matches_a_mixed_case_role():
+    """A role's cap is the same whatever its case, as the endpoint reports it."""
+    lim = _limiter()
+    _, cap, label = await lim.try_acquire("u1", "Pro", is_admin=False)
+    assert cap == 3
+    assert label == "pro"
+
+
+@pytest.mark.asyncio
 async def test_limit_for_unknown_role_falls_back_to_free():
     """Unknown roles fall back to the most restrictive (free) cap."""
     lim = _limiter()

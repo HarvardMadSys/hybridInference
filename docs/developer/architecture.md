@@ -554,6 +554,7 @@ Client-facing groups, all served by the same app:
 | [Batch webhooks](batches.md#webhooks) | `GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events` | API key; setting up or changing a webhook needs `BATCH_MIN_ROLE` |
 | Model catalog | `GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET /anthropic/v1/models` | Optional — a key only widens what is listed |
 | Balance probes | `GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET /v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, `GET /v1/sub2api/billing` | API key. A spent quota still answers; these routes do not admit work |
+| API key description | `GET /v1/key` | API key |
 | Health | `GET /health`, `/health/ready`, `/health/deep` | None; upstream addresses only for an admin |
 | Public routing disclosure | `GET /routing` | None; upstream addresses only for an admin |
 | Admin | `GET /admin/routing`, `GET /admin/stats` and the rest of `/admin/*` | Admin |
@@ -589,6 +590,12 @@ channel whose balance check reads `0` or less when the channel's automatic
 disabling is on, and enables it again only if its operator turned on automatic
 enabling. While user auth is disabled the same paths report an unlimited
 balance.
+
+`GET /v1/key` describes the calling key: its project, models, budgets and
+`concurrency.max_in_flight`, the effective in-flight cap the limiter enforces
+for it, or `null` when unlimited. When a project cap is the tighter one, that
+slot is shared across every key in the project, so a key can still receive
+`429` below `max_in_flight` while sibling keys hold the slot.
 
 ## Deployment shape
 

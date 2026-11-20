@@ -34,12 +34,13 @@ import time
 from decimal import Decimal
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Header, Request
 from fastapi.responses import JSONResponse
 
 from routing.model_selection import AUTO_MODEL_ID, AUTO_MODEL_PREFIX
 from serving.accounting import get_accounting_policy, money_decimal
 from serving.auto_mode import AutoMode, auto_mode_enabled, candidate_info
+from serving.config.runtime_settings import get_runtime_settings
 from serving.model_access import model_access_denial
 from serving.model_effort_capabilities import (
     anthropic_capabilities,
@@ -48,12 +49,20 @@ from serving.model_effort_capabilities import (
 )
 from serving.pricing import PricingUnavailableError, effective_pricing, effective_pricing_usd
 from serving.schemas import ModelItem, ModelList
-from serving.servers.auth import optional_verify_api_key, verify_api_key_for_balance
+from serving.servers.auth import (
+    _anonymous_context,
+    _resolve_effective_identity,
+    optional_verify_api_key,
+    verify_api_key_for_balance,
+)
+from serving.servers.concurrency import effective_user_concurrency, scope_concurrency_limits
 from serving.servers.deps import (
     get_auto_mode,
     get_embedding_adapters,
     get_model_visibility_resolver,
+    get_operational_store,
     get_router,
+    get_user_concurrency_limiter,
 )
 
 router = APIRouter()
@@ -416,8 +425,20 @@ async def _build_model_list_async(
 @router.get("/v1/key")
 async def describe_key(
     user_ctx: dict[str, Any] = Depends(verify_api_key_for_balance),
+    x_on_behalf_of: str | None = Header(None, alias="X-On-Behalf-Of"),
+    op_store=Depends(get_operational_store),
+    limiter=Depends(get_user_concurrency_limiter),
+    runtime_settings=Depends(get_runtime_settings),
 ) -> dict[str, Any]:
-    """Describe the calling API key: project, models, budgets and remaining spend."""
+    """Describe the calling API key: project, models, budgets, concurrency and spend.
+
+    ``concurrency.max_in_flight`` is the effective in-flight cap the limiter
+    enforces for this key (the tighter of the attributed user's cap and any
+    shared project cap), or ``null`` when unlimited. The project slot is shared
+    across all keys in the project. A trusted service account's
+    ``X-On-Behalf-Of`` applies to it exactly as it does to inference. When no
+    limiter is configured, inference is unguarded and the cap is ``null``.
+    """
     from serving import quota
 
     key_allowed = user_ctx.get("key_allowed_models")
@@ -440,6 +461,32 @@ async def describe_key(
     project_monthly = user_ctx.get("project_budget_monthly_usd")
     project_month_spent = float(user_ctx.get("project_spent_month_usd") or 0.0)
 
+    concurrency_user = user_ctx
+    if not user_ctx.get("authenticated"):
+        concurrency_user = _anonymous_context()
+    elif x_on_behalf_of:
+        concurrency_user = await _resolve_effective_identity(
+            user_ctx,
+            user_ctx.get("auth_key_hash") or "",
+            x_on_behalf_of,
+            op_store,
+        )
+    max_in_flight = None
+    if limiter is not None:
+        user_cap = await effective_user_concurrency(concurrency_user, runtime_settings)
+        caps = [
+            cap
+            for cap in (
+                user_cap,
+                *(
+                    capacity
+                    for _scope, _key, capacity in scope_concurrency_limits(concurrency_user)
+                ),
+            )
+            if cap > 0
+        ]
+        max_in_flight = min(caps, default=None)
+
     described: dict[str, Any] = {
         "key_prefix": user_ctx.get("key_prefix"),
         "project": {
@@ -447,6 +494,9 @@ async def describe_key(
             "name": user_ctx.get("project_name"),
         },
         "models": models,
+        "concurrency": {
+            "max_in_flight": max_in_flight,
+        },
         "budgets": {
             "key": {
                 window: (

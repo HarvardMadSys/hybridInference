@@ -8,9 +8,11 @@ import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from routing.routers import FixedRouter
 from serving import accounting
 from serving.accounting import AccountingPolicy
 from serving.servers.auth import _user_context, verify_api_key_for_balance
+from serving.servers.deps import AppServices
 from serving.servers.routers import models
 
 POLICY = AccountingPolicy("CNY", Decimal("6.7180"), "2026-11-05", "synthetic fixed rate")
@@ -44,6 +46,7 @@ def _identity() -> dict:
 
 async def _describe(context: dict) -> dict:
     app = FastAPI()
+    app.state.services = AppServices(router=FixedRouter())
     app.include_router(models.router)
     app.dependency_overrides[verify_api_key_for_balance] = lambda: context
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
