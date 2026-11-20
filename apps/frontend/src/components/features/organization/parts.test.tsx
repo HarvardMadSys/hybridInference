@@ -61,7 +61,7 @@ describe('the month of a member against its limit', () => {
     own.unmount();
 
     const { container } = render(
-      <LimitMeter spent={21} limit={100} limitText="$100.00" isDefault />,
+      <LimitMeter spent={21} limit={100} limitText="$100.00" source="default" />,
     );
 
     const word = screen.getByText('default');
@@ -73,8 +73,19 @@ describe('the month of a member against its limit', () => {
     expect(container.innerHTML).toBe(ownHtml);
   });
 
+  it('says so in the same place when the limit is the platform administrator’s', () => {
+    render(<LimitMeter spent={9} limit={10} limitText="$10.00" source="platform" />);
+
+    const word = screen.getByText('platform');
+    expect(word).toHaveAttribute('title', "Platform administrator's limit");
+    expect(word).toHaveClass('absolute');
+    expect(screen.queryByText('default')).not.toBeInTheDocument();
+  });
+
   it('says No limit, with no bar, for a member that has none', () => {
-    const { container } = render(<LimitMeter spent={12} limit={null} limitText="—" isDefault />);
+    const { container } = render(
+      <LimitMeter spent={12} limit={null} limitText="—" source="default" />,
+    );
 
     expect(screen.getByText('No limit')).toBeInTheDocument();
     expect(container.querySelector('[aria-hidden="true"]')).toBeNull();

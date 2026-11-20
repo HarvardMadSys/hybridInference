@@ -162,7 +162,9 @@ export function MemberDetailPanel({
               ? t('organization.member.limit_own', 'Monthly limit of this member')
               : current.monthly_limit_source === 'default'
                 ? t('organization.member.limit_default', 'Default limit of the organization')
-                : t('organization.member.limit_none', 'No monthly limit')
+                : current.monthly_limit_source === 'platform'
+                  ? t('organization.member.limit_platform', "Platform administrator's limit")
+                  : t('organization.member.limit_none', 'No monthly limit')
           }
         >
           <LimitBar spent={moneyAmount(current, 'spent_month')} limit={limit} />

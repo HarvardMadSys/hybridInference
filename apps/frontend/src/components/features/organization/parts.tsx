@@ -11,7 +11,7 @@ import {
 } from 'react';
 import { useT } from '@/components/providers/useT';
 import { BUTTON_SECONDARY, FIELD_LABEL, PANEL } from '@/components/features/admin/adminStyles';
-import type { OrganizationPeriod } from '@/lib/api/organization';
+import type { MemberLimitSource, OrganizationPeriod } from '@/lib/api/organization';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
 import { PERIODS, limitUse, periodLabel, periodRange, type StatusTone } from './text';
@@ -148,23 +148,36 @@ export function LimitBar({ spent, limit }: { spent: number | null; limit: number
  * for no limit. `limitText` is the limit already formatted in its currency.
  *
  * The bar and the figure have fixed places, so they line up down a list.
- * `isDefault` is for a limit that is the organization's default and not the
- * member's own: a small word under the figure says so. It hangs below the
- * line and moves nothing, so a row with it and a row without it look alike
- * but for that word.
+ * `source` says which limit it is. A limit that the organization did not set
+ * for this member has a small word under the figure: the organization's
+ * default, or the quota of the platform administrator. The word hangs below
+ * the line and moves nothing, so a row with it and a row without it look
+ * alike but for that word.
  */
 export function LimitMeter({
   spent,
   limit,
   limitText,
-  isDefault = false,
+  source = 'member',
 }: {
   spent: number | null;
   limit: number | null;
   limitText: string;
-  isDefault?: boolean;
+  source?: MemberLimitSource;
 }) {
   const t = useT();
+  const tag =
+    source === 'default'
+      ? {
+          word: t('organization.limit.default_tag', 'default'),
+          title: t('organization.member.limit_default', 'Default limit of the organization'),
+        }
+      : source === 'platform'
+        ? {
+            word: t('organization.limit.platform_tag', 'platform'),
+            title: t('organization.member.limit_platform', "Platform administrator's limit"),
+          }
+        : null;
   const use = limitUse(spent, limit);
   if (!use) {
     return (
@@ -186,12 +199,12 @@ export function LimitMeter({
           limit: limitText,
         })}
       </span>
-      {isDefault ? (
+      {tag ? (
         <span
-          title={t('organization.member.limit_default', 'Default limit of the organization')}
+          title={tag.title}
           className="absolute right-0 top-full mt-px text-[11px] leading-none text-gray-400"
         >
-          {t('organization.limit.default_tag', 'default')}
+          {tag.word}
         </span>
       ) : null}
     </span>

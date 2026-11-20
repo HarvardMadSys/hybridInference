@@ -207,6 +207,7 @@ describe('one member, opened in place', () => {
 
   it.each([
     ['default', 40, 'Default limit of the organization', '$76.70/ $40.00'],
+    ['platform', 10, "Platform administrator's limit", '$76.70/ $10.00'],
     ['none', null, 'No monthly limit', '$76.70'],
   ] as const)('says whose limit it is: %s', (source, limit, note, figure) => {
     const member = { ...LEI, monthly_limit_source: source, monthly_limit_usd: limit };

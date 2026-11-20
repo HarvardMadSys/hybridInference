@@ -180,7 +180,7 @@ function DefaultLimit({ organization }: { organization: Organization }) {
         <p id={noteId} className={FIELD_HINT}>
           {t(
             'organization.settings.default_hint',
-            'Applies at once to each member that has no monthly limit of its own. Leave empty for no default.',
+            'Applies at once to each member that has no monthly limit of its own, but not to administrators. Leave empty for no default.',
           )}
         </p>
       )}

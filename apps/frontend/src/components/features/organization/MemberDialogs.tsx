@@ -46,15 +46,23 @@ function LimitDialog({
   // The limit is typed in the currency the member's own row was read in, so a
   // USD row is never relabelled and saved as another currency's amount.
   const currency = moneyCurrency(member);
-  const own =
-    member.monthly_limit_source === 'member' ? moneyAmount(member, 'monthly_limit') : null;
+  // What the organization set for this member: the one limit this dialog
+  // changes. The quota of the platform administrator is shown and stays.
+  const own = moneyAmount(member, 'own_monthly_limit');
+  const platform = moneyAmount(member, 'platform_monthly_limit');
   const [value, setValue] = useState(own === null ? '' : String(own));
   const [error, setError] = useState<string | null>(null);
   const submitting = useRef(false);
   // The dialog is for one amount: the field has the cursor when it opens.
   const fieldRef = useRef<HTMLInputElement>(null);
 
-  const ceiling = moneyAmount(organization, 'monthly_limit');
+  // The limit of the organization is the ceiling, in the same currency as the
+  // amount that is typed. An organization read in another one gives no
+  // ceiling here: the gateway then decides.
+  const ceiling =
+    organization && moneyCurrency(organization) === currency
+      ? moneyAmount(organization, 'monthly_limit')
+      : null;
   const fallback = moneyAmount(organization, 'default_member_monthly_limit');
   const hint =
     fallback === null
@@ -68,7 +76,8 @@ function LimitDialog({
         );
 
   async function confirm(): Promise<void> {
-    if (submitting.current) return;
+    // Not before the organization is read: its limit is the ceiling.
+    if (submitting.current || !organization) return;
     const read = readLimit(value, own, currency, ceiling);
     if ('problem' in read) {
       setError(
@@ -120,6 +129,7 @@ function LimitDialog({
       cancelLabel={t('common.cancel', 'Cancel')}
       busyLabel={t('common.loading', 'Loading...')}
       busy={save.isPending}
+      confirmDisabled={!organization}
       error={error}
       initialFocusRef={fieldRef}
       onConfirm={() => void confirm()}
@@ -136,6 +146,17 @@ function LimitDialog({
           { member: who(member) },
         )}
       </p>
+      {platform === null ? null : (
+        <p>
+          {fill(
+            t(
+              'organization.limit_dialog.platform',
+              'The platform administrator set a limit of {amount} for this account. The lower of the two limits applies.',
+            ),
+            { amount: money.value(member, 'platform_monthly_limit') },
+          )}
+        </p>
+      )}
       <form
         onSubmit={(event) => {
           event.preventDefault();

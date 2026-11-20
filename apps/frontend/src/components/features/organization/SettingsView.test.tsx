@@ -39,7 +39,6 @@ const CONNECTION: OrganizationConnection = {
 const ORGANIZATION: Organization = {
   id: '01M7R5Z77ZWRJ5SQWHEZR6ACQ6',
   name: 'Example University',
-  status: 'active',
   created_at: '2026-11-01T12:00:00Z',
   member_count: 14,
   monthly_limit_usd: 1000,
@@ -259,7 +258,7 @@ describe('the default monthly limit of a member', () => {
     expect(field()).toHaveValue('40');
     expect(save()).toBeDisabled();
     expect(field()).toHaveAccessibleDescription(
-      'Applies at once to each member that has no monthly limit of its own. Leave empty for no default.',
+      'Applies at once to each member that has no monthly limit of its own, but not to administrators. Leave empty for no default.',
     );
   });
 

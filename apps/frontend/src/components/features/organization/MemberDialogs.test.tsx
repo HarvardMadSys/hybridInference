@@ -37,6 +37,7 @@ const LEI: OrganizationMember = {
   spent_month_usd: 71.66,
   monthly_limit_usd: 80,
   monthly_limit_source: 'member',
+  own_monthly_limit_usd: 80,
 };
 
 const ORGANIZATION = {
@@ -89,10 +90,105 @@ describe('the monthly limit of a member', () => {
   it('opens empty for a member on the default, which is not a limit of its own', () => {
     const { dialog } = open({
       mode: 'limit',
-      member: { ...LEI, monthly_limit_usd: 20, monthly_limit_source: 'default' },
+      member: {
+        ...LEI,
+        monthly_limit_usd: 20,
+        monthly_limit_source: 'default',
+        own_monthly_limit_usd: null,
+      },
     });
 
     expect(field(dialog)).toHaveValue('');
+    expect(dialog).not.toHaveTextContent('platform administrator');
+  });
+
+  it('edits the limit of the organization and shows the one of the platform administrator', async () => {
+    // The organization asked for 80; the platform administrator allows 10.
+    const { dialog } = open({
+      mode: 'limit',
+      member: {
+        ...LEI,
+        monthly_limit_usd: 10,
+        monthly_limit_source: 'platform',
+        own_monthly_limit_usd: 80,
+        platform_monthly_limit_usd: 10,
+      },
+    });
+
+    // The field has the limit that this dialog changes, not the one that applies.
+    expect(field(dialog)).toHaveValue('80');
+    expect(dialog).toHaveTextContent(
+      'The platform administrator set a limit of $10.00 for this account. The lower of the two limits applies.',
+    );
+    type(dialog, '5');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: 5, currency: 'USD' },
+      }),
+    );
+  });
+
+  it('opens empty, and clears nothing, when only the platform administrator set a limit', () => {
+    const { dialog, onClose } = open({
+      mode: 'limit',
+      member: {
+        ...LEI,
+        monthly_limit_usd: 10,
+        monthly_limit_source: 'platform',
+        own_monthly_limit_usd: null,
+        platform_monthly_limit_usd: 10,
+      },
+    });
+
+    expect(field(dialog)).toHaveValue('');
+    expect(dialog).toHaveTextContent('The platform administrator set a limit of $10.00');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    // An empty field is the limit the organization has for this member: none.
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('does not save before the organization is read, whose limit is the ceiling', () => {
+    const onClose = vi.fn();
+    render(
+      <MemberDialogs
+        dialog={{ mode: 'limit', member: LEI }}
+        organization={undefined}
+        onClose={onClose}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+
+    type(dialog, '5000');
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    // Enter in the field is no way around the button.
+    fireEvent.submit(field(dialog).closest('form') as HTMLFormElement);
+
+    expect(state.setLimit).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it('leaves the ceiling to the gateway when the organization was read in another currency', async () => {
+    // 7,000 of one currency is no ceiling for an amount of another.
+    const { dialog } = open({ mode: 'limit', member: LEI }, {
+      ...ORGANIZATION,
+      currency: 'CNY',
+      monthly_limit: 7000,
+    } as Organization);
+
+    type(dialog, '5000');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(state.setLimit).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        limit: { amount: 5000, currency: 'USD' },
+      }),
+    );
   });
 
   it('saves a new limit in the ledger currency and says so', async () => {
@@ -210,7 +306,7 @@ describe('the monthly limit of a member', () => {
   ])('closes on a limit %s that is left as it was read', (_what, stored) => {
     const { dialog, onClose } = open({
       mode: 'limit',
-      member: { ...LEI, monthly_limit_usd: stored },
+      member: { ...LEI, monthly_limit_usd: stored, own_monthly_limit_usd: stored },
     });
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
@@ -241,6 +337,8 @@ describe('the monthly limit of a member', () => {
       currency: 'CNY',
       monthly_limit: 500,
       monthly_limit_usd: 74.4269,
+      own_monthly_limit: 500,
+      own_monthly_limit_usd: 74.4269,
       spent_month: 480,
     } as OrganizationMember;
     const organization = {

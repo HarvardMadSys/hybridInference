@@ -3805,6 +3805,10 @@
     "source": "No limit",
     "text": "不限"
   },
+  "organization.limit.platform_tag": {
+    "source": "platform",
+    "text": "平台"
+  },
   "organization.limit.percent_of": {
     "source": "{percent}% of {limit}",
     "text": "{percent}% / {limit}"
@@ -3837,6 +3841,10 @@
     "source": "Monthly limit ({currency})",
     "text": "月额度（{currency}）"
   },
+  "organization.limit_dialog.platform": {
+    "source": "The platform administrator set a limit of {amount} for this account. The lower of the two limits applies.",
+    "text": "平台管理员给这个账号设了 {amount} 的月额度。两个额度里较低的那个生效。"
+  },
   "organization.limit_dialog.saved": {
     "source": "Monthly limit saved.",
     "text": "月额度已保存。"
@@ -3868,6 +3876,10 @@
   "organization.member.limit_none": {
     "source": "No monthly limit",
     "text": "没有月额度"
+  },
+  "organization.member.limit_platform": {
+    "source": "Platform administrator's limit",
+    "text": "平台管理员设的月额度"
   },
   "organization.member.limit_own": {
     "source": "Monthly limit of this member",
@@ -4186,8 +4198,8 @@
     "text": "默认月额度已清除。"
   },
   "organization.settings.default_hint": {
-    "source": "Applies at once to each member that has no monthly limit of its own. Leave empty for no default.",
-    "text": "立即对所有没有单独设月额度的成员生效。留空则不设默认值。"
+    "source": "Applies at once to each member that has no monthly limit of its own, but not to administrators. Leave empty for no default.",
+    "text": "立即对所有没有单独设月额度的成员生效，管理员除外。留空则不设默认值。"
   },
   "organization.settings.default_label": {
     "source": "Default monthly limit for a member ({currency})",

@@ -60,13 +60,15 @@ export interface OrganizationAdministrator {
 export interface Organization extends Money {
   id: string;
   name: string;
-  status: string;
   created_at: string;
   member_count: number;
   /** `null` is no limit. */
   monthly_limit_usd?: number | null;
   monthly_limit?: number | null;
-  /** What a member without a monthly limit of its own gets; `null` is none. */
+  /**
+   * What a member gets that the organization set no limit for; `null` is none.
+   * Not an administrator, of the organization or of the platform.
+   */
   default_member_monthly_limit_usd?: number | null;
   default_member_monthly_limit?: number | null;
   /** What the members were charged in this UTC month, as the limit counts it. */
@@ -76,7 +78,13 @@ export interface Organization extends Money {
   administrators: OrganizationAdministrator[];
 }
 
-export type MemberLimitSource = 'member' | 'default' | 'none';
+/**
+ * Which limit applies to a member: the one its organization set for it, the
+ * organization's default, the quota the platform administrator set for the
+ * account, or none. The gateway enforces the lower of the organization's and
+ * the platform administrator's.
+ */
+export type MemberLimitSource = 'member' | 'default' | 'platform' | 'none';
 
 export interface OrganizationMember extends Money {
   user_id: string;
@@ -102,10 +110,19 @@ export interface OrganizationMember extends Money {
   cost?: number | null;
   spent_month_usd: number;
   spent_month?: number | null;
+  /** The limit that applies, and which one it is. */
   monthly_limit_usd?: number | null;
   monthly_limit?: number | null;
-  /** Whose limit it is: the member's own, the organization's default, or none. */
   monthly_limit_source: MemberLimitSource;
+  /** The limit the organization set for this member: what its administrator edits. */
+  own_monthly_limit_usd?: number | null;
+  own_monthly_limit?: number | null;
+  /**
+   * The monthly quota the platform administrator set for the account. The
+   * organization reads it and cannot change it.
+   */
+  platform_monthly_limit_usd?: number | null;
+  platform_monthly_limit?: number | null;
 }
 
 export interface MemberList {

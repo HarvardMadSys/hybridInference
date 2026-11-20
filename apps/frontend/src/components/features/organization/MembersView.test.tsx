@@ -65,8 +65,11 @@ const YU = member({
   total_tokens: 493_000,
   cost_usd: 2.78,
   spent_month_usd: 6.4,
+  // An administrator has no limit of the organization: only the quota that
+  // the platform administrator set for the account.
   monthly_limit_usd: 40,
-  monthly_limit_source: 'default',
+  monthly_limit_source: 'platform',
+  platform_monthly_limit_usd: 40,
 });
 const MEI = member({
   user_id: 'u-mei',
@@ -187,12 +190,17 @@ describe('the members of the organization', () => {
     expect(yu).toHaveTextContent('Admin');
     expect(yu).toHaveTextContent('You');
     expect(yu).toHaveTextContent('16% of $40.00');
+    // The limit is the platform administrator's, and the row says so.
+    expect(within(yu).getByText('platform')).toHaveAttribute(
+      'title',
+      "Platform administrator's limit",
+    );
+    expect(yu).not.toHaveTextContent('default');
     // The limit is the default of the organization, and the row says so.
-    expect(within(yu).getByText('default')).toHaveAttribute(
+    expect(within(rowOf('Mei Song')).getByText('default')).toHaveAttribute(
       'title',
       'Default limit of the organization',
     );
-    expect(within(rowOf('Mei Song')).getByText('default')).toBeInTheDocument();
 
     // Removed by the organization, against suspended by the platform.
     expect(rowOf('Mei Song')).toHaveTextContent('Removed');

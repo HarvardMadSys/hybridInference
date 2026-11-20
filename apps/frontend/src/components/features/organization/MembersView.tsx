@@ -194,7 +194,7 @@ export function MembersView() {
             spent={moneyAmount(member, 'spent_month')}
             limit={moneyAmount(member, 'monthly_limit')}
             limitText={money.value(member, 'monthly_limit', { maximumFractionDigits: 2 })}
-            isDefault={member.monthly_limit_source === 'default'}
+            source={member.monthly_limit_source}
           />
         </td>
       </tr>
