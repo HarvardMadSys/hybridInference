@@ -8,6 +8,7 @@ import { OrganizationTabNav } from '@/components/features/organization/Organizat
 import { OrganizationPeriodProvider } from '@/components/features/organization/parts';
 import { useAuth } from '@/components/providers';
 import { useT } from '@/components/providers/useT';
+import { useOrganization } from '@/lib/hooks';
 
 /**
  * The organization console: for an administrator of the account's own
@@ -19,11 +20,25 @@ import { useT } from '@/components/providers/useT';
  * page; this guard only chooses what to show, from the account's profile.
  */
 export default function OrganizationLayout({ children }: { children: React.ReactNode }) {
-  const { state } = useAuth();
+  const { state, refreshUser } = useAuth();
   const router = useRouter();
   const t = useT();
   const organization = state.user?.organization;
   const allowed = organization?.role === 'admin';
+
+  // The profile has the name of the organization from when the page loaded.
+  // After a rename by the platform administrator, the organization as it is
+  // read now has the new name. The header shows that one, and the profile is
+  // read again, because the navigation entry and the audit log take the name
+  // from it. Once for a name: a profile that comes back with the old name is
+  // not asked for again and again.
+  const currentName = useOrganization(allowed).data?.name;
+  const profileName = organization?.name;
+  useEffect(() => {
+    if (currentName !== undefined && profileName !== undefined && currentName !== profileName) {
+      void refreshUser();
+    }
+  }, [currentName, profileName, refreshUser]);
 
   useEffect(() => {
     if (!state.loading && state.isAuthenticated && !allowed) {
@@ -77,7 +92,7 @@ export default function OrganizationLayout({ children }: { children: React.React
               /
             </span>
             <h1 className="truncate text-[18px] font-semibold tracking-tight text-gray-900">
-              {organization.name}
+              {currentName ?? organization.name}
             </h1>
           </header>
 

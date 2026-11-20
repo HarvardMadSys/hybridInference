@@ -18,6 +18,13 @@ function open(props: Partial<Parameters<typeof MemberDrawer>[0]> = {}) {
   return { panel: screen.getByRole('dialog', { name: props.title ?? 'Lei Wang' }), onClose };
 }
 
+/** A click as a person makes it: the button goes down and up on the same element. */
+function press(element: HTMLElement) {
+  fireEvent.mouseDown(element);
+  fireEvent.mouseUp(element);
+  fireEvent.click(element);
+}
+
 /** A page with a row that opens the panel, as the members table does. */
 function Page() {
   const [shown, setShown] = useState(false);
@@ -60,8 +67,25 @@ describe('the panel of a member', () => {
     fireEvent.keyDown(window, { key: 'Escape' });
     expect(onClose).toHaveBeenCalledTimes(2);
 
-    fireEvent.click(panel.parentElement as HTMLElement);
+    press(panel.parentElement as HTMLElement);
     expect(onClose).toHaveBeenCalledTimes(3);
+  });
+
+  it('stays open when a press that began inside it ends on the dimmed list', () => {
+    const { panel, onClose } = open();
+    const dimmed = panel.parentElement as HTMLElement;
+
+    // The end of a selection of text: the button goes down on the email and up
+    // outside the panel. The browser sends that click to what holds both.
+    fireEvent.mouseDown(screen.getByText('lei.wang@example.edu'));
+    fireEvent.mouseUp(dimmed);
+    fireEvent.click(dimmed);
+
+    expect(onClose).not.toHaveBeenCalled();
+
+    // A press on the dimmed list itself still closes it.
+    press(dimmed);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('stays open on a click inside it', () => {

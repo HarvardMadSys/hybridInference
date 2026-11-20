@@ -13,8 +13,9 @@ const FOCUSABLE =
  *
  * It is a modal layer, as a confirmation is: focus moves to Close when it
  * opens and back to the member's row when it closes, Tab stays inside, and
- * Escape, Close and a click on the dimmed list close it. On a phone the panel
- * has the width of the screen.
+ * Escape, Close and a click on the dimmed list close it. A press that began
+ * in the panel and ended on the dimmed list does not: that is the end of a
+ * selection of text. On a phone the panel has the width of the screen.
  *
  * `suspended` is for the time a confirmation is open over the panel. The
  * confirmation then has the keys: Escape closes it alone, and its own Tab
@@ -39,6 +40,8 @@ export function MemberDrawer({
   const titleId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const closeRef = useRef<HTMLButtonElement>(null);
+  // Whether the press that is now down began on the dimmed list itself.
+  const pressedOutside = useRef(false);
   // The key handler is installed once; these keep it reading the latest props.
   const suspendedRef = useRef(suspended);
   const onCloseRef = useRef(onClose);
@@ -81,14 +84,24 @@ export function MemberDrawer({
   }, []);
 
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-black/40" onClick={onClose}>
+    <div
+      className="fixed inset-0 z-40 flex justify-end bg-black/40"
+      onMouseDown={(event) => {
+        pressedOutside.current = event.target === event.currentTarget;
+      }}
+      onClick={(event) => {
+        // A click reaches this element also when the button went down inside
+        // the panel and came up here; only a press on the dimmed list closes.
+        if (pressedOutside.current && event.target === event.currentTarget) onClose();
+        pressedOutside.current = false;
+      }}
+    >
       <div
         ref={containerRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby={titleId}
         className="flex h-full w-full max-w-[60rem] flex-col border-gray-200 bg-gray-50 shadow-xl sm:border-l"
-        onClick={(event) => event.stopPropagation()}
       >
         <header className="flex shrink-0 items-start justify-between gap-3 border-b border-gray-200 bg-white px-5 py-4">
           <div className="min-w-0">

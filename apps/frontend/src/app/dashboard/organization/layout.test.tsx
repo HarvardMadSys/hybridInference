@@ -15,13 +15,21 @@ const state = vi.hoisted(() => ({
   push: vi.fn(),
   pathname: '/dashboard/organization/overview',
   auth: { loading: false, isAuthenticated: true, user: null as unknown },
+  refreshUser: vi.fn(),
+  // The organization as the gateway has it now; none until it is read.
+  organization: vi.fn(),
 }));
 
 vi.mock('next/navigation', () => ({
   useRouter: () => ({ replace: state.replace, push: state.push }),
   usePathname: () => state.pathname,
 }));
-vi.mock('@/components/providers', () => ({ useAuth: () => ({ state: state.auth }) }));
+vi.mock('@/components/providers', () => ({
+  useAuth: () => ({ state: state.auth, refreshUser: state.refreshUser }),
+}));
+vi.mock('@/lib/hooks', () => ({
+  useOrganization: (enabled?: boolean) => state.organization(enabled),
+}));
 vi.mock('@/components/ui/revealHorizontally', () => ({ revealHorizontally: vi.fn() }));
 
 import OrganizationLayout from './layout';
@@ -40,6 +48,8 @@ beforeEach(() => {
   state.replace.mockReset();
   state.push.mockReset();
   state.pathname = '/dashboard/organization/overview';
+  state.refreshUser.mockReset().mockResolvedValue(undefined);
+  state.organization.mockReset().mockReturnValue({ data: undefined });
 });
 afterEach(cleanup);
 
@@ -72,6 +82,61 @@ describe('the organization console', () => {
     expect(screen.getByRole('link', { name: 'Members' })).not.toHaveAttribute('aria-current');
   });
 
+  it('shows the name the organization has now, and reads the profile again, after a rename', () => {
+    // The profile still has the name from when the page loaded.
+    signedIn({ organization: ADMIN_OF });
+    state.organization.mockReturnValue({ data: { id: 'o-1', name: 'Example Institute' } });
+
+    render(
+      <OrganizationLayout>
+        <p>the page</p>
+      </OrganizationLayout>,
+    );
+
+    expect(screen.getByRole('heading', { name: 'Example Institute' })).toBeInTheDocument();
+    // The navigation entry and the audit log take the name from the profile.
+    expect(state.refreshUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the profile as it is while its name is the name of the organization', () => {
+    signedIn({ organization: ADMIN_OF });
+    state.organization.mockReturnValue({ data: { id: 'o-1', name: 'Example University' } });
+
+    const { rerender } = render(
+      <OrganizationLayout>
+        <p>the page</p>
+      </OrganizationLayout>,
+    );
+    rerender(
+      <OrganizationLayout>
+        <p>another page</p>
+      </OrganizationLayout>,
+    );
+
+    expect(state.organization).toHaveBeenLastCalledWith(true);
+    expect(state.refreshUser).not.toHaveBeenCalled();
+  });
+
+  it('asks once for the profile when the profile comes back with the old name', () => {
+    signedIn({ organization: ADMIN_OF });
+    state.organization.mockReturnValue({ data: { id: 'o-1', name: 'Example Institute' } });
+
+    const { rerender } = render(
+      <OrganizationLayout>
+        <p>the page</p>
+      </OrganizationLayout>,
+    );
+    // The profile was read again and is a new object with the same old name.
+    signedIn({ organization: { ...ADMIN_OF } });
+    rerender(
+      <OrganizationLayout>
+        <p>the page</p>
+      </OrganizationLayout>,
+    );
+
+    expect(state.refreshUser).toHaveBeenCalledTimes(1);
+  });
+
   it.each([
     [
       'a member that is not an administrator',
@@ -91,6 +156,9 @@ describe('the organization console', () => {
 
     expect(state.replace).toHaveBeenCalledWith('/dashboard');
     expect(screen.queryByText('the page')).not.toBeInTheDocument();
+    // No organization route is called for an account that is not an administrator of one.
+    expect(state.organization).toHaveBeenLastCalledWith(false);
+    expect(state.refreshUser).not.toHaveBeenCalled();
     expect(
       screen.getByRole('heading', { name: 'Organization administrator access required' }),
     ).toBeInTheDocument();
