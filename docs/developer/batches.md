@@ -392,6 +392,63 @@ while True:
     after = page["last_id"]
 ```
 
+## Retry the failed requests
+
+`POST /v1/batches/{id}/retry-failed` starts a new batch from a finished batch's
+requests that failed for a reason a new attempt may pass. Requests that
+completed are not rerun or billed again, and the source batch is not modified:
+its results stay readable until the retention period removes it.
+
+```json
+{
+  "id": "batch_0193...",
+  "object": "batch.retry_failed",
+  "source_batch_id": "batch_0192...",
+  "retried": 12,
+  "skipped": 3
+}
+```
+
+The new batch holds only the retried requests, with their original `custom_id`
+and body, in submission order. It keeps the source's target and endpoint, and
+its `metadata` is the source's with `retried_from` set to the source batch id.
+`retried` counts the requests copied; `skipped` counts the source's failed
+requests whose error would occur again. Only these error codes are retried:
+
+| `code` | Retried |
+|---|---|
+| `timeout` | yes |
+| `service_unavailable` | yes |
+| `upstream_error` | yes |
+| `rate_limited` | yes |
+| `invalid_request` | no |
+| `model_not_found` | no |
+| `forbidden` | no |
+| `result_too_large` | no |
+| `batch_failed`, `batch_expired` | no |
+
+A retry of a file batch is an inline batch: its results are paged from
+`/v1/batches/{id}/results`, and it has no output or error file. The source must
+be in a final status (`completed`, `failed`, `expired` or `cancelled`). Only the
+batch's owner may retry it: an administrator can read, cancel and delete another
+user's batch, but not retry it. The endpoint answers:
+
+| Status | When |
+|---|---|
+| `200` | The new batch was created |
+| `400` | The request carries `X-On-Behalf-Of` |
+| `401` | The API key is invalid or expired, or the account becomes unavailable before the batch is stored |
+| `403` | Your role may not create batches |
+| `404` | The batch is unknown, is another user's, or has been deleted (including by retention) |
+| `409` | The batch is not finished, or holds no request that may be retried |
+| `429` | Your role's daily cost quota is spent, or you have the most unfinished batches allowed |
+
+Retrying needs the role that creating needs, and the new batch counts toward the
+limits on unfinished batches and queued requests. Each retried request is billed
+and counted against your quota as a normal request when it runs, exactly as in
+the source batch. Retrying is repeatable: if an item fails again, retry the same
+source again while its results exist.
+
 ## Cancel or delete a batch
 
 `POST /v1/batches/{id}/cancel` stops a batch. Requests that have not started

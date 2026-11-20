@@ -3029,3 +3029,89 @@ msgstr "网关升级期间，如果应答的网关比控制台旧，控制台仍
 #~ "`400`（旧进程不认识该目标）；请重试，或等到所有进程都运行本版本。在最后一个旧进程退出之前，客户端仍可能在某个旧进程上访问到旧的 "
 #~ "`/v1/messages/batches`；在那里创建的批次由本版本按[从 Message Batches "
 #~ "迁移](#moving-from-message-batches)中所述的方式排空。"
+
+#: ../developer/batches.md:395
+msgid "Retry the failed requests"
+msgstr "重试失败的请求"
+
+#: ../developer/batches.md:397
+#, python-brace-format
+msgid ""
+"`POST /v1/batches/{id}/retry-failed` starts a new batch from a finished "
+"batch's requests that failed for a reason a new attempt may pass. "
+"Requests that completed are not rerun or billed again, and the source "
+"batch is not modified: its results stay readable until the retention "
+"period removes it."
+msgstr ""
+
+#: ../developer/batches.md:412
+msgid ""
+"The new batch holds only the retried requests, with their original "
+"`custom_id` and body, in submission order. It keeps the source's target "
+"and endpoint, and its `metadata` is the source's with `retried_from` set "
+"to the source batch id. `retried` counts the requests copied; `skipped` "
+"counts the source's failed requests whose error would occur again. Only "
+"these error codes are retried:"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "Retried"
+msgstr "会重试"
+
+#: ../developer/batches.md:41
+msgid "`batch_failed`, `batch_expired`"
+msgstr ""
+
+#: ../developer/batches.md:430
+#, python-brace-format
+msgid ""
+"A retry of a file batch is an inline batch: its results are paged from "
+"`/v1/batches/{id}/results`, and it has no output or error file. The "
+"source must be in a final status (`completed`, `failed`, `expired` or "
+"`cancelled`). Only the batch's owner may retry it: an administrator can "
+"read, cancel and delete another user's batch, but not retry it. The "
+"endpoint answers:"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "`200`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "The new batch was created"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "The request carries `X-On-Behalf-Of`"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"The API key is invalid or expired, or the account becomes unavailable "
+"before the batch is stored"
+msgstr "认证时 API key 无效或已过期，或在批次存储之前账户变得不可用"
+
+#: ../developer/batches.md:41
+msgid ""
+"The batch is unknown, is another user's, or has been deleted (including "
+"by retention)"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid "The batch is not finished, or holds no request that may be retried"
+msgstr ""
+
+#: ../developer/batches.md:41
+msgid ""
+"Your role's daily cost quota is spent, or you have the most unfinished "
+"batches allowed"
+msgstr ""
+
+#: ../developer/batches.md:446
+msgid ""
+"Retrying needs the role that creating needs, and the new batch counts "
+"toward the limits on unfinished batches and queued requests. Each retried"
+" request is billed and counted against your quota as a normal request "
+"when it runs, exactly as in the source batch. Retrying is repeatable: if "
+"an item fails again, retry the same source again while its results exist."
+msgstr ""

@@ -26,7 +26,11 @@ from serving.servers.auth import verify_api_key, verify_batch_management_identit
 from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import batches
-from serving.storage.batch_store import BatchDeleteInProgress, BatchOwnerUnavailable
+from serving.storage.batch_store import (
+    TERMINAL_BATCH_STATUSES,
+    BatchDeleteInProgress,
+    BatchOwnerUnavailable,
+)
 
 MODEL = "glm-4.7"
 ADMIN_MODEL = "admin-model"
@@ -213,6 +217,21 @@ class FakeBatchStore:
             for item in items[:limit]
         ]
 
+    async def retryable_failed_items(
+        self, batch_id: str, codes: frozenset[str]
+    ) -> tuple[list[dict[str, Any]], int]:
+        failed = [item for item in self.items.get(batch_id, []) if item["status"] == "failed"]
+        retryable = [
+            {
+                "custom_id": item["custom_id"],
+                "model_id": item["model_id"],
+                "request": item["request"],
+            }
+            for item in failed
+            if (item.get("error") or {}).get("code") in codes
+        ]
+        return retryable, len(failed) - len(retryable)
+
     async def result_page(
         self,
         batch_id: str,
@@ -392,6 +411,7 @@ ROUTES = [
     ("GET", "/v1/batches"),
     ("GET", "/v1/batches/batch_x"),
     ("POST", "/v1/batches/batch_x/cancel"),
+    ("POST", "/v1/batches/batch_x/retry-failed"),
     ("DELETE", "/v1/batches/batch_x"),
     ("GET", "/v1/batches/batch_x/results"),
 ]
@@ -1880,3 +1900,203 @@ async def test_responses_admission_checks_translated_chat_limits(client, store, 
     assert response.status_code == 400, response.text
     assert "Too many" in _message(response)
     assert not store.created
+
+
+# --- retry failed ---------------------------------------------------------------
+
+
+def _fail(item: dict[str, Any], code: str = "timeout", status: int = 504) -> None:
+    item.update(
+        status="failed",
+        status_code=status,
+        error={"code": code, "message": "no", "status": status},
+    )
+
+
+async def test_retry_creates_a_batch_of_only_the_retryable_failures(client, store, scheduler):
+    batch = await _create(client, body=_body(3))
+    completed, timed_out, invalid = store.items[batch["id"]]
+    completed.update(status="completed", status_code=200, response={"id": "c"})
+    _fail(timed_out, "timeout", 504)
+    _fail(invalid, "invalid_request", 400)
+    store.batches[batch["id"]]["status"] = "completed"
+    notified = scheduler.notified
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 200, response.text
+    answer = response.json()
+    assert answer["object"] == "batch.retry_failed"
+    assert answer["source_batch_id"] == batch["id"]
+    assert answer["retried"] == 1
+    assert answer["skipped"] == 1
+    new_id = answer["id"]
+    assert new_id != batch["id"]
+    assert [i["custom_id"] for i in store.items[new_id]] == ["req-1"]
+    assert store.items[new_id][0]["request"] == store.items[batch["id"]][1]["request"]
+    assert store.batches[new_id]["status"] == "validating"
+    assert store.batches[new_id]["metadata"] == {"retried_from": batch["id"]}
+    assert store.batches[new_id]["key_hash"] == "hash-alice"
+    assert store.batches[new_id]["api_surface"] == "openai_inline"
+    assert scheduler.notified == notified + 1
+    assert [i["status"] for i in store.items[batch["id"]]] == ["completed", "failed", "failed"]
+    assert store.batches[batch["id"]]["status"] == "completed"
+
+
+async def test_retry_keeps_source_metadata_and_target(client, store):
+    batch = await _create(client, body=_body(1, metadata={"run": "eval-1"}))
+    source = store.batches[batch["id"]]
+    source.update(
+        status="failed",
+        target="embeddings",
+        endpoint="/v1/embeddings",
+        api_surface="openai_file",
+        protocol_profile=None,
+    )
+    _fail(store.items[batch["id"]][0], "upstream_error", 502)
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    new_id = response.json()["id"]
+    new = store.batches[new_id]
+    assert new["metadata"] == {"run": "eval-1", "retried_from": batch["id"]}
+    assert (new["endpoint"], new["target"]) == ("/v1/embeddings", "embeddings")
+    assert new["api_surface"] == "openai_inline"
+
+
+@pytest.mark.parametrize(
+    "code,status",
+    [
+        ("timeout", 504),
+        ("upstream_error", 502),
+        ("service_unavailable", 503),
+        ("rate_limited", 429),
+    ],
+)
+async def test_every_transient_failure_is_retryable(client, store, code, status):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0], code, status)
+    store.batches[batch["id"]]["status"] = "completed"
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 200
+    assert response.json()["retried"] == 1
+
+
+@pytest.mark.parametrize("code,status", [("invalid_request", 400), ("forbidden", 403)])
+async def test_a_permanent_failure_is_not_retried(client, store, code, status):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0], code, status)
+    store.batches[batch["id"]]["status"] = "completed"
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 409
+    assert "no failed requests that may pass" in _message(response)
+    assert len(store.batches) == 1
+
+
+@pytest.mark.parametrize("status", sorted(TERMINAL_BATCH_STATUSES))
+async def test_any_finished_batch_can_be_retried(client, store, status):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0])
+    store.batches[batch["id"]]["status"] = status
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 200
+
+
+async def test_an_unfinished_batch_is_409(client, store):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0])
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 409
+    assert "only a finished batch can be retried" in _message(response)
+
+
+async def test_a_batch_with_no_failed_request_is_409(client, store):
+    batch = await _create(client)
+    store.batches[batch["id"]]["status"] = "completed"
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-alice")
+    )
+
+    assert response.status_code == 409
+    assert len(store.batches) == 1
+
+
+async def test_retrying_an_unknown_batch_is_404(client):
+    response = await client.post("/v1/batches/batch_x/retry-failed", headers=_auth())
+
+    assert response.status_code == 404
+
+
+async def test_another_users_batch_cannot_be_retried(client, store):
+    batch = await _create(client, key="key-alice")
+    _fail(store.items[batch["id"]][0])
+    store.batches[batch["id"]]["status"] = "completed"
+
+    for key in ("key-bob", "key-root"):
+        response = await client.post(f"/v1/batches/{batch['id']}/retry-failed", headers=_auth(key))
+        assert response.status_code == 404
+
+    assert len(store.batches) == 1
+
+
+async def test_retrying_needs_the_create_role(client, store):
+    batch = await _create(client, key="key-alice")
+    _fail(store.items[batch["id"]][0])
+    store.batches[batch["id"]]["status"] = "completed"
+    store.batches[batch["id"]]["user_id"] = "carol"
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed", headers=_auth("key-carol")
+    )
+
+    assert response.status_code == 403
+    assert len(store.batches) == 1
+
+
+async def test_retrying_on_behalf_of_another_is_400(client, store):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0])
+    store.batches[batch["id"]]["status"] = "completed"
+
+    response = await client.post(
+        f"/v1/batches/{batch['id']}/retry-failed",
+        headers={**_auth("key-alice"), "X-On-Behalf-Of": "bob"},
+    )
+
+    assert response.status_code == 400
+    assert len(store.batches) == 1
+
+
+async def test_retry_is_repeatable_while_the_source_exists(client, store):
+    batch = await _create(client)
+    _fail(store.items[batch["id"]][0])
+    store.batches[batch["id"]]["status"] = "completed"
+    path = f"/v1/batches/{batch['id']}/retry-failed"
+
+    first = await client.post(path, headers=_auth("key-alice"))
+    second = await client.post(path, headers=_auth("key-alice"))
+
+    assert first.status_code == second.status_code == 200
+    assert first.json()["id"] != second.json()["id"]
+    assert store.batches[batch["id"]]["status"] == "completed"

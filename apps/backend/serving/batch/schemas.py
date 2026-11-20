@@ -235,3 +235,18 @@ class BatchDeleted(BaseModel):
     id: str
     object: Literal["batch.deleted"] = "batch.deleted"
     deleted: bool = True
+
+
+class BatchRetryFailed(BaseModel):
+    """Answer to ``POST /v1/batches/{id}/retry-failed``.
+
+    ``id`` is the batch the retried requests were put in; ``retried`` and
+    ``skipped`` count the source's failed requests a new attempt may pass and
+    those it would not.
+    """
+
+    id: str
+    object: Literal["batch.retry_failed"] = "batch.retry_failed"
+    source_batch_id: str
+    retried: int
+    skipped: int
