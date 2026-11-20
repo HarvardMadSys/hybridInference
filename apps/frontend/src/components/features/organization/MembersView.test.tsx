@@ -224,8 +224,10 @@ describe('the members of the organization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
     expect(asked()).toMatchObject({ sortBy: 'name', order: 'asc' });
 
+    // The column shows the share of the limit that the month used, so that is
+    // its order: the member nearest its limit first, not the largest spend.
     fireEvent.click(screen.getByRole('button', { name: 'Monthly limit' }));
-    expect(asked()).toMatchObject({ sortBy: 'month', order: 'desc' });
+    expect(asked()).toMatchObject({ sortBy: 'limit_use', order: 'desc' });
   });
 
   it('searches once the typing pauses, from the first page', async () => {
@@ -242,6 +244,24 @@ describe('the members of the organization', () => {
     expect(asked()).toMatchObject({ search: undefined });
 
     await waitFor(() => expect(asked()).toMatchObject({ search: 'wang', offset: 0 }));
+  });
+
+  it('keeps the page when the text changes and the search does not', async () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    // At once: the page must also stay when the list has only just opened.
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(asked()).toMatchObject({ offset: 50 });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(asked()).toMatchObject({ search: undefined, offset: 50 });
+
+    // Spaces are not a search.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search by name or email' }), {
+      target: { value: '   ' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(asked()).toMatchObject({ search: undefined, offset: 50 });
   });
 
   it('narrows to a status and to a period, each from the first page', () => {

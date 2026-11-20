@@ -25,7 +25,15 @@ import { moneyAmount } from '@/lib/utils/money';
 import { MemberDetailPanel } from './MemberDetailPanel';
 import { MemberDialogs, type MemberDialog } from './MemberDialogs';
 import { MemberDrawer } from './MemberDrawer';
-import { LimitMeter, Pager, PeriodControl, StatusPill, useOrganizationPeriod } from './parts';
+import {
+  LimitMeter,
+  Pager,
+  PeriodControl,
+  StatusPill,
+  useLastPage,
+  useListPosition,
+  useOrganizationPeriod,
+} from './parts';
 import { compactNumber, memberName, memberStatus, relativeTime } from './text';
 
 const PAGE_SIZE = 50;
@@ -55,19 +63,20 @@ export function MembersView() {
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState<StatusChoice>('all');
   const [order, setOrder] = useState<Order>({ by: 'spend', order: 'desc' });
-  const [page, setPage] = useState(0);
+  // Another period, search, status or order starts at the first page.
+  const [page, setPage] = useListPosition(
+    `${period}|${search}|${status}|${order.by}|${order.order}`,
+    0,
+  );
   // The member whose panel is open, as its row had it. The panel reads the
   // member again itself, so it stays right after an action, and stays open when
   // a filter no longer lists the member (a removal under "Active").
   const [opened, setOpened] = useState<OrganizationMember | null>(null);
   const [dialog, setDialog] = useState<MemberDialog | null>(null);
 
-  // The list is asked for once typing pauses, from its first page.
+  // The list is asked for once typing pauses.
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(0);
-    }, SEARCH_DELAY_MS);
+    const timer = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DELAY_MS);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
@@ -84,12 +93,7 @@ export function MembersView() {
   const members = data?.members ?? [];
   const total = data?.total ?? 0;
 
-  // A removal or a narrower search can leave the page past the last one.
-  useEffect(() => {
-    if (data && page > 0 && page * PAGE_SIZE >= data.total) {
-      setPage(Math.max(0, Math.ceil(data.total / PAGE_SIZE) - 1));
-    }
-  }, [data, page]);
+  useLastPage(page, setPage, data?.total, PAGE_SIZE);
 
   const statusOptions: ReadonlyArray<{ value: StatusChoice; label: string }> = [
     { value: 'all', label: t('organization.members.status_all', 'All statuses') },
@@ -100,7 +104,6 @@ export function MembersView() {
   ];
 
   function sortBy(by: MemberSort) {
-    setPage(0);
     setOrder((current) =>
       current.by === by
         ? { by, order: current.order === 'asc' ? 'desc' : 'asc' }
@@ -201,13 +204,7 @@ export function MembersView() {
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <PeriodControl
-          value={period}
-          onChange={(next) => {
-            setPeriod(next);
-            setPage(0);
-          }}
-        />
+        <PeriodControl value={period} onChange={setPeriod} />
         <div className="relative min-w-[14rem] flex-1">
           <svg
             className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-gray-400"
@@ -234,10 +231,7 @@ export function MembersView() {
           size="sm"
           className="w-44"
           value={status}
-          onValueChange={(value) => {
-            setStatus(value);
-            setPage(0);
-          }}
+          onValueChange={setStatus}
           options={statusOptions}
           aria-label={t('organization.members.status_filter', 'Status')}
         />
@@ -272,7 +266,12 @@ export function MembersView() {
                   {header('requests', t('organization.overview.requests', 'Requests'), true)}
                   {header('tokens', t('organization.overview.tokens', 'Tokens'), true)}
                   {header('spend', t('organization.overview.spend', 'Spend'), true)}
-                  {header('month', t('organization.members.monthly_limit', 'Monthly limit'), true)}
+                  {/* By the share of the limit that the month used, which is what the column shows. */}
+                  {header(
+                    'limit_use',
+                    t('organization.members.monthly_limit', 'Monthly limit'),
+                    true,
+                  )}
                 </tr>
               </thead>
               <tbody>{members.map(row)}</tbody>

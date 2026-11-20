@@ -17,6 +17,7 @@ const state = vi.hoisted(() => ({
   requests: vi.fn(),
   models: vi.fn(),
   members: vi.fn(),
+  overview: vi.fn(),
   refetch: vi.fn(),
 }));
 
@@ -29,7 +30,7 @@ vi.mock('@/lib/hooks', () => ({
   useOrganizationRequests: (query: unknown) => state.requests(query),
   useOrganizationModelUsage: (period: string, enabled?: boolean) => state.models(period, enabled),
   useOrganizationMemberUsage: (query: unknown) => state.members(query),
-  useOrganizationOverview: () => ({ data: { cost_usd: 121.76 } }),
+  useOrganizationOverview: (period: string) => state.overview(period),
 }));
 
 import { UsageView } from './UsageView';
@@ -127,6 +128,7 @@ beforeEach(() => {
   state.requests.mockReset();
   state.models.mockReset().mockReturnValue(hook(MODELS));
   state.members.mockReset().mockReturnValue(hook<MemberList>({ total: 0, members: [] }));
+  state.overview.mockReset().mockReturnValue(hook({ cost_usd: 121.76 }));
   state.refetch.mockReset();
   answerRequests({ requests: [request({})], next_before: null });
 });
@@ -462,6 +464,58 @@ describe('the usage by member', () => {
     // The first page of the 7 days, not the second that was open before.
     expect(memberQuery()).toMatchObject({ period: '7d', offset: 0 });
     expect(screen.getByRole('button', { name: 'Previous' })).toBeDisabled();
+  });
+
+  it('goes back to the last page when the list gets shorter than the page it is on', async () => {
+    const { rerender } = render(<UsageView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(memberQuery()).toMatchObject({ offset: 100 });
+
+    // 60 members are left, so the third page is gone.
+    state.members.mockReturnValue(hook<MemberList>({ total: 60, members: [] }));
+    rerender(<UsageView />);
+
+    // Not "the organization has no members yet", with no way back to them.
+    await waitFor(() => expect(memberQuery()).toMatchObject({ offset: 50 }));
+  });
+
+  it('gives no share while the total on screen is still the one of the period before', () => {
+    // The members of the 30 days have arrived; the total of the 30 days has not.
+    state.overview.mockImplementation((period: string) =>
+      period === '7d'
+        ? hook({ cost_usd: 121.76 })
+        : hook({ cost_usd: 121.76 }, { isPlaceholderData: true }),
+    );
+
+    render(<UsageView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
+
+    const [, lei] = within(screen.getByRole('tabpanel', { name: 'By member' })).getAllByRole('row');
+    // 24.46 of the 121.76 of the 7 days would be a share of nothing that is shown.
+    expect([...lei.querySelectorAll('td')].map((cell) => cell.textContent)).toEqual([
+      'Lei Wanglei.wang@example.edu',
+      '982',
+      '3.4M',
+      '$24.46',
+      '—',
+    ]);
+  });
+
+  it('says so, and offers to try again, when the total of the organization cannot be read', () => {
+    const refetch = vi.fn();
+    state.overview.mockReturnValue(
+      hook(undefined, { error: new Error('The gateway is not reachable.'), refetch }),
+    );
+
+    render(<UsageView />);
+
+    const panel = screen.getByRole('tabpanel', { name: 'By member' });
+    // The members are still listed; only their share of the total is not known.
+    expect(within(panel).getAllByRole('row')).toHaveLength(3);
+    expect(within(panel).getByRole('alert')).toHaveTextContent('The gateway is not reachable.');
+    fireEvent.click(within(panel).getByRole('button', { name: 'Retry' }));
+    expect(refetch).toHaveBeenCalledTimes(1);
   });
 
   it('says so when no member matches, and when there is none at all', async () => {

@@ -21,7 +21,7 @@ import type { AuditCategory, OrganizationPeriod } from '@/lib/api/organization';
 import { useOrganizationAudit } from '@/lib/hooks';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { Pager, PeriodControl } from './parts';
+import { Pager, PeriodControl, useLastPage, useListPosition } from './parts';
 import { auditActor, auditDetails, auditEvent, auditTarget } from './text';
 
 const PAGE_SIZE = 50;
@@ -45,13 +45,11 @@ export function AuditLogView() {
   const [category, setCategory] = useState<CategoryChoice>('all');
   // The log is short and its rows are rare: it opens on all of them.
   const [period, setPeriod] = useState<OrganizationPeriod | null>(null);
-  const [page, setPage] = useState(0);
+  // Another search, kind of event or period starts at the first page.
+  const [page, setPage] = useListPosition(`${period ?? 'all'}|${category}|${search}`, 0);
 
   useEffect(() => {
-    const timer = setTimeout(() => {
-      setSearch(searchInput.trim());
-      setPage(0);
-    }, SEARCH_DELAY_MS);
+    const timer = setTimeout(() => setSearch(searchInput.trim()), SEARCH_DELAY_MS);
     return () => clearTimeout(timer);
   }, [searchInput]);
 
@@ -62,6 +60,7 @@ export function AuditLogView() {
     limit: PAGE_SIZE,
     offset: page * PAGE_SIZE,
   });
+  useLastPage(page, setPage, data?.total, PAGE_SIZE);
 
   const categories: ReadonlyArray<{ value: CategoryChoice; label: string }> = [
     { value: 'all', label: t('organization.audit.all', 'All events') },
@@ -85,24 +84,11 @@ export function AuditLogView() {
           size="sm"
           className="w-44"
           value={category}
-          onValueChange={(value) => {
-            setCategory(value);
-            setPage(0);
-          }}
+          onValueChange={setCategory}
           options={categories}
           aria-label={t('organization.audit.event', 'Event')}
         />
-        <PeriodControl
-          value={period}
-          onChange={(next) => {
-            setPeriod(next);
-            setPage(0);
-          }}
-          onAll={() => {
-            setPeriod(null);
-            setPage(0);
-          }}
-        />
+        <PeriodControl value={period} onChange={setPeriod} onAll={() => setPeriod(null)} />
       </div>
 
       {isLoading ? (

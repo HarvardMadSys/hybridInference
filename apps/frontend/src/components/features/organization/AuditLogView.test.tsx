@@ -207,6 +207,38 @@ describe('the audit log of the organization', () => {
     await waitFor(() => expect(asked()).toMatchObject({ search: 'lei', offset: 0 }));
   });
 
+  it('keeps the page when the text changes and the search does not', async () => {
+    answer({ total: 120, entries: [entry({})] });
+
+    render(<AuditLogView />);
+    // At once: the page must also stay when the log has only just opened.
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(asked()).toMatchObject({ search: undefined, offset: 50 });
+
+    // Spaces are not a search.
+    fireEvent.change(screen.getByRole('searchbox', { name: 'Search the log' }), {
+      target: { value: '  ' },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(asked()).toMatchObject({ search: undefined, offset: 50 });
+  });
+
+  it('goes back to the last page when the log gets shorter than the page it is on', async () => {
+    answer({ total: 120, entries: [entry({})] });
+    const { rerender } = render(<AuditLogView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    expect(asked()).toMatchObject({ offset: 100 });
+
+    // Rows left the period that is shown: 60 are left, so the third page is gone.
+    answer({ total: 60, entries: [] });
+    rerender(<AuditLogView />);
+
+    // Not "nothing has been recorded", with no way back to the rows.
+    await waitFor(() => expect(asked()).toMatchObject({ offset: 50 }));
+  });
+
   it('pages through a long log and says where the page is', () => {
     answer({ total: 120, entries: ENTRIES });
 

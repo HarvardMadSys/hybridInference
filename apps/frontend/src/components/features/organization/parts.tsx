@@ -1,6 +1,14 @@
 'use client';
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+  type ReactNode,
+} from 'react';
 import { useT } from '@/components/providers/useT';
 import { BUTTON_SECONDARY, FIELD_LABEL, PANEL } from '@/components/features/admin/adminStyles';
 import type { OrganizationPeriod } from '@/lib/api/organization';
@@ -298,7 +306,27 @@ export function useListPosition<T>(filters: string, first: T): [T, (next: T) => 
   const current = held.filters === filters;
   // Set while rendering: React renders again at once, before anything is drawn.
   if (!current) setHeld({ filters, position: first });
-  return [current ? held.position : first, (next) => setHeld({ filters, position: next })];
+  const move = useCallback((next: T) => setHeld({ filters, position: next }), [filters]);
+  return [current ? held.position : first, move];
+}
+
+/**
+ * Keeps a page inside its list. When the list got shorter than the page it is
+ * on, which a removal or the end of a period can do, the page goes to the
+ * last one that has rows. Without this, the reader is on an empty page with
+ * no way back. `total` is undefined until the list is read.
+ */
+export function useLastPage(
+  page: number,
+  setPage: (page: number) => void,
+  total: number | undefined,
+  pageSize: number,
+): void {
+  useEffect(() => {
+    if (total !== undefined && page > 0 && page * pageSize >= total) {
+      setPage(Math.max(0, Math.ceil(total / pageSize) - 1));
+    }
+  }, [page, pageSize, setPage, total]);
 }
 
 /** "Showing 1–50 of 132", with Previous and Next. */

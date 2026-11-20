@@ -30,7 +30,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { moneyAmount } from '@/lib/utils/money';
 import { RequestsTable } from './figures';
-import { Pager, PeriodControl, useListPosition, useOrganizationPeriod } from './parts';
+import { Pager, PeriodControl, useLastPage, useListPosition, useOrganizationPeriod } from './parts';
 import { compactNumber, memberName } from './text';
 
 type UsageKind = 'requests' | 'models' | 'members';
@@ -49,8 +49,8 @@ function usageKind(raw: string | null): UsageKind {
 }
 
 /** A part of a whole as a percentage with one decimal; a dash when there is no whole. */
-function share(part: number, whole: number): string {
-  if (!(whole > 0)) return '—';
+function share(part: number, whole: number | null): string {
+  if (whole === null || !(whole > 0)) return '—';
   return `${((part / whole) * 100).toFixed(1)}%`;
 }
 
@@ -219,6 +219,7 @@ function ByMember({ period, search }: { period: OrganizationPeriod; search: stri
     limit: MEMBER_PAGE,
     offset: page * MEMBER_PAGE,
   });
+  useLastPage(page, setPage, data?.total, MEMBER_PAGE);
   if (isLoading) return <AdminLoading label={t('common.loading', 'Loading...')} />;
   if (!data) return <Failure error={error} onRetry={() => void refetch()} />;
   if (data.members.length === 0) {
@@ -232,9 +233,14 @@ function ByMember({ period, search }: { period: OrganizationPeriod; search: stri
       />
     );
   }
-  const total = moneyAmount(overview.data, 'cost') ?? 0;
+  // A share is of what the organization spent in this period. While the total
+  // on screen is still the one of the period before, there is none to give.
+  const total = overview.isPlaceholderData ? null : moneyAmount(overview.data, 'cost');
   return (
     <div className={`space-y-2 transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}>
+      {overview.error && !overview.data ? (
+        <Failure error={overview.error} onRetry={() => void overview.refetch()} />
+      ) : null}
       <div className={`${PANEL} overflow-x-auto`}>
         <table className="min-w-full">
           <thead>
