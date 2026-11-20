@@ -12,11 +12,15 @@ Run with: make test-db-local ARGS="tests/servers/test_two_factor_live.py"
 from __future__ import annotations
 
 import os
+from datetime import UTC, datetime, timedelta
+from uuid import uuid4
 
 import pytest
 
 from serving.auth import two_factor as tf
 from serving.config.settings import get_settings
+from serving.servers.routers.auth_routes import hash_refresh_token
+from serving.utils.jwt import create_access_token
 from serving.utils.login_rate_limit import reset_login_rate_limit_state
 from tests.fixtures.auth_helpers import seed_test_user
 
@@ -60,6 +64,14 @@ async def _sign_in(client, user: dict, agent: str = CHROME) -> dict[str, str]:
 
 async def _admin(client, headers: dict[str, str]):
     return await client.get("/admin/audit-log/actions", headers=headers)
+
+
+async def _pgadmin(client, cookie: str, agent: str = CHROME):
+    return await client.get(
+        "/internal/verify-admin",
+        cookies={"refresh_token": cookie},
+        headers={"User-Agent": agent},
+    )
 
 
 async def test_an_administrator_from_sign_in_to_a_copied_session(
@@ -151,3 +163,167 @@ async def test_without_the_setting_an_administrator_is_let_in_as_before(auth_cli
 
     assert (await _admin(auth_client, browser)).status_code == 200
     assert (await _admin(auth_client, {**browser, "User-Agent": CURL})).status_code == 200
+    cookie = auth_client.cookies.get("refresh_token")
+    assert cookie
+    assert (await _pgadmin(auth_client, cookie)).status_code == 200
+
+
+async def test_pgadmin_browser_session_uses_authoritative_two_factor_policy(
+    auth_client, require_db, two_factor_required
+):
+    user = await seed_test_user(require_db)
+    await require_db.update_user_fields(user["id"], role="admin")
+    browser = await _sign_in(auth_client, user)
+    cookie = auth_client.cookies.get("refresh_token")
+    assert cookie
+
+    assert (await _pgadmin(auth_client, cookie)).status_code == 403
+    setup = await auth_client.post(
+        "/auth/two-factor/setup", headers=browser, json={"password": user["password"]}
+    )
+    assert setup.status_code == 200, setup.text
+    secret = setup.json()["secret"]
+    verified = await auth_client.post(
+        "/auth/two-factor/confirm",
+        headers=browser,
+        json={"code": tf.totp_at(secret, tf.current_step())},
+    )
+    assert verified.status_code == 200, verified.text
+
+    assert (await _pgadmin(auth_client, cookie)).status_code == 200
+    assert (await _pgadmin(auth_client, cookie, CURL)).status_code == 403
+
+
+async def test_pgadmin_legacy_refresh_cookie_uses_exact_session_two_factor(
+    auth_client, require_db, two_factor_required
+):
+    user = await seed_test_user(require_db)
+    await require_db.update_user_fields(user["id"], role="admin")
+    refresh = f"legacy-{uuid4()}"
+    sid = str(uuid4())
+    await require_db.create_session(
+        session_id=str(uuid4()),
+        user_id=user["id"],
+        refresh_token_hash=hash_refresh_token(refresh),
+        jti=str(uuid4()),
+        sid=sid,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    assert (await _pgadmin(auth_client, refresh)).status_code == 403
+
+    # A proof in a different session cannot satisfy this legacy cookie's SID.
+    login = await _sign_in(auth_client, user)
+    setup = await auth_client.post(
+        "/auth/two-factor/setup", headers=login, json={"password": user["password"]}
+    )
+    assert setup.status_code == 200, setup.text
+    secret = setup.json()["secret"]
+    assert (
+        await auth_client.post(
+            "/auth/two-factor/confirm",
+            headers=login,
+            json={"code": tf.totp_at(secret, tf.current_step())},
+        )
+    ).status_code == 200
+    assert (await _pgadmin(auth_client, refresh)).status_code == 403
+
+
+async def test_pgadmin_rechecks_identity_verification_after_policy_transition(
+    auth_client, auth_app, require_db
+):
+    runtime_settings = auth_app.state.services.runtime_settings
+    key = "signup_require_email_verification"
+    previous = await require_db.get_setting(key)
+
+    async def set_required(enabled: bool) -> None:
+        await require_db.set_setting(key, str(enabled), "bool", "pgadmin-policy-test")
+        runtime_settings.invalidate_key(key)
+
+    try:
+        await set_required(False)
+        user = await seed_test_user(require_db)
+        await require_db.update_user_fields(user["id"], role="admin")
+        browser = await _sign_in(auth_client, user)
+        cookie = auth_client.cookies.get("refresh_token")
+        assert cookie
+        assert (await _admin(auth_client, browser)).status_code == 200
+
+        await set_required(True)
+        await require_db.update_user_fields(user["id"], email_verified=False)
+
+        assert (await _admin(auth_client, browser)).status_code == 403
+        assert (await _pgadmin(auth_client, cookie)).status_code == 403
+    finally:
+        if previous is None:
+            await require_db.delete_setting(key)
+        else:
+            await require_db.set_setting(
+                key,
+                previous["value"],
+                previous["value_type"],
+                previous["updated_by"],
+            )
+        runtime_settings.invalidate_key(key)
+
+
+async def test_pgadmin_matches_phone_identity_verification_policy(
+    auth_client, auth_app_db_logger, require_db
+):
+    user = await seed_test_user(require_db, email=None)
+    await require_db.update_user_fields(user["id"], role="admin")
+    async with auth_app_db_logger.pool.acquire() as conn:
+        await conn.execute(
+            "UPDATE users SET phone = $2, phone_verified = FALSE WHERE id = $1",
+            user["id"],
+            "+12025550123",
+        )
+    sid = str(uuid4())
+    refresh = f"phone-legacy-{uuid4()}"
+    await require_db.create_session(
+        session_id=str(uuid4()),
+        user_id=user["id"],
+        refresh_token_hash=hash_refresh_token(refresh),
+        jti=str(uuid4()),
+        sid=sid,
+        expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    token, _jti = create_access_token(
+        user_id=user["id"], email=None, session_id=sid, is_admin=True, role="admin"
+    )
+    headers = {"Authorization": f"Bearer {token}", "User-Agent": CHROME}
+
+    assert (await _admin(auth_client, headers)).status_code == 403
+    assert (await _pgadmin(auth_client, refresh)).status_code == 403
+
+    assert await require_db.bind_user_phone(user["id"], "+12025550123")
+    assert (await _admin(auth_client, headers)).status_code == 200
+    assert (await _pgadmin(auth_client, refresh)).status_code == 200
+
+
+async def test_pgadmin_checks_every_live_admin_account(
+    auth_client, require_db, two_factor_required
+):
+    first = await seed_test_user(require_db, email=f"pgadmin_first_{uuid4().hex}@signuptest.dev")
+    second = await seed_test_user(require_db, email=f"pgadmin_second_{uuid4().hex}@signuptest.dev")
+    await require_db.update_user_fields(first["id"], role="admin")
+    await require_db.update_user_fields(second["id"], role="admin")
+    await _sign_in(auth_client, first)  # Older, unverified administrator.
+    second_headers = await _sign_in(auth_client, second)
+
+    setup = await auth_client.post(
+        "/auth/two-factor/setup", headers=second_headers, json={"password": second["password"]}
+    )
+    assert setup.status_code == 200, setup.text
+    secret = setup.json()["secret"]
+    confirmed = await auth_client.post(
+        "/auth/two-factor/confirm",
+        headers=second_headers,
+        json={"code": tf.totp_at(secret, tf.current_step())},
+    )
+    assert confirmed.status_code == 200, confirmed.text
+    cookie = auth_client.cookies.get("refresh_token")
+    assert cookie
+    assert (await _pgadmin(auth_client, cookie)).status_code == 200
+
+    await require_db.revoke_user_sessions(second["id"])
+    assert (await _pgadmin(auth_client, cookie)).status_code == 403

@@ -12,14 +12,15 @@ import { GET, POST } from './route';
 
 const VERIFY_URL = '/internal/verify-admin';
 
-type Upstream = (url: string, init: RequestInit) => Response | Promise<Response>;
+type FetchHandler = (url: string, init: RequestInit) => Response | Promise<Response>;
+type Upstream = FetchHandler;
 
 /**
  * Route both outbound calls the handler can make. `verify` stands in for
  * FastAPI, `upstream` for pgAdmin; either may be omitted by a test that
  * expects it never to be reached.
  */
-function stubFetch(handlers: { verify?: () => Response | Promise<Response>; upstream?: Upstream }) {
+function stubFetch(handlers: { verify?: FetchHandler; upstream?: Upstream }) {
   const verify = vi.fn(handlers.verify ?? (() => new Response(null, { status: 500 })));
   const upstream = vi.fn(handlers.upstream ?? (() => new Response('pgadmin', { status: 200 })));
 
@@ -27,7 +28,7 @@ function stubFetch(handlers: { verify?: () => Response | Promise<Response>; upst
     'fetch',
     vi.fn((input: RequestInfo | URL, init: RequestInit = {}) => {
       const url = String(input);
-      return url.includes(VERIFY_URL) ? verify() : upstream(url, init);
+      return url.includes(VERIFY_URL) ? verify(url, init) : upstream(url, init);
     }),
   );
 
@@ -106,18 +107,30 @@ describe('pgAdmin proxy — forwarding', () => {
   const admin = { cookie: 'refresh_token=admin; pga4_session=abc' };
 
   it('passes an admin through, preserving path and query', async () => {
-    const { upstream } = stubFetch({
+    const { verify, upstream } = stubFetch({
       verify: () => new Response(null, { status: 200 }),
       upstream: () => new Response('<html>pgadmin</html>', { status: 200 }),
     });
 
-    const response = await GET(request('/pgadmin/browser/js/utils.js?ver=8', admin));
+    const response = await GET(
+      request('/pgadmin/browser/js/utils.js?ver=8', {
+        ...admin,
+        headers: { 'user-agent': 'browser-agent', 'x-private': 'not-forwarded' },
+      }),
+    );
 
     expect(response.status).toBe(200);
     await expect(response.text()).resolves.toBe('<html>pgadmin</html>');
     expect(upstream).toHaveBeenCalledOnce();
     // URL drops the default port, so the :80 in the env default disappears here.
     expect(upstream.mock.calls[0][0]).toBe('http://pgadmin/pgadmin/browser/js/utils.js?ver=8');
+    const verifyHeaders = new Headers(verify.mock.calls[0][1]?.headers);
+    expect(verifyHeaders.get('cookie')).toBe(admin.cookie);
+    expect(verifyHeaders.get('user-agent')).toBe('browser-agent');
+    expect(verifyHeaders.has('x-private')).toBe(false);
+    const upstreamHeaders = new Headers(upstream.mock.calls[0][1]?.headers);
+    expect(upstreamHeaders.get('cookie')).toBe('pga4_session=abc');
+    expect(upstreamHeaders.get('x-private')).toBe('not-forwarded');
   });
 
   it('keeps pgAdmin’s own cookie but not the console session', async () => {

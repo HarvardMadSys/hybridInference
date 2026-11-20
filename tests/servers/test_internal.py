@@ -144,7 +144,7 @@ class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("status", ["suspended", "pending_approval", "rejected"])
-    async def test_an_admin_who_is_not_active_is_refused(
+    async def test_an_admin_who_is_not_active_is_refused_by_shared_policy(
         self, internal_client: AsyncClient, auth_backend, test_user, status
     ) -> None:
         """A suspended admin keeps a live session cookie; it must not open pgAdmin."""
@@ -160,7 +160,8 @@ class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
         await operational_store.update_user_fields(test_user["id"], status=status)
 
         response = await internal_client.get("/internal/verify-admin", cookies=cookies)
-        assert response.status_code == 401
+        assert response.status_code == 403
+        assert response.json()["detail"] == "Admin account is no longer active."
 
     @pytest.mark.asyncio
     async def test_a_revoked_admin_session_is_refused(
@@ -176,7 +177,7 @@ class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
             "/internal/verify-admin", cookies={"refresh_token": token}
         )
         assert response.status_code == 401
-        assert response.json()["detail"] == "Session revoked."
+        assert response.json()["detail"] == "This session has ended. Please login again."
 
     @pytest.mark.asyncio
     async def test_an_expired_admin_session_is_refused(
@@ -191,7 +192,7 @@ class TestVerifyAdminRefusesWhatCannotOpenPgAdmin:
             "/internal/verify-admin", cookies={"refresh_token": token}
         )
         assert response.status_code == 401
-        assert response.json()["detail"] == "Session expired."
+        assert response.json()["detail"] == "This session has ended. Please login again."
 
     @pytest.mark.asyncio
     async def test_no_cookie_is_refused(self, internal_client: AsyncClient) -> None:

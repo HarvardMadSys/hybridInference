@@ -14,13 +14,13 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
 from serving.auth import two_factor as tf
 from serving.config.settings import get_settings
-from serving.servers.deps import AppServices
+from serving.servers.deps import AppServices, admit_admin_session
 from serving.servers.middleware.exception_handler import install_exception_handlers
 from serving.servers.routers import admin as admin_router, two_factor_routes
 from serving.storage.base import OperationalStore
@@ -181,6 +181,24 @@ async def _open_model(gw: Gateway, headers: dict):
     return await gw.client.patch(
         f"/admin/models/{MODEL}/visibility", headers=headers, json={"required_role": "free"}
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sid", [None, ""])
+async def test_admin_session_without_a_nonempty_sid_fails_closed(gateway, sid):
+    request = Request(
+        {"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""}
+    )
+    payload = {"sub": ADMIN}
+    if sid is not None:
+        payload["sid"] = sid
+
+    with pytest.raises(HTTPException) as refused:
+        await admit_admin_session(request, gateway.store, payload)
+
+    assert refused.value.status_code == 401
+    assert refused.value.detail == "Invalid token payload."
+    gateway.store.session_is_live.assert_not_awaited()
 
 
 # --- adding an authenticator -------------------------------------------------

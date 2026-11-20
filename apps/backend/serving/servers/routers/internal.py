@@ -10,7 +10,6 @@ route handler rather than disappearing. See ``verify_admin``.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -21,17 +20,20 @@ from serving.auth.browser_sessions import (
     resolve_browser_session,
     session_live,
 )
-from serving.servers.deps import get_operational_store
+from serving.exceptions import TwoFactorRequiredError
+from serving.servers.deps import admit_admin_identity, get_operational_store
 from serving.utils.logging import get_logger
 
 router = APIRouter(prefix="/internal", tags=["Internal"])
 logger = get_logger(__name__)
 
 
-async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[str, Any]:
-    """Validate a refresh_token cookie and return the associated user row.
+async def _resolve_legacy_session(refresh_token: str | None, op_store: Any) -> tuple[str, str]:
+    """Resolve a pre-browser refresh cookie to its user and auth-session ID.
 
-    Raises HTTPException on any authentication failure.
+    The refresh-token hash lookup authenticates the credential. Session
+    liveness and current account authorization are decided by the shared
+    administrator-session policy after this returns.
     """
     if not refresh_token:
         raise HTTPException(status_code=401, detail="Not authenticated.")
@@ -45,25 +47,11 @@ async def _validate_session(refresh_token: str | None, op_store: Any) -> dict[st
     if not session_row:
         raise HTTPException(status_code=401, detail="Invalid session.")
 
-    if session_row["revoked"]:
-        raise HTTPException(status_code=401, detail="Session revoked.")
-
-    if session_row["expires_at"] < datetime.now(UTC):
-        raise HTTPException(status_code=401, detail="Session expired.")
-
-    user_row = await op_store.get_user_by_id(session_row["user_id"])
-
-    if not user_row:
-        raise HTTPException(status_code=401, detail="User not found.")
-
-    # Suspending an account revokes its API key, not its session rows, so a
-    # suspended (or never approved) admin can still hold a live session here.
-    # The browser-session path refuses them through ``session_live``; this
-    # path must too, or such an admin keeps opening pgAdmin.
-    if user_row.get("status") != "active":
-        raise HTTPException(status_code=401, detail="Account is not active.")
-
-    return user_row
+    user_id = session_row["user_id"]
+    sid = session_row["sid"]
+    if not isinstance(user_id, str) or not user_id or not isinstance(sid, str) or not sid:
+        raise HTTPException(status_code=401, detail="Invalid session.")
+    return user_id, sid
 
 
 @router.get("/verify-admin")
@@ -93,18 +81,25 @@ async def verify_admin(
         browser = await resolve_browser_session(op_store, request, upgrade=False)
         if browser is not None:
             live = [account for account in browser.accounts if session_live(account)]
-            admin = next((a for a in live if (a["role"] or "free") == "admin"), None)
-            if admin is not None:
+            if not live:
+                raise HTTPException(status_code=401, detail="Invalid session.")
+            admins = [a for a in live if (a["role"] or "free") == "admin"]
+            if not admins:
+                raise HTTPException(status_code=403, detail="Admin access required.")
+            for admin in admins:
+                try:
+                    await admit_admin_identity(request, op_store, admin["user_id"], admin["sid"])
+                except TwoFactorRequiredError:
+                    continue
+                except HTTPException as exc:
+                    if exc.status_code in {401, 403}:
+                        continue
+                    raise
                 logger.info("verify_admin admitted browser %s as %s", browser.id, admin["user_id"])
                 return Response(status_code=200)
-            if live:
-                raise HTTPException(status_code=403, detail="Admin access required.")
-            raise HTTPException(status_code=401, detail="Invalid session.")
+            raise HTTPException(status_code=403, detail="Admin access required.")
 
     # A cookie from before browser sessions names one account's session.
-    user = await _validate_session(refresh_token, op_store)
-
-    if (user["role"] or "free") != "admin":
-        raise HTTPException(status_code=403, detail="Admin access required.")
-
+    user_id, sid = await _resolve_legacy_session(refresh_token, op_store)
+    await admit_admin_identity(request, op_store, user_id, sid)
     return Response(status_code=200)
