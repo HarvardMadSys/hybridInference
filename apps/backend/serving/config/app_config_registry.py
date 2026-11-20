@@ -1703,6 +1703,8 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "ADMIN_TWO_FACTOR_REQUIRED": "security: a session holding administrator access must not "
     "be able to switch its own second factor off",
     "TWO_FACTOR_STEP_UP_MINUTES": "security: belongs with ADMIN_TWO_FACTOR_REQUIRED",
+    "PLAYGROUND_MCP_ALLOWED_HOSTS": "network wiring: which internal MCP servers the gateway "
+    "may reach",
     "TRUST_KUBERNETES_PROXY_DISCOVERY": "network wiring: opt-in authenticated proxy discovery",
     "KUBERNETES_PROXY_NAMESPACE": "network wiring: namespace containing the proxy Service",
     "KUBERNETES_PROXY_SERVICE_NAME": "network wiring: exact proxy Service identity",
