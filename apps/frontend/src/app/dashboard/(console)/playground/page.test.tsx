@@ -1056,6 +1056,7 @@ describe('PlaygroundPage', () => {
 
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: '+ Add MCP server' }));
     fireEvent.change(screen.getByLabelText('MCP server URL'), {
       target: { value: 'https://mcp.example/mcp' },
     });
@@ -1125,6 +1126,7 @@ describe('PlaygroundPage', () => {
 
     render(<PlaygroundPage />);
     await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: '+ Add MCP server' }));
     fireEvent.change(screen.getByLabelText('MCP server URL'), {
       target: { value: 'https://mcp.example/mcp' },
     });
@@ -1133,6 +1135,43 @@ describe('PlaygroundPage', () => {
     await sendPrompt('weather?');
 
     expect(await screen.findByRole('button', { name: 'Run' })).not.toBeDisabled();
+  });
+
+  it('connects an MCP server from the dialog with a Bearer token and a description', async () => {
+    stubWindowWidth(true);
+    fetchWithAuth.mockImplementation(async (_base: string, path: string) => {
+      if (path === '/internal/playground/models') return MODELS;
+      if (path === '/internal/playground/mcp/tools') {
+        return {
+          ok: true,
+          json: async () => ({
+            tools: [
+              { name: 'search', description: 'Search docs', inputSchema: { type: 'object' } },
+            ],
+          }),
+        };
+      }
+      return sseResponse([]);
+    });
+
+    render(<PlaygroundPage />);
+    await screen.findByRole('button', { name: 'Model: GLM 4.6' });
+    fireEvent.click(screen.getByRole('button', { name: '+ Add MCP server' }));
+    fireEvent.change(screen.getByLabelText('MCP server URL'), {
+      target: { value: 'https://mcp.example/mcp' },
+    });
+    fireEvent.change(screen.getByLabelText(/Description/), { target: { value: 'Docs search' } });
+    chooseOption('Authentication', 'Access token / API key');
+    fireEvent.change(screen.getByLabelText('access token'), { target: { value: 'tok' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+
+    expect(await screen.findByRole('checkbox', { name: /search/ })).toBeInTheDocument();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.getByText('Docs search')).toBeInTheDocument();
+    const call = fetchWithAuth.mock.calls.find(
+      (args) => args[1] === '/internal/playground/mcp/tools',
+    );
+    expect(JSON.parse(call?.[2].body).headers).toEqual({ Authorization: 'Bearer tok' });
   });
 
   it('aborts every live stream when the page unmounts', async () => {

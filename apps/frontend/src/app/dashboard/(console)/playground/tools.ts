@@ -11,6 +11,8 @@ export interface McpTool {
 export interface McpServer {
   id: string;
   url: string;
+  /** Shown under the URL; never sent to the server or the model. */
+  description?: string;
   headers: Record<string, string>;
   tools: McpTool[];
 }

@@ -35,6 +35,7 @@ import {
   type ToolCallDelta,
 } from './api';
 import { CodeBlock } from './CodeBlock';
+import { McpConnectDialog, type McpConnectRequest } from './McpConnectDialog';
 import {
   decodeRate,
   finishNote,
@@ -289,10 +290,8 @@ export default function PlaygroundPage() {
   const [models, setModels] = useState<PlaygroundModel[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [modelsError, setModelsError] = useState<string | null>(null);
-  const [mcpUrl, setMcpUrl] = useState('');
-  const [mcpToken, setMcpToken] = useState('');
-  const [mcpBusy, setMcpBusy] = useState(false);
-  const [mcpError, setMcpError] = useState<string | null>(null);
+  const [mcpDialogOpen, setMcpDialogOpen] = useState(false);
+  const mcpAddRef = useRef<HTMLButtonElement>(null);
   const [sessions, setSessions] = useState<PlaygroundSession[]>([createSession('s-1')]);
   const [activeSessionId, setActiveSessionId] = useState('s-1');
   // Sessions with a turn in flight. Streaming is scoped per session (issue:
@@ -433,15 +432,14 @@ export default function PlaygroundPage() {
     [activeSessionId, patchSession],
   );
 
-  const connectMcpServer = useCallback(async () => {
-    const url = mcpUrl.trim();
-    if (!url || mcpBusy) return;
-    setMcpBusy(true);
-    setMcpError(null);
-    const headers: Record<string, string> = mcpToken.trim()
-      ? { Authorization: mcpToken.trim() }
-      : {};
-    try {
+  const closeMcpDialog = useCallback(() => {
+    setMcpDialogOpen(false);
+    mcpAddRef.current?.focus();
+  }, []);
+
+  /** Discover a server's tools and add it; rejects with the message the dialog shows. */
+  const connectMcpServer = useCallback(
+    async ({ url, description, headers }: McpConnectRequest) => {
       const resp = await fetchWithAuth(API_BASE, '/internal/playground/mcp/tools', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -455,6 +453,7 @@ export default function PlaygroundPage() {
       const server: McpServer = {
         id: `mcp-${Date.now()}`,
         url,
+        ...(description ? { description } : {}),
         headers,
         tools: Array.isArray(data.tools) ? data.tools : [],
       };
@@ -465,14 +464,10 @@ export default function PlaygroundPage() {
           s.servers.some((candidate) => candidate.id === pick.serverId && candidate.url !== url),
         ),
       }));
-      setMcpUrl('');
-      setMcpToken('');
-    } catch (err) {
-      setMcpError(err instanceof Error && err.message ? err.message : 'Could not reach the server');
-    } finally {
-      setMcpBusy(false);
-    }
-  }, [mcpUrl, mcpToken, mcpBusy, patch, session?.connectionId]);
+      closeMcpDialog();
+    },
+    [patch, session?.connectionId, closeMcpDialog],
+  );
 
   const toggleMcpTool = useCallback(
     (serverId: string, name: string) => {
@@ -1451,11 +1446,18 @@ export default function PlaygroundPage() {
                 {sessionServers.map((server) => (
                   <div key={server.id} className="mt-2 rounded-lg border border-gray-200 p-2">
                     <div className="flex items-center justify-between gap-2">
-                      <span
-                        className="min-w-0 truncate text-[11px] text-gray-600"
-                        title={server.url}
-                      >
-                        {server.url}
+                      <span className="min-w-0">
+                        <span
+                          className="block truncate text-[11px] text-gray-600"
+                          title={server.url}
+                        >
+                          {server.url}
+                        </span>
+                        {server.description && (
+                          <span className="block break-words text-[11px] leading-4 text-gray-400">
+                            {server.description}
+                          </span>
+                        )}
                       </span>
                       <button
                         type="button"
@@ -1501,35 +1503,16 @@ export default function PlaygroundPage() {
                     )}
                   </div>
                 ))}
-                <div className="mt-2 space-y-1.5">
-                  <input
-                    value={mcpUrl}
-                    onChange={(e) => setMcpUrl(e.target.value)}
-                    placeholder="https://mcp.example.com/mcp"
-                    aria-label="MCP server URL"
-                    disabled={mcpBusy || activeStreaming}
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50"
-                  />
-                  <input
-                    value={mcpToken}
-                    onChange={(e) => setMcpToken(e.target.value)}
-                    placeholder="Authorization header (optional)"
-                    aria-label="MCP authorization header"
-                    disabled={mcpBusy || activeStreaming}
-                    className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-[13px] text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => void connectMcpServer()}
-                    disabled={!mcpUrl.trim() || mcpBusy || activeStreaming}
-                    className="w-full rounded-lg border border-gray-200 px-3 py-2 text-[13px] font-medium text-gray-600 transition hover:border-gray-300 hover:text-gray-900 disabled:opacity-40"
-                  >
-                    {mcpBusy ? 'Connecting...' : 'Connect'}
-                  </button>
-                </div>
-                {mcpError && (
-                  <p className="mt-1.5 break-words text-[11px] text-red-600">{mcpError}</p>
-                )}
+                <button
+                  ref={mcpAddRef}
+                  type="button"
+                  onClick={() => setMcpDialogOpen(true)}
+                  disabled={activeStreaming}
+                  aria-haspopup="dialog"
+                  className="mt-2 w-full rounded-lg border border-dashed border-gray-300 px-3 py-2 text-[13px] font-medium text-gray-600 transition hover:border-gray-400 hover:text-gray-900 disabled:opacity-40"
+                >
+                  + Add MCP server
+                </button>
                 <p className="mt-1.5 text-[11px] leading-4 text-gray-400">
                   Selected tools are sent with each turn. Run a tool call in the transcript to add
                   its result.
@@ -2244,6 +2227,10 @@ export default function PlaygroundPage() {
             </>
           )}
         </div>
+
+        {mcpDialogOpen && (
+          <McpConnectDialog onClose={closeMcpDialog} onConnect={connectMcpServer} />
+        )}
 
         {codeOpen && (
           <div
