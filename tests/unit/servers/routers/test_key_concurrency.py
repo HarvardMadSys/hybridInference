@@ -102,6 +102,28 @@ async def test_on_behalf_of_reports_the_target_cap(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_on_behalf_of_drops_the_callers_project_cap(monkeypatch):
+    target = {"user_id": "u2", "role": "pro", "max_concurrent_requests": 5}
+    resolve = AsyncMock(return_value=target)
+    monkeypatch.setattr(models, "_resolve_effective_identity", resolve)
+    app = _app(
+        {
+            "user_id": "service",
+            "role": "free",
+            "authenticated": True,
+            "auth_key_hash": "h",
+            "project_id": "proj-1",
+            "project_max_concurrent_requests": 1,
+        },
+        limiter=object(),
+    )
+
+    body = await _get(app, headers={"X-On-Behalf-Of": "u2"})
+
+    assert body["concurrency"] == {"max_in_flight": 5}
+
+
+@pytest.mark.asyncio
 async def test_reports_the_tighter_project_shared_cap():
     app = _app(
         {
