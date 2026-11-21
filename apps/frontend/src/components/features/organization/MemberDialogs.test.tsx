@@ -172,6 +172,56 @@ describe('the monthly limit of a member', () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it('says so, and offers to try again, when the organization could not be read', () => {
+    const onRetry = vi.fn();
+    render(
+      <MemberDialogs
+        dialog={{ mode: 'limit', member: LEI }}
+        organization={undefined}
+        onRetryOrganization={onRetry}
+        onClose={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+
+    expect(within(dialog).getByRole('alert')).toHaveTextContent(
+      'The organization could not be read, so the limit cannot be saved.',
+    );
+    // The button stays off, and now with its reason: the ceiling is not known.
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(state.setLimit).not.toHaveBeenCalled();
+  });
+
+  it('says nothing of a failed read while the organization is read, or when the dialog has it', () => {
+    const { rerender } = render(
+      <MemberDialogs
+        dialog={{ mode: 'limit', member: LEI }}
+        organization={undefined}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(within(screen.getByRole('dialog')).queryByRole('alert')).not.toBeInTheDocument();
+
+    // A later read that failed leaves the organization as it was read before.
+    rerender(
+      <MemberDialogs
+        dialog={{ mode: 'limit', member: LEI }}
+        organization={ORGANIZATION}
+        onRetryOrganization={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    const dialog = screen.getByRole('dialog');
+
+    expect(within(dialog).queryByRole('alert')).not.toBeInTheDocument();
+    expect(within(dialog).queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeEnabled();
+  });
+
   it('leaves the ceiling to the gateway when the organization was read in another currency', async () => {
     // 7,000 of one currency is no ceiling for an amount of another.
     const { dialog } = open({ mode: 'limit', member: LEI }, {

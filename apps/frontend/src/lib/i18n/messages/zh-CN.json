@@ -3841,6 +3841,10 @@
     "source": "Monthly limit ({currency})",
     "text": "月额度（{currency}）"
   },
+  "organization.limit_dialog.no_organization": {
+    "source": "The organization could not be read, so the limit cannot be saved.",
+    "text": "读取机构信息失败，暂时无法保存月额度。"
+  },
   "organization.limit_dialog.platform": {
     "source": "The platform administrator set a limit of {amount} for this account. The lower of the two limits applies.",
     "text": "平台管理员给这个账号设了 {amount} 的月额度。两个额度里较低的那个生效。"

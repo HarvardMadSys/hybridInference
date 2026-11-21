@@ -313,6 +313,7 @@ export function MembersView() {
       <MemberDialogs
         dialog={dialog}
         organization={organization.data}
+        onRetryOrganization={organization.isError ? () => void organization.refetch() : undefined}
         onClose={() => setDialog(null)}
       />
     </div>

@@ -1,6 +1,8 @@
 'use client';
 
 import { useRef, useState } from 'react';
+import { AdminNotice } from '@/components/features/admin/AdminPrimitives';
+import { NOTICE_ACTION } from '@/components/features/admin/adminStyles';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { useT } from '@/components/providers/useT';
 import { InputField } from '@/components/ui/InputField';
@@ -33,10 +35,12 @@ function who(member: OrganizationMember): string {
 function LimitDialog({
   member,
   organization,
+  onRetryOrganization,
   onClose,
 }: {
   member: OrganizationMember;
   organization: Organization | undefined;
+  onRetryOrganization?: () => void;
   onClose: () => void;
 }) {
   const t = useT();
@@ -178,6 +182,23 @@ function LimitDialog({
         />
         <button type="submit" className="hidden" tabIndex={-1} disabled={save.isPending} />
       </form>
+      {/* Save is off without the organization. A read that failed gives the
+          reason and the way to try again; a read in progress needs neither. */}
+      {!organization && onRetryOrganization ? (
+        <AdminNotice
+          role="alert"
+          action={
+            <button type="button" className={NOTICE_ACTION} onClick={onRetryOrganization}>
+              {t('organization.retry', 'Retry')}
+            </button>
+          }
+        >
+          {t(
+            'organization.limit_dialog.no_organization',
+            'The organization could not be read, so the limit cannot be saved.',
+          )}
+        </AdminNotice>
+      ) : null}
     </ConfirmDialog>
   );
 }
@@ -301,18 +322,30 @@ function RestoreDialog({ member, onClose }: { member: OrganizationMember; onClos
 export function MemberDialogs({
   dialog,
   organization,
+  onRetryOrganization,
   onClose,
 }: {
   dialog: MemberDialog | null;
   /** For the limit dialog: the organization's own limit and its default. */
   organization: Organization | undefined;
+  /**
+   * Given when the read of the organization failed: reads it again. The limit
+   * dialog that has no organization then says so, and offers this.
+   */
+  onRetryOrganization?: () => void;
   onClose: () => void;
 }): JSX.Element | null {
   if (!dialog) return null;
   const key = `${dialog.mode}-${dialog.member.user_id}`;
   if (dialog.mode === 'limit') {
     return (
-      <LimitDialog key={key} member={dialog.member} organization={organization} onClose={onClose} />
+      <LimitDialog
+        key={key}
+        member={dialog.member}
+        organization={organization}
+        onRetryOrganization={onRetryOrganization}
+        onClose={onClose}
+      />
     );
   }
   if (dialog.mode === 'remove') {

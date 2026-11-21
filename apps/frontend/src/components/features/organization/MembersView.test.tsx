@@ -11,14 +11,13 @@ vi.mock('next/dynamic', () => ({
 }));
 
 const state = vi.hoisted(() => ({
+  organization: vi.fn(),
   members: vi.fn(),
   member: vi.fn(),
   refetch: vi.fn(),
 }));
 vi.mock('@/lib/hooks', () => ({
-  useOrganization: () => ({
-    data: { id: 'o-1', name: 'Example University', monthly_limit_usd: 1000 },
-  }),
+  useOrganization: () => state.organization(),
   useOrganizationMembers: (query: unknown) => state.members(query),
   useOrganizationMember: (userId: string, period: string) => state.member(userId, period),
   useSetMemberMonthlyLimit: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -127,6 +126,11 @@ beforeEach(() => {
   // Only the clock is fixed, for "27 min ago"; the timers stay real.
   vi.useFakeTimers({ toFake: ['Date'] });
   vi.setSystemTime(new Date('2026-11-18T12:00:00Z'));
+  state.organization.mockReset().mockReturnValue({
+    data: { id: 'o-1', name: 'Example University', monthly_limit_usd: 1000 },
+    isError: false,
+    refetch: vi.fn(),
+  });
   state.members.mockReset();
   state.member.mockReset();
   state.refetch.mockReset();
@@ -393,6 +397,25 @@ describe('the members of the organization', () => {
 
     fireEvent.click(within(panel).getByRole('button', { name: 'Set monthly limit' }));
     expect(screen.getByRole('dialog', { name: 'Set monthly limit' })).toBeInTheDocument();
+  });
+
+  it('says in the limit dialog that the organization could not be read, and reads it again', () => {
+    const again = vi.fn();
+    state.organization.mockReturnValue({ data: undefined, isError: true, refetch: again });
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
+    const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
+    fireEvent.click(within(panel).getByRole('button', { name: 'Set monthly limit' }));
+
+    const confirmation = screen.getByRole('dialog', { name: 'Set monthly limit' });
+    expect(within(confirmation).getByRole('alert')).toHaveTextContent(
+      'The organization could not be read, so the limit cannot be saved.',
+    );
+    expect(within(confirmation).getByRole('button', { name: 'Save' })).toBeDisabled();
+    fireEvent.click(within(confirmation).getByRole('button', { name: 'Retry' }));
+    expect(again).toHaveBeenCalledTimes(1);
   });
 
   it('closes only the confirmation on Escape, and the panel on the next one', () => {
