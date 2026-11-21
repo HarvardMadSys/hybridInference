@@ -37,6 +37,7 @@ import {
   type AccountChangeReason,
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
+import type { OrganizationRef } from '@/lib/api/organization';
 import type { SsoProviderRef } from '@/lib/api/sso';
 import { getMe } from '@/lib/api/user';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
@@ -72,6 +73,12 @@ export interface AuthUser {
    * set only when it has no password and no verified phone to confirm with.
    */
   sso_reauth_provider?: SsoProviderRef | null;
+  /**
+   * The organization this account is a member of, and its role there. The
+   * organization console is offered to its administrators (`role: 'admin'`);
+   * the gateway decides who may read it.
+   */
+  organization?: OrganizationRef | null;
 }
 
 export interface AuthState {
@@ -219,6 +226,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           is_admin: me.is_admin,
           locale: me.locale ?? null,
           sso_reauth_provider: me.sso_reauth_provider ?? null,
+          organization: me.organization ?? null,
         },
       });
     } catch (error) {

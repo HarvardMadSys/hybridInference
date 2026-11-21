@@ -25,11 +25,14 @@ describe('isChatWorkspaceRoute', () => {
 });
 
 describe('isWideConsoleRoute', () => {
-  it('widens the admin area only', () => {
+  it('widens the admin area and the organization console only', () => {
     expect(isWideConsoleRoute('/dashboard/admin')).toBe(true);
     expect(isWideConsoleRoute('/dashboard/admin/users')).toBe(true);
+    expect(isWideConsoleRoute('/dashboard/organization')).toBe(true);
+    expect(isWideConsoleRoute('/dashboard/organization/members')).toBe(true);
     expect(isWideConsoleRoute('/dashboard')).toBe(false);
     expect(isWideConsoleRoute('/dashboard/administrator')).toBe(false);
+    expect(isWideConsoleRoute('/dashboard/organizations')).toBe(false);
     expect(isWideConsoleRoute('/settings')).toBe(false);
   });
 });
@@ -48,7 +51,13 @@ describe('isUserConsoleRoute', () => {
     ]) {
       expect(isUserConsoleRoute(path), path).toBe(true);
     }
-    for (const path of ['/dashboard/admin', '/dashboard/admin/users', '/dashboards', '/settings']) {
+    for (const path of [
+      '/dashboard/admin',
+      '/dashboard/admin/users',
+      '/dashboard/organization/overview',
+      '/dashboards',
+      '/settings',
+    ]) {
       expect(isUserConsoleRoute(path), path).toBe(false);
     }
   });
@@ -68,6 +77,13 @@ describe('isDashboardRoute', () => {
 describe('consoleWidthFor', () => {
   it('gives admin and the public pages a width, and leaves the user console to its shell', () => {
     expect(consoleWidthFor('/dashboard/admin/users')).toBe('max-w-[1440px]');
+    // The organization console has the admin area's frame: its tabs, no navigation rail.
+    expect(consoleWidthFor('/dashboard/organization/usage')).toBe('max-w-[1440px]');
+    expect(consoleFrameFor('/dashboard/organization/usage')).toEqual({
+      bar: true,
+      shell: false,
+      workspace: false,
+    });
     expect(consoleWidthFor('/dashboard/keys')).toBe('max-w-none');
     expect(consoleWidthFor('/dashboard/playground')).toBe('max-w-none');
     expect(consoleWidthFor('/login')).toBe('max-w-5xl');

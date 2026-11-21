@@ -53,6 +53,10 @@ reader’s saved language. Admin date/time labels use an explicit `en-US` locale
 while preserving their existing time zone. The rest of what stays in English is
 listed below.
 
+The organization console (`/dashboard/organization`) is not an administration
+page in this sense. Its readers are the staff of an organization, who are users,
+so it is translated like the rest of the console.
+
 ## The catalog
 
 `apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the English it
