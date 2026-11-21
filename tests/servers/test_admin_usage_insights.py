@@ -269,12 +269,16 @@ class TestAdminUsageInsightsAnalyze:
         assert resp.status_code == 200
         inserts = [c.args for c in mock_conn.execute.await_args_list if c.args[0] == INSERT_SQL]
         assert len(inserts) == 1
-        _sql, admin_ip, action, target_user_id, _details, success, *attribution = inserts[0]
+        (_sql, admin_ip, action, target_user_id, _details, success, *attribution, organization) = (
+            inserts[0]
+        )
         assert action == "usage_insights_analyze"
         assert success is True
         assert admin_ip == "203.0.113.10"
         assert target_user_id == "user-999"
         assert attribution == ["admin", "admin-1", "203.0.113.10", "user", "user-999"]
+        # An action of the deployment belongs to no organization.
+        assert organization is None
 
     @pytest.mark.asyncio
     async def test_analyze_400_when_not_configured(self, mock_db_logger, _patch_llm):

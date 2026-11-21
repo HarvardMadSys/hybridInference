@@ -666,3 +666,49 @@ def get_admin_audit_actor(
 def user_audit_actor(request: Request, current_user: dict[str, Any]) -> AuditActor:
     """The ``user`` actor for an account acting on itself through its session."""
     return AuditActor.user(current_user["user_id"], get_client_ip(request))
+
+
+@dataclass(frozen=True, slots=True)
+class OrganizationAdmin:
+    """An organization administrator a route admitted, and where it acts.
+
+    Attributes:
+        organization_id: The organization of the caller's own membership.
+        organization_name: Its name, for the messages an action writes.
+        user_id: The caller's account.
+        actor: The caller, as its audit rows record it.
+    """
+
+    organization_id: str
+    organization_name: str
+    user_id: str
+    actor: AuditActor
+
+
+async def require_organization_admin(
+    request: Request,
+    current_user: dict[str, Any] = Depends(get_current_user),
+    op_store=Depends(get_operational_store),
+) -> OrganizationAdmin:
+    """Admit an organization administrator, and say which organization it acts in.
+
+    The organization is read from the caller's own membership and never from
+    the request: an administrator works in one organization, its own. The role
+    of platform administrator admits nobody here.
+
+    Raises:
+        HTTPException: 403 for an account that is not an organization administrator.
+    """
+    from serving import organizations
+
+    membership = (
+        await organizations.membership_of(op_store, current_user["user_id"]) if op_store else None
+    )
+    if membership is None or membership["role"] != "admin":
+        raise HTTPException(status_code=403, detail="Organization administrator access required.")
+    return OrganizationAdmin(
+        organization_id=membership["organization_id"],
+        organization_name=membership["organization_name"],
+        user_id=current_user["user_id"],
+        actor=user_audit_actor(request, current_user),
+    )

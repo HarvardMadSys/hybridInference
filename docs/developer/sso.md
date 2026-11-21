@@ -161,6 +161,11 @@ A user manages their own links under **Settings → Single sign-on**: they can
 connect an organization account and disconnect one. Both ask the user to
 confirm, and the only way to sign in to an account cannot be disconnected.
 
+An account connects an organization account only when the account's own email
+is in the provider's `domains`. A link that was made before this rule stays. A
+member of an [organization](organizations.md) cannot disconnect the
+organization account that its membership rests on.
+
 The organization account's email may differ from the account's. It cannot be
 the email of another account here: one address belongs to one account, so the
 user signs in to that account and connects the organization account there.
@@ -191,6 +196,8 @@ authenticator app asks for it too.
 The gateway is not told when a provider disables an account. The member can no
 longer sign in through the provider, but sessions that are already open and
 API keys keep working. Suspend the account in **Admin → Users** to end both.
+An administrator of the member's [organization](organizations.md) can remove
+the member, which does the same.
 
 ## Stop offering a provider
 
@@ -246,7 +253,7 @@ and the reason, and never contains a token or a secret.
 | Single sign-on is unavailable | The provider cannot be reached, the client secret setting is empty, the gateway has not restarted since the secret was stored, or `FRONTEND_URL` is not an absolute URL |
 | The sign-in took too long | The user took more than ten minutes, opened the callback in another browser, or reached the console through an address other than `FRONTEND_URL`. Every sign-in ends this way when the console calls the gateway on another host and `COOKIE_DOMAIN` does not cover both: see step 6 of [Connect a provider](#connect-a-provider). A link from **Settings** also ends this way when the user signed out before it completed |
 | Too many sign-in attempts | More than 120 sign-ins were started from one client address in an hour. Behind a reverse proxy the gateway sees the proxy's address for every browser, and all of them share that allowance, until it is told which proxies to trust: see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md) |
-| Single sign-on failed | The provider's answer did not validate, the account lacks a claim that `required_claims` asks for, or the member was linked through another provider that has the same issuer |
+| Single sign-on failed | The provider's answer did not validate, the account lacks a claim that `required_claims` asks for, the member was linked through another provider that has the same issuer, or the account is a member of a different [organization](organizations.md) |
 | The email could not be confirmed | The email is outside the provider's `domains`, or the provider does not report it as verified |
 | No account here yet | `auto_create` is off, or the address is on `ADMIN_EMAILS` |
 | Pending approval | The account was created and waits in **Admin → Users** |

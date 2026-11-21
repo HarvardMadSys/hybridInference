@@ -216,7 +216,7 @@ def exceeded_payload(
     return _native_payload(body, headers, quota_amount, spent_amount)
 
 
-Scope = Literal["key", "project", "account"]
+Scope = Literal["key", "project", "account", "organization"]
 Window = Literal["day", "month"]
 
 
@@ -224,9 +224,11 @@ Window = Literal["day", "month"]
 class BudgetRefusal:
     """Which limit a request would exceed, and by how much it is already spent.
 
-    ``scope`` names whose limit it is: the presented API key's own budget, or
-    the account's quota. ``key_label`` is how a message names the key (its
-    name, else its masked prefix); None for the account.
+    ``scope`` names whose limit it is: the presented API key's own budget, its
+    project's, the account's quota, or the monthly limit of the organization
+    the account is a member of. ``key_label`` is how a message names the key
+    (its name, else its masked prefix); None for the others. ``scope_name`` is
+    the project's or the organization's name.
 
     ``limit_usd`` / ``spent_usd`` keep their USD meaning. A refusal decided in
     the native ledger (:func:`first_refusal_amount`) also carries the exact
@@ -266,13 +268,18 @@ def first_refusal(
     project_name: str | None = None,
     key_prefix: str | None = None,
     key_label: str | None = None,
+    organization_limit_usd: Money | None = None,
+    organization_spent_month_usd: Money = 0.0,
+    organization_name: str | None = None,
 ) -> BudgetRefusal | None:
     """Return the narrowest limit this request does not fit under, or None.
 
-    Checked in order key, project, account (day then month at each level), so a
-    refusal names the narrowest limit that ran out. Each uses the same
-    optimistic estimate (:func:`estimated_request_cost`), so the levels behave
-    alike near their limits. A NULL budget or monthly quota is no limit there.
+    Checked in order key, project, account (day then month at each level), then
+    the organization the account is a member of (month only), so a refusal
+    names the narrowest limit that ran out. Each uses the same optimistic
+    estimate (:func:`estimated_request_cost`), so the levels behave alike near
+    their limits. A NULL budget, monthly quota or organization limit is no
+    limit there.
 
     The limits and spends are ledger amounts, in the ledger's arithmetic (the
     ``*_usd`` names predate other ledgers): floats compared exactly as they
@@ -317,7 +324,45 @@ def first_refusal(
         return refuse("account", "day", account_quota_usd, account_spent_usd)
     if over(account_quota_monthly_usd, account_spent_month_usd):
         return refuse("account", "month", account_quota_monthly_usd, account_spent_month_usd)
+    if over(organization_limit_usd, organization_spent_month_usd):
+        return refuse(
+            "organization",
+            "month",
+            organization_limit_usd,
+            organization_spent_month_usd,
+            scope_name=organization_name,
+        )
     return None
+
+
+def organization_fields(row: Mapping[str, Any], *, native: bool) -> dict[str, Any]:
+    """The organization a :class:`~serving.spend_ledger.SpendCheck` is checked against.
+
+    From a lookup row that carries its account's organization (the
+    ``organization_*`` columns of the auth lookups): its id and name, its
+    monthly limit and what its counter holds for this UTC month, in the
+    ledger's arithmetic (floats on a USD ledger, exact decimals with
+    *native*). Empty for an account in no organization, and for a row from a
+    lookup that does not read one.
+    """
+    organization_id = row.get("organization_id")
+    if not organization_id:
+        return {}
+    if native:
+        limit: Money | None = native_limit(
+            row, "organization_limit_amount", "organization_limit_usd"
+        )
+        spent: Money = money_decimal(row.get("organization_spent_month_amount") or 0)
+    else:
+        stored = row.get("organization_limit_usd")
+        limit = None if stored is None else float(stored)
+        spent = float(row.get("organization_spent_month_usd") or 0.0)
+    return {
+        "organization_id": organization_id,
+        "organization_name": row.get("organization_name"),
+        "organization_limit_usd": limit,
+        "organization_spent_month_usd": spent,
+    }
 
 
 def native_limit(
@@ -377,8 +422,14 @@ def refusal_payload(
 
     The account's daily refusal is :func:`exceeded_payload` unchanged plus
     ``code``, ``scope`` and ``window``, so clients reading today's fields keep
-    working. The account's monthly refusal and a key's have the same fields
-    and reset with their window; a key's also names the key.
+    working. The account's monthly refusal, a key's and a project's have the
+    same fields and reset with their window; a key's also names the key, a
+    project's the project.
+
+    An organization's names the organization and says when its month starts
+    again, with no amount in the body, the message or the headers: what an
+    organization may spend and has spent is for its administrators to see, in
+    the organization console, and this answer goes to each of its members.
     """
     if refusal.scope == "account" and refusal.window == "day":
         body, headers = exceeded_payload(
@@ -392,6 +443,24 @@ def refusal_payload(
     now = datetime.now(UTC)
     reset_at = refusal.reset_at(now)
     retry_after = max(1, int((reset_at - now).total_seconds()))
+    if refusal.scope == "organization":
+        return {
+            "error": "Organization monthly limit exceeded",
+            "code": "budget_exceeded",
+            "scope": refusal.scope,
+            "window": refusal.window,
+            "organization": refusal.scope_name,
+            "reset_at": reset_at.isoformat(),
+            "contact_email": contact_email,
+            "message": (
+                f"Organization {refusal.scope_name!r} reached its monthly limit. Contact an "
+                "administrator of your organization."
+            ),
+            "retry_after": retry_after,
+        }, {
+            "Retry-After": str(retry_after),
+            "X-RateLimit-Reset": str(int(reset_at.timestamp())),
+        }
     remaining = max(0, refusal.limit_usd - refusal.spent_usd)
     period = "daily" if refusal.window == "day" else "monthly"
     if refusal.scope == "account":

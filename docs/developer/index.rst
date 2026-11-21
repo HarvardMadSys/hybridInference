@@ -72,6 +72,8 @@ Where to start
      - :doc:`routing`
    * - Let an organization's members sign in with its own accounts
      - :doc:`sso`
+   * - Let an organization see and manage its own members
+     - :doc:`organizations`
    * - Send a patch
      - :doc:`contributing`
    * - Identify a version or plan an upgrade
@@ -129,6 +131,7 @@ explains how to configure and extend an overlay.
    batches
    rag-chat
    sso
+   organizations
 
 .. toctree::
    :maxdepth: 2

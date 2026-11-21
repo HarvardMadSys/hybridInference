@@ -60,6 +60,7 @@ def op_store() -> MagicMock:
         side_effect=lambda email: dict(account) if email.lower() == EMAIL else None
     )
     store.get_user_avatar = AsyncMock(return_value=None)
+    store.get_organization_membership = AsyncMock(return_value=None)
     store.record_login_event = AsyncMock()
     store.update_user_last_login = AsyncMock()
     store.update_user_fields = AsyncMock()

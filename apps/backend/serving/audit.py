@@ -55,6 +55,7 @@ TargetType = Literal[
     "signup_domain",
     "site_update",
     "broadcast",
+    "organization",
 ]
 
 ACTOR_TYPES: frozenset[str] = frozenset(get_args(ActorType))
@@ -167,6 +168,11 @@ class AuditTarget:
         """A provider, by its name."""
         return cls("provider", name)
 
+    @classmethod
+    def organization(cls, organization_id: str) -> AuditTarget:
+        """An organization, by its id."""
+        return cls("organization", organization_id)
+
 
 @dataclass(frozen=True, slots=True)
 class AuditColumns:
@@ -179,6 +185,7 @@ class AuditColumns:
     source_ip: str | None
     target_type: str | None
     target_id: str | None
+    organization_id: str | None = None
 
 
 def audit_columns(
@@ -187,6 +194,7 @@ def audit_columns(
     target_user_id: str | None,
     actor: AuditActor | None,
     target: AuditTarget | None,
+    organization_id: str | None = None,
 ) -> AuditColumns:
     """Resolve what a writer passed into the columns its row stores.
 
@@ -200,6 +208,9 @@ def audit_columns(
     otherwise; passing *target_user_id* as well is refused. Without one, a
     legacy *target_user_id* is stored raw and left untyped: legacy writers
     put provider names there too, so its type is not assumed.
+
+    *organization_id* is the organization the row belongs to: the one an
+    organization administrator may read it in. None for a row of none.
 
     Raises:
         ValueError: A legacy argument was passed beside the actor or target.
@@ -222,4 +233,5 @@ def audit_columns(
         source_ip=source_ip,
         target_type=target.type if target is not None else None,
         target_id=target.id if target is not None else None,
+        organization_id=organization_id,
     )

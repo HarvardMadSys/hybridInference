@@ -277,3 +277,9 @@ msgstr "让某个机构的成员用机构自己的账号登录"
 
 msgid ":doc:`sso`"
 msgstr ":doc:`sso`"
+
+msgid "Let an organization see and manage its own members"
+msgstr "让机构自己查看和管理它的成员"
+
+msgid ":doc:`organizations`"
+msgstr ":doc:`organizations`"

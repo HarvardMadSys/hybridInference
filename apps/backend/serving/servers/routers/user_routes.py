@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from serving import organizations
 from serving.audit import AuditTarget
 from serving.auth import sso_accounts
 from serving.exceptions import (
@@ -58,6 +59,7 @@ from serving.schemas_auth import (
     UserInfo,
     UserProfileUpdate,
 )
+from serving.schemas_organization import OrganizationRef
 from serving.servers.auth import (
     decrypt_api_key,
     encrypt_api_key,
@@ -375,6 +377,7 @@ async def get_current_user_info(
         if sso_accounts.confirms_through_provider(user_row)
         else None
     )
+    membership = await organizations.membership_of(op_store, user_row["id"])
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
@@ -392,6 +395,15 @@ async def get_current_user_info(
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
         locale=_extract_locale_preference(_coerce_preferences(user_row.get("preferences"))),
+        organization=(
+            OrganizationRef(
+                id=membership["organization_id"],
+                name=membership["organization_name"],
+                role=membership["role"],
+            )
+            if membership
+            else None
+        ),
     )
 
 

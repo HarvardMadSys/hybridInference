@@ -59,6 +59,35 @@ _ACCOUNT_WRITES: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
     ("bind_user_phone", ("u1", "+15550100"), {}),
     ("bind_user_email", ("u1", "a@example.test"), {}),
     ("mark_user_email_verified", ("u1",), {}),
+    # What an organization does to one member. The role is one of them: an
+    # administrator has no limit from the organization, so the role decides
+    # the quota that the cached lookups carry.
+    ("set_organization_member_role", ("o1", "u1", "admin"), {}),
+    ("set_organization_member_limit", ("o1", "u1"), {"usd": Decimal("5")}),
+    ("remove_organization_member", ("o1", "u1"), {}),
+    ("restore_organization_member", ("o1", "u1"), {}),
+]
+
+# Every write that reaches each member of an organization, with what the store
+# answers when it changed something, and when it changed nothing that a lookup
+# carries (None: the write has no such answer).
+_ORGANIZATION_WRITES: list[tuple[str, tuple[Any, ...], dict[str, Any], Any, Any]] = [
+    ("create_organization", (), {"name": "Example"}, ("created", 2), ("name_taken", 0)),
+    (
+        "attach_organization_connection",
+        ("o1", "campus"),
+        {},
+        ("updated", 2),
+        ("connection_taken", 0),
+    ),
+    (
+        "set_organization_limit",
+        ("o1", "monthly_limit"),
+        {"usd": Decimal("5")},
+        ("updated", None, Decimal("5")),
+        None,
+    ),
+    ("rename_organization", ("o1", "Example"), {}, "updated", "name_taken"),
 ]
 
 
@@ -76,6 +105,7 @@ def inner() -> MagicMock:
     store.bind_user_email = AsyncMock(return_value=True)
     store.apply_role_quota = AsyncMock(return_value=3)
     store.attach_browser_session_account = AsyncMock(return_value=True)
+    store.set_organization_member_role = AsyncMock(return_value="updated")
     for name, _, _ in _ACCOUNT_WRITES:
         if not isinstance(getattr(store, name, None), AsyncMock):
             setattr(store, name, AsyncMock())
@@ -150,6 +180,45 @@ async def test_a_change_to_every_account_still_flushes_every_account(cached, inn
     await _warm(cached)
 
     await cached.apply_role_quota("free", Decimal("5"))
+
+    for key_hash in _ROWS:
+        await cached.get_auth_context_by_key_hash(key_hash)
+    assert inner.get_auth_context_by_key_hash.await_count == 6
+
+
+@pytest.mark.parametrize("outcome", ["unchanged", "not_found"])
+async def test_a_role_that_did_not_change_keeps_the_cached_auth(cached, inner, outcome):
+    inner.set_organization_member_role.return_value = outcome
+    await _warm(cached)
+
+    assert await cached.set_organization_member_role("o1", "u1", "admin") == outcome
+
+    for key_hash in _ROWS:
+        await cached.get_auth_context_by_key_hash(key_hash)
+    assert inner.get_auth_context_by_key_hash.await_count == 3
+
+
+@pytest.mark.parametrize(
+    ("write", "args", "kwargs", "changed", "same"), _ORGANIZATION_WRITES, ids=lambda v: str(v)[:40]
+)
+async def test_a_change_to_an_organization_flushes_every_account(
+    cached, inner, write, args, kwargs, changed, same
+):
+    """Its limits and its name are in the lookup of each member's keys."""
+    setattr(inner, write, AsyncMock(return_value=changed))
+    await _warm(cached)
+
+    assert await getattr(cached, write)(*args, **kwargs) == changed
+
+    for key_hash in _ROWS:
+        await cached.get_auth_context_by_key_hash(key_hash)
+    assert inner.get_auth_context_by_key_hash.await_count == 6
+
+    if same is None:
+        return
+    # The same write, when it reached no member or was refused, flushes nobody.
+    setattr(inner, write, AsyncMock(return_value=same))
+    assert await getattr(cached, write)(*args, **kwargs) == same
 
     for key_hash in _ROWS:
         await cached.get_auth_context_by_key_hash(key_hash)

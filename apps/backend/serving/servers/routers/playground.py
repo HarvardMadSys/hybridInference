@@ -200,7 +200,7 @@ async def _reserve_playground_spend(
         return None
     user_id = str(user["user_id"])
     read_at = time.monotonic()
-    daily, monthly, daily_amount, monthly_amount = await _account_quotas(
+    daily, monthly, daily_amount, monthly_amount, organization = await _account_quotas(
         op_store, {"id": user_id, "role": role}
     )
     identity = {
@@ -210,6 +210,7 @@ async def _reserve_playground_spend(
         "quota_monthly_cost_usd": monthly,
         "quota_daily_cost_amount": daily_amount,
         "quota_monthly_cost_amount": monthly_amount,
+        **organization,
     }
     user[SPEND_CHECK_KEY], *_ = await _gate(
         identity,

@@ -106,6 +106,23 @@ Link
 : The record that an identity at an identity provider signs in to one account.
   An account can hold links to several identity providers.
 
+Organization
+: A record that owns SSO connections and the accounts of its members, with a
+  monthly limit and its own administrators. [Organizations](organizations.md)
+  explains how to set one up.
+
+SSO connection
+: One entry of `SSO_PROVIDERS`, seen from the organization that owns it. A
+  connection belongs to one organization at most.
+
+Member
+: An account that belongs to an organization: it has an email in the `domains`
+  of an SSO connection of the organization, and a link through that connection.
+
+Organization administrator
+: A member that sees the usage of the organization's members and manages
+  them. The role is separate from the `admin` role of the deployment.
+
 ## Deployments
 
 Distribution

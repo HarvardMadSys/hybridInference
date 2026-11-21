@@ -42,6 +42,7 @@ from .routers import (
     internal,
     internal_lookups,
     models,
+    organization,
     playground,
     playground_mcp,
     projects,
@@ -194,6 +195,7 @@ def create_app() -> FastAPI:
     app.include_router(setup.router)
     app.include_router(user_routes.router)
     app.include_router(projects.router)
+    app.include_router(organization.router)
     app.include_router(internal.router)
     app.include_router(playground.router)
     app.include_router(playground_mcp.router)

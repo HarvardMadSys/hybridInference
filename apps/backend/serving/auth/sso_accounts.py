@@ -20,6 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Literal
 
+from serving import organizations
 from serving.auth.browser_sessions import email_verification_required
 from serving.config import sso as sso_config
 from serving.config.settings import is_admin_email
@@ -65,6 +66,8 @@ class Resolution:
     pending_link: bool = False
     refused: RefusalCode | None = None
     created: dict[str, Any] | None = None
+    #: The organization this sign-in made the account a member of, if it did.
+    joined_organization: str | None = None
 
 
 def status_refusal(status: str | None) -> RefusalCode | None:
@@ -229,6 +232,7 @@ async def _resolve(
         if not await may_auto_link(provider, user):
             return Resolution(pending_link=True)
         identity_id = generate_ulid()
+        membership = await organizations.membership_of(op_store, user["id"])
         outcome = await op_store.link_user_identity(
             identity_id=identity_id,
             user_id=user["id"],
@@ -239,11 +243,21 @@ async def _resolve(
         )
         if outcome == sso_store.LINKED:
             linked = await op_store.get_user_identity(identity.issuer, identity.subject)
-            return Resolution(user=user, identity_id=linked["id"] if linked else identity_id)
+            return Resolution(
+                user=user,
+                identity_id=linked["id"] if linked else identity_id,
+                joined_organization=await organizations.joined_organization(
+                    op_store, user["id"], membership
+                ),
+            )
         if outcome == sso_store.ISSUER_CONFLICT:
             return Resolution(refused="identity_conflict")
         if outcome == sso_store.ACCOUNT_INACTIVE:
             return Resolution(refused="inactive")
+        if outcome == sso_store.OTHER_ORGANIZATION:
+            # The account is a member of another organization than this
+            # provider's: an account belongs to one.
+            return Resolution(refused="failed")
         return None
 
     if not provider.auto_create:
@@ -276,6 +290,7 @@ async def _resolve(
     if user is None:
         return Resolution(refused="failed")
     logger.info(f"Single sign-on created user {user_id} via {provider.id} [status={status}]")
+    joined = await organizations.joined_organization(op_store, user_id, None)
     if status != "active":
-        return Resolution(refused="pending", created=user)
-    return Resolution(user=user, identity_id=identity_id, created=user)
+        return Resolution(refused="pending", created=user, joined_organization=joined)
+    return Resolution(user=user, identity_id=identity_id, created=user, joined_organization=joined)
