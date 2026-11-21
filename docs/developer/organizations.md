@@ -235,7 +235,8 @@ Things to know:
 - **The spend of an organization starts at membership.** What an account was
   charged before it became a member does not count against the limit of the
   organization, and the usage pages do not show it.
-- **A change of a limit applies within 30 seconds.**
+- **A change of a limit, or of the role of a member, applies within 30
+  seconds.**
 - **Requests that run at the same time** can take an organization a little
   past its limit, as they can for the quota of an account.
 - **A batch** of a member waits while the organization is at its limit, as it

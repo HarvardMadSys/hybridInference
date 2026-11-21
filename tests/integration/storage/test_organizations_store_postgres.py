@@ -1066,6 +1066,60 @@ async def test_the_default_of_an_organization_does_not_reach_an_administrator(st
     assert (await shown())[lead] == (None, "none")
 
 
+async def test_a_change_of_role_reaches_the_cached_lookup_of_the_member_at_once(store):
+    """The role decides the quota that a cached lookup carries: it does not wait to expire."""
+    raw_store, pool = store
+    op_store = CachedOperationalStore(raw_store, InMemoryCache())
+    member = await _account(op_store, "z1")
+    key_hash = await _key_hash(pool, await _key(op_store, member))
+    await _organization(op_store, "z", ("itest-z", [member]))
+    await op_store.set_organization_limit(
+        "o-itest-z",
+        "default_member_monthly_limit",
+        usd=Decimal("5"),
+        action="organization.default_member_limit.set",
+        actor=ORG_ADMIN,
+    )
+
+    async def cached() -> Decimal | None:
+        return (await op_store.get_auth_context_by_key_hash(key_hash))["quota_monthly_cost_usd"]
+
+    assert await cached() == Decimal("5")
+
+    given = await op_store.set_organization_member_role(
+        "o-itest-z", member, "admin", actor=PLATFORM
+    )
+
+    assert given == orgs.UPDATED
+    assert await cached() is None
+
+    taken = await op_store.set_organization_member_role(
+        "o-itest-z", member, "member", actor=PLATFORM
+    )
+
+    assert taken == orgs.UPDATED
+    assert await cached() == Decimal("5")
+
+
+async def test_a_new_name_reaches_the_cached_lookup_of_each_member_at_once(store):
+    """A refusal at the limit of the organization names it: not by a name it no longer has."""
+    raw_store, pool = store
+    op_store = CachedOperationalStore(raw_store, InMemoryCache())
+    member = await _account(op_store, "z2")
+    key_hash = await _key_hash(pool, await _key(op_store, member))
+    await _organization(op_store, "z", ("itest-z", [member]))
+
+    async def cached() -> str:
+        return (await op_store.get_auth_context_by_key_hash(key_hash))["organization_name"]
+
+    assert await cached() == "Itest z"
+
+    renamed = await op_store.rename_organization("o-itest-z", "Itest z renamed", actor=PLATFORM)
+
+    assert renamed == orgs.UPDATED
+    assert await cached() == "Itest z renamed"
+
+
 async def test_a_members_limit_is_refused_above_the_organizations_and_for_administrators(store):
     op_store, pool = store
     member, lead = await _account(op_store, "r1"), await _account(op_store, "r2")

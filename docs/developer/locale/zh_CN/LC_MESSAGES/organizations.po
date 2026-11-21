@@ -352,8 +352,8 @@ msgstr "需要了解的几点："
 msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization, and the usage pages do not show it."
 msgstr "**机构的花费从成为成员时开始计**。账号在成为成员之前被计的费用，不计入机构的上限，用量页面也不显示这部分。"
 
-msgid "**A change of a limit applies within 30 seconds.**"
-msgstr "**上限的修改在 30 秒内生效**。"
+msgid "**A change of a limit, or of the role of a member, applies within 30 seconds.**"
+msgstr "**上限的修改和成员角色的修改在 30 秒内生效**。"
 
 msgid "**Requests that run at the same time** can take an organization a little past its limit, as they can for the quota of an account."
 msgstr "**同时进行的请求**可能让机构略微超过上限，账号的配额也是这样。"

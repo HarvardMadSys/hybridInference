@@ -334,8 +334,8 @@ Three properties to know:
 
 - The counter starts when the account becomes a member. Spend from before that time does not count against
   the limit of the organization.
-- A cached key lookup lives 30 seconds. After a change of a limit, the gateway drops the cached lookups of
-  the accounts that the change applies to.
+- A cached key lookup lives 30 seconds. After a change of a limit, of the role of a member or of the name of
+  the organization, the gateway drops the cached lookups of the accounts that the change applies to.
 - Requests that run at the same time can exceed the limit by approximately the cost of one request. This is
   the bound that the other levels have.
 - The shared spend accounting, which is off and which no setting turns on today, checks the limit of the

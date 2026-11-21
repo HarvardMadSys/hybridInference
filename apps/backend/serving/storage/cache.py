@@ -24,6 +24,7 @@ from .cache_backend import (
     InMemoryCache as InMemoryCache,
     _snapshot,
 )
+from .organizations import UPDATED
 from .sso import LINKED
 
 if TYPE_CHECKING:
@@ -1228,8 +1229,8 @@ class CachedOperationalStore(OperationalStore):
     # -- organizations -------------------------------------------------------
     #
     # Nothing here is cached. A change that reaches what the auth lookups
-    # return (a member's status, a limit) evicts the cached auth entries it
-    # concerns, as the account writes above do.
+    # return (a member's status or role, a limit, the name) evicts the cached
+    # auth entries it concerns, as the account writes above do.
 
     async def create_organization(self, **fields: Any) -> tuple[str, int]:
         """Create an organization with its SSO connections and their members."""
@@ -1248,8 +1249,13 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.list_organizations()
 
     async def rename_organization(self, organization_id: str, name: str, **fields: Any) -> str:
-        """Give an organization another name."""
-        return await self._store.rename_organization(organization_id, name, **fields)
+        """Give an organization another name, then evict the cached auth entries."""
+        outcome = await self._store.rename_organization(organization_id, name, **fields)
+        if outcome == UPDATED:
+            # The lookup of each member's keys carries the name: a refusal at
+            # the limit of the organization names it.
+            await self.invalidate_auth_caches()
+        return outcome
 
     async def set_organization_limit(
         self, organization_id: str, limit: str, **fields: Any
@@ -1291,10 +1297,15 @@ class CachedOperationalStore(OperationalStore):
     async def set_organization_member_role(
         self, organization_id: str, user_id: str, role: str, **fields: Any
     ) -> str:
-        """Give a member the administrator role, or take it back."""
-        return await self._store.set_organization_member_role(
+        """Give a member the administrator role, or take it back, then evict its cached auth."""
+        outcome = await self._store.set_organization_member_role(
             organization_id, user_id, role, **fields
         )
+        if outcome == UPDATED:
+            # The role decides the quota the lookups carry: an administrator
+            # has no limit from its organization.
+            await self.invalidate_user_auth_caches(user_id)
+        return outcome
 
     async def remove_organization_member(
         self, organization_id: str, user_id: str, **fields: Any
