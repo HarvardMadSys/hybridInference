@@ -235,3 +235,38 @@ async def test_migrated_nested_credentials_reach_the_adapter_without_changing_me
     register_from_models_document(router, document)
     body = router.routes["nested"].adapters[0][0].config.extra_body
     assert body == {"custom_token": "legacy-private-token", "literal": "${LITERAL}"}
+
+
+async def test_mcp_servers_document_validates_store_entries(configuration):
+    document = {
+        "servers": [
+            {
+                "id": "docs",
+                "name": "Docs",
+                "url": "https://docs.example/mcp",
+                "headers": {"Authorization": "${DOCS_TOKEN}"},
+            }
+        ]
+    }
+    validate("MCP_SERVERS", json.dumps(document))
+    with pytest.raises(DocumentError):
+        validate(
+            "MCP_SERVERS",
+            json.dumps({**document, "servers": [{**document["servers"][0], "id": "Bad Id"}]}),
+        )
+    with pytest.raises(DocumentError):
+        validate(
+            "MCP_SERVERS",
+            json.dumps(
+                {
+                    "servers": [
+                        {
+                            "id": "docs",
+                            "name": "Docs",
+                            "url": "https://docs.example/mcp",
+                            "headers": {"Authorization": "inline-secret"},
+                        }
+                    ]
+                }
+            ),
+        )

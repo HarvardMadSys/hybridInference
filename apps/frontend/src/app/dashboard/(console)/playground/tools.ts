@@ -10,6 +10,10 @@ export interface McpTool {
 
 export interface McpServer {
   id: string;
+  /** Set when the server came from the store; calls then resolve it on the gateway. */
+  catalogId?: string;
+  /** Store display name; manual servers show their URL instead. */
+  name?: string;
   url: string;
   /** Shown under the URL; never sent to the server or the model. */
   description?: string;
@@ -19,6 +23,7 @@ export interface McpServer {
 
 export interface SelectedTool {
   serverId: string;
+  serverCatalogId?: string;
   serverUrl: string;
   serverHeaders: Record<string, string>;
   tool: McpTool;
@@ -52,6 +57,7 @@ export function selectedTools(servers: McpServer[], selection: ServerSelection[]
     used.add(wire);
     tools.push({
       serverId: server.id,
+      ...(server.catalogId ? { serverCatalogId: server.catalogId } : {}),
       serverUrl: server.url,
       serverHeaders: server.headers,
       tool,
@@ -73,6 +79,7 @@ export function resolveToolCall(call: ToolCall, tools: SelectedTool[]): ToolCall
   return {
     ...call,
     mcpName: tool.tool.name,
+    ...(tool.serverCatalogId ? { serverCatalogId: tool.serverCatalogId } : {}),
     serverUrl: tool.serverUrl,
     serverHeaders: tool.serverHeaders,
   };

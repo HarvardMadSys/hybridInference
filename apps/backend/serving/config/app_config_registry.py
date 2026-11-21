@@ -328,6 +328,14 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         one_time=True,
         validator=_document_validator("SSO_PROVIDERS"),
     ),
+    ConfigEntry(
+        "MCP_SERVERS",
+        "application",
+        "MCP server store as JSON. Each entry offers a connection target in the playground; "
+        "header values reference separate secret settings as ${NAME}. Omit for an empty store.",
+        type="text",
+        validator=_document_validator("MCP_SERVERS"),
+    ),
     # --- general -----------------------------------------------------------
     _setting(
         "base_url",

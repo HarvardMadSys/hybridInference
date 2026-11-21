@@ -33,6 +33,7 @@ other settings. No JSON file is a runtime fallback either.
 | `SITE_CONFIGURATION` | Public site identity and feature restrictions | Settings refresh |
 | `SITE_BRANDING` | Validated public branding | Settings refresh |
 | `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | Settings refresh |
+| `MCP_SERVERS` | MCP servers the Playground offers as a store | Settings refresh |
 
 Empty routing and alert documents use the built-in policy and thresholds.
 Empty site documents use neutral branding. An empty model catalog supplies no
