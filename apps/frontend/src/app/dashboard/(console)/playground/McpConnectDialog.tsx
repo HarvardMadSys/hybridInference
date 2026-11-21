@@ -2,6 +2,7 @@
 
 import { useEffect, useId, useRef, useState, type FormEvent, type KeyboardEvent } from 'react';
 import { Select } from '@/components/ui/Select';
+import { McpStorePicker, type McpCatalogEntry } from './McpStorePicker';
 
 export type McpAuthMode = 'none' | 'token' | 'headers';
 
@@ -14,6 +15,9 @@ export interface McpConnectRequest {
   url: string;
   description: string;
   headers: Record<string, string>;
+  /** Set when the request came from the store; the gateway resolves it. */
+  catalogId?: string;
+  name?: string;
 }
 
 const AUTH_OPTIONS: { value: McpAuthMode; label: string }[] = [
@@ -142,6 +146,24 @@ export function McpConnectDialog({
     if (!busy) onClose();
   };
 
+  const pickCatalogServer = async (entry: McpCatalogEntry) => {
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onConnect({
+        url: entry.url,
+        description: entry.description,
+        headers: {},
+        catalogId: entry.id,
+        name: entry.name,
+      });
+    } catch (err) {
+      setError(err instanceof Error && err.message ? err.message : 'Could not reach the server');
+      setBusy(false);
+    }
+  };
+
   const submit = async (event: FormEvent) => {
     event.preventDefault();
     const target = url.trim();
@@ -228,6 +250,22 @@ export function McpConnectDialog({
           </div>
 
           <div className="space-y-4 px-6 py-5">
+            <div>
+              <span className={fieldLabel}>Server store</span>
+              <p className={hint}>Servers this deployment offers, with credentials kept server-side.</p>
+              <div className="mt-2">
+                <McpStorePicker onPick={(entry) => void pickCatalogServer(entry)} busy={busy} />
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <span className="h-px flex-1 bg-gray-100" />
+              <span className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
+                Or connect a custom server
+              </span>
+              <span className="h-px flex-1 bg-gray-100" />
+            </div>
+
             <div>
               <label htmlFor={`${ids}-url`} className={fieldLabel}>
                 URL

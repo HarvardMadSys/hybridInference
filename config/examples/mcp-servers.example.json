@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "id": "context7",
+      "name": "Context7",
+      "description": "Library documentation lookup.",
+      "url": "https://mcp.context7.com/mcp",
+      "docs_url": "https://context7.com"
+    },
+    {
+      "id": "github",
+      "name": "GitHub",
+      "description": "Repositories, issues and pull requests. Needs a personal access token.",
+      "url": "https://api.githubcopilot.com/mcp/",
+      "headers": {
+        "Authorization": "${GITHUB_MCP_TOKEN}"
+      },
+      "docs_url": "https://github.com/github/github-mcp-server"
+    }
+  ]
+}
