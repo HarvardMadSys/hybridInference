@@ -252,7 +252,9 @@ export function McpConnectDialog({
           <div className="space-y-4 px-6 py-5">
             <div>
               <span className={fieldLabel}>Server store</span>
-              <p className={hint}>Servers this deployment offers, with credentials kept server-side.</p>
+              <p className={hint}>
+                Servers this deployment offers, with credentials kept server-side.
+              </p>
               <div className="mt-2">
                 <McpStorePicker onPick={(entry) => void pickCatalogServer(entry)} busy={busy} />
               </div>

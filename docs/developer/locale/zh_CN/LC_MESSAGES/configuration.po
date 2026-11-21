@@ -2823,6 +2823,14 @@ msgid "Identity providers for [single sign-on](sso.md)"
 msgstr "[单点登录](sso.md)的身份提供方"
 
 #: ../developer/configuration.md
+msgid "`MCP_SERVERS`"
+msgstr "`MCP_SERVERS`"
+
+#: ../developer/configuration.md
+msgid "MCP servers the Playground offers as a store"
+msgstr "Playground 以商店形式提供的 MCP 服务器"
+
+#: ../developer/configuration.md
 msgid "A provider's Base URL may name any host, private and loopback ones included, so that a self-hosted engine (vLLM, SGLang, Ollama) can be added. Cloud instance metadata addresses are always refused, in every spelling: IPv4 carried in IPv6 (IPv4-compatible, NAT64, 6to4 and the rest) is judged as the IPv4 address it reaches. When a probe fails, it shows the upstream's error message only when the upstream answered in the OpenAI error format. Other response bodies, redirect targets and connection details are not shown."
 msgstr "供应商的 Base URL 可以指向任何主机，包括私网和回环地址，以便接入自建推理引擎（vLLM、SGLang、Ollama）。云实例元数据地址无论以何种写法出现都会被拒绝：嵌入在 IPv6 中的 IPv4（IPv4 兼容、NAT64、6to4 等）按其实际到达的 IPv4 地址判断。探测失败时，只有当上游以 OpenAI 错误格式应答，才会显示上游的错误信息；其他响应体、重定向目标和连接细节均不显示。"
 
