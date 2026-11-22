@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 163  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 167  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -109,6 +109,8 @@ def test_admin_router_has_expected_route_count() -> None:
     # 161 -> 162: users/{user_id}/sso-identities/{identity_id}/unlink, an administrator
     # disconnecting a single sign-on identity from an account.
     # 162 -> 163: settings PATCH, several runtime settings behind one confirmation.
+    # 163 -> 167: mcp-servers list (read-only) and add/update/remove for the
+    # Playground MCP server store.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"
