@@ -55,9 +55,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       className={`h-full ${crimsonText.variable}`}
     >
       <head>
+        {/* React does not carry the nonce to the client, so it differs after hydration. */}
         <script
           id="console-theme"
           nonce={nonce}
+          suppressHydrationWarning
           dangerouslySetInnerHTML={{ __html: THEME_BOOTSTRAP_SCRIPT }}
         />
       </head>
