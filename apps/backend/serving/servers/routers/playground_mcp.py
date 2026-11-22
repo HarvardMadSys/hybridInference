@@ -98,6 +98,7 @@ async def list_servers(
                 "description": entry.description,
                 "url": entry.url,
                 "docsUrl": entry.docs_url,
+                "iconUrl": entry.icon_url,
             }
             for entry in _catalog().servers
         ]

@@ -55,6 +55,7 @@ TargetType = Literal[
     "signup_domain",
     "site_update",
     "broadcast",
+    "mcp_server",
 ]
 
 ACTOR_TYPES: frozenset[str] = frozenset(get_args(ActorType))

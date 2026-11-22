@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { McpServerIcon } from '@/components/features/mcp/McpServerIcon';
 import { config } from '@/config/env';
 import { fetchWithAuth, jsonOrThrow } from '@/lib/api/client';
 
@@ -10,6 +11,7 @@ export interface McpCatalogEntry {
   description: string;
   url: string;
   docsUrl?: string;
+  iconUrl?: string;
 }
 
 const API_BASE = config.apiBase;
@@ -94,31 +96,29 @@ export function McpStorePicker({
         type="search"
         value={query}
         onChange={(event) => setQuery(event.target.value)}
-        placeholder="Search servers"
+        placeholder="Search all servers"
         aria-label="Search MCP servers"
         disabled={busy}
         className="w-full rounded-lg border border-gray-200 bg-white px-3 py-2 text-sm text-gray-900 outline-none transition placeholder:text-gray-400 hover:border-gray-300 focus:border-gray-400 focus:ring-2 focus:ring-gray-900/5 disabled:opacity-50"
       />
-      <ul className="mt-2 max-h-56 space-y-1.5 overflow-y-auto">
+      <p className="mb-2 mt-4 text-[11px] font-medium uppercase tracking-wide text-gray-400">
+        Available servers
+      </p>
+      <ul className="grid max-h-64 grid-cols-1 gap-2 overflow-y-auto sm:grid-cols-2">
         {visible.map((entry) => (
           <li key={entry.id}>
             <button
               type="button"
               onClick={() => onPick(entry)}
               disabled={busy}
-              className="flex w-full items-start gap-2 rounded-lg border border-gray-200 px-3 py-2 text-left transition hover:border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+              className="flex h-full w-full items-start gap-2.5 rounded-xl border border-gray-200 px-3 py-2.5 text-left transition hover:border-gray-300 hover:bg-gray-50 disabled:opacity-50"
             >
-              <span
-                aria-hidden="true"
-                className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-gray-200 text-[11px] font-semibold text-gray-600"
-              >
-                {entry.name.slice(0, 1).toUpperCase()}
-              </span>
+              <McpServerIcon name={entry.name} url={entry.url} iconUrl={entry.iconUrl} size="md" />
               <span className="min-w-0">
                 <span className="block truncate text-[13px] font-medium text-gray-900">
                   {entry.name}
                 </span>
-                <span className="block break-words text-[11px] leading-4 text-gray-500">
+                <span className="mt-0.5 block break-words text-[11px] leading-4 text-gray-500">
                   {entry.description || entry.url}
                 </span>
               </span>

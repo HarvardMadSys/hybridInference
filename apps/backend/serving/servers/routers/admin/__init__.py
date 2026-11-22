@@ -22,6 +22,7 @@ from serving.servers.routers.admin import (
     config_backup,
     export,
     login_events,
+    mcp_servers,
     metrics,
     model_concurrency,
     model_queue,
@@ -63,6 +64,7 @@ router.include_router(config.router)
 router.include_router(config_backup.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
+router.include_router(mcp_servers.router)
 router.include_router(metrics.router)
 router.include_router(model_concurrency.router)
 router.include_router(model_queue.router)

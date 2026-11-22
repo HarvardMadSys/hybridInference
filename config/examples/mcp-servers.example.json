@@ -5,7 +5,8 @@
       "name": "Context7",
       "description": "Library documentation lookup.",
       "url": "https://mcp.context7.com/mcp",
-      "docs_url": "https://context7.com"
+      "docs_url": "https://context7.com",
+      "icon_url": "https://context7.com/favicon.ico"
     },
     {
       "id": "github",
@@ -15,7 +16,8 @@
       "headers": {
         "Authorization": "${GITHUB_MCP_TOKEN}"
       },
-      "docs_url": "https://github.com/github/github-mcp-server"
+      "docs_url": "https://github.com/github/github-mcp-server",
+      "icon_url": "https://github.com/favicon.ico"
     }
   ]
 }

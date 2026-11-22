@@ -36,6 +36,7 @@ class McpServerEntry(BaseModel):
     url: str = Field(min_length=1, max_length=2048)
     headers: dict[str, str] = Field(default_factory=dict)
     docs_url: str = Field(default="", max_length=2048)
+    icon_url: str = Field(default="", max_length=2048)
 
     @field_validator("id")
     @classmethod
@@ -49,9 +50,9 @@ class McpServerEntry(BaseModel):
     def _valid_url(cls, value: str) -> str:
         return _http_url(value)
 
-    @field_validator("docs_url")
+    @field_validator("docs_url", "icon_url")
     @classmethod
-    def _valid_docs_url(cls, value: str) -> str:
+    def _valid_optional_url(cls, value: str) -> str:
         return value if not value else _http_url(value)
 
     @field_validator("headers")

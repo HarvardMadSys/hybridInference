@@ -226,7 +226,7 @@ export function McpConnectDialog({
         aria-modal="true"
         aria-labelledby={`${ids}-title`}
         onKeyDown={onKeyDown}
-        className="w-full max-w-md rounded-2xl border border-gray-200 bg-white shadow-2xl"
+        className="w-full max-w-lg rounded-2xl border border-gray-200 bg-white shadow-2xl"
       >
         <form onSubmit={(event) => void submit(event)}>
           <div className="flex flex-col items-center px-6 pt-6">
@@ -245,15 +245,18 @@ export function McpConnectDialog({
               </svg>
             </div>
             <h2 id={`${ids}-title`} className="mt-3 text-base font-semibold text-gray-900">
-              Connect to MCP Server
+              Add MCP server
             </h2>
+            <p className="mt-1 text-center text-xs text-gray-500">
+              Pick a server from this deployment&apos;s store, or connect your own.
+            </p>
           </div>
 
           <div className="space-y-4 px-6 py-5">
             <div>
-              <span className={fieldLabel}>Server store</span>
+              <span className={fieldLabel}>Store</span>
               <p className={hint}>
-                Servers this deployment offers, with credentials kept server-side.
+                Servers this deployment offers. Their credentials stay on the gateway.
               </p>
               <div className="mt-2">
                 <McpStorePicker onPick={(entry) => void pickCatalogServer(entry)} busy={busy} />
@@ -263,7 +266,7 @@ export function McpConnectDialog({
             <div className="flex items-center gap-3">
               <span className="h-px flex-1 bg-gray-100" />
               <span className="text-[11px] font-medium uppercase tracking-wide text-gray-400">
-                Or connect a custom server
+                Custom server
               </span>
               <span className="h-px flex-1 bg-gray-100" />
             </div>

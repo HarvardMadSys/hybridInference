@@ -756,6 +756,7 @@ async def test_the_store_lists_servers_without_credentials(monkeypatch: pytest.M
                 "description": "Find pages",
                 "url": "https://docs.example/mcp",
                 "docsUrl": "",
+                "iconUrl": "",
             }
         ]
     }
