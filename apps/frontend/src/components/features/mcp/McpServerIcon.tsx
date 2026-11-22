@@ -4,7 +4,9 @@ import { useEffect, useState } from 'react';
 
 function faviconUrl(serverUrl: string): string {
   try {
-    return `${new URL(serverUrl).origin}/favicon.ico`;
+    const url = new URL(serverUrl);
+    // The page policy only allows https images, so an http favicon is a failure.
+    return url.protocol === 'https:' ? `${url.origin}/favicon.ico` : '';
   } catch {
     return '';
   }
