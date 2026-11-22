@@ -59,7 +59,7 @@ describe('McpConnectDialog', () => {
     const onConnect = vi.fn().mockResolvedValue(undefined);
     render(<McpConnectDialog onClose={vi.fn()} onConnect={onConnect} />);
 
-    expect(screen.getByRole('dialog', { name: 'Connect to MCP Server' })).toBeInTheDocument();
+    expect(screen.getByRole('dialog', { name: 'Add MCP server' })).toBeInTheDocument();
     expect(screen.getByText('Only use MCP servers you trust and verify.')).toBeInTheDocument();
     const connect = screen.getByRole('button', { name: 'Connect' });
     expect(connect).toBeDisabled();
