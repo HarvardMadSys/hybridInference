@@ -19,24 +19,31 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 
 from serving import organizations
 from serving.accounting import get_accounting_policy
+from serving.model_access import route_canonical_model_id
 from serving.schemas_organization import (
     ListMembersResponse,
     ListOrganizationAuditResponse,
     ListOrganizationRequestsResponse,
     MemberDetailResponse,
+    MemberModelsResponse,
     ModelUsageResponse,
     OrganizationMember,
     OrganizationMessageResponse,
     OrganizationOverviewResponse,
     OrganizationResponse,
     Period,
+    SetMemberModelsRequest,
     SetMonthlyLimitRequest,
 )
 from serving.servers.deps import (
     OrganizationAdmin,
+    get_embedding_adapters,
+    get_model_visibility_resolver,
     get_operational_store,
+    get_router,
     require_organization_admin,
 )
+from serving.servers.routers.models import _build_model_list_async
 from serving.storage import organizations as org_store
 
 router = APIRouter(prefix="/user/organization", tags=["Organization"])
@@ -45,7 +52,7 @@ MemberOrder = Literal[
     "name", "status", "last_request", "requests", "tokens", "spend", "month", "limit_use", "joined"
 ]
 MemberStatus = Literal["active", "suspended", "removed", "pending_approval"]
-AuditCategory = Literal["membership", "limits", "organization"]
+AuditCategory = Literal["membership", "limits", "access", "organization"]
 
 _NOT_A_MEMBER = "This account is not a member of your organization."
 _ABOVE_LIMIT = "A member's limit cannot be greater than the limit of the organization."
@@ -230,6 +237,128 @@ async def set_member_monthly_limit(
     if usd is None and native is None:
         return OrganizationMessageResponse(message="Monthly limit cleared.")
     return OrganizationMessageResponse(message="Monthly limit saved.")
+
+
+async def _member_account(op_store: Any, admin: OrganizationAdmin, user_id: str) -> dict[str, Any]:
+    """The account row of a member of the caller's organization.
+
+    Raises:
+        HTTPException: 404 when the account is not a member of the caller's organization.
+    """
+    membership = await organizations.membership_of(op_store, user_id)
+    account = await op_store.get_user_by_id(user_id) if membership else None
+    if not account or membership["organization_id"] != admin.organization_id:
+        raise HTTPException(404, _NOT_A_MEMBER)
+    return account
+
+
+@router.get("/members/{user_id}/models", response_model=MemberModelsResponse)
+async def get_member_models(
+    user_id: str,
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+    router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
+) -> MemberModelsResponse:
+    """The models the organization can turn off for a member, and those that are off.
+
+    ``available`` is what the platform lets the member use: the list the member
+    would see, without what the organization itself turned off.
+
+    Raises:
+        HTTPException: 404 when the account is not a member of the caller's organization.
+    """
+    account = await _member_account(op_store, admin, user_id)
+    lists = organizations.member_models(account)
+    listed = await _build_model_list_async(
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        model_visibility_resolver=model_visibility_resolver,
+        user_ctx={
+            "user_id": user_id,
+            "role": account.get("role") or "free",
+            "is_admin": account.get("role") == "admin",
+            "disabled_models": lists["platform_disabled_models"],
+        },
+    )
+    routes = _model_routes(router_exec)
+    available = {
+        route_canonical_model_id(routes[item.id], item.id) if item.id in routes else item.id
+        for item in listed.data
+    }
+    return MemberModelsResponse(available=sorted(available), **lists)
+
+
+def _model_routes(router_exec: Any) -> dict[str, Any]:
+    """Every route of the deployment by the name it is listed under, chat and embedding."""
+    return {**getattr(router_exec, "embedding_routes", {}), **router_exec.routes}
+
+
+@router.put("/members/{user_id}/models", response_model=MemberModelsResponse)
+async def set_member_models(
+    user_id: str,
+    payload: SetMemberModelsRequest,
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+    router_exec=Depends(get_router),
+) -> MemberModelsResponse:
+    """Replace the models the organization turned off for a member.
+
+    The list is the organization's own. The list of the platform administrator
+    is not changed: the gateway refuses a model in either, so this turns a
+    model off for a member and never turns on one the platform administrator
+    turned off. An id that names no model of the deployment is dropped, as
+    Admin drops it. Not for an administrator.
+
+    Raises:
+        HTTPException: 404 when the account is not a member of the caller's
+            organization; 409 for an administrator.
+    """
+    known = {
+        route_canonical_model_id(route, name) for name, route in _model_routes(router_exec).items()
+    }
+    outcome, _old, new = await op_store.set_organization_member_models(
+        admin.organization_id,
+        user_id,
+        [model for model in payload.disabled_models if model in known],
+        actor=admin.actor,
+    )
+    if outcome == org_store.NOT_FOUND:
+        raise HTTPException(404, _NOT_A_MEMBER)
+    if outcome == org_store.PROTECTED:
+        raise HTTPException(409, "The models of an administrator are not set here.")
+    account = await _member_account(op_store, admin, user_id)
+    lists = organizations.member_models(account)
+    return MemberModelsResponse(available=sorted(known), **{**lists, "disabled_models": new})
+
+
+@router.post("/members/{user_id}/keys/{key_id}/revoke", response_model=OrganizationMessageResponse)
+async def revoke_member_key(
+    user_id: str,
+    key_id: int,
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+) -> OrganizationMessageResponse:
+    """Revoke one API key of a member, as its owner does in the console.
+
+    The key stays revoked: the member makes a new one. Not for an administrator.
+
+    Raises:
+        HTTPException: 404 when the account is not a member of the caller's
+            organization, or the key is not that member's; 409 for an
+            administrator, or a key that is not active.
+    """
+    outcome, _identity = await op_store.revoke_organization_member_key(
+        admin.organization_id, user_id, key_id, actor=admin.actor
+    )
+    if outcome == org_store.NOT_FOUND:
+        raise HTTPException(404, "This member has no such API key.")
+    if outcome == org_store.PROTECTED:
+        raise HTTPException(409, "The API keys of an administrator are not revoked here.")
+    if outcome == org_store.NOT_ACTIVE:
+        raise HTTPException(409, "This API key is not active.")
+    return OrganizationMessageResponse(message="API key revoked.")
 
 
 @router.put("/default-member-limit", response_model=OrganizationResponse)

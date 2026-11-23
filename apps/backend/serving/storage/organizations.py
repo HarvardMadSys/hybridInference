@@ -14,6 +14,7 @@ transaction, so the methods that change something take the actor.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, date, datetime, timedelta
 from typing import TYPE_CHECKING, Any
@@ -23,6 +24,7 @@ import asyncpg
 from serving.accounting import get_accounting_policy
 from serving.audit import AuditTarget, audit_columns
 from serving.config.settings import admin_email_addresses
+from serving.model_access import normalize_disabled_models
 from serving.storage.audit_schema import insert_audit_row
 
 if TYPE_CHECKING:
@@ -84,7 +86,7 @@ _ORGANIZATION_SELECT = (
 
 _MEMBERSHIP_SELECT = (
     "SELECT m.user_id, m.organization_id, m.role, m.joined_at, m.removed_at, m.removed_by, "
-    "o.name AS organization_name "
+    "m.disabled_models, o.name AS organization_name "
     "FROM org_memberships m JOIN orgs o ON o.id = m.organization_id "
 )
 
@@ -346,6 +348,16 @@ _OWN_QUOTA_COLUMNS = (
 _MEMBER_QUOTA_JOIN = member_quota_join(
     own=(_OWN_QUOTA_USD, _OWN_QUOTA_AMOUNT), member="om", organization="o", account_role="u.role"
 )
+
+
+def model_list(stored: Any) -> list[str]:
+    """A ``disabled_models`` column as a list, whatever the driver returned it as."""
+    if isinstance(stored, str):
+        try:
+            stored = json.loads(stored)
+        except json.JSONDecodeError:
+            return []
+    return normalize_disabled_models(stored)
 
 
 def is_protected(member: Mapping[str, Any]) -> bool:
@@ -795,7 +807,9 @@ class PostgresOrganizationsMixin:
         """The organization an account belongs to and its role there, if any."""
         async with self._pool.acquire() as conn:
             row = await conn.fetchrow(_MEMBERSHIP_SELECT + "WHERE m.user_id = $1", user_id)
-        return dict(row) if row else None
+        if row is None:
+            return None
+        return {**row, "disabled_models": model_list(row["disabled_models"])}
 
     async def set_organization_member_role(
         self, organization_id: str, user_id: str, role: str, *, actor: AuditActor
@@ -1008,6 +1022,120 @@ class PostgresOrganizationsMixin:
                 success=True,
             )
         return UPDATED, old, new
+
+    async def set_organization_member_models(
+        self,
+        organization_id: str,
+        user_id: str,
+        models: Sequence[str],
+        *,
+        actor: AuditActor,
+    ) -> tuple[str, list[str], list[str]]:
+        """Replace the models an organization turned off for one member.
+
+        The list is the organization's own, on the member's row. The list of
+        the account (its ``preferences``) is the platform administrator's: it
+        is not read and not written here, and the request path refuses a model
+        in either (:func:`serving.model_access.disabled_models_of`). So this
+        can turn a model off for a member and never turn on one the platform
+        administrator turned off. Not for an administrator (``"protected"``).
+        One transaction with the audit row. Returns the outcome with the old
+        and the new list.
+        """
+        new = normalize_disabled_models(list(models))
+        audit = audit_columns(
+            admin_ip=None,
+            target_user_id=None,
+            actor=actor,
+            target=AuditTarget.user(user_id),
+            organization_id=organization_id,
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            member = await conn.fetchrow(
+                "SELECT m.role, u.role AS account_role, u.email, m.disabled_models "
+                "FROM org_memberships m JOIN users u ON u.id = m.user_id "
+                "WHERE m.user_id = $1 AND m.organization_id = $2 FOR UPDATE OF m",
+                user_id,
+                organization_id,
+            )
+            if member is None:
+                return NOT_FOUND, [], []
+            if is_protected(member):
+                return PROTECTED, [], []
+            old = model_list(member["disabled_models"])
+            if old == new:
+                return UNCHANGED, old, new
+            await conn.execute(
+                "UPDATE org_memberships SET disabled_models = $2::jsonb WHERE user_id = $1",
+                user_id,
+                json.dumps(new),
+            )
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="organization.member_models.set",
+                details={"email": member["email"], "disabled_models": {"old": old, "new": new}},
+                success=True,
+            )
+        return UPDATED, old, new
+
+    async def revoke_organization_member_key(
+        self, organization_id: str, user_id: str, key_id: int, *, actor: AuditActor
+    ) -> tuple[str, str | None]:
+        """Revoke one API key of a member, as its owner does in the console.
+
+        The key must be the member's own: any other is ``"not_found"``, as a
+        key that does not exist. Not for an administrator (``"protected"``),
+        and a key that is not active stays as it is (``"not_active"``). One
+        transaction with the audit row, which names the key and its project
+        and never its value. Returns the outcome and the identity the key
+        authenticates as, whose cached lookups the caller drops.
+        """
+        audit = audit_columns(
+            admin_ip=None,
+            target_user_id=None,
+            actor=actor,
+            target=AuditTarget.user(user_id),
+            organization_id=organization_id,
+        )
+        async with self._pool.acquire() as conn, conn.transaction():
+            # First, as in every write to an account's keys.
+            await self._lock_account_on(conn, user_id)
+            member = await conn.fetchrow(
+                "SELECT m.role, u.role AS account_role, u.email "
+                "FROM org_memberships m JOIN users u ON u.id = m.user_id "
+                "WHERE m.user_id = $1 AND m.organization_id = $2",
+                user_id,
+                organization_id,
+            )
+            if member is None:
+                return NOT_FOUND, None
+            key = await conn.fetchrow(
+                "SELECT k.status, k.name, k.user_id, p.name AS project_name "
+                "FROM api_keys k LEFT JOIN projects p ON p.id = k.project_id "
+                "WHERE k.id = $1 AND k.account_id = $2 FOR UPDATE OF k",
+                key_id,
+                user_id,
+            )
+            if key is None:
+                return NOT_FOUND, None
+            if is_protected(member):
+                return PROTECTED, None
+            if key["status"] != "active":
+                return NOT_ACTIVE, None
+            await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE id = $1", key_id)
+            await insert_audit_row(
+                conn,
+                columns=audit,
+                action="organization.member_key.revoke",
+                details={
+                    "email": member["email"],
+                    "key_name": key["name"],
+                    "project_name": key["project_name"],
+                },
+                success=True,
+            )
+        return UPDATED, key["user_id"]
 
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed *user_id*.

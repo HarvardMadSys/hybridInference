@@ -36,7 +36,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query, status
 
 from serving.agent_access import AgentAccessPolicyUnavailable, resolve_agent_access_permissions
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import disabled_models_of
 from serving.model_catalog import agent_model_reasoning_efforts, agent_visible_models
 from serving.servers.deps import (
     get_model_visibility_resolver,
@@ -156,7 +156,7 @@ async def model_catalog(
             # Without this the resolver's denylist check reads an absent
             # key and passes, so a model the owner disabled is offered by
             # the composer — and the grant minted from that choice carries it.
-            "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+            "disabled_models": disabled_models_of(user),
         },
     )
     return {

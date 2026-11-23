@@ -11,7 +11,7 @@ send.
 
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, ClassVar, Literal
+from typing import Annotated, Any, ClassVar, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -237,7 +237,7 @@ class OrganizationAuditEntry(BaseModel):
     id: int
     timestamp: datetime
     action: str
-    category: Literal["membership", "limits", "organization"]
+    category: Literal["membership", "limits", "access", "organization"]
     actor: Literal["platform_administrator", "member", "system"]
     actor_user_id: str | None = None
     actor_email: str | None = None
@@ -342,10 +342,81 @@ class ModelUsageResponse(BaseModel):
     models: list[ModelUsage]
 
 
+class MemberAccount(BaseModel):
+    """What the account of a member has: an active API key, a second factor, a verified email."""
+
+    has_key: bool = False
+    two_factor_enabled: bool = False
+    email_verified: bool = False
+
+
+class MemberProject(MoneyResponse):
+    """A project of a member: its name and what it spent, never its budgets or its models."""
+
+    id: str
+    name: str
+    is_default: bool = False
+    created_at: datetime
+    spent_today_usd: float = 0.0
+    spent_today: Decimal | None = None
+    spent_month_usd: float = 0.0
+    spent_month: Decimal | None = None
+
+
+class MemberKey(MoneyResponse):
+    """An API key of a member by its name: never its value, its prefix or its limits.
+
+    ``id`` names the key to :func:`revoke <serving.servers.routers.organization.revoke_member_key>`.
+    """
+
+    id: int
+    name: str | None = None
+    status: str
+    project_id: str | None = None
+    project_name: str | None = None
+    created_at: datetime
+    last_used_at: datetime | None = None
+    spent_today_usd: float = 0.0
+    spent_today: Decimal | None = None
+    spent_month_usd: float = 0.0
+    spent_month: Decimal | None = None
+
+
 class MemberDetailResponse(BaseModel):
-    """One member: its row, its spend for each of the last 30 days, its models, its last requests."""
+    """One member: its row, its spend for each of the last 30 days, its models, its last requests.
+
+    ``disabled_models`` are the models the organization turned off for the
+    member; ``platform_disabled_models`` those the platform administrator
+    turned off, which the organization can read and not change. A model in
+    either is refused.
+    """
 
     member: OrganizationMember
+    account: MemberAccount = Field(default_factory=MemberAccount)
     days: list[UsagePoint]
     models: list[ModelUsage]
     requests: list[OrganizationRequest]
+    projects: list[MemberProject] = Field(default_factory=list)
+    keys: list[MemberKey] = Field(default_factory=list)
+    disabled_models: list[str] = Field(default_factory=list)
+    platform_disabled_models: list[str] = Field(default_factory=list)
+
+
+class SetMemberModelsRequest(BaseModel):
+    """The models an organization turns off for one member; an empty list turns none off."""
+
+    disabled_models: list[Annotated[str, Field(min_length=1, max_length=200)]] = Field(
+        max_length=500
+    )
+
+
+class MemberModelsResponse(BaseModel):
+    """The models of one member, as its organization sets them.
+
+    ``available`` are the canonical ids of the models the platform lets the
+    member use, the ones an organization can turn off.
+    """
+
+    available: list[str]
+    disabled_models: list[str]
+    platform_disabled_models: list[str]

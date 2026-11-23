@@ -89,6 +89,7 @@ async def test_the_tables_arrive_empty_and_existing_rows_are_untouched(scratch):
         "monthly_limit_usd",
         "monthly_limit_amount",
         "accounting_currency",
+        "disabled_models",
     }
 
 

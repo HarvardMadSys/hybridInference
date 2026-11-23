@@ -31,7 +31,7 @@ from serving.exceptions import (
     generic_message_for_status,
     user_safe_error_for_log,
 )
-from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
+from serving.model_access import route_canonical_model_id
 from serving.quota import DEFAULT_DAILY_QUOTA_USD
 from serving.schemas import ModelList
 from serving.schemas_auth import (
@@ -419,8 +419,8 @@ async def get_user_models(
     """List models available to the current dashboard user."""
     disabled_models: list[str] = []
     if op_store:
-        disabled_models = get_disabled_models_from_preferences(
-            await op_store.get_user_preferences(current_user["user_id"])
+        disabled_models = await organizations.disabled_models_of_account(
+            op_store, current_user["user_id"]
         )
     return await _build_model_list_async(
         router_exec=router_exec,

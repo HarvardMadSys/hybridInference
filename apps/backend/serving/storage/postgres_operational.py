@@ -305,7 +305,13 @@ def _preferences_subset(column: str, *keys: str) -> str:
 # size on the event loop each time.
 _REQUEST_PREFERENCE_KEYS = ("disabled_models", "locale")
 _USER_ROW_PREFERENCES = _preferences_subset("preferences", *_REQUEST_PREFERENCE_KEYS)
-_KEY_AUTH_PREFERENCES = f"{_preferences_subset('u.preferences', 'disabled_models')} AS preferences"
+#: With the list of the member's organization (``om``, the membership that
+#: :data:`_ACCOUNT_QUOTA_JOIN` joins) beside it: an organization turns a model
+#: off for a member in a list of its own, and never writes the account's.
+_KEY_AUTH_PREFERENCES = (
+    f"{_preferences_subset('u.preferences', 'disabled_models')} AS preferences, "
+    "om.disabled_models AS organization_disabled_models"
+)
 
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
 # in select order.
@@ -331,6 +337,11 @@ _USER_COLUMNS = (
 _USER_SELECT = ", ".join(
     f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
     for column in _USER_COLUMNS
+) + (
+    # The models the account's organization turned off for it, through the
+    # primary key of its membership; NULL for an account in no organization.
+    ", (SELECT m.disabled_models FROM org_memberships m WHERE m.user_id = users.id) "
+    "AS organization_disabled_models"
 )
 
 # A stored preferences document this large (its stored size, which reading
@@ -853,7 +864,7 @@ def _coerce_user_row(row: Any) -> Row | None:
             d["preferences"] = {}
     elif not isinstance(val, dict):
         d["preferences"] = {}
-    for field in ("allowed_models", "project_allowed_models"):
+    for field in ("allowed_models", "project_allowed_models", "organization_disabled_models"):
         models = d.get(field)
         if isinstance(models, str):
             try:

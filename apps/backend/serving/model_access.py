@@ -9,6 +9,8 @@ from typing import Any
 from serving.config.settings import has_role
 
 DISABLED_MODELS_PREFERENCE_KEY = "disabled_models"
+#: The column a lookup carries the list of the account's organization in.
+ORGANIZATION_DISABLED_MODELS_KEY = "organization_disabled_models"
 
 
 def _pricing_mapping_indicates_paid(pricing: Any) -> bool:
@@ -188,6 +190,28 @@ def get_disabled_models_from_preferences(preferences: Any) -> list[str]:
     if not isinstance(preferences, dict):
         return []
     return normalize_disabled_models(preferences.get(DISABLED_MODELS_PREFERENCE_KEY))
+
+
+def disabled_models_of(row: Any, organization_models: Any = None) -> list[str]:
+    """The models that are off for the account of *row*, whoever turned them off.
+
+    Two parties can: the platform administrator, in the preferences of the
+    account, and the organization of a member, in a list of its own on the
+    membership. A model in either is off, so an organization can turn a model
+    off for a member and cannot turn on one the platform administrator turned
+    off. *row* is an account row or a key lookup, which carries both
+    (``preferences`` and ``organization_disabled_models``); *organization_models*
+    is the list of the membership for a caller that read it on its own.
+    """
+    if not isinstance(row, Mapping):
+        return normalize_disabled_models(organization_models)
+    return normalize_disabled_models(
+        [
+            *get_disabled_models_from_preferences(row.get("preferences")),
+            *normalize_disabled_models(row.get(ORGANIZATION_DISABLED_MODELS_KEY)),
+            *normalize_disabled_models(organization_models),
+        ]
+    )
 
 
 def is_model_disabled_for_user(canonical_model_id: str, user_ctx: dict[str, Any] | None) -> bool:

@@ -1346,6 +1346,33 @@ class CachedOperationalStore(OperationalStore):
         await self.invalidate_user_auth_caches(user_id)
         return result
 
+    async def set_organization_member_models(
+        self, organization_id: str, user_id: str, models: Any, **fields: Any
+    ) -> tuple[str, list[str], list[str]]:
+        """Replace the models that are off for a member, then evict what carries the old list.
+
+        The cached lookups of its keys, and the cached row of the account,
+        which the grant and the internal lookups read the list from.
+        """
+        result = await self._store.set_organization_member_models(
+            organization_id, user_id, models, **fields
+        )
+        await self.invalidate_user_auth_caches(user_id)
+        await self._cache.delete(self._user_key(user_id))
+        return result
+
+    async def revoke_organization_member_key(
+        self, organization_id: str, user_id: str, key_id: int, **fields: Any
+    ) -> tuple[str, str | None]:
+        """Revoke one key of a member, then evict the cached lookups that would still pass it."""
+        result = await self._store.revoke_organization_member_key(
+            organization_id, user_id, key_id, **fields
+        )
+        await self.invalidate_user_auth_caches(user_id)
+        if result[1] and result[1] != user_id:
+            await self.invalidate_user_auth_caches(result[1])
+        return result
+
     async def clear_organization_member_removal(self, user_id: str) -> None:
         """Forget that the organization removed an account."""
         return await self._store.clear_organization_member_removal(user_id)

@@ -94,7 +94,8 @@ def upgrade() -> None:
         "removed_by TEXT, "
         "monthly_limit_usd DECIMAL(10, 4), "
         "monthly_limit_amount NUMERIC(24, 12), "
-        "accounting_currency TEXT"
+        "accounting_currency TEXT, "
+        "disabled_models JSONB NOT NULL DEFAULT '[]'::jsonb"
         ")"
     )
     op.execute(

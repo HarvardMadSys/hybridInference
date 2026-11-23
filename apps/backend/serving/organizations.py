@@ -19,10 +19,17 @@ from decimal import Decimal
 from typing import TYPE_CHECKING, Any
 
 from serving import quota
-from serving.accounting import money_decimal
+from serving.accounting import get_accounting_policy, money_decimal
 from serving.audit import AuditActor, AuditTarget
+from serving.auth.two_factor import has_authenticator
 from serving.config import sso as sso_config
 from serving.config.settings import is_admin_email
+from serving.model_access import (
+    ORGANIZATION_DISABLED_MODELS_KEY,
+    disabled_models_of,
+    get_disabled_models_from_preferences,
+    normalize_disabled_models,
+)
 from serving.storage.base import OrganizationsUnavailableError
 from serving.storage.organizations import is_protected
 from serving.utils.logging import get_logger
@@ -85,6 +92,20 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     except OrganizationsUnavailableError:
         return None
     return dict(row) if row else None
+
+
+async def disabled_models_of_account(op_store: Any, user_id: str) -> list[str]:
+    """The models that are off for an account that signed in to the console.
+
+    A session carries no key lookup, so the two lists are read here: the
+    platform administrator's, in the preferences of the account, and the one of
+    its organization, on the membership (:func:`serving.model_access.disabled_models_of`).
+    """
+    preferences = await op_store.get_user_preferences(user_id)
+    membership = await membership_of(op_store, user_id)
+    return disabled_models_of(
+        {"preferences": preferences}, membership.get("disabled_models") if membership else None
+    )
 
 
 #: What a member is told when it asks for a password.
@@ -304,6 +325,7 @@ AUDIT_CATEGORIES: dict[str, tuple[str, ...]] = {
         "organization.member_limit.",
         "organization.default_member_limit.",
     ),
+    "access": ("organization.member_models.", "organization.member_key."),
     "organization": ("organization.create", "organization.update", "organization.connection."),
 }
 
@@ -634,12 +656,75 @@ async def member_detail_view(
         user_id=user_id,
         limit=MEMBER_RECENT_REQUESTS,
     )
+    account = await op_store.get_user_by_id(user_id) or {}
+    keys = await op_store.list_account_keys(user_id)
     return {
         "member": found[1][0],
+        "account": {
+            "has_key": any(key["status"] == "active" for key in keys),
+            "two_factor_enabled": has_authenticator(await op_store.get_two_factor(user_id)),
+            "email_verified": bool(account.get("email_verified")),
+        },
         "days": days,
         "models": usage["models"],
         "requests": [request_view(row) for row in requests],
+        "projects": [
+            await project_view(op_store, row) for row in await op_store.list_projects(user_id)
+        ],
+        "keys": [key_view(row) for row in keys],
+        **member_models(account),
     }
+
+
+def member_models(account: Mapping[str, Any]) -> dict[str, list[str]]:
+    """The models that are off for a member, by who turned them off."""
+    return {
+        "disabled_models": normalize_disabled_models(account.get(ORGANIZATION_DISABLED_MODELS_KEY)),
+        "platform_disabled_models": get_disabled_models_from_preferences(
+            account.get("preferences")
+        ),
+    }
+
+
+async def project_view(op_store: Any, row: Mapping[str, Any]) -> dict[str, Any]:
+    """A project of a member as its organization is shown it: its name and its spend."""
+    today, month = await op_store.get_project_spend(row["id"])
+    view: dict[str, Any] = {
+        "id": row["id"],
+        "name": row["name"],
+        "is_default": bool(row.get("is_default")),
+        "created_at": row["created_at"],
+        "spent_today_usd": today,
+        "spent_month_usd": month,
+    }
+    if get_accounting_policy().native:
+        today_amount, month_amount = await op_store.get_project_spend_amount(row["id"])
+        view.update(spent_today_amount=today_amount, spent_month_amount=month_amount)
+    return view
+
+
+def key_view(row: Mapping[str, Any]) -> dict[str, Any]:
+    """An API key of a member as its organization is shown it: by its name.
+
+    Never the value, the prefix that begins it, or the limits its owner set.
+    """
+    view: dict[str, Any] = {
+        "id": row["id"],
+        "name": row.get("name"),
+        "status": row["status"],
+        "project_id": row.get("project_id"),
+        "project_name": row.get("project_name"),
+        "created_at": row["created_at"],
+        "last_used_at": row.get("last_used_at"),
+        "spent_today_usd": float(row.get("spent_today_usd") or 0),
+        "spent_month_usd": float(row.get("spent_month_usd") or 0),
+    }
+    if get_accounting_policy().native:
+        view.update(
+            spent_today_amount=row.get("spent_today_amount"),
+            spent_month_amount=row.get("spent_month_amount"),
+        )
+    return view
 
 
 async def requests_view(

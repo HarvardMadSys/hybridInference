@@ -29,7 +29,7 @@ from fastapi import APIRouter, Depends, Query, status
 from pydantic import BaseModel, Field
 
 from serving import grants
-from serving.model_access import get_disabled_models_from_preferences
+from serving.model_access import disabled_models_of
 from serving.model_catalog import agent_visible_models
 from serving.servers.deps import (
     get_log_store,
@@ -155,7 +155,7 @@ async def mint_grant(
             # Without this the resolver's denylist check reads an absent
             # key and passes, so a model the owner disabled resolves here
             # as visible — and a grant gets minted for it.
-            "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+            "disabled_models": disabled_models_of(user),
         },
     )
     effective_models = grants.clamp_models(body.allowed_models, visible=visible)

@@ -28,7 +28,7 @@ from serving.grant_auth import (
 from serving.model_access import (
     KEY_ALLOWED_MODELS_KEY,
     PROJECT_ALLOWED_MODELS_KEY,
-    get_disabled_models_from_preferences,
+    disabled_models_of,
 )
 from serving.observability import detached_tasks
 from serving.observability.rejection_log import (
@@ -767,7 +767,7 @@ def _user_context(
         "spent_today_usd": spent_today_usd,
         "quota_remaining_cost_usd": quota_daily_cost_usd - spent_today_usd,
         "is_admin": user_role == "admin",
-        "disabled_models": get_disabled_models_from_preferences(identity.get("preferences")),
+        "disabled_models": disabled_models_of(identity),
         "max_concurrent_requests": identity.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation;
@@ -1768,7 +1768,7 @@ async def optional_verify_api_key(
         "role": user_role,
         "authenticated": True,
         "is_admin": user_role == "admin",
-        "disabled_models": get_disabled_models_from_preferences(row.get("preferences")),
+        "disabled_models": disabled_models_of(row),
         "max_concurrent_requests": row.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.

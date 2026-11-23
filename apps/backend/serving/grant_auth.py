@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
 from serving.accounting import get_accounting_policy, money_decimal
-from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
+from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, disabled_models_of
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.utils.logging import get_logger
 
@@ -338,7 +338,7 @@ async def authenticate_grant_model_call(
         # an account's concurrency stopped applying the moment the call arrived
         # from an agent — a per-user control with a hole in it, and one nobody
         # would think to test for.
-        "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        "disabled_models": disabled_models_of(user),
         "max_concurrent_requests": user.get("max_concurrent_requests"),
         # Attribution, unchanged: api_logs.agent_job_id is what the owner's
         # cost report reads, and it keeps working across the token change.

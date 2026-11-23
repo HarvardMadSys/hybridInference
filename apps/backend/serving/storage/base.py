@@ -352,6 +352,18 @@ class OperationalStore(ABC):
         """The organization an account belongs to and its role there, if any."""
         raise OrganizationsUnavailableError
 
+    async def set_organization_member_models(
+        self, organization_id: str, user_id: str, models: Any, **fields: Any
+    ) -> tuple[str, list[str], list[str]]:
+        """Replace the models an organization turned off for one member."""
+        raise OrganizationsUnavailableError
+
+    async def revoke_organization_member_key(
+        self, organization_id: str, user_id: str, key_id: int, **fields: Any
+    ) -> tuple[str, str | None]:
+        """Revoke one API key of a member."""
+        raise OrganizationsUnavailableError
+
     async def set_organization_member_role(
         self, organization_id: str, user_id: str, role: str, **fields: Any
     ) -> str:
