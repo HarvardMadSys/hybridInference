@@ -79,6 +79,17 @@ describe('the projects and keys of an account', () => {
     expect(within(archived).getByText('old')).toBeInTheDocument();
   });
 
+  it('gives the heading the look of the page that asks for one, and its own look otherwise', () => {
+    const { unmount } = render(<ProjectsAndKeys projects={PROJECTS} />);
+    expect(screen.getByText('Projects and keys')).toHaveClass('uppercase', 'text-[11px]');
+    unmount();
+
+    render(<ProjectsAndKeys projects={PROJECTS} headingClass="text-[13px] font-semibold" />);
+    const heading = screen.getByText('Projects and keys');
+    expect(heading).toHaveClass('text-[13px]', 'font-semibold');
+    expect(heading).not.toHaveClass('uppercase');
+  });
+
   it('says that the list is on its way, or why it could not be read', () => {
     const { rerender } = render(<ProjectsAndKeys projects={null} />);
     expect(screen.getByText('Loading…')).toBeInTheDocument();

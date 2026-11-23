@@ -80,6 +80,42 @@ describe('the spend cells of a row', () => {
     expect(screen.getAllByRole('cell')[1].querySelector('.sr-only')).toBeNull();
   });
 
+  it('shows the total of the last days as a figure for a list that gives one, and draws no line then', () => {
+    row(
+      <SpendCells
+        today={FIGURES.today}
+        week={{ amount: 7.5, text: 'USD 7.50' }}
+        month={FIGURES.month}
+        alltime={FIGURES.alltime}
+        cellClass={(column) => (column === 'trend' ? 'border-l' : '')}
+      />,
+    );
+
+    const cells = screen.getAllByRole('cell');
+    expect(cells.map((cell) => cell.textContent)).toEqual([
+      'USD 1.50',
+      'USD 7.50',
+      'USD 0.00',
+      'USD 40.00',
+    ]);
+    expect(screen.queryByTestId('trend')).not.toBeInTheDocument();
+    // A figure like its neighbours: their classes, the dimming of a zero, the list's own classes.
+    expect(cells[1]).toHaveClass('text-right', 'tabular-nums', 'text-gray-900', 'border-l');
+  });
+
+  it('dims a total of zero as it dims the other figures', () => {
+    row(
+      <SpendCells
+        today={FIGURES.today}
+        week={{ amount: 0, text: 'USD 0.00' }}
+        month={FIGURES.month}
+        alltime={FIGURES.alltime}
+      />,
+    );
+
+    expect(screen.getAllByRole('cell')[1]).toHaveClass('text-gray-300');
+  });
+
   it("adds the list's own classes to a cell", () => {
     row(
       <SpendCells

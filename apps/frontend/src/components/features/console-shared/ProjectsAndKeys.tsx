@@ -89,18 +89,19 @@ export function ProjectsAndKeys({
   projects,
   archivedKeys = [],
   error = null,
+  headingClass = 'text-[11px] font-medium uppercase tracking-wide text-gray-500',
 }: {
   projects: ProjectEntry[] | null;
   archivedKeys?: KeyEntry[];
   error?: string | null;
+  /** The classes of the heading, for a page whose other headings look another way. */
+  headingClass?: string;
 }) {
   const t = useT();
   const archived = t('console.projects.archived', 'Archived projects');
   return (
     <div className="space-y-2 rounded-lg border border-gray-200 bg-white p-4">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
-        {t('console.projects.title', 'Projects and keys')}
-      </div>
+      <div className={headingClass}>{t('console.projects.title', 'Projects and keys')}</div>
       {error && <InlineErrorText message={error} />}
       {!projects && !error && (
         <p className="text-[12px] text-gray-400">{t('console.projects.loading', 'Loading…')}</p>
