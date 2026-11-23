@@ -1,15 +1,18 @@
 'use client';
 
 import { useRef, useState } from 'react';
-import { AdminNotice } from '@/components/features/admin/AdminPrimitives';
-import { NOTICE_ACTION } from '@/components/features/admin/adminStyles';
+import { AdminLoading, AdminNotice } from '@/components/features/admin/AdminPrimitives';
+import { CHECKBOX, NOTICE_ACTION } from '@/components/features/admin/adminStyles';
 import { ConfirmDialog } from '@/components/features/configuration/ConfirmDialog';
 import { useT } from '@/components/providers/useT';
 import { InputField } from '@/components/ui/InputField';
-import type { Organization, OrganizationMember } from '@/lib/api/organization';
+import type { MemberKey, Organization, OrganizationMember } from '@/lib/api/organization';
 import {
+  useOrganizationMemberModels,
   useRemoveOrganizationMember,
   useRestoreOrganizationMember,
+  useRevokeMemberKey,
+  useSetMemberModels,
   useSetMemberMonthlyLimit,
 } from '@/lib/hooks';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
@@ -20,9 +23,14 @@ import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
 import { readLimit } from './limits';
 import { memberName } from './text';
 
-/** Which member dialog is open: its monthly limit, its removal, or its return. */
+/**
+ * Which member dialog is open: its monthly limit, its models, the revoking of
+ * one of its API keys, its removal, or its return.
+ */
 export type MemberDialog =
   | { mode: 'limit'; member: OrganizationMember }
+  | { mode: 'models'; member: OrganizationMember }
+  | { mode: 'revoke-key'; member: OrganizationMember; apiKey: MemberKey }
   | { mode: 'remove'; member: OrganizationMember }
   | { mode: 'restore'; member: OrganizationMember };
 
@@ -203,6 +211,205 @@ function LimitDialog({
   );
 }
 
+/**
+ * The models of one member. A checked model is on. The organization turns a
+ * model off here, and on again; a model that the platform administrator
+ * turned off is shown and cannot be changed.
+ */
+function ModelsDialog({ member, onClose }: { member: OrganizationMember; onClose: () => void }) {
+  const t = useT();
+  const toast = useAccountToast();
+  const models = useOrganizationMemberModels(member.user_id);
+  const save = useSetMemberModels();
+  // The models that are off, as the reader last set them; until then, as read.
+  const [draft, setDraft] = useState<string[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
+
+  const stored = models.data?.disabled_models ?? [];
+  const off = draft ?? stored;
+  const platformOff = models.data?.platform_disabled_models ?? [];
+  // A model the organization turned off stays in the list when the platform
+  // no longer offers it, so that it can still be turned on again.
+  const available = models.data
+    ? [...new Set([...models.data.available, ...stored])].filter(
+        (model) => !platformOff.includes(model),
+      )
+    : [];
+
+  function toggle(model: string) {
+    setDraft(off.includes(model) ? off.filter((one) => one !== model) : [...off, model]);
+  }
+
+  async function confirm(): Promise<void> {
+    if (submitting.current || !models.data) return;
+    const next = [...off].sort();
+    // The list that is stored is not sent again.
+    if (JSON.stringify(next) === JSON.stringify([...stored].sort())) {
+      onClose();
+      return;
+    }
+    submitting.current = true;
+    setError(null);
+    try {
+      await save.mutateAsync({ userId: member.user_id, disabledModels: next });
+      toast.success(t('organization.models_dialog.saved', 'Models saved.'));
+      onClose();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      submitting.current = false;
+    }
+  }
+
+  const row = 'flex items-center gap-2 rounded-md border px-3 py-1.5 text-[12px]';
+  return (
+    <ConfirmDialog
+      title={t('organization.models_dialog.title', 'Models')}
+      confirmLabel={t('organization.save', 'Save')}
+      cancelLabel={t('common.cancel', 'Cancel')}
+      busyLabel={t('common.loading', 'Loading...')}
+      busy={save.isPending}
+      confirmDisabled={!models.data}
+      error={error}
+      onConfirm={() => void confirm()}
+      onCancel={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <p>
+        {fill(
+          t(
+            'organization.models_dialog.body',
+            'The models that {member} can use. A model that is not checked is refused for this member.',
+          ),
+          { member: who(member) },
+        )}
+      </p>
+      {models.isLoading ? (
+        <AdminLoading size="sm" label={t('common.loading', 'Loading...')} />
+      ) : !models.data ? (
+        <AdminNotice
+          role="alert"
+          action={
+            <button type="button" className={NOTICE_ACTION} onClick={() => void models.refetch()}>
+              {t('organization.retry', 'Retry')}
+            </button>
+          }
+        >
+          {getErrorMessage(models.error)}
+        </AdminNotice>
+      ) : (
+        <div className="max-h-72 space-y-1.5 overflow-y-auto">
+          {available.length === 0 && platformOff.length === 0 ? (
+            <p className="text-[12px] text-gray-400">
+              {t('organization.models_dialog.none', 'The platform offers this member no model.')}
+            </p>
+          ) : null}
+          {available.map((model) => {
+            const isOff = off.includes(model);
+            return (
+              <label
+                key={model}
+                className={`${row} cursor-pointer transition ${
+                  isOff
+                    ? 'border-red-200 bg-red-50 text-gray-500'
+                    : 'border-gray-200 bg-white text-gray-700 hover:border-gray-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className={CHECKBOX}
+                  checked={!isOff}
+                  disabled={save.isPending}
+                  onChange={() => toggle(model)}
+                />
+                <span className="truncate font-medium">{model}</span>
+              </label>
+            );
+          })}
+          {platformOff.map((model) => (
+            <label
+              key={model}
+              className={`${row} cursor-not-allowed border-gray-200 bg-gray-50 text-gray-500`}
+            >
+              <input type="checkbox" className={CHECKBOX} checked={false} disabled readOnly />
+              <span className="truncate font-medium">{model}</span>
+              <span className="ml-auto shrink-0 text-[11px] text-gray-400">
+                {t('organization.models_dialog.platform_off', 'off by the platform administrator')}
+              </span>
+            </label>
+          ))}
+        </div>
+      )}
+    </ConfirmDialog>
+  );
+}
+
+function RevokeKeyDialog({
+  member,
+  apiKey,
+  onClose,
+}: {
+  member: OrganizationMember;
+  apiKey: MemberKey;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const toast = useAccountToast();
+  const revoke = useRevokeMemberKey();
+  const [error, setError] = useState<string | null>(null);
+  const submitting = useRef(false);
+  const keyName = apiKey.name ?? t('console.projects.unnamed_key', 'Unnamed key');
+
+  async function confirm(): Promise<void> {
+    if (submitting.current) return;
+    submitting.current = true;
+    setError(null);
+    try {
+      await revoke.mutateAsync({ userId: member.user_id, keyId: apiKey.id });
+      toast.success(t('organization.revoke_dialog.done', 'API key revoked.'));
+      onClose();
+    } catch (err) {
+      setError(getErrorMessage(err));
+    } finally {
+      submitting.current = false;
+    }
+  }
+
+  return (
+    <ConfirmDialog
+      title={t('organization.revoke_dialog.title', 'Revoke API key')}
+      confirmLabel={t('organization.revoke_dialog.confirm', 'Revoke key')}
+      cancelLabel={t('common.cancel', 'Cancel')}
+      busyLabel={t('common.loading', 'Loading...')}
+      busy={revoke.isPending}
+      tone="danger"
+      error={error}
+      onConfirm={() => void confirm()}
+      onCancel={() => {
+        if (!submitting.current) onClose();
+      }}
+    >
+      <p>
+        {fill(
+          t(
+            'organization.revoke_dialog.body',
+            'The API key "{key}" of {member} stops working at once. Requests with it are refused.',
+          ),
+          { key: keyName, member: who(member) },
+        )}
+      </p>
+      <p>
+        {t(
+          'organization.revoke_dialog.after',
+          'A revoked key stays revoked. The member can make a new one.',
+        )}
+      </p>
+    </ConfirmDialog>
+  );
+}
+
 function RemoveDialog({ member, onClose }: { member: OrganizationMember; onClose: () => void }) {
   const t = useT();
   const toast = useAccountToast();
@@ -344,6 +551,19 @@ export function MemberDialogs({
         member={dialog.member}
         organization={organization}
         onRetryOrganization={onRetryOrganization}
+        onClose={onClose}
+      />
+    );
+  }
+  if (dialog.mode === 'models') {
+    return <ModelsDialog key={key} member={dialog.member} onClose={onClose} />;
+  }
+  if (dialog.mode === 'revoke-key') {
+    return (
+      <RevokeKeyDialog
+        key={`${key}-${dialog.apiKey.id}`}
+        member={dialog.member}
+        apiKey={dialog.apiKey}
         onClose={onClose}
       />
     );

@@ -48,12 +48,60 @@ const LEI: OrganizationMember = {
   total_tokens: 3_420_000,
   cost_usd: 24.46,
   spent_month_usd: 76.7,
+  spent_today_usd: 3.2,
+  spent_7d_usd: 24.46,
+  spent_alltime_usd: 310.05,
   monthly_limit_usd: 130,
   monthly_limit_source: 'member',
 };
 
 const DETAIL: MemberDetail = {
   member: LEI,
+  account: { has_key: true, two_factor_enabled: false, email_verified: true },
+  projects: [
+    {
+      id: 'p-default',
+      name: 'Default',
+      is_default: true,
+      created_at: '2026-10-09T12:00:00Z',
+      spent_today_usd: 0,
+      spent_month_usd: 0,
+    },
+    {
+      id: 'p-thesis',
+      name: 'Thesis',
+      is_default: false,
+      created_at: '2026-10-10T12:00:00Z',
+      spent_today_usd: 3.2,
+      spent_month_usd: 76.7,
+    },
+  ],
+  keys: [
+    {
+      id: 41,
+      name: 'laptop',
+      status: 'active',
+      project_id: 'p-thesis',
+      project_name: 'Thesis',
+      created_at: '2026-10-10T12:00:00Z',
+      last_used_at: '2026-11-18T11:33:00Z',
+      spent_today_usd: 3.2,
+      spent_month_usd: 70,
+    },
+    {
+      id: 42,
+      name: null,
+      status: 'revoked',
+      project_id: 'p-thesis',
+      project_name: 'Thesis',
+      created_at: '2026-10-11T12:00:00Z',
+      last_used_at: null,
+      spent_today_usd: 0,
+      spent_month_usd: 6.7,
+    },
+  ],
+  disabled_models: ['glm-4.6'],
+  platform_disabled_models: ['big-model'],
   days: [
     {
       bucket: '2026-11-16T00:00:00Z',
@@ -140,18 +188,25 @@ afterEach(cleanup);
 
 describe('what an organization administrator may do to a member', () => {
   it('sets the limit of a member and removes one that is active', () => {
-    expect(memberActions(LEI)).toEqual({ limit: true, remove: true, restore: false });
+    expect(memberActions(LEI)).toEqual({
+      limit: true,
+      access: true,
+      remove: true,
+      restore: false,
+    });
   });
 
   it('restores only a member that the organization removed', () => {
     expect(memberActions({ ...LEI, status: 'suspended', removed: true })).toEqual({
       limit: true,
+      access: true,
       remove: false,
       restore: true,
     });
     // Suspended by the platform administrator: not the organization's to undo.
     expect(memberActions({ ...LEI, status: 'suspended', removed: false })).toEqual({
       limit: true,
+      access: true,
       remove: false,
       restore: false,
     });
@@ -160,6 +215,7 @@ describe('what an organization administrator may do to a member', () => {
   it('removes no account that waits for approval', () => {
     expect(memberActions({ ...LEI, status: 'pending_approval' })).toEqual({
       limit: true,
+      access: true,
       remove: false,
       restore: false,
     });
@@ -168,6 +224,7 @@ describe('what an organization administrator may do to a member', () => {
   it('does nothing to an organization administrator', () => {
     expect(memberActions({ ...LEI, role: 'admin' })).toEqual({
       limit: false,
+      access: false,
       remove: false,
       restore: false,
     });
@@ -177,11 +234,13 @@ describe('what an organization administrator may do to a member', () => {
     // An administrator of the platform: the role in the organization is "member".
     expect(memberActions({ ...LEI, protected: true })).toEqual({
       limit: false,
+      access: false,
       remove: false,
       restore: false,
     });
     expect(memberActions({ ...LEI, protected: false })).toEqual({
       limit: true,
+      access: true,
       remove: true,
       restore: false,
     });
@@ -189,17 +248,20 @@ describe('what an organization administrator may do to a member', () => {
 });
 
 describe('one member, opened in place', () => {
-  it('shows the figures of the period and the month against the member’s own limit', () => {
+  it('shows the four spend figures, the month against the member’s own limit, and the period’s requests', () => {
     answer(DETAIL);
 
-    render(<MemberDetailPanel member={LEI} period="7d" onAction={vi.fn()} />);
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
 
-    expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
+    expect(state.member).toHaveBeenLastCalledWith('u-lei', '30d');
     expect(screen.getByText('Active')).toBeInTheDocument();
     expect(screen.getByText('Joined Oct 9, 2026 · Last sign-in Never')).toBeInTheDocument();
-    expect(card('Spend')).toHaveTextContent('$24.46');
-    expect(card('Spend')).toHaveTextContent('Last 7 days');
+    expect(card('Today')).toHaveTextContent('$3.20');
+    expect(card('Last 7 days')).toHaveTextContent('$24.46');
+    expect(card('All-time')).toHaveTextContent('$310.05');
+    expect(card('All-time')).toHaveTextContent('Since the member joined');
     expect(card('Requests')).toHaveTextContent('982');
+    expect(card('Requests')).toHaveTextContent('Last 30 days');
     expect(card('Tokens')).toHaveTextContent('3.4M');
     expect(card('This month')).toHaveTextContent('$76.70/ $130.00');
     expect(card('This month')).toHaveTextContent('Monthly limit of this member');
@@ -248,6 +310,7 @@ describe('one member, opened in place', () => {
       ...LEI,
       currency: 'CNY' as const,
       cost: 171.2,
+      spent_today: 22.4,
       spent_month: 536.9,
       monthly_limit: 910,
     };
@@ -264,7 +327,7 @@ describe('one member, opened in place', () => {
     render(<MemberDetailPanel member={member} period="7d" onAction={vi.fn()} />);
 
     // The card of the same answer is in yuan, and so is the figure.
-    expect(card('Spend')).toHaveTextContent('¥171.20');
+    expect(card('Today')).toHaveTextContent('¥22.40');
     const spend = screen.getByRole('region', { name: 'Spend per day (CNY)' });
     expect(within(spend).getByTestId('chart')).toHaveAttribute('data-values', '¥24.50 ¥29.75');
     fireEvent.click(within(spend).getByRole('button', { name: 'Table' }));
@@ -317,6 +380,84 @@ describe('one member, opened in place', () => {
     expect(onAction).toHaveBeenNthCalledWith(1, { mode: 'limit', member: fresh });
     expect(onAction).toHaveBeenNthCalledWith(2, { mode: 'remove', member: fresh });
     expect(screen.queryByRole('button', { name: 'Restore member' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Models' }));
+    expect(onAction).toHaveBeenLastCalledWith({ mode: 'models', member: fresh });
+  });
+
+  it('says what the account has: a key, a second factor, a verified email', () => {
+    answer(DETAIL);
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
+
+    expect(
+      screen.getByText('Has an active API key · Two-factor off · Email verified'),
+    ).toBeInTheDocument();
+  });
+
+  it('lists the projects and the keys by name, with what each spent, and no key value', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-18T12:00:00Z'));
+    answer(DETAIL);
+
+    const { container } = render(
+      <MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />,
+    );
+
+    const thesis = screen.getByRole('region', { name: 'Thesis' });
+    expect(thesis).toHaveTextContent('$76.70 this month');
+    expect(thesis).toHaveTextContent('laptop$70.00 this month · last used 27 min ago');
+    // A key without a name, revoked and never used.
+    expect(thesis).toHaveTextContent('Unnamed keyrevoked$6.70 this month · never used');
+    expect(
+      within(screen.getByRole('region', { name: 'Default' })).getByText('No keys.'),
+    ).toBeInTheDocument();
+    // The gateway sends no value and no prefix of a key, and the list has no place for one.
+    expect(container.querySelector('code')).toBeNull();
+    vi.useRealTimers();
+  });
+
+  it('offers to revoke an active key, and hands the key to the page', () => {
+    answer(DETAIL);
+    const onAction = vi.fn();
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={onAction} />);
+
+    // Only the active key: a revoked key stays revoked.
+    expect(screen.getAllByRole('button', { name: /^Revoke / })).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke laptop' }));
+
+    expect(onAction).toHaveBeenCalledWith({
+      mode: 'revoke-key',
+      member: LEI,
+      apiKey: DETAIL.keys?.[0],
+    });
+  });
+
+  it('shows the models that are off, and whose each list is', () => {
+    answer(DETAIL);
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
+
+    const models = screen.getByRole('region', { name: 'Models turned off' });
+    expect(models).toHaveTextContent('By the organization: glm-4.6');
+    expect(models).toHaveTextContent('By the platform administrator: big-model');
+  });
+
+  it('says so when no model is off, and reads a gateway that sends none of the new lists', () => {
+    const older = { ...DETAIL };
+    delete older.account;
+    delete older.projects;
+    delete older.keys;
+    delete older.disabled_models;
+    delete older.platform_disabled_models;
+    answer(older);
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
+
+    expect(screen.getByText('No model is turned off for this member.')).toBeInTheDocument();
+    expect(screen.getByText('Projects and keys')).toBeInTheDocument();
+    expect(screen.queryByText(/API key ·/)).not.toBeInTheDocument();
   });
 
   it('offers to restore a member that the organization removed', () => {
@@ -351,6 +492,18 @@ describe('one member, opened in place', () => {
     expect(
       screen.queryByRole('button', { name: 'Remove from organization' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('gives no control over the keys or the models of an administrator', () => {
+    const admin = { ...LEI, role: 'admin' as const, protected: true };
+    answer({ ...DETAIL, member: admin });
+
+    render(<MemberDetailPanel member={admin} period="30d" onAction={vi.fn()} />);
+
+    expect(screen.queryByRole('button', { name: 'Models' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Revoke / })).not.toBeInTheDocument();
+    // The keys are still listed, by name.
+    expect(screen.getByRole('region', { name: 'Thesis' })).toHaveTextContent('laptop');
   });
 
   it('gives no action on an organization administrator, and says who has them', () => {
@@ -390,10 +543,12 @@ describe('one member, opened in place', () => {
 
     render(<MemberDetailPanel member={LEI} period="7d" onAction={vi.fn()} />);
 
-    expect(card('Spend')).toHaveTextContent('$24.46');
+    expect(card('Today')).toHaveTextContent('$3.20');
     expect(screen.getByRole('button', { name: 'Set monthly limit' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Loading...');
     expect(screen.queryByRole('region', { name: 'Recent requests' })).not.toBeInTheDocument();
+    // What the account has comes with the details, not with the row.
+    expect(screen.queryByText(/API key/)).not.toBeInTheDocument();
   });
 
   it('offers to try again when the details cannot be read', () => {

@@ -3957,13 +3957,41 @@
     "source": "Close",
     "text": "关闭"
   },
+  "organization.member.email_unverified": {
+    "source": "Email not verified",
+    "text": "邮箱未验证"
+  },
+  "organization.member.email_verified": {
+    "source": "Email verified",
+    "text": "邮箱已验证"
+  },
+  "organization.member.has_key": {
+    "source": "Has an active API key",
+    "text": "有可用的 API key"
+  },
   "organization.member.joined": {
     "source": "Joined {date} · Last sign-in {when}",
     "text": "{date} 加入 · 上次登录：{when}"
   },
+  "organization.member.key_last_used": {
+    "source": "last used {when}",
+    "text": "上次使用 {when}"
+  },
+  "organization.member.key_never_used": {
+    "source": "never used",
+    "text": "从未使用"
+  },
+  "organization.member.key_revoked": {
+    "source": "revoked",
+    "text": "已吊销"
+  },
   "organization.member.last_30_days": {
     "source": "Last 30 days",
     "text": "最近 30 天"
+  },
+  "organization.member.last_7_days": {
+    "source": "Last 7 days",
+    "text": "最近 7 天"
   },
   "organization.member.limit_default": {
     "source": "Default limit of the organization",
@@ -3980,6 +4008,26 @@
   "organization.member.limit_own": {
     "source": "Monthly limit of this member",
     "text": "这位成员自己的月额度"
+  },
+  "organization.member.models_off": {
+    "source": "Models turned off",
+    "text": "已关闭的模型"
+  },
+  "organization.member.models_off_none": {
+    "source": "No model is turned off for this member.",
+    "text": "没有对这个成员关闭任何模型。"
+  },
+  "organization.member.models_off_own": {
+    "source": "By the organization:",
+    "text": "机构关闭的："
+  },
+  "organization.member.models_off_platform": {
+    "source": "By the platform administrator:",
+    "text": "平台管理员关闭的："
+  },
+  "organization.member.no_key": {
+    "source": "No active API key",
+    "text": "没有可用的 API key"
   },
   "organization.member.no_requests": {
     "source": "No requests in this period.",
@@ -4001,9 +4049,29 @@
     "source": "Restore member",
     "text": "恢复成员"
   },
+  "organization.member.revoke_key": {
+    "source": "Revoke",
+    "text": "吊销"
+  },
+  "organization.member.revoke_key_named": {
+    "source": "Revoke {key}",
+    "text": "吊销 {key}"
+  },
   "organization.member.set_limit": {
     "source": "Set monthly limit",
     "text": "设置月额度"
+  },
+  "organization.member.set_models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "organization.member.since_joined": {
+    "source": "Since the member joined",
+    "text": "从成员加入算起"
+  },
+  "organization.member.spent_this_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
   },
   "organization.member.suspended_note": {
     "source": "The platform administrator suspended this account, and only the platform administrator can make it active again.",
@@ -4013,9 +4081,33 @@
     "source": "This month",
     "text": "本月"
   },
+  "organization.member.two_factor_off": {
+    "source": "Two-factor off",
+    "text": "未开两步验证"
+  },
+  "organization.member.two_factor_on": {
+    "source": "Two-factor on",
+    "text": "已开两步验证"
+  },
   "organization.members.admin_badge": {
     "source": "Admin",
     "text": "管理员"
+  },
+  "organization.members.alltime": {
+    "source": "All-time",
+    "text": "累计"
+  },
+  "organization.members.card_empty": {
+    "source": "No members right now",
+    "text": "现在没有成员"
+  },
+  "organization.members.card_near": {
+    "source": "Near or over the limit",
+    "text": "接近或超过月额度"
+  },
+  "organization.members.card_today": {
+    "source": "Top spenders today",
+    "text": "今日花费最高"
   },
   "organization.members.empty": {
     "source": "The organization has no members yet.",
@@ -4025,9 +4117,33 @@
     "source": "Last request",
     "text": "最近请求"
   },
+  "organization.members.limit_any": {
+    "source": "Any limit use",
+    "text": "不限额度使用情况"
+  },
+  "organization.members.limit_filter": {
+    "source": "Limit use",
+    "text": "额度使用情况"
+  },
+  "organization.members.limit_near": {
+    "source": "Near the limit (≥80%)",
+    "text": "接近月额度（≥80%）"
+  },
+  "organization.members.limit_over": {
+    "source": "Over the limit",
+    "text": "超过月额度"
+  },
   "organization.members.member": {
     "source": "Member",
     "text": "成员"
+  },
+  "organization.members.min_month": {
+    "source": "Month ≥ {symbol}",
+    "text": "本月 ≥ {symbol}"
+  },
+  "organization.members.min_today": {
+    "source": "Today ≥ {symbol}",
+    "text": "今日 ≥ {symbol}"
   },
   "organization.members.monthly_limit": {
     "source": "Monthly limit",
@@ -4053,9 +4169,45 @@
     "source": "Status",
     "text": "状态"
   },
+  "organization.members.today": {
+    "source": "Today",
+    "text": "今日"
+  },
+  "organization.members.trend_label": {
+    "source": "Spend of the last 7 days",
+    "text": "最近 7 天的花费"
+  },
+  "organization.members.week": {
+    "source": "7 days",
+    "text": "7 天"
+  },
+  "organization.members.week_total": {
+    "source": "Last 7 days: {amount}",
+    "text": "最近 7 天：{amount}"
+  },
   "organization.members.you_badge": {
     "source": "You",
     "text": "你"
+  },
+  "organization.models_dialog.body": {
+    "source": "The models that {member} can use. A model that is not checked is refused for this member.",
+    "text": "{member} 可以使用的模型。没有勾选的模型，这个成员的请求会被拒绝。"
+  },
+  "organization.models_dialog.none": {
+    "source": "The platform offers this member no model.",
+    "text": "平台没有对这个成员开放任何模型。"
+  },
+  "organization.models_dialog.platform_off": {
+    "source": "off by the platform administrator",
+    "text": "平台管理员已关闭"
+  },
+  "organization.models_dialog.saved": {
+    "source": "Models saved.",
+    "text": "模型已保存。"
+  },
+  "organization.models_dialog.title": {
+    "source": "Models",
+    "text": "模型"
   },
   "organization.overview.active_members": {
     "source": "Members with requests",
@@ -4260,6 +4412,26 @@
   "organization.retry": {
     "source": "Retry",
     "text": "重试"
+  },
+  "organization.revoke_dialog.after": {
+    "source": "A revoked key stays revoked. The member can make a new one.",
+    "text": "吊销的 key 不能恢复。成员可以自己新建一个。"
+  },
+  "organization.revoke_dialog.body": {
+    "source": "The API key \"{key}\" of {member} stops working at once. Requests with it are refused.",
+    "text": "{member} 的 API key“{key}”立刻失效，用它发的请求会被拒绝。"
+  },
+  "organization.revoke_dialog.confirm": {
+    "source": "Revoke key",
+    "text": "吊销 key"
+  },
+  "organization.revoke_dialog.done": {
+    "source": "API key revoked.",
+    "text": "API key 已吊销。"
+  },
+  "organization.revoke_dialog.title": {
+    "source": "Revoke API key",
+    "text": "吊销 API key"
   },
   "organization.role.admin": {
     "source": "Administrator",

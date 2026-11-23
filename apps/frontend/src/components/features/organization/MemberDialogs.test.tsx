@@ -4,18 +4,24 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SiteConfigProvider } from '@/components/providers/SiteConfigProvider';
 import { buildTimeSiteConfig } from '@/config/site-config';
-import type { Organization, OrganizationMember } from '@/lib/api/organization';
+import type { MemberKey, Organization, OrganizationMember } from '@/lib/api/organization';
 
 const state = vi.hoisted(() => ({
   setLimit: vi.fn(),
   remove: vi.fn(),
   restore: vi.fn(),
+  models: vi.fn(),
+  setModels: vi.fn(),
+  revokeKey: vi.fn(),
   success: vi.fn(),
 }));
 vi.mock('@/lib/hooks', () => ({
   useSetMemberMonthlyLimit: () => ({ mutateAsync: state.setLimit, isPending: false }),
   useRemoveOrganizationMember: () => ({ mutateAsync: state.remove, isPending: false }),
   useRestoreOrganizationMember: () => ({ mutateAsync: state.restore, isPending: false }),
+  useOrganizationMemberModels: (userId: string) => state.models(userId),
+  useSetMemberModels: () => ({ mutateAsync: state.setModels, isPending: false }),
+  useRevokeMemberKey: () => ({ mutateAsync: state.revokeKey, isPending: false }),
 }));
 vi.mock('@/lib/hooks/useAccountToast', () => ({
   useAccountToast: () => ({ success: state.success, error: vi.fn() }),
@@ -67,6 +73,18 @@ beforeEach(() => {
   state.setLimit.mockReset().mockResolvedValue(undefined);
   state.remove.mockReset().mockResolvedValue(undefined);
   state.restore.mockReset().mockResolvedValue(undefined);
+  state.models.mockReset().mockReturnValue({
+    data: {
+      available: ['deepseek-v3.2', 'glm-4.6', 'qwen-max'],
+      disabled_models: ['glm-4.6'],
+      platform_disabled_models: ['big-model'],
+    },
+    error: null,
+    isLoading: false,
+    refetch: vi.fn(),
+  });
+  state.setModels.mockReset().mockResolvedValue(undefined);
+  state.revokeKey.mockReset().mockResolvedValue(undefined);
   state.success.mockReset();
 });
 afterEach(cleanup);
@@ -500,6 +518,157 @@ describe('restoring a member', () => {
     await waitFor(() => expect(state.restore).toHaveBeenCalledWith('u-lei'));
     await waitFor(() => expect(onClose).toHaveBeenCalled());
     expect(state.success).toHaveBeenCalledWith('Member restored.');
+  });
+});
+
+describe('the models of a member', () => {
+  const box = (dialog: HTMLElement, model: string) =>
+    within(dialog).getByRole('checkbox', { name: new RegExp(`^${model}`) });
+
+  it('reads the models of the member, and checks those that are on', () => {
+    const { dialog } = open({ mode: 'models', member: LEI });
+
+    expect(state.models).toHaveBeenCalledWith('u-lei');
+    expect(dialog).toHaveTextContent(
+      'The models that Lei Wang (lei.wang@example.edu) can use. A model that is not checked is refused for this member.',
+    );
+    expect(box(dialog, 'deepseek-v3.2')).toBeChecked();
+    expect(box(dialog, 'glm-4.6')).not.toBeChecked();
+    expect(box(dialog, 'qwen-max')).toBeChecked();
+  });
+
+  it('shows a model that the platform administrator turned off, and does not let it change', () => {
+    const { dialog } = open({ mode: 'models', member: LEI });
+
+    const locked = box(dialog, 'big-model');
+    expect(locked).not.toBeChecked();
+    expect(locked).toBeDisabled();
+    expect(dialog).toHaveTextContent('off by the platform administrator');
+  });
+
+  it('saves the list of the organization only, and says so', async () => {
+    const { dialog, onClose } = open({ mode: 'models', member: LEI });
+
+    fireEvent.click(box(dialog, 'qwen-max'));
+    fireEvent.click(box(dialog, 'glm-4.6'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    // Never the model of the platform administrator's list.
+    await waitFor(() =>
+      expect(state.setModels).toHaveBeenCalledWith({
+        userId: 'u-lei',
+        disabledModels: ['qwen-max'],
+      }),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('Models saved.');
+  });
+
+  it('writes nothing when the list is left as it was', () => {
+    const { dialog, onClose } = open({ mode: 'models', member: LEI });
+
+    fireEvent.click(box(dialog, 'qwen-max'));
+    fireEvent.click(box(dialog, 'qwen-max'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(state.setModels).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('keeps a model that is off in the list when the platform no longer offers it', () => {
+    state.models.mockReturnValue({
+      data: { available: ['qwen-max'], disabled_models: ['retired'], platform_disabled_models: [] },
+      error: null,
+      isLoading: false,
+      refetch: vi.fn(),
+    });
+
+    const { dialog } = open({ mode: 'models', member: LEI });
+
+    expect(box(dialog, 'retired')).not.toBeChecked();
+    expect(box(dialog, 'retired')).toBeEnabled();
+  });
+
+  it('does not save before the models are read, and offers to read them again', () => {
+    const again = vi.fn();
+    state.models.mockReturnValue({
+      data: undefined,
+      error: new Error('The gateway is not reachable.'),
+      isLoading: false,
+      refetch: again,
+    });
+
+    const { dialog } = open({ mode: 'models', member: LEI });
+
+    expect(within(dialog).getByRole('button', { name: 'Save' })).toBeDisabled();
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('The gateway is not reachable.');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Retry' }));
+    expect(again).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the dialog open with what the gateway said when the save is refused', async () => {
+    state.setModels.mockRejectedValue(new Error('Unknown model: qwen-max'));
+    const { dialog, onClose } = open({ mode: 'models', member: LEI });
+
+    fireEvent.click(box(dialog, 'qwen-max'));
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    expect(await within(dialog).findByText('Unknown model: qwen-max')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+});
+
+describe('revoking an API key of a member', () => {
+  const KEY: MemberKey = {
+    id: 41,
+    name: 'laptop',
+    status: 'active',
+    project_id: 'p-1',
+    project_name: 'Thesis',
+    created_at: '2026-10-10T12:00:00Z',
+    spent_today_usd: 0,
+    spent_month_usd: 0,
+  };
+
+  it('says what the revoking does, and revokes the key only when confirmed', async () => {
+    const { dialog, onClose } = open({ mode: 'revoke-key', member: LEI, apiKey: KEY });
+
+    expect(dialog).toHaveTextContent(
+      'The API key "laptop" of Lei Wang (lei.wang@example.edu) stops working at once.',
+    );
+    expect(dialog).toHaveTextContent('A revoked key stays revoked. The member can make a new one.');
+    expect(state.revokeKey).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke key' }));
+
+    await waitFor(() =>
+      expect(state.revokeKey).toHaveBeenCalledWith({ userId: 'u-lei', keyId: 41 }),
+    );
+    await waitFor(() => expect(onClose).toHaveBeenCalled());
+    expect(state.success).toHaveBeenCalledWith('API key revoked.');
+  });
+
+  it('names a key that has no name, and revokes nothing when it is cancelled', () => {
+    const { dialog, onClose } = open({
+      mode: 'revoke-key',
+      member: LEI,
+      apiKey: { ...KEY, name: null },
+    });
+
+    expect(dialog).toHaveTextContent('The API key "Unnamed key" of');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+
+    expect(state.revokeKey).not.toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('shows the refusal of the gateway in the dialog', async () => {
+    state.revokeKey.mockRejectedValue(new Error('This API key is not active.'));
+    const { dialog, onClose } = open({ mode: 'revoke-key', member: LEI, apiKey: KEY });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Revoke key' }));
+
+    expect(await within(dialog).findByText('This API key is not active.')).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
   });
 });
 

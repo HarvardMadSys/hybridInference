@@ -2,7 +2,12 @@
 import '@testing-library/jest-dom/vitest';
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MemberDetail, MemberList, OrganizationMember } from '@/lib/api/organization';
+import type {
+  MemberDetail,
+  MemberList,
+  MembersSummary,
+  OrganizationMember,
+} from '@/lib/api/organization';
 import { chooseOption } from '@/test-utils/select';
 
 // The chart is loaded with next/dynamic; jsdom cannot lay out recharts anyway.
@@ -13,12 +18,17 @@ vi.mock('next/dynamic', () => ({
 const state = vi.hoisted(() => ({
   organization: vi.fn(),
   members: vi.fn(),
+  summary: vi.fn(),
   member: vi.fn(),
   refetch: vi.fn(),
 }));
 vi.mock('@/lib/hooks', () => ({
   useOrganization: () => state.organization(),
   useOrganizationMembers: (query: unknown) => state.members(query),
+  useOrganizationMembersSummary: () => state.summary(),
+  useOrganizationMemberModels: () => ({ data: undefined, isLoading: true, refetch: vi.fn() }),
+  useSetMemberModels: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useRevokeMemberKey: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useOrganizationMember: (userId: string, period: string) => state.member(userId, period),
   useSetMemberMonthlyLimit: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useRemoveOrganizationMember: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -48,6 +58,13 @@ function member(over: Partial<OrganizationMember>): OrganizationMember {
     total_tokens: 3_420_000,
     cost_usd: 24.46,
     spent_month_usd: 76.7,
+    spent_today_usd: 3.2,
+    spent_7d_usd: 24.46,
+    spent_alltime_usd: 310.05,
+    spend_days: [1, 2, 3, 4, 5, 6, 3.2].map((cost_usd, index) => ({
+      day: `2026-11-${12 + index}`,
+      cost_usd,
+    })),
     monthly_limit_usd: 130,
     monthly_limit_source: 'member',
     ...over,
@@ -94,9 +111,18 @@ const BO = member({
   total_tokens: 0,
   cost_usd: 0,
   spent_month_usd: 0,
+  spent_today_usd: 0,
+  spent_7d_usd: 0,
+  spent_alltime_usd: 0,
+  spend_days: [],
   monthly_limit_usd: null,
   monthly_limit_source: 'none',
 });
+
+const SUMMARY: MembersSummary = {
+  near_limit: { count: 1, top: [member({ spent_month_usd: 117, monthly_limit_usd: 130 })] },
+  top_spenders_today: { count: 2, top: [LEI, member({ user_id: 'u-an', user_name: 'An Li' })] },
+};
 
 function answer(list: MemberList | undefined, more: Record<string, unknown> = {}) {
   state.members.mockReturnValue({
@@ -132,6 +158,7 @@ beforeEach(() => {
     refetch: vi.fn(),
   });
   state.members.mockReset();
+  state.summary.mockReset().mockReturnValue({ data: SUMMARY, isLoading: false });
   state.member.mockReset();
   state.refetch.mockReset();
   state.member.mockImplementation((userId: string) => ({
@@ -147,28 +174,33 @@ afterEach(() => {
 });
 
 describe('the members of the organization', () => {
-  it('asks for the largest spend of the last 7 days first', () => {
+  it('asks for the largest spend of this month first, with no period of its own', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
 
     expect(asked()).toEqual({
-      period: '7d',
       search: undefined,
       status: undefined,
-      sortBy: 'spend',
+      limitState: undefined,
+      minCostToday: undefined,
+      minCostMonth: undefined,
+      currency: 'USD',
+      sortBy: 'month',
       order: 'desc',
       limit: 50,
       offset: 0,
     });
-    expect(screen.getByRole('columnheader', { name: 'Spend' })).toHaveAttribute(
+    // The spend columns are fixed, so the page has no 1d / 7d / 30d switch.
+    expect(screen.queryByRole('group', { name: 'Period' })).not.toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'This month' })).toHaveAttribute(
       'aria-sort',
       'descending',
     );
     expect(screen.getByRole('columnheader', { name: 'Member' })).not.toHaveAttribute('aria-sort');
   });
 
-  it('shows each member with its usage and where its month stands against its limit', () => {
+  it('shows each member with its spend and where its month stands against its limit', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
@@ -178,13 +210,27 @@ describe('the members of the organization', () => {
       'lei.wang@example.edu',
       'Active',
       '27 min ago',
-      '982',
-      '3.4M',
-      '$24.46',
+      '$3.20',
+      '$76.70',
+      '$310.05',
       '59% of $130.00',
     ]) {
       expect(lei).toHaveTextContent(text);
     }
+    // In the order of the Admin list: today, the trend, the month, all time.
+    expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
+      'Member',
+      'Status',
+      'Last request',
+      'Today',
+      '7 days',
+      'This month↓',
+      'All-time',
+      'Monthly limit',
+    ]);
+    // The trend is a line of the last 7 days; the pointer shows their total.
+    const trend = within(lei).getByRole('img', { name: 'Spend of the last 7 days' });
+    expect(trend.closest('td')).toHaveAttribute('title', 'Last 7 days: $24.46');
     expect(lei).not.toHaveTextContent('Admin');
     expect(lei).not.toHaveTextContent('You');
     // The limit is the member's own: a change of the default does not move it.
@@ -221,17 +267,24 @@ describe('the members of the organization', () => {
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
 
     render(<MembersView />);
-    fireEvent.click(screen.getByRole('button', { name: 'Requests' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Today' }));
 
-    expect(asked()).toMatchObject({ sortBy: 'requests', order: 'desc', offset: 0 });
-    expect(screen.getByRole('columnheader', { name: 'Requests' })).toHaveAttribute(
+    expect(asked()).toMatchObject({ sortBy: 'today', order: 'desc', offset: 0 });
+    expect(screen.getByRole('columnheader', { name: 'Today' })).toHaveAttribute(
       'aria-sort',
       'descending',
     );
-    expect(screen.getByRole('columnheader', { name: 'Spend' })).not.toHaveAttribute('aria-sort');
+    expect(screen.getByRole('columnheader', { name: 'This month' })).not.toHaveAttribute(
+      'aria-sort',
+    );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Requests' }));
-    expect(asked()).toMatchObject({ sortBy: 'requests', order: 'asc' });
+    fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+    expect(asked()).toMatchObject({ sortBy: 'today', order: 'asc' });
+
+    fireEvent.click(screen.getByRole('button', { name: '7 days' }));
+    expect(asked()).toMatchObject({ sortBy: 'week', order: 'desc' });
+    fireEvent.click(screen.getByRole('button', { name: 'All-time' }));
+    expect(asked()).toMatchObject({ sortBy: 'alltime', order: 'desc' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Member' }));
     expect(asked()).toMatchObject({ sortBy: 'name', order: 'asc' });
@@ -276,7 +329,7 @@ describe('the members of the organization', () => {
     expect(asked()).toMatchObject({ search: undefined, offset: 50 });
   });
 
-  it('narrows to a status and to a period, each from the first page', () => {
+  it('narrows to a status and to a use of the limit, each from the first page', () => {
     answer({ total: 120, members: [LEI] });
 
     render(<MembersView />);
@@ -286,12 +339,98 @@ describe('the members of the organization', () => {
     expect(asked()).toMatchObject({ status: 'removed', offset: 0 });
 
     fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
+    chooseOption('Limit use', 'Over the limit');
 
-    expect(asked()).toMatchObject({ period: '30d', status: 'removed', offset: 0 });
+    expect(asked()).toMatchObject({ limitState: 'over', status: 'removed', offset: 0 });
 
     chooseOption('Status', 'All statuses');
-    expect(asked()).toMatchObject({ status: undefined });
+    chooseOption('Limit use', 'Any limit use');
+    expect(asked()).toMatchObject({ status: undefined, limitState: undefined });
+  });
+
+  it('narrows to a least spend of today and of the month, in the ledger currency', () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.change(screen.getByLabelText('Today ≥ $'), { target: { value: '2.5' } });
+
+    expect(asked()).toMatchObject({ minCostToday: 2.5, currency: 'USD', offset: 0 });
+
+    fireEvent.change(screen.getByLabelText('Month ≥ $'), { target: { value: '0' } });
+    // Zero is a threshold, not the lack of one.
+    expect(asked()).toMatchObject({ minCostToday: 2.5, minCostMonth: 0 });
+
+    fireEvent.change(screen.getByLabelText('Today ≥ $'), { target: { value: '' } });
+    expect(asked()).toMatchObject({ minCostToday: undefined, minCostMonth: 0 });
+  });
+
+  it('shows the two cards, each with its count and the members that lead it', () => {
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+
+    const near = screen.getByRole('button', { name: /Near or over the limit/ });
+    expect(near).toHaveTextContent('1');
+    // The share of the limit that the month used.
+    expect(near).toHaveTextContent('Lei Wang90%');
+    const spenders = screen.getByRole('button', { name: /Top spenders today/ });
+    expect(spenders).toHaveTextContent('2');
+    expect(spenders).toHaveTextContent('Lei Wang$3.20');
+    expect(spenders).toHaveTextContent('An Li');
+    expect(near).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('opens the list of a card: its filter and its order, and nothing else', async () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    chooseOption('Status', 'Removed');
+    fireEvent.change(screen.getByLabelText('Today ≥ $'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: /Near or over the limit/ }));
+
+    expect(asked()).toMatchObject({
+      limitState: 'near',
+      sortBy: 'limit_use',
+      order: 'desc',
+      status: undefined,
+      minCostToday: undefined,
+      offset: 0,
+    });
+    expect(screen.getByRole('button', { name: /Near or over the limit/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /Top spenders today/ }));
+
+    expect(asked()).toMatchObject({ limitState: undefined, sortBy: 'today', order: 'desc' });
+    expect(screen.getByRole('button', { name: /Top spenders today/ })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    expect(screen.getByRole('button', { name: /Near or over the limit/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+
+    // Another order is no longer the list of the card.
+    fireEvent.click(screen.getByRole('button', { name: 'Member' }));
+    expect(screen.getByRole('button', { name: /Top spenders today/ })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  });
+
+  it('shows a dash on the cards while they are read, and the list all the same', () => {
+    state.summary.mockReturnValue({ data: undefined, isLoading: true });
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+
+    expect(screen.getByRole('button', { name: /Near or over the limit/ })).toHaveTextContent('—');
+    expect(rowOf('Lei Wang')).toBeInTheDocument();
   });
 
   it('pages through a long list and says where the page is', () => {
@@ -330,7 +469,7 @@ describe('the members of the organization', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Lei Wang' }));
 
     const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
-    expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
+    expect(state.member).toHaveBeenLastCalledWith('u-lei', '30d');
     expect(panel).toHaveTextContent('lei.wang@example.edu');
     expect(
       within(panel).getByText('Joined Oct 9, 2026 · Last sign-in 3 h ago'),
@@ -375,7 +514,7 @@ describe('the members of the organization', () => {
     fireEvent.click(rowOf('Lei Wang'));
     expect(screen.getAllByRole('dialog')).toHaveLength(1);
     expect(screen.getByRole('dialog', { name: 'Lei Wang' })).toBeInTheDocument();
-    expect(state.member).toHaveBeenLastCalledWith('u-lei', '7d');
+    expect(state.member).toHaveBeenLastCalledWith('u-lei', '30d');
   });
 
   it('opens the confirmation of the chosen action over the panel', () => {
@@ -514,7 +653,10 @@ describe('the members of the organization', () => {
           ...LEI,
           currency: 'CNY',
           cost: 164.4,
+          spent_today: 21.5,
+          spent_7d: 164.4,
           spent_month: 515.5,
+          spent_alltime: 2083.7,
           monthly_limit: 900,
         } as OrganizationMember,
       ],
@@ -523,10 +665,13 @@ describe('the members of the organization', () => {
     render(<MembersView />);
 
     const lei = rowOf('Lei Wang');
-    expect(lei).toHaveTextContent('¥164.40');
+    expect(lei).toHaveTextContent('¥21.50');
+    expect(lei).toHaveTextContent('¥515.50');
+    expect(lei).toHaveTextContent('¥2,083.70');
     expect(lei).toHaveTextContent('57% of ¥900.00');
     // Never the USD equivalents under a yuan sign.
-    expect(lei).not.toHaveTextContent('24.46');
+    expect(lei).not.toHaveTextContent('3.20');
+    expect(lei).not.toHaveTextContent('310.05');
     expect(lei).not.toHaveTextContent('130');
   });
 });

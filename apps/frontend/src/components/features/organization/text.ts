@@ -172,7 +172,8 @@ export function limitUse(
   if (limit == null || spent == null) return null;
   if (limit <= 0) return { percent: 100, tone: 'over' };
   const percent = Math.round((spent / limit) * 100);
-  return { percent, tone: percent >= 100 ? 'over' : percent >= 90 ? 'near' : 'ok' };
+  // Near from 80%, as the list filter and the card above it count it.
+  return { percent, tone: percent >= 100 ? 'over' : percent >= 80 ? 'near' : 'ok' };
 }
 
 /** The change of a figure against the period before, as a signed percentage; null without a base. */

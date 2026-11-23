@@ -34,6 +34,9 @@ describe('the bar of a limit', () => {
       bar(render(<LimitBar spent={spent} limit={100} />).container).fill;
 
     expect(fillOf(50)).toHaveClass('bg-blue-500');
+    // Near from 80%, as the filter of the member list counts it.
+    expect(fillOf(79)).toHaveClass('bg-blue-500');
+    expect(fillOf(80)).toHaveClass('bg-amber-500');
     expect(fillOf(90)).toHaveClass('bg-amber-500');
     expect(fillOf(100)).toHaveClass('bg-red-500');
   });

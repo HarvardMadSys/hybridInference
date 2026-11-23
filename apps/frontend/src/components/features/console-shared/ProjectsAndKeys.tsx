@@ -48,8 +48,15 @@ function KeyLine({ entry }: { entry: KeyEntry }) {
           <span className="ml-1.5 text-[11px] text-gray-400">{entry.statusNote}</span>
         )}
       </span>
-      <span className="tabular-nums text-gray-500">{entry.figures}</span>
-      {entry.action}
+      {entry.action === undefined ? (
+        <span className="tabular-nums text-gray-500">{entry.figures}</span>
+      ) : (
+        // The figures and the control stay together at the end of the line.
+        <span className="flex items-baseline gap-x-2">
+          <span className="tabular-nums text-gray-500">{entry.figures}</span>
+          {entry.action}
+        </span>
+      )}
     </li>
   );
 }

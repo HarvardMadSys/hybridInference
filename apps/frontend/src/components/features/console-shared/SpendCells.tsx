@@ -26,6 +26,7 @@ export function SpendCells({
   today,
   trend,
   trendLabel,
+  trendTitle,
   month,
   alltime,
   shows = () => true,
@@ -36,6 +37,8 @@ export function SpendCells({
   /** One value for each of the last days, the oldest first. */
   trend: Array<number | null>;
   trendLabel: string;
+  /** What the pointer shows over the trend: its total, for a list that has it. */
+  trendTitle?: string;
   month: SpendFigure;
   alltime: SpendFigure;
   shows?: (column: SpendColumn) => boolean;
@@ -51,7 +54,7 @@ export function SpendCells({
         </td>
       )}
       {shows('trend') && (
-        <td className={`px-2 ${cellClass('trend')}`}>
+        <td className={`px-2 ${cellClass('trend')}`} title={trendTitle}>
           <Sparkline values={trend} label={trendLabel} />
         </td>
       )}
