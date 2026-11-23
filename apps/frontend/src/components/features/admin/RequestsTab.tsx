@@ -31,6 +31,7 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { Select } from '@/components/ui/Select';
+import { RequestVolumeCard } from '@/components/features/console-shared/RequestVolumeCard';
 import { useConfirmAction } from './confirm/useConfirmAction';
 import { FoldedText } from './requestContent';
 import { BATCH_REQUESTS_PATH } from './batchRoutes';
@@ -168,12 +169,6 @@ function applyOffsetJump(
   const p = Math.min(Math.max(1, n), totalPages);
   setOffset((p - 1) * pageSize);
   clearInput();
-}
-
-function formatLatency(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
 }
 
 function formatTokens(n: number): string {
@@ -512,35 +507,27 @@ function RequestMetricsCard({
   const batchRequests = metric.batch_requests ?? 0;
 
   return (
-    <div className="rounded-xl border border-gray-200 bg-white p-4 shadow-sm">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[12px] font-medium text-gray-500">{metric.label}</div>
-          <div className="mt-1 text-[24px] font-bold tabular-nums text-gray-900">
-            {metric.total_requests.toLocaleString()}
+    <RequestVolumeCard
+      label={metric.label}
+      total={metric.total_requests}
+      ok={metric.success_requests}
+      failed={metric.error_requests}
+      averageLatencyMs={metric.avg_latency_ms}
+      afterFailed={
+        disconnects > 0 && (
+          <div title="Client disconnects: the caller hung up mid-stream (status 499 with the gateway's own cancellation marker). Counted apart from errors — not a service fault.">
+            <span className="text-amber-600">{disconnects.toLocaleString()}</span> disc
           </div>
-          <div className="text-[11px] text-gray-400">requests</div>
-        </div>
-        <div className="text-right text-[11px] text-gray-400">
-          <div>
-            <span className="text-emerald-600">{metric.success_requests.toLocaleString()}</span> ok
+        )
+      }
+      afterAverage={
+        batchRequests > 0 && (
+          <div title="Requests the batch worker ran in this window. Waits while a model was queued for capacity are left out. They are not in the figures above; each bar stacks them on top, in violet.">
+            <span className="text-violet-600">{batchRequests.toLocaleString()}</span> batch
           </div>
-          <div>
-            <span className="text-red-500">{metric.error_requests.toLocaleString()}</span> err
-          </div>
-          {disconnects > 0 && (
-            <div title="Client disconnects: the caller hung up mid-stream (status 499 with the gateway's own cancellation marker). Counted apart from errors — not a service fault.">
-              <span className="text-amber-600">{disconnects.toLocaleString()}</span> disc
-            </div>
-          )}
-          <div>{formatLatency(metric.avg_latency_ms)} avg</div>
-          {batchRequests > 0 && (
-            <div title="Requests the batch worker ran in this window. Waits while a model was queued for capacity are left out. They are not in the figures above; each bar stacks them on top, in violet.">
-              <span className="text-violet-600">{batchRequests.toLocaleString()}</span> batch
-            </div>
-          )}
-        </div>
-      </div>
+        )
+      }
+    >
       <div className="mt-4 flex h-16 items-end gap-px overflow-hidden rounded-md bg-gray-50 px-1 py-1">
         {metric.buckets.map((bucket) => {
           const batch = bucket.batch_request_count ?? 0;
@@ -614,7 +601,7 @@ function RequestMetricsCard({
           );
         })}
       </div>
-    </div>
+    </RequestVolumeCard>
   );
 }
 

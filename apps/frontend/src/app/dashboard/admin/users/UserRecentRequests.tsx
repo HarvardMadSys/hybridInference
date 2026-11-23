@@ -12,15 +12,10 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { FoldedText } from '@/components/features/admin/requestContent';
+import { formatLatency } from '@/components/features/console-shared/format';
 import { relTime } from './UserDetailPanel';
 
 const PAGE_SIZE = 25;
-
-function formatLatency(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
 
 interface RequestContentState {
   prompt: string | null;

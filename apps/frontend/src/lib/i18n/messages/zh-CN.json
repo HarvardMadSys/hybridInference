@@ -2583,6 +2583,22 @@
     "source": "Unnamed key",
     "text": "未命名的 key"
   },
+  "console.volume.average": {
+    "source": "avg",
+    "text": "平均"
+  },
+  "console.volume.failed": {
+    "source": "err",
+    "text": "失败"
+  },
+  "console.volume.ok": {
+    "source": "ok",
+    "text": "成功"
+  },
+  "console.volume.requests": {
+    "source": "requests",
+    "text": "次请求"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："

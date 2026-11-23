@@ -9,13 +9,8 @@ import {
 } from '@/lib/api/admin';
 import { ProviderPerformanceTab } from '@/app/dashboard/admin/ProviderPerformanceTab';
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
+import { formatLatency } from '@/components/features/console-shared/format';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
-
-function formatLatency(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
 
 function formatTokens(n: number): string {
   return Math.round(n).toLocaleString();
