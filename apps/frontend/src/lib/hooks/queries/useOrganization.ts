@@ -1,8 +1,11 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  getMemberModels,
   getOrganization,
   getOrganizationMember,
+  getOrganizationMembersSummary,
   getOrganizationOverview,
+  getOrganizationRequestVolume,
   listOrganizationAudit,
   listOrganizationMemberUsage,
   listOrganizationMembers,
@@ -10,7 +13,9 @@ import {
   listOrganizationRequests,
   removeOrganizationMember,
   restoreOrganizationMember,
+  revokeMemberKey,
   setDefaultMemberLimit,
+  setMemberModels,
   setMemberMonthlyLimit,
   type AuditQuery,
   type MemberQuery,
@@ -44,10 +49,10 @@ export function useOrganization(enabled = true) {
   });
 }
 
-export function useOrganizationOverview(period: OrganizationPeriod) {
+export function useOrganizationOverview(period: OrganizationPeriod, granularity?: 'hour' | 'day') {
   return useQuery({
-    queryKey: useKey('overview', period),
-    queryFn: () => getOrganizationOverview(period),
+    queryKey: useKey('overview', period, granularity ?? null),
+    queryFn: () => getOrganizationOverview(period, granularity),
     staleTime: THIRTY_S,
     placeholderData: keepPreviousData,
   });
@@ -60,6 +65,32 @@ export function useOrganizationMembers(params: MemberQuery) {
     staleTime: THIRTY_S,
     // A new page, search or order keeps the rows on screen until its answer arrives.
     placeholderData: keepPreviousData,
+  });
+}
+
+export function useOrganizationMembersSummary() {
+  return useQuery({
+    queryKey: useKey('members-summary'),
+    queryFn: getOrganizationMembersSummary,
+    staleTime: THIRTY_S,
+  });
+}
+
+/** The models of one member; asked for when its dialog opens. */
+export function useOrganizationMemberModels(userId: string | null) {
+  return useQuery({
+    queryKey: useKey('member-models', userId),
+    queryFn: () => getMemberModels(userId as string),
+    staleTime: THIRTY_S,
+    enabled: userId !== null,
+  });
+}
+
+export function useOrganizationRequestVolume() {
+  return useQuery({
+    queryKey: useKey('volume'),
+    queryFn: getOrganizationRequestVolume,
+    staleTime: THIRTY_S,
   });
 }
 
@@ -129,6 +160,19 @@ export function useSetMemberMonthlyLimit() {
 
 export function useSetDefaultMemberLimit() {
   return useOrganizationWrite((limit: MonthlyLimit) => setDefaultMemberLimit(limit));
+}
+
+export function useSetMemberModels() {
+  return useOrganizationWrite(
+    ({ userId, disabledModels }: { userId: string; disabledModels: string[] }) =>
+      setMemberModels(userId, disabledModels),
+  );
+}
+
+export function useRevokeMemberKey() {
+  return useOrganizationWrite(({ userId, keyId }: { userId: string; keyId: number }) =>
+    revokeMemberKey(userId, keyId),
+  );
 }
 
 export function useRemoveOrganizationMember() {

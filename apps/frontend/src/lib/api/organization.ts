@@ -86,6 +86,13 @@ export interface Organization extends Money {
  */
 export type MemberLimitSource = 'member' | 'default' | 'platform' | 'none';
 
+/** What a member spent on one UTC day (`YYYY-MM-DD`). */
+export interface SpendDay extends Money {
+  day: string;
+  cost_usd: number;
+  cost?: number | null;
+}
+
 export interface OrganizationMember extends Money {
   user_id: string;
   email?: string | null;
@@ -110,6 +117,19 @@ export interface OrganizationMember extends Money {
   cost?: number | null;
   spent_month_usd: number;
   spent_month?: number | null;
+  /**
+   * Today, the last 7 days and all time, from the day the account became a
+   * member. They are the same for every period. Absent from a gateway that
+   * does not send them yet.
+   */
+  spent_today_usd?: number;
+  spent_today?: number | null;
+  spent_7d_usd?: number;
+  spent_7d?: number | null;
+  spent_alltime_usd?: number;
+  spent_alltime?: number | null;
+  /** The spend of each of the last 7 UTC days, the oldest first, with today. */
+  spend_days?: SpendDay[];
   /** The limit that applies, and which one it is. */
   monthly_limit_usd?: number | null;
   monthly_limit?: number | null;
@@ -146,6 +166,9 @@ export interface ModelUsage extends Money {
   errors: number;
   prompt_tokens: number;
   completion_tokens: number;
+  /** The input tokens that the provider read from its cache. */
+  cached_tokens?: number;
+  total_tokens?: number;
   cost_usd: number;
   cost?: number | null;
 }
@@ -173,6 +196,41 @@ export interface OrganizationOverview extends Money {
   monthly_limit?: number | null;
   series: UsagePoint[];
   models: ModelUsage[];
+  /** The members with the highest spend in the period, the highest first. */
+  top_members?: OrganizationMember[];
+}
+
+/** How many members a card above the list stands for, and the first of them. */
+export interface MemberSummaryCard {
+  count: number;
+  top: OrganizationMember[];
+}
+
+/**
+ * The two cards above the member list: the members at 80% or more of the
+ * monthly limit that applies to them, the highest share first, and the members
+ * that spent anything today, the highest spend first.
+ */
+export interface MembersSummary {
+  near_limit: MemberSummaryCard;
+  top_spenders_today: MemberSummaryCard;
+}
+
+/** The requests of one window that ends now. A request failed with a status of 400 or more. */
+export interface RequestVolumeWindow {
+  requests: number;
+  ok: number;
+  failed: number;
+  /** `null` when no request of the window recorded a latency. */
+  avg_latency_ms?: number | null;
+}
+
+/** The requests of the members in the last hour, day, week and month (30 days). */
+export interface RequestVolume {
+  hour: RequestVolumeWindow;
+  day: RequestVolumeWindow;
+  week: RequestVolumeWindow;
+  month: RequestVolumeWindow;
 }
 
 /** One request of a member. The gateway never sends its content, nor a key's value. */
@@ -198,15 +256,71 @@ export interface RequestPage {
   next_before?: string | null;
 }
 
+/** What the account of a member has: an active API key, a second factor, a verified email. */
+export interface MemberAccount {
+  has_key: boolean;
+  two_factor_enabled: boolean;
+  email_verified: boolean;
+}
+
+/** A project of a member: its name and what it spent, never its budgets or its models. */
+export interface MemberProject extends Money {
+  id: string;
+  name: string;
+  is_default: boolean;
+  created_at: string;
+  spent_today_usd: number;
+  spent_today?: number | null;
+  spent_month_usd: number;
+  spent_month?: number | null;
+}
+
+/**
+ * An API key of a member by its name. The gateway sends no value, no prefix
+ * and no limit of a key; `id` names the key to `revokeMemberKey`.
+ */
+export interface MemberKey extends Money {
+  id: number;
+  name?: string | null;
+  status: string;
+  project_id?: string | null;
+  project_name?: string | null;
+  created_at: string;
+  last_used_at?: string | null;
+  spent_today_usd: number;
+  spent_today?: number | null;
+  spent_month_usd: number;
+  spent_month?: number | null;
+}
+
 export interface MemberDetail {
   member: OrganizationMember;
+  /** Absent from a gateway that does not send it yet, as the four lists below. */
+  account?: MemberAccount;
   /** The member's spend for each of the last 30 days. */
   days: UsagePoint[];
   models: ModelUsage[];
   requests: OrganizationRequest[];
+  projects?: MemberProject[];
+  keys?: MemberKey[];
+  /** The models the organization turned off for the member. */
+  disabled_models?: string[];
+  /** The models the platform administrator turned off: to read, not to change. */
+  platform_disabled_models?: string[];
 }
 
-export type AuditCategory = 'membership' | 'limits' | 'organization';
+/**
+ * The models of one member, as its organization sets them. `available` are
+ * the models the platform lets the member use: the ones an organization can
+ * turn off.
+ */
+export interface MemberModels {
+  available: string[];
+  disabled_models: string[];
+  platform_disabled_models: string[];
+}
+
+export type AuditCategory = 'membership' | 'limits' | 'access' | 'organization';
 export type AuditActor = 'platform_administrator' | 'member' | 'system';
 
 export interface AuditEntry {
@@ -237,15 +351,30 @@ export type MemberSort =
   | 'requests'
   | 'tokens'
   | 'spend'
+  | 'today'
+  | 'week'
   | 'month'
+  | 'alltime'
   /** The share of the monthly limit that the spend of this month uses; no limit is last. */
   | 'limit_use'
   | 'joined';
 
+/** How far into its monthly limit a member is: 80% of it or more, or all of it or more. */
+export type MemberLimitState = 'near' | 'over';
+
 export interface MemberQuery {
-  period: OrganizationPeriod;
+  /** The period of the requests and the tokens of a row; the spend columns do not follow it. */
+  period?: OrganizationPeriod;
   search?: string;
   status?: MemberStatusFilter;
+  limitState?: MemberLimitState;
+  /**
+   * The least spend of today and of this month, in `currency`. The gateway
+   * refuses (409) a threshold in a currency that is not the ledger's.
+   */
+  minCostToday?: number;
+  minCostMonth?: number;
+  currency?: Currency;
   sortBy?: MemberSort;
   order?: 'asc' | 'desc';
   limit?: number;
@@ -266,6 +395,8 @@ export interface AuditQuery {
   /** Every row when left out. */
   period?: OrganizationPeriod;
   category?: AuditCategory;
+  /** The rows that have this member as target or as actor. */
+  member?: string;
   search?: string;
   limit?: number;
   offset?: number;
@@ -320,8 +451,16 @@ export function getOrganization(): Promise<Organization> {
   return read<Organization>('');
 }
 
-export function getOrganizationOverview(period: OrganizationPeriod): Promise<OrganizationOverview> {
-  return read<OrganizationOverview>(`/overview${query({ period })}`);
+/**
+ * The usage of a period. `granularity` chooses the points of the series; the
+ * gateway has an hourly series for `1d` and `7d` only, and answers 400 for
+ * one of `30d`.
+ */
+export function getOrganizationOverview(
+  period: OrganizationPeriod,
+  granularity?: 'hour' | 'day',
+): Promise<OrganizationOverview> {
+  return read<OrganizationOverview>(`/overview${query({ period, granularity })}`);
 }
 
 export function listOrganizationMembers(params: MemberQuery): Promise<MemberList> {
@@ -330,12 +469,25 @@ export function listOrganizationMembers(params: MemberQuery): Promise<MemberList
       period: params.period,
       search: params.search,
       status: params.status,
+      limit_state: params.limitState,
+      min_cost_today: params.minCostToday,
+      min_cost_month: params.minCostMonth,
+      // Only with a threshold: the rest of the list does not depend on it.
+      currency:
+        params.minCostToday !== undefined || params.minCostMonth !== undefined
+          ? params.currency
+          : undefined,
       sort_by: params.sortBy,
       order: params.order,
       limit: params.limit,
       offset: params.offset,
     })}`,
   );
+}
+
+/** The two cards above the member list. */
+export function getOrganizationMembersSummary(): Promise<MembersSummary> {
+  return read<MembersSummary>('/members/summary');
 }
 
 export function getOrganizationMember(
@@ -387,6 +539,7 @@ export function listOrganizationAudit(params: AuditQuery): Promise<AuditPage> {
     `/audit-log${query({
       period: params.period,
       category: params.category,
+      member: params.member,
       search: params.search,
       limit: params.limit,
       offset: params.offset,
@@ -402,6 +555,34 @@ export async function setMemberMonthlyLimit(userId: string, limit: MonthlyLimit)
 /** Set the default monthly limit of a member, or clear it. */
 export function setDefaultMemberLimit(limit: MonthlyLimit): Promise<Organization> {
   return write<Organization>('PUT', '/default-member-limit', limitBody(limit));
+}
+
+/** The requests of the members in the last hour, day, week and month. */
+export function getOrganizationRequestVolume(): Promise<RequestVolume> {
+  return read<RequestVolume>('/usage/volume');
+}
+
+/** The models of one member: those it can use, and those that are off for it. */
+export function getMemberModels(userId: string): Promise<MemberModels> {
+  return read<MemberModels>(`${member(userId)}/models`);
+}
+
+/**
+ * Replace the models the organization turns off for one member; an empty list
+ * turns none off. The list of the platform administrator is not touched.
+ */
+export function setMemberModels(userId: string, disabledModels: string[]): Promise<MemberModels> {
+  return write<MemberModels>('PUT', `${member(userId)}/models`, {
+    disabled_models: disabledModels,
+  });
+}
+
+/** Revoke one API key of a member. A revoked key stays revoked. */
+export async function revokeMemberKey(userId: string, keyId: number): Promise<void> {
+  await write<{ message: string }>(
+    'POST',
+    `${member(userId)}/keys/${encodeURIComponent(String(keyId))}/revoke`,
+  );
 }
 
 /** Suspend a member's account: its sessions end and its API keys are revoked. */

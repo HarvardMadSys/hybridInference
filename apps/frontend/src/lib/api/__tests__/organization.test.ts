@@ -2,9 +2,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { setAccessToken } from '../client';
 import {
+  getMemberModels,
   getOrganization,
   getOrganizationMember,
+  getOrganizationMembersSummary,
   getOrganizationOverview,
+  getOrganizationRequestVolume,
   listOrganizationAudit,
   listOrganizationMemberUsage,
   listOrganizationMembers,
@@ -12,7 +15,9 @@ import {
   listOrganizationRequests,
   removeOrganizationMember,
   restoreOrganizationMember,
+  revokeMemberKey,
   setDefaultMemberLimit,
+  setMemberModels,
   setMemberMonthlyLimit,
 } from '../organization';
 
@@ -247,6 +252,104 @@ describe('removing and restoring a member', () => {
     await expect(removeOrganizationMember('u-1')).rejects.toMatchObject({
       statusCode: 409,
       message: 'An administrator cannot be removed here.',
+    });
+  });
+});
+
+describe('the figures of the members', () => {
+  it('sends the limit state and the thresholds with their currency', async () => {
+    respond({ total: 0, members: [] });
+
+    await listOrganizationMembers({
+      limitState: 'near',
+      minCostToday: 2.5,
+      minCostMonth: 0,
+      currency: 'CNY',
+      sortBy: 'limit_use',
+      order: 'desc',
+    });
+
+    expect(Object.fromEntries(sent().query)).toEqual({
+      limit_state: 'near',
+      min_cost_today: '2.5',
+      // Zero is a threshold too, and is not left out.
+      min_cost_month: '0',
+      currency: 'CNY',
+      sort_by: 'limit_use',
+      order: 'desc',
+    });
+  });
+
+  it('names no currency for a list without a threshold', async () => {
+    respond({ total: 0, members: [] });
+
+    await listOrganizationMembers({ currency: 'USD', sortBy: 'today', order: 'desc' });
+
+    expect(Object.fromEntries(sent().query)).toEqual({ sort_by: 'today', order: 'desc' });
+  });
+
+  it('asks for the two cards, the request volume and an hourly series', async () => {
+    respond({ near_limit: { count: 0, top: [] }, top_spenders_today: { count: 0, top: [] } });
+    await getOrganizationMembersSummary();
+    respond({ hour: {}, day: {}, week: {}, month: {} });
+    await getOrganizationRequestVolume();
+    respond({ period: '7d', series: [], models: [] });
+    await getOrganizationOverview('7d', 'hour');
+
+    expect(sent().path).toBe('/user/organization/members/summary');
+    expect(sent(1).path).toBe('/user/organization/usage/volume');
+    expect(Object.fromEntries(sent(2).query)).toEqual({ period: '7d', granularity: 'hour' });
+  });
+
+  it('narrows the audit log to one member', async () => {
+    respond({ total: 0, entries: [] });
+
+    await listOrganizationAudit({ category: 'access', member: 'u-3' });
+
+    expect(Object.fromEntries(sent().query)).toEqual({ category: 'access', member: 'u-3' });
+  });
+});
+
+describe('the models and the keys of a member', () => {
+  it('reads the models of a member, and replaces the list of the organization', async () => {
+    const answer = { available: ['a', 'b'], disabled_models: ['b'], platform_disabled_models: [] };
+    respond(answer);
+    await getMemberModels('u/3');
+    respond(answer);
+    const saved = await setMemberModels('u-3', ['b']);
+
+    expect(sent().path).toBe('/user/organization/members/u%2F3/models');
+    expect(sent().options.method).toBeUndefined();
+    expect(sent(1).path).toBe('/user/organization/members/u-3/models');
+    expect(sent(1).options.method).toBe('PUT');
+    expect(sent(1).body).toEqual({ disabled_models: ['b'] });
+    expect(saved).toEqual(answer);
+  });
+
+  it('turns no model off with an empty list, which it sends', async () => {
+    respond({ available: [], disabled_models: [], platform_disabled_models: [] });
+
+    await setMemberModels('u-3', []);
+
+    expect(sent().body).toEqual({ disabled_models: [] });
+  });
+
+  it('revokes one key by its id, with no body', async () => {
+    respond({ message: 'API key revoked.' });
+
+    await revokeMemberKey('u-3', 42);
+
+    expect(sent().path).toBe('/user/organization/members/u-3/keys/42/revoke');
+    expect(sent().options.method).toBe('POST');
+    expect(sent().options.body).toBeUndefined();
+  });
+
+  it('passes on why a key was not revoked', async () => {
+    respond({ error: { message: 'This API key is not active.', code: 409 } }, 409);
+
+    await expect(revokeMemberKey('u-3', 42)).rejects.toMatchObject({
+      statusCode: 409,
+      message: 'This API key is not active.',
     });
   });
 });
