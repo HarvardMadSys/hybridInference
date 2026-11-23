@@ -7,7 +7,7 @@ import {
   discoverSso,
   getPendingSsoLink,
   linkSsoIdentity,
-  listSsoIdentities,
+  readSsoIdentities,
   ssoErrorCode,
   ssoReauthPurpose,
   ssoRefusalMessage,
@@ -247,10 +247,23 @@ describe('the identities of the signed-in account', () => {
     available: true,
   };
 
-  it('are listed', async () => {
+  it('are read with the provider that linking would leave as the only way in', async () => {
+    const provider = { id: 'example-univ', name: 'Example University' };
+    respond({ identities: [identity], sso_only_provider: provider });
+    await expect(readSsoIdentities()).resolves.toEqual({
+      identities: [identity],
+      sso_only_provider: provider,
+    });
+
+    respond({ identities: [], sso_only_provider: null });
+    await expect(readSsoIdentities()).resolves.toMatchObject({ sso_only_provider: null });
+    expect(sent().url).toMatch(/\/auth\/sso\/identities$/);
+  });
+
+  it('are read as the signed-in account, also from a gateway that says nothing of a link', async () => {
     respond({ identities: [identity] });
 
-    await expect(listSsoIdentities()).resolves.toEqual([identity]);
+    await expect(readSsoIdentities()).resolves.toEqual({ identities: [identity] });
 
     expect(sent().url).toMatch(/\/auth\/sso\/identities$/);
     expect(authorization()).toBe(`Bearer ${accessToken}`);

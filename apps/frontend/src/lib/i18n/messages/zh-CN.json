@@ -927,6 +927,10 @@
     "source": "An account already exists for this email. Sign in the way you usually do to connect your {name} account.",
     "text": "这个邮箱已有账号。请用原来的方式登录一次，完成和 {name} 账号的关联。"
   },
+  "auth.sso.link_sso_only": {
+    "source": "After you connect it, this account signs in through {name} only. Its password is removed.",
+    "text": "关联后，这个账号只能通过 {name} 登录，现有密码会被删除。"
+  },
   "auth.sso.link_title": {
     "source": "Connect your {name} account?",
     "text": "关联 {name} 账号？"
@@ -934,6 +938,10 @@
   "auth.sso.linked_toast": {
     "source": "Single sign-on connected.",
     "text": "SSO 账号已关联。"
+  },
+  "auth.sso.must_sign_in": {
+    "source": "Accounts of {name} must sign in through single sign-on.",
+    "text": "{name} 的账号需要通过 SSO 登录。"
   },
   "auth.sso.not_available": {
     "source": "Your organization has not set up single sign-on here. Use another sign-in method.",

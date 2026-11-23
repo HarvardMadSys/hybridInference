@@ -13,7 +13,7 @@ import type { AuthAppearance } from '@/site-ui/contract';
 let authState = {
   loading: false,
   isAuthenticated: true,
-  user: null as { id: string; email: string | null; role: string } | null,
+  user: null as { id: string; email: string | null; role: string; is_admin?: boolean } | null,
 };
 
 let query = new URLSearchParams();
@@ -418,6 +418,119 @@ describe('the single sign-on entry', () => {
   });
 });
 
+describe('a password that is refused for an address of an organization', () => {
+  const refused = (details?: Record<string, unknown>) =>
+    new APIError('INVALID_CREDENTIALS', 'Invalid email or password', 401, details);
+  const organization = { sso_sign_in: { provider_name: 'Example University' } };
+  const line = () =>
+    screen.queryByText('Accounts of Example University must sign in through single sign-on.');
+  const action = () =>
+    within(line()!.parentElement!).getByRole('button', { name: 'Log in with SSO' });
+
+  function signIn(identifier: string) {
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
+      target: { value: identifier },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'Old-Secret-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+  }
+
+  beforeEach(() => {
+    authState.isAuthenticated = false;
+    authState.user = null;
+    loginMock.mockReset();
+    sso.discoverSso.mockReset();
+  });
+
+  it('says under the error that such accounts sign in through single sign-on', async () => {
+    loginMock.mockRejectedValue(refused(organization));
+    renderLogin();
+    signIn('alice@example.edu');
+
+    await waitFor(() => expect(line()).toBeInTheDocument());
+    // The usual error is still there, and comes first.
+    const error = screen.getByRole('alert');
+    expect(error).toHaveTextContent(/password/i);
+    expect(error.compareDocumentPosition(line()!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(action()).toBeEnabled();
+  });
+
+  it('starts the single sign-on for the address that was typed, without asking for it again', async () => {
+    query = new URLSearchParams({ next: '/dashboard/keys' });
+    loginMock.mockRejectedValue(refused(organization));
+    sso.discoverSso.mockResolvedValue('https://idp.example.edu/authorize?state=abc');
+    renderLogin();
+    signIn('alice@example.edu');
+    await waitFor(() => expect(line()).toBeInTheDocument());
+
+    fireEvent.click(action());
+
+    await waitFor(() =>
+      expect(navigateToMock).toHaveBeenCalledWith('https://idp.example.edu/authorize?state=abc'),
+    );
+    expect(sso.discoverSso).toHaveBeenCalledExactlyOnceWith('alice@example.edu', '/dashboard/keys');
+    // The step that asks for an address was never shown.
+    expect(screen.queryByLabelText('Work or school email')).not.toBeInTheDocument();
+  });
+
+  it('says why on the single sign-on step, with the address filled in, when it cannot start', async () => {
+    loginMock.mockRejectedValue(refused(organization));
+    sso.discoverSso.mockResolvedValue(null);
+    renderLogin();
+    signIn('alice@example.edu');
+    await waitFor(() => expect(line()).toBeInTheDocument());
+
+    fireEvent.click(action());
+
+    expect(await screen.findByLabelText('Work or school email')).toHaveValue('alice@example.edu');
+    expect(
+      screen.getByText(
+        'Your organization has not set up single sign-on here. Use another sign-in method.',
+      ),
+    ).toBeInTheDocument();
+    expect(navigateToMock).not.toHaveBeenCalled();
+  });
+
+  it('shows nothing more for a wrong password of any other address', async () => {
+    loginMock.mockRejectedValue(refused());
+    renderLogin();
+    signIn('someone@mail.example.org');
+
+    expect(await screen.findByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByText(/must sign in through single sign-on/)).not.toBeInTheDocument();
+    // Only the entry that the page always has.
+    expect(screen.getAllByRole('button', { name: 'Log in with SSO' })).toHaveLength(1);
+  });
+
+  it('takes the line away when the address in the field is changed', async () => {
+    loginMock.mockRejectedValue(refused(organization));
+    renderLogin();
+    signIn('alcie@example.edu');
+    await waitFor(() => expect(line()).toBeInTheDocument());
+
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
+      target: { value: 'alice@example.edu' },
+    });
+
+    // The line was about the address that was refused, and its action would
+    // start the sign-on for that one.
+    await waitFor(() => expect(line()).not.toBeInTheDocument());
+    expect(screen.getAllByRole('button', { name: 'Log in with SSO' })).toHaveLength(1);
+    expect(sso.discoverSso).not.toHaveBeenCalled();
+  });
+
+  it('takes the line away with the next try', async () => {
+    loginMock.mockRejectedValueOnce(refused(organization)).mockRejectedValueOnce(refused());
+    renderLogin();
+    signIn('alice@example.edu');
+    await waitFor(() => expect(line()).toBeInTheDocument());
+
+    signIn('someone@mail.example.org');
+
+    await waitFor(() => expect(line()).not.toBeInTheDocument());
+  });
+});
+
 describe('the single sign-on email step', () => {
   beforeEach(() => {
     authState.isAuthenticated = false;
@@ -774,6 +887,26 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(replaceMock).not.toHaveBeenCalled();
   });
 
+  it('does not send the owner to the provider again after a mistyped password', async () => {
+    // The gateway names the sign-on for every address of the domain. Here the
+    // round trip to the provider is made already, and the account has its password.
+    loginMock.mockRejectedValue(
+      new APIError('INVALID_CREDENTIALS', 'Invalid email or password', 401, {
+        sso_sign_in: { provider_name: 'Example University' },
+      }),
+    );
+    renderLogin();
+    expect(await screen.findByText(/Sign in the way you usually do/)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'Mistyped-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/password/i);
+    expect(screen.queryByText(/must sign in through single sign-on/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Log in with SSO' })).not.toBeInTheDocument();
+    expect(linkNotice()).toBeInTheDocument();
+  });
+
   it('says the sign-in took too long when nothing is waiting any more', async () => {
     sso.getPendingSsoLink.mockResolvedValue(null);
     renderLogin();
@@ -785,6 +918,50 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(screen.getByLabelText('Password')).toBeInTheDocument();
     expect(panel()).not.toBeInTheDocument();
     expect(linkNotice()).not.toBeInTheDocument();
+  });
+
+  it('says before the button that the account then signs in through the provider only', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    sso.getPendingSsoLink.mockResolvedValue({ ...waiting, sso_only_after_link: true });
+    renderLogin();
+
+    const notice = await screen.findByText(
+      'After you connect it, this account signs in through Example University only. Its password is removed.',
+    );
+    const connect = screen.getByRole('button', { name: 'Connect' });
+    expect(notice.compareDocumentPosition(connect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // The sentences the step always has stay.
+    expect(
+      screen.getByText(
+        'If you did not create this account yourself, review its API keys after connecting.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        'alice@example.edu will be able to sign in to this account through Example University.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('says nothing of the password to a platform administrator, which keeps it', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'admin', is_admin: true };
+    sso.getPendingSsoLink.mockResolvedValue({ ...waiting, sso_only_after_link: true });
+    renderLogin();
+
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
+  });
+
+  it('says nothing of the password to an account that keeps it', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    sso.getPendingSsoLink.mockResolvedValue({ ...waiting, sso_only_after_link: false });
+    renderLogin();
+
+    expect(await screen.findByRole('button', { name: 'Connect' })).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
   });
 
   it('asks the owner directly when the browser is already using that account', async () => {

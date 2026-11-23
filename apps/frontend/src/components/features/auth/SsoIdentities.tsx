@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { ssoStartFailure } from '@/components/auth/ssoMessages';
+import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react';
+import { ssoOnlyAfterLink, ssoStartFailure } from '@/components/auth/ssoMessages';
 import { useAuth } from '@/components/providers';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT, type Translate } from '@/components/providers/useT';
@@ -9,10 +9,11 @@ import { Button } from '@/components/ui/Button';
 import { InputField } from '@/components/ui/InputField';
 import {
   linkSsoIdentity,
-  listSsoIdentities,
+  readSsoIdentities,
   ssoRefusalMessage,
   unlinkSsoIdentity,
   type SsoIdentity,
+  type SsoProviderRef,
 } from '@/lib/api/sso';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { useFormatter } from '@/lib/i18n/useFormatter';
@@ -32,6 +33,16 @@ import {
 /** The signed-in account's identities, and whether they have been read yet. */
 export interface SsoIdentitiesState {
   identities: SsoIdentity[];
+  /**
+   * The provider that linking would leave the account with as its only way
+   * in, with its password removed; `null` for an account that keeps both.
+   */
+  ssoOnlyProvider?: SsoProviderRef | null;
+  /**
+   * Whether the gateway answered for this account. Linking is offered only
+   * then: before it, the page does not know what a link takes away.
+   */
+  known: boolean;
   loaded: boolean;
   reload: () => Promise<void>;
 }
@@ -45,24 +56,50 @@ export interface SsoIdentitiesState {
  * for one that predates single sign-on.
  */
 export function useSsoIdentities(userId: string | null): SsoIdentitiesState {
-  const [identities, setIdentities] = useState<SsoIdentity[]>([]);
+  // Kept with the account it was read for: after a switch of account, what
+  // the previous one had is not shown as this one's.
+  const [read, setRead] = useState<{
+    userId: string;
+    identities: SsoIdentity[];
+    ssoOnlyProvider: SsoProviderRef | null;
+  } | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const calls = useRef(0);
 
   const reload = useCallback(async () => {
+    if (!userId) return;
+    const call = ++calls.current;
     try {
-      setIdentities(await listSsoIdentities());
+      const answer = await readSsoIdentities();
+      // An answer that a later read overtook is not this account's any more.
+      if (call !== calls.current) return;
+      setRead({
+        userId,
+        identities: answer.identities,
+        ssoOnlyProvider: answer.sso_only_provider ?? null,
+      });
     } catch {
       // Shown as it was; the section says nothing it has not read.
     } finally {
       setLoaded(true);
     }
-  }, []);
+  }, [userId]);
 
   useEffect(() => {
-    if (userId) void reload();
-  }, [userId, reload]);
+    void reload();
+  }, [reload]);
 
-  return useMemo(() => ({ identities, loaded, reload }), [identities, loaded, reload]);
+  const mine = read !== null && read.userId === userId ? read : null;
+  return useMemo(
+    () => ({
+      identities: mine?.identities ?? [],
+      ssoOnlyProvider: mine?.ssoOnlyProvider ?? null,
+      known: mine !== null,
+      loaded,
+      reload,
+    }),
+    [mine, loaded, reload],
+  );
 }
 
 /**
@@ -125,7 +162,13 @@ function lastMethod(t: Translate, ssoOnly: boolean): string {
  * that can sign in to this account, removing one, and linking another. The
  * page draws the section around it, and decides whether to draw it at all.
  */
-export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentitiesState) {
+export function SsoIdentitiesPanel({
+  identities,
+  ssoOnlyProvider = null,
+  known,
+  loaded,
+  reload,
+}: SsoIdentitiesState) {
   const t = useT();
   const format = useFormatter();
   const { state, refreshUser } = useAuth();
@@ -221,12 +264,18 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
         <p className="text-sm text-gray-600">{lastMethod(t, state.user?.sso_only === true)}</p>
       )}
 
+      {/* Linking is offered once the gateway answered for this account (`known`):
+          before that, the form could not say what a link takes away. */}
       {!canChange ? (
         <p className="text-sm text-gray-600">
           {t('settings.sso.needs_password', 'Set a password before changing single sign-on.')}
         </p>
-      ) : !sso.enabled ? null : connecting && linkProof.kind !== 'none' ? (
-        <ConnectForm proof={linkProof} onCancel={() => setConnecting(false)} />
+      ) : !sso.enabled || !known ? null : connecting && linkProof.kind !== 'none' ? (
+        <ConnectForm
+          proof={linkProof}
+          ssoOnlyProvider={ssoOnlyProvider}
+          onCancel={() => setConnecting(false)}
+        />
       ) : (
         <div className="flex justify-end">
           <Button type="button" variant="secondary" onClick={() => setConnecting(true)}>
@@ -333,9 +382,12 @@ function DisconnectConfirm({
 
 function ConnectForm({
   proof,
+  ssoOnlyProvider,
   onCancel,
 }: {
   proof: Exclude<OwnerProof, { kind: 'none' }>;
+  /** Linking leaves the account with this provider as its only way in. */
+  ssoOnlyProvider: SsoProviderRef | null;
   onCancel: () => void;
 }) {
   const t = useT();
@@ -425,6 +477,10 @@ function ConnectForm({
       ) : (
         <OwnerPassword value={password} onChange={setPassword} disabled={busy} />
       )}
+      {ssoOnlyProvider ? (
+        // Said before the account is linked: the link cannot be taken back here.
+        <p className="text-sm text-gray-600">{ssoOnlyAfterLink(t, ssoOnlyProvider.name)}</p>
+      ) : null}
       {error ? (
         <div
           className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"

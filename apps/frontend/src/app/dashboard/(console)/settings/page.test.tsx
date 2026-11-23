@@ -19,7 +19,12 @@ const api = vi.hoisted(() => ({
 }));
 // The requests single sign-on makes; what reads a code or a refusal stays real.
 const sso = vi.hoisted(() => ({
+  // Not a request of the page: where a test sets the identities of the
+  // account. `readSsoIdentities`, which the section calls, passes them on
+  // with what linking one would do.
   listSsoIdentities: vi.fn(),
+  readSsoIdentities: vi.fn(),
+  onlyProvider: null as { id: string; name: string } | null,
   startSsoReauth: vi.fn(),
   linkSsoIdentity: vi.fn(),
   unlinkSsoIdentity: vi.fn(),
@@ -64,6 +69,11 @@ beforeEach(() => {
   api.sendPhoneCode.mockReset().mockResolvedValue({ message: 'sent', retry_after: 60 });
   api.updatePassword.mockReset().mockResolvedValue({ message: 'Password changed successfully.' });
   sso.listSsoIdentities.mockReset().mockResolvedValue([]);
+  sso.onlyProvider = null;
+  sso.readSsoIdentities.mockReset().mockImplementation(async () => ({
+    identities: await sso.listSsoIdentities(),
+    sso_only_provider: sso.onlyProvider,
+  }));
   sso.startSsoReauth
     .mockReset()
     .mockResolvedValue('https://idp.example.edu/authorize?prompt=login');
@@ -783,6 +793,58 @@ describe('the single sign-on section', () => {
     });
   });
 
+  it('says before the action that the account then signs in through the provider only', async () => {
+    // A password account with a school address: linking makes it a member.
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an SSO account' }));
+    const section = ssoSection();
+
+    const sentence = within(section).getByText(
+      'After you connect it, this account signs in through Example University only. Its password is removed.',
+    );
+    const action = within(section).getByRole('button', { name: 'Continue' });
+    expect(
+      sentence.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // The form is the one it always is.
+    expect(within(section).getByLabelText('Work or school email')).toBeInTheDocument();
+    expect(within(section).getByLabelText(/^Current password/)).toBeInTheDocument();
+  });
+
+  it('says nothing of the password to an account that keeps it', async () => {
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an SSO account' }));
+
+    expect(within(ssoSection()).getByLabelText('Work or school email')).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
+  });
+
+  it('offers no link while it does not know what a link takes away', async () => {
+    // The read of the identities failed: the page cannot say whether the
+    // account would lose its password, so it does not offer the link.
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    sso.readSsoIdentities.mockRejectedValue(new Error('gateway busy'));
+    renderSettings(false, true);
+
+    await waitFor(() => expect(sso.readSsoIdentities).toHaveBeenCalled());
+    expect(await screen.findByRole('heading', { name: 'Single sign-on' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Connect an SSO account' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Work or school email')).not.toBeInTheDocument();
+  });
+
+  it('says nothing of it before the form is open', async () => {
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    renderSettings(false, true);
+
+    expect(
+      await screen.findByRole('button', { name: 'Connect an SSO account' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
+  });
+
   it('says so when no provider answers for the email', async () => {
     sso.linkSsoIdentity.mockResolvedValue(null);
     renderSettings(false, true);
@@ -990,7 +1052,8 @@ describe('the single sign-on section', () => {
       renderSettings(false, true);
       const section = ssoSection();
 
-      expect(within(section).getByLabelText('Work or school email')).toHaveValue(
+      // The form is open again once the identities of the account are read.
+      expect(await within(section).findByLabelText('Work or school email')).toHaveValue(
         'carol@other.example',
       );
       expect(
@@ -1024,7 +1087,7 @@ describe('the single sign-on section', () => {
       renderSettings(false, true);
       const section = ssoSection();
 
-      fireEvent.click(within(section).getByRole('button', { name: 'Continue' }));
+      fireEvent.click(await within(section).findByRole('button', { name: 'Continue' }));
 
       expect(await within(section).findByRole('alert')).toHaveTextContent(
         'Your organization has not set up single sign-on here. Use another sign-in method.',

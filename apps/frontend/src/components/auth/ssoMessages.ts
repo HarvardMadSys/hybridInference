@@ -1,5 +1,6 @@
 import type { Translate } from '@/components/providers/useT';
 import type { SsoErrorCode } from '@/lib/api/sso';
+import { fill } from '@/lib/utils/interpolate';
 
 /**
  * The sentence for one `sso_error` code.
@@ -71,4 +72,19 @@ export function ssoStartFailure(t: Translate, status: number | undefined): strin
   if (status === 503) return ssoErrorMessage(t, 'unavailable');
   if (status === 429) return ssoErrorMessage(t, 'rate_limited');
   return null;
+}
+
+/**
+ * What linking does to an account that becomes a member of an organization
+ * with it, said before the account is linked: on the step that asks, and in
+ * the form that starts a link.
+ */
+export function ssoOnlyAfterLink(t: Translate, name: string): string {
+  return fill(
+    t(
+      'auth.sso.link_sso_only',
+      'After you connect it, this account signs in through {name} only. Its password is removed.',
+    ),
+    { name },
+  );
 }
