@@ -845,6 +845,19 @@ describe('the single sign-on section', () => {
       expect(sso.unlinkSsoIdentity).not.toHaveBeenCalled();
     });
 
+    it('does not tell a member of an organization to set a password, which it cannot', async () => {
+      user = { ...user, sso_only: true };
+      sso.listSsoIdentities.mockResolvedValue([identity()]);
+      renderSettings(false, true);
+
+      expect(
+        await screen.findByText(
+          'This account belongs to an organization. It signs in through single sign-on only.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Set a password before disconnecting it/)).not.toBeInTheDocument();
+    });
+
     it('does not offer to disconnect the only way in, and sends nobody to the provider for it', async () => {
       // No password, no phone, one identity: the gateway would refuse it.
       sso.listSsoIdentities.mockResolvedValue([identity()]);

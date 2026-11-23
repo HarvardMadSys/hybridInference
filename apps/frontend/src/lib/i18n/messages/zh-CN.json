@@ -2851,6 +2851,10 @@
     "source": "This is the only way to sign in to this account. Set a password before disconnecting it.",
     "text": "这是当前账号唯一的登录方式。请先设置密码，再解除关联。"
   },
+  "settings.sso.only_method": {
+    "source": "This account belongs to an organization. It signs in through single sign-on only.",
+    "text": "这个账号属于一个机构，只能通过单点登录来登录。"
+  },
   "settings.sso.needs_password": {
     "source": "Set a password before changing single sign-on.",
     "text": "请先设置密码，再修改 SSO 关联。"

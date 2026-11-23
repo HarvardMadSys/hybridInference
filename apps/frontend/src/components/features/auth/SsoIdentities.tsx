@@ -75,8 +75,18 @@ type OwnerProof = { kind: 'password' } | { kind: 'sso'; reauth: SsoReauth } | { 
 
 const CONFIRM_BOX = 'mt-3 space-y-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3';
 
-/** Why the account's only way in stays: said before it is tried, and when it is refused. */
-function lastMethod(t: Translate): string {
+/**
+ * Why the account's only way in stays: said before it is tried, and when it is
+ * refused. A member of an organization cannot set a password, so it is not
+ * told to: its organization's single sign-on is how the account is signed in to.
+ */
+function lastMethod(t: Translate, ssoOnly: boolean): string {
+  if (ssoOnly) {
+    return t(
+      'settings.sso.only_method',
+      'This account belongs to an organization. It signs in through single sign-on only.',
+    );
+  }
   return t(
     'settings.sso.last_method',
     'This is the only way to sign in to this account. Set a password before disconnecting it.',
@@ -180,7 +190,9 @@ export function SsoIdentitiesPanel({ identities, loaded, reload }: SsoIdentities
         </ul>
       )}
 
-      {onlyWayIn && <p className="text-sm text-gray-600">{lastMethod(t)}</p>}
+      {onlyWayIn && (
+        <p className="text-sm text-gray-600">{lastMethod(t, state.user?.sso_only === true)}</p>
+      )}
 
       {!canChange ? (
         <p className="text-sm text-gray-600">
@@ -235,6 +247,7 @@ function DisconnectConfirm({
   onCancel: () => void;
 }) {
   const t = useT();
+  const ssoOnly = useAuth().state.user?.sso_only === true;
   const toast = useAccountToast();
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -257,7 +270,7 @@ function DisconnectConfirm({
       reauth?.settle(err);
       setError(
         err instanceof APIError && err.statusCode === 409
-          ? lastMethod(t)
+          ? lastMethod(t, ssoOnly)
           : (ssoRefusalMessage(err) ?? getErrorMessage(err)),
       );
       setBusy(false);
