@@ -118,9 +118,9 @@ export interface OrganizationMember extends Money {
   spent_month_usd: number;
   spent_month?: number | null;
   /**
-   * Today, the last 7 days and all time, from the day the account became a
-   * member. They are the same for every period. Absent from a gateway that
-   * does not send them yet.
+   * Today, the last 7 days and all time, of the whole account: the figures
+   * that Admin shows for it. They are the same for every period. Absent from
+   * a gateway that does not send them yet.
    */
   spent_today_usd?: number;
   spent_today?: number | null;

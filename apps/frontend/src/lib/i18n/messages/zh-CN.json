@@ -4037,9 +4037,9 @@
     "source": "last used {when}",
     "text": "上次使用 {when}"
   },
-  "organization.member.key_not_used_since": {
-    "source": "not used since the account joined",
-    "text": "加入机构后没有用过"
+  "organization.member.key_never_used": {
+    "source": "never used",
+    "text": "从未使用"
   },
   "organization.member.key_revoked": {
     "source": "revoked",
@@ -4124,10 +4124,6 @@
   "organization.member.set_models": {
     "source": "Models",
     "text": "模型"
-  },
-  "organization.member.since_joined": {
-    "source": "Since the member joined",
-    "text": "从成员加入算起"
   },
   "organization.member.spent_this_month": {
     "source": "{amount} this month",

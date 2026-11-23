@@ -259,7 +259,8 @@ describe('one member, opened in place', () => {
     expect(card('Today')).toHaveTextContent('$3.20');
     expect(card('Last 7 days')).toHaveTextContent('$24.46');
     expect(card('All-time')).toHaveTextContent('$310.05');
-    expect(card('All-time')).toHaveTextContent('Since the member joined');
+    // All time is all time: nothing under the figure says where it starts.
+    expect(card('All-time')).not.toHaveTextContent(/joined/i);
     expect(card('Requests')).toHaveTextContent('982');
     expect(card('Requests')).toHaveTextContent('Last 30 days');
     expect(card('Tokens')).toHaveTextContent('3.4M');
@@ -407,12 +408,8 @@ describe('one member, opened in place', () => {
     const thesis = screen.getByRole('region', { name: 'Thesis' });
     expect(thesis).toHaveTextContent('$76.70 this month');
     expect(thesis).toHaveTextContent('laptop$70.00 this month · last used 27 min ago');
-    // A key without a name, revoked. The gateway sends no time for a key that
-    // was last used before the account became a member, so "never" is not said.
-    expect(thesis).toHaveTextContent(
-      'Unnamed keyrevoked$6.70 this month · not used since the account joined',
-    );
-    expect(thesis).not.toHaveTextContent('never');
+    // A key without a name, revoked and never used.
+    expect(thesis).toHaveTextContent('Unnamed keyrevoked$6.70 this month · never used');
     expect(
       within(screen.getByRole('region', { name: 'Default' })).getByText('No keys.'),
     ).toBeInTheDocument();

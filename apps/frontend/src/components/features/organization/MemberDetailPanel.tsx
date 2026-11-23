@@ -112,9 +112,7 @@ function MemberProjects({
         ? fill(t('organization.member.key_last_used', 'last used {when}'), {
             when: relativeTime(key.last_used_at, t, fmt),
           })
-        : // The gateway sends no time for a key that was last used before the
-          // account became a member, so "never" would be more than is known.
-          t('organization.member.key_not_used_since', 'not used since the account joined')
+        : t('organization.member.key_never_used', 'never used')
     }`,
     action:
       canRevoke && key.status === 'active' ? (
@@ -320,7 +318,6 @@ export function MemberDetailPanel({
         <StatCard
           label={t('organization.members.alltime', 'All-time')}
           value={amount('spent_alltime')}
-          note={t('organization.member.since_joined', 'Since the member joined')}
         />
         <StatCard
           label={t('organization.overview.requests', 'Requests')}
