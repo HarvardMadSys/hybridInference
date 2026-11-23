@@ -345,17 +345,17 @@ export function auditDetails(entry: AuditEntry, t: Translate, locale: string): s
       const on = lists.old.filter((model) => !lists.next.includes(model)).join(', ');
       if (off && on) {
         return fill(
-          t('organization.audit.details.models_both', 'Turned off: {off}; turned on again: {on}'),
+          t('organization.audit.details.models_both', 'Disabled: {off}; enabled again: {on}'),
           { off, on },
         );
       }
       if (off) {
-        return fill(t('organization.audit.details.models_off', 'Turned off: {models}'), {
+        return fill(t('organization.audit.details.models_off', 'Disabled: {models}'), {
           models: off,
         });
       }
       return on
-        ? fill(t('organization.audit.details.models_on', 'Turned on again: {models}'), {
+        ? fill(t('organization.audit.details.models_on', 'Enabled again: {models}'), {
             models: on,
           })
         : '';

@@ -3798,16 +3798,16 @@
     "text": "{key}，在项目 {project} 里"
   },
   "organization.audit.details.models_both": {
-    "source": "Turned off: {off}; turned on again: {on}",
-    "text": "关闭：{off}；重新开启：{on}"
+    "source": "Disabled: {off}; enabled again: {on}",
+    "text": "禁用：{off}；重新启用：{on}"
   },
   "organization.audit.details.models_off": {
-    "source": "Turned off: {models}",
-    "text": "关闭：{models}"
+    "source": "Disabled: {models}",
+    "text": "禁用：{models}"
   },
   "organization.audit.details.models_on": {
-    "source": "Turned on again: {models}",
-    "text": "重新开启：{models}"
+    "source": "Enabled again: {models}",
+    "text": "重新启用：{models}"
   },
   "organization.audit.details.remove": {
     "source": "Account suspended; sessions ended, API keys revoked",
@@ -4026,20 +4026,36 @@
     "text": "关闭"
   },
   "organization.member.email_unverified": {
-    "source": "Email not verified",
-    "text": "邮箱未验证"
+    "source": "Not verified",
+    "text": "未验证"
   },
   "organization.member.email_verified": {
-    "source": "Email verified",
-    "text": "邮箱已验证"
+    "source": "Verified",
+    "text": "已验证"
   },
-  "organization.member.has_key": {
-    "source": "Has an active API key",
-    "text": "有可用的 API key"
+  "organization.member.fact_email": {
+    "source": "Email",
+    "text": "邮箱"
   },
-  "organization.member.joined": {
-    "source": "Joined {date} · Last sign-in {when}",
-    "text": "{date} 加入 · 上次登录：{when}"
+  "organization.member.fact_joined": {
+    "source": "Joined",
+    "text": "加入时间"
+  },
+  "organization.member.fact_key": {
+    "source": "API key",
+    "text": "API key"
+  },
+  "organization.member.fact_last_sign_in": {
+    "source": "Last sign-in",
+    "text": "上次登录"
+  },
+  "organization.member.fact_two_factor": {
+    "source": "Two-factor",
+    "text": "两步验证"
+  },
+  "organization.member.key_active": {
+    "source": "Active",
+    "text": "可用"
   },
   "organization.member.key_last_used": {
     "source": "last used {when}",
@@ -4048,6 +4064,10 @@
   "organization.member.key_never_used": {
     "source": "never used",
     "text": "从未使用"
+  },
+  "organization.member.key_none": {
+    "source": "None",
+    "text": "没有"
   },
   "organization.member.key_revoked": {
     "source": "revoked",
@@ -4078,24 +4098,12 @@
     "text": "这位成员自己的月额度"
   },
   "organization.member.models_off": {
-    "source": "Models turned off",
-    "text": "已关闭的模型"
+    "source": "Disabled models",
+    "text": "禁用模型"
   },
   "organization.member.models_off_none": {
-    "source": "No model is turned off for this member.",
-    "text": "没有对这个成员关闭任何模型。"
-  },
-  "organization.member.models_off_own": {
-    "source": "By the organization:",
-    "text": "机构关闭的："
-  },
-  "organization.member.models_off_platform": {
-    "source": "By the platform administrator:",
-    "text": "平台管理员关闭的："
-  },
-  "organization.member.no_key": {
-    "source": "No active API key",
-    "text": "没有可用的 API key"
+    "source": "No model is disabled for this member.",
+    "text": "没有为这个成员禁用任何模型。"
   },
   "organization.member.no_requests": {
     "source": "No requests in this period.",
@@ -4146,12 +4154,12 @@
     "text": "本月"
   },
   "organization.member.two_factor_off": {
-    "source": "Two-factor off",
-    "text": "未开两步验证"
+    "source": "Off",
+    "text": "未开启"
   },
   "organization.member.two_factor_on": {
-    "source": "Two-factor on",
-    "text": "已开两步验证"
+    "source": "On",
+    "text": "已开启"
   },
   "organization.members.admin_badge": {
     "source": "Admin",
@@ -4161,6 +4169,10 @@
     "source": "All-time",
     "text": "累计"
   },
+  "organization.members.card_clear": {
+    "source": "Shown in the list · Clear",
+    "text": "列表中正在显示 · 取消"
+  },
   "organization.members.card_empty": {
     "source": "No members right now",
     "text": "现在没有成员"
@@ -4169,13 +4181,37 @@
     "source": "Near or over the limit",
     "text": "接近或超过月额度"
   },
+  "organization.members.card_near_count": {
+    "source": "{count} members",
+    "text": "{count} 人"
+  },
+  "organization.members.card_near_one": {
+    "source": "1 member",
+    "text": "1 人"
+  },
+  "organization.members.card_show": {
+    "source": "Show in the list",
+    "text": "在列表中查看"
+  },
   "organization.members.card_today": {
     "source": "Top spenders today",
     "text": "今日花费最高"
   },
+  "organization.members.card_today_count": {
+    "source": "{count} members spent today",
+    "text": "今日 {count} 人有花费"
+  },
+  "organization.members.card_today_one": {
+    "source": "1 member spent today",
+    "text": "今日 1 人有花费"
+  },
   "organization.members.cards_failed": {
     "source": "The members near their limit and the top spenders of today could not be read: {reason}",
     "text": "读不到接近月额度的成员和今日花费最高的成员：{reason}"
+  },
+  "organization.members.clear_filters": {
+    "source": "Clear filters",
+    "text": "清除筛选"
   },
   "organization.members.empty": {
     "source": "The organization has no members yet.",
@@ -4241,17 +4277,9 @@
     "source": "Today",
     "text": "今日"
   },
-  "organization.members.trend_label": {
-    "source": "Spend of the last 7 days",
-    "text": "最近 7 天的花费"
-  },
   "organization.members.week": {
     "source": "7 days",
     "text": "7 天"
-  },
-  "organization.members.week_total": {
-    "source": "Last 7 days: {amount}",
-    "text": "最近 7 天：{amount}"
   },
   "organization.members.you_badge": {
     "source": "You",
@@ -4266,8 +4294,8 @@
     "text": "平台没有对这个成员开放任何模型。"
   },
   "organization.models_dialog.platform_off": {
-    "source": "off by the platform administrator",
-    "text": "平台管理员已关闭"
+    "source": "disabled by the platform administrator",
+    "text": "平台管理员已禁用"
   },
   "organization.models_dialog.saved": {
     "source": "Models saved.",
@@ -4781,17 +4809,29 @@
     "source": "Last 24 hours",
     "text": "最近 24 小时"
   },
+  "organization.usage.volume_failed": {
+    "source": "{count} failed",
+    "text": "失败 {count}"
+  },
   "organization.usage.volume_hour": {
     "source": "Last hour",
     "text": "最近 1 小时"
+  },
+  "organization.usage.volume_latency": {
+    "source": "{latency} avg",
+    "text": "平均 {latency}"
   },
   "organization.usage.volume_month": {
     "source": "Last 30 days",
     "text": "最近 30 天"
   },
-  "organization.usage.volume_note": {
-    "source": "Windows that end now. They do not follow the period below.",
-    "text": "每个窗口都到现在为止，不随下面的时间范围变化。"
+  "organization.usage.volume_ok": {
+    "source": "{count} ok",
+    "text": "成功 {count}"
+  },
+  "organization.usage.volume_requests": {
+    "source": "requests",
+    "text": "次请求"
   },
   "organization.usage.volume_week": {
     "source": "Last 7 days",

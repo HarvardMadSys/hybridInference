@@ -211,9 +211,9 @@ describe('the audit log of the organization', () => {
     render(<AuditLogView />);
 
     expect(rows().map((row) => [row[1], row[3]])).toEqual([
-      ['Member models changed', 'Turned off: qwen-max'],
-      ['Member models changed', 'Turned on again: glm-4.6'],
-      ['Member models changed', 'Turned off: qwen-max, small; turned on again: glm-4.6'],
+      ['Member models changed', 'Disabled: qwen-max'],
+      ['Member models changed', 'Enabled again: glm-4.6'],
+      ['Member models changed', 'Disabled: qwen-max, small; enabled again: glm-4.6'],
       ['API key revoked', 'laptop, in project Thesis'],
     ]);
   });

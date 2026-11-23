@@ -17,14 +17,12 @@ import {
 import { SearchBox } from '@/components/features/console-shared/SearchBox';
 import { SpendCells } from '@/components/features/console-shared/SpendCells';
 import { StatusPill } from '@/components/features/console-shared/StatusPill';
-import { SummaryCard } from '@/components/features/console-shared/SummaryCard';
 import { ThresholdInput } from '@/components/features/console-shared/ThresholdInput';
 import { Select } from '@/components/ui/Select';
 import type {
   MemberLimitState,
   MemberSort,
   MemberStatusFilter,
-  MemberSummaryCard,
   OrganizationMember,
 } from '@/lib/api/organization';
 import {
@@ -37,6 +35,7 @@ import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
+import { MemberCard, type MemberCardRow } from './MemberCards';
 import { MemberDetailPanel } from './MemberDetailPanel';
 import { MemberDialogs, type MemberDialog } from './MemberDialogs';
 import { MemberDrawer } from './MemberDrawer';
@@ -102,9 +101,10 @@ const SPEND_NUMBER = 'whitespace-nowrap px-4 py-2.5 text-right text-[13px] tabul
  * The members of the organization, one row each, with what each spent today,
  * in the last 7 days, in this month and in all time, and where its month
  * stands against its limit. Two cards above the list open it on the members
- * near their limit and on today's largest spenders. A row opens a panel at the
- * right side of the window, with the member's details and the actions on it;
- * the list stays behind the panel.
+ * near their limit and on today's largest spenders, and put it back when
+ * pressed again; "Clear filters" puts it back from anything. A row opens a
+ * panel at the right side of the window, with the member's details and the
+ * actions on it; the list stays behind the panel.
  */
 export function MembersView() {
   const t = useT();
@@ -164,7 +164,6 @@ export function MembersView() {
     { value: 'near', label: t('organization.members.limit_near', 'Near the limit (≥80%)') },
     { value: 'over', label: t('organization.members.limit_over', 'Over the limit') },
   ];
-  const trendLabel = t('organization.members.trend_label', 'Spend of the last 7 days');
 
   /** A card opens its list from the first page, with nothing else narrowing it. */
   function openView(view: Filters) {
@@ -172,6 +171,45 @@ export function MembersView() {
     setSearch('');
     setFilters(view);
   }
+
+  const nearOpen = search === '' && sameFilters(filters, NEAR_LIMIT);
+  const todayOpen = search === '' && sameFilters(filters, TOP_TODAY);
+  // Anything that makes the list another one than the page opens with.
+  const changed = searchInput !== '' || search !== '' || !sameFilters(filters, NO_FILTERS);
+
+  /** How many members a card holds, in words; nothing for none. */
+  function held(count: number | undefined, one: string, many: string): string | undefined {
+    if (!count) return undefined;
+    return count === 1 ? one : fill(many, { count: fmt.number(count) });
+  }
+
+  /** The members nearest their limit: the share of the limit that the month used. */
+  const nearRows: MemberCardRow[] = (summary.data?.near_limit.top ?? [])
+    .slice(0, CARD_MEMBERS)
+    .map((member) => {
+      const use = limitUse(
+        moneyAmount(member, 'spent_month'),
+        moneyAmount(member, 'monthly_limit'),
+      );
+      return {
+        id: member.user_id,
+        name: memberName(member),
+        value: use ? `${use.percent}%` : '',
+        share: use ? use.percent / 100 : 0,
+        tone: use?.tone,
+      };
+    });
+  /** Today's largest spenders: each against the largest of them. */
+  const todayTop = (summary.data?.top_spenders_today.top ?? []).slice(0, CARD_MEMBERS);
+  const todayLargest = Math.max(0, ...todayTop.map((m) => moneyAmount(m, 'spent_today') ?? 0));
+  const todayRows: MemberCardRow[] = todayTop.map((member) => ({
+    id: member.user_id,
+    name: memberName(member),
+    value: money.value(member, 'spent_today', { maximumFractionDigits: 2 }),
+    share: todayLargest > 0 ? (moneyAmount(member, 'spent_today') ?? 0) / todayLargest : 0,
+  }));
+  const showLabel = t('organization.members.card_show', 'Show in the list');
+  const clearLabel = t('organization.members.card_clear', 'Shown in the list · Clear');
 
   function sortBy(by: MemberSort) {
     setFilters((current) => ({
@@ -204,18 +242,6 @@ export function MembersView() {
         </button>
       </th>
     );
-  }
-
-  /** The members of a card, each with the figure that put it there. */
-  function cardItems(
-    card: MemberSummaryCard | undefined,
-    figureOf: (member: OrganizationMember) => string,
-  ) {
-    return (card?.top ?? []).map((member) => ({
-      id: member.user_id,
-      label: memberName(member),
-      value: figureOf(member),
-    }));
   }
 
   function figure(member: OrganizationMember, field: string) {
@@ -275,11 +301,7 @@ export function MembersView() {
         </td>
         <SpendCells
           today={figure(member, 'spent_today')}
-          trend={(member.spend_days ?? []).map((day) => moneyAmount(day, 'cost'))}
-          trendLabel={trendLabel}
-          trendTitle={fill(t('organization.members.week_total', 'Last 7 days: {amount}'), {
-            amount: money.value(member, 'spent_7d', { maximumFractionDigits: 2 }),
-          })}
+          week={figure(member, 'spent_7d')}
           month={figure(member, 'spent_month')}
           alltime={figure(member, 'spent_alltime')}
           numberClass={SPEND_NUMBER}
@@ -326,35 +348,36 @@ export function MembersView() {
         </AdminNotice>
       ) : (
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <SummaryCard
+          <MemberCard
             title={t('organization.members.card_near', 'Near or over the limit')}
-            accent="amber"
-            count={summary.data?.near_limit.count ?? 0}
-            items={cardItems(summary.data?.near_limit, (member) => {
-              const use = limitUse(
-                moneyAmount(member, 'spent_month'),
-                moneyAmount(member, 'monthly_limit'),
-              );
-              return use ? `${use.percent}%` : '';
-            })}
-            empty={t('organization.members.card_empty', 'No members right now')}
-            shown={CARD_MEMBERS}
-            loading={summary.isLoading}
-            active={search === '' && sameFilters(filters, NEAR_LIMIT)}
-            onClick={() => openView(NEAR_LIMIT)}
-          />
-          <SummaryCard
-            title={t('organization.members.card_today', 'Top spenders today')}
-            accent="emerald"
-            count={summary.data?.top_spenders_today.count ?? 0}
-            items={cardItems(summary.data?.top_spenders_today, (member) =>
-              money.value(member, 'spent_today', { maximumFractionDigits: 2 }),
+            count={held(
+              summary.data?.near_limit.count,
+              t('organization.members.card_near_one', '1 member'),
+              t('organization.members.card_near_count', '{count} members'),
             )}
+            rows={nearRows}
             empty={t('organization.members.card_empty', 'No members right now')}
-            shown={CARD_MEMBERS}
             loading={summary.isLoading}
-            active={search === '' && sameFilters(filters, TOP_TODAY)}
-            onClick={() => openView(TOP_TODAY)}
+            active={nearOpen}
+            showLabel={showLabel}
+            clearLabel={clearLabel}
+            onToggle={() => openView(nearOpen ? NO_FILTERS : NEAR_LIMIT)}
+          />
+          <MemberCard
+            title={t('organization.members.card_today', 'Top spenders today')}
+            // The card names the first of them; this says how many there are in all.
+            count={held(
+              summary.data?.top_spenders_today.count,
+              t('organization.members.card_today_one', '1 member spent today'),
+              t('organization.members.card_today_count', '{count} members spent today'),
+            )}
+            rows={todayRows}
+            empty={t('organization.members.card_empty', 'No members right now')}
+            loading={summary.isLoading}
+            active={todayOpen}
+            showLabel={showLabel}
+            clearLabel={clearLabel}
+            onToggle={() => openView(todayOpen ? NO_FILTERS : TOP_TODAY)}
           />
         </div>
       )}
@@ -398,6 +421,15 @@ export function MembersView() {
           onChange={(next) => setFilters((current) => ({ ...current, minCostMonth: next }))}
           step="0.01"
         />
+        {changed ? (
+          <button
+            type="button"
+            onClick={() => openView(NO_FILTERS)}
+            className="h-8 rounded-md px-2 text-[12px] font-medium text-gray-500 transition hover:bg-gray-100 hover:text-gray-900"
+          >
+            {t('organization.members.clear_filters', 'Clear filters')}
+          </button>
+        ) : null}
       </div>
 
       {isLoading ? (
@@ -427,7 +459,7 @@ export function MembersView() {
                   {header('status', t('organization.members.status', 'Status'))}
                   {header('last_request', t('organization.members.last_request', 'Last request'))}
                   {header('today', t('organization.members.today', 'Today'), true)}
-                  {header('week', t('organization.members.week', '7 days'))}
+                  {header('week', t('organization.members.week', '7 days'), true)}
                   {header('month', t('organization.member.this_month', 'This month'), true)}
                   {header('alltime', t('organization.members.alltime', 'All-time'), true)}
                   {/* By the share of the limit that the month used, which is what the column shows. */}

@@ -176,6 +176,11 @@ function answer(data: MemberDetail | undefined, more: Record<string, unknown> = 
   });
 }
 
+/** One fact of the member: the cell with its name and its value. */
+function fact(label: string): HTMLElement {
+  return screen.getByText(label, { selector: 'dt' }).parentElement as HTMLElement;
+}
+
 function card(label: string): HTMLElement {
   return screen.getByText(label).closest('div') as HTMLElement;
 }
@@ -254,8 +259,9 @@ describe('one member, opened in place', () => {
     render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
 
     expect(state.member).toHaveBeenLastCalledWith('u-lei', '30d');
-    expect(screen.getByText('Active')).toBeInTheDocument();
-    expect(screen.getByText('Joined Oct 9, 2026 · Last sign-in Never')).toBeInTheDocument();
+    expect(fact('Status')).toHaveTextContent('Active');
+    expect(fact('Joined')).toHaveTextContent('Oct 9, 2026');
+    expect(fact('Last sign-in')).toHaveTextContent('Never');
     expect(card('Today')).toHaveTextContent('$3.20');
     expect(card('Last 7 days')).toHaveTextContent('$24.46');
     expect(card('All-time')).toHaveTextContent('$310.05');
@@ -391,9 +397,23 @@ describe('one member, opened in place', () => {
 
     render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
 
-    expect(
-      screen.getByText('Has an active API key · Two-factor off · Email verified'),
-    ).toBeInTheDocument();
+    // Each fact under its own name, not three phrases in one line of text.
+    expect(fact('API key')).toHaveTextContent('Active');
+    expect(fact('Two-factor')).toHaveTextContent('Off');
+    expect(fact('Email')).toHaveTextContent('Verified');
+  });
+
+  it('says what the account does not have', () => {
+    answer({
+      ...DETAIL,
+      account: { has_key: false, two_factor_enabled: true, email_verified: false },
+    });
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
+
+    expect(fact('API key')).toHaveTextContent('None');
+    expect(fact('Two-factor')).toHaveTextContent('On');
+    expect(fact('Email')).toHaveTextContent('Not verified');
   });
 
   it('lists the projects and the keys by name, with what each spent, and no key value', () => {
@@ -435,14 +455,30 @@ describe('one member, opened in place', () => {
     });
   });
 
-  it('shows the models that are off, and whose each list is', () => {
+  it('lists the disabled models, one to a line, and says which the platform administrator disabled', () => {
     answer(DETAIL);
 
     render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
 
-    const models = screen.getByRole('region', { name: 'Models turned off' });
-    expect(models).toHaveTextContent('By the organization: glm-4.6');
-    expect(models).toHaveTextContent('By the platform administrator: big-model');
+    const models = screen.getByRole('region', { name: 'Disabled models' });
+    expect(
+      within(models)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['glm-4.6', 'big-modeldisabled by the platform administrator']);
+  });
+
+  it('lists a model once when the organization and the platform administrator both disabled it', () => {
+    answer({ ...DETAIL, disabled_models: ['glm-4.6'], platform_disabled_models: ['glm-4.6'] });
+
+    render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
+
+    const models = screen.getByRole('region', { name: 'Disabled models' });
+    expect(
+      within(models)
+        .getAllByRole('listitem')
+        .map((item) => item.textContent),
+    ).toEqual(['glm-4.6disabled by the platform administrator']);
   });
 
   it('says so when no model is off, and reads a gateway that sends none of the new lists', () => {
@@ -456,9 +492,12 @@ describe('one member, opened in place', () => {
 
     render(<MemberDetailPanel member={LEI} period="30d" onAction={vi.fn()} />);
 
-    expect(screen.getByText('No model is turned off for this member.')).toBeInTheDocument();
+    expect(screen.getByText('No model is disabled for this member.')).toBeInTheDocument();
     expect(screen.getByText('Projects and keys')).toBeInTheDocument();
-    expect(screen.queryByText(/API key ·/)).not.toBeInTheDocument();
+    // A gateway that says nothing of the account: a dash, never a "None" or an "Off".
+    expect(fact('API key')).toHaveTextContent('—');
+    expect(fact('Two-factor')).toHaveTextContent('—');
+    expect(fact('Email')).toHaveTextContent('—');
   });
 
   it('offers to restore a member that the organization removed', () => {
@@ -550,8 +589,9 @@ describe('one member, opened in place', () => {
     expect(screen.getByRole('button', { name: 'Set monthly limit' })).toBeInTheDocument();
     expect(screen.getByRole('status')).toHaveTextContent('Loading...');
     expect(screen.queryByRole('region', { name: 'Recent requests' })).not.toBeInTheDocument();
-    // What the account has comes with the details, not with the row.
-    expect(screen.queryByText(/API key/)).not.toBeInTheDocument();
+    // What the row has is there at once; what the account has comes with the details.
+    expect(fact('Joined')).toHaveTextContent('Oct 9, 2026');
+    expect(fact('API key')).toHaveTextContent('—');
   });
 
   it('offers to try again when the details cannot be read', () => {

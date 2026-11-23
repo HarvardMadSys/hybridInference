@@ -153,14 +153,32 @@ describe('the request volume of the organization', () => {
 
     const volume = screen.getByRole('region', { name: 'Request volume' });
     const cards = ['Last hour', 'Last 24 hours', 'Last 7 days', 'Last 30 days'].map(
-      (label) => within(volume).getByText(label).closest('.rounded-xl') as HTMLElement,
+      (label) => within(volume).getByText(label).parentElement as HTMLElement,
     );
-    expect(cards[0]).toHaveTextContent('42requests40 ok2 err850ms avg');
-    expect(cards[1]).toHaveTextContent('1,310requests1,300 ok10 err1.2s avg');
+    expect(cards[0]).toHaveTextContent('42requests40 ok2 failed850ms avg');
+    expect(cards[1]).toHaveTextContent('1,310requests1,300 ok10 failed1.2s avg');
     expect(cards[2]).toHaveTextContent('4,464');
     // A window without a request has no latency to average.
-    expect(cards[3]).toHaveTextContent('0requests0 ok0 err— avg');
-    expect(volume).toHaveTextContent('They do not follow the period below.');
+    expect(cards[3]).toHaveTextContent('0requests0 ok0 failed— avg');
+    // Each card names its window; nothing above them explains the cards.
+    expect(within(volume).queryByRole('heading')).not.toBeInTheDocument();
+    expect(volume).not.toHaveTextContent('They do not follow the period below.');
+  });
+
+  it('draws how the requests of a window ended as one bar: the part that ended well, then the part that failed', () => {
+    render(<UsageView />);
+
+    const volume = screen.getByRole('region', { name: 'Request volume' });
+    const bar = (label: string) =>
+      [
+        ...(
+          within(volume).getByText(label).parentElement as HTMLElement
+        ).querySelectorAll<HTMLElement>('[aria-hidden="true"] > span'),
+      ].map((part) => part.style.width);
+    // 40 of 42 and 2 of 42.
+    expect(bar('Last hour').map((width) => Math.round(parseFloat(width)))).toEqual([95, 5]);
+    // No request: no part of the bar is filled.
+    expect(bar('Last 30 days')).toEqual(['0%', '0%']);
   });
 
   it('offers to try again when the volume cannot be read, and shows the requests all the same', () => {

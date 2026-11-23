@@ -336,7 +336,10 @@ function ModelsDialog({ member, onClose }: { member: OrganizationMember; onClose
               <input type="checkbox" className={CHECKBOX} checked={false} disabled readOnly />
               <span className="truncate font-medium">{model}</span>
               <span className="ml-auto shrink-0 text-[11px] text-gray-400">
-                {t('organization.models_dialog.platform_off', 'off by the platform administrator')}
+                {t(
+                  'organization.models_dialog.platform_off',
+                  'disabled by the platform administrator',
+                )}
               </span>
             </label>
           ))}

@@ -17,9 +17,9 @@ import {
   TABLE_CELL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
-import { RequestVolumeCard } from '@/components/features/console-shared/RequestVolumeCard';
+import { formatLatency } from '@/components/features/console-shared/format';
 import { Select } from '@/components/ui/Select';
-import type { OrganizationPeriod } from '@/lib/api/organization';
+import type { OrganizationPeriod, RequestVolumeWindow } from '@/lib/api/organization';
 import {
   useOrganizationMemberUsage,
   useOrganizationModelUsage,
@@ -30,9 +30,17 @@ import {
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
 import { RequestsTable } from './figures';
-import { Pager, PeriodControl, useLastPage, useListPosition, useOrganizationPeriod } from './parts';
+import {
+  Pager,
+  PeriodControl,
+  StatCard,
+  useLastPage,
+  useListPosition,
+  useOrganizationPeriod,
+} from './parts';
 import { compactNumber, memberName } from './text';
 
 type UsageKind = 'requests' | 'models' | 'members';
@@ -73,13 +81,54 @@ function Failure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
 }
 
 /**
- * The requests of the members in the last hour, day, week and month: how many,
- * how many ended well and how many failed, and the average latency. The
- * windows end now; they do not follow the period of the page.
+ * The requests of one window that ends now: how many, a bar of how they ended
+ * (the part that ended well, then the part that failed), and under it the two
+ * counts and the average latency.
+ */
+function VolumeCard({ label, volume }: { label: string; volume: RequestVolumeWindow }) {
+  const t = useT();
+  const fmt = useFormatter();
+  const { requests, ok, failed } = volume;
+  const part = (count: number) => (requests > 0 ? `${(count / requests) * 100}%` : '0%');
+  return (
+    <StatCard
+      label={label}
+      value={fmt.number(requests)}
+      aside={t('organization.usage.volume_requests', 'requests')}
+    >
+      <span
+        aria-hidden="true"
+        className="flex h-1.5 w-full overflow-hidden rounded-full bg-gray-300"
+      >
+        <span className="h-full bg-emerald-500" style={{ width: part(ok) }} />
+        <span className="h-full bg-red-500" style={{ width: part(failed) }} />
+      </span>
+      <p className="mt-2 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 text-[12px] tabular-nums text-gray-500">
+        <span>
+          {fill(t('organization.usage.volume_ok', '{count} ok'), { count: fmt.number(ok) })}
+        </span>
+        <span className={failed > 0 ? 'text-red-600' : undefined}>
+          {fill(t('organization.usage.volume_failed', '{count} failed'), {
+            count: fmt.number(failed),
+          })}
+        </span>
+        <span>
+          {fill(t('organization.usage.volume_latency', '{latency} avg'), {
+            latency: formatLatency(volume.avg_latency_ms),
+          })}
+        </span>
+      </p>
+    </StatCard>
+  );
+}
+
+/**
+ * The requests of the members in the last hour, day, week and month, one card
+ * each. The windows end now; they do not follow the period of the page, and
+ * each card says its window.
  */
 function RequestVolume() {
   const t = useT();
-  const fmt = useFormatter();
   const { data, error, isLoading, refetch } = useOrganizationRequestVolume();
   const title = t('organization.usage.volume', 'Request volume');
   const windows = [
@@ -89,16 +138,7 @@ function RequestVolume() {
     ['month', t('organization.usage.volume_month', 'Last 30 days')],
   ] as const;
   return (
-    <section aria-label={title} className="space-y-2">
-      <div>
-        <h3 className="text-[13px] font-semibold text-gray-900">{title}</h3>
-        <p className="text-[12px] text-gray-500">
-          {t(
-            'organization.usage.volume_note',
-            'Windows that end now. They do not follow the period below.',
-          )}
-        </p>
-      </div>
+    <section aria-label={title}>
       {isLoading ? (
         <AdminLoading size="sm" label={t('common.loading', 'Loading...')} />
       ) : !data ? (
@@ -106,15 +146,7 @@ function RequestVolume() {
       ) : (
         <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {windows.map(([key, label]) => (
-            <RequestVolumeCard
-              key={key}
-              label={label}
-              total={data[key].requests}
-              ok={data[key].ok}
-              failed={data[key].failed}
-              averageLatencyMs={data[key].avg_latency_ms}
-              formatNumber={(value) => fmt.number(value)}
-            />
+            <VolumeCard key={key} label={label} volume={data[key]} />
           ))}
         </div>
       )}

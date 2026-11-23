@@ -211,13 +211,14 @@ describe('the members of the organization', () => {
       'Active',
       '27 min ago',
       '$3.20',
+      '$24.46',
       '$76.70',
       '$310.05',
       '59% of $130.00',
     ]) {
       expect(lei).toHaveTextContent(text);
     }
-    // In the order of the Admin list: today, the trend, the month, all time.
+    // In the order of the Admin list: today, the last 7 days, the month, all time.
     expect(screen.getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual([
       'Member',
       'Status',
@@ -228,11 +229,14 @@ describe('the members of the organization', () => {
       'All-time',
       'Monthly limit',
     ]);
-    // The trend is a line of the last 7 days; the pointer shows their total.
-    const trend = within(lei).getByRole('img', { name: 'Spend of the last 7 days' });
-    expect(trend.closest('td')).toHaveAttribute('title', 'Last 7 days: $24.46');
-    // The same total as text, for a reader who has no pointer to hover with.
-    expect(within(lei).getByText('Last 7 days: $24.46')).toHaveClass('sr-only');
+    // The last 7 days are an amount, as the three columns beside them are: no line to read.
+    expect(within(lei).queryByRole('img')).not.toBeInTheDocument();
+    expect(
+      within(lei)
+        .getAllByRole('cell')
+        .slice(3, 7)
+        .map((cell) => cell.textContent),
+    ).toEqual(['$3.20', '$24.46', '$76.70', '$310.05']);
     expect(lei).not.toHaveTextContent('Admin');
     expect(lei).not.toHaveTextContent('You');
     // The limit is the member's own: a change of the default does not move it.
@@ -373,14 +377,79 @@ describe('the members of the organization', () => {
     render(<MembersView />);
 
     const near = screen.getByRole('button', { name: /Near or over the limit/ });
-    expect(near).toHaveTextContent('1');
+    // The count in words: a bare figure beside a list of names does not say what it counts.
+    expect(near).toHaveTextContent('1 member');
     // The share of the limit that the month used.
     expect(near).toHaveTextContent('Lei Wang90%');
     const spenders = screen.getByRole('button', { name: /Top spenders today/ });
-    expect(spenders).toHaveTextContent('2');
+    expect(spenders).toHaveTextContent('2 members spent today');
     expect(spenders).toHaveTextContent('Lei Wang$3.20');
     expect(spenders).toHaveTextContent('An Li');
     expect(near).toHaveAttribute('aria-pressed', 'false');
+    // A card says what a press does.
+    expect(near).toHaveTextContent('Show in the list');
+    expect(spenders).toHaveTextContent('Show in the list');
+  });
+
+  it('puts the list back when the card that is on is pressed again', () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    const near = () => screen.getByRole('button', { name: /Near or over the limit/ });
+    fireEvent.click(near());
+
+    expect(asked()).toMatchObject({ limitState: 'near', sortBy: 'limit_use' });
+    expect(near()).toHaveTextContent('Shown in the list · Clear');
+
+    fireEvent.click(near());
+
+    expect(asked()).toMatchObject({ limitState: undefined, sortBy: 'month', order: 'desc' });
+    expect(near()).toHaveAttribute('aria-pressed', 'false');
+    expect(near()).toHaveTextContent('Show in the list');
+
+    // The other card is an order of the list, and goes back the same way.
+    const today = () => screen.getByRole('button', { name: /Top spenders today/ });
+    fireEvent.click(today());
+    expect(asked()).toMatchObject({ sortBy: 'today', order: 'desc' });
+    fireEvent.click(today());
+    expect(asked()).toMatchObject({ sortBy: 'month', order: 'desc' });
+    expect(today()).toHaveAttribute('aria-pressed', 'false');
+  });
+
+  it('offers "Clear filters" once the list is another one than it opens with, and only then', async () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    const clear = () => screen.queryByRole('button', { name: 'Clear filters' });
+    expect(clear()).not.toBeInTheDocument();
+
+    chooseOption('Status', 'Removed');
+    fireEvent.change(screen.getByLabelText('Today ≥ $'), { target: { value: '5' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+    expect(asked()).toMatchObject({ status: 'removed', minCostToday: 5, sortBy: 'today' });
+
+    fireEvent.click(clear() as HTMLElement);
+
+    expect(asked()).toMatchObject({
+      status: undefined,
+      minCostToday: undefined,
+      limitState: undefined,
+      sortBy: 'month',
+      order: 'desc',
+      offset: 0,
+    });
+    expect(clear()).not.toBeInTheDocument();
+
+    // A card, an order alone and a search are each a change of the list too.
+    fireEvent.click(screen.getByRole('button', { name: /Top spenders today/ }));
+    expect(clear()).toBeInTheDocument();
+    fireEvent.click(clear() as HTMLElement);
+    fireEvent.change(screen.getByLabelText('Search by name or email'), {
+      target: { value: 'lei' },
+    });
+    expect(clear()).toBeInTheDocument();
+    fireEvent.click(clear() as HTMLElement);
+    expect(screen.getByLabelText('Search by name or email')).toHaveValue('');
   });
 
   it('opens the list of a card: its filter and its order, and nothing else', async () => {
@@ -526,9 +595,8 @@ describe('the members of the organization', () => {
     const panel = screen.getByRole('dialog', { name: 'Lei Wang' });
     expect(state.member).toHaveBeenLastCalledWith('u-lei', '30d');
     expect(panel).toHaveTextContent('lei.wang@example.edu');
-    expect(
-      within(panel).getByText('Joined Oct 9, 2026 · Last sign-in 3 h ago'),
-    ).toBeInTheDocument();
+    expect(within(panel).getByText('Joined').parentElement).toHaveTextContent('Oct 9, 2026');
+    expect(within(panel).getByText('Last sign-in').parentElement).toHaveTextContent('3 h ago');
     expect(within(panel).getByRole('button', { name: 'Set monthly limit' })).toBeInTheDocument();
     expect(
       within(panel).getByRole('button', { name: 'Remove from organization' }),

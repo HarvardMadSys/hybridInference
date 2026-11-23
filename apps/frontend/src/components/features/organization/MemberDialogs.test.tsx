@@ -543,7 +543,7 @@ describe('the models of a member', () => {
     const locked = box(dialog, 'big-model');
     expect(locked).not.toBeChecked();
     expect(locked).toBeDisabled();
-    expect(dialog).toHaveTextContent('off by the platform administrator');
+    expect(dialog).toHaveTextContent('disabled by the platform administrator');
   });
 
   it('saves the list of the organization only, and says so', async () => {

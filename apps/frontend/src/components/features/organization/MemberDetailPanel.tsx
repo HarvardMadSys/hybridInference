@@ -1,11 +1,13 @@
 'use client';
 
+import type { ReactNode } from 'react';
 import type { Translate } from '@/components/providers/useT';
 import { useT } from '@/components/providers/useT';
 import { AdminLoading, AdminNotice } from '@/components/features/admin/AdminPrimitives';
 import {
   BUTTON_DANGER,
   BUTTON_SECONDARY,
+  FIELD_LABEL,
   NOTICE_ACTION,
   PANEL,
   ROW_ACTION_DANGER,
@@ -57,19 +59,87 @@ export function memberActions(member: OrganizationMember): {
   };
 }
 
-/** What the account has, in three short phrases. */
-function accountFacts(account: MemberAccount, t: Translate): string[] {
-  return [
-    account.has_key
-      ? t('organization.member.has_key', 'Has an active API key')
-      : t('organization.member.no_key', 'No active API key'),
-    account.two_factor_enabled
-      ? t('organization.member.two_factor_on', 'Two-factor on')
-      : t('organization.member.two_factor_off', 'Two-factor off'),
-    account.email_verified
-      ? t('organization.member.email_verified', 'Email verified')
-      : t('organization.member.email_unverified', 'Email not verified'),
-  ];
+/** The heading of a panel of the member's details. */
+const PANEL_HEADING = 'text-[13px] font-semibold text-gray-900';
+
+/**
+ * One fact of the member: its name over its value. A fact that is a yes or a
+ * no has a dot of that color before the word.
+ */
+function Fact({ label, value, has }: { label: string; value: ReactNode; has?: boolean }) {
+  return (
+    <div className="min-w-0 px-4">
+      <dt className={FIELD_LABEL}>{label}</dt>
+      <dd className="mt-1 flex min-h-[1.375rem] items-center gap-1.5 text-[13px] font-medium text-gray-900">
+        {has === undefined ? null : (
+          <span
+            aria-hidden="true"
+            className={`h-1.5 w-1.5 shrink-0 rounded-full ${has ? 'bg-emerald-500' : 'bg-gray-400'}`}
+          />
+        )}
+        <span className="truncate">{value}</span>
+      </dd>
+    </div>
+  );
+}
+
+/**
+ * Who the member is, in one panel: its status, when it joined and last signed
+ * in, and what its account has. The three facts of the account are a dash
+ * until the member's details are read.
+ */
+function MemberFacts({
+  member,
+  account,
+}: {
+  member: OrganizationMember;
+  account: MemberAccount | undefined;
+}) {
+  const t = useT();
+  const fmt = useFormatter();
+  const fact = (has: boolean | undefined, yes: string, no: string) =>
+    has === undefined ? { value: '—' } : { value: has ? yes : no, has };
+  return (
+    // The columns of the figures below: a fact stands over the figure under it.
+    <dl className={`${PANEL} grid grid-cols-2 gap-3 py-4 lg:grid-cols-3`}>
+      <Fact
+        label={t('organization.members.status', 'Status')}
+        value={<StatusPill tone={memberStatus(member, t)} />}
+      />
+      <Fact
+        label={t('organization.member.fact_joined', 'Joined')}
+        value={fmt.date(member.joined_at, { year: 'numeric', month: 'short', day: 'numeric' })}
+      />
+      <Fact
+        label={t('organization.member.fact_last_sign_in', 'Last sign-in')}
+        value={relativeTime(member.last_login_at, t, fmt)}
+      />
+      <Fact
+        label={t('organization.member.fact_key', 'API key')}
+        {...fact(
+          account?.has_key,
+          t('organization.member.key_active', 'Active'),
+          t('organization.member.key_none', 'None'),
+        )}
+      />
+      <Fact
+        label={t('organization.member.fact_two_factor', 'Two-factor')}
+        {...fact(
+          account?.two_factor_enabled,
+          t('organization.member.two_factor_on', 'On'),
+          t('organization.member.two_factor_off', 'Off'),
+        )}
+      />
+      <Fact
+        label={t('organization.member.fact_email', 'Email')}
+        {...fact(
+          account?.email_verified,
+          t('organization.member.email_verified', 'Verified'),
+          t('organization.member.email_unverified', 'Not verified'),
+        )}
+      />
+    </dl>
+  );
 }
 
 /** The word of a key that is not active. */
@@ -131,6 +201,7 @@ function MemberProjects({
   const projectIds = new Set(projects.map((project) => project.id));
   return (
     <ProjectsAndKeys
+      headingClass={PANEL_HEADING}
       projects={projects.map((project) => ({
         id: project.id,
         name: project.name,
@@ -144,43 +215,39 @@ function MemberProjects({
 }
 
 /**
- * The models that are off for a member: those of the organization, which the
- * "Models" action changes, and those of the platform administrator, which the
- * organization reads.
+ * The models that are disabled for a member, one to a line: those of the
+ * organization, which the "Models" action changes, and those of the platform
+ * administrator, which the organization reads and which say so.
  */
 function MemberModelsOff({ detail }: { detail: MemberDetail }) {
   const t = useT();
-  const own = detail.disabled_models ?? [];
   const platform = detail.platform_disabled_models ?? [];
+  const models = [...new Set([...(detail.disabled_models ?? []), ...platform])];
+  const title = t('organization.member.models_off', 'Disabled models');
   return (
-    <section
-      className={`${PANEL} space-y-1.5 p-4`}
-      aria-label={t('organization.member.models_off', 'Models turned off')}
-    >
-      <h3 className="text-[13px] font-semibold text-gray-900">
-        {t('organization.member.models_off', 'Models turned off')}
-      </h3>
-      {own.length === 0 && platform.length === 0 ? (
-        <p className="text-[12px] text-gray-400">
-          {t('organization.member.models_off_none', 'No model is turned off for this member.')}
+    <section className={`${PANEL} p-4`} aria-label={title}>
+      <h3 className={PANEL_HEADING}>{title}</h3>
+      {models.length === 0 ? (
+        <p className="mt-1.5 text-[12px] text-gray-400">
+          {t('organization.member.models_off_none', 'No model is disabled for this member.')}
         </p>
-      ) : null}
-      {own.length > 0 ? (
-        <p className="text-[12px] text-gray-700">
-          <span className="text-gray-500">
-            {t('organization.member.models_off_own', 'By the organization:')}
-          </span>{' '}
-          {own.join(', ')}
-        </p>
-      ) : null}
-      {platform.length > 0 ? (
-        <p className="text-[12px] text-gray-700">
-          <span className="text-gray-500">
-            {t('organization.member.models_off_platform', 'By the platform administrator:')}
-          </span>{' '}
-          {platform.join(', ')}
-        </p>
-      ) : null}
+      ) : (
+        <ul className="mt-2 divide-y divide-gray-100 text-[13px]">
+          {models.map((model) => (
+            <li key={model} className="flex items-baseline justify-between gap-3 py-1.5">
+              <span className="truncate font-medium text-gray-900">{model}</span>
+              {platform.includes(model) ? (
+                <span className="shrink-0 text-[12px] text-gray-400">
+                  {t(
+                    'organization.models_dialog.platform_off',
+                    'disabled by the platform administrator',
+                  )}
+                </span>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      )}
     </section>
   );
 }
@@ -189,7 +256,7 @@ function MemberModelsOff({ detail }: { detail: MemberDetail }) {
  * One member, as its panel shows it: its status, when it joined, what its
  * account has, what an administrator may do to it, its spend, its spend for
  * each of the last 30 days, the models it used, its projects and keys, the
- * models that are off for it, and its last requests.
+ * models that are disabled for it, and its last requests.
  */
 export function MemberDetailPanel({
   member,
@@ -216,18 +283,7 @@ export function MemberDetailPanel({
 
   return (
     <div className="space-y-3">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
-        <StatusPill tone={memberStatus(current, t)} />
-        <p className="text-[12px] text-gray-500">
-          {fill(t('organization.member.joined', 'Joined {date} · Last sign-in {when}'), {
-            date: fmt.date(current.joined_at, { year: 'numeric', month: 'short', day: 'numeric' }),
-            when: relativeTime(current.last_login_at, t, fmt),
-          })}
-        </p>
-      </div>
-      {data?.account ? (
-        <p className="text-[12px] text-gray-500">{accountFacts(data.account, t).join(' · ')}</p>
-      ) : null}
+      <MemberFacts member={current} account={data?.account} />
 
       {hasAction ? (
         <div className="flex flex-wrap items-center gap-2">
@@ -366,7 +422,7 @@ export function MemberDetailPanel({
             className={`${PANEL} p-4`}
             aria-label={t('organization.overview.by_model', 'Spend by model')}
           >
-            <h3 className="text-[13px] font-semibold text-gray-900">
+            <h3 className={PANEL_HEADING}>
               {t('organization.overview.by_model', 'Spend by model')}
             </h3>
             <p className="mb-3 mt-0.5 text-[12px] text-gray-500">{inPeriod}</p>
@@ -380,7 +436,7 @@ export function MemberDetailPanel({
           />
           <MemberModelsOff detail={data} />
           <section aria-label={t('organization.member.recent', 'Recent requests')}>
-            <h3 className="mb-2 text-[13px] font-semibold text-gray-900">
+            <h3 className={`mb-2 ${PANEL_HEADING}`}>
               {t('organization.member.recent', 'Recent requests')}
             </h3>
             <RequestsTable
