@@ -244,6 +244,9 @@ class UserInfo(BaseModel):
     #: The organization the account is a member of and its role there; None
     #: for an account in no organization.
     organization: OrganizationRef | None = None
+    #: A member of an organization that is not a platform administrator: it
+    #: signs in through single sign-on only, and cannot have a password.
+    sso_only: bool = False
 
 
 # Accounts signed in on one browser

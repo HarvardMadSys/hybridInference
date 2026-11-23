@@ -118,11 +118,12 @@ class ResetRedemption(NamedTuple):
 
     *outcome* is ``"reset"`` when the password was replaced, and otherwise why
     the link was refused: ``"invalid"`` (no such link, or no such account),
-    ``"used"`` or ``"expired"``. *user_id* is the account reset, for
-    ``"reset"`` only.
+    ``"used"``, ``"expired"``, or ``"sso_only"`` (the account is a member of
+    an organization, which has no password). *user_id* is the account reset,
+    for ``"reset"`` only.
     """
 
-    outcome: Literal["reset", "invalid", "used", "expired"]
+    outcome: Literal["reset", "invalid", "used", "expired", "sso_only"]
     user_id: str | None = None
 
 

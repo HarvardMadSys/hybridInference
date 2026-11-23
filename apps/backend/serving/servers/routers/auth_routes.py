@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from serving import organizations
 from serving.audit import AuditActor, AuditTarget
 from serving.auth import sso_accounts
 from serving.auth.browser_sessions import (
@@ -496,6 +497,13 @@ async def login(
 
     if not password_matches:
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+
+    # A member of an organization has no password: the join took it. One that
+    # stayed (the account was a platform administrator then) signs nobody in,
+    # and is answered as a wrong one, as for an account that never had one.
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        await _record("failure", failure_reason="sso_only", user_id=user_row["id"])
         raise HTTPException(status_code=401, detail="Invalid email or password")
 
     # Check account status *before* email verification. A suspended, rejected,
@@ -1056,6 +1064,15 @@ async def forgot_password(
             message="If an account exists with this email, a password reset link has been sent."
         )
 
+    # A member of an organization signs in through single sign-on and has no
+    # password to reset: no link is made. The answer is the one every address
+    # gets, so it does not tell who is a member.
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        logger.info(f"Password reset not sent to organization member: {user_row['id']}")
+        return PasswordResetResponse(
+            message="If an account exists with this email, a password reset link has been sent."
+        )
+
     # Every request let through mails a link that works, the same one while it
     # has most of its life left: repeated requests add no rows, and someone
     # asking for another person's reset only sends that person working links.
@@ -1133,6 +1150,10 @@ async def reset_password(
 
     password_hash_str = await password_utils.hash_password_async(body.new_password)
     redemption = await op_store.redeem_reset_token(body.token, password_hash=password_hash_str)
+    if redemption.outcome == "sso_only":
+        # The link is good; the account became a member of an organization
+        # after it was sent, and has no password any more.
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
     if redemption.outcome != "reset":
         raise _reset_refused(redemption.outcome)
 

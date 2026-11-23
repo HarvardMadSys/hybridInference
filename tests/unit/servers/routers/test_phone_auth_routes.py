@@ -589,6 +589,37 @@ async def test_phone_login_refuses_inactive_status(enabled, status):
 
 
 @pytest.mark.asyncio
+async def test_a_code_does_not_sign_a_member_of_an_organization_in(enabled):
+    """The identity provider of the organization decides who signs in to a member's account."""
+    store = Store(user())
+    store.get_organization_membership = AsyncMock(
+        return_value={"organization_id": "o-1", "role": "member"}
+    )
+    with pytest.raises(HTTPException) as refused:
+        await routes.phone_login(
+            request(), Response(), PhoneVerifyRequest(phone=PHONE, code="123456"), store
+        )
+    assert refused.value.status_code == 403
+    assert "single sign-on" in refused.value.detail
+    store.create_phone_session.assert_not_called()
+    assert store.browser_sessions.browsers == {}
+    assert store.record_phone_login_event.call_args.kwargs["failure_reason"] == "sso_only"
+
+
+@pytest.mark.asyncio
+async def test_a_code_signs_a_platform_administrator_in_though_it_is_a_member(enabled):
+    store = Store({**user(), "role": "admin"})
+    store.get_organization_membership = AsyncMock(
+        return_value={"organization_id": "o-1", "role": "member"}
+    )
+    signed_in = await routes.phone_login(
+        request(), Response(), PhoneVerifyRequest(phone=PHONE, code="123456"), store
+    )
+    assert signed_in.user.role == "admin"
+    store.create_phone_session.assert_called_once()
+
+
+@pytest.mark.asyncio
 async def test_phone_login_does_not_bypass_real_unverified_email(enabled):
     store = Store(user(email="admin@example.com", email_verified=False))
     with pytest.raises(HTTPException) as exc:

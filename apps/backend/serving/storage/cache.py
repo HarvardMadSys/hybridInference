@@ -1180,6 +1180,8 @@ class CachedOperationalStore(OperationalStore):
         outcome = await self._store.link_user_identity(**fields)
         if outcome == LINKED:
             await self.invalidate_user_auth_caches(fields["user_id"])
+            # A member has no password: the cached row may hold the one it had.
+            await self._cache.delete(self._user_key(fields["user_id"]))
         return outcome
 
     async def touch_user_identity(self, identity_id: str) -> None:
@@ -1238,7 +1240,16 @@ class CachedOperationalStore(OperationalStore):
         if result[1]:
             # The new members' lookups now carry the organization's limits.
             await self.invalidate_auth_caches()
+            await self._forget_new_members()
         return result
+
+    async def _forget_new_members(self) -> None:
+        """Evict every cached account row: a join took the password of some of them.
+
+        An attach makes members of accounts the caller does not name, so every
+        row goes, as every auth entry does beside it.
+        """
+        await self._cache.delete_pattern(self._user_key("*"))
 
     async def get_organization(self, organization_id: str) -> Row | None:
         """One organization with its member count and the ids of its SSO connections."""
@@ -1280,6 +1291,7 @@ class CachedOperationalStore(OperationalStore):
         )
         if result[1]:
             await self.invalidate_auth_caches()
+            await self._forget_new_members()
         return result
 
     async def detach_organization_connection(

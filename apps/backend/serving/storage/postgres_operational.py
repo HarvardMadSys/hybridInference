@@ -42,7 +42,11 @@ from serving.storage.base import (
     Row,
 )
 from serving.storage.erasure_fence import fence_account_digest, lock_fence_keys_shared
-from serving.storage.organizations import PostgresOrganizationsMixin, member_quota_join
+from serving.storage.organizations import (
+    PostgresOrganizationsMixin,
+    member_quota_join,
+    signs_in_through_sso_only,
+)
 from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.storage.sso import PostgresSsoMixin
@@ -3483,6 +3487,10 @@ class PostgresOperationalStore(
                 return ResetRedemption("used")
             if link["expired"]:
                 return ResetRedemption("expired")
+            if await signs_in_through_sso_only(conn, owner):
+                # Decided here, under the lock on the account that the link
+                # that makes a member takes too.
+                return ResetRedemption("sso_only")
             await conn.execute(
                 "UPDATE users SET password_hash = $2 WHERE id = $1", owner, password_hash
             )

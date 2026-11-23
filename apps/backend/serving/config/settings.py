@@ -877,6 +877,11 @@ def is_admin_email(email: str | None) -> bool:
     return email.strip().lower() in _parse_admin_emails(_shared_settings().admin_emails)
 
 
+def admin_email_addresses() -> list[str]:
+    """The ``ADMIN_EMAILS`` addresses, lower-cased: :func:`is_admin_email` for a rule in SQL."""
+    return _parse_admin_emails(_shared_settings().admin_emails)
+
+
 def get_signup_notify_emails() -> list[str]:
     """Return recipients for signup approval notifications.
 

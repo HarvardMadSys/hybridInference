@@ -22,6 +22,7 @@ import asyncpg
 
 from serving.accounting import get_accounting_policy
 from serving.audit import AuditTarget, audit_columns
+from serving.config.settings import admin_email_addresses
 from serving.storage.audit_schema import insert_audit_row
 
 if TYPE_CHECKING:
@@ -362,11 +363,6 @@ def _above(value: Any, ceiling: Any) -> bool:
     return value is not None and ceiling is not None and value > ceiling
 
 
-def _inserted(tag: str) -> int:
-    """The row count of an ``INSERT`` command tag (``INSERT 0 3``)."""
-    return int(tag.rsplit(" ", 1)[-1])
-
-
 async def lock_for_sign_in(conn: Any) -> None:
     """Keep an attach out until this sign-in's transaction ends.
 
@@ -377,14 +373,64 @@ async def lock_for_sign_in(conn: Any) -> None:
     await conn.execute(SIGN_IN_LOCK_SQL)
 
 
+#: A member that is not a platform administrator, as ``users u``: the account
+#: that signs in through single sign-on only. ``{exempt}`` is the parameter
+#: that holds the ``ADMIN_EMAILS`` addresses, which make an administrator of an
+#: account whose role does not say so yet.
+_SSO_ONLY_ACCOUNT = (
+    "u.role IS DISTINCT FROM 'admin' "
+    "AND NOT COALESCE(lower(u.email) = ANY(${exempt}::text[]), FALSE)"
+)
+
+
+async def close_password_sign_in(conn: Any, user_ids: Sequence[str]) -> None:
+    """Take the password, and the links that set one, from accounts that just became members.
+
+    The organization owns the account of a member, so its identity provider
+    decides who signs in: a password from before would let in a person the
+    provider disabled. In the transaction that makes the membership. A platform
+    administrator keeps the password: that account must get in when the
+    provider is not available.
+    """
+    if not user_ids:
+        return
+    members = f"u.id = ANY($1::text[]) AND {_SSO_ONLY_ACCOUNT.format(exempt=2)}"
+    arguments = (list(user_ids), admin_email_addresses())
+    await conn.execute(
+        f"DELETE FROM password_reset_tokens t USING users u WHERE t.user_id = u.id AND {members}",
+        *arguments,
+    )
+    await conn.execute(
+        f"UPDATE users u SET password_hash = NULL WHERE u.password_hash IS NOT NULL AND {members}",
+        *arguments,
+    )
+
+
+async def signs_in_through_sso_only(conn: Any, user_id: str) -> bool:
+    """Whether *user_id* is a member that is not a platform administrator.
+
+    The rule of :func:`serving.organizations.is_sso_only`, for a transaction
+    that must decide under its own locks.
+    """
+    return bool(
+        await conn.fetchval(
+            "SELECT 1 FROM org_memberships m JOIN users u ON u.id = m.user_id "
+            f"WHERE m.user_id = $1 AND {_SSO_ONLY_ACCOUNT.format(exempt=2)}",
+            user_id,
+            admin_email_addresses(),
+        )
+    )
+
+
 async def join_organization(conn: Any, *, user_id: str, provider_id: str) -> str | None:
     """Make *user_id* a member of the organization *provider_id* belongs to.
 
     Returns the organization's id when this call made the membership, None when
     the provider belongs to no organization or the account is a member already.
-    Its transaction took :func:`lock_for_sign_in` first.
+    Its transaction took :func:`lock_for_sign_in` first. A new member loses its
+    password (:func:`close_password_sign_in`).
     """
-    return await conn.fetchval(
+    organization_id = await conn.fetchval(
         "INSERT INTO org_memberships (user_id, organization_id) "
         "SELECT $1, c.organization_id FROM org_sso_connections c "
         "WHERE c.provider_id = $2 "
@@ -392,6 +438,9 @@ async def join_organization(conn: Any, *, user_id: str, provider_id: str) -> str
         user_id,
         provider_id,
     )
+    if organization_id is not None:
+        await close_password_sign_in(conn, [user_id])
+    return organization_id
 
 
 async def in_other_organization(conn: Any, *, user_id: str, provider_id: str) -> bool:
@@ -424,8 +473,8 @@ async def _identities_without_organization(conn: Any) -> list[dict]:
 
 async def _attach(
     conn: Any, organization_id: str, provider_id: str, user_ids: Sequence[str]
-) -> int:
-    """Attach *provider_id* and make *user_ids* members; how many memberships are new."""
+) -> list[str]:
+    """Attach *provider_id* and make *user_ids* members; the accounts whose membership is new."""
     attached = await conn.fetchval(
         "INSERT INTO org_sso_connections (provider_id, organization_id) "
         "VALUES ($1, $2) ON CONFLICT (provider_id) DO NOTHING RETURNING provider_id",
@@ -440,15 +489,17 @@ async def _attach(
         if owner != organization_id:
             raise _ConnectionTaken
     if not user_ids:
-        return 0
-    tag = await conn.execute(
+        return []
+    rows = await conn.fetch(
         "INSERT INTO org_memberships (user_id, organization_id) "
         "SELECT u.id, $1 FROM users u WHERE u.id = ANY($2::text[]) "
-        "ON CONFLICT (user_id) DO NOTHING",
+        "ON CONFLICT (user_id) DO NOTHING RETURNING user_id",
         organization_id,
         list(user_ids),
     )
-    return _inserted(tag)
+    joined = [row["user_id"] for row in rows]
+    await close_password_sign_in(conn, joined)
+    return joined
 
 
 class PostgresOrganizationsMixin:
@@ -511,8 +562,8 @@ class PostgresOrganizationsMixin:
                 added = 0
                 identities = await _identities_without_organization(conn) if connections else []
                 for provider_id, accounts_of in connections:
-                    added += await _attach(
-                        conn, organization_id, provider_id, accounts_of(identities)
+                    added += len(
+                        await _attach(conn, organization_id, provider_id, accounts_of(identities))
                     )
                 await insert_audit_row(
                     conn,
@@ -694,7 +745,7 @@ class PostgresOrganizationsMixin:
                 if found is None:
                     return NOT_FOUND, 0
                 user_ids = accounts_of(await _identities_without_organization(conn))
-                added = await _attach(conn, organization_id, provider_id, user_ids)
+                added = len(await _attach(conn, organization_id, provider_id, user_ids))
                 await insert_audit_row(
                     conn,
                     columns=audit,

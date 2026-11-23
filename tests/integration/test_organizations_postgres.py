@@ -469,14 +469,16 @@ async def test_an_administrator_reaches_only_the_members_of_its_own_organization
     await store.create_organization(
         organization_id="o-other", name="Other Organization", actor=PLATFORM
     )
+    # Signed in before the membership: a member has no password sign-in, and
+    # a session from before the join stays.
+    boss = new_browser(app)
+    boss_headers = await _password_session(boss, "boss@other.example.org")
     async with clean_organizations.acquire() as conn:
         await conn.execute(
             "INSERT INTO org_memberships (user_id, organization_id, role) "
             "VALUES ($1, 'o-other', 'admin')",
             boss_id,
         )
-    boss = new_browser(app)
-    boss_headers = await _password_session(boss, "boss@other.example.org")
 
     own = (await boss.get("/user/organization", headers=boss_headers)).json()
     members = (await boss.get("/user/organization/members", headers=boss_headers)).json()

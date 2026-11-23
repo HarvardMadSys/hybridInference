@@ -404,6 +404,7 @@ async def get_current_user_info(
             if membership
             else None
         ),
+        sso_only=organizations.is_sso_only(user_row, membership),
     )
 
 
@@ -1400,6 +1401,9 @@ async def change_password(
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
+
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
 
     first_password = not user_row.get("password_hash")
     # The current password, or for a first password (a new way in, which the

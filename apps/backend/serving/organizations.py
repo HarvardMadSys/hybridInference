@@ -22,6 +22,7 @@ from serving import quota
 from serving.accounting import money_decimal
 from serving.audit import AuditActor, AuditTarget
 from serving.config import sso as sso_config
+from serving.config.settings import is_admin_email
 from serving.storage.base import OrganizationsUnavailableError
 from serving.storage.organizations import is_protected
 from serving.utils.logging import get_logger
@@ -84,6 +85,32 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     except OrganizationsUnavailableError:
         return None
     return dict(row) if row else None
+
+
+#: What a member is told when it asks for a password.
+SSO_ONLY_DETAIL = (
+    "This account belongs to an organization and signs in through single sign-on. "
+    "It cannot have a password."
+)
+
+
+def is_sso_only(user: Mapping[str, Any], membership: Mapping[str, Any] | None) -> bool:
+    """Whether an account signs in through single sign-on only.
+
+    A member of an organization that is not a platform administrator: the
+    organization owns the account, so its identity provider decides who gets
+    in. A platform administrator (the role, or an ``ADMIN_EMAILS`` address,
+    which becomes one on its next token) keeps every way in, for the day the
+    provider is not available.
+    """
+    if membership is None:
+        return False
+    return user.get("role") != "admin" and not is_admin_email(user.get("email"))
+
+
+async def signs_in_through_sso_only(op_store: Any, user: Mapping[str, Any]) -> bool:
+    """:func:`is_sso_only` for an account whose membership is not read yet."""
+    return is_sso_only(user, await membership_of(op_store, user["id"]))
 
 
 #: The columns an identity carries of the organization its requests are checked
