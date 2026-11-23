@@ -328,9 +328,6 @@ msgstr "需要了解的几点："
 msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization, and the usage pages do not show it."
 msgstr "**机构的花费从成为成员时开始计**。账号在成为成员之前被计的费用，不计入机构的上限，用量页面也不显示这部分。"
 
-msgid "**A change of a limit, or of the role of a member, applies within 30 seconds.**"
-msgstr "**上限的修改和成员角色的修改在 30 秒内生效**。"
-
 msgid "**Requests that run at the same time** can take an organization a little past its limit, as they can for the quota of an account."
 msgstr "**同时进行的请求**可能让机构略微超过上限，账号的配额也是这样。"
 
@@ -399,9 +396,6 @@ msgstr "机构管理员移除或恢复一个成员"
 
 msgid "Stop using an organization"
 msgstr "停止使用一个机构"
-
-msgid "Take the administrator role back from each of its administrators and clear its monthly limit. The members keep their accounts and sign in as before."
-msgstr "收回它每一位管理员的管理员角色，并清除它的每月上限。成员保留各自的账号，和以前一样登录。"
 
 msgid "How a member signs in"
 msgstr "成员怎样登录"
@@ -487,12 +481,6 @@ msgstr "关闭模型，作废 key"
 msgid "An organization can only take away. It cannot give a member more than you allow."
 msgstr "机构只能收紧，不能给成员比你允许的更多。"
 
-msgid "**Models.** An organization administrator turns a model off for one member. The organization has a list of its own for this. The list that you set in **Admin → Users** is a different list: the organization can read it and cannot change it. The gateway refuses a model that is in either list. So an organization cannot turn on a model that you turned off. `GET /user/organization/members/{user_id}/models` returns the models that you let the member use, and the two lists."
-msgstr "**模型。** 机构管理员可以对单个成员关闭某个模型。机构为此有自己的一份清单。你在 **Admin → Users** 里设置的是另一份清单：机构能看到，但不能修改。两份清单里任何一份有的模型，网关都会拒绝。所以机构不能把你关掉的模型打开。`GET /user/organization/members/{user_id}/models` 返回你允许这个成员使用的模型，以及这两份清单。"
-
-msgid "**API keys.** An organization administrator revokes one API key of a member, as the owner of the key does in the console. The key stays revoked, and the member can make a new one. `key_id` is the `id` of the key in the panel of the member."
-msgstr "**API key。** 机构管理员可以作废某个成员的一把 API key，和 key 的主人在控制台里做的一样。作废的 key 不会恢复，成员可以新建一把。`key_id` 是成员面板里那把 key 的 `id`。"
-
 msgid "The gateway is not told when the identity provider disables an account. The person can then no longer sign in, because a member has no password. Until an administrator removes the member, its open sessions and its API keys keep working."
 msgstr "身份提供方停用账号时，网关不会得到通知。这个人此后不能再登录，因为成员没有密码。在管理员移除这个成员之前，它已打开的会话和 API key 仍然有效。"
 
@@ -513,3 +501,21 @@ msgstr "`organization.member_key.revoke`"
 
 msgid "An organization administrator revokes an API key of a member"
 msgstr "机构管理员作废某个成员的一把 API key"
+
+msgid "`python -m serving.auth.reset_password` refuses a member too."
+msgstr "`python -m serving.auth.reset_password` 同样拒绝成员。"
+
+msgid "This is not undone. A member stays a member when you detach the connection, and its account stays without a password. Check the `domains` of a connection before you attach it."
+msgstr "这一点不能撤销。你摘掉连接之后，成员仍然是成员，它的账号仍然没有密码。挂上一个连接之前，先核对它的 `domains`。"
+
+msgid "**Models.** An organization administrator turns a model off for one member. The organization has a list of its own for this. The list that you set in **Admin → Users** is a different list: the organization can read it and cannot change it. The gateway refuses a model that is in either list. So an organization cannot turn on a model that you turned off. `GET /user/organization/members/{user_id}/models` returns the models that you let the member use, and the two lists. The organization can turn off only those models. Its list does not apply to an organization administrator or to an account with the `admin` role."
+msgstr "**模型。** 机构管理员可以对单个成员关闭某个模型。机构为此有自己的一份清单。你在 **Admin → Users** 里设置的是另一份清单：机构能看到，但不能修改。两份清单里任何一份有的模型，网关都会拒绝。所以机构不能把你关掉的模型打开。`GET /user/organization/members/{user_id}/models` 返回你允许这个成员使用的模型，以及这两份清单。机构只能关闭这些模型。机构的清单不作用于机构管理员，也不作用于拥有 `admin` 角色的账号。"
+
+msgid "**API keys.** An organization administrator revokes one API key of a member, as the owner of the key does in the console. The key stays revoked, and the member can make a new one. `key_id` is the `id` of the key in the panel of the member. The panel shows the keys that the account had as a member. It does not show a key that was revoked before the account became one."
+msgstr "**API key。** 机构管理员可以作废某个成员的一把 API key，和 key 的主人在控制台里做的一样。作废的 key 不会恢复，成员可以新建一把。`key_id` 是成员面板里那把 key 的 `id`。面板只显示账号作为成员期间拥有的 key，不显示它成为成员之前就已作废的 key。"
+
+msgid "**A change of a limit, of the role of a member or of its models applies within 60 seconds.** A revoked key stops within 30 seconds."
+msgstr "**修改上限、成员的角色或成员的模型，在 60 秒内生效。** 作废的 key 在 30 秒内失效。"
+
+msgid "Take the administrator role back from each of its administrators and clear its monthly limit. The members keep their accounts and sign in through single sign-on as before. They stay members: their accounts have no password."
+msgstr "收回它每一位管理员的管理员角色，并清除它的每月上限。成员保留各自的账号，照常通过单点登录来登录。它们仍然是成员：账号没有密码。"

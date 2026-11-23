@@ -33,6 +33,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
+from serving import organizations
 from serving.audit import AuditTarget
 from serving.auth.two_factor import (
     LOCK_EVERY_ATTEMPTS,
@@ -253,6 +254,15 @@ async def start_two_factor_setup(
         )
     else:
         if not user_row.get("password_hash"):
+            if await organizations.signs_in_through_sso_only(op_store, user_row):
+                # A member of an organization cannot set a password: its
+                # identity provider is where it has a second factor.
+                raise HTTPException(
+                    status_code=400,
+                    detail="This account signs in through single sign-on and has no password, "
+                    "so it cannot add an authenticator here. Its identity provider asks "
+                    "for a second factor.",
+                )
             raise HTTPException(
                 status_code=400,
                 detail="Adding an authenticator needs your password, and this account has "

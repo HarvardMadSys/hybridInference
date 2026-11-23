@@ -307,10 +307,15 @@ _REQUEST_PREFERENCE_KEYS = ("disabled_models", "locale")
 _USER_ROW_PREFERENCES = _preferences_subset("preferences", *_REQUEST_PREFERENCE_KEYS)
 #: With the list of the member's organization (``om``, the membership that
 #: :data:`_ACCOUNT_QUOTA_JOIN` joins) beside it: an organization turns a model
-#: off for a member in a list of its own, and never writes the account's.
+#: off for a member in a list of its own, and never writes the account's. Not
+#: for an administrator, of the organization or of the platform: the
+#: organization does not set its models (``is_protected``), so a list from
+#: before the role does not hold it either, as a limit from before does not
+#: (:func:`serving.storage.organizations.member_quota_join`).
 _KEY_AUTH_PREFERENCES = (
     f"{_preferences_subset('u.preferences', 'disabled_models')} AS preferences, "
-    "om.disabled_models AS organization_disabled_models"
+    "CASE WHEN om.role = 'admin' OR u.role = 'admin' THEN NULL ELSE om.disabled_models END "
+    "AS organization_disabled_models"
 )
 
 # Columns of a single-user lookup (get_user_by_id / _by_email / _by_login_name),
@@ -339,8 +344,10 @@ _USER_SELECT = ", ".join(
     for column in _USER_COLUMNS
 ) + (
     # The models the account's organization turned off for it, through the
-    # primary key of its membership; NULL for an account in no organization.
-    ", (SELECT m.disabled_models FROM org_memberships m WHERE m.user_id = users.id) "
+    # primary key of its membership; NULL for an account in no organization,
+    # and for an administrator (see _KEY_AUTH_PREFERENCES).
+    ", (SELECT CASE WHEN m.role = 'admin' OR users.role = 'admin' THEN NULL "
+    "ELSE m.disabled_models END FROM org_memberships m WHERE m.user_id = users.id) "
     "AS organization_disabled_models"
 )
 
@@ -3528,6 +3535,28 @@ class PostgresOperationalStore(
             await conn.execute("DELETE FROM password_reset_tokens WHERE user_id = $1", owner)
             await conn.execute("DELETE FROM auth_sessions WHERE user_id = $1", owner)
         return ResetRedemption("reset", owner)
+
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give an account a password, unless it signs in through single sign-on only.
+
+        Decided under the lock on the account's row, which the event that makes
+        a member waits for: of a join and this write at the same time, the join
+        ends with no password on the account whichever comes first. False, with
+        nothing written, for a member of an organization that is not a platform
+        administrator, and for an account that does not exist.
+        """
+        async with self._pool.acquire() as conn, conn.transaction():
+            if (
+                await conn.fetchval("SELECT id FROM users WHERE id = $1 FOR UPDATE", user_id)
+                is None
+            ):
+                return False
+            if await signs_in_through_sso_only(conn, user_id):
+                return False
+            await conn.execute(
+                "UPDATE users SET password_hash = $2 WHERE id = $1", user_id, password_hash
+            )
+        return True
 
     # -- identity authorization codes ----------------------------------------
 

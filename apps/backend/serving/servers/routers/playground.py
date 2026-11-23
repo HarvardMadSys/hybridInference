@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from routing.endpoints import endpoint_id_for_adapter
+from serving import organizations
 from serving.config.runtime_settings import get_runtime_settings
 from serving.config.settings import has_role
 from serving.model_access import model_access_denial
@@ -318,9 +319,34 @@ async def _playground_slot(
             limiter.release(slot_key)
 
 
+_internal_role = require_role("internal")
+
+
+async def _require_internal(
+    current_user: dict[str, Any] = Depends(_internal_role),
+    op_store: Any = Depends(get_operational_store),
+) -> dict[str, Any]:
+    """The session's caller with the internal role, and the models that are off for it.
+
+    The session context is built for the dashboard and names no model. Model
+    access reads ``disabled_models`` from the caller, as it does for an API
+    key: the list the platform administrator keeps on the account, and the one
+    of the account's organization. Without it the playground would list and
+    serve a model that every other surface refuses this account.
+    """
+    if not op_store:
+        return current_user
+    return {
+        **current_user,
+        "disabled_models": await organizations.disabled_models_of_account(
+            op_store, current_user["user_id"]
+        ),
+    }
+
+
 @router.get("/models")
 async def list_models(
-    _admin: dict[str, Any] = Depends(require_role("internal")),
+    _admin: dict[str, Any] = Depends(_require_internal),
     router_exec=Depends(get_router),
     model_visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> dict[str, Any]:
@@ -519,7 +545,6 @@ def _with_route_frame(
 
 
 #: The playground's caller check, shared by the routes and the body read below.
-_require_internal = require_role("internal")
 _chat_body = json_body_after(_require_internal, PlaygroundChatRequest)
 
 

@@ -905,7 +905,13 @@ async def switch_account(
         access_token=access_token,
         token_type="bearer",
         expires_in=get_access_token_expire_minutes() * 60,
-        user=account_user_info(account, role=user_role),
+        user=account_user_info(
+            account,
+            role=user_role,
+            sso_only=await organizations.signs_in_through_sso_only(
+                op_store, {"id": account["user_id"], "role": user_role, "email": account["email"]}
+            ),
+        ),
     )
 
 

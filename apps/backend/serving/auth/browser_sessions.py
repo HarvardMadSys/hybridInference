@@ -327,8 +327,14 @@ async def issue_account_token(op_store: Any, account: dict[str, Any]) -> tuple[s
     return access_token, user_role
 
 
-def account_user_info(account: dict[str, Any], *, role: str | None = None) -> UserInfo:
-    """Describe a signed-in account the way the login response does."""
+def account_user_info(
+    account: dict[str, Any], *, role: str | None = None, sso_only: bool = False
+) -> UserInfo:
+    """Describe a signed-in account the way the login response does.
+
+    *sso_only* is what the caller read of the account's organization: a member
+    that is not a platform administrator signs in through single sign-on only.
+    """
     user_role = role or account["role"] or "free"
     return UserInfo(
         id=account["user_id"],
@@ -344,6 +350,7 @@ def account_user_info(account: dict[str, Any], *, role: str | None = None) -> Us
         is_admin=user_role == "admin",
         created_at=account["created_at"],
         last_login_at=account.get("last_login_at"),
+        sso_only=sso_only,
     )
 
 

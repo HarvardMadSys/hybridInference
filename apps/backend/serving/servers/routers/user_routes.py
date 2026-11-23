@@ -1371,6 +1371,7 @@ async def update_profile(
         is_admin=(user_row["role"] or "free") == "admin",
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
+        sso_only=await organizations.signs_in_through_sso_only(op_store, user_row),
     )
 
 
@@ -1424,7 +1425,10 @@ async def change_password(
 
     # A signed-in owner, confirmed just above: not refused for a busy queue.
     new_password_hash = await password_utils.hash_password_async(body.new_password, shed=False)
-    await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
+    # Decided again where it is written: the account can have become a member
+    # of an organization since the check above.
+    if not await op_store.set_user_password(current_user["user_id"], new_password_hash):
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.
     revoked = await op_store.revoke_user_sessions(

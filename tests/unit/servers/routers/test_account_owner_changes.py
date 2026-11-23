@@ -75,6 +75,9 @@ class Store:
         self.mark_user_email_verified = AsyncMock()
         self.bind_user_email = AsyncMock(return_value=True)
         self.update_user_fields = AsyncMock()
+        # The password is written by a method of its own, which refuses an
+        # account that signs in through single sign-on only.
+        self.set_user_password = AsyncMock(return_value=True)
         self.revoke_user_sessions = AsyncMock(return_value=0)
         self.delete_user_reset_tokens = AsyncMock()
 
@@ -272,11 +275,11 @@ async def test_phone_account_needs_a_set_password_code_for_a_first_password(setu
     with pytest.raises(HTTPException) as exc:
         await change(store, ChangePasswordRequest(new_password="Brand-New-Pass-1"))
     assert exc.value.status_code == 400
-    store.update_user_fields.assert_not_awaited()
+    store.set_user_password.assert_not_awaited()
 
     await change(store, ChangePasswordRequest(new_password="Brand-New-Pass-1", phone_code="123456"))
     assert store.consume_phone_code.call_args.kwargs["purpose"] == "set_password"
-    store.update_user_fields.assert_awaited_once()
+    store.set_user_password.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -288,7 +291,7 @@ async def test_a_failed_code_sets_no_password(setup):
             store, ChangePasswordRequest(new_password="Brand-New-Pass-1", phone_code="123456")
         )
     assert exc.value.status_code == 400
-    store.update_user_fields.assert_not_awaited()
+    store.set_user_password.assert_not_awaited()
 
 
 # -- changing the password ----------------------------------------------------
@@ -305,7 +308,7 @@ async def test_guessing_the_current_password_counts_against_the_login_limit(setu
         )
     assert exc.value.status_code == 429
     assert limiter.await_args.args[0] == "owner@e2e-mail.org"
-    store.update_user_fields.assert_not_awaited()
+    store.set_user_password.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -318,7 +321,7 @@ async def test_a_wrong_current_password_changes_nothing(setup, old_password):
             ChangePasswordRequest(old_password=old_password, new_password="Brand-New-Pass-1"),
         )
     assert exc.value.status_code == 400
-    store.update_user_fields.assert_not_awaited()
+    store.set_user_password.assert_not_awaited()
     store.revoke_user_sessions.assert_not_awaited()
 
 

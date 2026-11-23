@@ -64,6 +64,7 @@ def op_store() -> MagicMock:
     store.record_login_event = AsyncMock()
     store.update_user_last_login = AsyncMock()
     store.update_user_fields = AsyncMock()
+    store.set_user_password = AsyncMock(return_value=True)
     store.delete_user_reset_tokens = AsyncMock()
     store.create_session = AsyncMock()
     fake = browser_sessions.install(store)

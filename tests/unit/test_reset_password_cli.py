@@ -75,6 +75,8 @@ def _store(account: dict[str, Any] | None) -> MagicMock:
     store.get_user_by_login_name = AsyncMock(return_value=account)
     store.update_user_fields = AsyncMock()
     store.delete_user_sessions = AsyncMock()
+    # No member of an organization: such an account gets no password from the tool.
+    store.signs_in_through_sso_only = AsyncMock(return_value=False)
     return store
 
 
@@ -336,3 +338,16 @@ async def test_the_database_is_reached_with_the_db_settings_alone(monkeypatch):
     with pytest.raises(cli.ResetPasswordError, match=r"Could not connect to the database"):
         await cli._reset_with_database("admin", "a-new-Passw0rd")
     assert (seen["host"], seen["port"]) == ("db.internal", 6543)
+
+
+class TestMemberOfAnOrganization:
+    async def test_the_tool_refuses_and_changes_nothing(self):
+        """A member signs in through single sign-on only: a password would not sign it in."""
+        store = _store({"id": "u-1", "email": "member@example.edu"})
+        store.signs_in_through_sso_only = AsyncMock(return_value=True)
+
+        with pytest.raises(cli.ResetPasswordError, match="single sign-on"):
+            await cli.reset_password(store, "member@example.edu", "A-new-passw0rd-of-mine")
+
+        store.update_user_fields.assert_not_awaited()
+        store.delete_user_sessions.assert_not_awaited()

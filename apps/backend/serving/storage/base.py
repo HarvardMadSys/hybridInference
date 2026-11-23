@@ -1501,6 +1501,16 @@ class OperationalStore(ABC):
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delete all reset tokens for a user."""
 
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give an account a password, unless it signs in through single sign-on only.
+
+        False, with nothing written, for a member of an organization that is
+        not a platform administrator. A store that keeps no organizations
+        writes the password as any other field.
+        """
+        await self.update_user_fields(user_id, password_hash=password_hash)
+        return True
+
     @abstractmethod
     async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
         """Spend reset link *token* on a new password, all in one transaction.

@@ -13,6 +13,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from serving.auth import reset_password as reset_tool
 from serving.config.settings import get_settings
 from tests.fixtures.sso_app import (
     EMAIL,
@@ -191,6 +192,8 @@ async def test_a_member_is_told_on_its_profile_and_sets_no_password(
 
     assert profile.json()["sso_only"] is True
     assert profile.json()["has_password"] is False
+    renamed = await alice.patch("/user/profile", json={"user_name": "Alice"}, headers=alice_headers)
+    assert renamed.json()["sso_only"] is True
     assert changed.status_code == 403, changed.text
     assert "single sign-on" in changed.json()["detail"]
     assert await _password_hash(clean_organizations, alice_id) is None
@@ -233,3 +236,38 @@ async def test_an_account_in_no_organization_is_not_sso_only(app, store):
     profile = await browser.get("/user/me", headers=session)
 
     assert profile.json()["sso_only"] is False
+
+
+async def test_no_write_gives_a_member_a_password(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    """Decided where the password is written, under the lock a join waits for."""
+    root, headers, _ = await _platform_admin(app, store)
+    await _make_organization(root, headers)
+    _, _, alice_id = await _member(app, idp, store)
+    outsider_id = await existing_user(store, "someone@elsewhere.org")
+
+    assert await store.set_user_password(alice_id, "hash-for-a-member") is False
+    assert await store.set_user_password(outsider_id, "hash-for-an-outsider") is True
+    assert await store.set_user_password("no-such-account", "hash") is False
+
+    assert await _password_hash(clean_organizations, alice_id) is None
+    assert await _password_hash(clean_organizations, outsider_id) == "hash-for-an-outsider"
+    assert (await store.get_user_by_id(outsider_id))["password_hash"] == "hash-for-an-outsider"
+
+
+async def test_the_command_line_reset_gives_a_member_no_password(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    root, headers, _ = await _platform_admin(app, store)
+    await _make_organization(root, headers)
+    _, _, alice_id = await _member(app, idp, store)
+    tool = reset_tool.AccountStore(clean_organizations)
+
+    with pytest.raises(reset_tool.ResetPasswordError, match="single sign-on"):
+        await reset_tool.reset_password(tool, EMAIL, "A-new-passw0rd-of-mine")
+    # The platform administrator of these tests is no member: its reset goes through.
+    await reset_tool.reset_password(tool, "root@elsewhere.org", "A-new-passw0rd-of-mine")
+
+    assert await _password_hash(clean_organizations, alice_id) is None
+    assert (await _login(app, "root@elsewhere.org", "A-new-passw0rd-of-mine")).status_code == 200

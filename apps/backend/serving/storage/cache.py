@@ -1316,9 +1316,11 @@ class CachedOperationalStore(OperationalStore):
             organization_id, user_id, role, **fields
         )
         if outcome == UPDATED:
-            # The role decides the quota the lookups carry: an administrator
-            # has no limit from its organization.
+            # The role decides the quota and the models the lookups carry: an
+            # administrator has no limit and no model list from its
+            # organization. The cached row of the account carries the list too.
             await self.invalidate_user_auth_caches(user_id)
+            await self._cache.delete(self._user_key(user_id))
         return outcome
 
     async def remove_organization_member(
@@ -1514,6 +1516,12 @@ class CachedOperationalStore(OperationalStore):
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delegate to wrapped store."""
         return await self._store.delete_user_reset_tokens(user_id)
+
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give an account a password unless it is SSO-only, then evict its cached row."""
+        written = await self._store.set_user_password(user_id, password_hash)
+        await self._cache.delete(self._user_key(user_id))
+        return written
 
     async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
         """Delegate, then forget the reset account's cached user row and session liveness."""

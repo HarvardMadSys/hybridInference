@@ -27,6 +27,7 @@ from serving.grant_auth import (
 )
 from serving.model_access import (
     KEY_ALLOWED_MODELS_KEY,
+    ORGANIZATION_DISABLED_MODELS_KEY,
     PROJECT_ALLOWED_MODELS_KEY,
     disabled_models_of,
 )
@@ -1110,6 +1111,9 @@ async def _resolve_effective_identity(
         "quota_daily_cost_amount": daily_amount,
         "quota_monthly_cost_amount": monthly_amount,
         "preferences": target.get("preferences"),
+        # With the models its organization turned off for it: on behalf of an
+        # account, a model is refused as it is for the account's own key.
+        ORGANIZATION_DISABLED_MODELS_KEY: target.get(ORGANIZATION_DISABLED_MODELS_KEY),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
         **organization,
     }

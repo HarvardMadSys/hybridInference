@@ -134,8 +134,13 @@ provider is not available.
 - **Phone sign-in.** `POST /auth/phone/login` refuses a member. A member can have a phone number, and the
   code then confirms an action, but it does not sign in.
 - **No new password.** `POST /user/change-password` and `POST /auth/reset-password` refuse a member with a
-  403. `POST /auth/forgot-password` gives its usual answer and sends no link.
-- `GET /user/me` has `sso_only: true` for such an account. The console then shows no password control.
+  403. `POST /auth/forgot-password` gives its usual answer and sends no link. The command-line reset
+  (`python -m serving.auth.reset_password`) refuses a member too. Each write of a password is decided
+  under the lock on the account that a join waits for.
+- **Confirmation.** A member confirms a change of its single sign-on at its identity provider. It is not
+  told to set a password.
+- `GET /user/me` has `sso_only: true` for such an account, and so has each answer that describes the
+  signed-in account. The console then shows no password control.
 
 Sessions that exist stay. An API key is not a sign-in: the keys of a member work until the member is removed
 (§7.3) or a key is revoked (§7.6).
@@ -227,8 +232,9 @@ The list takes:
   `_` in it have no special meaning;
 - a status filter;
 - `limit_state`: `near` (80% or more of the limit) or `over` (100% or more);
-- `min_cost_today` and `min_cost_month`, in the ledger currency. `currency` names the unit that the console
-  read them in. When it is not the ledger currency, the answer is a 409, as in **Admin → Users**;
+- `min_cost_today` and `min_cost_month`, in USD, or in the ledger currency when `currency` names it.
+  `currency` is the unit that the console read them in. When it is not the ledger currency, the answer is
+  a 409, as in **Admin → Users**;
 - a sort column and a page.
 
 The status is the status of the account. A member that the organization removed shows "Removed". The
@@ -251,7 +257,8 @@ A row opens the details of the member (`?period=`, default `30d`):
 - the spend for each model in the period;
 - the projects of the member, each with its name and its spend of today and of this month, and its API
   keys, each with its name, its project, its status, its last use and the same two figures. Never the key
-  value, its prefix, or the limits that its owner set;
+  value, its prefix, or the limits that its owner set. Only the keys that the account had as a member: a
+  key that was revoked before, and not used since, is not shown, and neither is a last use from before;
 - the models that are off for the member: those that the organization turned off (§7.5), and those that
   the platform administrator turned off, which the organization can read and cannot change;
 - the last 6 requests;
@@ -357,9 +364,12 @@ of the organization for that member. An empty list turns nothing off.
   read it and does not write it.
 - The gateway refuses a model that is in either list (§8.4). Thus an organization can turn a model off, and
   cannot turn on a model that the platform administrator turned off.
-- An id that is not a model of the deployment is dropped, as **Admin → Users** drops it.
 - `GET /user/organization/members/{user_id}/models` returns the two lists, and the models that the
-  platform lets the member use: those that the organization can turn off.
+  platform lets the member use: those that the organization can turn off. Each other id is dropped, so
+  the answer does not name a model that the role of the member does not reach.
+- The list does not hold an organization administrator or an account with the `admin` role, as the limit
+  of §7.1 does not. A list from before the role stays on the membership and applies again when the role
+  goes.
 - The write is one transaction with the audit row, which has the old list and the new list.
 
 ### 7.6 Revoke an API key of a member
@@ -468,10 +478,13 @@ A member whose own limit is reached gets the refusal of today, with `scope: "acc
 Each gate reads the models that are off for the account from the preferences of the account
 (`disabled_models`). For a member, the gate adds the list of the membership (§7.5). The lookup of an API
 key reads it with the membership, in the same round trip, and a gate that reads the account reads the
-membership with it. The refusal is the one of today for a model that is off, and `GET /v1/models` and
-`GET /user/models` leave the model out.
+membership with it. A request on behalf of an account and the playground read it too: before this work
+the playground read neither list. The refusal is the one of today for a model that is off, and
+`GET /v1/models` and `GET /user/models` leave the model out.
 
-A cached key lookup carries the list. A change drops the cached lookups of the member (§8.2).
+A cached key lookup carries the list, and so does the cached row of the account (60 seconds), which the
+grant gate and the internal lookups read. A change drops both for the member (§8.2). A second gateway
+process applies the change when its own copy expires.
 
 ## 9. The platform administrator
 

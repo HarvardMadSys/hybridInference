@@ -86,8 +86,9 @@ _ORGANIZATION_SELECT = (
 
 _MEMBERSHIP_SELECT = (
     "SELECT m.user_id, m.organization_id, m.role, m.joined_at, m.removed_at, m.removed_by, "
-    "m.disabled_models, o.name AS organization_name "
+    "m.disabled_models, o.name AS organization_name, u.role AS account_role "
     "FROM org_memberships m JOIN orgs o ON o.id = m.organization_id "
+    "JOIN users u ON u.id = m.user_id "
 )
 
 
@@ -1496,8 +1497,8 @@ class PostgresOrganizationsMixin:
 
         For each window (:data:`VOLUME_WINDOWS`): how many requests, how many
         were OK and how many failed (a status of 400 or more, as the model
-        table counts an error), and the mean latency of those that recorded
-        one. One read of the request log, bounded by the longest window.
+        table counts an error; a request without a status is OK, as in the
+        request list), and the mean latency of those that recorded one. One read of the request log, bounded by the longest window.
         """
         now = datetime.now(UTC)
         starts = [now - span for span in VOLUME_WINDOWS.values()]
@@ -1506,7 +1507,8 @@ class PostgresOrganizationsMixin:
             within = f"l.timestamp >= ${number}"
             columns.append(
                 f"COUNT(*) FILTER (WHERE {within}) AS {name}_requests, "
-                f"COUNT(*) FILTER (WHERE {within} AND l.status_code < 400) AS {name}_ok, "
+                f"COUNT(*) FILTER (WHERE {within} AND COALESCE(l.status_code, 0) < 400) "
+                f"AS {name}_ok, "
                 f"COUNT(*) FILTER (WHERE {within} AND l.status_code >= 400) AS {name}_failed, "
                 f"AVG(l.latency_ms) FILTER (WHERE {within}) AS {name}_latency"
             )

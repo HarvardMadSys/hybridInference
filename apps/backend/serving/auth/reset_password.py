@@ -119,6 +119,19 @@ class AccountStore:
         """Update columns of the account, as the operational store does."""
         await self._store.update_user_fields(user_id, **fields)
 
+    async def signs_in_through_sso_only(self, user_id: str) -> bool:
+        """Whether the account is a member of an organization that has no password.
+
+        False on a database from before organizations, which has no members.
+        """
+        from serving.storage.organizations import signs_in_through_sso_only
+
+        async with self._pool.acquire() as conn:
+            table = await conn.fetchrow("SELECT to_regclass('org_memberships') AS found")
+            if table is None or table.get("found") is None:
+                return False
+            return await signs_in_through_sso_only(conn, user_id)
+
     async def delete_user_sessions(self, user_id: str) -> None:
         """Revoke every session of the account, as the operational store does."""
         await self._store.delete_user_sessions(user_id)
@@ -188,6 +201,13 @@ async def reset_password(store: Any, identifier: str, new_password: str) -> dict
     if account is None:
         raise ResetPasswordError(
             f"No account has the login name or email address {identifier!r}. Nothing was changed."
+        )
+
+    sso_only = getattr(store, "signs_in_through_sso_only", None)
+    if sso_only is not None and await sso_only(account["id"]):
+        raise ResetPasswordError(
+            f"The account {identifier!r} is a member of an organization. It signs in through "
+            "single sign-on only, and a password would not sign it in. Nothing was changed."
         )
 
     await store.update_user_fields(

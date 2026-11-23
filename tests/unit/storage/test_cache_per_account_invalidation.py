@@ -66,6 +66,10 @@ _ACCOUNT_WRITES: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
     ("set_organization_member_limit", ("o1", "u1"), {"usd": Decimal("5")}),
     ("remove_organization_member", ("o1", "u1"), {}),
     ("restore_organization_member", ("o1", "u1"), {}),
+    # The models an organization turned off are in the cached lookups, and a
+    # revoked key must not be answered from them.
+    ("set_organization_member_models", ("o1", "u1", ["model-a"]), {}),
+    ("revoke_organization_member_key", ("o1", "u1", 7), {}),
 ]
 
 # Every write that reaches each member of an organization, with what the store
@@ -106,6 +110,7 @@ def inner() -> MagicMock:
     store.apply_role_quota = AsyncMock(return_value=3)
     store.attach_browser_session_account = AsyncMock(return_value=True)
     store.set_organization_member_role = AsyncMock(return_value="updated")
+    store.revoke_organization_member_key = AsyncMock(return_value=("updated", "u1"))
     for name, _, _ in _ACCOUNT_WRITES:
         if not isinstance(getattr(store, name, None), AsyncMock):
             setattr(store, name, AsyncMock())

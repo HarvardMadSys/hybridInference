@@ -49,6 +49,11 @@ account, so its identity provider decides who can sign in.
   identity provider is not available.
 - An API key is not a sign-in. The keys of a member work until the member is
   removed or a key is revoked.
+- `python -m serving.auth.reset_password` refuses a member too.
+
+This is not undone. A member stays a member when you detach the connection,
+and its account stays without a password. Check the `domains` of a connection
+before you attach it.
 
 Attach each SSO connection that answers for the email domains of an
 organization. An organization account of a connection that is not attached
@@ -200,11 +205,14 @@ allow.
   cannot change it. The gateway refuses a model that is in either list. So an
   organization cannot turn on a model that you turned off.
   `GET /user/organization/members/{user_id}/models` returns the models that
-  you let the member use, and the two lists.
+  you let the member use, and the two lists. The organization can turn off
+  only those models. Its list does not apply to an organization administrator
+  or to an account with the `admin` role.
 - **API keys.** An organization administrator revokes one API key of a member,
   as the owner of the key does in the console. The key stays revoked, and the
   member can make a new one. `key_id` is the `id` of the key in the panel of
-  the member.
+  the member. The panel shows the keys that the account had as a member. It
+  does not show a key that was revoked before the account became one.
 
 ### Remove and restore a member
 
@@ -287,8 +295,8 @@ Things to know:
 - **The spend of an organization starts at membership.** What an account was
   charged before it became a member does not count against the limit of the
   organization, and the usage pages do not show it.
-- **A change of a limit, or of the role of a member, applies within 30
-  seconds.**
+- **A change of a limit, of the role of a member or of its models applies
+  within 60 seconds.** A revoked key stops within 30 seconds.
 - **Requests that run at the same time** can take an organization a little
   past its limit, as they can for the quota of an account.
 - **A batch** of a member waits while the organization is at its limit, as it
@@ -332,4 +340,5 @@ reads the rows of its own organization. A row of yours names its actor
 ## Stop using an organization
 
 Take the administrator role back from each of its administrators and clear its
-monthly limit. The members keep their accounts and sign in as before.
+monthly limit. The members keep their accounts and sign in through single
+sign-on as before. They stay members: their accounts have no password.

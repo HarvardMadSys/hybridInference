@@ -16,7 +16,7 @@ from __future__ import annotations
 from decimal import Decimal  # noqa: TC003 -- FastAPI reads the annotation at runtime
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 
 from serving import organizations
 from serving.accounting import get_accounting_policy
@@ -316,6 +316,35 @@ async def _member_account(op_store: Any, admin: OrganizationAdmin, user_id: str)
     return account
 
 
+async def _member_models(
+    account: dict[str, Any], *, router_exec: Any, embedding_adapters: Any, resolver: Any
+) -> MemberModelsResponse:
+    """The models of a member as its organization sets them.
+
+    ``available`` is what the platform lets the member use: the list the member
+    would see, without what the organization itself turned off. A model of the
+    deployment that the member's role does not reach is not in it.
+    """
+    lists = organizations.member_models(account)
+    listed = await _build_model_list_async(
+        router_exec=router_exec,
+        embedding_adapters=embedding_adapters,
+        model_visibility_resolver=resolver,
+        user_ctx={
+            "user_id": account["id"],
+            "role": account.get("role") or "free",
+            "is_admin": account.get("role") == "admin",
+            "disabled_models": lists["platform_disabled_models"],
+        },
+    )
+    routes = {**getattr(router_exec, "embedding_routes", {}), **router_exec.routes}
+    available = {
+        route_canonical_model_id(routes[item.id], item.id) if item.id in routes else item.id
+        for item in listed.data
+    }
+    return MemberModelsResponse(available=sorted(available), **lists)
+
+
 @router.get("/members/{user_id}/models", response_model=MemberModelsResponse)
 async def get_member_models(
     user_id: str,
@@ -327,36 +356,15 @@ async def get_member_models(
 ) -> MemberModelsResponse:
     """The models the organization can turn off for a member, and those that are off.
 
-    ``available`` is what the platform lets the member use: the list the member
-    would see, without what the organization itself turned off.
-
     Raises:
         HTTPException: 404 when the account is not a member of the caller's organization.
     """
-    account = await _member_account(op_store, admin, user_id)
-    lists = organizations.member_models(account)
-    listed = await _build_model_list_async(
+    return await _member_models(
+        await _member_account(op_store, admin, user_id),
         router_exec=router_exec,
         embedding_adapters=embedding_adapters,
-        model_visibility_resolver=model_visibility_resolver,
-        user_ctx={
-            "user_id": user_id,
-            "role": account.get("role") or "free",
-            "is_admin": account.get("role") == "admin",
-            "disabled_models": lists["platform_disabled_models"],
-        },
+        resolver=model_visibility_resolver,
     )
-    routes = _model_routes(router_exec)
-    available = {
-        route_canonical_model_id(routes[item.id], item.id) if item.id in routes else item.id
-        for item in listed.data
-    }
-    return MemberModelsResponse(available=sorted(available), **lists)
-
-
-def _model_routes(router_exec: Any) -> dict[str, Any]:
-    """Every route of the deployment by the name it is listed under, chat and embedding."""
-    return {**getattr(router_exec, "embedding_routes", {}), **router_exec.routes}
 
 
 @router.put("/members/{user_id}/models", response_model=MemberModelsResponse)
@@ -366,23 +374,30 @@ async def set_member_models(
     admin: OrganizationAdmin = Depends(require_organization_admin),
     op_store=Depends(get_operational_store),
     router_exec=Depends(get_router),
+    embedding_adapters: dict[str, Any] = Depends(get_embedding_adapters),
+    model_visibility_resolver=Depends(get_model_visibility_resolver),
 ) -> MemberModelsResponse:
     """Replace the models the organization turned off for a member.
 
     The list is the organization's own. The list of the platform administrator
     is not changed: the gateway refuses a model in either, so this turns a
     model off for a member and never turns on one the platform administrator
-    turned off. An id that names no model of the deployment is dropped, as
-    Admin drops it. Not for an administrator.
+    turned off. Only a model the member could use is taken, or one that is off
+    already: any other id is dropped, so the answer does not say which models
+    a deployment has beyond those. Not for an administrator.
 
     Raises:
         HTTPException: 404 when the account is not a member of the caller's
             organization; 409 for an administrator.
     """
-    known = {
-        route_canonical_model_id(route, name) for name, route in _model_routes(router_exec).items()
+    sources = {
+        "router_exec": router_exec,
+        "embedding_adapters": embedding_adapters,
+        "resolver": model_visibility_resolver,
     }
-    outcome, _old, new = await op_store.set_organization_member_models(
+    before = await _member_models(await _member_account(op_store, admin, user_id), **sources)
+    known = {*before.available, *before.disabled_models}
+    outcome, _old, _new = await op_store.set_organization_member_models(
         admin.organization_id,
         user_id,
         [model for model in payload.disabled_models if model in known],
@@ -392,15 +407,13 @@ async def set_member_models(
         raise HTTPException(404, _NOT_A_MEMBER)
     if outcome == org_store.PROTECTED:
         raise HTTPException(409, "The models of an administrator are not set here.")
-    account = await _member_account(op_store, admin, user_id)
-    lists = organizations.member_models(account)
-    return MemberModelsResponse(available=sorted(known), **{**lists, "disabled_models": new})
+    return await _member_models(await _member_account(op_store, admin, user_id), **sources)
 
 
 @router.post("/members/{user_id}/keys/{key_id}/revoke", response_model=OrganizationMessageResponse)
 async def revoke_member_key(
     user_id: str,
-    key_id: int,
+    key_id: int = Path(ge=1, le=2**63 - 1),
     admin: OrganizationAdmin = Depends(require_organization_admin),
     op_store=Depends(get_operational_store),
 ) -> OrganizationMessageResponse:

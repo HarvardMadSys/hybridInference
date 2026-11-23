@@ -17,6 +17,7 @@ from fastapi import Request
 
 from serving import organizations as organization_rules
 from serving.model_access import disabled_models_of
+from serving.servers import auth
 from serving.servers.auth import generate_api_key, hash_api_key, verify_api_key
 from serving.servers.deps import get_router
 from serving.servers.routers import organization
@@ -42,10 +43,15 @@ def _route(model_id: str) -> SimpleNamespace:
     return SimpleNamespace(adapters=[(adapter, 1.0)])
 
 
+HIDDEN = "model-for-administrators"
+
+
 @pytest.fixture
 def deployment_models(app, monkeypatch):
-    """A deployment that serves three models, and lists them all to every account."""
-    router = SimpleNamespace(routes={name: _route(name) for name in MODELS}, embedding_routes={})
+    """A deployment with three models every account is listed, and one it lists to nobody here."""
+    router = SimpleNamespace(
+        routes={name: _route(name) for name in (*MODELS, HIDDEN)}, embedding_routes={}
+    )
     app.dependency_overrides[get_router] = lambda: router
 
     async def listed(**context):
@@ -114,7 +120,7 @@ async def test_an_organization_turns_a_model_off_for_a_member_and_never_one_on(
 
     before = await alice.get(models, headers=headers)
     changed = await alice.put(
-        models, json={"disabled_models": ["model-a", "no-such-model"]}, headers=headers
+        models, json={"disabled_models": ["model-a", "no-such-model", HIDDEN]}, headers=headers
     )
 
     assert before.json() == {
@@ -123,8 +129,13 @@ async def test_an_organization_turns_a_model_off_for_a_member_and_never_one_on(
         "platform_disabled_models": ["model-b"],
     }
     assert changed.status_code == 200, changed.text
-    assert changed.json()["disabled_models"] == ["model-a"]
-    assert changed.json()["platform_disabled_models"] == ["model-b"]
+    # A model the member's role does not reach is not taken, and not named back.
+    assert changed.json() == {
+        "available": ["model-a", "model-c"],
+        "disabled_models": ["model-a"],
+        "platform_disabled_models": ["model-b"],
+    }
+    assert HIDDEN not in changed.text and HIDDEN not in before.text
     both = ["model-a", "model-b"]
     # Every way the request path reads the account refuses both.
     assert await _at_the_door(store, key) == both
@@ -276,3 +287,107 @@ async def test_the_audit_log_of_the_organization_has_the_category_access(
     assert {entry["category"] for entry in entries} == {"access"}
     assert entries[1]["details"]["disabled_models"] == {"old": [], "new": ["model-c"]}
     assert entries[0]["details"]["key_name"] == "laptop"
+
+
+async def test_a_model_is_refused_on_behalf_of_a_member_as_for_its_own_key(
+    app, idp, store, members_sign_straight_in, deployment_models, monkeypatch
+):
+    """The doc assistant calls the gateway with its own key, on behalf of the signed-in account."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    state = await _organization_with_an_administrator(app, idp, store)
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    service_id = await shared.existing_user(store, "service@elsewhere.org")
+    service_key, _ = await _key(store, service_id, "service")
+    monkeypatch.setattr(
+        auth, "_impersonation_service_key_hashes", lambda: frozenset({hash_api_key(service_key)})
+    )
+    off = await alice.put(
+        f"/user/organization/members/{bob_id}/models",
+        json={"disabled_models": ["model-a"]},
+        headers=headers,
+    )
+    assert off.status_code == 200, off.text
+
+    context = await verify_api_key(
+        request=MagicMock(spec=Request),
+        authorization=f"Bearer {service_key}",
+        x_api_key=None,
+        x_on_behalf_of=bob_id,
+        op_store=store._store,
+    )
+
+    assert context["user_id"] == bob_id
+    assert context["disabled_models"] == ["model-a"]
+
+
+async def test_what_an_organization_turned_off_does_not_hold_an_administrator(
+    app, idp, store, members_sign_straight_in, deployment_models, monkeypatch
+):
+    """As a limit from before the role does not: the organization does not set its models."""
+    monkeypatch.setenv("USER_AUTH_ENABLED", "1")
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    key, _ = await _key(store, bob_id, "laptop")
+    await alice.put(
+        f"/user/organization/members/{bob_id}/models",
+        json={"disabled_models": ["model-a"]},
+        headers=headers,
+    )
+    assert await _at_the_door(store, key) == ["model-a"]
+    assert disabled_models_of(await store.get_user_by_id(bob_id)) == ["model-a"]
+
+    await shared._set_role(root, root_headers, state["organization_id"], bob_id)
+
+    # At once, in the cached lookups too.
+    assert await _at_the_door(store, key) == []
+    assert disabled_models_of(await store.get_auth_context_by_key_hash(hash_api_key(key))) == []
+    assert disabled_models_of(await store.get_user_by_id(bob_id)) == []
+    assert await organization_rules.disabled_models_of_account(store, bob_id) == []
+
+    await shared._set_role(root, root_headers, state["organization_id"], bob_id, "member")
+
+    # The list was kept: it holds the member again when the role goes.
+    assert await _at_the_door(store, key) == ["model-a"]
+    assert disabled_models_of(await store.get_user_by_id(bob_id)) == ["model-a"]
+
+
+async def test_a_key_from_before_the_membership_is_not_shown(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    state = await _organization_with_an_administrator(app, idp, store)
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    ids = {name: (await _key(store, bob_id, name))[1] for name in ("gone", "ended", "live")}
+    async with clean_organizations.acquire() as conn:
+        # Revoked and last used before Bob was a member: not the organization's to see.
+        await conn.execute(
+            "UPDATE api_keys SET status = 'revoked', created_at = NOW() - INTERVAL '30 days', "
+            "last_used_at = NOW() - INTERVAL '20 days' WHERE id = $1",
+            ids["gone"],
+        )
+        # Made before, used as a member, then revoked: shown.
+        await conn.execute(
+            "UPDATE api_keys SET status = 'revoked', created_at = NOW() - INTERVAL '30 days', "
+            "last_used_at = NOW() + INTERVAL '1 minute' WHERE id = $1",
+            ids["ended"],
+        )
+        # Live, last used before: shown, without that time.
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '30 days', "
+            "last_used_at = NOW() - INTERVAL '20 days' WHERE id = $1",
+            ids["live"],
+        )
+
+    shown = await alice.get(f"/user/organization/members/{bob_id}", headers=headers)
+    too_large = await alice.post(
+        f"/user/organization/members/{bob_id}/keys/99999999999999999999/revoke", headers=headers
+    )
+
+    keys = {key["name"]: key for key in shown.json()["keys"]}
+    assert set(keys) == {"ended", "live"}
+    assert keys["live"]["last_used_at"] is None
+    assert keys["ended"]["last_used_at"] is not None
+    assert too_large.status_code == 422
