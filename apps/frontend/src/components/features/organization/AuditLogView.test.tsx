@@ -167,9 +167,9 @@ describe('the audit log of the organization', () => {
     ]);
   });
 
-  it('says which models were turned off, and which key was revoked', () => {
+  it('says which models an action turned off and which it turned on again, and which key was revoked', () => {
     answer({
-      total: 3,
+      total: 4,
       entries: [
         entry({
           id: 7,
@@ -177,7 +177,8 @@ describe('the audit log of the organization', () => {
           category: 'access',
           details: {
             email: 'lei.wang@example.edu',
-            disabled_models: { old: [], new: ['glm-4.6', 'qwen-max'] },
+            // glm-4.6 was off before and stays off: it is not what this action did.
+            disabled_models: { old: ['glm-4.6'], new: ['glm-4.6', 'qwen-max'] },
           },
         }),
         entry({
@@ -187,6 +188,15 @@ describe('the audit log of the organization', () => {
           details: {
             email: 'lei.wang@example.edu',
             disabled_models: { old: ['glm-4.6'], new: [] },
+          },
+        }),
+        entry({
+          id: 8,
+          action: 'organization.member_models.set',
+          category: 'access',
+          details: {
+            email: 'lei.wang@example.edu',
+            disabled_models: { old: ['glm-4.6', 'big'], new: ['big', 'qwen-max', 'small'] },
           },
         }),
         entry({
@@ -201,8 +211,9 @@ describe('the audit log of the organization', () => {
     render(<AuditLogView />);
 
     expect(rows().map((row) => [row[1], row[3]])).toEqual([
-      ['Member models changed', 'Turned off: glm-4.6, qwen-max'],
-      ['Member models changed', 'No model turned off'],
+      ['Member models changed', 'Turned off: qwen-max'],
+      ['Member models changed', 'Turned on again: glm-4.6'],
+      ['Member models changed', 'Turned off: qwen-max, small; turned on again: glm-4.6'],
       ['API key revoked', 'laptop, in project Thesis'],
     ]);
   });

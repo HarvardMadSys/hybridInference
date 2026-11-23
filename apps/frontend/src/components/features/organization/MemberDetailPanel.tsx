@@ -112,7 +112,9 @@ function MemberProjects({
         ? fill(t('organization.member.key_last_used', 'last used {when}'), {
             when: relativeTime(key.last_used_at, t, fmt),
           })
-        : t('organization.member.key_never_used', 'never used')
+        : // The gateway sends no time for a key that was last used before the
+          // account became a member, so "never" would be more than is known.
+          t('organization.member.key_not_used_since', 'not used since the account joined')
     }`,
     action:
       canRevoke && key.status === 'active' ? (
@@ -274,14 +276,14 @@ export function MemberDetailPanel({
         <p className="text-[12px] text-gray-500">
           {t(
             'organization.member.admin_note',
-            'The platform administrator sets the limit of an organization administrator and removes one.',
+            'The platform administrator sets the limit and the models of an organization administrator, revokes its API keys and removes it.',
           )}
         </p>
       ) : current.protected ? (
         <p className="text-[12px] text-gray-500">
           {t(
             'organization.member.protected_note',
-            'The platform administrator sets the limit of this account and removes it.',
+            'The platform administrator sets the limit and the models of this account, revokes its API keys and removes it.',
           )}
         </p>
       ) : current.status === 'suspended' && !current.removed ? (

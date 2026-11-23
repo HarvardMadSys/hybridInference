@@ -37,6 +37,11 @@ describe('the bar of a limit', () => {
     // Near from 80%, as the filter of the member list counts it.
     expect(fillOf(79)).toHaveClass('bg-blue-500');
     expect(fillOf(80)).toHaveClass('bg-amber-500');
+    // On the ratio itself, as the gateway compares it, not on a rounded figure:
+    // 79.6% is not yet near, and 99.6% is not yet over.
+    expect(fillOf(79.6)).toHaveClass('bg-blue-500');
+    expect(fillOf(99.6)).toHaveClass('bg-amber-500');
+    expect(fillOf(100)).toHaveClass('bg-red-500');
     expect(fillOf(90)).toHaveClass('bg-amber-500');
     expect(fillOf(100)).toHaveClass('bg-red-500');
   });
@@ -56,6 +61,20 @@ describe('the month of a member against its limit', () => {
     expect(bar(container).fill.style.width).toBe('59%');
     // The limit is the member's own: nothing more is said.
     expect(screen.queryByText('default')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    // Not yet near: the list filter and the card do not count this member.
+    [79.6, '79% of $100.00', 'text-gray-500'],
+    [80, '80% of $100.00', 'text-amber-600'],
+    // Not yet over: the month is still under the limit.
+    [99.6, '99% of $100.00', 'text-amber-600'],
+    [100, '100% of $100.00', 'text-red-600'],
+    [116.4, '116% of $100.00', 'text-red-600'],
+  ])('never claims a mark the member has not reached: %d of 100', (spent, text, tone) => {
+    render(<LimitMeter spent={spent} limit={100} limitText="$100.00" />);
+
+    expect(screen.getByText(text)).toHaveClass(tone);
   });
 
   it('says so under the figure when the limit is the default of the organization', () => {

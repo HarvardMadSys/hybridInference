@@ -237,6 +237,19 @@ export function TwoFactorSettings() {
     );
   }
 
+  if (state.user?.sso_only) {
+    // A member of an organization has no password and cannot set one: the
+    // gateway refuses the setup, and this is its sentence.
+    return (
+      <p className="text-sm text-gray-600">
+        {t(
+          'two_factor.settings.sso_only',
+          'This account signs in through single sign-on and has no password, so it cannot add an authenticator here. Its identity provider asks for a second factor.',
+        )}
+      </p>
+    );
+  }
+
   if (!hasPassword) {
     return (
       <p className="text-sm text-gray-600">

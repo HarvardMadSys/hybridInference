@@ -10,9 +10,12 @@ import { buildTimeSiteConfig } from '@/config/site-config';
 import * as api from '@/lib/api/organization';
 
 vi.mock('@/lib/api/organization', () => ({
+  getMemberModels: vi.fn(),
   getOrganization: vi.fn(),
   getOrganizationMember: vi.fn(),
+  getOrganizationMembersSummary: vi.fn(),
   getOrganizationOverview: vi.fn(),
+  getOrganizationRequestVolume: vi.fn(),
   listOrganizationAudit: vi.fn(),
   listOrganizationMemberUsage: vi.fn(),
   listOrganizationMembers: vi.fn(),
@@ -20,21 +23,41 @@ vi.mock('@/lib/api/organization', () => ({
   listOrganizationRequests: vi.fn(),
   removeOrganizationMember: vi.fn(),
   restoreOrganizationMember: vi.fn(),
+  revokeMemberKey: vi.fn(),
   setDefaultMemberLimit: vi.fn(),
+  setMemberModels: vi.fn(),
   setMemberMonthlyLimit: vi.fn(),
 }));
 
 import {
+  ORGANIZATION_QUERY_KEY,
   useOrganization,
   useOrganizationMember,
+  useOrganizationMemberModels,
   useOrganizationMembers,
+  useOrganizationMembersSummary,
   useOrganizationModelUsage,
   useOrganizationOverview,
+  useOrganizationRequestVolume,
   useRemoveOrganizationMember,
   useRestoreOrganizationMember,
+  useRevokeMemberKey,
   useSetDefaultMemberLimit,
+  useSetMemberModels,
   useSetMemberMonthlyLimit,
 } from './useOrganization';
+
+const SUMMARY: api.MembersSummary = {
+  near_limit: { count: 0, top: [] },
+  top_spenders_today: { count: 0, top: [] },
+};
+const QUIET: api.RequestVolumeWindow = { requests: 0, ok: 0, failed: 0, avg_latency_ms: null };
+const VOLUME: api.RequestVolume = { hour: QUIET, day: QUIET, week: QUIET, month: QUIET };
+const MODELS: api.MemberModels = {
+  available: ['glm-4.6'],
+  disabled_models: [],
+  platform_disabled_models: [],
+};
 
 function wrapperFor(currency: 'USD' | 'CNY' = 'USD') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -69,6 +92,11 @@ beforeEach(() => {
     .mockResolvedValue({ id: 'o-1' } as api.Organization);
   vi.mocked(api.removeOrganizationMember).mockReset().mockResolvedValue(undefined);
   vi.mocked(api.restoreOrganizationMember).mockReset().mockResolvedValue(undefined);
+  vi.mocked(api.getOrganizationMembersSummary).mockReset().mockResolvedValue(SUMMARY);
+  vi.mocked(api.getOrganizationRequestVolume).mockReset().mockResolvedValue(VOLUME);
+  vi.mocked(api.getMemberModels).mockReset().mockResolvedValue(MODELS);
+  vi.mocked(api.setMemberModels).mockReset().mockResolvedValue(MODELS);
+  vi.mocked(api.revokeMemberKey).mockReset().mockResolvedValue(undefined);
 });
 afterEach(cleanup);
 
@@ -109,6 +137,41 @@ describe('reading the organization', () => {
 
     await waitFor(() => expect(result.current.data).toBeDefined());
     expect(api.getOrganizationMember).toHaveBeenCalledWith('u-lei', '30d');
+  });
+
+  it('asks for the two cards, the request volume and an hourly series', async () => {
+    const { wrapper } = wrapperFor();
+    const { result } = renderHook(
+      () => ({
+        summary: useOrganizationMembersSummary(),
+        volume: useOrganizationRequestVolume(),
+        hourly: useOrganizationOverview('7d', 'hour'),
+        daily: useOrganizationOverview('7d'),
+      }),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.summary.data).toEqual(SUMMARY));
+    await waitFor(() => expect(result.current.volume.data).toEqual(VOLUME));
+    await waitFor(() => expect(result.current.daily.data).toBeDefined());
+    // The series of hours and the series of days of one period are two answers.
+    expect(api.getOrganizationOverview).toHaveBeenCalledWith('7d', 'hour');
+    expect(api.getOrganizationOverview).toHaveBeenCalledWith('7d', undefined);
+    expect(api.getOrganizationOverview).toHaveBeenCalledTimes(2);
+  });
+
+  it('asks for the models of a member only once it is named', async () => {
+    const { wrapper } = wrapperFor();
+    const { result, rerender } = renderHook(
+      ({ userId }: { userId: string | null }) => useOrganizationMemberModels(userId),
+      { wrapper, initialProps: { userId: null as string | null } },
+    );
+    expect(api.getMemberModels).not.toHaveBeenCalled();
+
+    rerender({ userId: 'u-lei' });
+
+    await waitFor(() => expect(result.current.data).toEqual(MODELS));
+    expect(api.getMemberModels).toHaveBeenCalledWith('u-lei');
   });
 
   it('asks for nothing while a read is turned off', async () => {
@@ -190,6 +253,8 @@ describe('changing the organization', () => {
         fallback: useSetDefaultMemberLimit(),
         remove: useRemoveOrganizationMember(),
         restore: useRestoreOrganizationMember(),
+        models: useSetMemberModels(),
+        revoke: useRevokeMemberKey(),
       }),
       { wrapper },
     );
@@ -198,12 +263,54 @@ describe('changing the organization', () => {
       await result.current.fallback.mutateAsync({ amount: null, currency: 'CNY' });
       await result.current.remove.mutateAsync('u-mei');
       await result.current.restore.mutateAsync('u-mei');
+      await result.current.models.mutateAsync({ userId: 'u-lei', disabledModels: ['glm-4.6'] });
+      await result.current.revoke.mutateAsync({ userId: 'u-lei', keyId: 41 });
     });
 
     expect(api.setDefaultMemberLimit).toHaveBeenCalledWith({ amount: null, currency: 'CNY' });
     expect(api.removeOrganizationMember).toHaveBeenCalledWith('u-mei');
     expect(api.restoreOrganizationMember).toHaveBeenCalledWith('u-mei');
+    expect(api.setMemberModels).toHaveBeenCalledWith('u-lei', ['glm-4.6']);
+    expect(api.revokeMemberKey).toHaveBeenCalledWith('u-lei', 41);
   });
+
+  it.each([
+    [
+      'the models of a member',
+      () => useSetMemberModels(),
+      { userId: 'u-lei', disabledModels: ['glm-4.6'] },
+    ],
+    ['the revoking of a key', () => useRevokeMemberKey(), { userId: 'u-lei', keyId: 41 }],
+  ] as const)(
+    'reads every answer of the organization again after %s',
+    async (_name, useWrite, variables) => {
+      const { client, wrapper } = wrapperFor();
+      const invalidate = vi.spyOn(client, 'invalidateQueries');
+      const { result } = renderHook(
+        () => ({
+          member: useOrganizationMember('u-lei', '30d'),
+          models: useOrganizationMemberModels('u-lei'),
+          summary: useOrganizationMembersSummary(),
+          write: useWrite(),
+        }),
+        { wrapper },
+      );
+      await waitFor(() => expect(result.current.member.data).toBeDefined());
+      await waitFor(() => expect(result.current.models.data).toBeDefined());
+      await waitFor(() => expect(result.current.summary.data).toBeDefined());
+
+      await act(async () => {
+        await (result.current.write.mutateAsync as (input: unknown) => Promise<unknown>)(variables);
+      });
+
+      // The whole prefix: the member, its models, the cards and the log change together.
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ORGANIZATION_QUERY_KEY });
+      expect(ORGANIZATION_QUERY_KEY).toEqual(['organization']);
+      expect(api.getOrganizationMember).toHaveBeenCalledTimes(2);
+      expect(api.getMemberModels).toHaveBeenCalledTimes(2);
+      expect(api.getOrganizationMembersSummary).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('reads nothing again when the write is refused, and passes the refusal on', async () => {
     vi.mocked(api.removeOrganizationMember).mockRejectedValue(

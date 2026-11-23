@@ -305,38 +305,59 @@ export function MembersView() {
 
   return (
     <div className="space-y-3">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <SummaryCard
-          title={t('organization.members.card_near', 'Near or over the limit')}
-          accent="amber"
-          count={summary.data?.near_limit.count ?? 0}
-          items={cardItems(summary.data?.near_limit, (member) => {
-            const use = limitUse(
-              moneyAmount(member, 'spent_month'),
-              moneyAmount(member, 'monthly_limit'),
-            );
-            return use ? `${use.percent}%` : '';
-          })}
-          empty={t('organization.members.card_empty', 'No members right now')}
-          shown={CARD_MEMBERS}
-          loading={summary.isLoading}
-          active={search === '' && sameFilters(filters, NEAR_LIMIT)}
-          onClick={() => openView(NEAR_LIMIT)}
-        />
-        <SummaryCard
-          title={t('organization.members.card_today', 'Top spenders today')}
-          accent="emerald"
-          count={summary.data?.top_spenders_today.count ?? 0}
-          items={cardItems(summary.data?.top_spenders_today, (member) =>
-            money.value(member, 'spent_today', { maximumFractionDigits: 2 }),
+      {/* A count of zero is a figure. A read that failed has none to show,
+          so it says so, and the list below is there all the same. */}
+      {!summary.isLoading && !summary.data ? (
+        <AdminNotice
+          role="alert"
+          action={
+            <button type="button" className={NOTICE_ACTION} onClick={() => void summary.refetch()}>
+              {t('organization.retry', 'Retry')}
+            </button>
+          }
+        >
+          {fill(
+            t(
+              'organization.members.cards_failed',
+              'The members near their limit and the top spenders of today could not be read: {reason}',
+            ),
+            { reason: getErrorMessage(summary.error) },
           )}
-          empty={t('organization.members.card_empty', 'No members right now')}
-          shown={CARD_MEMBERS}
-          loading={summary.isLoading}
-          active={search === '' && sameFilters(filters, TOP_TODAY)}
-          onClick={() => openView(TOP_TODAY)}
-        />
-      </div>
+        </AdminNotice>
+      ) : (
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <SummaryCard
+            title={t('organization.members.card_near', 'Near or over the limit')}
+            accent="amber"
+            count={summary.data?.near_limit.count ?? 0}
+            items={cardItems(summary.data?.near_limit, (member) => {
+              const use = limitUse(
+                moneyAmount(member, 'spent_month'),
+                moneyAmount(member, 'monthly_limit'),
+              );
+              return use ? `${use.percent}%` : '';
+            })}
+            empty={t('organization.members.card_empty', 'No members right now')}
+            shown={CARD_MEMBERS}
+            loading={summary.isLoading}
+            active={search === '' && sameFilters(filters, NEAR_LIMIT)}
+            onClick={() => openView(NEAR_LIMIT)}
+          />
+          <SummaryCard
+            title={t('organization.members.card_today', 'Top spenders today')}
+            accent="emerald"
+            count={summary.data?.top_spenders_today.count ?? 0}
+            items={cardItems(summary.data?.top_spenders_today, (member) =>
+              money.value(member, 'spent_today', { maximumFractionDigits: 2 }),
+            )}
+            empty={t('organization.members.card_empty', 'No members right now')}
+            shown={CARD_MEMBERS}
+            loading={summary.isLoading}
+            active={search === '' && sameFilters(filters, TOP_TODAY)}
+            onClick={() => openView(TOP_TODAY)}
+          />
+        </div>
+      )}
 
       <div className="flex flex-wrap items-center gap-2">
         <SearchBox

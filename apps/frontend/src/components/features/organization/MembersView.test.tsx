@@ -231,6 +231,8 @@ describe('the members of the organization', () => {
     // The trend is a line of the last 7 days; the pointer shows their total.
     const trend = within(lei).getByRole('img', { name: 'Spend of the last 7 days' });
     expect(trend.closest('td')).toHaveAttribute('title', 'Last 7 days: $24.46');
+    // The same total as text, for a reader who has no pointer to hover with.
+    expect(within(lei).getByText('Last 7 days: $24.46')).toHaveClass('sr-only');
     expect(lei).not.toHaveTextContent('Admin');
     expect(lei).not.toHaveTextContent('You');
     // The limit is the member's own: a change of the default does not move it.
@@ -423,6 +425,59 @@ describe('the members of the organization', () => {
     );
   });
 
+  it('says that the cards could not be read, never two zeros, and reads them again when asked', () => {
+    const again = vi.fn();
+    state.summary.mockReturnValue({
+      data: undefined,
+      isLoading: false,
+      error: new Error('The gateway is not reachable.'),
+      refetch: again,
+    });
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+
+    const notice = screen.getByRole('alert');
+    expect(notice).toHaveTextContent(
+      'The members near their limit and the top spenders of today could not be read: The gateway is not reachable.',
+    );
+    // No card, so no count of zero and no "No members right now" to click.
+    expect(
+      screen.queryByRole('button', { name: /Near or over the limit/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Top spenders today/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('No members right now')).not.toBeInTheDocument();
+    fireEvent.click(within(notice).getByRole('button', { name: 'Retry' }));
+    expect(again).toHaveBeenCalledTimes(1);
+    // The list does not depend on the cards.
+    expect(rowOf('Lei Wang')).toBeInTheDocument();
+  });
+
+  it('shows a count of zero as a figure when the cards were read and are empty', () => {
+    state.summary.mockReturnValue({
+      data: { near_limit: { count: 0, top: [] }, top_spenders_today: { count: 0, top: [] } },
+      isLoading: false,
+    });
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    expect(screen.getAllByText('No members right now')).toHaveLength(2);
+  });
+
+  it('sends no threshold below zero, which the gateway would refuse', () => {
+    answer({ total: 4, members: [LEI, YU, MEI, BO] });
+
+    render(<MembersView />);
+    fireEvent.change(screen.getByLabelText('Today ≥ $'), { target: { value: '-1' } });
+
+    expect(asked()).toMatchObject({ minCostToday: undefined });
+    expect(screen.getByLabelText('Today ≥ $')).toHaveAttribute('aria-invalid', 'true');
+    // The list is still the list, not a refusal in its place.
+    expect(rowOf('Lei Wang')).toBeInTheDocument();
+  });
+
   it('shows a dash on the cards while they are read, and the list all the same', () => {
     state.summary.mockReturnValue({ data: undefined, isLoading: true });
     answer({ total: 4, members: [LEI, YU, MEI, BO] });
@@ -610,7 +665,7 @@ describe('the members of the organization', () => {
     ).not.toBeInTheDocument();
     expect(
       screen.getByText(
-        'The platform administrator sets the limit of an organization administrator and removes one.',
+        'The platform administrator sets the limit and the models of an organization administrator, revokes its API keys and removes it.',
       ),
     ).toBeInTheDocument();
   });

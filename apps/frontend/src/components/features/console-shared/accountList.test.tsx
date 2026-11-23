@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SearchBox } from './SearchBox';
@@ -63,6 +63,21 @@ describe('the spend cells of a row', () => {
       'USD 1.50',
       'USD 40.00',
     ]);
+  });
+
+  it('has the total of the trend as text for a reader without a pointer', () => {
+    row(<SpendCells {...FIGURES} trendTitle="Last 7 days: USD 7.50" />);
+
+    const trend = screen.getAllByRole('cell')[1];
+    expect(trend).toHaveAttribute('title', 'Last 7 days: USD 7.50');
+    // Visually hidden, so the look of the cell is the line alone.
+    expect(within(trend).getByText('Last 7 days: USD 7.50')).toHaveClass('sr-only');
+  });
+
+  it('has no such text for a list that has no total', () => {
+    row(<SpendCells {...FIGURES} />);
+
+    expect(screen.getAllByRole('cell')[1].querySelector('.sr-only')).toBeNull();
   });
 
   it("adds the list's own classes to a cell", () => {
@@ -171,6 +186,54 @@ describe('the threshold filter', () => {
     fireEvent.change(input, { target: { value: '' } });
     // The value the caller holds is still null, so there is no second call.
     expect(onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('sends no number below its lowest value, and marks the field', () => {
+    const onChange = vi.fn();
+    const { rerender } = render(
+      <ThresholdInput label="Today at least" value={5} onChange={onChange} step="0.01" />,
+    );
+    const input = screen.getByLabelText('Today at least');
+
+    fireEvent.change(input, { target: { value: '-1' } });
+    // No filter for it: the gateway would refuse the number.
+    expect(onChange).toHaveBeenLastCalledWith(null);
+    expect(onChange).not.toHaveBeenCalledWith(-1);
+
+    // The caller now holds no threshold; what was typed stays, marked.
+    rerender(
+      <ThresholdInput label="Today at least" value={null} onChange={onChange} step="0.01" />,
+    );
+    expect(input).toHaveValue(-1);
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input.closest('label')).toHaveClass('border-red-300');
+
+    fireEvent.change(input, { target: { value: '0' } });
+    expect(onChange).toHaveBeenLastCalledWith(0);
+    rerender(<ThresholdInput label="Today at least" value={0} onChange={onChange} step="0.01" />);
+    expect(input).not.toHaveAttribute('aria-invalid');
+  });
+
+  it('counts its own lowest value, not zero', () => {
+    const onChange = vi.fn();
+    render(<ThresholdInput label="Active in last (h)" value={null} onChange={onChange} min={1} />);
+
+    fireEvent.change(screen.getByLabelText('Active in last (h)'), { target: { value: '0' } });
+
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.getByLabelText('Active in last (h)')).toHaveAttribute('aria-invalid', 'true');
+  });
+
+  it('keeps the text as it was typed when it stands for the value it has', () => {
+    const { rerender } = render(
+      <ThresholdInput label="Today at least" value={null} onChange={() => {}} />,
+    );
+    const input = screen.getByLabelText('Today at least');
+    fireEvent.change(input, { target: { value: '2.50' } });
+
+    rerender(<ThresholdInput label="Today at least" value={2.5} onChange={() => {}} />);
+
+    expect((input as HTMLInputElement).value).toBe('2.50');
   });
 
   it('takes a value set from outside, and its lowest value', () => {

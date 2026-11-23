@@ -2859,6 +2859,10 @@
     "source": "Set a password before changing single sign-on.",
     "text": "请先设置密码，再修改 SSO 关联。"
   },
+  "settings.sso.organization_identity": {
+    "source": "This single sign-on belongs to your organization and cannot be disconnected.",
+    "text": "这个单点登录属于你的机构，不能解除关联。"
+  },
   "settings.sso.title": {
     "source": "Single sign-on",
     "text": "SSO 登录"
@@ -3785,13 +3789,17 @@
     "source": "{key}, in project {project}",
     "text": "{key}，在项目 {project} 里"
   },
-  "organization.audit.details.models_none": {
-    "source": "No model turned off",
-    "text": "没有关闭任何模型"
+  "organization.audit.details.models_both": {
+    "source": "Turned off: {off}; turned on again: {on}",
+    "text": "关闭：{off}；重新开启：{on}"
   },
   "organization.audit.details.models_off": {
     "source": "Turned off: {models}",
     "text": "关闭：{models}"
+  },
+  "organization.audit.details.models_on": {
+    "source": "Turned on again: {models}",
+    "text": "重新开启：{models}"
   },
   "organization.audit.details.remove": {
     "source": "Account suspended; sessions ended, API keys revoked",
@@ -4002,8 +4010,8 @@
     "text": "设置月额度"
   },
   "organization.member.admin_note": {
-    "source": "The platform administrator sets the limit of an organization administrator and removes one.",
-    "text": "机构管理员的月额度和移除由平台管理员处理。"
+    "source": "The platform administrator sets the limit and the models of an organization administrator, revokes its API keys and removes it.",
+    "text": "机构管理员的月额度、模型、API key 的吊销和移除都由平台管理员处理。"
   },
   "organization.member.close": {
     "source": "Close",
@@ -4029,9 +4037,9 @@
     "source": "last used {when}",
     "text": "上次使用 {when}"
   },
-  "organization.member.key_never_used": {
-    "source": "never used",
-    "text": "从未使用"
+  "organization.member.key_not_used_since": {
+    "source": "not used since the account joined",
+    "text": "加入机构后没有用过"
   },
   "organization.member.key_revoked": {
     "source": "revoked",
@@ -4086,8 +4094,8 @@
     "text": "这段时间没有请求。"
   },
   "organization.member.protected_note": {
-    "source": "The platform administrator sets the limit of this account and removes it.",
-    "text": "这个账号的月额度和移除由平台管理员处理。"
+    "source": "The platform administrator sets the limit and the models of this account, revokes its API keys and removes it.",
+    "text": "这个账号的月额度、模型、API key 的吊销和移除都由平台管理员处理。"
   },
   "organization.member.recent": {
     "source": "Recent requests",
@@ -4160,6 +4168,10 @@
   "organization.members.card_today": {
     "source": "Top spenders today",
     "text": "今日花费最高"
+  },
+  "organization.members.cards_failed": {
+    "source": "The members near their limit and the top spenders of today could not be read: {reason}",
+    "text": "读不到接近月额度的成员和今日花费最高的成员：{reason}"
   },
   "organization.members.empty": {
     "source": "The organization has no members yet.",
@@ -5808,6 +5820,10 @@
   "two_factor.settings.required": {
     "source": "Administrator access is off for this account until it has an authenticator app.",
     "text": "此账户添加验证器应用之前，无法使用管理员权限。"
+  },
+  "two_factor.settings.sso_only": {
+    "source": "This account signs in through single sign-on and has no password, so it cannot add an authenticator here. Its identity provider asks for a second factor.",
+    "text": "此账户只通过单点登录来登录，没有密码，所以不能在这里添加验证器应用。它的身份提供方会要求第二重验证。"
   },
   "two_factor.settings.title": {
     "source": "Two-Factor Authentication",

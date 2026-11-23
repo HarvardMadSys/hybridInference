@@ -171,9 +171,16 @@ export function limitUse(
 ): { percent: number; tone: 'ok' | 'near' | 'over' } | null {
   if (limit == null || spent == null) return null;
   if (limit <= 0) return { percent: 100, tone: 'over' };
-  const percent = Math.round((spent / limit) * 100);
-  // Near from 80%, as the list filter and the card above it count it.
-  return { percent, tone: percent >= 100 ? 'over' : percent >= 80 ? 'near' : 'ok' };
+  // As the gateway counts it for the list filter and the card above the list:
+  // near from 80% of the limit, over from all of it, on the ratio itself.
+  const ratio = spent / limit;
+  const tone = ratio >= 1 ? 'over' : ratio >= 0.8 ? 'near' : 'ok';
+  // Rounded down, and never to a mark the member has not reached: 79.6% reads
+  // 79%, not 80%. (The small term undoes 0.29 * 100 = 28.999….)
+  const floor = Math.floor(ratio * 100 + 1e-9);
+  const percent =
+    tone === 'ok' ? Math.min(floor, 79) : tone === 'near' ? Math.min(floor, 99) : floor;
+  return { percent, tone };
 }
 
 /** The change of a figure against the period before, as a signed percentage; null without a base. */
@@ -239,6 +246,13 @@ function pair(value: unknown): { old: string | null; next: string | null } | nul
   if (!value || typeof value !== 'object') return null;
   const record = value as Record<string, unknown>;
   return { old: text(record.old), next: text(record.new) };
+}
+
+/** The two model lists of an audit row: before and after. A list the row lacks is empty. */
+function modelLists(value: unknown): { old: string[]; next: string[] } {
+  const record = value && typeof value === 'object' ? (value as Record<string, unknown>) : {};
+  const list = (one: unknown) => (Array.isArray(one) ? (one.filter(text) as string[]) : []);
+  return { old: list(record.old), next: list(record.new) };
 }
 
 /** A role in the organization, in words; one this console does not know shows as it is. */
@@ -324,16 +338,27 @@ export function auditDetails(entry: AuditEntry, t: Translate, locale: string): s
     case 'organization.connection.detach':
       return text(details.provider) ?? '';
     case 'organization.member_models.set': {
-      const lists = details.disabled_models;
-      const off =
-        lists && typeof lists === 'object' && Array.isArray((lists as { new?: unknown }).new)
-          ? ((lists as { new: unknown[] }).new.filter(text) as string[])
-          : [];
-      return off.length > 0
-        ? fill(t('organization.audit.details.models_off', 'Turned off: {models}'), {
-            models: off.join(', '),
+      // The row has the list before and the list after. What the action did
+      // is the difference: turned off, and turned on again.
+      const lists = modelLists(details.disabled_models);
+      const off = lists.next.filter((model) => !lists.old.includes(model)).join(', ');
+      const on = lists.old.filter((model) => !lists.next.includes(model)).join(', ');
+      if (off && on) {
+        return fill(
+          t('organization.audit.details.models_both', 'Turned off: {off}; turned on again: {on}'),
+          { off, on },
+        );
+      }
+      if (off) {
+        return fill(t('organization.audit.details.models_off', 'Turned off: {models}'), {
+          models: off,
+        });
+      }
+      return on
+        ? fill(t('organization.audit.details.models_on', 'Turned on again: {models}'), {
+            models: on,
           })
-        : t('organization.audit.details.models_none', 'No model turned off');
+        : '';
     }
     case 'organization.member_key.revoke': {
       const key = text(details.key_name);

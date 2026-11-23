@@ -84,6 +84,15 @@ describe('figures', () => {
     expect(limitUse(76.7, 130)).toEqual({ percent: 59, tone: 'ok' });
     expect(limitUse(72, 80)).toEqual({ percent: 90, tone: 'near' });
     expect(limitUse(40.6, 35)).toEqual({ percent: 116, tone: 'over' });
+    // The tone is of the ratio itself, as the gateway compares it, and the
+    // figure is rounded down: neither claims a mark that is not reached.
+    expect(limitUse(79.6, 100)).toEqual({ percent: 79, tone: 'ok' });
+    expect(limitUse(80, 100)).toEqual({ percent: 80, tone: 'near' });
+    expect(limitUse(99.6, 100)).toEqual({ percent: 99, tone: 'near' });
+    expect(limitUse(100, 100)).toEqual({ percent: 100, tone: 'over' });
+    // 0.29 * 100 is 28.999… in binary: still 29%.
+    expect(limitUse(0.29, 1)).toEqual({ percent: 29, tone: 'ok' });
+    expect(limitUse(0, 50)).toEqual({ percent: 0, tone: 'ok' });
     // A limit of zero lets nothing through.
     expect(limitUse(0, 0)).toEqual({ percent: 100, tone: 'over' });
     expect(limitUse(12, null)).toBeNull();

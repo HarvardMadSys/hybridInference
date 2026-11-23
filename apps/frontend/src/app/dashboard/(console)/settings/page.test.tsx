@@ -163,6 +163,29 @@ describe('a member of an organization, who signs in through single sign-on only'
     expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
   });
 
+  it('confirms at its identity provider, and is asked for no password and no phone code', () => {
+    // As the gateway now answers for such an account: no password, whatever
+    // the account holds, and the provider to confirm with. It has a phone too.
+    user = {
+      ...user,
+      email: 'carol@example.edu',
+      has_password: false,
+      sso_only: true,
+      phone: '+8613812345678',
+      phone_verified: true,
+      sso_reauth_provider: { id: 'example-univ', name: 'Example University' },
+    };
+    renderSettings(true, true);
+
+    const email = screen.getByRole('heading', { name: 'Email Address' }).closest('section')!;
+    expect(
+      within(email).getByRole('button', { name: 'Confirm with Example University' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/verification code/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Send code/i })).not.toBeInTheDocument();
+  });
+
   it('keeps the password section for an account that is not one', () => {
     user = { ...user, has_password: true, sso_only: false };
     renderSettings(false);
@@ -650,8 +673,14 @@ describe('the single sign-on section', () => {
 
   it('explains that the only way to sign in cannot be disconnected', async () => {
     sso.listSsoIdentities.mockResolvedValue([identity()]);
+    // The gateway's own sentence: the status is all else it sends, and a
+    // second refusal has the same status.
     sso.unlinkSsoIdentity.mockRejectedValue(
-      new APIError('USER_ALREADY_EXISTS', 'Only sign-in method.', 409),
+      new APIError(
+        'USER_ALREADY_EXISTS',
+        'This is the only way to sign in to this account. Set a password before disconnecting it.',
+        409,
+      ),
     );
     renderSettings(false, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
@@ -665,6 +694,48 @@ describe('the single sign-on section', () => {
       'This is the only way to sign in to this account. Set a password before disconnecting it.',
     );
     expect(screen.getByText('Example University')).toBeInTheDocument();
+  });
+
+  it('says that the single sign-on of the organization of a member cannot be disconnected', async () => {
+    sso.listSsoIdentities.mockResolvedValue([identity()]);
+    sso.unlinkSsoIdentity.mockRejectedValue(
+      new APIError(
+        'USER_ALREADY_EXISTS',
+        'This single sign-on belongs to your organization and cannot be disconnected.',
+        409,
+      ),
+    );
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
+    const row = screen.getByText('Example University').closest('li')!;
+    fireEvent.change(within(row).getByLabelText(/^Current password/), {
+      target: { value: 'Secret-1' },
+    });
+    fireEvent.click(within(row).getByRole('button', { name: 'Disconnect' }));
+
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'This single sign-on belongs to your organization and cannot be disconnected.',
+    );
+    // Not the other refusal with the same status: this account has a password.
+    expect(alert).not.toHaveTextContent('only way to sign in');
+    expect(alert).not.toHaveTextContent('Set a password');
+  });
+
+  it('shows the sentence of the gateway for a conflict it does not know, never a guess', async () => {
+    sso.listSsoIdentities.mockResolvedValue([identity()]);
+    sso.unlinkSsoIdentity.mockRejectedValue(
+      new APIError('USER_ALREADY_EXISTS', 'A rule of a later release.', 409),
+    );
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
+    const row = screen.getByText('Example University').closest('li')!;
+    fireEvent.change(within(row).getByLabelText(/^Current password/), {
+      target: { value: 'Secret-1' },
+    });
+    fireEvent.click(within(row).getByRole('button', { name: 'Disconnect' }));
+
+    expect(await within(row).findByRole('alert')).toHaveTextContent('A rule of a later release.');
   });
 
   it('shows the gateway’s reason for any other refusal', async () => {

@@ -407,8 +407,12 @@ describe('one member, opened in place', () => {
     const thesis = screen.getByRole('region', { name: 'Thesis' });
     expect(thesis).toHaveTextContent('$76.70 this month');
     expect(thesis).toHaveTextContent('laptop$70.00 this month · last used 27 min ago');
-    // A key without a name, revoked and never used.
-    expect(thesis).toHaveTextContent('Unnamed keyrevoked$6.70 this month · never used');
+    // A key without a name, revoked. The gateway sends no time for a key that
+    // was last used before the account became a member, so "never" is not said.
+    expect(thesis).toHaveTextContent(
+      'Unnamed keyrevoked$6.70 this month · not used since the account joined',
+    );
+    expect(thesis).not.toHaveTextContent('never');
     expect(
       within(screen.getByRole('region', { name: 'Default' })).getByText('No keys.'),
     ).toBeInTheDocument();
@@ -517,7 +521,7 @@ describe('one member, opened in place', () => {
     }
     expect(
       screen.getByText(
-        'The platform administrator sets the limit of an organization administrator and removes one.',
+        'The platform administrator sets the limit and the models of an organization administrator, revokes its API keys and removes it.',
       ),
     ).toBeInTheDocument();
   });
@@ -534,7 +538,9 @@ describe('one member, opened in place', () => {
       screen.queryByRole('button', { name: 'Remove from organization' }),
     ).not.toBeInTheDocument();
     expect(
-      screen.getByText('The platform administrator sets the limit of this account and removes it.'),
+      screen.getByText(
+        'The platform administrator sets the limit and the models of this account, revokes its API keys and removes it.',
+      ),
     ).toBeInTheDocument();
   });
 

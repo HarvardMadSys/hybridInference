@@ -80,6 +80,33 @@ const CONFIRM_BOX = 'mt-3 space-y-3 rounded-lg border border-gray-200 bg-gray-50
  * refused. A member of an organization cannot set a password, so it is not
  * told to: its organization's single sign-on is how the account is signed in to.
  */
+/**
+ * The two sentences the gateway refuses an unlink with. Both are a 409 with
+ * nothing else to tell them apart, so the sentence is what is read: the
+ * identity a member has from its own organization, and the last way in.
+ */
+const ORGANIZATION_IDENTITY_REFUSAL =
+  'This single sign-on belongs to your organization and cannot be disconnected.';
+const LAST_SIGN_IN_REFUSAL =
+  'This is the only way to sign in to this account. Set a password before disconnecting it.';
+
+/**
+ * Why an identity was not disconnected, in the reader's language where the
+ * refusal is one the console knows; the gateway's own sentence for any other.
+ */
+export function unlinkRefusal(error: unknown, t: Translate, ssoOnly: boolean): string {
+  if (error instanceof APIError && error.statusCode === 409) {
+    if (error.message === ORGANIZATION_IDENTITY_REFUSAL) {
+      return t(
+        'settings.sso.organization_identity',
+        'This single sign-on belongs to your organization and cannot be disconnected.',
+      );
+    }
+    if (error.message === LAST_SIGN_IN_REFUSAL) return lastMethod(t, ssoOnly);
+  }
+  return ssoRefusalMessage(error) ?? getErrorMessage(error);
+}
+
 function lastMethod(t: Translate, ssoOnly: boolean): string {
   if (ssoOnly) {
     return t(
@@ -268,11 +295,7 @@ function DisconnectConfirm({
       await onDone();
     } catch (err) {
       reauth?.settle(err);
-      setError(
-        err instanceof APIError && err.statusCode === 409
-          ? lastMethod(t, ssoOnly)
-          : (ssoRefusalMessage(err) ?? getErrorMessage(err)),
-      );
+      setError(unlinkRefusal(err, t, ssoOnly));
       setBusy(false);
     }
   };
