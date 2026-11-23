@@ -1,6 +1,5 @@
 import type { Translate } from '@/components/providers/useT';
 import type { SsoErrorCode } from '@/lib/api/sso';
-import { fill } from '@/lib/utils/interpolate';
 
 /**
  * The sentence for one `sso_error` code.
@@ -77,14 +76,12 @@ export function ssoStartFailure(t: Translate, status: number | undefined): strin
 /**
  * What linking does to an account that becomes a member of an organization
  * with it, said before the account is linked: on the step that asks, and in
- * the form that starts a link.
+ * the form that starts a link. It names the way in, single sign-on, and not
+ * the organization: a member signs in through any identity that is linked.
  */
-export function ssoOnlyAfterLink(t: Translate, name: string): string {
-  return fill(
-    t(
-      'auth.sso.link_sso_only',
-      'After you connect it, this account signs in through {name} only. Its password is removed.',
-    ),
-    { name },
+export function ssoOnlyAfterLink(t: Translate): string {
+  return t(
+    'auth.sso.link_sso_only',
+    'After you connect it, this account signs in through single sign-on only. Its password is removed.',
   );
 }

@@ -464,7 +464,7 @@ function ConnectForm({
           role="note"
           className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
         >
-          {ssoOnlyAfterLink(t, ssoOnlyProvider.name)}
+          {ssoOnlyAfterLink(t)}
         </div>
       ) : null}
       <InputField

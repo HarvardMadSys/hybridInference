@@ -928,8 +928,8 @@
     "text": "这个邮箱已有账号。请用原来的方式登录一次，完成和 {name} 账号的关联。"
   },
   "auth.sso.link_sso_only": {
-    "source": "After you connect it, this account signs in through {name} only. Its password is removed.",
-    "text": "关联后，这个账号只能通过 {name} 登录，现有密码会被删除。"
+    "source": "After you connect it, this account signs in through single sign-on only. Its password is removed.",
+    "text": "关联后，这个账号只能通过 SSO 登录，现有密码会被删除。"
   },
   "auth.sso.link_title": {
     "source": "Connect your {name} account?",

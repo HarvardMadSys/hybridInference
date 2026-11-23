@@ -472,7 +472,7 @@ function LoginContent() {
                 // Said before the button: the account is the organization's from then on.
                 // The gateway answers for the provider alone; a platform administrator
                 // keeps its password, so it is not told that it loses it.
-                <AuthNotice>{ssoOnlyAfterLink(t, waiting.provider_name)}</AuthNotice>
+                <AuthNotice>{ssoOnlyAfterLink(t)}</AuthNotice>
               ) : null}
               <button
                 type="button"

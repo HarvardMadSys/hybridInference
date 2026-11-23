@@ -804,7 +804,7 @@ describe('the single sign-on section', () => {
     // of small print between the last field and the button.
     const sentence = within(section).getByRole('note');
     expect(sentence).toHaveTextContent(
-      'After you connect it, this account signs in through Example University only. Its password is removed.',
+      'After you connect it, this account signs in through single sign-on only. Its password is removed.',
     );
     const email = within(section).getByLabelText('Work or school email');
     const action = within(section).getByRole('button', { name: 'Continue' });

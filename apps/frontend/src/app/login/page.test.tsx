@@ -929,7 +929,7 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     renderLogin();
 
     const notice = await screen.findByText(
-      'After you connect it, this account signs in through Example University only. Its password is removed.',
+      'After you connect it, this account signs in through single sign-on only. Its password is removed.',
     );
     const connect = screen.getByRole('button', { name: 'Connect' });
     expect(notice.compareDocumentPosition(connect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
