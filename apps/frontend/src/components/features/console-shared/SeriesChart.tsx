@@ -1,6 +1,6 @@
 'use client';
 
-// Loaded via next/dynamic from the organization pages. Do not import
+// Loaded via next/dynamic from the pages that show a series. Do not import
 // statically, or the recharts bundle lands in every page's first chunk.
 import {
   Bar,
@@ -13,6 +13,12 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
+import {
+  CHART_AXIS_LINE,
+  CHART_AXIS_TICK,
+  CHART_GRID_STROKE,
+  CHART_TOOLTIP_STYLE,
+} from './chartTheme';
 
 /** One point of a series, with its label already in the reader's language. */
 export interface SeriesPoint {
@@ -22,14 +28,6 @@ export interface SeriesPoint {
 
 const SERIES_COLOR = '#3b82f6';
 
-const TOOLTIP_STYLE = {
-  fontSize: 12,
-  borderRadius: 8,
-  border: '1px solid #e5e7eb',
-  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-} as const;
-
-const AXIS_TICK = { fontSize: 11, fill: '#9ca3af' } as const;
 const MARGIN = { top: 8, right: 8, left: 0, bottom: 0 } as const;
 
 /**
@@ -61,16 +59,16 @@ export default function SeriesChart({
 }) {
   const axes = (
     <>
-      <CartesianGrid stroke="#f3f4f6" vertical={false} />
+      <CartesianGrid stroke={CHART_GRID_STROKE} vertical={false} />
       <XAxis
         dataKey="label"
-        tick={AXIS_TICK}
+        tick={CHART_AXIS_TICK}
         tickLine={false}
-        axisLine={{ stroke: '#e5e7eb' }}
+        axisLine={CHART_AXIS_LINE}
         minTickGap={24}
       />
       <YAxis
-        tick={AXIS_TICK}
+        tick={CHART_AXIS_TICK}
         tickLine={false}
         axisLine={false}
         width={52}
@@ -82,7 +80,7 @@ export default function SeriesChart({
         cursor={
           kind === 'bar' ? { fill: 'rgba(59,130,246,0.06)' } : { stroke: 'rgba(148,163,184,0.5)' }
         }
-        contentStyle={TOOLTIP_STYLE}
+        contentStyle={CHART_TOOLTIP_STYLE}
         formatter={(value) => [formatValue(Number(value)), name]}
       />
     </>

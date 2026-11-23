@@ -13,7 +13,7 @@ import { FigureCard } from './parts';
 import { requestStatus } from './text';
 
 // The chart carries the recharts bundle; a page shows its figures first.
-const SeriesChart = dynamic(() => import('./OrganizationCharts'), {
+const SeriesChart = dynamic(() => import('@/components/features/console-shared/SeriesChart'), {
   ssr: false,
   loading: () => <div className="h-[220px] animate-pulse rounded bg-gray-50" />,
 });
