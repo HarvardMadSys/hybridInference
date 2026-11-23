@@ -186,8 +186,8 @@ class OrganizationMember(MoneyResponse):
 
     The requests, the tokens and ``cost`` are those of the period. The four
     ``spent_*`` figures are the same for every period: today, the last 7 days,
-    this month and all time, from the day the account became a member (this
-    month is the whole calendar month, the figure the limit is compared with).
+    this month and all time. They are of the whole account, the figures that
+    Admin has for it.
 
     ``status`` is the account's status. ``removed`` is True for a member the
     organization removed: only such a member is the organization's to restore.

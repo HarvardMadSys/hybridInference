@@ -712,12 +712,10 @@ async def member_detail_view(
     spent = {
         row["day"]: row for row in await op_store.get_user_cost_history(user_id, MEMBER_SPEND_DAYS)
     }
-    # As every figure of a member: from the day its account became one.
-    joined = found[1][0]["joined_at"].astimezone(UTC).date()
     days = []
     for offset in range(MEMBER_SPEND_DAYS - 1, -1, -1):
         day = today - timedelta(days=offset)
-        row = (spent.get(day.isoformat()) or {}) if day >= joined else {}
+        row = spent.get(day.isoformat()) or {}
         days.append(
             {
                 "bucket": datetime(day.year, day.month, day.day, tzinfo=UTC),
@@ -734,12 +732,7 @@ async def member_detail_view(
         limit=MEMBER_RECENT_REQUESTS,
     )
     account = await op_store.get_user_by_id(user_id) or {}
-    joined_at = found[1][0]["joined_at"]
-    keys = [
-        key_view(row, joined_at)
-        for row in await op_store.list_account_keys(user_id)
-        if _key_of_membership(row, joined_at)
-    ]
+    keys = [key_view(row) for row in await op_store.list_account_keys(user_id)]
     return {
         "member": found[1][0],
         "account": {
@@ -785,29 +778,11 @@ async def project_view(op_store: Any, row: Mapping[str, Any]) -> dict[str, Any]:
     return view
 
 
-def _key_of_membership(row: Mapping[str, Any], joined_at: datetime) -> bool:
-    """Whether a key is one the organization is shown: one the member had as a member.
-
-    A key that is not revoked, or one made, used or revoked since the account
-    became a member. A key that was revoked before is from the time the
-    account was not the organization's (as its earlier requests). So is a
-    revoked key that names no time: the organization and a removal write one.
-    """
-    if row["status"] != "revoked":
-        return True
-    return any(
-        row.get(stamp) is not None and row[stamp] >= joined_at
-        for stamp in ("created_at", "last_used_at", "revoked_at")
-    )
-
-
-def key_view(row: Mapping[str, Any], joined_at: datetime) -> dict[str, Any]:
+def key_view(row: Mapping[str, Any]) -> dict[str, Any]:
     """An API key of a member as its organization is shown it: by its name.
 
     Never the value, the prefix that begins it, or the limits its owner set.
-    A last use from before the account became a member is not shown.
     """
-    last_used_at = row.get("last_used_at")
     view: dict[str, Any] = {
         "id": row["id"],
         "name": row.get("name"),
@@ -815,7 +790,7 @@ def key_view(row: Mapping[str, Any], joined_at: datetime) -> dict[str, Any]:
         "project_id": row.get("project_id"),
         "project_name": row.get("project_name"),
         "created_at": row["created_at"],
-        "last_used_at": last_used_at if last_used_at and last_used_at >= joined_at else None,
+        "last_used_at": row.get("last_used_at"),
         "spent_today_usd": float(row.get("spent_today_usd") or 0),
         "spent_month_usd": float(row.get("spent_month_usd") or 0),
     }

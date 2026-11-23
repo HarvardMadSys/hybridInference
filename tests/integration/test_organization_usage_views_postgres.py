@@ -1,7 +1,7 @@
 """What the organization console gained beside Admin: volume, top members, tokens, hours.
 
 Over HTTP, on the real store. Every figure is of the members of one
-organization, from the day each became one.
+organization, and of no other account.
 """
 
 from __future__ import annotations
@@ -51,16 +51,6 @@ async def _request(
         )
 
 
-async def _joined(pool, user_id: str, days_ago: int) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE org_memberships SET joined_at = NOW() - make_interval(days => $2) "
-            "WHERE user_id = $1",
-            user_id,
-            days_ago,
-        )
-
-
 async def _forget_spend(pool, *user_ids: str) -> None:
     async with pool.acquire() as conn:
         await conn.execute(
@@ -76,15 +66,16 @@ async def test_the_request_volume_counts_four_windows_that_end_now(
     _bob, _bob_headers, bob_id = state["bob"]
     outsider_id = await shared.existing_user(store, "someone@elsewhere.org")
     pool = clean_organizations
-    await _joined(pool, bob_id, 25)
     for _ in range(3):
         await _request(pool, bob_id, ago=timedelta(minutes=5), latency=100)
     await _request(pool, bob_id, ago=timedelta(minutes=10), status=500, latency=100)
     await _request(pool, bob_id, ago=timedelta(hours=5), latency=400)
     await _request(pool, bob_id, ago=timedelta(days=3), latency=None)
     await _request(pool, bob_id, ago=timedelta(days=20), status=429)
-    # Before the account was a member, and of an account that is none: counted nowhere.
+    # Before Bob was a member: the request is the account's, so it counts.
     await _request(pool, bob_id, ago=timedelta(days=27))
+    # Past the longest window, and of an account that is no member: counted nowhere.
+    await _request(pool, bob_id, ago=timedelta(days=31))
     await _request(pool, outsider_id, ago=timedelta(minutes=1), status=500)
 
     volume = await alice.get(f"{ORGANIZATION}/usage/volume", headers=headers)
@@ -95,7 +86,7 @@ async def test_the_request_volume_counts_four_windows_that_end_now(
         "day": {"requests": 5, "ok": 4, "failed": 1, "avg_latency_ms": 160.0},
         # The request of three days ago recorded no latency: the mean is of the five that did.
         "week": {"requests": 6, "ok": 5, "failed": 1, "avg_latency_ms": 160.0},
-        "month": {"requests": 7, "ok": 5, "failed": 2, "avg_latency_ms": 160.0},
+        "month": {"requests": 8, "ok": 6, "failed": 2, "avg_latency_ms": 160.0},
     }
 
 
@@ -124,8 +115,6 @@ async def test_the_overview_names_the_top_members_and_counts_the_tokens_of_each_
     pool = clean_organizations
     await _seed_usage(pool, store, alice_id, requests=2, cost="0.50")
     await _seed_usage(pool, store, bob_id, requests=4, cost="1.50")
-    # A request counts from the instant of the membership, so Bob joined before this one.
-    await _joined(pool, bob_id, 1)
     await _request(pool, bob_id, ago=timedelta(minutes=1), prompt=1000, completion=10, cached=800)
     try:
         overview = await alice.get(f"{ORGANIZATION}/overview?period=7d", headers=headers)
@@ -156,7 +145,6 @@ async def test_the_series_has_a_point_for_each_hour_when_it_is_asked_to(
     state = await _organization_with_an_administrator(app, idp, store)
     alice, headers, _ = state["alice"]
     _bob, _bob_headers, bob_id = state["bob"]
-    await _joined(clean_organizations, bob_id, 1)
     await _request(clean_organizations, bob_id, ago=timedelta(seconds=30))
     asked_at = datetime.now(UTC)
 

@@ -174,22 +174,19 @@ UTC, with today. "This month" is the calendar month in UTC, the same month as th
 Members has no period. Each row has the spend columns of **Admin → Users**: today, the last 7 days, this
 month and all time (§6.3).
 
-Every figure is a sum over the accounts that have a membership in the organization, from the time each
-account became a member. The pages do not show what an account used before. When the platform administrator
-attaches a connection, accounts become members that did nothing for it, and their earlier requests name
-models, projects and API keys.
+Every figure is a sum over the accounts that have a membership in the organization, and is of the whole
+account. The organization owns the account of a member (§3), so the organization console shows the figures
+that **Admin → Users** has for that account. This includes what an account used before it became a member:
+an account that linked its identity later, or that was a member from the attach of a connection.
 
-- A request row has its instant, thus the request log is cut at the instant of the membership.
-- A day counter is one row for a UTC day. Thus the day on which an account became a member counts as a
-  whole day.
-- The spend of this month of a member is not cut. It is the figure that the monthly limit is compared with,
-  and the gateway counts the whole calendar month.
+One figure starts at the membership: the counter of the organization, which the monthly limit of the
+organization is compared with (§8.2).
 
 | Figure | Source |
 |---|---|
 | Spend for each day | `user_daily_cost`, the counters that the quota gates read |
 | Requests and tokens, the figures for each model and for each hour, the request volume, and the request rows | `api_logs`, through the index on `(user_id, timestamp)`. A period is 30 days at most |
-| Spend of a member today, in the last 7 days and in all time | `user_daily_cost`, from the day of the membership |
+| Spend of a member today, in the last 7 days and in all time | `user_daily_cost` |
 | Spend of a project and of an API key, today and in this month | `spend_counters` for a project and `api_key_daily_cost` for a key, the rows that the quota gates read |
 | Last request of a member | `user_daily_cost.last_request_at` |
 | Monthly limit of a member | The limit on the membership, the default of the organization, and the monthly quota of the account (§8.1) |
@@ -258,9 +255,7 @@ A row opens the details of the member (`?period=`, default `30d`):
 - the spend for each model in the period;
 - the projects of the member, each with its name and its spend of today and of this month, and its API
   keys, each with its name, its project, its status, its last use and the same two figures. Never the key
-  value, its prefix, or the limits that its owner set. Only the keys that the account had as a member: a
-  key that was revoked before is not shown, and neither is a last use from before. A key that the
-  organization revoked, or that a removal revoked, has the time of it and stays in the list;
+  value, its prefix, or the limits that its owner set;
 - the models that are off for the member: those that the organization turned off (§7.5), and those that
   the platform administrator turned off, which the organization can read and cannot change;
 - the last 6 requests;
@@ -747,7 +742,7 @@ Notes:
     each refusal; a platform administrator keeps the password;
   - the models of a member at each gate, and that the list of the platform administrator stays as it was;
   - the revoke of a key, and that a key of a different account is a 404;
-  - the figures of §6.3 from the day of the membership, the filters and the two cards.
+  - the figures of §6.3 against those that Admin has for the account, the filters and the two cards.
 - **Admin route count:** `tests/servers/test_admin_router_aggregation.py` gets the new number.
 - **Console:** the entry for each role; the guard; each page with a stubbed API; the three dialogs; the API
   module (`lib/api/__tests__/organization.test.ts`); `catalog.test.ts` for the new strings.
@@ -796,10 +791,11 @@ entry.
 | Where the organization is stored | The tables `organizations` and `org_members` of revision `0015`, with the kind `team` | They hold one hidden row for each account, the service continues to write them, a trigger of revision `0018` writes the account quota into them, and a contract revision is planned to drop them. New tables keep this work independent of that revision |
 | Where the membership comes from | A query on `user_identities` and the `domains` at each use | The role needs a record. The key lookup needs one read through a primary key. And a change of `SSO_PROVIDERS` would change the members of the past |
 | One account or two | One account that joins and leaves organizations | #1829 decides that the organization owns the account. Then to remove a member is to suspend the account, and no personal data is in it |
-| How usage is counted for an organization | An organization column on each usage row, written with the request | Each write on the request path would change. Sums over the members need no new write, and the time of the membership bounds them (§6.1) |
+| How usage is counted for an organization | An organization column on each usage row, written with the request | Each write on the request path would change. Sums over the members need no new write |
 | Where the limit of a member is kept | In the monthly quota of the account (`account_quotas`), as the first version of this work did | One field would have two owners. An organization administrator could then clear or raise a quota that the platform administrator set. With two fields the lower value applies (§8.1) |
 | Where the spend of an organization comes from at admission | The sum of `user_daily_cost` over all members, for each request | The cost grows with the number of members and days. A counter row is one read |
 | Where the default limit of a member is kept | A copy in the quota of each member | Each change of the default would write every member, and each account would need a mark that says where its limit came from |
+| Which usage of a member the organization sees | Only the usage from the time of the membership, as the first version of this work did | The two consoles then show different figures for one account. The organization owns the account of a member, and a member signs in through its organization only (§4.4) |
 | How a member is kept from a password sign-in | A check at sign-in only, with the password left on the account | Each place that asks "has this account a password" would need the same check: the confirmation of an action, the second factor, the unlink of an identity. Without a password on the account, each of them is correct as it is. The check at sign-in stays for the account that kept a password |
 | Where the models of a member are kept | In the preferences of the account, the list that **Admin → Users** sets | One field would have two owners, as for the limit. An organization administrator could then turn on a model that the platform administrator turned off |
 | The path of the routes | A new prefix `/organization` | A new public prefix needs an entry in `deploy/public-paths.json`, a route handler and a middleware rule in the console. `/user` has all of them |

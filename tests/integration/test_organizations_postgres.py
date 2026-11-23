@@ -738,15 +738,15 @@ async def test_an_administrator_sees_the_usage_of_the_members_and_never_their_co
     assert {request["user_id"] for request in shown["requests"]} == {bob_id}
 
 
-async def test_what_an_account_did_before_it_became_a_member_is_not_shown(
+async def test_the_figures_of_a_member_are_those_of_its_whole_account(
     app, idp, store, clean_organizations, members_sign_straight_in
 ):
-    """Making an organization enrolls accounts that did nothing for it."""
+    """The organization owns the account: what it used before it joined is in the figures too."""
     root, root_headers, _ = await _platform_admin(app, store)
     alice, headers, alice_id = await _member(app, idp, store)
     _bob, _bob_headers, bob_id = await _member(app, idp, store, email=BOB, sub="subject-2")
     earlier = datetime.now(UTC) - timedelta(days=3)
-    # Bob used the gateway on its own before there was an organization.
+    # Bob used the gateway before there was an organization.
     await _seed_usage(clean_organizations, store, bob_id, requests=3, cost="6.00", at=earlier)
     made = await _make_organization(root, root_headers)
     await _set_role(root, root_headers, made["organization"]["id"], alice_id)
@@ -756,20 +756,21 @@ async def test_what_an_account_did_before_it_became_a_member_is_not_shown(
         members = await alice.get("/user/organization/members?period=30d", headers=headers)
         requests = await alice.get("/user/organization/usage/requests?period=30d", headers=headers)
         detail = await alice.get(f"/user/organization/members/{bob_id}?period=30d", headers=headers)
-        own = await _bob.get("/user/usage?days=30", headers=_bob_headers)
+        in_admin = await root.get("/admin/users", params={"search": BOB}, headers=root_headers)
     finally:
         async with clean_organizations.acquire() as conn:
             await conn.execute("DELETE FROM user_daily_cost WHERE user_id = $1", bob_id)
 
-    assert (overview.json()["requests"], overview.json()["cost_usd"]) == (2, 1.0)
+    assert (overview.json()["requests"], overview.json()["cost_usd"]) == (5, 7.0)
     bob = next(m for m in members.json()["members"] if m["user_id"] == bob_id)
-    assert (bob["requests"], bob["cost_usd"]) == (2, 1.0)
-    assert len(requests.json()["requests"]) == 2
+    assert (bob["requests"], bob["cost_usd"]) == (5, 7.0)
+    assert len(requests.json()["requests"]) == 5
     shown = detail.json()
-    assert len(shown["requests"]) == 2
-    assert sum(day["cost_usd"] for day in shown["days"]) == 1.0
-    # The account itself still has all of it.
-    assert own.status_code == 200, own.text
+    assert len(shown["requests"]) == 5
+    assert sum(day["cost_usd"] for day in shown["days"]) == 7.0
+    # The two consoles show one figure for all time.
+    (as_admin_sees,) = in_admin.json()["users"]
+    assert bob["spent_alltime_usd"] == float(as_admin_sees["usage_alltime_usd"]) == 7.0
 
 
 # -- removing and restoring a member ---------------------------------------------------

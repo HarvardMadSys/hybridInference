@@ -1326,8 +1326,8 @@ async def _day_cost(pool, user_id: str, at: datetime, cost: str) -> None:
         )
 
 
-async def test_the_figures_of_a_member_start_when_its_account_became_a_member(store):
-    """An attach enrolls accounts that did nothing for it: their earlier use stays theirs."""
+async def test_the_figures_of_a_member_are_of_its_whole_account(store):
+    """The organization owns the account: what it used before it joined is in every figure."""
     op_store, pool = store
     member, early = await _account(op_store, "j1"), await _account(op_store, "j2")
     await _organization(op_store, "j", ("itest-j", [member, early]))
@@ -1346,18 +1346,15 @@ async def test_the_figures_of_a_member_start_when_its_account_became_a_member(st
         (after, "model-after"),
     ):
         await _request(pool, member, at, model=model)
-    for at, cost in ((before, "5"), (at_joining, "2"), (after, "1")):
+    costs = ((before, "5"), (at_joining, "2"), (after, "1"))
+    for at, cost in costs:
         await _day_cost(pool, member, at, cost)
     # An account that has done nothing since it became a member.
     await _request(pool, early, before, model="model-before")
     await _day_cost(pool, early, before, "7")
     first_day, last_day = (now - timedelta(days=29)).date(), now.date()
     month_start = now.date().replace(day=1)
-    whole_month = sum(
-        Decimal(cost)
-        for at, cost in ((before, "5"), (at_joining, "2"), (after, "1"))
-        if at.date() >= month_start
-    )
+    whole_month = sum(Decimal(cost) for at, cost in costs if at.date() >= month_start)
 
     _total, rows = await op_store.list_organization_members(
         "o-itest-j", first_day=first_day, last_day=last_day
@@ -1371,29 +1368,34 @@ async def test_the_figures_of_a_member_start_when_its_account_became_a_member(st
     detail = await organization_rules.member_detail_view(op_store, "o-itest-j", member, "30d")
 
     listed = {row["user_id"]: row for row in rows}
-    # The request log has the instant: one second before the joining is before it.
-    assert (listed[member]["requests"], listed[member]["total_tokens"]) == (2, 300)
+    # Every request and every day of the account, also those from before the joining.
+    assert (listed[member]["requests"], listed[member]["total_tokens"]) == (4, 600)
     assert listed[member]["last_request_at"] == after
-    # A day counter is one row for a day: the day of the joining counts whole,
-    # the days before it do not count.
-    assert listed[member]["cost_usd"] == Decimal("3")
-    # What the monthly limit is compared with is the whole month, as the request path counts it.
+    assert listed[member]["cost_usd"] == Decimal("8")
+    assert listed[member]["spent_alltime_usd"] == Decimal("8")
     assert listed[member]["spent_month_usd"] == whole_month
-    assert (listed[early]["requests"], listed[early]["cost_usd"]) == (0, 0)
-    assert listed[early]["last_request_at"] is None
+    assert (listed[early]["requests"], listed[early]["cost_usd"]) == (1, Decimal("7"))
+    assert listed[early]["last_request_at"] == before
 
-    assert (usage["requests"], usage["total_tokens"], usage["members_with_requests"]) == (2, 300, 1)
-    assert {row["model_id"]: row["requests"] for row in usage["models"]} == {"model-after": 2}
+    assert (usage["requests"], usage["total_tokens"], usage["members_with_requests"]) == (5, 750, 2)
+    assert {row["model_id"]: row["requests"] for row in usage["models"]} == {
+        "model-before": 3,
+        "model-after": 2,
+    }
     assert [row["day"] for row in usage["spend_days"]] == sorted(
-        {at_joining.date().isoformat(), after.date().isoformat()}
+        {before.date().isoformat(), at_joining.date().isoformat(), after.date().isoformat()}
     )
-    assert sum(row["cost_usd"] for row in usage["spend_days"]) == Decimal("3")
-    assert [row["model_id"] for row in requests] == ["model-after", "model-after"]
-
+    assert sum(row["cost_usd"] for row in usage["spend_days"]) == Decimal("15")
+    assert [row["model_id"] for row in requests] == ["model-after"] * 2 + ["model-before"] * 3
     days = {point["bucket"].date(): point["cost_usd"] for point in detail["days"]}
-    assert (days[before.date()], days[at_joining.date()], days[after.date()]) == (0, 2, 1)
-    assert {row["model_id"] for row in detail["models"]} == {"model-after"}
-    assert [row["model_id"] for row in detail["requests"]] == ["model-after", "model-after"]
+    assert (days[before.date()], days[at_joining.date()], days[after.date()]) == (5, 2, 1)
+    assert {row["model_id"] for row in detail["models"]} == {"model-before", "model-after"}
+    assert [row["model_id"] for row in detail["requests"]] == [
+        "model-after",
+        "model-after",
+        "model-before",
+        "model-before",
+    ]
 
 
 async def test_a_search_takes_a_percent_sign_and_an_underscore_as_they_are(store):

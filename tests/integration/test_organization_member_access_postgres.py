@@ -354,27 +354,20 @@ async def test_what_an_organization_turned_off_does_not_hold_an_administrator(
     assert disabled_models_of(await store.get_user_by_id(bob_id)) == ["model-a"]
 
 
-async def test_a_key_from_before_the_membership_is_not_shown(
+async def test_the_panel_lists_every_key_of_the_account_as_admin_does(
     app, idp, store, clean_organizations, members_sign_straight_in
 ):
+    """Also a key from before the account was a member: the organization owns the account."""
     state = await _organization_with_an_administrator(app, idp, store)
     alice, headers, _ = state["alice"]
     _bob, _bob_headers, bob_id = state["bob"]
-    ids = {name: (await _key(store, bob_id, name))[1] for name in ("gone", "ended", "live")}
+    ids = {name: (await _key(store, bob_id, name))[1] for name in ("gone", "live")}
     async with clean_organizations.acquire() as conn:
-        # Revoked and last used before Bob was a member: not the organization's to see.
         await conn.execute(
             "UPDATE api_keys SET status = 'revoked', created_at = NOW() - INTERVAL '30 days', "
             "last_used_at = NOW() - INTERVAL '20 days' WHERE id = $1",
             ids["gone"],
         )
-        # Made before, used as a member, then revoked: shown.
-        await conn.execute(
-            "UPDATE api_keys SET status = 'revoked', created_at = NOW() - INTERVAL '30 days', "
-            "last_used_at = NOW() + INTERVAL '1 minute' WHERE id = $1",
-            ids["ended"],
-        )
-        # Live, last used before: shown, without that time.
         await conn.execute(
             "UPDATE api_keys SET created_at = NOW() - INTERVAL '30 days', "
             "last_used_at = NOW() - INTERVAL '20 days' WHERE id = $1",
@@ -387,19 +380,20 @@ async def test_a_key_from_before_the_membership_is_not_shown(
     )
 
     keys = {key["name"]: key for key in shown.json()["keys"]}
-    assert set(keys) == {"ended", "live"}
-    assert keys["live"]["last_used_at"] is None
-    assert keys["ended"]["last_used_at"] is not None
+    assert {name: key["status"] for name, key in keys.items()} == {
+        "gone": "revoked",
+        "live": "active",
+    }
+    assert keys["live"]["last_used_at"] is not None
     assert too_large.status_code == 422
 
-    # A key from before, never used as a member: the organization revokes it and still sees it.
     revoked = await alice.post(
         f"/user/organization/members/{bob_id}/keys/{ids['live']}/revoke", headers=headers
     )
     assert revoked.status_code == 200, revoked.text
     after = await alice.get(f"/user/organization/members/{bob_id}", headers=headers)
     assert {key["name"]: key["status"] for key in after.json()["keys"]} == {
-        "ended": "revoked",
+        "gone": "revoked",
         "live": "revoked",
     }
 

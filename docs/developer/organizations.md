@@ -150,12 +150,10 @@ of their monthly limit, and `limit_state=over` those at 100% or more.
 `min_cost_today` and `min_cost_month` are amounts in USD, or in the ledger
 currency when the call names it with `currency`.
 
-The figures of a member start when its account became a member. The pages do
-not show the requests that the account made before, nor their models, projects
-and API key names. Spend comes from a counter for each UTC day, so the day on
-which the account became a member counts as a whole day. One figure counts the
-whole calendar month: the spend of this month, which a row shows beside the
-monthly limit. The gateway compares the limit with the whole month.
+The figures of a member are of its whole account. They are the figures that
+**Admin → Users** shows for that account. So an organization administrator
+also sees what an account used before it became a member, for example an
+account that existed when you attached the connection.
 
 Money fields follow [Accounting Currency](accounting.md): the `*_usd` fields,
 and the native amounts with `currency` on a ledger that is not in USD.
@@ -211,8 +209,7 @@ allow.
 - **API keys.** An organization administrator revokes one API key of a member,
   as the owner of the key does in the console. The key stays revoked, and the
   member can make a new one. `key_id` is the `id` of the key in the panel of
-  the member. The panel shows the keys that the account had as a member. It
-  does not show a key that was revoked before the account became one.
+  the member.
 
 ### Remove and restore a member
 
@@ -294,7 +291,7 @@ Things to know:
 
 - **The spend of an organization starts at membership.** What an account was
   charged before it became a member does not count against the limit of the
-  organization, and the usage pages do not show it.
+  organization. The usage pages show it.
 - **A change of a limit, of the role of a member or of its models applies
   within 60 seconds.** A revoked key stops within 30 seconds.
 - **Requests that run at the same time** can take an organization a little

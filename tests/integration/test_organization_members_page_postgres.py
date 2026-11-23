@@ -1,8 +1,8 @@
 """The member list of an organization: its spend columns, its filters and its two cards.
 
 The columns are those of Admin's user list (today, the last 7 days, this
-month, all time), counted from the day an account became a member. A card
-above the list is the list under one filter, so the two never disagree.
+month, all time), with the figures Admin has for the account. A card above
+the list is the list under one filter, so the two never disagree.
 """
 
 from __future__ import annotations
@@ -55,31 +55,20 @@ async def spend(clean_organizations):
         )
 
 
-async def _joined(pool, user_id: str, days_ago: int) -> None:
-    async with pool.acquire() as conn:
-        await conn.execute(
-            "UPDATE org_memberships SET joined_at = NOW() - make_interval(days => $2) "
-            "WHERE user_id = $1",
-            user_id,
-            days_ago,
-        )
-
-
 def _row(listed, user_id: str) -> dict:
     return next(member for member in listed.json()["members"] if member["user_id"] == user_id)
 
 
-async def test_a_member_has_the_spend_of_today_of_seven_days_and_of_all_time_since_it_joined(
+async def test_a_member_has_the_spend_of_today_of_seven_days_and_of_all_time(
     app, idp, store, clean_organizations, members_sign_straight_in, spend
 ):
     state = await _organization_with_an_administrator(app, idp, store)
     alice, headers, _ = state["alice"]
     _bob, _bob_headers, bob_id = state["bob"]
-    await _joined(clean_organizations, bob_id, 10)
     await spend(bob_id, 0, "2.00")
     await spend(bob_id, 3, "3.00")
     await spend(bob_id, 8, "5.00")
-    # Before the account was a member: in no column of the organization.
+    # Bob joined a moment ago: what the account spent before is in all time too.
     await spend(bob_id, 20, "7.00")
 
     listed = await alice.get(f"{MEMBERS}?sort_by=today&order=desc", headers=headers)
@@ -91,7 +80,7 @@ async def test_a_member_has_the_spend_of_today_of_seven_days_and_of_all_time_sin
         assert (bob["spent_today_usd"], bob["spent_7d_usd"], bob["spent_alltime_usd"]) == (
             2.0,
             5.0,
-            10.0,
+            17.0,
         )
         days = bob["spend_days"]
         assert [point["day"] for point in days] == [_day(ago) for ago in range(6, -1, -1)]

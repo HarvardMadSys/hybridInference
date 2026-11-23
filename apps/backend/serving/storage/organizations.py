@@ -238,14 +238,6 @@ _LOG_AMOUNT = "COALESCE(l.cost_amount, l.cost_usd * $2::numeric)"
 
 _THIS_MONTH = "to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
 
-#: The figures of a member start when its account became a member (``s`` is its
-#: scope row): what the account did before is not its organization's to see. An
-#: attach makes accounts members that did nothing for it, and their earlier
-#: requests name models, projects and keys. A request has its instant. A cost
-#: counter is one row for a UTC day, so the day of the joining counts whole.
-_SINCE_JOINED_LOG = "l.timestamp >= s.joined_at"
-_SINCE_JOINED_DAY = "c.day >= to_char(s.joined_at AT TIME ZONE 'UTC', 'YYYY-MM-DD')"
-
 
 def contains_pattern(text: str) -> str:
     """A ``LIKE`` pattern that finds *text* anywhere, in lower case.
@@ -908,13 +900,6 @@ class PostgresOrganizationsMixin:
                 return PROTECTED
             if member["status"] != "active":
                 return NOT_ACTIVE
-            # The keys that the suspension revokes were the member's as a
-            # member: with the time, the organization is still shown them.
-            await conn.execute(
-                "UPDATE api_keys SET revoked_at = NOW() "
-                "WHERE account_id = $1 AND status = 'active' AND revoked_at IS NULL",
-                user_id,
-            )
             await self._suspend_user_on(conn, user_id, suspension_message=suspension_message)
             await conn.execute(
                 "UPDATE org_memberships SET removed_at = NOW(), removed_by = $2 WHERE user_id = $1",
@@ -1150,10 +1135,7 @@ class PostgresOrganizationsMixin:
                 return PROTECTED, None
             if key["status"] != "active":
                 return NOT_ACTIVE, None
-            # With the time, which says that the key was the member's as a member.
-            await conn.execute(
-                "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() WHERE id = $1", key_id
-            )
+            await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE id = $1", key_id)
             await insert_audit_row(
                 conn,
                 columns=audit,
@@ -1215,13 +1197,11 @@ class PostgresOrganizationsMixin:
     # -- what an administrator is shown --------------------------------------
     #
     # Every figure is a sum over the accounts that have a membership in the
-    # organization, from when each became a member (:data:`_SINCE_JOINED_LOG`).
-    # Spend comes from the cost counters (``user_daily_cost``), the days the
-    # quota gates read; requests, tokens and models come from the request log,
-    # bounded by the period. One figure is not cut at the joining: what a
-    # member spent this month, because that is what its monthly limit is
-    # compared with, and the request path counts the whole month. No statement
-    # here selects a request's content.
+    # organization, and is of the whole account: the organization owns the
+    # account of a member, so its figures are those Admin has for it. Spend
+    # comes from the cost counters (``user_daily_cost``), the days the quota
+    # gates read; requests, tokens and models come from the request log,
+    # bounded by the period. No statement here selects a request's content.
 
     async def list_organization_administrators(self, organization_id: str) -> list[dict]:
         """The members that have the administrator role, by email."""
@@ -1323,12 +1303,12 @@ class PostgresOrganizationsMixin:
             "spent AS ("
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-            f"  WHERE c.day >= $3 AND c.day <= $4 AND {_SINCE_JOINED_DAY} GROUP BY c.user_id), "
+            "  WHERE c.day >= $3 AND c.day <= $4 GROUP BY c.user_id), "
             "month AS ("
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
             f"  WHERE c.day >= {_THIS_MONTH} GROUP BY c.user_id), "
-            # Today, the days of the trend, and every day since the joining.
+            # Today, the days of the trend, and every day the account has.
             "fixed AS ("
             "  SELECT c.user_id, "
             "         SUM(c.cost_usd) FILTER (WHERE c.day = $7) AS today_usd, "
@@ -1337,16 +1317,15 @@ class PostgresOrganizationsMixin:
             f"         SUM({_AMOUNT}) FILTER (WHERE c.day >= $8) AS week_amount, "
             f"         SUM(c.cost_usd) AS alltime_usd, SUM({_AMOUNT}) AS alltime_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-            f"  WHERE {_SINCE_JOINED_DAY} GROUP BY c.user_id), "
+            "  GROUP BY c.user_id), "
             "seen AS ("
-            "  SELECT c.user_id, MAX(c.last_request_at) "
-            "         FILTER (WHERE c.last_request_at >= s.joined_at) AS last_request_at "
+            "  SELECT c.user_id, MAX(c.last_request_at) AS last_request_at "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id GROUP BY c.user_id), "
             "logged AS ("
             "  SELECT l.user_id, COUNT(*) AS requests, "
             "         COALESCE(SUM(l.total_tokens), 0) AS total_tokens "
             "  FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-            f"  WHERE l.timestamp >= $5 AND l.timestamp < $6 AND {_SINCE_JOINED_LOG} "
+            "  WHERE l.timestamp >= $5 AND l.timestamp < $6 "
             "  GROUP BY l.user_id) "
         )
         # One source for the count and for the page: a filter on a figure
@@ -1393,7 +1372,7 @@ class PostgresOrganizationsMixin:
                 f"WITH {_SCOPE} "
                 f"SELECT c.user_id, c.day, c.cost_usd, {_AMOUNT} AS cost_amount "
                 "FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-                f"WHERE c.user_id = ANY($3::text[]) AND c.day >= $4 AND {_SINCE_JOINED_DAY}",
+                "WHERE c.user_id = ANY($3::text[]) AND c.day >= $4",
                 organization_id,
                 params[1],
                 [row["user_id"] for row in rows],
@@ -1447,7 +1426,7 @@ class PostgresOrganizationsMixin:
                 f"WITH {scope} "
                 f"SELECT c.day, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
                 "FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
-                f"WHERE c.day >= $3 AND c.day <= $4 AND {_SINCE_JOINED_DAY} "
+                "WHERE c.day >= $3 AND c.day <= $4 "
                 "GROUP BY c.day ORDER BY c.day",
                 *params,
             )
@@ -1460,7 +1439,7 @@ class PostgresOrganizationsMixin:
                 "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
                 f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                f"WHERE l.timestamp >= $3 AND l.timestamp < $4 AND {_SINCE_JOINED_LOG} "
+                "WHERE l.timestamp >= $3 AND l.timestamp < $4 "
                 "GROUP BY 1 ORDER BY 1",
                 *params,
             )
@@ -1475,7 +1454,7 @@ class PostgresOrganizationsMixin:
                 "       COALESCE(SUM(l.cache_read_tokens), 0) AS cached_tokens, "
                 "       COALESCE(SUM(l.total_tokens), 0) AS total_tokens "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                f"WHERE l.timestamp >= $3 AND l.timestamp < $4 AND {_SINCE_JOINED_LOG} "
+                "WHERE l.timestamp >= $3 AND l.timestamp < $4 "
                 "GROUP BY l.model_id ORDER BY 6 DESC, 2 DESC, l.model_id",
                 *params,
             )
@@ -1485,7 +1464,7 @@ class PostgresOrganizationsMixin:
                 "SELECT COUNT(*) AS requests, COALESCE(SUM(l.total_tokens), 0) AS total_tokens, "
                 "       COUNT(DISTINCT l.user_id) AS members_with_requests "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                f"WHERE l.timestamp >= $2 AND l.timestamp < $3 AND {_SINCE_JOINED_LOG}",
+                "WHERE l.timestamp >= $2 AND l.timestamp < $3",
                 *params,
             )
             member_count = await conn.fetchval(
@@ -1526,7 +1505,7 @@ class PostgresOrganizationsMixin:
             row = await conn.fetchrow(
                 f"WITH {_SCOPE} SELECT {', '.join(columns)} "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
-                f"WHERE l.timestamp >= ${len(starts) + 1} AND {_SINCE_JOINED_LOG}",
+                f"WHERE l.timestamp >= ${len(starts) + 1}",
                 organization_id,
                 *starts,
             )
@@ -1565,7 +1544,7 @@ class PostgresOrganizationsMixin:
         """
         start, end = utc_bounds(first_day, last_day)
         params: list[Any] = [organization_id, start, end]
-        where = ["l.timestamp >= $2", "l.timestamp < $3", _SINCE_JOINED_LOG]
+        where = ["l.timestamp >= $2", "l.timestamp < $3"]
         if user_id is not None:
             params.append(user_id)
             where.append(f"l.user_id = ${len(params)}")

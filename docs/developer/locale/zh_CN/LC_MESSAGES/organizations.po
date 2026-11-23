@@ -190,9 +190,6 @@ msgstr "`GET /user/organization/audit-log`"
 msgid "The routes that show figures take `period`: `1d`, `7d` or `30d`, the last 1, 7 or 30 days in UTC, with today. The audit log takes it too, and shows every row without it. \"This month\" is the calendar month in UTC, the month that an account's monthly quota uses."
 msgstr "显示数字的路由都带 `period`：`1d`、`7d` 或 `30d`，即按 UTC 计、含今天在内的最近 1、7 或 30 天。审计日志也可以带它，不带时显示全部记录。“本月”指 UTC 的自然月，和账号每月配额所用的月份相同。"
 
-msgid "The figures of a member start when its account became a member. The pages do not show the requests that the account made before, nor their models, projects and API key names. Spend comes from a counter for each UTC day, so the day on which the account became a member counts as a whole day. One figure counts the whole calendar month: the spend of this month, which a row shows beside the monthly limit. The gateway compares the limit with the whole month."
-msgstr "一个成员的数字从它的账号成为成员时开始计。这些页面不显示账号在此之前发出的请求，也不显示那些请求的模型、项目和 API key 名称。花费来自按 UTC 每天一条的计数，所以账号成为成员的那一天按整天计。有一个数字按整个自然月计：成员行里显示在每月上限旁边的本月花费。网关是拿整个月和上限比较的。"
-
 msgid "Money fields follow [Accounting Currency](accounting.md): the `*_usd` fields, and the native amounts with `currency` on a ledger that is not in USD."
 msgstr "金额字段遵循[记账币种](accounting.md)：`*_usd` 字段；在非 USD 账本上，还有带 `currency` 的账本币种金额。"
 
@@ -324,9 +321,6 @@ msgstr "成员用完自己的上限时（机构给它的上限，或者你设的
 
 msgid "Things to know:"
 msgstr "需要了解的几点："
-
-msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization, and the usage pages do not show it."
-msgstr "**机构的花费从成为成员时开始计**。账号在成为成员之前被计的费用，不计入机构的上限，用量页面也不显示这部分。"
 
 msgid "**Requests that run at the same time** can take an organization a little past its limit, as they can for the quota of an account."
 msgstr "**同时进行的请求**可能让机构略微超过上限，账号的配额也是这样。"
@@ -511,11 +505,17 @@ msgstr "这一点不能撤销。你摘掉连接之后，成员仍然是成员，
 msgid "**Models.** An organization administrator turns a model off for one member. The organization has a list of its own for this. The list that you set in **Admin → Users** is a different list: the organization can read it and cannot change it. The gateway refuses a model that is in either list. So an organization cannot turn on a model that you turned off. `GET /user/organization/members/{user_id}/models` returns the models that you let the member use, and the two lists. The organization can turn off only those models. Its list does not apply to an organization administrator or to an account with the `admin` role."
 msgstr "**模型。** 机构管理员可以对单个成员关闭某个模型。机构为此有自己的一份清单。你在 **Admin → Users** 里设置的是另一份清单：机构能看到，但不能修改。两份清单里任何一份有的模型，网关都会拒绝。所以机构不能把你关掉的模型打开。`GET /user/organization/members/{user_id}/models` 返回你允许这个成员使用的模型，以及这两份清单。机构只能关闭这些模型。机构的清单不作用于机构管理员，也不作用于拥有 `admin` 角色的账号。"
 
-msgid "**API keys.** An organization administrator revokes one API key of a member, as the owner of the key does in the console. The key stays revoked, and the member can make a new one. `key_id` is the `id` of the key in the panel of the member. The panel shows the keys that the account had as a member. It does not show a key that was revoked before the account became one."
-msgstr "**API key。** 机构管理员可以作废某个成员的一把 API key，和 key 的主人在控制台里做的一样。作废的 key 不会恢复，成员可以新建一把。`key_id` 是成员面板里那把 key 的 `id`。面板只显示账号作为成员期间拥有的 key，不显示它成为成员之前就已作废的 key。"
-
 msgid "**A change of a limit, of the role of a member or of its models applies within 60 seconds.** A revoked key stops within 30 seconds."
 msgstr "**修改上限、成员的角色或成员的模型，在 60 秒内生效。** 作废的 key 在 30 秒内失效。"
 
 msgid "Take the administrator role back from each of its administrators and clear its monthly limit. The members keep their accounts and sign in through single sign-on as before. They stay members: their accounts have no password."
 msgstr "收回它每一位管理员的管理员角色，并清除它的每月上限。成员保留各自的账号，照常通过单点登录来登录。它们仍然是成员：账号没有密码。"
+
+msgid "The figures of a member are of its whole account. They are the figures that **Admin → Users** shows for that account. So an organization administrator also sees what an account used before it became a member, for example an account that existed when you attached the connection."
+msgstr "成员的数字是它整个账号的数字，也就是 **Admin → Users** 里这个账号的那些数字。所以机构管理员也能看到账号成为成员之前的用量，例如你挂上连接时已经存在的账号。"
+
+msgid "**API keys.** An organization administrator revokes one API key of a member, as the owner of the key does in the console. The key stays revoked, and the member can make a new one. `key_id` is the `id` of the key in the panel of the member."
+msgstr "**API key。** 机构管理员可以作废某个成员的一把 API key，和 key 的主人在控制台里做的一样。作废的 key 不会恢复，成员可以新建一把。`key_id` 是成员面板里那把 key 的 `id`。"
+
+msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization. The usage pages show it."
+msgstr "**机构的花费从成为成员时开始算。** 账号在成为成员之前产生的费用，不计入机构的上限。用量页面里会显示这部分用量。"
