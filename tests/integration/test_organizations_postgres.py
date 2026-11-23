@@ -57,7 +57,7 @@ async def clean_organizations(auth_backend, clean_auth_tables):
 
     async def _wipe() -> None:
         async with db_logger.pool.acquire() as conn:
-            await conn.execute("DELETE FROM sso_organizations")
+            await conn.execute("DELETE FROM orgs")
             await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'o:%'")
             await conn.execute("DELETE FROM admin_audit_log WHERE organization_id IS NOT NULL")
             await conn.execute("DELETE FROM api_logs WHERE request_id LIKE 'org-itest-%'")
@@ -471,7 +471,7 @@ async def test_an_administrator_reaches_only_the_members_of_its_own_organization
     )
     async with clean_organizations.acquire() as conn:
         await conn.execute(
-            "INSERT INTO sso_organization_members (user_id, organization_id, role) "
+            "INSERT INTO org_memberships (user_id, organization_id, role) "
             "VALUES ($1, 'o-other', 'admin')",
             boss_id,
         )
@@ -1041,7 +1041,7 @@ async def test_an_administrator_sets_the_limit_of_a_member_and_the_default(
     assert all(m["platform_monthly_limit_usd"] is None for m in listed)
     async with clean_organizations.acquire() as conn:
         stored = await conn.fetch(
-            "SELECT user_id, monthly_limit_usd FROM sso_organization_members "
+            "SELECT user_id, monthly_limit_usd FROM org_memberships "
             "WHERE user_id = ANY($1::text[])",
             [bob_id, carol_id],
         )

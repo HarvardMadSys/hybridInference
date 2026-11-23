@@ -227,7 +227,7 @@ search text, a category and the period.
 ### 7.1 The monthly limit of a member
 
 `PUT /user/organization/members/{user_id}/monthly-limit` sets the limit of the organization for one
-member. It is a pair of columns on the membership (`sso_organization_members.monthly_limit_usd` and
+member. It is a pair of columns on the membership (`org_memberships.monthly_limit_usd` and
 `monthly_limit_amount`). An empty value clears it, and the default of the organization then applies.
 
 - The value cannot be negative, and it cannot be greater than the limit of the organization.
@@ -464,11 +464,11 @@ platform administrator with thin routes below `/admin/organizations/{id}`.
 
 ## 12. Data model
 
-One expand revision, `0023_sso_organizations`. The previous release does not read the new tables or the
+One expand revision, `0023_orgs`. The previous release does not read the new tables or the
 new column.
 
 ```sql
-CREATE TABLE sso_organizations (
+CREATE TABLE orgs (
     id                                  TEXT PRIMARY KEY,
     name                                TEXT NOT NULL,
     monthly_limit_usd                   DECIMAL(14, 4),     -- NULL: no limit
@@ -479,17 +479,17 @@ CREATE TABLE sso_organizations (
     created_at                          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at                          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
-CREATE UNIQUE INDEX idx_sso_organizations_name ON sso_organizations (lower(name));
+CREATE UNIQUE INDEX idx_orgs_name ON orgs (lower(name));
 
-CREATE TABLE sso_organization_connections (
+CREATE TABLE org_sso_connections (
     provider_id     TEXT PRIMARY KEY,                       -- an id in SSO_PROVIDERS
-    organization_id TEXT NOT NULL REFERENCES sso_organizations(id) ON DELETE CASCADE,
+    organization_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE sso_organization_members (
+CREATE TABLE org_memberships (
     user_id         TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-    organization_id TEXT NOT NULL REFERENCES sso_organizations(id) ON DELETE CASCADE,
+    organization_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE,
     role            TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')),
     joined_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     removed_at      TIMESTAMPTZ,                            -- set by §7.3, cleared by §7.4
@@ -498,9 +498,9 @@ CREATE TABLE sso_organization_members (
     monthly_limit_amount NUMERIC(24, 12),
     accounting_currency  TEXT
 );
-CREATE INDEX idx_sso_organization_connections_organization
-    ON sso_organization_connections (organization_id);
-CREATE INDEX idx_sso_organization_members_organization ON sso_organization_members (organization_id);
+CREATE INDEX idx_org_sso_connections_organization
+    ON org_sso_connections (organization_id);
+CREATE INDEX idx_org_memberships_organization ON org_memberships (organization_id);
 
 ALTER TABLE admin_audit_log ADD COLUMN organization_id TEXT;
 CREATE INDEX idx_admin_audit_log_organization ON admin_audit_log (organization_id, timestamp DESC)
@@ -603,7 +603,7 @@ Notes:
 
 ## 16. Release and rollback
 
-- **No organization, no change.** Without a row in `sso_organizations`, no account is a member, the lookup
+- **No organization, no change.** Without a row in `orgs`, no account is a member, the lookup
   of a key finds no organization, and the console shows no entry.
 - **The revision only adds** three tables, one column and two indexes. After a rollback to the previous
   release, they are not used.

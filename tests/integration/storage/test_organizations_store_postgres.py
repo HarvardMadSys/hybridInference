@@ -41,7 +41,7 @@ async def store():
                 "DELETE FROM admin_audit_log WHERE organization_id LIKE 'o-itest-%' "
                 "OR target_user_id LIKE 'u-org-%' OR actor_id LIKE 'u-org-%'"
             )
-            await conn.execute("DELETE FROM sso_organizations WHERE id LIKE 'o-itest-%'")
+            await conn.execute("DELETE FROM orgs WHERE id LIKE 'o-itest-%'")
             await conn.execute("DELETE FROM spend_counters WHERE scope_id LIKE 'o:o-itest-%'")
             await conn.execute("DELETE FROM api_logs WHERE user_id LIKE 'u-org-%'")
             await conn.execute("DELETE FROM user_daily_cost WHERE user_id LIKE 'u-org-%'")
@@ -879,7 +879,7 @@ async def _member_limit(pool, user_id: str) -> tuple:
     """The limit an organization set for a member: both columns of its membership."""
     async with pool.acquire() as conn:
         row = await conn.fetchrow(
-            "SELECT monthly_limit_usd, monthly_limit_amount FROM sso_organization_members "
+            "SELECT monthly_limit_usd, monthly_limit_amount FROM org_memberships "
             "WHERE user_id = $1",
             user_id,
         )
@@ -1335,7 +1335,7 @@ async def test_the_figures_of_a_member_start_when_its_account_became_a_member(st
     joined = now - timedelta(days=2)
     async with pool.acquire() as conn:
         await conn.execute(
-            "UPDATE sso_organization_members SET joined_at = $1 WHERE user_id LIKE 'u-org-j%'",
+            "UPDATE org_memberships SET joined_at = $1 WHERE user_id LIKE 'u-org-j%'",
             joined,
         )
     before, at_joining, after = joined - timedelta(days=3), joined, now - timedelta(minutes=5)
@@ -1404,7 +1404,7 @@ async def test_a_search_takes_a_percent_sign_and_an_underscore_as_they_are(store
     async with pool.acquire() as conn:
         # Members for an hour: a request is shown from the joining on.
         await conn.execute(
-            "UPDATE sso_organization_members SET joined_at = $1 WHERE organization_id = $2",
+            "UPDATE org_memberships SET joined_at = $1 WHERE organization_id = $2",
             now - timedelta(hours=1),
             "o-itest-k",
         )

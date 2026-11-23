@@ -101,7 +101,7 @@ async def test_the_limits_of_an_organization_are_kept_exactly_in_the_native_colu
         row = await pool.fetchrow(
             "SELECT name, monthly_limit_usd, monthly_limit_amount, "
             "default_member_monthly_limit_usd, default_member_monthly_limit_amount, "
-            "accounting_currency FROM sso_organizations WHERE id = 'o-1'"
+            "accounting_currency FROM orgs WHERE id = 'o-1'"
         )
 
     assert created == (orgs.CREATED, 2)
@@ -134,7 +134,7 @@ async def test_the_limit_of_a_member_is_kept_exactly_on_its_membership():
         async def stored() -> tuple:
             row = await pool.fetchrow(
                 "SELECT monthly_limit_amount, monthly_limit_usd, accounting_currency "
-                "FROM sso_organization_members WHERE user_id = 'u1'"
+                "FROM org_memberships WHERE user_id = 'u1'"
             )
             return tuple(row)
 

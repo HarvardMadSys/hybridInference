@@ -82,7 +82,7 @@ async def test_new_rows_on_a_migrated_table_carry_their_attribution(legacy_conn)
     conn = legacy_conn
     await ensure_admin_audit_log_schema(conn)
     # The baseline stops at the attribution columns; the writer also names the
-    # column a later revision (``0023_sso_organizations``) adds.
+    # column a later revision (``0023_orgs``) adds.
     await conn.execute("ALTER TABLE admin_audit_log ADD COLUMN organization_id TEXT")
     columns = audit_columns(
         admin_ip=None,

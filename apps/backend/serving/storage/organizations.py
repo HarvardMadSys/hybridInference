@@ -1,9 +1,9 @@
 """Organizations: the record, its SSO connections and its members.
 
 An organization owns the accounts of its members: an account is in one
-organization at most (the primary key of ``sso_organization_members``), and an
+organization at most (the primary key of ``org_memberships``), and an
 ``SSO_PROVIDERS`` entry belongs to one organization at most (the primary key of
-``sso_organization_connections``). Nothing here reads the provider document;
+``org_sso_connections``). Nothing here reads the provider document;
 which accounts a connection makes members is decided by the caller, which
 knows the provider's domains (:mod:`serving.organizations`): it gives the rule
 (:data:`AccountsOf`), and the attach applies it to the identities it reads.
@@ -73,18 +73,18 @@ _ORGANIZATION_SELECT = (
     "SELECT o.id, o.name, o.monthly_limit_usd, o.monthly_limit_amount, "
     "o.default_member_monthly_limit_usd, o.default_member_monthly_limit_amount, "
     "o.accounting_currency, o.created_at, o.updated_at, "
-    "(SELECT COUNT(*) FROM sso_organization_members m WHERE m.organization_id = o.id) "
+    "(SELECT COUNT(*) FROM org_memberships m WHERE m.organization_id = o.id) "
     "AS member_count, "
     "COALESCE((SELECT array_agg(c.provider_id ORDER BY c.created_at, c.provider_id) "
-    "FROM sso_organization_connections c WHERE c.organization_id = o.id), '{}'::text[]) "
+    "FROM org_sso_connections c WHERE c.organization_id = o.id), '{}'::text[]) "
     "AS provider_ids "
-    "FROM sso_organizations o "
+    "FROM orgs o "
 )
 
 _MEMBERSHIP_SELECT = (
     "SELECT m.user_id, m.organization_id, m.role, m.joined_at, m.removed_at, m.removed_by, "
     "o.name AS organization_name "
-    "FROM sso_organization_members m JOIN sso_organizations o ON o.id = m.organization_id "
+    "FROM org_memberships m JOIN orgs o ON o.id = m.organization_id "
 )
 
 
@@ -106,7 +106,7 @@ def member_quota_join(
     - *own*, the quota of the account itself, a USD expression and a native
       one. The platform administrator sets it.
     - what its organization has for it: the limit it set for the member
-      (*member*, the alias of the row of ``sso_organization_members``), else
+      (*member*, the alias of the row of ``org_memberships``), else
       its default (*organization*, the alias of its own row). Nothing for an
       account that is no member, and nothing for an administrator, of the
       organization or of the platform (*account_role* is the SQL of the
@@ -202,7 +202,7 @@ def _scope(member_parameter: int | None = None) -> str:
     return (
         "scope AS (SELECT m.user_id, m.role, m.joined_at, m.removed_at, "
         "m.monthly_limit_usd, m.monthly_limit_amount "
-        f"FROM sso_organization_members m WHERE m.organization_id = $1{member})"
+        f"FROM org_memberships m WHERE m.organization_id = $1{member})"
     )
 
 
@@ -385,8 +385,8 @@ async def join_organization(conn: Any, *, user_id: str, provider_id: str) -> str
     Its transaction took :func:`lock_for_sign_in` first.
     """
     return await conn.fetchval(
-        "INSERT INTO sso_organization_members (user_id, organization_id) "
-        "SELECT $1, c.organization_id FROM sso_organization_connections c "
+        "INSERT INTO org_memberships (user_id, organization_id) "
+        "SELECT $1, c.organization_id FROM org_sso_connections c "
         "WHERE c.provider_id = $2 "
         "ON CONFLICT (user_id) DO NOTHING RETURNING organization_id",
         user_id,
@@ -398,8 +398,8 @@ async def in_other_organization(conn: Any, *, user_id: str, provider_id: str) ->
     """Whether *user_id* is a member of an organization other than *provider_id*'s."""
     return bool(
         await conn.fetchval(
-            "SELECT 1 FROM sso_organization_members m "
-            "JOIN sso_organization_connections c ON c.provider_id = $2 "
+            "SELECT 1 FROM org_memberships m "
+            "JOIN org_sso_connections c ON c.provider_id = $2 "
             "WHERE m.user_id = $1 AND m.organization_id <> c.organization_id",
             user_id,
             provider_id,
@@ -417,7 +417,7 @@ async def _identities_without_organization(conn: Any) -> list[dict]:
         "SELECT i.user_id, i.provider_id, i.issuer, i.email, u.email AS account_email "
         "FROM user_identities i JOIN users u ON u.id = i.user_id "
         "WHERE NOT EXISTS ("
-        "SELECT 1 FROM sso_organization_members m WHERE m.user_id = i.user_id)"
+        "SELECT 1 FROM org_memberships m WHERE m.user_id = i.user_id)"
     )
     return [dict(row) for row in rows]
 
@@ -427,14 +427,14 @@ async def _attach(
 ) -> int:
     """Attach *provider_id* and make *user_ids* members; how many memberships are new."""
     attached = await conn.fetchval(
-        "INSERT INTO sso_organization_connections (provider_id, organization_id) "
+        "INSERT INTO org_sso_connections (provider_id, organization_id) "
         "VALUES ($1, $2) ON CONFLICT (provider_id) DO NOTHING RETURNING provider_id",
         provider_id,
         organization_id,
     )
     if attached is None:
         owner = await conn.fetchval(
-            "SELECT organization_id FROM sso_organization_connections WHERE provider_id = $1",
+            "SELECT organization_id FROM org_sso_connections WHERE provider_id = $1",
             provider_id,
         )
         if owner != organization_id:
@@ -442,7 +442,7 @@ async def _attach(
     if not user_ids:
         return 0
     tag = await conn.execute(
-        "INSERT INTO sso_organization_members (user_id, organization_id) "
+        "INSERT INTO org_memberships (user_id, organization_id) "
         "SELECT u.id, $1 FROM users u WHERE u.id = ANY($2::text[]) "
         "ON CONFLICT (user_id) DO NOTHING",
         organization_id,
@@ -500,7 +500,7 @@ class PostgresOrganizationsMixin:
                 if connections:
                     await conn.execute(ATTACH_LOCK_SQL)
                 created = await conn.fetchval(
-                    f"INSERT INTO sso_organizations (id, name, {column}) VALUES ($1, $2, $3) "
+                    f"INSERT INTO orgs (id, name, {column}) VALUES ($1, $2, $3) "
                     "ON CONFLICT DO NOTHING RETURNING id",
                     organization_id,
                     name,
@@ -560,21 +560,21 @@ class PostgresOrganizationsMixin:
         try:
             async with self._pool.acquire() as conn, conn.transaction():
                 old = await conn.fetchval(
-                    "SELECT name FROM sso_organizations WHERE id = $1 FOR UPDATE", organization_id
+                    "SELECT name FROM orgs WHERE id = $1 FOR UPDATE", organization_id
                 )
                 if old is None:
                     return NOT_FOUND
                 if old == name:
                     return UNCHANGED
                 taken = await conn.fetchval(
-                    "SELECT 1 FROM sso_organizations WHERE lower(name) = lower($1) AND id <> $2",
+                    "SELECT 1 FROM orgs WHERE lower(name) = lower($1) AND id <> $2",
                     name,
                     organization_id,
                 )
                 if taken:
                     return NAME_TAKEN
                 await conn.execute(
-                    "UPDATE sso_organizations SET name = $2, updated_at = NOW() WHERE id = $1",
+                    "UPDATE orgs SET name = $2, updated_at = NOW() WHERE id = $1",
                     organization_id,
                     name,
                 )
@@ -619,7 +619,7 @@ class PostgresOrganizationsMixin:
             before = await conn.fetchrow(
                 "SELECT monthly_limit_usd, monthly_limit_amount, "
                 "default_member_monthly_limit_usd, default_member_monthly_limit_amount "
-                "FROM sso_organizations WHERE id = $1 FOR UPDATE",
+                "FROM orgs WHERE id = $1 FOR UPDATE",
                 organization_id,
             )
             if before is None:
@@ -629,7 +629,7 @@ class PostgresOrganizationsMixin:
             ):
                 return ABOVE_LIMIT, limit_value(before, limit), None
             after = await conn.fetchrow(
-                f"UPDATE sso_organizations SET {column} = $2, updated_at = NOW() WHERE id = $1 "
+                f"UPDATE orgs SET {column} = $2, updated_at = NOW() WHERE id = $1 "
                 f"RETURNING {limit}_usd, {limit}_amount",
                 organization_id,
                 value,
@@ -656,7 +656,7 @@ class PostgresOrganizationsMixin:
         """The organization an ``SSO_PROVIDERS`` entry belongs to, if any."""
         async with self._pool.acquire() as conn:
             return await conn.fetchval(
-                "SELECT organization_id FROM sso_organization_connections WHERE provider_id = $1",
+                "SELECT organization_id FROM org_sso_connections WHERE provider_id = $1",
                 provider_id,
             )
 
@@ -689,7 +689,7 @@ class PostgresOrganizationsMixin:
             async with self._pool.acquire() as conn, conn.transaction():
                 await conn.execute(ATTACH_LOCK_SQL)
                 found = await conn.fetchval(
-                    "SELECT 1 FROM sso_organizations WHERE id = $1 FOR UPDATE", organization_id
+                    "SELECT 1 FROM orgs WHERE id = $1 FOR UPDATE", organization_id
                 )
                 if found is None:
                     return NOT_FOUND, 0
@@ -722,7 +722,7 @@ class PostgresOrganizationsMixin:
         )
         async with self._pool.acquire() as conn, conn.transaction():
             detached = await conn.fetchval(
-                "DELETE FROM sso_organization_connections "
+                "DELETE FROM org_sso_connections "
                 "WHERE provider_id = $1 AND organization_id = $2 RETURNING provider_id",
                 provider_id,
                 organization_id,
@@ -761,7 +761,7 @@ class PostgresOrganizationsMixin:
         )
         async with self._pool.acquire() as conn, conn.transaction():
             old = await conn.fetchval(
-                "SELECT role FROM sso_organization_members "
+                "SELECT role FROM org_memberships "
                 "WHERE user_id = $1 AND organization_id = $2 FOR UPDATE",
                 user_id,
                 organization_id,
@@ -771,7 +771,7 @@ class PostgresOrganizationsMixin:
             if old == role:
                 return UNCHANGED
             await conn.execute(
-                "UPDATE sso_organization_members SET role = $2 WHERE user_id = $1", user_id, role
+                "UPDATE org_memberships SET role = $2 WHERE user_id = $1", user_id, role
             )
             await insert_audit_row(
                 conn,
@@ -812,7 +812,7 @@ class PostgresOrganizationsMixin:
             await self._lock_account_on(conn, user_id)
             member = await conn.fetchrow(
                 "SELECT m.role, u.role AS account_role, u.status, u.email "
-                "FROM sso_organization_members m JOIN users u ON u.id = m.user_id "
+                "FROM org_memberships m JOIN users u ON u.id = m.user_id "
                 "WHERE m.user_id = $1 AND m.organization_id = $2 FOR UPDATE OF m, u",
                 user_id,
                 organization_id,
@@ -825,8 +825,7 @@ class PostgresOrganizationsMixin:
                 return NOT_ACTIVE
             await self._suspend_user_on(conn, user_id, suspension_message=suspension_message)
             await conn.execute(
-                "UPDATE sso_organization_members SET removed_at = NOW(), removed_by = $2 "
-                "WHERE user_id = $1",
+                "UPDATE org_memberships SET removed_at = NOW(), removed_by = $2 WHERE user_id = $1",
                 user_id,
                 actor.id,
             )
@@ -858,7 +857,7 @@ class PostgresOrganizationsMixin:
         async with self._pool.acquire() as conn, conn.transaction():
             member = await conn.fetchrow(
                 "SELECT m.removed_at, u.status, u.email "
-                "FROM sso_organization_members m JOIN users u ON u.id = m.user_id "
+                "FROM org_memberships m JOIN users u ON u.id = m.user_id "
                 "WHERE m.user_id = $1 AND m.organization_id = $2 FOR UPDATE OF m, u",
                 user_id,
                 organization_id,
@@ -872,7 +871,7 @@ class PostgresOrganizationsMixin:
                 user_id,
             )
             await conn.execute(
-                "UPDATE sso_organization_members SET removed_at = NULL, removed_by = NULL "
+                "UPDATE org_memberships SET removed_at = NULL, removed_by = NULL "
                 "WHERE user_id = $1",
                 user_id,
             )
@@ -921,9 +920,9 @@ class PostgresOrganizationsMixin:
                 "m.monthly_limit_usd AS member_limit_usd, "
                 "m.monthly_limit_amount AS member_limit_amount, "
                 "o.monthly_limit_usd, o.monthly_limit_amount "
-                "FROM sso_organization_members m "
+                "FROM org_memberships m "
                 "JOIN users u ON u.id = m.user_id "
-                "JOIN sso_organizations o ON o.id = m.organization_id "
+                "JOIN orgs o ON o.id = m.organization_id "
                 "WHERE m.user_id = $1 AND m.organization_id = $2 FOR UPDATE OF m",
                 user_id,
                 organization_id,
@@ -936,7 +935,7 @@ class PostgresOrganizationsMixin:
             if _above(value, limit_value(member, "monthly_limit")):
                 return ABOVE_LIMIT, old, None
             after = await conn.fetchrow(
-                f"UPDATE sso_organization_members SET {column} = $2 WHERE user_id = $1 "
+                f"UPDATE org_memberships SET {column} = $2 WHERE user_id = $1 "
                 "RETURNING monthly_limit_usd AS member_limit_usd, "
                 "monthly_limit_amount AS member_limit_amount",
                 user_id,
@@ -967,7 +966,7 @@ class PostgresOrganizationsMixin:
         """
         async with self._pool.acquire() as conn:
             await conn.execute(
-                "UPDATE sso_organization_members SET removed_at = NULL, removed_by = NULL "
+                "UPDATE org_memberships SET removed_at = NULL, removed_by = NULL "
                 "WHERE user_id = $1 AND removed_at IS NOT NULL",
                 user_id,
             )
@@ -992,8 +991,8 @@ class PostgresOrganizationsMixin:
                 "mq.usd AS quota_monthly_cost_usd, mq.amount AS quota_monthly_cost_amount, "
                 "COALESCE(oc.cost_usd, 0) AS organization_spent_month_usd, "
                 "COALESCE(oc.cost_amount, 0) AS organization_spent_month_amount "
-                "FROM sso_organization_members om "
-                "JOIN sso_organizations o ON o.id = om.organization_id "
+                "FROM org_memberships om "
+                "JOIN orgs o ON o.id = om.organization_id "
                 "JOIN users u ON u.id = om.user_id "
                 f"{_own_quota_join('om.user_id')}"
                 f"{_MEMBER_QUOTA_JOIN}"
@@ -1020,7 +1019,7 @@ class PostgresOrganizationsMixin:
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT m.user_id, u.email, u.user_name, u.last_login_at "
-                "FROM sso_organization_members m JOIN users u ON u.id = m.user_id "
+                "FROM org_memberships m JOIN users u ON u.id = m.user_id "
                 "WHERE m.organization_id = $1 AND m.role = 'admin' "
                 "ORDER BY lower(COALESCE(u.email, '')), m.user_id",
                 organization_id,
@@ -1119,7 +1118,7 @@ class PostgresOrganizationsMixin:
             "       COALESCE(logged.total_tokens, 0) AS total_tokens, "
             "       seen.last_request_at "
             "FROM scope s JOIN users u ON u.id = s.user_id "
-            "JOIN sso_organizations o ON o.id = $1 "
+            "JOIN orgs o ON o.id = $1 "
             f"{_own_quota_join('s.user_id')}"
             "LEFT JOIN spent ON spent.user_id = s.user_id "
             "LEFT JOIN month ON month.user_id = s.user_id "
@@ -1212,7 +1211,7 @@ class PostgresOrganizationsMixin:
                 *params,
             )
             member_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM sso_organization_members WHERE organization_id = $1",
+                "SELECT COUNT(*) FROM org_memberships WHERE organization_id = $1",
                 organization_id,
             )
         return {

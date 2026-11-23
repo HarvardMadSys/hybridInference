@@ -3,7 +3,7 @@
 The columns, the ``accounting_sync_amounts`` trigger function and its triggers
 come from migration ``0022_ledger_currency``; the service issues no DDL. A
 later revision that adds a table with money adds it here too
-(``0023_sso_organizations``: the limits of an organization, and the limit it
+(``0023_orgs``: the limits of an organization, and the limit it
 sets for a member). This
 module names them for the readers, the writers and the offline currency
 migration, and checks them read-only at startup, so a database whose schema
@@ -45,11 +45,11 @@ AMOUNT_COLUMNS: dict[str, dict[str, str]] = {
     },
     "spend_reservations": {"amount_usd": "amount", "cost_usd": "cost_amount"},
     "spend_reconciliations": {"amount_usd": "amount", "cost_usd": "cost_amount"},
-    "sso_organizations": {
+    "orgs": {
         "monthly_limit_usd": "monthly_limit_amount",
         "default_member_monthly_limit_usd": "default_member_monthly_limit_amount",
     },
-    "sso_organization_members": {"monthly_limit_usd": "monthly_limit_amount"},
+    "org_memberships": {"monthly_limit_usd": "monthly_limit_amount"},
 }
 
 #: Rollups that keep a native sum beside their USD one with no trigger and no
@@ -74,8 +74,8 @@ ACCOUNTING_TRIGGERS: dict[str, tuple[str, ...]] = {
     "account_quotas": ("account_quotas_accounting_amounts",),
     "spend_reservations": ("spend_reservations_accounting_amounts",),
     "spend_reconciliations": ("spend_reconciliations_accounting_amounts",),
-    "sso_organizations": ("sso_organizations_accounting_amounts",),
-    "sso_organization_members": ("sso_organization_members_accounting_amounts",),
+    "orgs": ("orgs_accounting_amounts",),
+    "org_memberships": ("org_memberships_accounting_amounts",),
 }
 
 #: sha256 of the reviewed ``accounting_sync_amounts`` body (``pg_proc.prosrc``),

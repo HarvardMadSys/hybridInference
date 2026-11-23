@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 ATTRIBUTION_COLUMNS = ("actor_type", "actor_id", "source_ip", "target_type", "target_id")
 
 #: The organization a row belongs to, NULL for a row of none. Added by migration
-#: ``0023_sso_organizations``; like the attribution columns, every write names it.
+#: ``0023_orgs``; like the attribution columns, every write names it.
 ORGANIZATION_COLUMN = "organization_id"
 
 # The legacy columns keep their parameter positions ($1-$5).

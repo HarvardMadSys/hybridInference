@@ -1,13 +1,13 @@
 """Organizations: the record, its SSO connections, its members, and their audit rows.
 
-- ``sso_organizations``: one row per organization. Its monthly limit and the
+- ``orgs``: one row per organization. Its monthly limit and the
   default monthly limit of a member are money, so each is a ``*_usd`` column
   with a native ``*_amount`` column beside it, kept in step by the
   ``accounting_sync_amounts`` trigger ``0022_ledger_currency`` installed. NULL
   in a limit is "none".
-- ``sso_organization_connections``: which organization an ``SSO_PROVIDERS``
+- ``org_sso_connections``: which organization an ``SSO_PROVIDERS``
   entry belongs to. The provider id is the key: one organization at most.
-- ``sso_organization_members``: which organization an account belongs to, and
+- ``org_memberships``: which organization an account belongs to, and
   its role there. The account is the key: one organization at most. A removal
   by the organization marks the row (``removed_at``, ``removed_by``) and leaves
   it; the row goes only with its account. The monthly limit the organization
@@ -25,7 +25,7 @@ them. These tables are independent of that revision.
 Expand only: the new tables and the new column are invisible to earlier code,
 which keeps writing audit rows without the column.
 
-Revision ID: 0023_sso_organizations
+Revision ID: 0023_orgs
 Revises: 0022_ledger_currency
 Create Date: 2026-11-18
 """
@@ -36,7 +36,7 @@ import json
 
 from alembic import op
 
-revision = "0023_sso_organizations"
+revision = "0023_orgs"
 down_revision = "0022_ledger_currency"
 branch_labels = None
 depends_on = None
@@ -54,7 +54,7 @@ MEMBER_LIMIT_PAIRS = {"monthly_limit_usd": "monthly_limit_amount"}
 def upgrade() -> None:
     """Add the three tables, the limits' triggers and the audit column."""
     op.execute(
-        "CREATE TABLE IF NOT EXISTS sso_organizations ("
+        "CREATE TABLE IF NOT EXISTS orgs ("
         "id TEXT PRIMARY KEY, "
         "name TEXT NOT NULL, "
         "monthly_limit_usd DECIMAL(14, 4), "
@@ -66,31 +66,28 @@ def upgrade() -> None:
         "updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
         ")"
     )
-    op.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sso_organizations_name "
-        "ON sso_organizations (lower(name))"
-    )
+    op.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_orgs_name ON orgs (lower(name))")
     mapping = json.dumps(LIMIT_PAIRS, separators=(",", ":"))
     op.execute(
-        "CREATE OR REPLACE TRIGGER sso_organizations_accounting_amounts "
-        "BEFORE INSERT OR UPDATE ON sso_organizations "
+        "CREATE OR REPLACE TRIGGER orgs_accounting_amounts "
+        "BEFORE INSERT OR UPDATE ON orgs "
         f"FOR EACH ROW EXECUTE FUNCTION accounting_sync_amounts('{mapping}')"
     )
     op.execute(
-        "CREATE TABLE IF NOT EXISTS sso_organization_connections ("
+        "CREATE TABLE IF NOT EXISTS org_sso_connections ("
         "provider_id TEXT PRIMARY KEY, "
-        "organization_id TEXT NOT NULL REFERENCES sso_organizations(id) ON DELETE CASCADE, "
+        "organization_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE, "
         "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()"
         ")"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sso_organization_connections_organization "
-        "ON sso_organization_connections (organization_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_sso_connections_organization "
+        "ON org_sso_connections (organization_id)"
     )
     op.execute(
-        "CREATE TABLE IF NOT EXISTS sso_organization_members ("
+        "CREATE TABLE IF NOT EXISTS org_memberships ("
         "user_id TEXT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE, "
-        "organization_id TEXT NOT NULL REFERENCES sso_organizations(id) ON DELETE CASCADE, "
+        "organization_id TEXT NOT NULL REFERENCES orgs(id) ON DELETE CASCADE, "
         "role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin')), "
         "joined_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
         "removed_at TIMESTAMPTZ, "
@@ -101,13 +98,13 @@ def upgrade() -> None:
         ")"
     )
     op.execute(
-        "CREATE INDEX IF NOT EXISTS idx_sso_organization_members_organization "
-        "ON sso_organization_members (organization_id)"
+        "CREATE INDEX IF NOT EXISTS idx_org_memberships_organization "
+        "ON org_memberships (organization_id)"
     )
     member_mapping = json.dumps(MEMBER_LIMIT_PAIRS, separators=(",", ":"))
     op.execute(
-        "CREATE OR REPLACE TRIGGER sso_organization_members_accounting_amounts "
-        "BEFORE INSERT OR UPDATE ON sso_organization_members "
+        "CREATE OR REPLACE TRIGGER org_memberships_accounting_amounts "
+        "BEFORE INSERT OR UPDATE ON org_memberships "
         f"FOR EACH ROW EXECUTE FUNCTION accounting_sync_amounts('{member_mapping}')"
     )
     op.execute("ALTER TABLE admin_audit_log ADD COLUMN IF NOT EXISTS organization_id TEXT")

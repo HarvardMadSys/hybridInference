@@ -103,7 +103,7 @@ scope_rows AS (
     INSERT INTO spend_counters AS c (scope_id, period, cost_usd, requests, last_request_at)
     SELECT scope_id, period, SUM(cost_usd), SUM(requests), NOW()
     FROM batch
-    LEFT JOIN sso_organization_members om ON om.user_id = batch.user_id
+    LEFT JOIN org_memberships om ON om.user_id = batch.user_id
     CROSS JOIN LATERAL (VALUES
         (project_id, 'd:' || day),
         (project_id, 'm:' || left(day, 7)),
@@ -193,7 +193,7 @@ scope_rows AS (
     SELECT scope_id, period, NULL::numeric, SUM(cost_amount), {currency}::text, SUM(requests),
            NOW()
     FROM batch
-    LEFT JOIN sso_organization_members om ON om.user_id = batch.user_id
+    LEFT JOIN org_memberships om ON om.user_id = batch.user_id
     CROSS JOIN LATERAL (VALUES
         (project_id, 'd:' || day),
         (project_id, 'm:' || left(day, 7)),
@@ -485,8 +485,8 @@ _ACCOUNT_QUOTA_COLUMNS = (
 )
 _ACCOUNT_QUOTA_JOIN = (
     "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
-    "LEFT JOIN sso_organization_members om ON om.user_id = k.user_id "
-    "LEFT JOIN sso_organizations o ON o.id = om.organization_id "
+    "LEFT JOIN org_memberships om ON om.user_id = k.user_id "
+    "LEFT JOIN orgs o ON o.id = om.organization_id "
     "LEFT JOIN users ou ON ou.id = om.user_id "
     + member_quota_join(
         own=(_OWN_MONTHLY_QUOTA, _OWN_MONTHLY_QUOTA_AMOUNT),
@@ -1185,7 +1185,7 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn, conn.transaction():
             await self._suspend_user_on(conn, user_id, **fields)
             await conn.execute(
-                "UPDATE sso_organization_members SET removed_at = NULL, removed_by = NULL "
+                "UPDATE org_memberships SET removed_at = NULL, removed_by = NULL "
                 "WHERE user_id = $1 AND removed_at IS NOT NULL",
                 user_id,
             )
