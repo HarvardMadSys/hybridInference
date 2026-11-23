@@ -782,6 +782,7 @@ class CachedOperationalStore(OperationalStore):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        organization_id: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -797,6 +798,7 @@ class CachedOperationalStore(OperationalStore):
             active_within_hours=active_within_hours,
             anomaly=anomaly,
             include_usage_totals=include_usage_totals,
+            organization_id=organization_id,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:

@@ -165,3 +165,45 @@ async def test_the_cards_are_the_organization_administrators_alone(
 
     assert refused.status_code == 403
     assert signed_out.status_code == 401
+
+
+# -- Admin: the organization of an account -------------------------------------------
+
+
+async def test_admin_users_shows_the_organization_of_an_account_and_filters_by_it(
+    app, idp, store, members_sign_straight_in
+):
+    state = await _organization_with_an_administrator(app, idp, store)
+    root, root_headers = state["root"]
+    _alice, _alice_headers, alice_id = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    organization_id = state["organization_id"]
+    outsider_id = await shared.existing_user(store, "someone@elsewhere.org")
+
+    async def users(query: str = "") -> dict[str, dict | None]:
+        listed = await root.get(f"/admin/users?{query}", headers=root_headers)
+        assert listed.status_code == 200, listed.text
+        assert listed.json()["total"] == len(listed.json()["users"])
+        return {user["id"]: user["organization"] for user in listed.json()["users"]}
+
+    everyone = await users()
+    members = await users(f"organization_id={organization_id}")
+    in_none = await users("organization_id=none")
+    of_another = await users("organization_id=o-no-such-organization")
+    searched = await users(f"organization_id={organization_id}&search=bob")
+
+    here = {"id": organization_id, "name": "Example University"}
+    assert everyone[alice_id] == {**here, "role": "admin"}
+    assert everyone[bob_id] == {**here, "role": "member"}
+    assert everyone[outsider_id] is None
+    assert set(members) == {alice_id, bob_id}
+    # The platform administrator of these tests is in no organization either.
+    assert outsider_id in in_none and not {alice_id, bob_id} & set(in_none)
+    assert of_another == {}
+    assert set(searched) == {bob_id}
+
+    detail = await root.get(f"/admin/users/{bob_id}/detail", headers=root_headers)
+    outsiders = await root.get(f"/admin/users/{outsider_id}/detail", headers=root_headers)
+
+    assert detail.json()["organization"] == {**here, "role": "member"}
+    assert outsiders.json()["organization"] is None

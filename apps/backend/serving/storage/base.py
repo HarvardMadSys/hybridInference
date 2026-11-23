@@ -695,6 +695,7 @@ class OperationalStore(ABC):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        organization_id: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -715,6 +716,10 @@ class OperationalStore(ABC):
         Additional kw-only filters (all default to ``None`` — no-op):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
           today/month spend meets the threshold (USD).
+        - ``organization_id``: keep the members of one organization, or with
+          ``"none"`` the accounts in no organization. Each row has
+          ``organization_id``, ``organization_name`` and ``organization_role``,
+          NULL for an account in none.
         - ``quota_state``: ``"default"``/``"custom"`` filter on the user's
           active key quota; ``"near"``/``"over"`` compare today's spend
           against quota.

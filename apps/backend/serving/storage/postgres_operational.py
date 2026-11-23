@@ -875,6 +875,10 @@ def _coerce_user_row(row: Any) -> Row | None:
     return d
 
 
+#: The value of ``list_users(organization_id=...)`` that keeps the accounts in
+#: no organization. An organization's id is a ULID, so it is never this word.
+NO_ORGANIZATION = "none"
+
 #: The lookups a request makes before it is served -- authentication, spend and
 #: quota, session liveness, and the per-model and runtime settings read on the
 #: way -- which use the request pool (:mod:`serving.storage.pools`). Each is a
@@ -1570,6 +1574,7 @@ class PostgresOperationalStore(
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        organization_id: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1665,6 +1670,16 @@ class PostgresOperationalStore(
                 "EXISTS (SELECT 1 FROM api_keys k3 WHERE k3.account_id = u.id "
                 "AND k3.status = 'active' AND k3.quota_daily_cost_usd IS NOT NULL)"
             )
+        if organization_id == NO_ORGANIZATION:
+            where_clauses.append(
+                "NOT EXISTS (SELECT 1 FROM org_memberships mo WHERE mo.user_id = u.id)"
+            )
+        elif organization_id:
+            where_clauses.append(
+                "EXISTS (SELECT 1 FROM org_memberships mo WHERE mo.user_id = u.id "
+                f"AND mo.organization_id = ${len(filter_params) + 1})"
+            )
+            filter_params.append(organization_id)
         if provider:
             # Keep users who hit `provider` in the last 30 days.
             where_clauses.append(
@@ -1819,8 +1834,13 @@ class PostgresOperationalStore(
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
                 f"  u.signup_reason, u.admin_note, "
                 f"  u.created_at, u.last_login_at, "
-                f"  k.key_prefix, k.status AS key_status "
+                f"  k.key_prefix, k.status AS key_status, "
+                # The organization the account is a member of, if it is one.
+                f"  om.organization_id, o.name AS organization_name, "
+                f"  om.role AS organization_role "
                 f"  FROM users u "
+                f"  LEFT JOIN org_memberships om ON om.user_id = u.id "
+                f"  LEFT JOIN orgs o ON o.id = om.organization_id "
                 # One row per user: an account can hold several active keys,
                 # and the list shows its newest.
                 f"  LEFT JOIN LATERAL ("

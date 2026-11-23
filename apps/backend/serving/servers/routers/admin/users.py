@@ -5,7 +5,7 @@ from __future__ import annotations
 import json as _json
 import logging
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
@@ -68,6 +68,7 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
+from serving.schemas_organization import OrganizationRef
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
@@ -103,6 +104,28 @@ def _user_label(user_row: dict) -> str:
     )
 
 
+def _membership_ref(membership: Any) -> OrganizationRef | None:
+    """The organization of an account, from its membership; None for none."""
+    if not membership:
+        return None
+    return OrganizationRef(
+        id=membership["organization_id"],
+        name=membership["organization_name"],
+        role=membership["role"],
+    )
+
+
+def _organization_of(row: Any) -> OrganizationRef | None:
+    """The organization of an account, from a row that carries its membership; None for none."""
+    if not row or not row.get("organization_id"):
+        return None
+    return OrganizationRef(
+        id=row["organization_id"],
+        name=row["organization_name"],
+        role=row["organization_role"],
+    )
+
+
 @router.get("/users", response_model=ListUsersResponse)
 async def list_users(
     request: Request,
@@ -128,6 +151,7 @@ async def list_users(
     active_within_hours: int | None = Query(None, ge=1),
     anomaly: bool | None = None,
     include_usage_totals: bool = True,
+    organization_id: str | None = Query(None, max_length=64),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -159,6 +183,9 @@ async def list_users(
     - anomaly: when ``true``, keep only users whose today's spend is
       anomalously high vs. their prior 7-day average (today >= $1, history
       >= 3 days, today >= 5x avg).
+    - organization_id: keep the members of one organization, or with ``none``
+      the accounts in no organization. Each row has ``organization``, its
+      id, name and the role of the account there, or null.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -185,6 +212,7 @@ async def list_users(
         active_within_hours=active_within_hours,
         anomaly=anomaly,
         include_usage_totals=include_usage_totals,
+        organization_id=organization_id,
     )
 
     status_counts = StatusCounts(
@@ -222,6 +250,7 @@ async def list_users(
                 has_key=row.get("key_prefix") is not None,
                 key_prefix=row.get("key_prefix"),
                 key_status=row.get("key_status"),
+                organization=_organization_of(row),
                 usage_today_usd=Decimal(str(row.get("usage_today", 0))),
                 usage_month_usd=Decimal(str(row.get("usage_month", 0))),
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
@@ -861,6 +890,7 @@ async def get_user_detail(
         admin_note=user_row.get("admin_note"),
         suspension_message=user_row.get("suspension_message"),
         sso_identities=await sso_accounts.identity_summaries(op_store, user_id),
+        organization=_membership_ref(await organizations.membership_of(op_store, user_id)),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,
