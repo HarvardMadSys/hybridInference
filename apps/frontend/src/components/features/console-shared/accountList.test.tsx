@@ -109,6 +109,22 @@ describe('the summary card of a list', () => {
     expect(onClick).toHaveBeenCalledTimes(1);
   });
 
+  it('shows as many accounts as the page asks for', () => {
+    render(
+      <SummaryCard
+        title="Top spenders today"
+        accent="emerald"
+        count={4}
+        items={items}
+        empty="No members right now"
+        shown={5}
+        onClick={() => {}}
+      />,
+    );
+
+    expect(screen.getAllByRole('listitem')).toHaveLength(4);
+  });
+
   it('says so when no account is in the view, and marks the view that is open', () => {
     render(
       <SummaryCard

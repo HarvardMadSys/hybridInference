@@ -45,6 +45,8 @@ import { limitUse, memberName, memberStatus, relativeTime } from './text';
 
 const PAGE_SIZE = 50;
 const SEARCH_DELAY_MS = 300;
+/** How many members a card names: all that the gateway sends for it. */
+const CARD_MEMBERS = 5;
 /** The period of a member's details: the requests, the tokens and the models of its panel. */
 const DETAIL_PERIOD = '30d';
 
@@ -316,6 +318,7 @@ export function MembersView() {
             return use ? `${use.percent}%` : '';
           })}
           empty={t('organization.members.card_empty', 'No members right now')}
+          shown={CARD_MEMBERS}
           loading={summary.isLoading}
           active={search === '' && sameFilters(filters, NEAR_LIMIT)}
           onClick={() => openView(NEAR_LIMIT)}
@@ -328,6 +331,7 @@ export function MembersView() {
             money.value(member, 'spent_today', { maximumFractionDigits: 2 }),
           )}
           empty={t('organization.members.card_empty', 'No members right now')}
+          shown={CARD_MEMBERS}
           loading={summary.isLoading}
           active={search === '' && sameFilters(filters, TOP_TODAY)}
           onClick={() => openView(TOP_TODAY)}
