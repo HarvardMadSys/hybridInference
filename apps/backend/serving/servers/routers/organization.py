@@ -34,6 +34,7 @@ from serving.schemas_organization import (
     OrganizationOverviewResponse,
     OrganizationResponse,
     Period,
+    RequestVolumeResponse,
     SetMemberModelsRequest,
     SetMonthlyLimitRequest,
 )
@@ -99,11 +100,21 @@ async def get_organization(
 @router.get("/overview", response_model=OrganizationOverviewResponse)
 async def get_overview(
     period: Period = "7d",
+    granularity: Literal["hour", "day"] | None = None,
     admin: OrganizationAdmin = Depends(require_organization_admin),
     op_store=Depends(get_operational_store),
 ) -> OrganizationOverviewResponse:
-    """The organization's usage in a period: totals, a series, and the spend for each model."""
-    view = await organizations.overview_view(op_store, admin.organization_id, period)
+    """The organization's usage in a period: totals, a series, the models and the top members.
+
+    The series has one point for each hour of ``1d`` and for each day of a
+    longer period. ``granularity`` chooses: ``hour`` is for ``1d`` and ``7d``.
+
+    Raises:
+        HTTPException: 400 for an hourly series of ``30d``.
+    """
+    if granularity == "hour" and period not in organizations.HOURLY_PERIODS:
+        raise HTTPException(400, "An hourly series is for a period of 1d or 7d.")
+    view = await organizations.overview_view(op_store, admin.organization_id, period, granularity)
     if view is None:
         raise HTTPException(404, "No such organization.")
     return OrganizationOverviewResponse(**view)
@@ -445,6 +456,21 @@ async def set_default_member_limit(
     return OrganizationResponse(**view)
 
 
+@router.get("/usage/volume", response_model=RequestVolumeResponse)
+async def get_request_volume(
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+) -> RequestVolumeResponse:
+    """The requests of the members in the last hour, day, week and month, to now.
+
+    For each window: the requests, how many were OK, how many failed, and the
+    average latency. The windows do not follow the period of the page.
+    """
+    return RequestVolumeResponse(
+        **await op_store.get_organization_request_volume(admin.organization_id)
+    )
+
+
 @router.get("/usage/requests", response_model=ListOrganizationRequestsResponse)
 async def list_requests(
     period: Period = "7d",
@@ -523,19 +549,26 @@ async def list_member_usage(
 async def list_audit_log(
     period: Period | None = None,
     category: AuditCategory | None = None,
+    member: str | None = Query(default=None, max_length=64),
     search: str | None = Query(default=None, max_length=200),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     admin: OrganizationAdmin = Depends(require_organization_admin),
     op_store=Depends(get_operational_store),
 ) -> ListOrganizationAuditResponse:
-    """The management actions of the caller's organization, newest first."""
+    """The management actions of the caller's organization, newest first.
+
+    ``member`` keeps the rows that have that account as target or as actor.
+    Each entry has its details in full: for a change, the old value and the
+    new one. No entry has the address the action came from.
+    """
     return ListOrganizationAuditResponse(
         **await organizations.audit_view(
             op_store,
             admin.organization_id,
             period=period,
             category=category,
+            member=member,
             search=search,
             limit=limit,
             offset=offset,

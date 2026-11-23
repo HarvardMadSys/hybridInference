@@ -294,6 +294,9 @@ class ModelUsage(MoneyResponse):
     errors: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    #: The input tokens that the provider read from its cache.
+    cached_tokens: int = 0
+    total_tokens: int = 0
     cost_usd: float = 0.0
     cost: Decimal | None = None
 
@@ -329,6 +332,30 @@ class OrganizationOverviewResponse(MoneyResponse):
     monthly_limit: Decimal | None = None
     series: list[UsagePoint] = Field(default_factory=list)
     models: list[ModelUsage] = Field(default_factory=list)
+    #: The members with the highest spend in the period, the highest first.
+    top_members: list[OrganizationMember] = Field(default_factory=list)
+
+
+class RequestVolumeWindow(BaseModel):
+    """The requests of one window that ends now.
+
+    A request is ``failed`` with a status of 400 or more. ``avg_latency_ms`` is
+    None when no request of the window recorded a latency.
+    """
+
+    requests: int = 0
+    ok: int = 0
+    failed: int = 0
+    avg_latency_ms: float | None = None
+
+
+class RequestVolumeResponse(BaseModel):
+    """The requests of the members in the last hour, day, week and month (30 days)."""
+
+    hour: RequestVolumeWindow
+    day: RequestVolumeWindow
+    week: RequestVolumeWindow
+    month: RequestVolumeWindow
 
 
 class OrganizationRequest(MoneyResponse):

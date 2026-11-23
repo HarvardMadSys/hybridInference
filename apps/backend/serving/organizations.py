@@ -537,7 +537,7 @@ def _series(
     hourly: bool,
     now: datetime | None = None,
 ) -> list[dict[str, Any]]:
-    """One point per UTC day of the span, or per hour of its last day; quiet ones included.
+    """One point per UTC day of the span, or per hour of it; quiet ones included.
 
     A day's spend is the cost counters'; an hour's is the request log's, the
     only place an hour is recorded. An hour that has not begun has no point:
@@ -545,13 +545,12 @@ def _series(
     """
     logged = {row["bucket"].replace(tzinfo=UTC): row for row in usage["buckets"]}
     spent = {row["day"]: row for row in usage["spend_days"]}
+    days = (last_day - first_day).days + 1
+    start = datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC)
     if hourly:
-        start = datetime(last_day.year, last_day.month, last_day.day, tzinfo=UTC)
         begun = ((now or datetime.now(UTC)) - start) // timedelta(hours=1) + 1
-        buckets = [start + timedelta(hours=hour) for hour in range(max(0, min(24, begun)))]
+        buckets = [start + timedelta(hours=hour) for hour in range(max(0, min(24 * days, begun)))]
     else:
-        days = (last_day - first_day).days + 1
-        start = datetime(first_day.year, first_day.month, first_day.day, tzinfo=UTC)
         buckets = [start + timedelta(days=day) for day in range(days)]
     series = []
     for bucket in buckets:
@@ -570,13 +569,28 @@ def _series(
     return series
 
 
-async def overview_view(op_store: Any, organization_id: str, period: str) -> dict[str, Any] | None:
-    """The organization's usage in *period*, with the period before for ``1d`` and ``7d``."""
+#: The periods whose series can have one point for each hour.
+HOURLY_PERIODS = ("1d", "7d")
+#: How many members the overview names by their spend.
+TOP_MEMBERS = 5
+
+
+async def overview_view(
+    op_store: Any, organization_id: str, period: str, granularity: str | None = None
+) -> dict[str, Any] | None:
+    """The organization's usage in *period*, with the period before for ``1d`` and ``7d``.
+
+    The series has one point for each hour of ``1d`` and for each day of a
+    longer period, unless *granularity* (``hour`` or ``day``) says otherwise;
+    ``hour`` is for a period of :data:`HOURLY_PERIODS`.
+    """
+    if granularity == "hour" and period not in HOURLY_PERIODS:
+        raise ValueError(f"no hourly series for the period {period!r}")
     organization = await op_store.get_organization(organization_id)
     if organization is None:
         return None
     first_day, last_day = period_span(period)
-    hourly = period == "1d"
+    hourly = granularity == "hour" or (granularity is None and period == "1d")
     usage = await op_store.get_organization_usage(
         organization_id, first_day=first_day, last_day=last_day, hourly=hourly
     )
@@ -594,6 +608,14 @@ async def overview_view(op_store: Any, organization_id: str, period: str) -> dic
             "requests": before["requests"],
         }
     spend = await op_store.get_organization_month_spend(organization_id)
+    _total_members, by_spend = await op_store.list_organization_members(
+        organization_id,
+        first_day=first_day,
+        last_day=last_day,
+        sort_by="spend",
+        descending=True,
+        limit=TOP_MEMBERS,
+    )
     return {
         "period": period,
         "bucket": "hour" if hourly else "day",
@@ -610,6 +632,12 @@ async def overview_view(op_store: Any, organization_id: str, period: str) -> dic
         "monthly_limit_amount": organization["monthly_limit_amount"],
         "series": _series(usage, first_day, last_day, hourly=hourly),
         "models": usage["models"],
+        # Only those that spent or asked anything: a list of zeros ranks nobody.
+        "top_members": [
+            member_view(row, organization)
+            for row in by_spend
+            if row.get("cost_usd") or row.get("requests")
+        ],
     }
 
 
@@ -813,10 +841,14 @@ async def audit_view(
     period: str | None = None,
     category: str | None = None,
     search: str | None = None,
+    member: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, Any]:
-    """One page of the organization's audit log, newest first."""
+    """One page of the organization's audit log, newest first.
+
+    *member* keeps the rows that have that account as target or as actor.
+    """
     since = None
     if period is not None:
         first_day, _ = period_span(period)
@@ -826,6 +858,7 @@ async def audit_view(
         since=since,
         prefixes=AUDIT_CATEGORIES[category] if category else (),
         search=search,
+        member=member,
         limit=limit,
         offset=offset,
     )

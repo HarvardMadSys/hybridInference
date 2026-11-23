@@ -1399,6 +1399,10 @@ class CachedOperationalStore(OperationalStore):
         """The organization's totals, series and models in a span of UTC days."""
         return await self._store.get_organization_usage(organization_id, **fields)
 
+    async def get_organization_request_volume(self, organization_id: str) -> Row:
+        """The requests of the members in the last hour, day, week and month."""
+        return await self._store.get_organization_request_volume(organization_id)
+
     async def list_organization_requests(self, organization_id: str, **fields: Any) -> list[Row]:
         """Requests of the organization's members, newest first, without their content."""
         return await self._store.list_organization_requests(organization_id, **fields)

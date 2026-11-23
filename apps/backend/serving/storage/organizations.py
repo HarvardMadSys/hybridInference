@@ -196,6 +196,14 @@ LIMIT_STATES = {"near": "0.8", "over": "1"}
 #: How many days the trend of a member's spend has, with today.
 TREND_DAYS = 7
 
+#: The windows of the request volume, each ending now; the longest is last.
+VOLUME_WINDOWS = {
+    "hour": timedelta(hours=1),
+    "day": timedelta(days=1),
+    "week": timedelta(days=7),
+    "month": timedelta(days=30),
+}
+
 #: The member statuses a list may be narrowed to, one for each word a member is
 #: shown with: ``removed`` is a member the organization removed, ``suspended``
 #: an account that is suspended in another way. No member is in two of them.
@@ -1452,7 +1460,9 @@ class PostgresOrganizationsMixin:
                 "       COALESCE(SUM(l.prompt_tokens), 0) AS prompt_tokens, "
                 "       COALESCE(SUM(l.completion_tokens), 0) AS completion_tokens, "
                 "       COALESCE(SUM(l.cost_usd), 0) AS cost_usd, "
-                f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount "
+                f"       COALESCE(SUM({_LOG_AMOUNT}), 0) AS cost_amount, "
+                "       COALESCE(SUM(l.cache_read_tokens), 0) AS cached_tokens, "
+                "       COALESCE(SUM(l.total_tokens), 0) AS total_tokens "
                 "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
                 f"WHERE l.timestamp >= $3 AND l.timestamp < $4 AND {_SINCE_JOINED_LOG} "
                 "GROUP BY l.model_id ORDER BY 6 DESC, 2 DESC, l.model_id",
@@ -1479,6 +1489,47 @@ class PostgresOrganizationsMixin:
             "members_with_requests": totals["members_with_requests"],
             "member_count": member_count,
             "models": [dict(row) for row in models],
+        }
+
+    async def get_organization_request_volume(self, organization_id: str) -> dict:
+        """The requests of the members in the last hour, day, week and month, to now.
+
+        For each window (:data:`VOLUME_WINDOWS`): how many requests, how many
+        were OK and how many failed (a status of 400 or more, as the model
+        table counts an error), and the mean latency of those that recorded
+        one. One read of the request log, bounded by the longest window.
+        """
+        now = datetime.now(UTC)
+        starts = [now - span for span in VOLUME_WINDOWS.values()]
+        columns = []
+        for number, name in enumerate(VOLUME_WINDOWS, start=2):
+            within = f"l.timestamp >= ${number}"
+            columns.append(
+                f"COUNT(*) FILTER (WHERE {within}) AS {name}_requests, "
+                f"COUNT(*) FILTER (WHERE {within} AND l.status_code < 400) AS {name}_ok, "
+                f"COUNT(*) FILTER (WHERE {within} AND l.status_code >= 400) AS {name}_failed, "
+                f"AVG(l.latency_ms) FILTER (WHERE {within}) AS {name}_latency"
+            )
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"WITH {_SCOPE} SELECT {', '.join(columns)} "
+                "FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
+                f"WHERE l.timestamp >= ${len(starts) + 1} AND {_SINCE_JOINED_LOG}",
+                organization_id,
+                *starts,
+            )
+        return {
+            name: {
+                "requests": row[f"{name}_requests"],
+                "ok": row[f"{name}_ok"],
+                "failed": row[f"{name}_failed"],
+                "avg_latency_ms": (
+                    None
+                    if row[f"{name}_latency"] is None
+                    else round(float(row[f"{name}_latency"]), 1)
+                ),
+            }
+            for name in VOLUME_WINDOWS
         }
 
     async def list_organization_requests(
@@ -1547,10 +1598,15 @@ class PostgresOrganizationsMixin:
         since: datetime | None = None,
         prefixes: Sequence[str] = (),
         search: str | None = None,
+        member: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[dict]]:
         """One page of the audit rows that belong to an organization, newest first.
+
+        *member* keeps the rows an account is the target of, or the acting
+        account of. Every row is the organization's already, so the id of an
+        account outside it finds nothing.
 
         With the emails of the acting account and of a user target. *prefixes*
         keeps the actions that start with one of them. *search* looks in the
@@ -1567,6 +1623,12 @@ class PostgresOrganizationsMixin:
         if prefixes:
             params.append([f"{prefix}%" for prefix in prefixes])
             where.append(f"a.action LIKE ANY(${len(params)}::text[])")
+        if member:
+            params.append(member)
+            where.append(
+                f"(a.target_user_id = ${len(params)} "
+                f"OR (a.actor_type = 'user' AND a.actor_id = ${len(params)}))"
+            )
         if search:
             params.append(contains_pattern(search))
             like = _LIKE.replace("${n}", f"${len(params)}")

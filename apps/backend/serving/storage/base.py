@@ -358,6 +358,10 @@ class OperationalStore(ABC):
         """Replace the models an organization turned off for one member."""
         raise OrganizationsUnavailableError
 
+    async def get_organization_request_volume(self, organization_id: str) -> Row:
+        """The requests of the members in the last hour, day, week and month."""
+        raise OrganizationsUnavailableError
+
     async def revoke_organization_member_key(
         self, organization_id: str, user_id: str, key_id: int, **fields: Any
     ) -> tuple[str, str | None]:
