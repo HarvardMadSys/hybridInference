@@ -184,7 +184,7 @@ models, projects and API keys.
 | Spend for each day | `user_daily_cost`, the counters that the quota gates read |
 | Requests and tokens, the figures for each model and for each hour, the request volume, and the request rows | `api_logs`, through the index on `(user_id, timestamp)`. A period is 30 days at most |
 | Spend of a member today, in the last 7 days and in all time | `user_daily_cost`, from the day of the membership |
-| Spend of a project and of an API key in this month | `spend_counters`, the rows that the quota gates read |
+| Spend of a project and of an API key, today and in this month | `spend_counters` for a project and `api_key_daily_cost` for a key, the rows that the quota gates read |
 | Last request of a member | `user_daily_cost.last_request_at` |
 | Monthly limit of a member | The limit on the membership, the default of the organization, and the monthly quota of the account (§8.1) |
 | Spend of the organization in this month | The counter of the organization (§8.2) |
@@ -219,7 +219,7 @@ A card opens the list with the filter and the order that it stands for.
 
 **One row for each member:** name, email, role, status, last request, and four spend columns: today, the
 last 7 days (the total, and one value for each day), this month with the monthly limit, and all time. The
-row also has the requests and the tokens of all time.
+row also has the requests and the tokens of a period (`period`, `30d` when the call names none).
 
 The list takes:
 
@@ -249,9 +249,9 @@ A row opens the details of the member (`?period=`, default `30d`):
 - the four spend columns, and the monthly limit;
 - the spend for each day of the last 30 days;
 - the spend for each model in the period;
-- the projects of the member. For each project: its name and its spend of this month. For each API key of
-  the project: its name, its status, its last use and its spend of this month. Never the key value or its
-  prefix;
+- the projects of the member, each with its name and its spend of today and of this month, and its API
+  keys, each with its name, its project, its status, its last use and the same two figures. Never the key
+  value, its prefix, or the limits that its owner set;
 - the models that are off for the member: those that the organization turned off (§7.5), and those that
   the platform administrator turned off, which the organization can read and cannot change;
 - the last 6 requests;
@@ -357,7 +357,9 @@ of the organization for that member. An empty list turns nothing off.
   read it and does not write it.
 - The gateway refuses a model that is in either list (§8.4). Thus an organization can turn a model off, and
   cannot turn on a model that the platform administrator turned off.
-- An id that is not a model of the deployment is refused with a 422.
+- An id that is not a model of the deployment is dropped, as **Admin → Users** drops it.
+- `GET /user/organization/members/{user_id}/models` returns the two lists, and the models that the
+  platform lets the member use: those that the organization can turn off.
 - The write is one transaction with the audit row, which has the old list and the new list.
 
 ### 7.6 Revoke an API key of a member
@@ -532,7 +534,7 @@ the console do not change.
 |---|---|
 | `GET /user/organization` | The organization, its SSO connections, its administrators, its limits and the spend of this month |
 | `GET /user/organization/overview?period=&granularity=` | §6.2 |
-| `GET /user/organization/members?search=&status=&limit_state=&min_cost_today=&min_cost_month=&currency=&sort_by=&order=&limit=&offset=` | §6.3, with the total number |
+| `GET /user/organization/members?period=&search=&status=&limit_state=&min_cost_today=&min_cost_month=&currency=&sort_by=&order=&limit=&offset=` | §6.3, with the total number |
 | `GET /user/organization/members/summary` | The two cards of §6.3 |
 | `GET /user/organization/members/{user_id}?period=` | The details of one member |
 | `GET /user/organization/usage/volume` | The four cards of §6.4 |
@@ -544,6 +546,7 @@ the console do not change.
 | `PUT /user/organization/default-member-limit` | §7.2 |
 | `POST /user/organization/members/{user_id}/remove` | §7.3 |
 | `POST /user/organization/members/{user_id}/restore` | §7.4 |
+| `GET /user/organization/members/{user_id}/models` | The models of §7.5 that can be turned off, and the two lists |
 | `PUT /user/organization/members/{user_id}/models` | §7.5 |
 | `POST /user/organization/members/{user_id}/keys/{key_id}/revoke` | §7.6 |
 

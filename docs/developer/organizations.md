@@ -34,6 +34,26 @@ A membership ends only when the account is deleted permanently. The members
 stay when you detach an SSO connection, and when the email of an account
 changes later.
 
+### How a member signs in
+
+A member signs in through single sign-on only. The organization owns the
+account, so its identity provider decides who can sign in.
+
+- When an account becomes a member, the gateway removes its password and its
+  password reset links. This includes the accounts that become members when
+  you attach a connection. They sign in through the connection from then on.
+- A member cannot set a password, in **Settings** or with a reset link, and a
+  phone code does not sign it in.
+- An account with the `admin` role, or with an address in `ADMIN_EMAILS`, is
+  the exception. It keeps its password, so that it can sign in when the
+  identity provider is not available.
+- An API key is not a sign-in. The keys of a member work until the member is
+  removed or a key is revoked.
+
+Attach each SSO connection that answers for the email domains of an
+organization. An organization account of a connection that is not attached
+can also sign a member in.
+
 ## Set an organization up
 
 The Admin console has no pages for these steps yet. Call the Admin API. Each
@@ -103,18 +123,27 @@ the caller's membership: no call names it. Every other caller gets a 403.
 | Page | Route | Shows |
 |---|---|---|
 | **Settings** | `GET /user/organization` | The organization: name, SSO connections, administrators, limits and the spend of this month |
-| **Overview** | `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day. For one day, a series of each hour that has begun. The spend of each model |
-| **Members** | `GET /user/organization/members` | One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of this month with the monthly limit. Takes `search`, `status`, `sort_by`, `order`, `limit` and `offset` |
-| **Members**, in the panel of a member | `GET /user/organization/members/{user_id}` | One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests |
+| **Overview** | `GET /user/organization/overview` | Totals of the period: spend, requests, tokens and the number of members with requests. A series of each day. For one day, a series of each hour that has begun; `granularity=hour` gives the hours of 7 days too. For each model: requests, errors, input, output and cached tokens, and spend. The 5 members with the highest spend |
+| **Members** | `GET /user/organization/members` | One row for each member: name, email, role, status, last request, and the spend of today, of the last 7 days, of this month with the monthly limit, and of all time. Takes `search`, `status`, `limit_state`, `min_cost_today`, `min_cost_month`, `sort_by`, `order`, `limit` and `offset` |
+| **Members**, the two cards | `GET /user/organization/members/summary` | The members near or over their monthly limit, and the members with the highest spend today: the number, and the first 5 |
+| **Members**, in the panel of a member | `GET /user/organization/members/{user_id}` | One member: the same figures, the spend of each of the last 30 days, the spend of each model, and the last requests. Whether the account has an API key, a second factor and a verified email. Its projects and its API keys by name, with their spend. The models that are off for it |
+| **Usage**, the four cards | `GET /user/organization/usage/volume` | The requests of the last hour, day, week and month: how many were OK, how many failed, and the average latency |
 | **Usage → Requests** | `GET /user/organization/usage/requests` | One row for each request, newest first: time, member, project, name of the API key, model, status code, tokens and cost. Takes `search`, `model`, `status`, `limit`, and `before` for the next page |
 | **Usage → By model** | `GET /user/organization/usage/models` | Requests, errors, tokens and spend of each model |
 | **Usage → By member** | `GET /user/organization/usage/members` | Requests, tokens and spend of each member |
-| **Audit log** | `GET /user/organization/audit-log` | The management actions of this organization. Takes `category`, `search`, `limit` and `offset` |
+| **Audit log** | `GET /user/organization/audit-log` | The management actions of this organization, each with its details: for a change, the old value and the new value. Takes `category`, `member`, `search`, `limit` and `offset` |
 
 The routes that show figures take `period`: `1d`, `7d` or `30d`, the last 1, 7
 or 30 days in UTC, with today. The audit log takes it too, and shows every row
 without it. "This month" is the calendar month in UTC, the month that an
 account's monthly quota uses.
+
+The four spend columns of a member do not follow the period. They are the
+columns of **Admin → Users**: today, the last 7 days, this month and all time.
+`limit_state=near` keeps the members whose spend of this month is 80% or more
+of their monthly limit, and `limit_state=over` those at 100% or more.
+`min_cost_today` and `min_cost_month` are amounts in USD, or in the ledger
+currency when the call names it with `currency`.
 
 The figures of a member start when its account became a member. The pages do
 not show the requests that the account made before, nor their models, projects
@@ -130,7 +159,9 @@ No route shows these:
 
 - the content of a request: the prompt, the response, the tools or the error
   text;
-- the value of an API key. A request row shows the name of the key only;
+- the value of an API key, or the prefix that begins it. A request row and the
+  panel of a member show the name of a key only;
+- the address that a request or a management action came from;
 - an account that is not a member, or a different organization;
 - the configuration of the deployment, or the client secret of an SSO
   connection.
@@ -138,9 +169,10 @@ No route shows these:
 ## What an organization administrator can change
 
 On **Members**, a click on a row opens a panel with the details of the member
-and the actions on that member: **Set monthly limit**, **Remove from
-organization** and **Restore member**. **Settings** has the default monthly
-limit for a member. The actions call these routes:
+and the actions on that member: **Set monthly limit**, **Models**, **Revoke**
+for an API key, **Remove from organization** and **Restore member**.
+**Settings** has the default monthly limit for a member. The actions call
+these routes:
 
 | Route | What it does |
 |---|---|
@@ -148,12 +180,31 @@ limit for a member. The actions call these routes:
 | `PUT /user/organization/default-member-limit` | Sets the default monthly limit for a member. `null` clears it |
 | `POST /user/organization/members/{user_id}/remove` | Removes a member |
 | `POST /user/organization/members/{user_id}/restore` | Restores a member that the organization removed |
+| `PUT /user/organization/members/{user_id}/models` | Sets the models that are off for a member. `{"disabled_models": []}` turns none off |
+| `POST /user/organization/members/{user_id}/keys/{key_id}/revoke` | Revokes one API key of a member |
 
-The three routes that name a member do not apply to an organization
+The routes that name a member do not apply to an organization
 administrator, to an account with the `admin` role, or to the caller. The
 answer is a 409. The row of such a member has `protected: true`, and the
 console shows no action in its panel. The default monthly limit does not apply
 to these accounts either.
+
+### Turn a model off, and revoke a key
+
+An organization can only take away. It cannot give a member more than you
+allow.
+
+- **Models.** An organization administrator turns a model off for one member.
+  The organization has a list of its own for this. The list that you set in
+  **Admin → Users** is a different list: the organization can read it and
+  cannot change it. The gateway refuses a model that is in either list. So an
+  organization cannot turn on a model that you turned off.
+  `GET /user/organization/members/{user_id}/models` returns the models that
+  you let the member use, and the two lists.
+- **API keys.** An organization administrator revokes one API key of a member,
+  as the owner of the key does in the console. The key stays revoked, and the
+  member can make a new one. `key_id` is the `id` of the key in the panel of
+  the member.
 
 ### Remove and restore a member
 
@@ -176,8 +227,9 @@ on your own authority, write a suspension message for it in **Admin → Users**.
 The suspension is then yours, and the organization can no longer restore the
 member.
 
-The gateway is not told when the identity provider disables an account. Until
-an administrator removes the member, its open sessions and its API keys keep
+The gateway is not told when the identity provider disables an account. The
+person can then no longer sign in, because a member has no password. Until an
+administrator removes the member, its open sessions and its API keys keep
 working.
 
 ## Limits
@@ -249,6 +301,14 @@ Things to know:
   `monthly_limit` with `currency`. The offline currency migration converts the
   limits of the organizations that exist.
 
+## The organization of an account in Admin
+
+**Admin → Users** shows the organization of each account. `GET /admin/users`
+has `organization` on each row: the id and the name of the organization, and
+the role of the account there, or `null`. `organization_id=<id>` keeps the
+members of one organization, and `organization_id=none` the accounts that have
+none. `GET /admin/users/{user_id}/detail` has the same field.
+
 ## The audit log
 
 Each action on this page writes a row to the audit log, with the organization
@@ -266,6 +326,8 @@ reads the rows of its own organization. A row of yours names its actor
 | `organization.default_member_limit.set`, `organization.member_limit.set` | An organization administrator changes the default limit or the limit of a member |
 | `organization.member.join` | An account becomes a member at a sign-in or a link |
 | `organization.member.remove`, `organization.member.restore` | An organization administrator removes or restores a member |
+| `organization.member_models.set` | An organization administrator changes the models that are off for a member |
+| `organization.member_key.revoke` | An organization administrator revokes an API key of a member |
 
 ## Stop using an organization
 

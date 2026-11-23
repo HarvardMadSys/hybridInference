@@ -88,10 +88,12 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     if lookup is None:
         return None
     try:
-        row = await lookup(user_id)
+        answer = lookup(user_id)
+        row = await answer if inspect.isawaitable(answer) else None
     except OrganizationsUnavailableError:
         return None
-    return dict(row) if row else None
+    # A membership is a row; anything else a store answers with is none.
+    return dict(row) if isinstance(row, Mapping) else None
 
 
 async def disabled_models_of_account(op_store: Any, user_id: str) -> list[str]:
