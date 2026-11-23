@@ -457,6 +457,16 @@ function ConnectForm({
 
   return (
     <form onSubmit={submit} className="space-y-4" noValidate>
+      {ssoOnlyProvider ? (
+        // Said first, and as a warning: the link removes the password, and it
+        // cannot be taken back here.
+        <div
+          role="note"
+          className="rounded-md border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800"
+        >
+          {ssoOnlyAfterLink(t, ssoOnlyProvider.name)}
+        </div>
+      ) : null}
       <InputField
         label={t('auth.sso.email_label', 'Work or school email')}
         type="email"
@@ -477,10 +487,6 @@ function ConnectForm({
       ) : (
         <OwnerPassword value={password} onChange={setPassword} disabled={busy} />
       )}
-      {ssoOnlyProvider ? (
-        // Said before the account is linked: the link cannot be taken back here.
-        <p className="text-sm text-gray-600">{ssoOnlyAfterLink(t, ssoOnlyProvider.name)}</p>
-      ) : null}
       {error ? (
         <div
           className="rounded-md border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"

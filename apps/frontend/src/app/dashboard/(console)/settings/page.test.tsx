@@ -800,13 +800,19 @@ describe('the single sign-on section', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Connect an SSO account' }));
     const section = ssoSection();
 
-    const sentence = within(section).getByText(
+    // A warning of its own, which the reader meets before the fields: not a line
+    // of small print between the last field and the button.
+    const sentence = within(section).getByRole('note');
+    expect(sentence).toHaveTextContent(
       'After you connect it, this account signs in through Example University only. Its password is removed.',
     );
+    const email = within(section).getByLabelText('Work or school email');
     const action = within(section).getByRole('button', { name: 'Continue' });
-    expect(
-      sentence.compareDocumentPosition(action) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    for (const later of [email, action]) {
+      expect(
+        sentence.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
     // The form is the one it always is.
     expect(within(section).getByLabelText('Work or school email')).toBeInTheDocument();
     expect(within(section).getByLabelText(/^Current password/)).toBeInTheDocument();

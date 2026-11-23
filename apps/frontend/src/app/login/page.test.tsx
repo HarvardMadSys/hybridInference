@@ -25,6 +25,7 @@ const phoneLoginMock = vi.fn();
 const switchAccountMock = vi.fn();
 const removeAccountMock = vi.fn();
 const completeExternalSignInMock = vi.fn();
+const refreshUserMock = vi.fn();
 let accountsState: Array<{
   id: string;
   email: string | null;
@@ -45,6 +46,7 @@ vi.mock('@/components/providers', () => ({
     accounts: accountsState,
     switchAccount: switchAccountMock,
     removeAccount: removeAccountMock,
+    refreshUser: refreshUserMock,
   }),
 }));
 
@@ -989,6 +991,27 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(pushMock).not.toHaveBeenCalled();
     expect(sso.confirmSsoLink).toHaveBeenCalledTimes(1);
     expect(sso.cancelSsoLink).not.toHaveBeenCalled();
+  });
+
+  it('reads the profile again after the link, before it goes on: the account may have no password now', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    const order: string[] = [];
+    sso.confirmSsoLink.mockImplementation(async () => {
+      order.push('link');
+      return { message: 'Single sign-on connected.' };
+    });
+    refreshUserMock.mockImplementation(async () => {
+      order.push('profile');
+    });
+    replaceMock.mockImplementation(() => {
+      order.push('next page');
+    });
+    renderLogin();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(order).toEqual(['link', 'profile', 'next page']));
   });
 
   it('drops the identity on "Not now", and goes on', async () => {

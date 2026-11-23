@@ -43,6 +43,13 @@ import { userDisplayName } from '@/lib/utils/userLabel';
 const UNDER_FORM = 'mt-4 flex items-center justify-center gap-4';
 
 /**
+ * The action inside a notice, in the console's own look: a filled button, so
+ * that it does not read as one more line of the notice's text.
+ */
+const NOTICE_BUTTON =
+  'mt-3 inline-flex h-9 items-center justify-center gap-1.5 rounded-md bg-blue-600 px-4 text-sm font-medium text-white shadow-sm transition-colors hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50';
+
+/**
  * The identity a single sign-on left waiting for the owner of the account it
  * matched (`?sso=link`): still being read, there, or gone.
  */
@@ -92,6 +99,7 @@ function LoginContent() {
     accounts = [],
     switchAccount,
     removeAccount,
+    refreshUser,
   } = useAuth();
   // Null until the visitor picks: the chooser when this browser has accounts.
   const [view, setView] = useState<'chooser' | 'form' | null>(null);
@@ -362,6 +370,9 @@ function LoginContent() {
     setLinkError(null);
     try {
       await confirmSsoLink();
+      // The link can change what the account is: a member of an organization has
+      // no password. The pages after this one read that from the profile.
+      await refreshUser();
       toast.success(t('auth.sso.linked_toast', 'Single sign-on connected.'));
       // Replaced, not pushed: going back to the question would find nothing
       // waiting any more and say the sign-in took too long.
@@ -667,12 +678,15 @@ function LoginContent() {
               </p>
               <button
                 type="button"
-                className={skin.linkButton}
+                // A module's look has one button, the form's own; the console's
+                // look has a second one that fits inside a notice.
+                className={isNeutral ? NOTICE_BUTTON : `${skin.submit} mt-3`}
                 onClick={() => void signInThroughSso()}
                 disabled={ssoBusy}
                 aria-busy={ssoBusy}
               >
                 {t('auth.sso.button', 'Log in with SSO')}
+                <span aria-hidden="true">→</span>
               </button>
             </AuthNotice>
           )}
