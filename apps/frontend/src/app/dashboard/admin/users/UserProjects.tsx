@@ -1,10 +1,13 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import {
+  ProjectsAndKeys,
+  type KeyEntry,
+} from '@/components/features/console-shared/ProjectsAndKeys';
 import { getUserProjects, type AdminUserProjects } from '@/lib/api/admin';
 import type { ApiKeyListItem, Project } from '@/lib/api/user';
 import { getErrorMessage } from '@/lib/utils/errors';
-import { InlineErrorText } from '@/components/ui/InlineErrorText';
 import { useMoney } from '@/lib/hooks/useMoney';
 
 type Money = ReturnType<typeof useMoney>;
@@ -42,8 +45,8 @@ function projectLimits(project: Project): string[] {
   return limits;
 }
 
-function KeyLine({ apiKey }: { apiKey: ApiKeyListItem }) {
-  const money = useMoney();
+/** A key as the administrator reads it: its name, its masked value, today's spend and its limits. */
+function keyEntry(money: Money, apiKey: ApiKeyListItem): KeyEntry {
   const limits = [
     money.amount(apiKey, 'budget_daily') != null
       ? `daily ${amount(money, apiKey, 'budget_daily')}`
@@ -53,34 +56,15 @@ function KeyLine({ apiKey }: { apiKey: ApiKeyListItem }) {
       : null,
     apiKey.allowed_models != null ? `${apiKey.allowed_models.length} model(s)` : null,
   ].filter(Boolean);
-  return (
-    <li className="flex flex-wrap items-baseline justify-between gap-x-3 py-1 text-[12px]">
-      <span className="min-w-0 truncate">
-        <span className={apiKey.name ? 'font-medium text-gray-900' : 'italic text-gray-400'}>
-          {apiKey.name ?? 'Unnamed key'}
-        </span>{' '}
-        <code className="text-gray-500">{apiKey.key_masked}</code>
-        {apiKey.status !== 'active' && (
-          <span className="ml-1.5 text-[11px] text-gray-400">{apiKey.status}</span>
-        )}
-      </span>
-      <span className="tabular-nums text-gray-500">
-        {amount(money, apiKey, 'spent_today')} today
-        {limits.length > 0 && ` · ${limits.join(' · ')}`}
-      </span>
-    </li>
-  );
-}
-
-function KeyList({ keys }: { keys: ApiKeyListItem[] }) {
-  if (keys.length === 0) return <p className="mt-1 pl-3 text-[12px] text-gray-400">No keys.</p>;
-  return (
-    <ul className="mt-1 divide-y divide-gray-100 border-l-2 border-gray-100 pl-3">
-      {keys.map((key) => (
-        <KeyLine key={key.key_prefix} apiKey={key} />
-      ))}
-    </ul>
-  );
+  return {
+    id: apiKey.key_prefix,
+    name: apiKey.name ?? null,
+    masked: apiKey.key_masked,
+    statusNote: apiKey.status !== 'active' ? apiKey.status : undefined,
+    figures: `${amount(money, apiKey, 'spent_today')} today${
+      limits.length > 0 ? ` · ${limits.join(' · ')}` : ''
+    }`,
+  };
 }
 
 /**
@@ -112,42 +96,30 @@ export function UserProjects({ userId }: { userId: string }) {
   const archivedKeys = (data?.keys ?? []).filter((key) => !projectIds.has(key.project_id ?? ''));
 
   return (
-    <div className="space-y-2 rounded-lg border border-gray-200 bg-white p-4">
-      <div className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
-        Projects and keys
-      </div>
-      {error && <InlineErrorText message={error} />}
-      {!data && !error && <p className="text-[12px] text-gray-400">Loading…</p>}
-      {data?.projects.map((project) => {
-        const limits = projectLimits(project);
-        return (
-          <section key={project.id} aria-label={project.name} className="pt-1">
-            <div className="flex flex-wrap items-baseline justify-between gap-x-3 text-[13px]">
-              <span className="font-semibold text-gray-900">
-                {project.name}
-                {project.is_default && project.name !== 'Default' && (
-                  <span className="ml-1.5 rounded bg-blue-50 px-1.5 py-0.5 text-[10px] font-medium text-blue-700">
-                    Default
-                  </span>
-                )}
-              </span>
-              <span className="text-[12px] tabular-nums text-gray-500">
-                {spend(money, project, 'today', 'today')}
-                {' · '}
-                {spend(money, project, 'month', 'this month')}
-                {limits.length > 0 && ` · ${limits.join(' · ')}`}
-              </span>
-            </div>
-            <KeyList keys={data.keys.filter((key) => key.project_id === project.id)} />
-          </section>
-        );
-      })}
-      {archivedKeys.length > 0 && (
-        <section aria-label="Archived projects" className="pt-1">
-          <div className="text-[13px] font-semibold text-gray-500">Archived projects</div>
-          <KeyList keys={archivedKeys} />
-        </section>
-      )}
-    </div>
+    <ProjectsAndKeys
+      projects={
+        data
+          ? data.projects.map((project) => {
+              const limits = projectLimits(project);
+              return {
+                id: project.id,
+                name: project.name,
+                isDefault: project.is_default,
+                figures: `${spend(money, project, 'today', 'today')} · ${spend(
+                  money,
+                  project,
+                  'month',
+                  'this month',
+                )}${limits.length > 0 ? ` · ${limits.join(' · ')}` : ''}`,
+                keys: data.keys
+                  .filter((key) => key.project_id === project.id)
+                  .map((key) => keyEntry(money, key)),
+              };
+            })
+          : null
+      }
+      archivedKeys={archivedKeys.map((key) => keyEntry(money, key))}
+      error={error}
+    />
   );
 }

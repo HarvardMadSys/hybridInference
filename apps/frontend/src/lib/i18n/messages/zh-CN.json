@@ -2559,6 +2559,30 @@
     "source": "Settings",
     "text": "设置"
   },
+  "console.projects.archived": {
+    "source": "Archived projects",
+    "text": "已归档的项目"
+  },
+  "console.projects.default": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "console.projects.loading": {
+    "source": "Loading…",
+    "text": "加载中…"
+  },
+  "console.projects.no_keys": {
+    "source": "No keys.",
+    "text": "没有 API key。"
+  },
+  "console.projects.title": {
+    "source": "Projects and keys",
+    "text": "项目和 API key"
+  },
+  "console.projects.unnamed_key": {
+    "source": "Unnamed key",
+    "text": "未命名的 key"
+  },
   "dashboard.account.email": {
     "source": "Email:",
     "text": "邮箱："
