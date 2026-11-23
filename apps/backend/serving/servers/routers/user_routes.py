@@ -370,21 +370,25 @@ async def get_current_user_info(
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
 
-    # Only an account with neither a password nor a verified phone confirms
-    # sensitive actions at its identity provider, so only it is looked up.
+    membership = await organizations.membership_of(op_store, user_row["id"])
+    sso_only = organizations.is_sso_only(user_row, membership)
+    # An account with neither a password nor a verified phone confirms
+    # sensitive actions at its identity provider, and so does a member of an
+    # organization, whatever its account holds: only for those is it looked up.
     reauth_provider = (
         await sso_accounts.account_provider(op_store, user_row["id"])
-        if sso_accounts.confirms_through_provider(user_row)
+        if sso_only or sso_accounts.confirms_through_provider(user_row)
         else None
     )
-    membership = await organizations.membership_of(op_store, user_row["id"])
     return UserInfo(
         id=user_row["id"],
         email=user_row["email"],
         login_name=user_row.get("login_name"),
         phone=user_row.get("phone"),
         phone_verified=user_row.get("phone_verified", False),
-        has_password=bool(user_row.get("password_hash")),
+        # A password that stayed on a member signs nobody in and confirms
+        # nothing: for the console the account has none.
+        has_password=bool(user_row.get("password_hash")) and not sso_only,
         sso_reauth_provider=sso_accounts.provider_ref(reauth_provider),
         user_name=user_row["user_name"],
         avatar_url=await op_store.get_user_avatar(user_row["id"]),
@@ -404,7 +408,7 @@ async def get_current_user_info(
             if membership
             else None
         ),
-        sso_only=organizations.is_sso_only(user_row, membership),
+        sso_only=sso_only,
     )
 
 

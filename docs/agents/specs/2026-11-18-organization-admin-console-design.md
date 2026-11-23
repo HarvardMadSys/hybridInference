@@ -137,8 +137,9 @@ provider is not available.
   403. `POST /auth/forgot-password` gives its usual answer and sends no link. The command-line reset
   (`python -m serving.auth.reset_password`) refuses a member too. Each write of a password is decided
   under the lock on the account that a join waits for.
-- **Confirmation.** A member confirms a change of its single sign-on at its identity provider. It is not
-  told to set a password.
+- **Confirmation.** A member confirms each action that asks for the owner of the account at its identity
+  provider, also when the account still holds a password or a phone number. `GET /user/me` then has
+  `has_password: false` and names the provider.
 - `GET /user/me` has `sso_only: true` for such an account, and so has each answer that describes the
   signed-in account. The console then shows no password control.
 
@@ -258,7 +259,8 @@ A row opens the details of the member (`?period=`, default `30d`):
 - the projects of the member, each with its name and its spend of today and of this month, and its API
   keys, each with its name, its project, its status, its last use and the same two figures. Never the key
   value, its prefix, or the limits that its owner set. Only the keys that the account had as a member: a
-  key that was revoked before, and not used since, is not shown, and neither is a last use from before;
+  key that was revoked before is not shown, and neither is a last use from before. A key that the
+  organization revoked, or that a removal revoked, has the time of it and stays in the list;
 - the models that are off for the member: those that the organization turned off (§7.5), and those that
   the platform administrator turned off, which the organization can read and cannot change;
 - the last 6 requests;

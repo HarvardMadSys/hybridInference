@@ -2438,6 +2438,7 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT k.id, k.key_prefix, k.name, k.created_at, k.last_used_at, k.status, "
+                "k.revoked_at, "
                 "k.project_id, p.name AS project_name, "
                 f"k.api_key_encrypted, {_KEY_LIMIT_COLUMNS}, "
                 "COALESCE(s.today, 0) AS spent_today_usd, "

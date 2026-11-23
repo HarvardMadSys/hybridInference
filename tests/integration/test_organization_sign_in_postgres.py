@@ -162,12 +162,18 @@ async def test_a_password_that_stayed_on_a_member_does_not_sign_in(
         )
 
     refused = await _login(app)
+    alice, alice_headers, _ = await _member(app, idp, store)
+    profile = (await alice.get("/user/me", headers=alice_headers)).json()
 
     assert refused.status_code == 401
     assert refused.json()["detail"] == WRONG_PASSWORD
+    # For the console the account has no password: it confirms where it signs in.
+    assert (profile["has_password"], profile["sso_only"]) == (False, True)
+    assert profile["sso_reauth_provider"] == {"id": "example-univ", "name": "Example University"}
     async with clean_organizations.acquire() as conn:
         reason = await conn.fetchval(
-            "SELECT failure_reason FROM login_events WHERE user_id = $1 ORDER BY id DESC LIMIT 1",
+            "SELECT failure_reason FROM login_events "
+            "WHERE user_id = $1 AND outcome = 'failure' ORDER BY id DESC LIMIT 1",
             member_id,
         )
     assert reason == "sso_only"

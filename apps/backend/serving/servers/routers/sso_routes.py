@@ -896,11 +896,13 @@ async def _confirm_owner(
     user_row = await op_store.get_user_by_id(current_user["user_id"])
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
-    if await organizations.signs_in_through_sso_only(op_store, user_row):
-        # A member of an organization has no password and cannot set one: it
-        # confirms at its identity provider, whatever else the account holds.
-        user_row = {**user_row, "password_hash": None, "phone": None, "phone_verified": False}
-    elif not user_row.get("password_hash") and not sso_accounts.confirms_through_provider(user_row):
+    # A member of an organization is not told to set a password, which it
+    # cannot: the owner's confirmation sends it to its identity provider.
+    if (
+        not user_row.get("password_hash")
+        and not sso_accounts.confirms_through_provider(user_row)
+        and not await organizations.signs_in_through_sso_only(op_store, user_row)
+    ):
         raise HTTPException(
             status_code=400,
             detail="Set a password before changing single sign-on.",

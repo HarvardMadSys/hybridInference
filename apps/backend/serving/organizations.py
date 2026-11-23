@@ -788,15 +788,16 @@ async def project_view(op_store: Any, row: Mapping[str, Any]) -> dict[str, Any]:
 def _key_of_membership(row: Mapping[str, Any], joined_at: datetime) -> bool:
     """Whether a key is one the organization is shown: one the member had as a member.
 
-    A key that is not revoked, or one made or used since the account became a
-    member. A key that was revoked before, and not used since, is from the
-    time the account was not the organization's (as its earlier requests).
+    A key that is not revoked, or one made, used or revoked since the account
+    became a member. A key that was revoked before is from the time the
+    account was not the organization's (as its earlier requests). So is a
+    revoked key that names no time: the organization and a removal write one.
     """
     if row["status"] != "revoked":
         return True
     return any(
         row.get(stamp) is not None and row[stamp] >= joined_at
-        for stamp in ("created_at", "last_used_at")
+        for stamp in ("created_at", "last_used_at", "revoked_at")
     )
 
 

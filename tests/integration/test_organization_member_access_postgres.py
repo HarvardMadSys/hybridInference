@@ -391,3 +391,35 @@ async def test_a_key_from_before_the_membership_is_not_shown(
     assert keys["live"]["last_used_at"] is None
     assert keys["ended"]["last_used_at"] is not None
     assert too_large.status_code == 422
+
+    # A key from before, never used as a member: the organization revokes it and still sees it.
+    revoked = await alice.post(
+        f"/user/organization/members/{bob_id}/keys/{ids['live']}/revoke", headers=headers
+    )
+    assert revoked.status_code == 200, revoked.text
+    after = await alice.get(f"/user/organization/members/{bob_id}", headers=headers)
+    assert {key["name"]: key["status"] for key in after.json()["keys"]} == {
+        "ended": "revoked",
+        "live": "revoked",
+    }
+
+
+async def test_the_keys_of_a_removed_member_stay_in_its_panel(
+    app, idp, store, clean_organizations, members_sign_straight_in
+):
+    state = await _organization_with_an_administrator(app, idp, store)
+    alice, headers, _ = state["alice"]
+    _bob, _bob_headers, bob_id = state["bob"]
+    _, key_id = await _key(store, bob_id, "from-before")
+    async with clean_organizations.acquire() as conn:
+        await conn.execute(
+            "UPDATE api_keys SET created_at = NOW() - INTERVAL '30 days' WHERE id = $1", key_id
+        )
+
+    removed = await alice.post(f"/user/organization/members/{bob_id}/remove", headers=headers)
+
+    assert removed.status_code == 200, removed.text
+    shown = await alice.get(f"/user/organization/members/{bob_id}", headers=headers)
+    assert {key["name"]: key["status"] for key in shown.json()["keys"]} == {
+        "from-before": "revoked"
+    }

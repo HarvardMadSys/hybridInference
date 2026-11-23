@@ -908,6 +908,13 @@ class PostgresOrganizationsMixin:
                 return PROTECTED
             if member["status"] != "active":
                 return NOT_ACTIVE
+            # The keys that the suspension revokes were the member's as a
+            # member: with the time, the organization is still shown them.
+            await conn.execute(
+                "UPDATE api_keys SET revoked_at = NOW() "
+                "WHERE account_id = $1 AND status = 'active' AND revoked_at IS NULL",
+                user_id,
+            )
             await self._suspend_user_on(conn, user_id, suspension_message=suspension_message)
             await conn.execute(
                 "UPDATE org_memberships SET removed_at = NOW(), removed_by = $2 WHERE user_id = $1",
@@ -1143,7 +1150,10 @@ class PostgresOrganizationsMixin:
                 return PROTECTED, None
             if key["status"] != "active":
                 return NOT_ACTIVE, None
-            await conn.execute("UPDATE api_keys SET status = 'revoked' WHERE id = $1", key_id)
+            # With the time, which says that the key was the member's as a member.
+            await conn.execute(
+                "UPDATE api_keys SET status = 'revoked', revoked_at = NOW() WHERE id = $1", key_id
+            )
             await insert_audit_row(
                 conn,
                 columns=audit,
