@@ -149,6 +149,7 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
   const { branding, features, sso } = useSiteConfig();
   const t = useT();
   const hasPassword = state.user?.has_password !== false;
+  const ssoOnly = state.user?.sso_only === true;
   // An account with no password and no phone confirms at its identity provider.
   const passwordReauth = useSsoReauth('set_password');
   const ssoIdentities = useSsoIdentities(state.user?.id ?? null);
@@ -499,7 +500,9 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
         </SettingsSection>
       )}
 
-      {(hasPassword || (features.phoneAuth && verifiedPhone) || passwordReauth) && (
+      {/* A member of an organization signs in through single sign-on only: the
+          gateway refuses a password for it, so the page offers none. */}
+      {!ssoOnly && (hasPassword || (features.phoneAuth && verifiedPhone) || passwordReauth) && (
         <SettingsSection
           id="settings-password"
           title={

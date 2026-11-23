@@ -34,6 +34,12 @@ interface User {
    * or `null` for an account in none, and from a gateway older than organizations.
    */
   organization?: OrganizationRef | null;
+  /**
+   * The account signs in through single sign-on only: a member of an
+   * organization that is not a platform administrator. It has no password and
+   * the gateway refuses to set one. Absent from an older gateway.
+   */
+  sso_only?: boolean;
 }
 
 interface ApiKeyResponse {

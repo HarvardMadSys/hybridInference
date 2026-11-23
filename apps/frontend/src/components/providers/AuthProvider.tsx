@@ -79,6 +79,8 @@ export interface AuthUser {
    * the gateway decides who may read it.
    */
   organization?: OrganizationRef | null;
+  /** The account signs in through single sign-on only, and has no password to set. */
+  sso_only?: boolean;
 }
 
 export interface AuthState {
@@ -227,6 +229,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           locale: me.locale ?? null,
           sso_reauth_provider: me.sso_reauth_provider ?? null,
           organization: me.organization ?? null,
+          sso_only: me.sso_only ?? false,
         },
       });
     } catch (error) {

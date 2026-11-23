@@ -145,6 +145,32 @@ describe('account phone binding', () => {
   });
 });
 
+describe('a member of an organization, who signs in through single sign-on only', () => {
+  it('is offered no password, to change or to set', () => {
+    user = { ...user, has_password: false, sso_only: true };
+    renderSettings(true, true);
+
+    expect(screen.queryByRole('heading', { name: 'Set Password' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
+    // The rest of the page is as for every account.
+    expect(screen.getByRole('heading', { name: 'Change Nickname' })).toBeInTheDocument();
+  });
+
+  it('is offered none even while an older password is still on the account', () => {
+    user = { ...user, has_password: true, sso_only: true };
+    renderSettings(false);
+
+    expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the password section for an account that is not one', () => {
+    user = { ...user, has_password: true, sso_only: false };
+    renderSettings(false);
+
+    expect(screen.getByRole('heading', { name: 'Change Password' })).toBeInTheDocument();
+  });
+});
+
 describe('an account that signs in with a login name', () => {
   const setupAdmin = () => ({
     ...user,
