@@ -8,7 +8,8 @@ import type { ModelUsage, OrganizationRequest, UsagePoint } from '@/lib/api/orga
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useFormatter, type Formatter } from '@/lib/i18n/useFormatter';
 import { moneyAmount, moneyCurrency, type Currency } from '@/lib/utils/money';
-import { FigureCard, StatusPill } from './parts';
+import { StatusPill } from '@/components/features/console-shared/StatusPill';
+import { FigureCard } from './parts';
 import { requestStatus } from './text';
 
 // The chart carries the recharts bundle; a page shows its figures first.

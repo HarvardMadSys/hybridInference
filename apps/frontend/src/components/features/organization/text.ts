@@ -1,3 +1,4 @@
+import type { StatusTone } from '@/components/features/console-shared/StatusPill';
 import type { Translate } from '@/components/providers/useT';
 import type {
   AuditEntry,
@@ -93,11 +94,7 @@ export function relativeTime(
 }
 
 /** The tone of a status pill: the pill's colors and its dot's. */
-export interface StatusTone {
-  label: string;
-  pill: string;
-  dot: string;
-}
+export type { StatusTone };
 
 const TONE = {
   ok: { pill: 'bg-emerald-50 text-emerald-700 ring-emerald-600/20', dot: 'bg-emerald-500' },

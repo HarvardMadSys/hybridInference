@@ -1,5 +1,6 @@
 'use client';
 
+import { SummaryCard, type SummaryAccent } from '@/components/features/console-shared/SummaryCard';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useUsersSummary } from './hooks/useUsersSummary';
 import type { SummaryCard as SummaryCardData } from './types';
@@ -67,7 +68,7 @@ export function SummaryCards({ onCardClick, activeView }: SummaryCardsProps) {
 
 interface CardProps {
   title: string;
-  accent: 'indigo' | 'emerald' | 'red' | 'amber';
+  accent: SummaryAccent;
   card: SummaryCardData | undefined;
   loading: boolean;
   showCost?: boolean;
@@ -75,54 +76,23 @@ interface CardProps {
   onClick: () => void;
 }
 
-const ACCENT = {
-  indigo: { dot: 'bg-indigo-500', ring: 'ring-indigo-500', count: 'text-indigo-700' },
-  emerald: { dot: 'bg-emerald-500', ring: 'ring-emerald-500', count: 'text-emerald-700' },
-  red: { dot: 'bg-red-500', ring: 'ring-red-500', count: 'text-red-700' },
-  amber: { dot: 'bg-amber-500', ring: 'ring-amber-500', count: 'text-amber-700' },
-} as const;
-
+/** One card of the Users tab: the shared card, with the accounts named as the tab names them. */
 function Card({ title, accent, card, loading, showCost, active, onClick }: CardProps) {
   const money = useMoney();
-  const a = ACCENT[accent];
-  const count = card?.count ?? 0;
-  const top = (card?.top ?? []).slice(0, 3);
   return (
-    <button
-      type="button"
+    <SummaryCard
+      title={title}
+      accent={accent}
+      count={card?.count ?? 0}
+      items={(card?.top ?? []).map((u) => ({
+        id: u.id,
+        label: userAccountLabel(u),
+        value: showCost ? money.value(u, 'today_cost', { maximumFractionDigits: 2 }) : undefined,
+      }))}
+      empty="No users right now"
+      loading={loading}
+      active={active}
       onClick={onClick}
-      aria-pressed={active}
-      className={`group flex min-h-[7.5rem] flex-col rounded-lg border bg-white p-4 text-left transition hover:border-gray-300 hover:shadow-sm ${
-        active ? `border-transparent ring-2 ${a.ring}` : 'border-gray-200'
-      }`}
-    >
-      <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-wide text-gray-500">
-        <span className={`h-2 w-2 rounded-full ${a.dot}`} aria-hidden="true" />
-        {title}
-      </div>
-      <div
-        className={`mt-1 text-[26px] font-semibold leading-tight tabular-nums ${
-          !loading && count > 0 ? a.count : 'text-gray-300'
-        }`}
-      >
-        {loading ? '—' : count}
-      </div>
-      {top.length > 0 ? (
-        <ul className="mt-1.5 space-y-0.5 text-[12px] text-gray-600">
-          {top.map((u) => (
-            <li key={u.id} className="flex justify-between gap-2">
-              <span className="truncate">{userAccountLabel(u)}</span>
-              {showCost && (
-                <span className="shrink-0 tabular-nums text-gray-900">
-                  {money.value(u, 'today_cost', { maximumFractionDigits: 2 })}
-                </span>
-              )}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        !loading && <div className="mt-1.5 text-[12px] text-gray-400">No users right now</div>
-      )}
-    </button>
+    />
   );
 }

@@ -8,6 +8,7 @@ import {
   NOTICE_ACTION,
   PANEL,
 } from '@/components/features/admin/adminStyles';
+import { StatusPill } from '@/components/features/console-shared/StatusPill';
 import type { OrganizationMember, OrganizationPeriod } from '@/lib/api/organization';
 import { useOrganizationMember } from '@/lib/hooks';
 import { useMoney } from '@/lib/hooks/useMoney';
@@ -17,7 +18,7 @@ import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount } from '@/lib/utils/money';
 import { AXIS_AMOUNT, RequestsTable, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import type { MemberDialog } from './MemberDialogs';
-import { LimitBar, StatCard, StatusPill } from './parts';
+import { LimitBar, StatCard } from './parts';
 import { compactNumber, memberStatus, periodLabel, relativeTime } from './text';
 
 /** What an organization administrator may do to a member, from the member's row. */

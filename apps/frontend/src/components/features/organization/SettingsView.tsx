@@ -28,7 +28,8 @@ import { getErrorMessage } from '@/lib/utils/errors';
 import { fill } from '@/lib/utils/interpolate';
 import { moneyAmount, moneyCurrency } from '@/lib/utils/money';
 import { readLimit } from './limits';
-import { LimitBar, StatusPill } from './parts';
+import { StatusPill } from '@/components/features/console-shared/StatusPill';
+import { LimitBar } from './parts';
 import { memberName, relativeTime, type StatusTone } from './text';
 
 const TERM = 'text-[12px] text-gray-500';

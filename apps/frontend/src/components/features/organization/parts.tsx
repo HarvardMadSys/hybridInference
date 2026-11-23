@@ -14,7 +14,7 @@ import { BUTTON_SECONDARY, FIELD_LABEL, PANEL } from '@/components/features/admi
 import type { MemberLimitSource, OrganizationPeriod } from '@/lib/api/organization';
 import { useFormatter } from '@/lib/i18n/useFormatter';
 import { fill } from '@/lib/utils/interpolate';
-import { PERIODS, limitUse, periodLabel, periodRange, type StatusTone } from './text';
+import { PERIODS, limitUse, periodLabel, periodRange } from './text';
 
 /**
  * The small pieces the organization console's pages are built from. They use
@@ -105,17 +105,6 @@ export function PeriodControl({
 }
 
 /* -- one-line pieces --------------------------------------------------------- */
-
-export function StatusPill({ tone }: { tone: StatusTone }) {
-  return (
-    <span
-      className={`inline-flex items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${tone.pill}`}
-    >
-      <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} aria-hidden="true" />
-      {tone.label}
-    </span>
-  );
-}
 
 const METER_FILL = { ok: 'bg-blue-500', near: 'bg-amber-500', over: 'bg-red-500' } as const;
 

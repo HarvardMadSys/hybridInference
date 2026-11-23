@@ -2511,6 +2511,10 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.filter.any": {
+    "source": "any",
+    "text": "不限"
+  },
   "console.nav.admin": {
     "source": "Admin Console",
     "text": "管理后台"
