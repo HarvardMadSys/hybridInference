@@ -115,6 +115,30 @@ describe('the token table of the models', () => {
   const count = (value: number) => `n${value}`;
   const headers = () => screen.getAllByRole('columnheader').map((cell) => cell.textContent);
 
+  it('keeps its own look where the caller names none, and takes the parts a caller names', () => {
+    const { container, rerender } = render(
+      <ModelTokenTable title="Provider A" rows={rows} formatCount={count} />,
+    );
+    // As the Admin console draws it.
+    expect(container.firstElementChild).toHaveClass('rounded-xl', 'border', 'overflow-hidden');
+    expect(screen.getAllByRole('row')[1]).toHaveClass('border-t');
+
+    rerender(
+      <ModelTokenTable
+        title="Provider A"
+        rows={rows}
+        formatCount={count}
+        look={{ frame: 'a-panel', row: 'a-row', numberCell: 'a-number' }}
+      />,
+    );
+    // As the console that passed them draws its tables; the parts it did not name are unchanged.
+    expect(container.firstElementChild).toHaveClass('a-panel');
+    expect(container.firstElementChild).not.toHaveClass('rounded-xl');
+    expect(screen.getAllByRole('row')[1]).toHaveClass('a-row');
+    expect(screen.getAllByRole('cell')[1]).toHaveClass('a-number');
+    expect(screen.getAllByRole('cell')[0]).toHaveClass('px-4', 'py-2', 'text-gray-900');
+  });
+
   it('has every column under its title, in the order of the table', () => {
     render(<ModelTokenTable title="Provider A" rows={rows} formatCount={count} />);
 

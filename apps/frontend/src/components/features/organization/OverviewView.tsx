@@ -245,6 +245,19 @@ export function OverviewView() {
           }))}
           formatCount={(value) => fmt.number(value)}
           columns={['input', 'output', 'cached', 'requests']}
+          // As the tables beside it on this page, not as the Admin console's.
+          look={{
+            frame: `${PANEL} overflow-x-auto`,
+            title: 'px-4 pb-2 pt-4 text-[13px] font-semibold text-gray-900',
+            table: 'min-w-full',
+            head: '',
+            headRow: 'border-y border-gray-200 bg-gray-50',
+            modelHead: TABLE_HEAD_CELL,
+            numberHead: NUM_HEAD,
+            row: 'border-b border-gray-100 last:border-b-0',
+            modelCell: TABLE_CELL,
+            numberCell: NUM_CELL,
+          }}
         />
       ) : null}
 
