@@ -242,7 +242,7 @@ it('does not reactivate an old scope when a profile refresh returns after anothe
   const pending = await startAdminMutation();
   const profile = deferred<typeof admin>();
   api.getMe.mockReturnValueOnce(profile.promise);
-  let refreshing!: Promise<void>;
+  let refreshing!: Promise<boolean>;
   await act(async () => {
     refreshing = controller.refreshUser();
   });

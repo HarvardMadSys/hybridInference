@@ -32,7 +32,7 @@ function card(props: Partial<Parameters<typeof MemberCard>[0]> = {}) {
 
 /** The filled part of each row's bar: its width and its color. */
 function bars(button: HTMLElement) {
-  return [...button.querySelectorAll<HTMLElement>('[aria-hidden="true"] > span')].map((fill) => [
+  return [...button.querySelectorAll<HTMLElement>('.overflow-hidden > span')].map((fill) => [
     fill.style.width,
     fill.className.match(/bg-(blue|amber|red)-500/)?.[1],
   ]);
@@ -54,9 +54,30 @@ describe('a card above the member list', () => {
     expect(bars(button)).toEqual([
       ['100%', 'red'],
       ['90%', 'amber'],
-      // A row with nothing still has a bar to see, in the color of a row without a tone.
-      ['3%', 'blue'],
+      // Nothing draws no fill, as on the bar of a limit; the color is that of a row without a tone.
+      ['0%', 'blue'],
     ]);
+  });
+
+  it('draws enough to be seen for a share that is almost nothing', () => {
+    const { button } = card({
+      rows: [{ id: 'u-small', name: 'Shan Luo', value: '$0.01', share: 0.004 }],
+    });
+
+    expect(bars(button)).toEqual([['3%', 'blue']]);
+  });
+
+  it('keeps one name for a screen reader: the line at the foot is for the eye', () => {
+    const { button } = card({ active: true });
+
+    const foot = [...button.querySelectorAll('span')].find((span) =>
+      span.textContent?.startsWith('Shown in the list'),
+    );
+    expect(foot).toHaveAttribute('aria-hidden', 'true');
+    // The state of the switch is the button's own.
+    expect(screen.getByRole('button', { pressed: true })).toBe(button);
+    expect(button).toHaveAccessibleName(/^Near or over the limit/);
+    expect(button).not.toHaveAccessibleName(/Clear/);
   });
 
   it('is a switch: off it says what a press shows, on it says that a press clears', () => {

@@ -793,7 +793,7 @@ describe('the single sign-on section', () => {
     });
   });
 
-  it('says before the action that the account then signs in through the provider only', async () => {
+  it('says before the action that the account then signs in through single sign-on only', async () => {
     // A password account with a school address: linking makes it a member.
     sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
     renderSettings(false, true);

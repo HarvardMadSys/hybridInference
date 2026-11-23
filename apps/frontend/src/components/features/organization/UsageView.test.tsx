@@ -165,6 +165,19 @@ describe('the request volume of the organization', () => {
     expect(volume).not.toHaveTextContent('They do not follow the period below.');
   });
 
+  it('says "request" for a window that has one', () => {
+    state.volume.mockReturnValue(
+      hook({ ...VOLUME, hour: { requests: 1, ok: 1, failed: 0, avg_latency_ms: 300 } }),
+    );
+
+    render(<UsageView />);
+
+    const volume = screen.getByRole('region', { name: 'Request volume' });
+    const hour = within(volume).getByText('Last hour').parentElement as HTMLElement;
+    expect(hour).toHaveTextContent('1request1 ok0 failed300ms avg');
+    expect(hour).not.toHaveTextContent('1requests');
+  });
+
   it('draws how the requests of a window ended as one bar: the part that ended well, then the part that failed', () => {
     render(<UsageView />);
 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { z } from 'zod';
@@ -146,6 +146,10 @@ function SettingsContent() {
 function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
   const toast = useAccountToast();
   const { state, refreshUser } = useAuth();
+  // The forms below wait for the profile and have no use for whether it was read.
+  const reloadProfile = useCallback(async () => {
+    await refreshUser();
+  }, [refreshUser]);
   const { branding, features, sso } = useSiteConfig();
   const t = useT();
   const hasPassword = state.user?.has_password !== false;
@@ -458,7 +462,7 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
           currentEmail={state.user?.email}
           hasPassword={hasPassword}
           phone={state.user?.phone_verified ? state.user.phone : null}
-          onSuccess={refreshUser}
+          onSuccess={reloadProfile}
         />
       </SettingsSection>
 
@@ -482,7 +486,7 @@ function SettingsSections({ ssoReturn }: { ssoReturn: SsoReturn }) {
               </span>
             </div>
           ) : (
-            <PhoneAuthForm purpose="bind" onSuccess={refreshUser} />
+            <PhoneAuthForm purpose="bind" onSuccess={reloadProfile} />
           )}
         </SettingsSection>
       )}

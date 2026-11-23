@@ -4829,6 +4829,10 @@
     "source": "{count} ok",
     "text": "成功 {count}"
   },
+  "organization.usage.volume_request": {
+    "source": "request",
+    "text": "次请求"
+  },
   "organization.usage.volume_requests": {
     "source": "requests",
     "text": "次请求"

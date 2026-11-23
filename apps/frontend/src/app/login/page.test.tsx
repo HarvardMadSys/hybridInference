@@ -81,6 +81,8 @@ vi.mock('react-hot-toast', () => ({
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The profile is read again unless a test says that the read fails.
+  refreshUserMock.mockReset().mockResolvedValue(true);
   authState = {
     loading: false,
     isAuthenticated: true,
@@ -457,6 +459,19 @@ describe('a password that is refused for an address of an organization', () => {
     expect(action()).toBeEnabled();
   });
 
+  it('draws the action as a filled button in the console\u2019s own look, not as one more line of the notice', async () => {
+    loginMock.mockRejectedValue(refused(organization));
+    renderLogin();
+    signIn('alice@example.edu');
+    await waitFor(() => expect(line()).toBeInTheDocument());
+
+    expect(action()).toHaveClass('bg-blue-600', 'text-white', 'rounded-md');
+    // The link at the foot of the page keeps the look of a link.
+    const entries = screen.getAllByRole('button', { name: 'Log in with SSO' });
+    expect(entries).toHaveLength(2);
+    expect(entries.find((entry) => entry !== action())).not.toHaveClass('bg-blue-600');
+  });
+
   it('starts the single sign-on for the address that was typed, without asking for it again', async () => {
     query = new URLSearchParams({ next: '/dashboard/keys' });
     loginMock.mockRejectedValue(refused(organization));
@@ -705,6 +720,32 @@ describe('single sign-on under a distribution\u2019s sign-in skin', () => {
     expect(screen.getByLabelText('Work or school email')).toHaveClass('x-input');
   });
 
+  it('draws the action of the notice in the skin\u2019s own link, not in its form button', async () => {
+    // A module styles this action itself, through its link class and the
+    // `[data-auth="notice"] button` hook of its style sheet.
+    loginMock.mockReset().mockRejectedValue(
+      new APIError('INVALID_CREDENTIALS', 'Invalid email or password', 401, {
+        sso_sign_in: { provider_name: 'Example University' },
+      }),
+    );
+    renderSkinned();
+    fireEvent.change(screen.getByLabelText('Email or login name'), {
+      target: { value: 'alice@example.edu' },
+    });
+    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'Old-Secret-1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Log In' }));
+
+    const line = await screen.findByText(
+      'Accounts of Example University must sign in through single sign-on.',
+    );
+    const action = within(line.parentElement!).getByRole('button', { name: 'Log in with SSO' });
+    expect(action).toHaveClass('x-link');
+    expect(action).not.toHaveClass('x-submit');
+    expect(action.closest('[data-auth="notice"]')).not.toBeNull();
+    // No mark of the console's own button either.
+    expect(action).toHaveTextContent(/^Log in with SSO$/);
+  });
+
   it('does the same for declining a waiting identity', async () => {
     authState.isAuthenticated = true;
     authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
@@ -922,7 +963,7 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     expect(linkNotice()).not.toBeInTheDocument();
   });
 
-  it('says before the button that the account then signs in through the provider only', async () => {
+  it('says before the button that the account then signs in through single sign-on only', async () => {
     authState.isAuthenticated = true;
     authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
     sso.getPendingSsoLink.mockResolvedValue({ ...waiting, sso_only_after_link: true });
@@ -1003,6 +1044,7 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     });
     refreshUserMock.mockImplementation(async () => {
       order.push('profile');
+      return true;
     });
     replaceMock.mockImplementation(() => {
       order.push('next page');
@@ -1012,6 +1054,42 @@ describe('an identity waiting for the account owner (?sso=link)', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
 
     await waitFor(() => expect(order).toEqual(['link', 'profile', 'next page']));
+    // One read was enough.
+    expect(refreshUserMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads the profile once more when the first read after the link fails, and only then goes on', async () => {
+    // The link is made, and the gateway is busy for the read that follows it. The
+    // next pages would go on with the profile of before the link.
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    refreshUserMock.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    renderLogin();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(refreshUserMock).toHaveBeenCalledTimes(1));
+    // Not before the second read.
+    expect(replaceMock).not.toHaveBeenCalled();
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/dashboard/keys'), {
+      timeout: 3000,
+    });
+    expect(refreshUserMock).toHaveBeenCalledTimes(2);
+    expect(sso.confirmSsoLink).toHaveBeenCalledTimes(1);
+  });
+
+  it('goes on all the same when the second read fails too: the link is made', async () => {
+    authState.isAuthenticated = true;
+    authState.user = { id: 'alice', email: 'alice@example.edu', role: 'free' };
+    refreshUserMock.mockResolvedValue(false);
+    renderLogin();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect' }));
+
+    await waitFor(() => expect(replaceMock).toHaveBeenCalledWith('/dashboard/keys'), {
+      timeout: 3000,
+    });
+    expect(refreshUserMock).toHaveBeenCalledTimes(2);
   });
 
   it('drops the identity on "Not now", and goes on', async () => {

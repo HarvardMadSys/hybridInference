@@ -787,19 +787,40 @@ describe('AuthProvider when the gateway fails', () => {
     await signedInAs('first-user');
     getMe.mockRejectedValueOnce(new APIError(code, 'failed', status));
 
-    await act(() => controller.refreshUser());
+    let read: boolean | undefined;
+    await act(async () => {
+      read = await controller.refreshUser();
+    });
 
     expect(controller.state.user?.id).toBe('first-user');
     expect(controller.state.isAuthenticated).toBe(true);
+    // The account is kept, and the caller is told that its profile is the old one.
+    expect(read).toBe(false);
+  });
+
+  it('says that the profile was read when it was', async () => {
+    await signedInAs('first-user');
+
+    let read: boolean | undefined;
+    await act(async () => {
+      read = await controller.refreshUser();
+    });
+
+    expect(read).toBe(true);
+    expect(controller.state.user?.id).toBe('first-user');
   });
 
   it('signs out when the reload is refused', async () => {
     await signedInAs('first-user');
     getMe.mockRejectedValueOnce(new APIError('TOKEN_EXPIRED', 'expired', 401));
 
-    await act(() => controller.refreshUser());
+    let read: boolean | undefined;
+    await act(async () => {
+      read = await controller.refreshUser();
+    });
 
     expect(controller.state.isAuthenticated).toBe(false);
+    expect(read).toBe(false);
   });
 
   // A switch installs the next account's token before its profile loads.

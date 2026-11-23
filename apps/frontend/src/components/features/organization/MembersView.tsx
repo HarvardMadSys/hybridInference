@@ -120,6 +120,10 @@ export function MembersView() {
     `${search}|${status}|${limitState}|${minCostToday}|${minCostMonth}|${order.by}|${order.order}`,
     0,
   );
+  // Counts the times the list was put back or opened on a card. A threshold
+  // field keeps what was typed while its value stands, also a number it does
+  // not take; a new count gives the two fields a new start.
+  const [fresh, setFresh] = useState(0);
   // The member whose panel is open, as its row had it. The panel reads the
   // member again itself, so it stays right after an action, and stays open when
   // a filter no longer lists the member (a removal under "Active").
@@ -170,6 +174,7 @@ export function MembersView() {
     setSearchInput('');
     setSearch('');
     setFilters(view);
+    setFresh((count) => count + 1);
   }
 
   const nearOpen = search === '' && sameFilters(filters, NEAR_LIMIT);
@@ -406,6 +411,7 @@ export function MembersView() {
           aria-label={t('organization.members.limit_filter', 'Limit use')}
         />
         <ThresholdInput
+          key={`today-${fresh}`}
           label={fill(t('organization.members.min_today', 'Today ≥ {symbol}'), {
             symbol: money.symbol,
           })}
@@ -414,6 +420,7 @@ export function MembersView() {
           step="0.01"
         />
         <ThresholdInput
+          key={`month-${fresh}`}
           label={fill(t('organization.members.min_month', 'Month ≥ {symbol}'), {
             symbol: money.symbol,
           })}

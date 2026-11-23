@@ -1,8 +1,7 @@
 'use client';
 
 import { PANEL } from '@/components/features/admin/adminStyles';
-
-const BAR = { ok: 'bg-blue-500', near: 'bg-amber-500', over: 'bg-red-500' } as const;
+import { METER_FILL } from './parts';
 
 /** One member of a card: who, the figure that put it there, and that figure as a bar. */
 export interface MemberCardRow {
@@ -13,7 +12,7 @@ export interface MemberCardRow {
   /** How much of the bar is filled, from 0 to 1. */
   share: number;
   /** The color of the bar; the colors of a limit in the list below. */
-  tone?: keyof typeof BAR;
+  tone?: keyof typeof METER_FILL;
 }
 
 /**
@@ -22,7 +21,8 @@ export interface MemberCardRow {
  *
  * The card is a switch for the list below. A press opens the list on the
  * card's view; a press on the card that is on puts the list back. The card
- * says which of the two a press does.
+ * says which of the two a press does. That line is for the eye: a screen
+ * reader has the state of the switch, and the name of the card stays one name.
  */
 export function MemberCard({
   title,
@@ -76,8 +76,11 @@ export function MemberCard({
                 className="block h-1.5 overflow-hidden rounded-full bg-gray-300"
               >
                 <span
-                  className={`block h-full rounded-full ${BAR[row.tone ?? 'ok']}`}
-                  style={{ width: `${Math.round(Math.max(0.03, Math.min(1, row.share)) * 100)}%` }}
+                  className={`block h-full rounded-full ${METER_FILL[row.tone ?? 'ok']}`}
+                  // As the bar of a limit: nothing draws no fill, anything draws enough to be seen.
+                  style={{
+                    width: `${row.share > 0 ? Math.round(Math.max(0.03, Math.min(1, row.share)) * 100) : 0}%`,
+                  }}
                 />
               </span>
               <span className="whitespace-nowrap text-right tabular-nums text-gray-900">
@@ -91,11 +94,12 @@ export function MemberCard({
       )}
       {/* At the foot, so that the cards of a row end alike whatever they list. */}
       <span
+        aria-hidden="true"
         className={`mt-auto pt-3 text-[12px] font-medium ${
           active ? 'text-blue-600' : 'text-gray-500 group-hover:text-gray-900'
         }`}
       >
-        {active ? clearLabel : showLabel} <span aria-hidden="true">{active ? '✕' : '→'}</span>
+        {active ? clearLabel : showLabel} {active ? '✕' : '→'}
       </span>
     </button>
   );

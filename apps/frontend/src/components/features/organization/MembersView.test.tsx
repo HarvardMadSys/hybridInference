@@ -301,6 +301,55 @@ describe('the members of the organization', () => {
     expect(asked()).toMatchObject({ sortBy: 'limit_use', order: 'desc' });
   });
 
+  it('puts a search that is applied back too, from a card and from "Clear filters"', async () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    const box = () => screen.getByRole('searchbox', { name: 'Search by name or email' });
+    const near = () => screen.getByRole('button', { name: /Near or over the limit/ });
+    fireEvent.change(box(), { target: { value: 'wang' } });
+    await waitFor(() => expect(asked()).toMatchObject({ search: 'wang' }));
+
+    // A card opens its list with nothing else narrowing it: the search goes.
+    fireEvent.click(near());
+    expect(asked()).toMatchObject({ search: undefined, limitState: 'near' });
+    expect(box()).toHaveValue('');
+    expect(near()).toHaveAttribute('aria-pressed', 'true');
+
+    // A search under the list of a card: it is no longer the list of the card.
+    fireEvent.change(box(), { target: { value: 'lei' } });
+    await waitFor(() => expect(asked()).toMatchObject({ search: 'lei', limitState: 'near' }));
+    expect(near()).toHaveAttribute('aria-pressed', 'false');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    expect(asked()).toMatchObject({ search: undefined, limitState: undefined, sortBy: 'month' });
+    expect(box()).toHaveValue('');
+    // And no later answer of the pause brings the text back.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(asked()).toMatchObject({ search: undefined });
+  });
+
+  it('empties a threshold field that holds a number the list does not take, when the list is put back', () => {
+    answer({ total: 120, members: [LEI] });
+
+    render(<MembersView />);
+    const today = () => screen.getByLabelText('Today ≥ $');
+    // Below the least value: no filter, and the field is marked.
+    fireEvent.change(today(), { target: { value: '-1' } });
+    expect(asked()).toMatchObject({ minCostToday: undefined });
+    chooseOption('Status', 'Removed');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+
+    expect(today()).toHaveValue(null);
+    expect(screen.queryByRole('button', { name: 'Clear filters' })).not.toBeInTheDocument();
+
+    // A card does the same.
+    fireEvent.change(today(), { target: { value: '-1' } });
+    fireEvent.click(screen.getByRole('button', { name: /Top spenders today/ }));
+    expect(today()).toHaveValue(null);
+  });
+
   it('searches once the typing pauses, from the first page', async () => {
     answer({ total: 120, members: [LEI] });
 

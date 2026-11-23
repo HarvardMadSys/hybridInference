@@ -42,6 +42,9 @@ import { userDisplayName } from '@/lib/utils/userLabel';
  */
 const UNDER_FORM = 'mt-4 flex items-center justify-center gap-4';
 
+/** How long the page waits before it reads the profile a second time, after a link. */
+const PROFILE_RETRY_MS = 600;
+
 /**
  * The action inside a notice, in the console's own look: a filled button, so
  * that it does not read as one more line of the notice's text.
@@ -371,8 +374,12 @@ function LoginContent() {
     try {
       await confirmSsoLink();
       // The link can change what the account is: a member of an organization has
-      // no password. The pages after this one read that from the profile.
-      await refreshUser();
+      // no password. The pages after this one read that from the profile, so a
+      // read that fails is made once more before the page goes on.
+      if (!(await refreshUser())) {
+        await new Promise((resolve) => setTimeout(resolve, PROFILE_RETRY_MS));
+        await refreshUser();
+      }
       toast.success(t('auth.sso.linked_toast', 'Single sign-on connected.'));
       // Replaced, not pushed: going back to the question would find nothing
       // waiting any more and say the sign-in took too long.
@@ -678,15 +685,16 @@ function LoginContent() {
               </p>
               <button
                 type="button"
-                // A module's look has one button, the form's own; the console's
-                // look has a second one that fits inside a notice.
-                className={isNeutral ? NOTICE_BUTTON : `${skin.submit} mt-3`}
+                // The console's own look draws a filled button here. A module
+                // keeps its link: it styles this action itself, through that
+                // class and the `[data-auth="notice"] button` hook.
+                className={isNeutral ? NOTICE_BUTTON : skin.linkButton}
                 onClick={() => void signInThroughSso()}
                 disabled={ssoBusy}
                 aria-busy={ssoBusy}
               >
                 {t('auth.sso.button', 'Log in with SSO')}
-                <span aria-hidden="true">→</span>
+                {isNeutral ? <span aria-hidden="true">→</span> : null}
               </button>
             </AuthNotice>
           )}

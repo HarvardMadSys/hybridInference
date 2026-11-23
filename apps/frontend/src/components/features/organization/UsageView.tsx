@@ -94,7 +94,11 @@ function VolumeCard({ label, volume }: { label: string; volume: RequestVolumeWin
     <StatCard
       label={label}
       value={fmt.number(requests)}
-      aside={t('organization.usage.volume_requests', 'requests')}
+      aside={
+        requests === 1
+          ? t('organization.usage.volume_request', 'request')
+          : t('organization.usage.volume_requests', 'requests')
+      }
     >
       <span
         aria-hidden="true"

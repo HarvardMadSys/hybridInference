@@ -109,7 +109,8 @@ interface AuthContextValue {
   loginPhone: (phone: string, code: string) => Promise<void>;
   /** Sign the current account out of this browser; its other accounts stay. */
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  /** Reads the profile again. Resolves to whether it was read: `false` leaves the profile as it was. */
+  refreshUser: () => Promise<boolean>;
   /** The accounts signed in on this browser, for the account chooser and menu. */
   accounts: AccountSummary[];
   /** How many accounts one browser may hold. */
@@ -210,7 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const me = await getMe();
       // An earlier profile request must not reactivate an account that left
       // while it was in flight (including an other-tab account-change notice).
-      if (revision !== accountRevision.current) return;
+      if (revision !== accountRevision.current) return false;
       activateAccountToasts(me.id);
       setState({
         isAuthenticated: true,
@@ -232,15 +233,17 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           sso_only: me.sso_only ?? false,
         },
       });
+      return true;
     } catch (error) {
-      if (revision !== accountRevision.current) return;
+      if (revision !== accountRevision.current) return false;
       // A failure that says nothing about the session -- the gateway down or
       // busy, a 429 -- keeps the account this tab shows, while its token still
       // names that account (a switch has already installed the next one's).
       const shown = userIdRef.current;
-      if (shown && shown === tokenAccount() && !isSessionGone(error)) return;
+      if (shown && shown === tokenAccount() && !isSessionGone(error)) return false;
       invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
+      return false;
     }
   }, [activateAccountToasts, invalidateAccountToasts]);
 

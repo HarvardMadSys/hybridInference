@@ -106,7 +106,8 @@ export function PeriodControl({
 
 /* -- one-line pieces --------------------------------------------------------- */
 
-const METER_FILL = { ok: 'bg-blue-500', near: 'bg-amber-500', over: 'bg-red-500' } as const;
+/** The color of a bar by where its figure stands: the colors of a limit. */
+export const METER_FILL = { ok: 'bg-blue-500', near: 'bg-amber-500', over: 'bg-red-500' } as const;
 
 /**
  * The bar of a limit: how much of it the month's spend has used. The track is
