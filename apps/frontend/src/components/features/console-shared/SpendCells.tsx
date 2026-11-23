@@ -27,7 +27,6 @@ export function SpendCells({
   today,
   trend = [],
   trendLabel = '',
-  trendTitle,
   week,
   month,
   alltime,
@@ -39,11 +38,6 @@ export function SpendCells({
   /** One value for each of the last days, the oldest first. Not read with `week`. */
   trend?: Array<number | null>;
   trendLabel?: string;
-  /**
-   * The total of the trend, for a list that has it: what the pointer shows
-   * over the line, and the text of the cell for a screen reader.
-   */
-  trendTitle?: string;
   /** The total of the last days. With it the cell is this figure, like its neighbours. */
   week?: SpendFigure;
   month: SpendFigure;
@@ -66,10 +60,8 @@ export function SpendCells({
             {week.text}
           </td>
         ) : (
-          <td className={`px-2 ${cellClass('trend')}`} title={trendTitle}>
+          <td className={`px-2 ${cellClass('trend')}`}>
             <Sparkline values={trend} label={trendLabel} />
-            {/* The pointer has the title; this is the same text for a reader without one. */}
-            {trendTitle !== undefined && <span className="sr-only">{trendTitle}</span>}
           </td>
         ))}
       {shows('month') && (

@@ -30,7 +30,6 @@ export function SummaryCard({
   count,
   items,
   empty,
-  shown = 3,
   loading = false,
   active = false,
   onClick,
@@ -38,10 +37,8 @@ export function SummaryCard({
   title: string;
   accent: SummaryAccent;
   count: number;
-  /** In the order to show; the card shows the first of them. */
+  /** In the order to show; the card shows the first three of them. */
   items: SummaryCardItem[];
-  /** How many of the items the card shows. */
-  shown?: number;
   /** What the card says under a count of zero. */
   empty: string;
   loading?: boolean;
@@ -50,7 +47,7 @@ export function SummaryCard({
   onClick: () => void;
 }) {
   const a = ACCENT[accent];
-  const top = items.slice(0, shown);
+  const top = items.slice(0, 3);
   return (
     <button
       type="button"

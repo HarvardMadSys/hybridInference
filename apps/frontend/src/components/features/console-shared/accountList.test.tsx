@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import type { ReactNode } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { SearchBox } from './SearchBox';
@@ -65,19 +65,12 @@ describe('the spend cells of a row', () => {
     ]);
   });
 
-  it('has the total of the trend as text for a reader without a pointer', () => {
-    row(<SpendCells {...FIGURES} trendTitle="Last 7 days: USD 7.50" />);
-
-    const trend = screen.getAllByRole('cell')[1];
-    expect(trend).toHaveAttribute('title', 'Last 7 days: USD 7.50');
-    // Visually hidden, so the look of the cell is the line alone.
-    expect(within(trend).getByText('Last 7 days: USD 7.50')).toHaveClass('sr-only');
-  });
-
-  it('has no such text for a list that has no total', () => {
+  it('draws the line alone in the cell of the trend', () => {
     row(<SpendCells {...FIGURES} />);
 
-    expect(screen.getAllByRole('cell')[1].querySelector('.sr-only')).toBeNull();
+    const trend = screen.getAllByRole('cell')[1];
+    expect(trend).not.toHaveAttribute('title');
+    expect(trend.children).toHaveLength(1);
   });
 
   it('shows the total of the last days as a figure for a list that gives one, and draws no line then', () => {
@@ -158,22 +151,6 @@ describe('the summary card of a list', () => {
     expect(screen.queryByText('d@example.edu')).not.toBeInTheDocument();
     fireEvent.click(card);
     expect(onClick).toHaveBeenCalledTimes(1);
-  });
-
-  it('shows as many accounts as the page asks for', () => {
-    render(
-      <SummaryCard
-        title="Top spenders today"
-        accent="emerald"
-        count={4}
-        items={items}
-        empty="No members right now"
-        shown={5}
-        onClick={() => {}}
-      />,
-    );
-
-    expect(screen.getAllByRole('listitem')).toHaveLength(4);
   });
 
   it('says so when no account is in the view, and marks the view that is open', () => {
