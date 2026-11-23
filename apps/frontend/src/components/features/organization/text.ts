@@ -201,6 +201,10 @@ export function auditEvent(action: string, t: Translate): string {
       return t('organization.audit.event.default_limit', 'Default monthly limit changed');
     case 'organization.limit.set':
       return t('organization.audit.event.limit', 'Organization monthly limit changed');
+    case 'organization.member_models.set':
+      return t('organization.audit.event.member_models', 'Member models changed');
+    case 'organization.member_key.revoke':
+      return t('organization.audit.event.member_key', 'API key revoked');
     case 'organization.create':
       return t('organization.audit.event.create', 'Organization created');
     case 'organization.update':
@@ -319,6 +323,29 @@ export function auditDetails(entry: AuditEntry, t: Translate, locale: string): s
     }
     case 'organization.connection.detach':
       return text(details.provider) ?? '';
+    case 'organization.member_models.set': {
+      const lists = details.disabled_models;
+      const off =
+        lists && typeof lists === 'object' && Array.isArray((lists as { new?: unknown }).new)
+          ? ((lists as { new: unknown[] }).new.filter(text) as string[])
+          : [];
+      return off.length > 0
+        ? fill(t('organization.audit.details.models_off', 'Turned off: {models}'), {
+            models: off.join(', '),
+          })
+        : t('organization.audit.details.models_none', 'No model turned off');
+    }
+    case 'organization.member_key.revoke': {
+      const key = text(details.key_name);
+      const project = text(details.project_name);
+      if (key && project) {
+        return fill(t('organization.audit.details.key_in_project', '{key}, in project {project}'), {
+          key,
+          project,
+        });
+      }
+      return key ?? project ?? '';
+    }
     default:
       return '';
   }

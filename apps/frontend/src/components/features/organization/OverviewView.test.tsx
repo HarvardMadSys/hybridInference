@@ -33,10 +33,11 @@ vi.mock('next/dynamic', () => ({
 
 const state = vi.hoisted(() => ({ overview: vi.fn(), refetch: vi.fn() }));
 vi.mock('@/lib/hooks', () => ({
-  useOrganizationOverview: (period: string) => state.overview(period),
+  useOrganizationOverview: (period: string, granularity?: string) =>
+    state.overview(period, granularity),
 }));
 
-import { OverviewView } from './OverviewView';
+import { OverviewView, seriesGranularity } from './OverviewView';
 
 function day(date: string, cost: number, members: number) {
   return {
@@ -99,8 +100,9 @@ function answer(data: OrganizationOverview | undefined, more: Record<string, unk
   });
 }
 
+/** The stat card with this label: the cards come first, before a table with a column of that name. */
 function card(label: string): HTMLElement {
-  return screen.getByText(label).closest('div') as HTMLElement;
+  return screen.getAllByText(label)[0].closest('div') as HTMLElement;
 }
 
 beforeEach(() => {
@@ -115,7 +117,7 @@ describe('the organization overview', () => {
 
     render(<OverviewView />);
 
-    expect(state.overview).toHaveBeenLastCalledWith('7d');
+    expect(state.overview).toHaveBeenLastCalledWith('7d', 'day');
     expect(card('Spend')).toHaveTextContent('$121.76');
     expect(card('Spend')).toHaveTextContent('−6% vs previous 7 days');
     expect(card('Requests')).toHaveTextContent('4,464');
@@ -193,7 +195,9 @@ describe('the organization overview', () => {
     render(<OverviewView />);
     fireEvent.click(screen.getByRole('button', { name: 'Last 30 days' }));
 
-    expect(state.overview).toHaveBeenLastCalledWith('30d');
+    // 30 days have days only: the gateway is asked for no granularity.
+    expect(state.overview).toHaveBeenLastCalledWith('30d', undefined);
+    expect(screen.queryByRole('group', { name: 'Points of the series' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Last 30 days' })).toHaveAttribute(
       'aria-pressed',
       'true',
@@ -218,6 +222,115 @@ describe('the organization overview', () => {
     expect(screen.getByRole('region', { name: 'Spend per hour (USD)' })).toBeInTheDocument();
   });
 
+  it('lets the reader choose hours or days for a period that has both', () => {
+    answer(WEEK);
+
+    render(<OverviewView />);
+    const choice = screen.getByRole('group', { name: 'Points of the series' });
+    expect(within(choice).getByRole('button', { name: 'By day' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    fireEvent.click(within(choice).getByRole('button', { name: 'By hour' }));
+
+    expect(state.overview).toHaveBeenLastCalledWith('7d', 'hour');
+
+    // The choice stays for a day, whose own series is of hours anyway.
+    fireEvent.click(screen.getByRole('button', { name: 'Today (UTC)' }));
+    expect(state.overview).toHaveBeenLastCalledWith('1d', 'hour');
+    fireEvent.click(screen.getByRole('button', { name: 'By day' }));
+    expect(state.overview).toHaveBeenLastCalledWith('1d', 'day');
+  });
+
+  it('chooses hours for a day and days for a week until the reader chooses', () => {
+    expect(seriesGranularity('1d', null)).toBe('hour');
+    expect(seriesGranularity('7d', null)).toBe('day');
+    expect(seriesGranularity('7d', 'hour')).toBe('hour');
+    expect(seriesGranularity('30d', 'hour')).toBe('day');
+  });
+
+  it('tells the hours of several days apart by their day', () => {
+    answer({
+      ...WEEK,
+      bucket: 'hour',
+      series: [
+        { ...day('2026-11-16', 1.5, 3), bucket: '2026-11-16T08:00:00Z' },
+        { ...day('2026-11-17', 2.5, 5), bucket: '2026-11-17T08:00:00Z' },
+      ],
+    });
+
+    render(<OverviewView />);
+
+    const members = screen.getByRole('region', { name: 'Members with requests per hour' });
+    expect(within(members).getByTestId('chart')).toHaveTextContent(
+      'Nov 16, 08:00=3 Nov 17, 08:00=5',
+    );
+  });
+
+  it('lists the tokens of each model: input, output, cached and requests', () => {
+    answer({
+      ...WEEK,
+      models: [
+        {
+          ...WEEK.models[0],
+          prompt_tokens: 120_000,
+          completion_tokens: 30_000,
+          cached_tokens: 8000,
+        },
+        // A gateway that does not send the cached tokens yet.
+        { ...WEEK.models[1], prompt_tokens: 5000, completion_tokens: 700 },
+      ],
+    });
+
+    render(<OverviewView />);
+
+    const table = screen.getByText('Tokens by model').parentElement as HTMLElement;
+    expect(
+      within(table)
+        .getAllByRole('row')
+        .map((row) => [...row.children].map((cell) => cell.textContent)),
+    ).toEqual([
+      ['Model', 'Input', 'Output', 'Cached', 'Requests'],
+      ['deepseek-v3.2', '120,000', '30,000', '8,000', '900'],
+      ['glm-4.6', '5,000', '700', '0', '1,600'],
+    ]);
+  });
+
+  it('lists the members that spent the most in the period, with the way to all of them', () => {
+    const member = (name: string, cost: number, requests: number) => ({
+      user_id: `u-${name}`,
+      user_name: name,
+      email: `${name.toLowerCase()}@example.edu`,
+      role: 'member' as const,
+      status: 'active',
+      removed: false,
+      joined_at: '2026-10-09T12:00:00Z',
+      requests,
+      total_tokens: requests * 1000,
+      cost_usd: cost,
+      spent_month_usd: cost,
+      monthly_limit_source: 'none' as const,
+    });
+    answer({ ...WEEK, top_members: [member('Lei', 24.46, 982), member('An', 9.5, 120)] });
+
+    render(<OverviewView />);
+
+    const top = screen.getByRole('region', { name: 'Top members' });
+    expect(
+      within(top)
+        .getAllByRole('row')
+        .map((row) => [...row.children].map((cell) => cell.textContent)),
+    ).toEqual([
+      ['Member', 'Requests', 'Tokens', 'Spend'],
+      ['Lei', '982', '982K', '$24.46'],
+      ['An', '120', '120K', '$9.50'],
+    ]);
+    expect(within(top).getByRole('link', { name: 'View by member' })).toHaveAttribute(
+      'href',
+      '/dashboard/organization/usage?view=members',
+    );
+  });
+
   it('says so when the organization has no limit, and compares with nothing when there is no period before', () => {
     answer({ ...WEEK, period: '30d', previous: null, monthly_limit_usd: null });
 
@@ -235,7 +348,9 @@ describe('the organization overview', () => {
     render(<OverviewView />);
 
     expect(screen.queryByTestId('chart')).not.toBeInTheDocument();
-    expect(screen.getAllByText('Nothing in this period.')).toHaveLength(3);
+    // The two series, the models and the top members; a table of no tokens is not drawn.
+    expect(screen.getAllByText('Nothing in this period.')).toHaveLength(4);
+    expect(screen.queryByText('Tokens by model')).not.toBeInTheDocument();
   });
 
   it('reads the native amounts on a ledger that is not in USD', () => {

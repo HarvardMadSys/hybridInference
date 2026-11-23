@@ -8,6 +8,7 @@ import type {
   OrganizationMember,
   OrganizationRequest,
   RequestPage,
+  RequestVolume,
 } from '@/lib/api/organization';
 import { chooseOption } from '@/test-utils/select';
 
@@ -18,6 +19,7 @@ const state = vi.hoisted(() => ({
   models: vi.fn(),
   members: vi.fn(),
   overview: vi.fn(),
+  volume: vi.fn(),
   refetch: vi.fn(),
 }));
 
@@ -31,6 +33,7 @@ vi.mock('@/lib/hooks', () => ({
   useOrganizationModelUsage: (period: string, enabled?: boolean) => state.models(period, enabled),
   useOrganizationMemberUsage: (query: unknown) => state.members(query),
   useOrganizationOverview: (period: string) => state.overview(period),
+  useOrganizationRequestVolume: () => state.volume(),
 }));
 
 import { UsageView } from './UsageView';
@@ -122,6 +125,13 @@ function memberQuery(): Record<string, unknown> {
   return state.members.mock.lastCall?.[0] as Record<string, unknown>;
 }
 
+const VOLUME: RequestVolume = {
+  hour: { requests: 42, ok: 40, failed: 2, avg_latency_ms: 850 },
+  day: { requests: 1310, ok: 1300, failed: 10, avg_latency_ms: 1240 },
+  week: { requests: 4464, ok: 4400, failed: 64, avg_latency_ms: 990 },
+  month: { requests: 0, ok: 0, failed: 0, avg_latency_ms: null },
+};
+
 beforeEach(() => {
   state.view = null;
   state.replace.mockReset();
@@ -129,10 +139,45 @@ beforeEach(() => {
   state.models.mockReset().mockReturnValue(hook(MODELS));
   state.members.mockReset().mockReturnValue(hook<MemberList>({ total: 0, members: [] }));
   state.overview.mockReset().mockReturnValue(hook({ cost_usd: 121.76 }));
+  state.volume.mockReset().mockReturnValue(hook(VOLUME));
   state.refetch.mockReset();
   answerRequests({ requests: [request({})], next_before: null });
 });
 afterEach(cleanup);
+
+describe('the request volume of the organization', () => {
+  it('shows the last hour, day, week and month, whatever the view and the period are', () => {
+    state.view = 'models';
+
+    render(<UsageView />);
+
+    const volume = screen.getByRole('region', { name: 'Request volume' });
+    const cards = ['Last hour', 'Last 24 hours', 'Last 7 days', 'Last 30 days'].map(
+      (label) => within(volume).getByText(label).closest('.rounded-xl') as HTMLElement,
+    );
+    expect(cards[0]).toHaveTextContent('42requests40 ok2 err850ms avg');
+    expect(cards[1]).toHaveTextContent('1,310requests1,300 ok10 err1.2s avg');
+    expect(cards[2]).toHaveTextContent('4,464');
+    // A window without a request has no latency to average.
+    expect(cards[3]).toHaveTextContent('0requests0 ok0 err— avg');
+    expect(volume).toHaveTextContent('They do not follow the period below.');
+  });
+
+  it('offers to try again when the volume cannot be read, and shows the requests all the same', () => {
+    const again = vi.fn();
+    state.volume.mockReturnValue(
+      hook(undefined, { error: new Error('The gateway is not reachable.'), refetch: again }),
+    );
+
+    render(<UsageView />);
+
+    const volume = screen.getByRole('region', { name: 'Request volume' });
+    expect(within(volume).getByRole('alert')).toHaveTextContent('The gateway is not reachable.');
+    fireEvent.click(within(volume).getByRole('button', { name: 'Retry' }));
+    expect(again).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole('table')).toBeInTheDocument();
+  });
+});
 
 describe('the requests of the organization', () => {
   it('opens on the newest requests of the last 7 days, each with its member', () => {

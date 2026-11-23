@@ -1,9 +1,17 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
 import { useT } from '@/components/providers/useT';
 import { AdminLoading, AdminNotice } from '@/components/features/admin/AdminPrimitives';
-import { NOTICE_ACTION, PANEL } from '@/components/features/admin/adminStyles';
+import {
+  NOTICE_ACTION,
+  PANEL,
+  TABLE_CELL,
+  TABLE_HEAD_CELL,
+} from '@/components/features/admin/adminStyles';
+import { ModelTokenTable } from '@/components/features/console-shared/ModelTokenTable';
+import type { OrganizationPeriod } from '@/lib/api/organization';
 import { useOrganizationOverview } from '@/lib/hooks';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useFormatter } from '@/lib/i18n/useFormatter';
@@ -13,7 +21,28 @@ import { moneyAmount } from '@/lib/utils/money';
 import { AXIS_AMOUNT, SeriesFigure, SpendByModel, seriesCurrency } from './figures';
 import { organizationHref } from './OrganizationTabNav';
 import { ChangeNote, LimitBar, PeriodControl, StatCard, useOrganizationPeriod } from './parts';
-import { changePercent, compactNumber, previousPeriodLabel } from './text';
+import { changePercent, compactNumber, memberName, previousPeriodLabel } from './text';
+
+type Granularity = 'hour' | 'day';
+
+const SEGMENT = 'rounded px-2.5 py-1 text-[12px] font-medium transition';
+const NUM_HEAD = `${TABLE_HEAD_CELL} text-right`;
+const NUM_CELL = `${TABLE_CELL} whitespace-nowrap text-right tabular-nums`;
+const LINK =
+  'text-[12px] font-medium text-gray-600 underline decoration-gray-300 underline-offset-4 transition hover:text-gray-900';
+
+/**
+ * The points of the series for a period: what the reader chose, where the
+ * period has the choice. A day of hours is the series of `1d`, and `30d` has
+ * days only.
+ */
+export function seriesGranularity(
+  period: OrganizationPeriod,
+  chosen: Granularity | null,
+): Granularity {
+  if (period === '30d') return 'day';
+  return chosen ?? (period === '1d' ? 'hour' : 'day');
+}
 
 /**
  * The organization at a glance: what its members spent and asked for in the
@@ -25,11 +54,45 @@ export function OverviewView() {
   const money = useMoney();
   const fmt = useFormatter();
   const { period, setPeriod } = useOrganizationPeriod();
-  const { data, error, isLoading, isPlaceholderData, refetch } = useOrganizationOverview(period);
+  // What the reader chose for the series; until then, what the period has by itself.
+  const [chosen, setChosen] = useState<Granularity | null>(null);
+  const granularity = seriesGranularity(period, chosen);
+  const { data, error, isLoading, isPlaceholderData, refetch } = useOrganizationOverview(
+    period,
+    // The gateway has no hourly series of 30 days, and is not asked for one.
+    period === '30d' ? undefined : granularity,
+  );
 
+  const granularities: ReadonlyArray<[Granularity, string]> = [
+    ['hour', t('organization.overview.by_hour', 'By hour')],
+    ['day', t('organization.overview.by_day', 'By day')],
+  ];
   const toolbar = (
     <div className="flex flex-wrap items-center gap-2">
       <PeriodControl value={period} onChange={setPeriod} />
+      {period === '30d' ? null : (
+        <div
+          role="group"
+          aria-label={t('organization.overview.granularity', 'Points of the series')}
+          className="inline-flex rounded-md border border-gray-200 bg-gray-50 p-0.5"
+        >
+          {granularities.map(([key, label]) => (
+            <button
+              key={key}
+              type="button"
+              aria-pressed={granularity === key}
+              onClick={() => setChosen(key)}
+              className={`${SEGMENT} ${
+                granularity === key
+                  ? 'bg-white text-gray-900 shadow-sm'
+                  : 'text-gray-500 hover:text-gray-900'
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 
@@ -68,6 +131,7 @@ export function OverviewView() {
   const bucketHeader = hourly
     ? t('organization.overview.hour', 'Hour (UTC)')
     : t('organization.overview.day', 'Day (UTC)');
+  const topMembers = data.top_members ?? [];
 
   return (
     <div className={`space-y-4 transition-opacity ${isPlaceholderData ? 'opacity-60' : ''}`}>
@@ -162,15 +226,80 @@ export function OverviewView() {
           <h3 className="text-[13px] font-semibold text-gray-900">
             {t('organization.overview.by_model', 'Spend by model')}
           </h3>
-          <Link
-            href={`${organizationHref('usage')}?view=models`}
-            prefetch={false}
-            className="text-[12px] font-medium text-gray-600 underline decoration-gray-300 underline-offset-4 transition hover:text-gray-900"
-          >
+          <Link href={`${organizationHref('usage')}?view=models`} prefetch={false} className={LINK}>
             {t('organization.overview.view_by_model', 'View by model')}
           </Link>
         </div>
         <SpendByModel models={data.models} />
+      </section>
+
+      {data.models.length > 0 ? (
+        <ModelTokenTable
+          title={t('organization.overview.tokens_by_model', 'Tokens by model')}
+          rows={data.models.map((model) => ({
+            model_id: model.model_id,
+            input_tokens: model.prompt_tokens,
+            output_tokens: model.completion_tokens,
+            cached_tokens: model.cached_tokens ?? 0,
+            request_count: model.requests,
+          }))}
+          formatCount={(value) => fmt.number(value)}
+          columns={['input', 'output', 'cached', 'requests']}
+        />
+      ) : null}
+
+      <section
+        className={`${PANEL} overflow-x-auto`}
+        aria-label={t('organization.overview.top_members', 'Top members')}
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 pb-2 pt-4">
+          <h3 className="text-[13px] font-semibold text-gray-900">
+            {t('organization.overview.top_members', 'Top members')}
+          </h3>
+          <Link
+            href={`${organizationHref('usage')}?view=members`}
+            prefetch={false}
+            className={LINK}
+          >
+            {t('organization.overview.view_by_member', 'View by member')}
+          </Link>
+        </div>
+        {topMembers.length === 0 ? (
+          <p className="px-4 pb-4 text-[13px] text-gray-400">
+            {t('organization.figure.empty', 'Nothing in this period.')}
+          </p>
+        ) : (
+          <table className="min-w-full">
+            <thead>
+              <tr className="border-y border-gray-200 bg-gray-50">
+                <th scope="col" className={TABLE_HEAD_CELL}>
+                  {t('organization.members.member', 'Member')}
+                </th>
+                <th scope="col" className={NUM_HEAD}>
+                  {t('organization.overview.requests', 'Requests')}
+                </th>
+                <th scope="col" className={NUM_HEAD}>
+                  {t('organization.overview.tokens', 'Tokens')}
+                </th>
+                <th scope="col" className={NUM_HEAD}>
+                  {t('organization.overview.spend', 'Spend')}
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {topMembers.map((member) => (
+                <tr key={member.user_id} className="border-b border-gray-100 last:border-b-0">
+                  <td className={`${TABLE_CELL} max-w-[20rem] truncate`}>{memberName(member)}</td>
+                  <td className={NUM_CELL}>{fmt.number(member.requests)}</td>
+                  <td className={NUM_CELL}>{compactNumber(member.total_tokens, fmt)}</td>
+                  <td className={`${NUM_CELL} text-gray-900`}>
+                    {money.value(member, 'cost', { maximumFractionDigits: 2 })}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </section>
     </div>
   );

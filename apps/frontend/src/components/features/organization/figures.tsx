@@ -21,16 +21,24 @@ const SeriesChart = dynamic(() => import('@/components/features/console-shared/S
 const NUM_HEAD = `${TABLE_HEAD_CELL} text-right`;
 const NUM_CELL = `${TABLE_CELL} whitespace-nowrap text-right tabular-nums`;
 
-/** A point's place on the axis: its UTC day, or its UTC hour for a day of hours. */
-export function bucketLabel(point: UsagePoint, hourly: boolean, fmt: Formatter): string {
-  return hourly
-    ? fmt.dateTime(point.bucket, {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false,
-        timeZone: 'UTC',
-      })
-    : fmt.date(point.bucket, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+/**
+ * A point's place on the axis: its UTC day, or its UTC hour for a day of
+ * hours. With `withDay`, an hour has its day too, for hours of more than one day.
+ */
+export function bucketLabel(
+  point: UsagePoint,
+  hourly: boolean,
+  fmt: Formatter,
+  withDay = false,
+): string {
+  if (!hourly) return fmt.date(point.bucket, { month: 'short', day: 'numeric', timeZone: 'UTC' });
+  return fmt.dateTime(point.bucket, {
+    ...(withDay ? { month: 'short', day: 'numeric' } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+    timeZone: 'UTC',
+  });
 }
 
 /**
@@ -86,8 +94,10 @@ export function SeriesFigure({
 }) {
   const t = useT();
   const fmt = useFormatter();
+  // Hours of several days are told apart by their day.
+  const severalDays = hourly && new Set(series.map((point) => point.bucket.slice(0, 10))).size > 1;
   const points = series.map((point) => ({
-    label: bucketLabel(point, hourly, fmt),
+    label: bucketLabel(point, hourly, fmt, severalDays),
     value: valueOf(point),
   }));
   const quiet = points.every((point) => point.value === 0);

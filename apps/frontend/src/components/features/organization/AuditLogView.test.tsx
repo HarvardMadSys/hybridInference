@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuditEntry, AuditPage } from '@/lib/api/organization';
 import { chooseOption } from '@/test-utils/select';
@@ -87,7 +87,9 @@ function rows(): string[][] {
   return screen
     .getAllByRole('row')
     .slice(1)
-    .map((row) => [...row.querySelectorAll('td')].slice(1).map((cell) => cell.textContent ?? ''));
+    .map((row) =>
+      [...row.querySelectorAll('td')].slice(1, 5).map((cell) => cell.textContent ?? ''),
+    );
 }
 
 beforeEach(() => {
@@ -106,6 +108,7 @@ describe('the audit log of the organization', () => {
     expect(asked()).toEqual({
       period: undefined,
       category: undefined,
+      member: undefined,
       search: undefined,
       limit: 50,
       offset: 0,
@@ -117,6 +120,8 @@ describe('the audit log of the organization', () => {
       'Event',
       'Target',
       'Details',
+      // The last column opens a row; its name is for a screen reader.
+      'Every field',
     ]);
   });
 
@@ -162,6 +167,119 @@ describe('the audit log of the organization', () => {
     ]);
   });
 
+  it('says which models were turned off, and which key was revoked', () => {
+    answer({
+      total: 3,
+      entries: [
+        entry({
+          id: 7,
+          action: 'organization.member_models.set',
+          category: 'access',
+          details: {
+            email: 'lei.wang@example.edu',
+            disabled_models: { old: [], new: ['glm-4.6', 'qwen-max'] },
+          },
+        }),
+        entry({
+          id: 6,
+          action: 'organization.member_models.set',
+          category: 'access',
+          details: {
+            email: 'lei.wang@example.edu',
+            disabled_models: { old: ['glm-4.6'], new: [] },
+          },
+        }),
+        entry({
+          id: 5,
+          action: 'organization.member_key.revoke',
+          category: 'access',
+          details: { email: 'lei.wang@example.edu', key_name: 'laptop', project_name: 'Thesis' },
+        }),
+      ],
+    });
+
+    render(<AuditLogView />);
+
+    expect(rows().map((row) => [row[1], row[3]])).toEqual([
+      ['Member models changed', 'Turned off: glm-4.6, qwen-max'],
+      ['Member models changed', 'No model turned off'],
+      ['API key revoked', 'laptop, in project Thesis'],
+    ]);
+  });
+
+  it('opens a row on every field that the action recorded, and on no source address', () => {
+    answer({
+      total: 1,
+      entries: [
+        entry({
+          id: 7,
+          action: 'organization.member_models.set',
+          category: 'access',
+          details: {
+            email: 'lei.wang@example.edu',
+            disabled_models: { old: ['glm-4.6'], new: ['glm-4.6', 'qwen-max'] },
+          },
+        }),
+      ],
+    });
+
+    render(<AuditLogView />);
+    const toggle = screen.getByRole('button', {
+      name: /^Show every field of Member models changed/,
+    });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    const opened = screen.getAllByRole('row')[2];
+    // Each field of the details, in full: the old list and the new one.
+    expect(within(opened).getByText('disabled_models').nextElementSibling?.textContent).toBe(
+      JSON.stringify({ old: ['glm-4.6'], new: ['glm-4.6', 'qwen-max'] }, null, 2),
+    );
+    expect(within(opened).getByText('email').nextElementSibling).toHaveTextContent(
+      'lei.wang@example.edu',
+    );
+    for (const label of ['Event', 'Time', 'Actor', 'Target']) {
+      expect(within(opened).getByText(label)).toBeInTheDocument();
+    }
+    expect(opened).not.toHaveTextContent(/source/i);
+    expect(within(opened).queryByText('Raw JSON')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Hide every field of/ }));
+    expect(screen.getAllByRole('row')).toHaveLength(2);
+  });
+
+  it('narrows to the member of a row, as target or as actor, and back', () => {
+    answer({ total: 120, entries: ENTRIES });
+
+    render(<AuditLogView />);
+    fireEvent.click(screen.getByRole('button', { name: 'Next' }));
+    fireEvent.click(screen.getByRole('button', { name: 'mei.song@example.edu' }));
+
+    expect(asked()).toMatchObject({ member: 'u-mei', offset: 0 });
+    expect(screen.getByText('Only the events of mei.song@example.edu')).toBeInTheDocument();
+    // The member the log is narrowed to is plain text in its rows.
+    expect(screen.queryByRole('button', { name: 'mei.song@example.edu' })).not.toBeInTheDocument();
+
+    // An actor that is a member narrows too.
+    fireEvent.click(screen.getAllByRole('button', { name: 'yu.chen@example.edu' })[0]);
+    expect(asked()).toMatchObject({ member: 'u-yu' });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show every member' }));
+    expect(asked()).toMatchObject({ member: undefined });
+    expect(screen.queryByText(/^Only the events of/)).not.toBeInTheDocument();
+  });
+
+  it('gives no such control for the platform administrator, the system or the organization', () => {
+    answer({ total: 4, entries: ENTRIES });
+
+    render(<AuditLogView />);
+
+    for (const name of ['Platform administrator', 'System', 'Example University']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+  });
+
   it('narrows to a kind of event, from the first page', () => {
     answer({ total: 120, entries: ENTRIES });
 
@@ -174,6 +292,9 @@ describe('the audit log of the organization', () => {
 
     chooseOption('Event', 'Membership');
     expect(asked()).toMatchObject({ category: 'membership' });
+
+    chooseOption('Event', 'Access');
+    expect(asked()).toMatchObject({ category: 'access' });
 
     chooseOption('Event', 'All events');
     expect(asked()).toMatchObject({ category: undefined });

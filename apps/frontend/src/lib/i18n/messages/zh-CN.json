@@ -3729,6 +3729,10 @@
     "source": "Team",
     "text": "团队"
   },
+  "organization.audit.access": {
+    "source": "Access",
+    "text": "访问"
+  },
   "organization.audit.actor": {
     "source": "Actor",
     "text": "操作人"
@@ -3749,6 +3753,10 @@
     "source": "All events",
     "text": "全部事件"
   },
+  "organization.audit.all_fields": {
+    "source": "Every field",
+    "text": "全部字段"
+  },
   "organization.audit.details": {
     "source": "Details",
     "text": "详情"
@@ -3768,6 +3776,18 @@
   "organization.audit.details.join": {
     "source": "Signed in through {provider}",
     "text": "通过 {provider} 登录"
+  },
+  "organization.audit.details.key_in_project": {
+    "source": "{key}, in project {project}",
+    "text": "{key}，在项目 {project} 里"
+  },
+  "organization.audit.details.models_none": {
+    "source": "No model turned off",
+    "text": "没有关闭任何模型"
+  },
+  "organization.audit.details.models_off": {
+    "source": "Turned off: {models}",
+    "text": "关闭：{models}"
   },
   "organization.audit.details.remove": {
     "source": "Account suspended; sessions ended, API keys revoked",
@@ -3821,9 +3841,17 @@
     "source": "Member joined",
     "text": "成员加入"
   },
+  "organization.audit.event.member_key": {
+    "source": "API key revoked",
+    "text": "吊销了 API key"
+  },
   "organization.audit.event.member_limit": {
     "source": "Member monthly limit changed",
     "text": "修改成员月额度"
+  },
+  "organization.audit.event.member_models": {
+    "source": "Member models changed",
+    "text": "改了成员的模型"
   },
   "organization.audit.event.member_remove": {
     "source": "Member removed",
@@ -3837,9 +3865,21 @@
     "source": "Organization renamed",
     "text": "机构改名"
   },
+  "organization.audit.hide_fields": {
+    "source": "Hide every field of {event}, {time}",
+    "text": "收起 {event}（{time}）的全部字段"
+  },
   "organization.audit.limits": {
     "source": "Limits",
     "text": "额度变动"
+  },
+  "organization.audit.member_clear": {
+    "source": "Show every member",
+    "text": "显示所有成员"
+  },
+  "organization.audit.member_filter": {
+    "source": "Only the events of {member}",
+    "text": "只看 {member} 的事件"
   },
   "organization.audit.membership": {
     "source": "Membership",
@@ -3849,6 +3889,10 @@
     "source": "No event matches these filters.",
     "text": "没有符合筛选条件的事件。"
   },
+  "organization.audit.only_member": {
+    "source": "Show only the events of {member}",
+    "text": "只看 {member} 的事件"
+  },
   "organization.audit.organization": {
     "source": "Organization",
     "text": "机构变动"
@@ -3856,6 +3900,10 @@
   "organization.audit.search": {
     "source": "Search the log",
     "text": "搜索日志"
+  },
+  "organization.audit.show_fields": {
+    "source": "Show every field of {event}, {time}",
+    "text": "展开 {event}（{time}）的全部字段"
   },
   "organization.audit.target": {
     "source": "Target",
@@ -4221,6 +4269,14 @@
     "source": "Members with requests per hour",
     "text": "每小时有请求的成员数"
   },
+  "organization.overview.by_day": {
+    "source": "By day",
+    "text": "按天"
+  },
+  "organization.overview.by_hour": {
+    "source": "By hour",
+    "text": "按小时"
+  },
   "organization.overview.by_model": {
     "source": "Spend by model",
     "text": "各模型花费"
@@ -4228,6 +4284,10 @@
   "organization.overview.day": {
     "source": "Day (UTC)",
     "text": "日期（UTC）"
+  },
+  "organization.overview.granularity": {
+    "source": "Points of the series",
+    "text": "序列的粒度"
   },
   "organization.overview.hour": {
     "source": "Hour (UTC)",
@@ -4264,6 +4324,18 @@
   "organization.overview.tokens": {
     "source": "Tokens",
     "text": "Token"
+  },
+  "organization.overview.tokens_by_model": {
+    "source": "Tokens by model",
+    "text": "各模型的 token"
+  },
+  "organization.overview.top_members": {
+    "source": "Top members",
+    "text": "花费最高的成员"
+  },
+  "organization.overview.view_by_member": {
+    "source": "View by member",
+    "text": "按成员查看"
   },
   "organization.overview.view_by_model": {
     "source": "View by model",
@@ -4680,6 +4752,30 @@
   "organization.usage.views": {
     "source": "Usage views",
     "text": "用量视图"
+  },
+  "organization.usage.volume": {
+    "source": "Request volume",
+    "text": "请求量"
+  },
+  "organization.usage.volume_day": {
+    "source": "Last 24 hours",
+    "text": "最近 24 小时"
+  },
+  "organization.usage.volume_hour": {
+    "source": "Last hour",
+    "text": "最近 1 小时"
+  },
+  "organization.usage.volume_month": {
+    "source": "Last 30 days",
+    "text": "最近 30 天"
+  },
+  "organization.usage.volume_note": {
+    "source": "Windows that end now. They do not follow the period below.",
+    "text": "每个窗口都到现在为止，不随下面的时间范围变化。"
+  },
+  "organization.usage.volume_week": {
+    "source": "Last 7 days",
+    "text": "最近 7 天"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",

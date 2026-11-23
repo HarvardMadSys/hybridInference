@@ -17,6 +17,7 @@ import {
   TABLE_CELL,
   TABLE_HEAD_CELL,
 } from '@/components/features/admin/adminStyles';
+import { RequestVolumeCard } from '@/components/features/console-shared/RequestVolumeCard';
 import { Select } from '@/components/ui/Select';
 import type { OrganizationPeriod } from '@/lib/api/organization';
 import {
@@ -24,6 +25,7 @@ import {
   useOrganizationModelUsage,
   useOrganizationOverview,
   useOrganizationRequests,
+  useOrganizationRequestVolume,
 } from '@/lib/hooks';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { useFormatter } from '@/lib/i18n/useFormatter';
@@ -67,6 +69,56 @@ function Failure({ error, onRetry }: { error: unknown; onRetry: () => void }) {
     >
       {getErrorMessage(error)}
     </AdminNotice>
+  );
+}
+
+/**
+ * The requests of the members in the last hour, day, week and month: how many,
+ * how many ended well and how many failed, and the average latency. The
+ * windows end now; they do not follow the period of the page.
+ */
+function RequestVolume() {
+  const t = useT();
+  const fmt = useFormatter();
+  const { data, error, isLoading, refetch } = useOrganizationRequestVolume();
+  const title = t('organization.usage.volume', 'Request volume');
+  const windows = [
+    ['hour', t('organization.usage.volume_hour', 'Last hour')],
+    ['day', t('organization.usage.volume_day', 'Last 24 hours')],
+    ['week', t('organization.usage.volume_week', 'Last 7 days')],
+    ['month', t('organization.usage.volume_month', 'Last 30 days')],
+  ] as const;
+  return (
+    <section aria-label={title} className="space-y-2">
+      <div>
+        <h3 className="text-[13px] font-semibold text-gray-900">{title}</h3>
+        <p className="text-[12px] text-gray-500">
+          {t(
+            'organization.usage.volume_note',
+            'Windows that end now. They do not follow the period below.',
+          )}
+        </p>
+      </div>
+      {isLoading ? (
+        <AdminLoading size="sm" label={t('common.loading', 'Loading...')} />
+      ) : !data ? (
+        <Failure error={error} onRetry={() => void refetch()} />
+      ) : (
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          {windows.map(([key, label]) => (
+            <RequestVolumeCard
+              key={key}
+              label={label}
+              total={data[key].requests}
+              ok={data[key].ok}
+              failed={data[key].failed}
+              averageLatencyMs={data[key].avg_latency_ms}
+              formatNumber={(value) => fmt.number(value)}
+            />
+          ))}
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -346,6 +398,7 @@ export function UsageView() {
 
   return (
     <div className="space-y-3">
+      <RequestVolume />
       <div className="flex flex-wrap items-center gap-2">
         <PeriodControl value={period} onChange={setPeriod} />
         {kind !== 'models' ? (
