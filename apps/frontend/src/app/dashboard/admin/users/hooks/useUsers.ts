@@ -35,6 +35,7 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         provider: state.provider ?? undefined,
         activeWithinHours: state.activeWithinHours ?? undefined,
         anomaly: state.anomaly ?? undefined,
+        organizationId: state.organization ?? undefined,
       }),
     staleTime: THIRTY_S,
   });

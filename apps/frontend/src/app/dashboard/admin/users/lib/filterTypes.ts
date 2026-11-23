@@ -11,6 +11,7 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   provider: null,
   activeWithinHours: null,
   anomaly: null,
+  organization: null,
   view: null,
 };
 
@@ -62,6 +63,7 @@ export function filterStateFromUrl(
     provider: params.get('provider'),
     activeWithinHours: parseNumber(params.get('active_within_hours')),
     anomaly,
+    organization: params.get('organization_id') || null,
     view: params.get('view'),
   };
 }
@@ -80,6 +82,7 @@ export function filterStateToUrl(state: FilterState, currency: Currency = 'USD')
     out.set('active_within_hours', String(state.activeWithinHours));
   }
   if (state.anomaly !== null) out.set('anomaly', String(state.anomaly));
+  if (state.organization) out.set('organization_id', state.organization);
   if (state.view) out.set('view', state.view);
   return out.toString();
 }

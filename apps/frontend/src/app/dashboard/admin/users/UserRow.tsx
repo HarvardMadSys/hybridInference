@@ -44,6 +44,8 @@ interface UserRowProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectedChange?: (selected: boolean) => void;
+  /** The table has an Organization column. */
+  showOrganization?: boolean;
 }
 
 // Token counts run large (millions–billions for heavy users); render them
@@ -92,6 +94,7 @@ export function UserRow({
   selectable = false,
   selected = false,
   onSelectedChange,
+  showOrganization = false,
 }: UserRowProps) {
   const money = useMoney();
   const status = STATUS_STYLE[user.status] ?? STATUS_STYLE.active;
@@ -232,6 +235,22 @@ export function UserRow({
           </div>
         )}
       </td>
+      {showOrganization && (
+        <td className="max-w-[12rem] px-2.5 py-1.5 text-[13px]">
+          {user.organization ? (
+            <>
+              <div className="truncate text-gray-700" title={user.organization.name}>
+                {user.organization.name}
+              </div>
+              {user.organization.role === 'admin' && (
+                <div className="text-[11px] text-gray-500">Administrator</div>
+              )}
+            </>
+          ) : (
+            <Dash />
+          )}
+        </td>
+      )}
       <SpendCells
         today={{
           amount: today,

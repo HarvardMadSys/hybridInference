@@ -6,6 +6,8 @@ import { StatusFilter } from './filters/StatusFilter';
 import { UsageFilter } from './filters/UsageFilter';
 import { ProviderFilter } from './filters/ProviderFilter';
 import { QuotaFilter } from './filters/QuotaFilter';
+import { OrganizationFilter } from './filters/OrganizationFilter';
+import type { AdminOrganization } from '@/lib/api/admin';
 import { DEFAULT_FILTER_STATE } from './lib/filterTypes';
 import { SearchBox } from '@/components/features/console-shared/SearchBox';
 import { ColumnPicker } from './ColumnPicker';
@@ -23,6 +25,8 @@ interface FilterBarProps {
   onDensityChange: (d: Density) => void;
   hiddenColumns: ColumnId[];
   onHiddenColumnsChange: (hidden: ColumnId[]) => void;
+  /** The organizations of the deployment. With none, the bar has no organization filter. */
+  organizations?: AdminOrganization[];
 }
 
 export function FilterBar({
@@ -32,6 +36,7 @@ export function FilterBar({
   onDensityChange,
   hiddenColumns,
   onHiddenColumnsChange,
+  organizations = [],
 }: FilterBarProps) {
   const [searchInput, setSearchInput] = useState(state.search);
   // Keep a ref to the latest state so the debounce callback always merges into
@@ -78,6 +83,13 @@ export function FilterBar({
           value={state.quotaState}
           onChange={(quotaState) => onChange({ ...stateRef.current, quotaState })}
         />
+        {(organizations.length > 0 || state.organization) && (
+          <OrganizationFilter
+            organizations={organizations}
+            value={state.organization ?? null}
+            onChange={(organization) => onChange({ ...stateRef.current, organization })}
+          />
+        )}
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <UsageFilter
