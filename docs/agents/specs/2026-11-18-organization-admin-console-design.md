@@ -5,8 +5,11 @@
 - Issue: #1829 (RFC). The platform side, #1830, is a separate record
 - Scope: an organization record with members and administrators; a console area where an organization
   administrator sees the usage of the members and manages them; a monthly limit of the organization that the
-  gateway enforces. Unchanged: the `/v1` request and response formats, how a member signs in (#1719), and the
-  Admin Console pages
+  gateway enforces; a member signs in through single sign-on only. Unchanged: the `/v1` request and response
+  formats. The Admin Console changes in one place: **Admin → Users** shows the organization of an account
+- Revised: 2026-11-22, after the review of the two pull requests. The tables have the names of §12; a member
+  has no password (§4.4); the organization console gained the figures and the two member actions that
+  **Admin → Users** has (§6, §7.5, §7.6); the two consoles share components (§13)
 - Based on: `dev` @ `e911f8e5`
 - Related records: [enterprise single sign-on](2026-11-13-enterprise-sso-oidc-design.md) (SSO connections,
   identities, linking), [projects and API keys](2026-11-01-projects-and-api-keys-design.md) (§18 limits,
@@ -40,15 +43,16 @@ Goals:
 
 | Left out | Note |
 |---|---|
-| The Admin pages for organizations: the list, suspend, delete, the organization column in **Admin → Users** | #1830. This record gives the Admin routes that set an organization up (§9) |
+| The Admin pages for organizations: the list, suspend, delete | #1830. This record gives the Admin routes that set an organization up (§9), and the organization column in **Admin → Users** |
 | Automatic removal when the identity provider disables an account (SCIM) | Later. Until then an administrator removes the member (§7.3) |
 | Invitations, and approval in the organization console | Each SSO connection decides with `auto_create` and `require_approval`, as today |
 | One account in two organizations, and an account that joins or leaves an organization | The organization owns the account (§3) |
 | Projects or API keys that members share | Later. A project belongs to one account |
 | Roles other than member and administrator, and roles from the groups of the identity provider | Later |
 | An organization that has no SSO connection | Membership comes only from SSO |
-| Limits of an organization on models, concurrency or request rate | Later |
-| CSV export, and sign-in events in the audit log | The prototype of #1829 shows them. They can follow |
+| A model list for the whole organization, and limits on concurrency or request rate | Later. An organization turns a model off for one member (§7.5) |
+| CSV export, sign-in events in the audit log, and the source address of an audit row | The prototype of #1829 shows the first two. They can follow |
+| The behavior figures of **Admin → Users** (turns, automation score, anomalies) and its saved views | They read request content, or they are tools of the platform administrator |
 | A second factor for organization administrators | The second factor of #1814 is for the platform administrator |
 
 ## 3. Model
@@ -112,6 +116,34 @@ A membership ends when the account is deleted permanently. Nothing else ends it:
 - **Disconnect.** A member cannot disconnect the identity of an SSO connection of its organization in
   **Settings → Single sign-on**. The member rule needs this identity.
 
+### 4.4 A member signs in through single sign-on only
+
+The organization owns the account of a member. So the identity provider of the organization decides who
+can sign in to it: a person that the provider disabled must not get in with a password that the account
+had from before.
+
+The rule applies to each member that is not a platform administrator (the `admin` role, or an address in
+`ADMIN_EMAILS`). A platform administrator keeps the password: that account must get in when the identity
+provider is not available.
+
+- **At the join.** The event that makes an account a member (§4.1) removes its password and its password
+  reset links, in the same transaction. A first sign-in through SSO makes an account that has none.
+- **Password sign-in.** `POST /auth/login` refuses a member with the answer for a wrong password. Thus a
+  password that stayed on the account (for example, of an account that lost the `admin` role) does not sign
+  in.
+- **Phone sign-in.** `POST /auth/phone/login` refuses a member. A member can have a phone number, and the
+  code then confirms an action, but it does not sign in.
+- **No new password.** `POST /user/change-password` and `POST /auth/reset-password` refuse a member with a
+  403. `POST /auth/forgot-password` gives its usual answer and sends no link.
+- `GET /user/me` has `sso_only: true` for such an account. The console then shows no password control.
+
+Sessions that exist stay. An API key is not a sign-in: the keys of a member work until the member is removed
+(§7.3) or a key is revoked (§7.6).
+
+A member can have an identity of an SSO connection that is not attached to the organization, when that
+connection answers for the same email domain. That identity signs in. The platform administrator attaches
+each connection that answers for the domains of an organization.
+
 ## 5. Who may call what
 
 - **The organization console routes** (§11.1) need a console session and a membership with the role `admin`.
@@ -123,14 +155,18 @@ A membership ends when the account is deleted permanently. Nothing else ends it:
 - **The member actions** (§7) do not apply to an organization administrator, to an account with the `admin`
   role, or to the caller. The answer is a 409.
 - `GET /user/me` gets a field `organization`: `{id, name, role}` for a member, `null` for each other
-  account. The console shows the entry of the organization console when the role is `admin`.
+  account. The console shows the entry of the organization console when the role is `admin`. It also gets
+  `sso_only` (§4.4).
 
 ## 6. What an organization administrator sees
 
 ### 6.1 Periods and sources
 
-Each page has a period: `1d`, `7d` or `30d`. A period is the last 1, 7 or 30 days in UTC, with today.
-"This month" is the calendar month in UTC, the same month as the account quota uses.
+Overview, Usage and Audit log have a period: `1d`, `7d` or `30d`. A period is the last 1, 7 or 30 days in
+UTC, with today. "This month" is the calendar month in UTC, the same month as the account quota uses.
+
+Members has no period. Each row has the spend columns of **Admin → Users**: today, the last 7 days, this
+month and all time (§6.3).
 
 Every figure is a sum over the accounts that have a membership in the organization, from the time each
 account became a member. The pages do not show what an account used before. When the platform administrator
@@ -146,7 +182,9 @@ models, projects and API keys.
 | Figure | Source |
 |---|---|
 | Spend for each day | `user_daily_cost`, the counters that the quota gates read |
-| Requests and tokens, the figures for each model and for each hour, and the request rows | `api_logs`, through the index on `(user_id, timestamp)`. A period is 30 days at most |
+| Requests and tokens, the figures for each model and for each hour, the request volume, and the request rows | `api_logs`, through the index on `(user_id, timestamp)`. A period is 30 days at most |
+| Spend of a member today, in the last 7 days and in all time | `user_daily_cost`, from the day of the membership |
+| Spend of a project and of an API key in this month | `spend_counters`, the rows that the quota gates read |
 | Last request of a member | `user_daily_cost.last_request_at` |
 | Monthly limit of a member | The limit on the membership, the default of the organization, and the monthly quota of the account (§8.1) |
 | Spend of the organization in this month | The counter of the organization (§8.2) |
@@ -163,38 +201,67 @@ native amounts with `currency` on a ledger that is not in USD.
   of members. For `1d` and `7d`, also the spend and the requests of the period before.
 - **This month:** the spend of the organization and its limit.
 - **Two series:** members with requests, and spend. One point for each day. For `1d`, one point for each
-  hour of the UTC day that has begun.
-- **Spend for each model** in the period.
+  hour of the UTC day that has begun. `granularity=hour` gives one point for each hour also for `7d`. It is
+  not available for `30d`.
+- **A table for each model** in the period: requests, errors, input tokens, output tokens, cached tokens,
+  spend and the share of spend.
+- **Top members:** the 5 members with the highest spend in the period, with their requests and tokens.
 
 ### 6.3 Members
 
-One row for each member: name, email, role, status, last request, requests, tokens, spend, and the spend of
-this month with the monthly limit. The list takes a search text (name or email), a status filter, a sort
-column and a page. A search text is matched as it is, here and on the other pages: `%` and `_` in it have
-no special meaning.
+**Two cards** above the list (`GET /user/organization/members/summary`):
+
+- **Near or over the limit:** the number of members whose spend of this month is 80% or more of the monthly
+  limit that applies to them, and the 5 with the highest share.
+- **Top spenders today:** the number of members with spend today, and the 5 with the highest spend.
+
+A card opens the list with the filter and the order that it stands for.
+
+**One row for each member:** name, email, role, status, last request, and four spend columns: today, the
+last 7 days (the total, and one value for each day), this month with the monthly limit, and all time. The
+row also has the requests and the tokens of all time.
+
+The list takes:
+
+- a search text (name or email). A search text is matched as it is, here and on the other pages: `%` and
+  `_` in it have no special meaning;
+- a status filter;
+- `limit_state`: `near` (80% or more of the limit) or `over` (100% or more);
+- `min_cost_today` and `min_cost_month`, in the ledger currency. `currency` names the unit that the console
+  read them in. When it is not the ledger currency, the answer is a 409, as in **Admin → Users**;
+- a sort column and a page.
 
 The status is the status of the account. A member that the organization removed shows "Removed". The
 status filter has one value for each word that the list shows. Thus the value `suspended` does not list a
 member that the organization removed.
 
-The sort column can be the share of the monthly limit that the spend of this month uses
-(`sort_by=limit_use`). A member without a limit is last.
+The sort column can be each spend column, the last request, the name, the join date, or the share of the
+monthly limit that the spend of this month uses (`sort_by=limit_use`). A member without a limit is last.
 
 A row has `protected: true` for an administrator of the organization or of the platform. The organization
-cannot set the limit of such a member or remove it: the routes of §7 answer with a 409. The console shows no
-action for it.
+cannot set the limit of such a member, change its models, revoke its keys or remove it: the routes of §7
+answer with a 409. The console shows no action for it.
 
-A row opens the details of the member:
+A row opens the details of the member (`?period=`, default `30d`):
 
 - the join date and the last sign-in;
-- the totals of the period, and the spend of this month with the limit;
+- whether the account has an active API key, a second factor, and a verified email;
+- the four spend columns, and the monthly limit;
 - the spend for each day of the last 30 days;
 - the spend for each model in the period;
+- the projects of the member. For each project: its name and its spend of this month. For each API key of
+  the project: its name, its status, its last use and its spend of this month. Never the key value or its
+  prefix;
+- the models that are off for the member: those that the organization turned off (§7.5), and those that
+  the platform administrator turned off, which the organization can read and cannot change;
 - the last 6 requests;
 - the actions of §7.
 
 ### 6.4 Usage
 
+- **Request volume.** Four cards: the last hour, day, week and month. Each has the requests, how many were
+  OK and how many failed, and the average latency. The windows end now; they are not the period of the
+  page.
 - **Requests.** One row for each request, newest first: time, member, project, API key name, model, status
   code, input tokens, output tokens, cost. Filters: member (search text), model, and status (all, OK,
   errors). The page size is 50.
@@ -204,7 +271,9 @@ A row opens the details of the member:
 ### 6.5 Audit log
 
 The management actions of this organization (§10): time, actor, event, target and details. Filters: a
-search text, a category and the period.
+search text, a category, a member and the period. The member filter gives the rows that have the member as
+target or as actor. An entry opens to show each field of the details: for a change, the old value and the
+new value. No route returns the source address of a row.
 
 ### 6.6 Settings
 
@@ -218,7 +287,8 @@ search text, a category and the period.
 ### 6.7 What no route returns
 
 - Request content: `prompt`, `response`, `request_payload`, `tools`, `error`, `metadata`.
-- API key values. A request row shows the name of the key only.
+- API key values and key prefixes. A request row and the details of a member show the name of a key only.
+- The source address of a request or of an audit row.
 - Data of an account that is not a member, and data of a different organization.
 - The configuration of the deployment, and the secret of an SSO connection.
 
@@ -276,6 +346,27 @@ administrator makes a removed member active again in **Admin → Users**, the ga
 The gateway also clears the mark when the platform administrator writes a suspension message for a removed
 member. An account cannot be suspended two times, and this is how the platform administrator takes the
 suspension. The organization can then no longer restore the member.
+
+### 7.5 Turn a model off for a member
+
+`PUT /user/organization/members/{user_id}/models` takes `{"disabled_models": [...]}` and replaces the list
+of the organization for that member. An empty list turns nothing off.
+
+- The list is a column on the membership (`org_memberships.disabled_models`). The list of the platform
+  administrator is in the preferences of the account, and **Admin → Users** sets it. This route does not
+  read it and does not write it.
+- The gateway refuses a model that is in either list (§8.4). Thus an organization can turn a model off, and
+  cannot turn on a model that the platform administrator turned off.
+- An id that is not a model of the deployment is refused with a 422.
+- The write is one transaction with the audit row, which has the old list and the new list.
+
+### 7.6 Revoke an API key of a member
+
+`POST /user/organization/members/{user_id}/keys/{key_id}/revoke` revokes one API key. It is the operation
+that the owner of the key has in the console. The key must belong to the member: for each other key the
+answer is a 404. A revoked key stays revoked, and the member can make a new one.
+
+The audit row has the name of the key and of its project.
 
 ## 8. Limits at admission
 
@@ -370,6 +461,16 @@ poll, §8.2).
 
 A member whose own limit is reached gets the refusal of today, with `scope: "account"`.
 
+### 8.4 The models of a member
+
+Each gate reads the models that are off for the account from the preferences of the account
+(`disabled_models`). For a member, the gate adds the list of the membership (§7.5). The lookup of an API
+key reads it with the membership, in the same round trip, and a gate that reads the account reads the
+membership with it. The refusal is the one of today for a model that is off, and `GET /v1/models` and
+`GET /user/models` leave the model out.
+
+A cached key lookup carries the list. A change drops the cached lookups of the member (§8.2).
+
 ## 9. The platform administrator
 
 The platform administrator sets an organization up through Admin routes (§11.2). The pages for these routes
@@ -384,6 +485,9 @@ are in #1830. Until then the operator guide gives the calls.
    role of an account in **Admin → Users**: the role stays after the session ends. `ADMIN_TOKEN` cannot give
    it. To remove the role needs no confirmation.
 4. **Change the name and the monthly limit.**
+
+**Admin → Users** shows the organization of each account: a column, a filter (one organization, or the
+accounts that have none), and the organization with the role in the details of an account.
 
 An organization stores the `id` of each of its SSO connections. If the platform administrator changes the
 `id` of an entry in `SSO_PROVIDERS`, the organization loses that connection. The members stay. The platform
@@ -402,6 +506,8 @@ administrator attaches the new `id`. The routes show a connection that has no en
 | Limits | `organization.member_limit.set` | the organization administrator | the member |
 | Limits | `organization.default_member_limit.set` | the organization administrator | the organization |
 | Limits | `organization.limit.set` | the platform administrator | the organization |
+| Access | `organization.member_models.set` | the organization administrator | the member |
+| Access | `organization.member_key.revoke` | the organization administrator | the member |
 | Organization | `organization.create`, `organization.update`, `organization.connection.attach`, `organization.connection.detach` | the platform administrator | the organization |
 
 - The details hold the old value and the new value.
@@ -425,17 +531,21 @@ the console do not change.
 | Route | Returns or does |
 |---|---|
 | `GET /user/organization` | The organization, its SSO connections, its administrators, its limits and the spend of this month |
-| `GET /user/organization/overview?period=` | §6.2 |
-| `GET /user/organization/members?period=&search=&status=&sort_by=&order=&limit=&offset=` | §6.3, with the total number |
+| `GET /user/organization/overview?period=&granularity=` | §6.2 |
+| `GET /user/organization/members?search=&status=&limit_state=&min_cost_today=&min_cost_month=&currency=&sort_by=&order=&limit=&offset=` | §6.3, with the total number |
+| `GET /user/organization/members/summary` | The two cards of §6.3 |
 | `GET /user/organization/members/{user_id}?period=` | The details of one member |
+| `GET /user/organization/usage/volume` | The four cards of §6.4 |
 | `GET /user/organization/usage/requests?period=&search=&model=&status=&limit=&before=` | Request rows. `before` takes the cursor that the page before returned |
 | `GET /user/organization/usage/models?period=` | Totals for each model |
 | `GET /user/organization/usage/members?period=&search=` | Totals for each member |
-| `GET /user/organization/audit-log?period=&category=&search=&limit=&offset=` | §6.5 |
+| `GET /user/organization/audit-log?period=&category=&member=&search=&limit=&offset=` | §6.5 |
 | `PUT /user/organization/members/{user_id}/monthly-limit` | §7.1 |
 | `PUT /user/organization/default-member-limit` | §7.2 |
 | `POST /user/organization/members/{user_id}/remove` | §7.3 |
 | `POST /user/organization/members/{user_id}/restore` | §7.4 |
+| `PUT /user/organization/members/{user_id}/models` | §7.5 |
+| `POST /user/organization/members/{user_id}/keys/{key_id}/revoke` | §7.6 |
 
 ### 11.2 Admin
 
@@ -454,8 +564,12 @@ platform administrator with thin routes below `/admin/organizations/{id}`.
 
 ### 11.3 Changed routes
 
-- `GET /user/me`: the field `organization` (§5).
+- `GET /user/me`: the fields `organization` (§5) and `sso_only` (§4.4).
+- `POST /auth/login`, `POST /auth/phone/login`, `POST /auth/forgot-password`, `POST /auth/reset-password`
+  and `POST /user/change-password`: the refusals of §4.4.
 - `POST /auth/sso/identities/link` and `POST /auth/sso/identities/{id}/unlink`: the two refusals of §4.3.
+- `GET /admin/users`: the field `organization` (`{id, name, role}` or `null`) on each row, and the filter
+  `organization_id` (an id, or `none`). `GET /admin/users/{id}/detail`: the same field.
 - `PATCH /admin/users/{id}`: a change of the status to `active` clears the mark of a removal (§7.4).
 - `GET /admin/audit-log`: the `organization_id` filter, and the field `organization_id` on each row.
 - The 429 of each inference route: the new `scope` value (§8.3).
@@ -496,7 +610,8 @@ CREATE TABLE org_memberships (
     removed_by      TEXT,
     monthly_limit_usd    DECIMAL(10, 4),                    -- §7.1; NULL: the default applies
     monthly_limit_amount NUMERIC(24, 12),
-    accounting_currency  TEXT
+    accounting_currency  TEXT,
+    disabled_models      JSONB NOT NULL DEFAULT '[]'::jsonb -- §7.5
 );
 CREATE INDEX idx_org_sso_connections_organization
     ON org_sso_connections (organization_id);
@@ -522,6 +637,8 @@ Notes:
   organization that §19 of the projects record removed. The service continues to write them, the three
   triggers of revision `0018` connect them to the account quota and to the projects, and a contract revision
   is planned to drop them. This design does not use them, so it does not depend on that revision (§18).
+  Those two names are thus not free, and the new tables are `orgs`, `org_sso_connections` and
+  `org_memberships`. The API, the code and the console say "organization".
 - `spend_counters` gets no new column. A row of an organization differs only in its `scope_id`. An
   organization has a row for each month, and no row for a day.
 
@@ -535,13 +652,21 @@ Notes:
 - **Guard.** The layout sends a signed-out visitor to the sign-in page and an account without the role to
   `/dashboard`, as the Admin layout does. The gateway decides access. The guard only chooses what to show.
 - **Building blocks.** The pages use what the Admin Console has: `adminStyles.ts`, `AdminPrimitives`,
-  the table, filter and page patterns of **Admin → Users**, `ConfirmDialog` for the dialogs,
-  `useAccountToast`, and `recharts` for the charts.
+  `ConfirmDialog` for the dialogs, `useAccountToast`, and `recharts` for the charts.
+- **Shared components.** The two consoles show the same kinds of things, so the parts are one copy in
+  `components/features/console-shared/`: the summary cards, the spend cells with the 7-day trend, the
+  filters of the account list, the projects and keys of an account, the request list, the audit list with
+  an entry that opens, the request volume cards, and the usage charts. A shared component takes its data
+  and its actions as props, and its text through `t()`. The Admin Console is under a provider that keeps it
+  in English, so the same component is in English there and translated in the organization console.
 - **Member details.** A member row opens a panel at the right side of the window, as the prototype of
-  #1829 shows. The list stays behind the panel. On a phone the panel has the width of the screen. The
-  panel is new: a row in **Admin → Users** opens in place.
+  #1829 shows. The list stays behind the panel. On a phone the panel has the width of the screen. A row in
+  **Admin → Users** opens in place. The two containers differ; the parts in them are the shared ones.
 - **Dialogs.** "Set monthly limit", "Remove from organization" and "Restore member" say what changes, as the
-  prototype of #1829 shows.
+  prototype of #1829 shows. "Models" and "Revoke key" follow the same pattern.
+- **Settings of an account.** The personal **Settings** page shows no password control for an account with
+  `sso_only`.
+- **Admin → Users.** An Organization column, a filter, and the organization with the role in the details.
 - **Language.** The Admin Console is in English only. The organization console is for the staff of an
   organization, so it uses `t()` with slots `organization.<page>.<meaning>` and has entries in
   `zh-CN.json`.
@@ -562,14 +687,20 @@ Notes:
   - `servers/auth.py`, `grant_auth.py`, `routers/playground.py`: the organization in each `SpendCheck`;
   - `batch/scheduler.py`, `routers/batch_console_create.py`: the pause and the refusal of a batch;
   - `servers/deps.py`: `require_organization_admin`;
-  - `routers/user_routes.py` and `schemas_auth.py`: the field of `GET /user/me`;
-  - `routers/admin/users.py`: the mark of a removal, and the audit filter;
+  - `routers/user_routes.py` and `schemas_auth.py`: the fields of `GET /user/me`, and the refusal of a new
+    password;
+  - `routers/auth_routes.py`, `routers/phone_auth_routes.py`, `auth/reset_password.py`: the refusals of
+    §4.4;
+  - `model_access.py` and each gate: the models of a member (§8.4);
+  - `routers/admin/users.py`: the mark of a removal, the audit filter, and the organization of an account;
   - `audit.py`: the target type; `storage/audit_schema.py`: the column;
   - `storage/base.py`, `storage/cache.py`, `storage/accounting_schema.py`.
 - **Console, new:** `app/dashboard/organization/` (layout, tabs, five pages); `lib/api/organization.ts`;
   `lib/hooks/queries/useOrganization.ts`; components in `components/features/organization/`.
 - **Console, changed:** `ConsoleNav.tsx`, `AuthProvider.tsx`, `lib/api/user.ts`, `lib/hooks/index.ts`,
-  `components/ui/consoleWidth.ts`, `lib/i18n/messages/zh-CN.json`.
+  `components/ui/consoleWidth.ts`, `lib/i18n/messages/zh-CN.json`; the pages of **Admin → Users**,
+  **Admin → Requests** and **Admin → Audit**, which now use the shared components; the personal
+  **Settings** page.
 - **Documentation:** a new `docs/developer/organizations.md` for operators (make an organization, attach a
   connection, give the role, set limits, remove a member), with its Chinese translation and an entry in
   `index.rst`; the two changes of §4.3 and a pointer in `sso.md`; four terms in the glossary; the new
@@ -594,6 +725,11 @@ Notes:
     request gets the 429 of §8.3;
   - the limits on a ledger in CNY, and the offline currency migration on a database that has organizations;
   - the audit rows and their scope.
+  - the sign-in rule of §4.4: a password and its reset links are gone after each of the three join events;
+    each refusal; a platform administrator keeps the password;
+  - the models of a member at each gate, and that the list of the platform administrator stays as it was;
+  - the revoke of a key, and that a key of a different account is a 404;
+  - the figures of §6.3 from the day of the membership, the filters and the two cards.
 - **Admin route count:** `tests/servers/test_admin_router_aggregation.py` gets the new number.
 - **Console:** the entry for each role; the guard; each page with a stubbed API; the three dialogs; the API
   module (`lib/api/__tests__/organization.test.ts`); `catalog.test.ts` for the new strings.
@@ -605,7 +741,9 @@ Notes:
 
 - **No organization, no change.** Without a row in `orgs`, no account is a member, the lookup
   of a key finds no organization, and the console shows no entry.
-- **The revision only adds** three tables, one column and two indexes. After a rollback to the previous
+- **The revision only adds** three tables, one column and two indexes. (The first version of this work
+  named the tables `sso_organizations`, `sso_organization_connections` and `sso_organization_members`. The
+  revision was renamed in place before it ran on a shared database.) After a rollback to the previous
   release, they are not used.
 - **The gateway and the console can be upgraded or rolled back in either order.** An older console ignores
   the new field. A newer console with an older gateway gets no field and shows no entry.
@@ -623,7 +761,11 @@ Two pull requests that change no file in common, so both can be open at the same
    actions of §7, the limits at admission (§8), the audit column, their tests, the operator guide and this
    record.
 2. **Console:** the entry, the area and its five pages, the dialogs, the strings and their translation, and
-   their tests.
+   their tests. The shared components of §13 are commits of their own, because they change Admin pages.
+
+A later pull request drops the tables of revision `0015` (`organizations`, `org_members`, `projects.org_id`,
+`api_keys.org_id` and the triggers of revision `0018`). It takes two releases: one that stops the writes,
+then the contract revision.
 
 The gateway merges first. Between the two merges, nothing that a user sees changes: no organization exists
 until the platform administrator makes one, and a console from before the second pull request shows no
@@ -640,6 +782,8 @@ entry.
 | Where the limit of a member is kept | In the monthly quota of the account (`account_quotas`), as the first version of this work did | One field would have two owners. An organization administrator could then clear or raise a quota that the platform administrator set. With two fields the lower value applies (§8.1) |
 | Where the spend of an organization comes from at admission | The sum of `user_daily_cost` over all members, for each request | The cost grows with the number of members and days. A counter row is one read |
 | Where the default limit of a member is kept | A copy in the quota of each member | Each change of the default would write every member, and each account would need a mark that says where its limit came from |
+| How a member is kept from a password sign-in | A check at sign-in only, with the password left on the account | Each place that asks "has this account a password" would need the same check: the confirmation of an action, the second factor, the unlink of an identity. Without a password on the account, each of them is correct as it is. The check at sign-in stays for the account that kept a password |
+| Where the models of a member are kept | In the preferences of the account, the list that **Admin → Users** sets | One field would have two owners, as for the limit. An organization administrator could then turn on a model that the platform administrator turned off |
 | The path of the routes | A new prefix `/organization` | A new public prefix needs an entry in `deploy/public-paths.json`, a route handler and a middleware rule in the console. `/user` has all of them |
 
 ## 19. References
