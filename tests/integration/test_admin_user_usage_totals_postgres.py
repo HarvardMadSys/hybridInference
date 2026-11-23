@@ -25,7 +25,7 @@ async def store():
     )
     try:
         async with pool.acquire() as db:
-            for table in ("users", "api_keys", "user_daily_cost"):
+            for table in ("users", "api_keys", "user_daily_cost", "orgs", "org_memberships"):
                 await db.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
             # api_logs with the daily usage rollup the totals read.
             await ensure_api_logs_schema(db)
