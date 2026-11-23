@@ -96,6 +96,37 @@ async def membership_of(op_store: Any, user_id: str) -> dict[str, Any] | None:
     return dict(row) if isinstance(row, Mapping) else None
 
 
+async def organization_of_provider(op_store: Any, provider_id: str) -> str | None:
+    """The organization an SSO connection belongs to, or None.
+
+    None too in a store that keeps no organizations.
+    """
+    lookup = getattr(op_store, "get_provider_organization", None)
+    if lookup is None:
+        return None
+    try:
+        answer = lookup(provider_id)
+        owner = await answer if inspect.isawaitable(answer) else None
+    except OrganizationsUnavailableError:
+        return None
+    return owner if isinstance(owner, str) else None
+
+
+async def organization_provider_for(op_store: Any, email: str | None) -> SsoProvider | None:
+    """The SSO connection of an organization that answers for *email*, if there is one.
+
+    The members of that organization sign in through it only. Decided from the
+    domain of the address and the connections that are attached: no account is
+    read, so the answer says nothing about whether one exists.
+    """
+    if not email or "@" not in email:
+        return None
+    provider = sso_config.provider_for_email(email)
+    if provider is None or await organization_of_provider(op_store, provider.id) is None:
+        return None
+    return provider
+
+
 async def disabled_models_of_account(op_store: Any, user_id: str) -> list[str]:
     """The models that are off for an account that signed in to the console.
 
@@ -129,9 +160,12 @@ def is_sso_only(user: Mapping[str, Any], membership: Mapping[str, Any] | None) -
     which becomes one on its next token) keeps every way in, for the day the
     provider is not available.
     """
-    if membership is None:
-        return False
-    return user.get("role") != "admin" and not is_admin_email(user.get("email"))
+    return membership is not None and not is_platform_administrator(user)
+
+
+def is_platform_administrator(user: Mapping[str, Any]) -> bool:
+    """Whether an account is a platform administrator, or becomes one on its next token."""
+    return user.get("role") == "admin" or is_admin_email(user.get("email"))
 
 
 async def signs_in_through_sso_only(op_store: Any, user: Mapping[str, Any]) -> bool:

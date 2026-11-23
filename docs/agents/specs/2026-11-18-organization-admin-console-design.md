@@ -143,6 +143,21 @@ provider is not available.
 - `GET /user/me` has `sso_only: true` for such an account, and so has each answer that describes the
   signed-in account. The console then shows no password control.
 
+A person that registered with a password and linked the identity later does not know this rule, so the
+gateway says it in three places:
+
+- **Before the link.** The identity that waits for a link (`GET /auth/sso/link`) has `sso_only_after_link`,
+  and the identities of an account (`GET /auth/sso/identities`) have `sso_only_provider`. The console then
+  says that the account will sign in through that provider only and that its password is removed. The first
+  is read before the owner of the account signs in, so it is decided by the provider alone and says nothing
+  about the account; the console does not show the sentence to a platform administrator. The second is the
+  account's own page, and is exact: it is empty for a platform administrator and for a member.
+- **At a failed password sign-in.** For an address whose domain an SSO connection of an organization answers
+  for, the 401 has `sso_sign_in` with the name of that connection. It depends on the domain alone: it is the
+  same for an account that does not exist, a wrong password and a member, so it says nothing about an account.
+- **At a reset request.** A member gets an email that says how its account signs in, in place of a reset
+  link. Only the owner of the address reads it.
+
 Sessions that exist stay. An API key is not a sign-in: the keys of a member work until the member is removed
 (§7.3) or a key is revoked (§7.6).
 
@@ -578,6 +593,8 @@ platform administrator with thin routes below `/admin/organizations/{id}`.
 ### 11.3 Changed routes
 
 - `GET /user/me`: the fields `organization` (§5) and `sso_only` (§4.4).
+- `GET /auth/sso/link`: the field `sso_only_after_link`. `GET /auth/sso/identities`: the field
+  `sso_only_provider`. The 401 of `POST /auth/login`: the field `sso_sign_in` (§4.4).
 - `POST /auth/login`, `POST /auth/phone/login`, `POST /auth/forgot-password`, `POST /auth/reset-password`
   and `POST /user/change-password`: the refusals of §4.4.
 - `POST /auth/sso/identities/link` and `POST /auth/sso/identities/{id}/unlink`: the two refusals of §4.3.

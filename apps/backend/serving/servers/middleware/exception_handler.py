@@ -26,6 +26,7 @@ legitimate client rather than protect anyone:
   to the suspended user.
 """
 
+import json
 import time
 from datetime import UTC, datetime
 
@@ -34,6 +35,7 @@ from fastapi.exception_handlers import http_exception_handler
 from fastapi.responses import JSONResponse
 
 from serving.exceptions import (
+    WRONG_CREDENTIALS_DETAIL,
     AccountSuspendedError,
     APIKeyNotFoundError,
     DuplicateAPIKeyError,
@@ -44,6 +46,7 @@ from serving.exceptions import (
     QuotaExceededError,
     SessionNotFoundError,
     SessionRevokedError,
+    SsoSignInRequiredError,
     TokenAlreadyUsedError,
     TokenExpiredError,
     TwoFactorRequiredError,
@@ -158,6 +161,31 @@ def install_exception_handlers(app: FastAPI) -> None:
                 "timestamp": datetime.now(UTC).isoformat(),
             },
         )
+
+    @app.exception_handler(SsoSignInRequiredError)
+    async def sso_sign_in_required_handler(request: Request, exc: SsoSignInRequiredError):
+        # The refusal of a wrong name or password, written by the handler this
+        # application answers every other one with, and one more field beside
+        # it: the connection that the accounts of this address's organization
+        # sign in through. The two refusals then differ in that field alone,
+        # whatever shape the application gives an ``HTTPException``.
+        plain = HTTPException(status_code=401, detail=WRONG_CREDENTIALS_DETAIL)
+        response = await _http_exception_handler(request.app)(request, plain)
+        try:
+            body = json.loads(response.body)
+        except ValueError:
+            return response
+        if not isinstance(body, dict):
+            return response
+        body["sso_sign_in"] = {"provider_name": exc.provider_name}
+        # What the plain refusal carries beside its body stays; the two that
+        # describe the body are written again for the longer one.
+        kept = {
+            name: value
+            for name, value in response.headers.items()
+            if name.lower() not in ("content-length", "content-type")
+        }
+        return JSONResponse(status_code=response.status_code, content=body, headers=kept)
 
     @app.exception_handler(EmailNotVerifiedError)
     async def email_not_verified_handler(request: Request, exc: EmailNotVerifiedError):

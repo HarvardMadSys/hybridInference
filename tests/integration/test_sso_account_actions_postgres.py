@@ -298,7 +298,10 @@ async def test_the_chooser_names_the_provider_of_an_account_without_a_password(
 async def test_an_account_links_an_identity_with_another_email_from_settings(browser, idp, store):
     user_id = await existing_user(store, "personal@example.edu")
     headers = await _password_session(browser, "personal@example.edu")
-    assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {"identities": []}
+    assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {
+        "identities": [],
+        "sso_only_provider": None,
+    }
 
     started = await browser.post(
         "/auth/sso/identities/link",
@@ -445,7 +448,10 @@ async def test_an_identity_whose_email_is_another_accounts_cannot_be_linked(brow
 
     assert location(back) == (SETTINGS, {"sso_error": ["email_in_use"]})
     assert await store.get_user_identity(ISSUER, "subject-1") is None
-    assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {"identities": []}
+    assert (await browser.get("/auth/sso/identities", headers=headers)).json() == {
+        "identities": [],
+        "sso_only_provider": None,
+    }
 
     # The account that has the address still connects it.
     async with new_browser(browser._transport.app) as own:

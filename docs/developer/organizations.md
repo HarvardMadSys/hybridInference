@@ -51,6 +51,18 @@ account, so its identity provider decides who can sign in.
   removed or a key is revoked.
 - `python -m serving.auth.reset_password` refuses a member too.
 
+A person who registered with a password and connected the organization account
+later is told about this:
+
+- Before the connection, the console says that the account will sign in
+  through the organization only and that its password is removed.
+- After a failed password sign-in with an address of the organization, the
+  sign-in page says that the accounts of the organization must sign in through
+  single sign-on, and offers that sign-in. The page says this for each address
+  of the domain, also for one that has no account.
+- A member who asks for a reset link gets an email that says how the account
+  signs in, in place of the link.
+
 This is not undone. A member stays a member when you detach the connection,
 and its account stays without a password. Check the `domains` of a connection
 before you attach it.

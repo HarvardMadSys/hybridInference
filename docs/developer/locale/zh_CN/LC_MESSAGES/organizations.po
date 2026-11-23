@@ -519,3 +519,15 @@ msgstr "**API key。** 机构管理员可以作废某个成员的一把 API key�
 
 msgid "**The spend of an organization starts at membership.** What an account was charged before it became a member does not count against the limit of the organization. The usage pages show it."
 msgstr "**机构的花费从成为成员时开始算。** 账号在成为成员之前产生的费用，不计入机构的上限。用量页面里会显示这部分用量。"
+
+msgid "A person who registered with a password and connected the organization account later is told about this:"
+msgstr "先用密码注册、之后才关联机构账号的人，会在下面几处得到提示："
+
+msgid "Before the connection, the console says that the account will sign in through the organization only and that its password is removed."
+msgstr "关联之前，控制台会说明：这个账号之后只能通过机构登录，现有密码会被删除。"
+
+msgid "After a failed password sign-in with an address of the organization, the sign-in page says that the accounts of the organization must sign in through single sign-on, and offers that sign-in. The page says this for each address of the domain, also for one that has no account."
+msgstr "用机构的邮箱地址登录、密码登录失败之后，登录页会说明这个机构的账号需要通过单点登录来登录，并给出单点登录的入口。这个域名下的每个地址都会看到这句话，没有账号的地址也一样。"
+
+msgid "A member who asks for a reset link gets an email that says how the account signs in, in place of the link."
+msgstr "成员申请重置链接时，收到的是一封说明这个账号怎样登录的邮件，而不是重置链接。"

@@ -99,6 +99,24 @@ class AccountSuspendedError(AuthenticationError):
         super().__init__(f"Account is {status}")
 
 
+#: What a sign-in with a wrong name or password is told, whatever was wrong.
+WRONG_CREDENTIALS_DETAIL = "Invalid email or password"
+
+
+class SsoSignInRequiredError(AuthenticationError):
+    """A password sign-in failed for an address whose organization signs in through SSO.
+
+    Raised in place of the plain refusal of a wrong name or password, with the
+    same status and the same message, for every address of such a domain: it
+    adds the name of the connection the organization's accounts sign in
+    through, and says nothing about the account that was tried.
+    """
+
+    def __init__(self, provider_name: str):
+        self.provider_name = provider_name
+        super().__init__(WRONG_CREDENTIALS_DETAIL)
+
+
 class TwoFactorRequiredError(AuthenticationError):
     """The session has to give a code from the account's authenticator first.
 

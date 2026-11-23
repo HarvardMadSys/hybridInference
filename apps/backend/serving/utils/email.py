@@ -615,6 +615,57 @@ and {contact} right away.
     return send_email(to_email, subject, html_body, text_body)
 
 
+def send_sso_sign_in_email(to_email: str, organization_name: str) -> bool:
+    """Tell a member of an organization that asked for a reset link how its account signs in.
+
+    The account has no password: it signs in through the single sign-on of
+    its organization. Sent in place of a reset link, to the owner alone.
+
+    Args:
+        to_email: The account's email address.
+        organization_name: The organization the account is a member of.
+
+    Returns:
+        True if email sent successfully, False otherwise.
+    """
+    site_name = get_site_identity().name
+    subject = f"How to sign in to your {site_name} account"
+    login_url = f"{settings.frontend_url}/login"
+    safe_organization = html_lib.escape(organization_name)
+    safe_login_url = html_lib.escape(login_url)
+
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #2563eb;">Sign in through single sign-on</h2>
+            <p>Someone asked to reset the password of your {site_name} account.</p>
+            <p>This account belongs to {safe_organization} and has no password.
+               It signs in through the single sign-on of {safe_organization}.</p>
+            <p>Open <a href="{safe_login_url}">the sign-in page</a>, choose
+               <strong>Log in with SSO</strong> and enter this email address.</p>
+            <p>If you did not ask for this, you can ignore this email.</p>
+        </div>
+    </body>
+    </html>
+    """
+
+    text_body = f"""
+Sign in through single sign-on
+
+Someone asked to reset the password of your {site_name} account.
+
+This account belongs to {organization_name} and has no password.
+It signs in through the single sign-on of {organization_name}.
+
+Open {login_url}, choose "Log in with SSO" and enter this email address.
+
+If you did not ask for this, you can ignore this email.
+    """
+
+    return send_email(to_email, subject, html_body, text_body)
+
+
 def send_new_registration_admin_email(
     to_email: str,
     user_email: str,

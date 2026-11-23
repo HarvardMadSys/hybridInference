@@ -842,6 +842,12 @@ class SsoPendingLinkResponse(BaseModel):
     provider_id: str
     provider_name: str
     email: str
+    #: Whether the provider is the connection of an organization: the link
+    #: makes the account a member, which signs in through this provider only
+    #: and loses its password. Decided by the provider alone, because this is
+    #: read before the owner of the account signs in. A platform administrator
+    #: keeps its password; the console knows that once the owner is signed in.
+    sso_only_after_link: bool = False
 
 
 class SsoMessageResponse(BaseModel):
@@ -874,9 +880,19 @@ class SsoIdentity(BaseModel):
 
 
 class SsoIdentitiesResponse(BaseModel):
-    """The identities linked to the signed-in account."""
+    """The identities linked to the signed-in account.
+
+    ``sso_only_provider`` is the connection of an organization that answers
+    for the email of the account, when linking it would make the account a
+    member: the account then signs in through it only and loses its password.
+    None for an account that is a member already, for a platform
+    administrator, and when no such connection answers for the address.
+    It is the one provider this account can link: a provider links only an
+    account whose email it answers for, and one domain has one provider.
+    """
 
     identities: list[SsoIdentity]
+    sso_only_provider: SsoProviderRef | None = None
 
 
 class SsoLinkIdentityRequest(BaseModel):

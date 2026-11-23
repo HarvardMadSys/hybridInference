@@ -688,10 +688,14 @@ async def get_pending_link(
     )
     if pending is None:
         raise HTTPException(status_code=404, detail="No single sign-on is waiting to be linked.")
+    # By the provider alone: nothing about the account is said before its
+    # owner signs in.
+    owner = await organizations.organization_of_provider(op_store, pending["provider_id"])
     return SsoPendingLinkResponse(
         provider_id=pending["provider_id"],
         provider_name=_provider_name(pending["provider_id"]),
         email=pending["email"],
+        sso_only_after_link=owner is not None,
     )
 
 
@@ -923,9 +927,22 @@ async def list_identities(
     current_user: dict[str, Any] = Depends(get_current_user),
     op_store=Depends(get_operational_store),
 ) -> SsoIdentitiesResponse:
-    """List the identities linked to the signed-in account."""
+    """List the identities linked to the signed-in account.
+
+    With the connection of an organization that this account could link, when
+    the link would leave it with single sign-on only.
+    """
+    account = await op_store.get_user_by_id(current_user["user_id"]) or {}
+    provider = await organizations.organization_provider_for(op_store, account.get("email"))
+    # A platform administrator keeps its password, and a member has none to lose.
+    if provider is not None and (
+        organizations.is_platform_administrator(account)
+        or await organizations.membership_of(op_store, current_user["user_id"]) is not None
+    ):
+        provider = None
     return SsoIdentitiesResponse(
-        identities=await sso_accounts.identity_summaries(op_store, current_user["user_id"])
+        identities=await sso_accounts.identity_summaries(op_store, current_user["user_id"]),
+        sso_only_provider=sso_accounts.provider_ref(provider),
     )
 
 
