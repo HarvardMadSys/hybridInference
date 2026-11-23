@@ -2511,6 +2511,26 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.audit.changed": {
+    "source": "Changed ",
+    "text": "改了 "
+  },
+  "console.audit.changed_to": {
+    "source": " changed to ",
+    "text": " 改为 "
+  },
+  "console.audit.more": {
+    "source": "+{count} more",
+    "text": "还有 {count} 项"
+  },
+  "console.audit.no_details": {
+    "source": "No details",
+    "text": "没有详情"
+  },
+  "console.audit.raw_json": {
+    "source": "Raw JSON",
+    "text": "原始 JSON"
+  },
   "console.filter.any": {
     "source": "any",
     "text": "不限"
@@ -2582,6 +2602,34 @@
   "console.projects.unnamed_key": {
     "source": "Unnamed key",
     "text": "未命名的 key"
+  },
+  "console.tokens.cached": {
+    "source": "Cached",
+    "text": "缓存"
+  },
+  "console.tokens.cost": {
+    "source": "Cost",
+    "text": "费用"
+  },
+  "console.tokens.input": {
+    "source": "Input",
+    "text": "输入"
+  },
+  "console.tokens.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "console.tokens.output": {
+    "source": "Output",
+    "text": "输出"
+  },
+  "console.tokens.reasoning": {
+    "source": "Reasoning",
+    "text": "推理"
+  },
+  "console.tokens.requests": {
+    "source": "Requests",
+    "text": "请求数"
   },
   "console.volume.average": {
     "source": "avg",

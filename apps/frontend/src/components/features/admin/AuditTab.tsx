@@ -1,9 +1,15 @@
 'use client';
 
-import { Fragment, useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react';
+import { Fragment, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { Select } from '@/components/ui/Select';
+import {
+  AuditChangeSummary,
+  AuditEntryDetails,
+  DisclosureChevron,
+  type AuditMeta,
+} from '@/components/features/console-shared/AuditEntryDetails';
 import { AuditLogEntry, listAuditActions, listAuditLog } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import {
@@ -107,21 +113,6 @@ function formatShortDate(iso: string): string {
   });
 }
 
-/** One value on one line, cut short: for the row summary. */
-function shortValue(v: unknown, max = 48): string {
-  if (v === null || v === undefined) return '—';
-  const s = typeof v === 'string' ? v : typeof v === 'object' ? JSON.stringify(v) : String(v);
-  return s.length > max ? `${s.slice(0, max)}…` : s;
-}
-
-/** A value in full: objects and arrays as indented JSON. */
-function fullValue(v: unknown): string {
-  if (v === null || v === undefined) return '—';
-  if (typeof v === 'string') return v;
-  if (typeof v === 'object') return JSON.stringify(v, null, 2);
-  return String(v);
-}
-
 const ACTOR_LABELS: Partial<Record<string, string>> = {
   admin: 'Administrator',
   user: 'User (self-service)',
@@ -168,69 +159,11 @@ function filterableUserId(entry: AuditLogEntry): string | null {
   return entry.target_type === 'user' && entry.target_user_id ? entry.target_user_id : null;
 }
 
-function detailEntries(entry: AuditLogEntry): [string, unknown][] {
-  return entry.details && typeof entry.details === 'object' ? Object.entries(entry.details) : [];
-}
-
-/**
- * What changed, in one line. A before/after pair reads `key: old → new`; a
- * list of changed fields reads as that list; anything else shows its first
- * two set fields and how many more there are. Every field is in the details.
- */
-function DetailSummary({ entry }: { entry: AuditLogEntry }) {
-  const fields = detailEntries(entry);
-  if (fields.length === 0) return <span className="text-gray-400">No details</span>;
-  const d = Object.fromEntries(fields);
-
-  if ('old_value' in d || 'new_value' in d) {
-    return (
-      <>
-        {typeof d.key === 'string' ? (
-          <span className="font-mono text-[12px] text-gray-900">{d.key}</span>
-        ) : null}
-        {typeof d.key === 'string' ? <span className="text-gray-400">: </span> : null}
-        <span className="text-gray-500">{shortValue(d.old_value)}</span>
-        <span className="px-1 text-gray-400" aria-hidden="true">
-          →
-        </span>
-        <span className="sr-only"> changed to </span>
-        <span className="text-gray-900">{shortValue(d.new_value)}</span>
-      </>
-    );
-  }
-
-  if (Array.isArray(d.updated_fields) && d.updated_fields.length > 0) {
-    return (
-      <>
-        <span className="text-gray-400">Changed </span>
-        <span className="text-gray-900">{d.updated_fields.map(String).join(', ')}</span>
-      </>
-    );
-  }
-
-  const set = fields.filter(([, v]) => v !== null && v !== undefined && v !== '');
-  const shown = (set.length > 0 ? set : fields).slice(0, 2);
-  const more = fields.length - shown.length;
-  return (
-    <>
-      {shown.map(([k, v], i) => (
-        <Fragment key={k}>
-          {i > 0 ? <span className="px-1.5 text-gray-300">·</span> : null}
-          <span className="text-gray-400">{k} </span>
-          <span className="text-gray-900">{shortValue(v)}</span>
-        </Fragment>
-      ))}
-      {more > 0 ? <span className="pl-1.5 text-gray-400">+{more} more</span> : null}
-    </>
-  );
-}
-
 /** The whole record, every field in full, then the stored JSON. */
 function EntryDetails({ entry }: { entry: AuditLogEntry }) {
-  const fields = detailEntries(entry);
   // The row reads the local time, the action and short forms of who, what and
   // from where. Here each stored field appears once, in full, as recorded.
-  const meta: [string, ReactNode, string?][] = [
+  const meta: AuditMeta[] = [
     ['Action', entry.action, 'font-mono'],
     [
       'Timestamp',
@@ -286,44 +219,7 @@ function EntryDetails({ entry }: { entry: AuditLogEntry }) {
   if (!entry.actor_type && entry.admin_ip && entry.admin_ip !== source) {
     meta.push(['Legacy source', entry.admin_ip, 'font-mono']);
   }
-  return (
-    <div className="animate-admin-reveal space-y-2.5">
-      <dl className="flex flex-wrap gap-x-6 gap-y-2">
-        {meta.map(([label, value, valueClass]) => (
-          <div key={label} className="min-w-0 max-w-full">
-            <dt className="text-[11px] leading-4 text-gray-400">{label}</dt>
-            <dd
-              className={`text-[12px] leading-5 text-gray-800 [overflow-wrap:anywhere] ${valueClass ?? ''}`}
-            >
-              {value}
-            </dd>
-          </div>
-        ))}
-      </dl>
-      {fields.length > 0 ? (
-        <dl className="grid grid-cols-[minmax(0,max-content)_minmax(0,1fr)] gap-x-4 gap-y-1 rounded-md border border-gray-200 bg-white px-3 py-2 font-mono text-[12px] leading-5">
-          {fields.map(([k, v]) => (
-            <Fragment key={k}>
-              <dt className="max-w-[16rem] text-gray-500 [overflow-wrap:anywhere]">{k}</dt>
-              <dd className="min-w-0 whitespace-pre-wrap text-gray-800 [overflow-wrap:anywhere]">
-                {fullValue(v)}
-              </dd>
-            </Fragment>
-          ))}
-        </dl>
-      ) : null}
-      {entry.details != null ? (
-        <details>
-          <summary className="w-fit cursor-pointer rounded text-[11px] font-medium text-gray-500 transition-colors duration-150 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400">
-            Raw JSON
-          </summary>
-          <pre className="mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md border border-gray-200 bg-white px-3 py-2 text-[11px] text-gray-600">
-            {JSON.stringify(entry.details, null, 2)}
-          </pre>
-        </details>
-      ) : null}
-    </div>
-  );
+  return <AuditEntryDetails meta={meta} details={entry.details} />;
 }
 
 // A long ID is cut short to fit its column; the whole of it stays in the text,
@@ -433,25 +329,6 @@ function SourceCell({ entry }: { entry: AuditLogEntry }) {
     );
   }
   return <span className={`${CELL_LABEL} text-gray-400`}>Not recorded</span>;
-}
-
-function Chevron({ open }: { open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 20 20"
-      fill="currentColor"
-      aria-hidden="true"
-      className={`h-3.5 w-3.5 transition-transform duration-150 motion-reduce:transition-none ${
-        open ? 'rotate-90' : ''
-      }`}
-    >
-      <path
-        fillRule="evenodd"
-        d="M7.21 14.77a.75.75 0 01.02-1.06L11.168 10 7.23 6.29a.75.75 0 111.04-1.08l4.5 4.25a.75.75 0 010 1.08l-4.5 4.25a.75.75 0 01-1.06-.02z"
-        clipRule="evenodd"
-      />
-    </svg>
-  );
 }
 
 export function AuditTab() {
@@ -753,7 +630,7 @@ export function AuditTab() {
                           </td>
                           <td className="px-4 py-2.5 align-top">
                             <div className="truncate text-[12px] leading-5">
-                              <DetailSummary entry={entry} />
+                              <AuditChangeSummary details={entry.details} />
                             </div>
                           </td>
                           <td className="px-4 py-2.5 align-top">
@@ -774,7 +651,7 @@ export function AuditTab() {
                               aria-label={`${isOpen ? 'Hide' : 'Show'} details of ${actionLabel(entry.action)}, ${absoluteTs}`}
                               className="inline-flex h-7 w-7 items-center justify-center rounded-md text-gray-400 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400"
                             >
-                              <Chevron open={isOpen} />
+                              <DisclosureChevron open={isOpen} />
                             </button>
                           </td>
                         </tr>
