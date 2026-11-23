@@ -13,6 +13,7 @@ No route returns the content of a request or the value of an API key.
 
 from __future__ import annotations
 
+from decimal import Decimal  # noqa: TC003 -- FastAPI reads the annotation at runtime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -26,6 +27,7 @@ from serving.schemas_organization import (
     ListOrganizationRequestsResponse,
     MemberDetailResponse,
     MemberModelsResponse,
+    MembersSummaryResponse,
     ModelUsageResponse,
     OrganizationMember,
     OrganizationMessageResponse,
@@ -49,7 +51,18 @@ from serving.storage import organizations as org_store
 router = APIRouter(prefix="/user/organization", tags=["Organization"])
 
 MemberOrder = Literal[
-    "name", "status", "last_request", "requests", "tokens", "spend", "month", "limit_use", "joined"
+    "name",
+    "status",
+    "last_request",
+    "requests",
+    "tokens",
+    "spend",
+    "today",
+    "week",
+    "month",
+    "alltime",
+    "limit_use",
+    "joined",
 ]
 MemberStatus = Literal["active", "suspended", "removed", "pending_approval"]
 AuditCategory = Literal["membership", "limits", "access", "organization"]
@@ -98,9 +111,13 @@ async def get_overview(
 
 @router.get("/members", response_model=ListMembersResponse)
 async def list_members(
-    period: Period = "7d",
+    period: Period = "30d",
     search: str | None = Query(default=None, max_length=200),
     status: MemberStatus | None = None,
+    limit_state: Literal["near", "over"] | None = None,
+    min_cost_today: Decimal | None = Query(default=None, ge=0),
+    min_cost_month: Decimal | None = Query(default=None, ge=0),
+    currency: Literal["USD", "CNY"] | None = None,
     sort_by: MemberOrder = "name",
     order: Literal["asc", "desc"] = "asc",
     limit: int = Query(default=50, ge=1, le=500),
@@ -108,13 +125,36 @@ async def list_members(
     admin: OrganizationAdmin = Depends(require_organization_admin),
     op_store=Depends(get_operational_store),
 ) -> ListMembersResponse:
-    """One page of the organization's members, with their usage in a period."""
+    """One page of the organization's members.
+
+    Each row has the spend of today, of the last 7 days, of this month and of
+    all time, whatever the period; ``period`` is that of its requests and
+    tokens. ``limit_state`` keeps the members near (80% or more) or over
+    their monthly limit. ``min_cost_today`` and ``min_cost_month`` are in
+    ``currency`` when it is given, and in USD otherwise.
+
+    Raises:
+        HTTPException: 409 when a threshold is in a currency that is not the
+            ledger's any more: the console read it before the currency changed.
+    """
+    policy = get_accounting_policy()
+    thresholds = {"min_today": min_cost_today, "min_month": min_cost_month}
+    if currency is not None and any(value is not None for value in thresholds.values()):
+        if currency != policy.currency:
+            raise HTTPException(409, "Accounting currency changed; reload the filters")
+    else:
+        thresholds = {
+            name: None if value is None else policy.from_usd(value)
+            for name, value in thresholds.items()
+        }
     found = await organizations.members_view(
         op_store,
         admin.organization_id,
         period,
         search=search,
         status=status,
+        limit_state=limit_state,
+        **thresholds,
         sort_by=sort_by,
         descending=order == "desc",
         limit=limit,
@@ -124,6 +164,19 @@ async def list_members(
         raise HTTPException(404, "No such organization.")
     total, members = found
     return ListMembersResponse(total=total, members=[OrganizationMember(**m) for m in members])
+
+
+# Before ``/members/{user_id}``: the first route that matches a path answers it.
+@router.get("/members/summary", response_model=MembersSummaryResponse)
+async def get_members_summary(
+    admin: OrganizationAdmin = Depends(require_organization_admin),
+    op_store=Depends(get_operational_store),
+) -> MembersSummaryResponse:
+    """The two cards above the member list: near or over the limit, and today's top spenders."""
+    view = await organizations.members_summary_view(op_store, admin.organization_id)
+    if view is None:
+        raise HTTPException(404, "No such organization.")
+    return MembersSummaryResponse(**view)
 
 
 @router.get("/members/{user_id}", response_model=MemberDetailResponse)

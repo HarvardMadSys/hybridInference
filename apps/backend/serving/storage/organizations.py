@@ -181,9 +181,20 @@ MEMBER_ORDER = {
     "tokens": "COALESCE(logged.total_tokens, 0)",
     "spend": "COALESCE(spent.cost_amount, 0)",
     "month": "COALESCE(month.cost_amount, 0)",
+    "today": "COALESCE(fixed.today_amount, 0)",
+    "week": "COALESCE(fixed.week_amount, 0)",
+    "alltime": "COALESCE(fixed.alltime_amount, 0)",
     "limit_use": _LIMIT_USE,
     "joined": "s.joined_at",
 }
+
+#: How far into its monthly limit a member is that a list may be narrowed to:
+#: ``near`` is 80% of it or more, as in Admin, and ``over`` all of it or more.
+#: A member without a limit is in neither.
+LIMIT_STATES = {"near": "0.8", "over": "1"}
+
+#: How many days the trend of a member's spend has, with today.
+TREND_DAYS = 7
 
 #: The member statuses a list may be narrowed to, one for each word a member is
 #: shown with: ``removed`` is a member the organization removed, ``suspended``
@@ -1234,25 +1245,48 @@ class PostgresOrganizationsMixin:
         search: str | None = None,
         status: str | None = None,
         user_id: str | None = None,
+        limit_state: str | None = None,
+        min_today: Any = None,
+        min_month: Any = None,
+        spent_today: bool = False,
         sort_by: str = "name",
         descending: bool = False,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[dict]]:
-        """One page of members with their usage from *first_day* to *last_day* (UTC).
+        """One page of members with their figures.
+
+        The requests, the tokens and ``cost`` are those from *first_day* to
+        *last_day* (UTC). The spend of today, of the last
+        :data:`TREND_DAYS` days, of this month and of all time is the same for
+        every period, with one value for each day of the trend (``spend_days``).
 
         Returns how many members match with the page. *user_id* keeps one
         member; *search* matches a name or an email; *status* is a key of
-        :data:`MEMBER_STATUS`; *sort_by* a key of :data:`MEMBER_ORDER`.
+        :data:`MEMBER_STATUS`; *limit_state* a key of :data:`LIMIT_STATES`;
+        *min_today* and *min_month* are amounts in the ledger currency that the
+        spend of today and of this month must reach; *spent_today* keeps the
+        members that spent anything today; *sort_by* is a key of
+        :data:`MEMBER_ORDER`.
         """
         if sort_by not in MEMBER_ORDER:
             raise ValueError(f"unknown member order {sort_by!r}")
         if status is not None and status not in MEMBER_STATUS:
             raise ValueError(f"unknown member status {status!r}")
+        if limit_state is not None and limit_state not in LIMIT_STATES:
+            raise ValueError(f"unknown limit state {limit_state!r}")
         start, end = utc_bounds(first_day, last_day)
+        today = datetime.now(UTC).date()
+        trend_start = today - timedelta(days=TREND_DAYS - 1)
         filters = _member_filters(status, user_id, search)
-        count_params: list[Any] = [organization_id]
-        count_where = _render(filters, count_params)
+        if limit_state is not None:
+            filters.append((f"({_LIMIT_USE}) >= {LIMIT_STATES[limit_state]}", _NO_PARAMETER))
+        if min_today is not None:
+            filters.append(("COALESCE(fixed.today_amount, 0) >= ${n}", min_today))
+        if min_month is not None:
+            filters.append(("COALESCE(month.cost_amount, 0) >= ${n}", min_month))
+        if spent_today:
+            filters.append(("COALESCE(fixed.today_amount, 0) > 0", _NO_PARAMETER))
         params: list[Any] = [
             organization_id,
             get_accounting_policy().usd_to_currency_rate,
@@ -1260,11 +1294,12 @@ class PostgresOrganizationsMixin:
             last_day.isoformat(),
             start,
             end,
+            today.isoformat(),
+            trend_start.isoformat(),
         ]
         where = _render(filters, params)
-        params.extend([limit, offset])
         direction = "DESC" if descending else "ASC"
-        sql = (
+        figures = (
             f"WITH {_SCOPE}, "
             "spent AS ("
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
@@ -1274,6 +1309,16 @@ class PostgresOrganizationsMixin:
             f"  SELECT c.user_id, SUM(c.cost_usd) AS cost_usd, SUM({_AMOUNT}) AS cost_amount "
             "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
             f"  WHERE c.day >= {_THIS_MONTH} GROUP BY c.user_id), "
+            # Today, the days of the trend, and every day since the joining.
+            "fixed AS ("
+            "  SELECT c.user_id, "
+            "         SUM(c.cost_usd) FILTER (WHERE c.day = $7) AS today_usd, "
+            f"         SUM({_AMOUNT}) FILTER (WHERE c.day = $7) AS today_amount, "
+            "         SUM(c.cost_usd) FILTER (WHERE c.day >= $8) AS week_usd, "
+            f"         SUM({_AMOUNT}) FILTER (WHERE c.day >= $8) AS week_amount, "
+            f"         SUM(c.cost_usd) AS alltime_usd, SUM({_AMOUNT}) AS alltime_amount "
+            "  FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
+            f"  WHERE {_SINCE_JOINED_DAY} GROUP BY c.user_id), "
             "seen AS ("
             "  SELECT c.user_id, MAX(c.last_request_at) "
             "         FILTER (WHERE c.last_request_at >= s.joined_at) AS last_request_at "
@@ -1284,6 +1329,22 @@ class PostgresOrganizationsMixin:
             "  FROM api_logs l JOIN scope s ON s.user_id = l.user_id "
             f"  WHERE l.timestamp >= $5 AND l.timestamp < $6 AND {_SINCE_JOINED_LOG} "
             "  GROUP BY l.user_id) "
+        )
+        # One source for the count and for the page: a filter on a figure
+        # narrows both.
+        source = (
+            "FROM scope s JOIN users u ON u.id = s.user_id "
+            "JOIN orgs o ON o.id = $1 "
+            f"{_own_quota_join('s.user_id')}"
+            "LEFT JOIN spent ON spent.user_id = s.user_id "
+            "LEFT JOIN month ON month.user_id = s.user_id "
+            "LEFT JOIN fixed ON fixed.user_id = s.user_id "
+            "LEFT JOIN seen ON seen.user_id = s.user_id "
+            "LEFT JOIN logged ON logged.user_id = s.user_id "
+            f"WHERE {where} "
+        )
+        page = (
+            f"{figures}"
             "SELECT s.user_id, s.role, s.joined_at, s.removed_at, "
             "       u.email, u.user_name, u.status, u.role AS account_role, u.last_login_at, "
             f"       {_OWN_QUOTA_COLUMNS}, "
@@ -1293,28 +1354,45 @@ class PostgresOrganizationsMixin:
             "       COALESCE(spent.cost_amount, 0) AS cost_amount, "
             "       COALESCE(month.cost_usd, 0) AS spent_month_usd, "
             "       COALESCE(month.cost_amount, 0) AS spent_month_amount, "
+            "       COALESCE(fixed.today_usd, 0) AS spent_today_usd, "
+            "       COALESCE(fixed.today_amount, 0) AS spent_today_amount, "
+            "       COALESCE(fixed.week_usd, 0) AS spent_7d_usd, "
+            "       COALESCE(fixed.week_amount, 0) AS spent_7d_amount, "
+            "       COALESCE(fixed.alltime_usd, 0) AS spent_alltime_usd, "
+            "       COALESCE(fixed.alltime_amount, 0) AS spent_alltime_amount, "
             "       COALESCE(logged.requests, 0) AS requests, "
             "       COALESCE(logged.total_tokens, 0) AS total_tokens, "
             "       seen.last_request_at "
-            "FROM scope s JOIN users u ON u.id = s.user_id "
-            "JOIN orgs o ON o.id = $1 "
-            f"{_own_quota_join('s.user_id')}"
-            "LEFT JOIN spent ON spent.user_id = s.user_id "
-            "LEFT JOIN month ON month.user_id = s.user_id "
-            "LEFT JOIN seen ON seen.user_id = s.user_id "
-            "LEFT JOIN logged ON logged.user_id = s.user_id "
-            f"WHERE {where} "
+            f"{source}"
             f"ORDER BY {MEMBER_ORDER[sort_by]} {direction} NULLS LAST, s.user_id "
-            f"LIMIT ${len(params) - 1} OFFSET ${len(params)}"
+            f"LIMIT ${len(params) + 1} OFFSET ${len(params) + 2}"
         )
         async with self._pool.acquire() as conn:
-            total = await conn.fetchval(
-                f"WITH {_SCOPE} SELECT COUNT(*) FROM scope s JOIN users u ON u.id = s.user_id "
-                f"WHERE {count_where}",
-                *count_params,
+            total = await conn.fetchval(f"{figures}SELECT COUNT(*) {source}", *params)
+            rows = [dict(row) for row in await conn.fetch(page, *params, limit, offset)]
+            days = await conn.fetch(
+                f"WITH {_SCOPE} "
+                f"SELECT c.user_id, c.day, c.cost_usd, {_AMOUNT} AS cost_amount "
+                "FROM user_daily_cost c JOIN scope s ON s.user_id = c.user_id "
+                f"WHERE c.user_id = ANY($3::text[]) AND c.day >= $4 AND {_SINCE_JOINED_DAY}",
+                organization_id,
+                params[1],
+                [row["user_id"] for row in rows],
+                trend_start.isoformat(),
             )
-            rows = await conn.fetch(sql, *params)
-        return total, [dict(row) for row in rows]
+        spent_on = {(row["user_id"], row["day"]): row for row in days}
+        trend = [(trend_start + timedelta(days=offset)).isoformat() for offset in range(TREND_DAYS)]
+        for row in rows:
+            row["spend_days"] = [
+                {
+                    "day": day,
+                    "cost_usd": (spent_on.get((row["user_id"], day)) or {}).get("cost_usd") or 0,
+                    "cost_amount": (spent_on.get((row["user_id"], day)) or {}).get("cost_amount")
+                    or 0,
+                }
+                for day in trend
+            ]
+        return total, rows
 
     async def get_organization_usage(
         self,

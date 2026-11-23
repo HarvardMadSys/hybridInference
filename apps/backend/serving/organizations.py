@@ -443,6 +443,13 @@ def member_view(row: dict[str, Any], organization: dict[str, Any]) -> dict[str, 
         "cost_amount": row.get("cost_amount"),
         "spent_month_usd": row.get("spent_month_usd") or 0,
         "spent_month_amount": row.get("spent_month_amount"),
+        "spent_today_usd": row.get("spent_today_usd") or 0,
+        "spent_today_amount": row.get("spent_today_amount"),
+        "spent_7d_usd": row.get("spent_7d_usd") or 0,
+        "spent_7d_amount": row.get("spent_7d_amount"),
+        "spent_alltime_usd": row.get("spent_alltime_usd") or 0,
+        "spent_alltime_amount": row.get("spent_alltime_amount"),
+        "spend_days": row.get("spend_days") or [],
         "monthly_limit_usd": limit_usd,
         "monthly_limit_amount": limit_amount,
         "monthly_limit_source": source,
@@ -618,6 +625,43 @@ async def members_view(
         organization_id, first_day=first_day, last_day=last_day, **filters
     )
     return total, [member_view(row, organization) for row in rows]
+
+
+#: How many members a card above the member list names.
+SUMMARY_TOP = 5
+
+
+async def members_summary_view(op_store: Any, organization_id: str) -> dict[str, Any] | None:
+    """The two cards above the member list; None for no such organization.
+
+    Each card is the member list under one filter and one order, so a card
+    and the list it opens never disagree.
+    """
+    near = await members_view(
+        op_store,
+        organization_id,
+        "30d",
+        limit_state="near",
+        sort_by="limit_use",
+        descending=True,
+        limit=SUMMARY_TOP,
+    )
+    if near is None:
+        return None
+    spenders = await members_view(
+        op_store,
+        organization_id,
+        "30d",
+        spent_today=True,
+        sort_by="today",
+        descending=True,
+        limit=SUMMARY_TOP,
+    )
+    assert spenders is not None  # the organization was just read
+    return {
+        "near_limit": {"count": near[0], "top": near[1]},
+        "top_spenders_today": {"count": spenders[0], "top": spenders[1]},
+    }
 
 
 async def member_detail_view(

@@ -173,8 +173,21 @@ class OrganizationMessageResponse(BaseModel):
     message: str
 
 
+class SpendDay(MoneyResponse):
+    """What a member spent on one UTC day (``YYYY-MM-DD``)."""
+
+    day: str
+    cost_usd: float = 0.0
+    cost: Decimal | None = None
+
+
 class OrganizationMember(MoneyResponse):
     """One member, with its usage in the requested period.
+
+    The requests, the tokens and ``cost`` are those of the period. The four
+    ``spent_*`` figures are the same for every period: today, the last 7 days,
+    this month and all time, from the day the account became a member (this
+    month is the whole calendar month, the figure the limit is compared with).
 
     ``status`` is the account's status. ``removed`` is True for a member the
     organization removed: only such a member is the organization's to restore.
@@ -210,6 +223,14 @@ class OrganizationMember(MoneyResponse):
     cost: Decimal | None = None
     spent_month_usd: float = 0.0
     spent_month: Decimal | None = None
+    spent_today_usd: float = 0.0
+    spent_today: Decimal | None = None
+    spent_7d_usd: float = 0.0
+    spent_7d: Decimal | None = None
+    spent_alltime_usd: float = 0.0
+    spent_alltime: Decimal | None = None
+    #: The spend of each of the last 7 UTC days, the oldest first, with today.
+    spend_days: list[SpendDay] = Field(default_factory=list)
     monthly_limit_usd: float | None = None
     monthly_limit: Decimal | None = None
     monthly_limit_source: Literal["member", "default", "platform", "none"] = "none"
@@ -340,6 +361,26 @@ class ModelUsageResponse(BaseModel):
 
     period: Period
     models: list[ModelUsage]
+
+
+class MemberSummaryCard(BaseModel):
+    """How many members a card stands for, and the first of them."""
+
+    count: int
+    top: list[OrganizationMember]
+
+
+class MembersSummaryResponse(BaseModel):
+    """The two cards above the member list.
+
+    ``near_limit``: the members whose spend of this month is 80% or more of
+    the monthly limit that applies to them, the highest share first.
+    ``top_spenders_today``: the members that spent anything today, the highest
+    spend first.
+    """
+
+    near_limit: MemberSummaryCard
+    top_spenders_today: MemberSummaryCard
 
 
 class MemberAccount(BaseModel):
