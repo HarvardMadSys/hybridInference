@@ -1026,9 +1026,9 @@ export interface AdminRequestOffloadGroup {
   request_count: number;
   // Offloaded requests that failed anyway. Client disconnects are not counted.
   failed_count: number;
-  // Offloaded requests by the reason their log carries: `queue_wait`,
-  // `engine_wait` or `last_resort`. Keyed by string so a reason a newer gateway
-  // adds still arrives.
+  // Offloaded requests by the reason their log carries: `spillover` (the
+  // greedy router), `queue_wait`, `engine_wait` or `last_resort`. Keyed by
+  // string so a reason a newer gateway adds still arrives.
   reasons: Record<string, number>;
   // Every request the model had in the window, under the same filters.
   model_request_count: number;

@@ -22,7 +22,7 @@ import contextlib
 import copy
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 import aiohttp
@@ -31,6 +31,8 @@ from fastapi.responses import JSONResponse
 
 from routing.endpoint_health import failure_may_lose_prefix_cache
 from routing.endpoints import endpoint_id_for_adapter
+from routing.greedy import GreedyRouter
+from routing.offload import OFFLOAD_LAST_RESORT
 from routing.prefill_load import (
     conversation_fingerprint,
     estimate_prefill_tokens,
@@ -48,7 +50,11 @@ from serving.adapters.reasoning_effort import (
     effort_contract,
     translate_effort,
 )
-from serving.adapters.upstream_limiter import UpstreamSaturated
+from serving.adapters.upstream_limiter import (
+    UpstreamQueueWaitExpired,
+    UpstreamSaturated,
+    dispatch_queue_context,
+)
 from serving.auto_mode import (
     AnthropicStreamModelRenamer,
     AutoModelUnavailable,
@@ -112,7 +118,7 @@ from serving.utils.tokens import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, AsyncIterator, Callable, Mapping
+    from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Mapping
 
     from fastapi.exceptions import RequestValidationError
     from fastapi.responses import StreamingResponse
@@ -552,6 +558,66 @@ def _prompt_tokens(body: dict[str, Any], adapter) -> int:
     if adapter.native_format != "openai" and isinstance(output_config, dict):
         output_format = output_config.get("format")
     return estimate_prefill_tokens(messages, tools=tools, response_format=output_format)
+
+
+# --- Greedy models -----------------------------------------------------------
+
+#: What :func:`_unless_spilled` returns for a dispatch that left its engine's queue.
+_SPILLED: Any = object()
+
+
+@dataclass(frozen=True, slots=True)
+class _GreedySpill:
+    """A greedy model's request on its way to a local engine, and where it goes if the engine stays full.
+
+    The dispatch carries ``deadline`` into the engine's queue
+    (``serving.adapters.upstream_limiter``). Left there unsent at the deadline --
+    nothing has reached the engine, and nothing but keepalives the client -- the
+    request is served once more, as the client sent it, on ``cloud`` only, and
+    logged with ``offload`` as the reason it left its engine. That is this
+    surface's one fallback: the cloud failing is the client's answer.
+    """
+
+    deadline: float
+    cloud: frozenset[str]
+    offload: str
+
+
+def _greedy_router(services: MessagesServices, canonical: str) -> GreedyRouter | None:
+    """Return the router of ``canonical`` when it is a greedy one (``router: greedy``)."""
+    registry = getattr(services.app_services, "model_router_registry", None)
+    if registry is None:
+        return None
+    try:
+        router = registry.get_router(canonical)
+    except Exception:  # pragma: no cover - a model the registry cannot build is not greedy
+        return None
+    return router if isinstance(router, GreedyRouter) else None
+
+
+def _pick_on(router_exec, canonical: str, user_role: str, endpoints: frozenset[str]):
+    """Return the adapter this surface picks among ``endpoints``, or None when none is eligible.
+
+    The surface's own rule (``_pick_dispatch_adapter``): admission first, in
+    route order, then the key-tier preference.
+    """
+    if not endpoints:
+        return None
+    eligible = router_exec.eligible_adapters(canonical, endpoint_scope=endpoints)
+    if not eligible:
+        return None
+    adapter, _weight = _pick_adapter_for_role(eligible, user_role)
+    return adapter
+
+
+async def _unless_spilled(dispatch: Awaitable[Any], spill: _GreedySpill | None) -> Any:
+    """Await a dispatch, or return :data:`_SPILLED` when it left its engine's queue for the cloud."""
+    try:
+        return await dispatch
+    except UpstreamQueueWaitExpired:
+        if spill is None:
+            raise
+        return _SPILLED
 
 
 # --- Model resolution ------------------------------------------------------
@@ -1898,6 +1964,11 @@ class MessagesConstraints:
     pin_model: bool
     anthropic_version: str | None
     batch_routes_only: bool = False
+    #: The endpoints a greedy model's request may use once it left its engine's
+    #: queue for the cloud (``_GreedySpill``); None for any.
+    endpoint_scope: frozenset[str] | None = None
+    #: Why such a request left its engine, for its log (``_routing["offload"]``).
+    offload: str | None = None
 
     @classmethod
     def online(cls) -> MessagesConstraints:
@@ -2342,6 +2413,70 @@ async def execute_messages(
 
     forwarded_headers = _extract_forwarded_headers(ctx.origin.headers)
 
+    # A greedy model's request goes to one of its local engines first, and to
+    # the cloud when the engines stay full (routing/greedy.py). This surface
+    # picks its own adapter, so it asks the model's router where, by the
+    # router's own rule. Not for an auto or rerouted request, which a second
+    # pass could serve under another model, nor for a batch item, which is
+    # served as written on its own routes.
+    offload_reason = constraints.offload
+    greedy_spill: _GreedySpill | None = None
+    greedy = (
+        _greedy_router(services, canonical)
+        if auto_selection is None
+        and reroute_info is None
+        and constraints.adapter_requirement is None
+        else None
+    )
+    if greedy is not None:
+        plan_messages, plan_tools = _prefill_inputs(body)
+        plan = greedy.surface_plan(
+            canonical,
+            estimate_prefill_tokens(plan_messages, tools=plan_tools),
+            imposed=constraints.endpoint_scope,
+        )
+        user_role = (user_ctx or {}).get("role", "free")
+        local = _pick_on(router_exec, canonical, user_role, plan.local)
+        chosen = local or _pick_on(router_exec, canonical, user_role, plan.cloud)
+        if chosen is not None and chosen is not adapter:
+            try:
+                require_source_pricing(chosen.config)
+            except HTTPException as exc:
+                return _messages_error(
+                    exc.status_code, safe_detail_text(exc.detail, exc.status_code)
+                )
+            adapter = chosen
+        if local is not None and plan.deadline is not None:
+            greedy_spill = _GreedySpill(
+                deadline=plan.deadline, cloud=plan.cloud, offload=plan.offload
+            )
+        elif local is None and chosen is not None and offload_reason is None:
+            # No local engine could take it at all.
+            offload_reason = OFFLOAD_LAST_RESORT
+    # The deadline goes with the dispatch into its engine's queue.
+    queue_terms = (
+        dispatch_queue_context(deadline=greedy_spill.deadline) if greedy_spill is not None else {}
+    )
+
+    async def _spill(spill: _GreedySpill) -> MessagesOutcome:
+        """Serve the request once more, as the client sent it, on the model's cloud routes."""
+        logger.info(
+            "route_offload",
+            extra={
+                "event": "route_offload",
+                "model_id": canonical,
+                "reason": spill.offload,
+                "router": "greedy",
+                "surface": "anthropic_messages",
+            },
+        )
+        return await execute_messages(
+            _copy_of(request_payload_for_log),
+            ctx,
+            services,
+            replace(constraints, endpoint_scope=spill.cloud, offload=spill.offload),
+        )
+
     # Endpoint health is read on the way in (adapter admission) but, until this
     # surface recorded its own outcomes, was written only by the chat path. An
     # endpoint served exclusively through /v1/messages -- which is the bulk of
@@ -2515,6 +2650,8 @@ async def execute_messages(
         # other rung of its fallback chain is reachable.
         "endpoint_id": dispatch_endpoint_id,
     }
+    if offload_reason is not None:
+        metadata["offload"] = offload_reason
     # The session resolved from the client's request, back where the body was
     # still pristine (see above).
     if declared_session is not None:
@@ -2569,6 +2706,9 @@ async def execute_messages(
             # (``dispatch_watch.report_sent``); see the usage resolution below.
             upstream_dispatch = DispatchRecord()
             stream_failed = False
+            # Left its engine's queue for the cloud before any frame (_GreedySpill).
+            spilled = False
+            sent_frames = False
             stream_status_code: int = 200
             stream_error_message: str | None = None
             stream_error_operator: str | None = None
@@ -2648,7 +2788,9 @@ async def execute_messages(
                     return well_formed
 
                 # The adapter runs in the reader's copy of this context.
-                with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch}):
+                with req_ctx.push(
+                    **{req_ctx.UPSTREAM_DISPATCH_RECORD: upstream_dispatch, **queue_terms}
+                ):
                     reader_task = asyncio.create_task(
                         pump_stream(upstream, chunk_queue, end=_STREAM_SENTINEL)
                     )
@@ -2744,6 +2886,13 @@ async def execute_messages(
                                 yield held
                             break
                         if isinstance(item, Exception):
+                            if (
+                                greedy_spill is not None
+                                and isinstance(item, UpstreamQueueWaitExpired)
+                                and not sent_frames
+                            ):
+                                spilled = True
+                                break
                             raise item
                         chunk = item
                         if isinstance(chunk, str):
@@ -2764,6 +2913,7 @@ async def execute_messages(
                             chunk = renamer.feed(chunk)
                             if not chunk:
                                 continue
+                        sent_frames = True
                         yield chunk
                 finally:
                     reader_task.cancel()
@@ -2907,7 +3057,9 @@ async def execute_messages(
                 # recovering endpoint its whole cooldown.
                 health_registry.end_dispatch(dispatch_claim)
                 latency_ms = int((time.time() - start) * 1000)
-                if log_store:
+                # A request that left its engine's queue for the cloud sent
+                # nothing: the cloud attempt below writes its row.
+                if log_store and not spilled:
                     final_acc = _finalize_response_acc(response_acc)
                     # A client disconnect (CancelledError) skips the adapter's
                     # end-of-stream usage_sink flush, so request_usage is still
@@ -2964,6 +3116,18 @@ async def execute_messages(
                         # a stream the client cut short is logged with.
                         charge=not stream_failed,
                     )
+            if spilled and greedy_spill is not None:
+                # Nothing but keepalives has reached the client: the cloud's
+                # answer is this stream's.
+                outcome = await _spill(greedy_spill)
+                if isinstance(outcome, MessagesStream):
+                    try:
+                        async for frame in outcome.frames:
+                            yield frame
+                    finally:
+                        await outcome.aclose()
+                elif isinstance(outcome, MessagesError):
+                    yield f"event: error\ndata: {json.dumps(outcome.body())}\n\n".encode()
 
         return MessagesStream(
             _gen(),
@@ -2979,14 +3143,18 @@ async def execute_messages(
     # Marked when the request leaves the gateway, for billing a cancellation.
     dispatch = dispatch_watch.DispatchRecord()
     try:
-        with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch}):
-            resp = await adapter.messages(
-                body,
-                request_id=request_id,
-                usage_sink=request_usage,
-                extra_headers=forwarded_headers,
+        with req_ctx.push(**{req_ctx.UPSTREAM_DISPATCH_RECORD: dispatch, **queue_terms}):
+            resp = await _unless_spilled(
+                adapter.messages(
+                    body,
+                    request_id=request_id,
+                    usage_sink=request_usage,
+                    extra_headers=forwarded_headers,
+                ),
+                greedy_spill,
             )
-        prefill_load.release(prefill_lease, prefill_confirmed=True)
+        if resp is not _SPILLED:
+            prefill_load.release(prefill_lease, prefill_confirmed=True)
     except HTTPException as exc:
         # Not str(exc.detail): unlike the router's own HTTPExceptions (static
         # contract text), one raised from inside adapter.messages() is an
@@ -3213,6 +3381,9 @@ async def execute_messages(
         # nothing at all.
         health_registry.end_dispatch(dispatch_claim)
 
+    if resp is _SPILLED and greedy_spill is not None:
+        # Left its engine's queue unsent: the cloud serves it, and logs it.
+        return await _spill(greedy_spill)
     # Every branch above returns, so reaching here means the adapter produced a
     # response. Recorded before logging so a slow log store can't delay the
     # recovery signal that closes an open circuit.

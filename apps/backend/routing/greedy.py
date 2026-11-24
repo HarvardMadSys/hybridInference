@@ -78,7 +78,13 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
-__all__ = ["OFFLOAD_SPILLOVER", "GreedyRouter", "GreedyRoutingError", "cutoff_deadline"]
+__all__ = [
+    "OFFLOAD_SPILLOVER",
+    "GreedyRouter",
+    "GreedyRoutingError",
+    "SurfacePlan",
+    "cutoff_deadline",
+]
 
 #: ``_routing["offload"]`` for a request that found no free place and went to the
 #: cloud without waiting. The other reasons are the queue-wait offload's:
@@ -202,6 +208,34 @@ class _Plan:
     spillover: bool
     capped: bool = False
     too_long: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class SurfacePlan:
+    """Where a request goes, for a surface that dispatches its own adapter.
+
+    ``/v1/messages`` forwards an Anthropic body the router has no method for, so
+    it picks the adapter itself; this is what :meth:`GreedyRouter.surface_plan`
+    tells it, by the router's own rules.
+
+    Attributes:
+        local: The self-hosted endpoints to send the request to first.
+        cloud: The endpoints it may go to instead.
+        deadline: The ``time.monotonic()`` time a dispatch to a local engine stops
+            waiting in the engine's queue, or None when no cloud route could take
+            the request, which then waits its turn.
+        spillover: Whether the deadline had passed on arrival.
+    """
+
+    local: frozenset[str]
+    cloud: frozenset[str]
+    deadline: float | None
+    spillover: bool
+
+    @property
+    def offload(self) -> str:
+        """Return ``_routing["offload"]`` for a request that leaves the queue for the cloud."""
+        return OFFLOAD_SPILLOVER if self.spillover else OFFLOAD_QUEUE_WAIT
 
 
 def _frame(routing: dict[str, Any]) -> str:
@@ -571,6 +605,36 @@ class GreedyRouter:
             spillover=deadline is not None and deadline <= arrival,
             capped=capped,
             too_long=too_long_local | too_long_cloud,
+        )
+
+    def surface_plan(
+        self,
+        model_id: str,
+        prompt_tokens: int,
+        *,
+        imposed: frozenset[str] | None = None,
+    ) -> SurfacePlan:
+        """Plan a request for a surface that dispatches its own adapter.
+
+        The ranges, the deadline and the cloud check of this router's own
+        requests (:meth:`_plan`), so a surface that cannot hand this router its
+        request still follows the same rule: a local engine while it has a
+        place, the cloud once the request's deadline passes. ``imposed`` is the
+        caller's range, ``prompt_tokens`` the request's estimate.
+        """
+        self._ensure_registered()
+        fixed, _local_pool, _cloud_pool = self._require_attached()
+        arrival = time.monotonic()
+        local, _too_long_local = self._local_range(model_id, imposed, prompt_tokens)
+        cloud, _too_long_cloud, _capped = self._cloud_range(model_id, imposed, prompt_tokens)
+        deadline: float | None = None
+        if local and cloud and self._cloud_takes(fixed, model_id, cloud, None):
+            deadline = self._deadline(prompt_tokens, arrival)
+        return SurfacePlan(
+            local=local,
+            cloud=cloud,
+            deadline=deadline,
+            spillover=deadline is not None and deadline <= arrival,
         )
 
     def _local_range(

@@ -18,6 +18,11 @@ const WINDOW_LABEL = '24h';
 /** The reasons the router records on an offloaded request, in column order. */
 const REASON_COLUMNS = [
   {
+    reason: 'spillover',
+    label: 'Spillover',
+    title: 'The engine had no free place, so the request went to the cloud at once',
+  },
+  {
     reason: 'queue_wait',
     label: 'Queue wait',
     title: 'An earlier attempt waited out the wait for an outbound slot in the gateway',

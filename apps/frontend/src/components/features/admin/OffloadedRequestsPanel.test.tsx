@@ -89,6 +89,7 @@ describe('OffloadedRequestsPanel', () => {
     expect(headers()).toEqual([
       'Model',
       'Offload route',
+      'Spillover',
       'Queue wait',
       'Engine wait',
       'Last resort',
@@ -99,6 +100,7 @@ describe('OffloadedRequestsPanel', () => {
     expect(rowCells('glm-4.6:reserved-api')).toEqual([
       'glm-4.6',
       'glm-4.6:reserved-api',
+      '—',
       '5',
       '3',
       '1',
@@ -110,6 +112,7 @@ describe('OffloadedRequestsPanel', () => {
     expect(rowCells('qwen3-coder:openrouter-api')).toEqual([
       'qwen3-coder',
       'qwen3-coder:openrouter-api',
+      '—',
       '—',
       '4',
       '—',
@@ -130,7 +133,25 @@ describe('OffloadedRequestsPanel', () => {
     render(<OffloadedRequestsPanel {...defaultProps} />);
 
     await screen.findByText('glm-4.6:reserved-api');
-    expect(rowCells('glm-4.6:reserved-api')[6]).toBe('<0.1%');
+    expect(rowCells('glm-4.6:reserved-api')[7]).toBe('<0.1%');
+  });
+
+  it('counts a request the greedy router sent to the cloud at once under Spillover', async () => {
+    vi.mocked(getRecentRequestOffloads).mockResolvedValue(
+      makeResponse([
+        makeGroup({
+          endpoint_id: 'glm-4.6:cloud-api',
+          request_count: 8,
+          reasons: { spillover: 6, queue_wait: 2 },
+        }),
+      ]),
+    );
+
+    render(<OffloadedRequestsPanel {...defaultProps} />);
+
+    await screen.findByText('glm-4.6:cloud-api');
+    expect(headers()).not.toContain('Other');
+    expect(rowCells('glm-4.6:cloud-api').slice(2, 7)).toEqual(['6', '2', '—', '—', '8']);
   });
 
   it('adds an Other column only for a reason it has no column for', async () => {
@@ -144,7 +165,7 @@ describe('OffloadedRequestsPanel', () => {
 
     await screen.findByText('glm-4.6:reserved-api');
     expect(headers()).toContain('Other');
-    expect(rowCells('glm-4.6:reserved-api').slice(2, 7)).toEqual(['9', '—', '—', '2', '11']);
+    expect(rowCells('glm-4.6:reserved-api').slice(2, 8)).toEqual(['—', '9', '—', '—', '2', '11']);
   });
 
   it('asks for the past day under the tab filters', async () => {
