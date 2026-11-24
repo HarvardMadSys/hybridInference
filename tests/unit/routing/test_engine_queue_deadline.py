@@ -399,7 +399,7 @@ async def test_every_engine_left_unsent_reports_the_queue_and_no_failed_attempt(
         await _stream(router, options)
 
     assert caught.value._routing["failed_attempts"] == []  # type: ignore[attr-defined]
-    assert engines_left_unsent(caught.value) == ()
+    assert engines_left_unsent(caught.value) == (ENGINE_ID, OTHER_ID)
     assert (_expired(), _expired(OTHER_ADDRESS)) == (1, 1)
     first.answer(0)
     second.answer(0)

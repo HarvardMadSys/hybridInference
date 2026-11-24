@@ -55,6 +55,7 @@ from routing.routers import (
     _configured_context_window,
     _serves_caller,
     adapter_supports_modalities,
+    dispatch_walk,
     engines_left_unsent,
 )
 from serving.adapters.key_pool import KeyPoolExhausted
@@ -63,6 +64,7 @@ from serving.adapters.upstream_limiter import (
     EngineQueueUnavailable,
     UpstreamQueueWaitExpired,
     UpstreamSaturated,
+    engine_address,
     get_upstream_limiter,
     is_local_endpoint,
 )
@@ -132,32 +134,29 @@ def _left_unsent(exc: BaseException) -> bool:
 
 
 #: What a route raises without sending anything upstream: no outbound place in
-#: this gateway's own limiter, or no key the caller may use.
+#: this gateway's own limiter, or no key the caller may use (its role-restricted
+#: kind included).
 _NOTHING_SENT = (UpstreamSaturated, KeyPoolExhausted)
 
 
 def _sent_to(exc: BaseException, record: dict[str, Any]) -> str | None:
     """Return the cloud route a failed cloud step sent the request to, or None.
 
-    ``record`` is the ledger's record of the step. The pool walks its routes and
-    raises one route's error, so an error raised before anything was sent
-    (:data:`_NOTHING_SENT`) can still hide a route that was sent the request. The
-    error's routing block lists every route the pool tried, and marks
-    ``uncharged`` those that ended without anything charged to the route.
+    The pool's walk records which of its attempts left this gateway
+    (``DispatchWalk.sent``), whatever each upstream answered then, so a route
+    that timed out after it was sent counts and one that waited for an outbound
+    place does not. The first is the route the request was offloaded to. An
+    error that ended no walk is read by its type, with ``record``, the ledger's
+    record of the step: what never leaves the gateway (:data:`_NOTHING_SENT`)
+    sent nothing, and anything else is the route's own answer.
     """
-    if not isinstance(exc, _NOTHING_SENT):
-        endpoint = record.get("endpoint_id")
-        return str(endpoint) if endpoint else _CLOUD
-    routing = getattr(exc, "_routing", None)
-    tried = routing.get("failed_attempts") if isinstance(routing, dict) else None
-    for attempt in tried if isinstance(tried, list) else ():
-        if (
-            isinstance(attempt, dict)
-            and not attempt.get("uncharged")
-            and attempt.get("endpoint_id")
-        ):
-            return str(attempt["endpoint_id"])
-    return None
+    walk = dispatch_walk(exc)
+    if walk is not None:
+        return walk.sent[0] if walk.sent else None
+    if isinstance(exc, _NOTHING_SENT):
+        return None
+    endpoint = record.get("endpoint_id")
+    return str(endpoint) if endpoint else _CLOUD
 
 
 def _caller_owns_dispatch(options: RoutingRequestOptions | None) -> bool:
@@ -179,25 +178,30 @@ def _caller_owns_dispatch(options: RoutingRequestOptions | None) -> bool:
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
-    """One request's steps, decided when it arrives.
+    """One request's terms, decided when it arrives.
 
-    ``local`` and ``cloud`` are each step's options, or None when that side
-    cannot take the request at all. ``local_retry`` is the local step without a
-    deadline. ``spillover`` is whether the deadline had passed on arrival, which
-    names the reason a request that left the queue goes to the cloud. The rest
-    say why a range is narrower than its pool's, for the error a request that
-    neither side can take is told: ``capped``, its prompt is over
-    ``cloud_max_input_tokens`` and the cloud had routes; ``too_long``, the routes
-    whose configured window cannot fit it; ``prompt_tokens``, its estimate.
+    ``local`` is the first step's options, or None when no local engine can take
+    the request; that step runs at once. A later step works its range out again
+    just before it runs (``GreedyRouter._cloud_options``, ``_retry_options``), from
+    the pools' ranges then: a request can wait long enough for a route edit to
+    land first, and a range taken from the table it replaced names endpoints the
+    pool no longer has. ``base`` is the caller's options every step starts from,
+    ``imposed`` the caller's own range, and ``prompt_tokens`` the estimate every
+    step fits routes to. ``spillover`` is whether the deadline had passed on
+    arrival, which names the reason a request that left the queue goes to the
+    cloud. ``capped`` and ``too_long`` say why the ranges were narrower than the
+    pools' on arrival, for the error a request no side can take is told: its
+    prompt is over ``cloud_max_input_tokens`` and the cloud had routes; the
+    routes whose configured window cannot fit it.
     """
 
+    base: RoutingRequestOptions
+    imposed: frozenset[str] | None
+    prompt_tokens: int
     local: RoutingRequestOptions | None
-    local_retry: RoutingRequestOptions | None
-    cloud: RoutingRequestOptions | None
     spillover: bool
     capped: bool = False
     too_long: frozenset[str] = frozenset()
-    prompt_tokens: int = 0
 
 
 def _frame(routing: dict[str, Any]) -> str:
@@ -301,8 +305,9 @@ class GreedyRouter:
         self._stopped = False
         # The limiter's token for this router's registration (set_engine_queues).
         self._registration: object | None = None
-        # The engines (base URLs) the last registration that succeeded named: the
-        # only self-hosted engines a request is sent to (see _register).
+        # The engines the last registration that succeeded named, as the limiter
+        # knows them (host:port): the only self-hosted engines a request is sent
+        # to (see _register).
         self._queued: frozenset[str] = frozenset()
 
     # ------------------------------------------------------------------
@@ -402,7 +407,8 @@ class GreedyRouter:
         return frozenset(
             endpoint_id_for_adapter(adapter)
             for adapter in self._local_adapters()
-            if getattr(adapter.config, "base_url", None) in self._queued
+            if getattr(adapter.config, "base_url", None)
+            and engine_address(adapter.config.base_url) in self._queued
         )
 
     def _require_attached(self) -> tuple[FixedRouter, LocalBackend, FixedCloudBackend]:
@@ -443,7 +449,7 @@ class GreedyRouter:
             self._queued = frozenset()
             return
         self._registration = limiter.set_engine_queues(self._model_id, engines)
-        self._queued = frozenset(engines)
+        self._queued = frozenset(engine_address(base_url) for base_url in engines)
 
     async def start(self) -> bool:
         """Register this model's engine queues; True when this call did it."""
@@ -462,7 +468,8 @@ class GreedyRouter:
         it for the same model, and started first, keeps the queues it registered.
         A router that registered on its first request without being started
         (:meth:`_ensure_registered`) is cleared all the same. A stopped router
-        registers nothing again until it is started.
+        registers nothing again until it is started, and sends a request it is
+        still handed to no self-hosted engine: it no longer has a queue there.
         """
         had_work = self._started or self._registration is not None
         self._started = False
@@ -470,6 +477,7 @@ class GreedyRouter:
         if self._model_id is not None and self._registration is not None:
             get_upstream_limiter().clear_engine_queues(self._model_id, token=self._registration)
         self._registration = None
+        self._queued = frozenset()
         return had_work
 
     def refresh_route_table(self) -> None:
@@ -536,7 +544,7 @@ class GreedyRouter:
         configured context window cannot fit the estimated prompt is passed over,
         as a cloud route is for a prompt over ``cloud_max_input_tokens``.
         """
-        fixed, local_pool, cloud_pool = self._require_attached()
+        fixed, _local_pool, _cloud_pool = self._require_attached()
         arrival = time.monotonic()
         prompt_tokens = estimate_prefill_tokens(
             messages,
@@ -544,34 +552,79 @@ class GreedyRouter:
             response_format=params.get("response_format"),
         )
         imposed = routing_options.endpoint_scope if routing_options is not None else None
-        local = self._in_range(local_pool, imposed, model_id) & self._queued_local()
-        cloud = self._in_range(cloud_pool, imposed, model_id)
-        local, too_long_local = self._fitting(model_id, local, prompt_tokens)
-        cloud, too_long_cloud = self._fitting(model_id, cloud, prompt_tokens)
-        cap = self._params.cloud_max_input_tokens
-        capped = bool(cloud) and cap is not None and prompt_tokens > cap
-        if capped:
-            cloud = frozenset()
+        local, too_long_local = self._local_range(model_id, imposed, prompt_tokens)
+        cloud, too_long_cloud, capped = self._cloud_range(model_id, imposed, prompt_tokens)
 
         deadline: float | None = None
         if local and cloud and self._cloud_takes(fixed, model_id, cloud, routing_options):
             deadline = self._deadline(prompt_tokens, arrival)
         base = routing_options if routing_options is not None else RoutingRequestOptions()
-        local_options = (
-            replace(base, endpoint_scope=local, engine_queue_deadline=deadline) if local else None
-        )
         return _Plan(
-            local=local_options,
-            local_retry=(
-                replace(local_options, engine_queue_deadline=None) if local_options else None
-            ),
-            cloud=(
-                replace(base, endpoint_scope=cloud, engine_queue_deadline=None) if cloud else None
+            base=base,
+            imposed=imposed,
+            prompt_tokens=prompt_tokens,
+            local=(
+                replace(base, endpoint_scope=local, engine_queue_deadline=deadline)
+                if local
+                else None
             ),
             spillover=deadline is not None and deadline <= arrival,
             capped=capped,
             too_long=too_long_local | too_long_cloud,
-            prompt_tokens=prompt_tokens,
+        )
+
+    def _local_range(
+        self, model_id: str, imposed: frozenset[str] | None, prompt_tokens: int
+    ) -> tuple[frozenset[str], frozenset[str]]:
+        """Return the self-hosted endpoints a step may use now, and those too small for the prompt.
+
+        The local pool's range inside the caller's, narrowed to the engines whose
+        queue this router registered and to windows that fit the prompt.
+        """
+        _fixed, local_pool, _cloud_pool = self._require_attached()
+        local = self._in_range(local_pool, imposed, model_id) & self._queued_local()
+        return self._fitting(model_id, local, prompt_tokens)
+
+    def _cloud_range(
+        self, model_id: str, imposed: frozenset[str] | None, prompt_tokens: int
+    ) -> tuple[frozenset[str], frozenset[str], bool]:
+        """Return the cloud endpoints a step may use now, those too small, and whether the cap cut it.
+
+        The cloud pool's range inside the caller's and inside the model's routes
+        that are not self-hosted now. The pool's range is derived when the route
+        table is refreshed, and a route edited into a self-hosted one since is an
+        engine this router has not registered: as a cloud route it would get its
+        requests past the engine's queue.
+        """
+        _fixed, _local_pool, cloud_pool = self._require_attached()
+        cloud = self._in_range(cloud_pool, imposed, model_id) & self._cloud_scope()
+        cloud, too_long = self._fitting(model_id, cloud, prompt_tokens)
+        cap = self._params.cloud_max_input_tokens
+        capped = bool(cloud) and cap is not None and prompt_tokens > cap
+        return (frozenset() if capped else cloud), too_long, capped
+
+    def _cloud_options(self, model_id: str, plan: _Plan) -> RoutingRequestOptions | None:
+        """Return the cloud step's options with its range worked out now, or None for none."""
+        cloud, _too_long, _capped = self._cloud_range(model_id, plan.imposed, plan.prompt_tokens)
+        return (
+            replace(plan.base, endpoint_scope=cloud, engine_queue_deadline=None) if cloud else None
+        )
+
+    def _retry_options(
+        self, model_id: str, plan: _Plan, engines: frozenset[str]
+    ) -> RoutingRequestOptions | None:
+        """Return the options of the local step after the cloud, or None when it has no engine.
+
+        Only ``engines``, the ones the first step left the request unsent at, and
+        only those still in the local range now: an engine that failed on the
+        request is not sent it again. No deadline: the request waits its turn.
+        """
+        if not engines:
+            return None
+        local, _too_long = self._local_range(model_id, plan.imposed, plan.prompt_tokens)
+        retry = local & engines
+        return (
+            replace(plan.base, endpoint_scope=retry, engine_queue_deadline=None) if retry else None
         )
 
     @staticmethod
@@ -648,8 +701,8 @@ class GreedyRouter:
 
         Its reason is ``last_resort`` when no local engine could take the request
         at all, the queue's when an engine left it unsent (``unsent``, see
-        :meth:`_left_engine_unsent`), and none after a local failure alone, which
-        goes to the cloud as an ordinary fallback.
+        :meth:`_engines_left`), and none after a local failure alone, which goes
+        to the cloud as an ordinary fallback.
         """
         if plan.local is None:
             reason: str | None = OFFLOAD_LAST_RESORT
@@ -666,14 +719,24 @@ class GreedyRouter:
         )
 
     @staticmethod
-    def _left_engine_unsent(ledger: AttemptLedger) -> bool:
-        """Return whether the local step left an engine that could still take the request.
+    def _engines_left(ledger: AttemptLedger, plan: _Plan) -> frozenset[str]:
+        """Return the engines the local step left the request unsent at, which could still take it.
 
-        Either every engine it tried left it unsent at the deadline, or one did
-        while another failed: the local pool then raises the failure, and names
-        the engines it passed over (``engines_left_unsent``).
+        The local pool names them on the error it raises (``engines_left_unsent``):
+        every engine it tried, when each left the request at the deadline, or the
+        ones it passed over beside an engine that failed. An unsent error that
+        names none stands for the whole first step's range.
         """
-        return bool(ledger.unsent) or any(engines_left_unsent(exc) for exc in ledger.errors)
+        engines: set[str] = set()
+        for exc in ledger.unsent:
+            named = engines_left_unsent(exc)
+            if named:
+                engines.update(named)
+            elif plan.local is not None:
+                engines.update(plan.local.endpoint_scope or ())
+        for exc in ledger.errors:
+            engines.update(engines_left_unsent(exc))
+        return frozenset(engines)
 
     @staticmethod
     def _retry_step(ledger: AttemptLedger, cloud: _Step, recorded: int) -> _Step:
@@ -761,19 +824,23 @@ class GreedyRouter:
             response = await run(local_pool, _LOCAL, plan.local)
             if response is not None:
                 return step.served(response, _LOCAL)
-        unsent = self._left_engine_unsent(ledger)
+        engines = self._engines_left(ledger, plan)
         ended = self._plan_ends(ledger, model_id, 0)
-        if plan.cloud is not None and not ended:
-            step = self._cloud_step(ledger, plan, unsent=unsent)
+        cloud = None if ended else self._cloud_options(model_id, plan)
+        if cloud is not None:
+            step = self._cloud_step(ledger, plan, unsent=bool(engines))
             self._log_spill(model_id, step.offload)
             recorded = len(ledger.attempts)
-            response = await run(cloud_pool, _CLOUD, plan.cloud)
+            response = await run(cloud_pool, _CLOUD, cloud)
             if response is not None:
                 return step.served(response, _CLOUD)
             step = self._retry_step(ledger, step, recorded)
             ended = self._plan_ends(ledger, model_id, recorded)
-        if unsent and plan.local_retry is not None and not ended:
-            response = await run(local_pool, _LOCAL, plan.local_retry, may_leave=False)
+        else:
+            step = _Step(after_local=plan.local is not None, earlier=tuple(ledger.attempts))
+        retry = None if ended else self._retry_options(model_id, plan, engines)
+        if retry is not None:
+            response = await run(local_pool, _LOCAL, retry, may_leave=False)
             if response is not None:
                 return step.served(response, _LOCAL)
         ledger.raise_after(
@@ -881,25 +948,27 @@ class GreedyRouter:
                     yield chunk
             if outcome.served:
                 return
-        unsent = self._left_engine_unsent(ledger)
+        engines = self._engines_left(ledger, plan)
         ended = self._plan_ends(ledger, model_id, 0)
-        if plan.cloud is not None and not ended:
-            step = self._cloud_step(ledger, plan, unsent=unsent)
+        cloud = None if ended else self._cloud_options(model_id, plan)
+        if cloud is not None:
+            step = self._cloud_step(ledger, plan, unsent=bool(engines))
             self._log_spill(model_id, step.offload)
             recorded = len(ledger.attempts)
             outcome = StreamOutcome()
-            async with run(cloud_pool, _CLOUD, plan.cloud, outcome, step) as chunks:
+            async with run(cloud_pool, _CLOUD, cloud, outcome, step) as chunks:
                 async for chunk in chunks:
                     yield chunk
             if outcome.served:
                 return
             step = self._retry_step(ledger, step, recorded)
             ended = self._plan_ends(ledger, model_id, recorded)
-        if unsent and plan.local_retry is not None and not ended:
+        else:
+            step = _Step(after_local=plan.local is not None, earlier=tuple(ledger.attempts))
+        retry = None if ended else self._retry_options(model_id, plan, engines)
+        if retry is not None:
             outcome = StreamOutcome()
-            async with run(
-                local_pool, _LOCAL, plan.local_retry, outcome, step, may_leave=False
-            ) as chunks:
+            async with run(local_pool, _LOCAL, retry, outcome, step, may_leave=False) as chunks:
                 async for chunk in chunks:
                     yield chunk
             if outcome.served:

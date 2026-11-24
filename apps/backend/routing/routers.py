@@ -535,9 +535,43 @@ def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) ->
         routing.setdefault("offload_endpoint_id", endpoint_id)
 
 
-#: Where a dispatch with a caller-owned queue deadline names, on the error it
-#: raises, the engines it passed over unsent (:func:`engines_left_unsent`).
-_ENGINES_LEFT_UNSENT = "_engines_left_unsent"
+@dataclass(frozen=True, slots=True)
+class DispatchWalk:
+    """What one dispatch did on its way through the route, kept on the error it raises.
+
+    The router tries candidates one after another and raises one of their
+    errors (``_select_surfaced_error``). A caller that composes pools decides its
+    next step from the others too, so the error carries them all, each as the
+    endpoint ids it concerns, in dispatch order.
+
+    Attributes:
+        sent: The attempts whose request left this gateway for the upstream
+            (``_DispatchReport.sent``), whatever the upstream then answered.
+        refused: The attempts the upstream refused as a malformed request
+            (``counts_as_request_refusal``), which count toward the bound on
+            how many routes such a request is sent to.
+        unsent: The engines passed over at the caller's queue deadline
+            (``_left_caller_queue``): nothing was sent to them.
+    """
+
+    sent: tuple[str, ...] = ()
+    refused: tuple[str, ...] = ()
+    unsent: tuple[str, ...] = ()
+
+
+#: The attribute :class:`DispatchWalk` is kept under on the error a walk raises.
+_DISPATCH_WALK = "_dispatch_walk"
+
+
+def dispatch_walk(exc: BaseException) -> DispatchWalk | None:
+    """Return the walk recorded on the error a dispatch raised, or None.
+
+    None for an error no walk ended with: one raised before any candidate was
+    tried, or one a dispatch re-raised at once -- a pin, a caller that owns the
+    candidate order, a stream already committed.
+    """
+    walk = getattr(exc, _DISPATCH_WALK, None)
+    return walk if isinstance(walk, DispatchWalk) else None
 
 
 def _left_caller_queue(exc: BaseException, engine_queue_deadline: float | None) -> bool:
@@ -564,7 +598,8 @@ def engines_left_unsent(exc: BaseException) -> tuple[str, ...]:
     engines it passed over, so the caller knows one of them could still take the
     request.
     """
-    return tuple(getattr(exc, _ENGINES_LEFT_UNSENT, ()))
+    walk = dispatch_walk(exc)
+    return walk.unsent if walk is not None else ()
 
 
 def _raise_surfaced_error(
@@ -600,8 +635,20 @@ def _raise_surfaced_error(
     ``unsent`` are the attempts that left their caller's queue deadline unsent
     (``_left_caller_queue``), as ``(adapter, error)``: none of them is a failure.
     With no failure the first is raised; otherwise the surfaced failure names
-    their engines (:func:`engines_left_unsent`).
+    their engines (:func:`engines_left_unsent`). Either way the error raised
+    carries the whole walk (:class:`DispatchWalk`).
     """
+    walk = DispatchWalk(
+        sent=tuple(
+            endpoint_id_for_adapter(attempt.adapter) for attempt in attempts if attempt.sent
+        ),
+        refused=tuple(
+            endpoint_id_for_adapter(attempt.adapter)
+            for attempt in attempts
+            if counts_as_request_refusal(attempt.error)
+        ),
+        unsent=tuple(endpoint_id_for_adapter(adapter) for adapter, _error in unsent),
+    )
     if not attempts:
         adapter, unsent_error = unsent[0]
         if not isinstance(getattr(unsent_error, "_routing", None), dict):
@@ -611,6 +658,7 @@ def _raise_surfaced_error(
                 "endpoint_id": endpoint_id_for_adapter(adapter),
                 "failed_attempts": failed_attempts,
             }
+        setattr(unsent_error, _DISPATCH_WALK, walk)
         raise unsent_error
     reported = _reported_attempts(attempts)
     selected = _select_surfaced_error(reported)
@@ -638,12 +686,7 @@ def _raise_surfaced_error(
         # upstream keeps whatever it already decided.
         routing.setdefault("fallback", True)
     _mark_offload(routing, attempts)
-    if unsent:
-        setattr(
-            exc,
-            _ENGINES_LEFT_UNSENT,
-            tuple(endpoint_id_for_adapter(adapter) for adapter, _error in unsent),
-        )
+    setattr(exc, _DISPATCH_WALK, walk)
     raise exc
 
 
@@ -809,9 +852,17 @@ _REQUEST_REFUSAL_LIMIT = 2
 _REQUEST_REFUSAL_STATUSES = frozenset({400, 422})
 
 
-def _counts_as_request_refusal(exc: BaseException) -> bool:
-    """Return whether ``exc`` refuses the request as malformed, its length aside."""
+def counts_as_request_refusal(exc: BaseException) -> bool:
+    """Return whether ``exc`` refuses the request as malformed, its length aside.
+
+    Public for a caller that counts refusals toward the same bound itself
+    (:func:`refusals_reach_limit`).
+    """
     return _http_status_of(exc) in _REQUEST_REFUSAL_STATUSES and not exceeds_context_window(exc)
+
+
+# RouteWise reads it by its earlier name.
+_counts_as_request_refusal = counts_as_request_refusal
 
 
 def request_refusals_end_fallback(
@@ -824,7 +875,21 @@ def request_refusals_end_fallback(
     True. Public because every router that walks candidates after a failure
     needs the same bound; see ``_REQUEST_REFUSAL_LIMIT`` for the policy.
     """
-    refused = [endpoint_id for endpoint_id, error in failures if _counts_as_request_refusal(error)]
+    return refusals_reach_limit(
+        model_id,
+        [endpoint_id for endpoint_id, error in failures if counts_as_request_refusal(error)],
+    )
+
+
+def refusals_reach_limit(model_id: str, refused: Sequence[str | None]) -> bool:
+    """Return whether this many routes refusing the request as malformed ends the walk.
+
+    ``refused`` names each route that refused it, once per attempt. The bound of
+    :func:`request_refusals_end_fallback`, for a caller that counted the
+    refusals itself -- across the walks of several pools, say
+    (``DispatchWalk.refused``). Logs ``request_refusal_fallback_stopped`` when it
+    returns True.
+    """
     if len(refused) < _REQUEST_REFUSAL_LIMIT:
         return False
     logger.info(

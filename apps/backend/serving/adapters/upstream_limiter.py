@@ -271,6 +271,16 @@ def _engine_address(base_url: str | None) -> str:
     return f"{host}:{port}"
 
 
+def engine_address(base_url: str | None) -> str:
+    """Return the ``host:port`` this limiter knows the engine at *base_url* by.
+
+    For a caller that keeps its own record of the engines it registered and has
+    to compare routes with it the way the limiter does: two base URLs that
+    reach one server are one engine.
+    """
+    return _engine_address(base_url)
+
+
 def _valid_limit(limit: object) -> int:
     """Return an engine queue's limit, or raise ValueError when it is not one."""
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:

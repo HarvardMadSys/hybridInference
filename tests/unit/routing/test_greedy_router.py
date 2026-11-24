@@ -12,6 +12,7 @@ import asyncio
 import gc
 import json
 import time
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -39,6 +40,7 @@ from serving.adapters.upstream_limiter import (
     reset_upstream_limiter,
     upstream_slot,
 )
+from serving.exceptions import UpstreamRequestTimedOut
 from serving.utils import context as req_ctx
 
 if TYPE_CHECKING:
@@ -74,13 +76,14 @@ class _Engine(BaseAdapter):
         provider: str = "engine",
         context_length: int = 8192,
         endpoint_id: str | None = None,
+        path: str = "/v1",
     ) -> None:
         super().__init__(
             ModelConfig(
                 id=MODEL,
                 name=MODEL,
                 provider=provider,
-                base_url=f"http://localhost:{port}/v1",
+                base_url=f"http://localhost:{port}{path}",
                 endpoint_id=endpoint_id or f"{MODEL}:local-{port}",
                 context_length=context_length,
             )
@@ -134,12 +137,17 @@ class _Engine(BaseAdapter):
 
 
 class _Cloud(BaseAdapter):
-    """The model's cloud route, which can be made to fail before any output."""
+    """The model's cloud route, which takes an outbound slot as an adapter does.
+
+    ``fail_with`` fails a request once it has left the gateway, before any
+    output; ``unsent_with`` fails it before, as a full outbound limit does.
+    """
 
     def __init__(
         self,
         *,
         fail_with: BaseException | None = None,
+        unsent_with: BaseException | None = None,
         provider: str = "cloud",
         endpoint_id: str = CLOUD_ID,
         context_length: int = 8192,
@@ -155,6 +163,7 @@ class _Cloud(BaseAdapter):
             )
         )
         self.fail_with = fail_with
+        self.unsent_with = unsent_with
         #: Raised after the first output, once the stream is committed.
         self.fail_after_output: BaseException | None = None
         self.calls = 0
@@ -163,20 +172,26 @@ class _Cloud(BaseAdapter):
         self, messages: list[dict[str, Any]], **params: Any
     ) -> dict[str, Any]:
         self.calls += 1
-        if self.fail_with is not None:
-            raise self.fail_with
-        return self.format_response(content="cloud", model=MODEL)
+        if self.unsent_with is not None:
+            raise self.unsent_with
+        async with upstream_slot(self.config.provider, KEY, base_url=self.config.base_url):
+            if self.fail_with is not None:
+                raise self.fail_with
+            return self.format_response(content="cloud", model=MODEL)
 
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
     ) -> AsyncGenerator[str, None]:
         self.calls += 1
-        if self.fail_with is not None:
-            raise self.fail_with
-        yield _chunk({"content": "cloud"})
-        if self.fail_after_output is not None:
-            raise self.fail_after_output
-        yield _chunk({}, finish_reason="stop")
+        if self.unsent_with is not None:
+            raise self.unsent_with
+        async with upstream_slot(self.config.provider, KEY, base_url=self.config.base_url):
+            if self.fail_with is not None:
+                raise self.fail_with
+            yield _chunk({"content": "cloud"})
+            if self.fail_after_output is not None:
+                raise self.fail_after_output
+            yield _chunk({}, finish_reason="stop")
 
 
 class _BadRequest(Exception):
@@ -453,6 +468,68 @@ async def test_engines_a_refresh_could_not_register_are_sent_nothing():
     await ahead
 
 
+async def test_a_cloud_route_replaced_while_the_request_waits_takes_it_at_its_deadline():
+    engine, old_cloud = _Engine(), _Cloud()
+    new_cloud = _Cloud(provider="cloud-new", endpoint_id=f"{MODEL}:cloud-new")
+    fixed = _fixed(engine, old_cloud)
+    router = build_router("greedy", {"cutoff": SHORT_CUTOFF})
+    router.attach_route_table(fixed, model_scope={MODEL})
+    await router.start()
+    ahead = await _busy_engine(router, engine)
+
+    behind = _stream(router)
+    await _until(lambda: _line()["waiting"] == 1)
+    fixed.register_route(MODEL, [(engine, 1.0), (new_cloud, 1.0)])
+    router.refresh_route_table()
+
+    chunks = await behind
+    assert _routing(chunks)["provider"] == "cloud-new"
+    assert old_cloud.calls == 0
+    engine.answer(0)
+    await ahead
+
+
+async def test_a_cloud_route_edited_into_a_self_hosted_one_is_not_used_as_the_cloud():
+    engine, cloud = _Engine(), _Cloud()
+    fixed = _fixed(engine, cloud)
+    router = build_router("greedy", {})
+    router.attach_route_table(fixed, model_scope={MODEL})
+    await router.start()
+    ahead = await _busy_engine(router, engine)
+    # The cloud route, edited in place into an engine nobody registered; the
+    # pools have not followed the edit yet.
+    edited = _Engine(port=18009, provider="engine-x", endpoint_id=CLOUD_ID)
+    fixed.register_route(MODEL, [(engine, 1.0), (edited, 1.0)])
+
+    behind = _stream(router)
+    await _until(lambda: _line()["waiting"] == 1)
+    engine.answer(0)
+    await engine.wait_sent(2)
+    engine.answer(1)
+
+    assert _content(await behind) == "engine"
+    assert edited.sent_count == 0
+    await ahead
+
+
+async def test_a_route_to_the_same_engine_by_another_url_keeps_its_queue():
+    engine, cloud = _Engine(), _Cloud()
+    fixed = _fixed(engine, cloud)
+    router = build_router("greedy", {})
+    router.attach_route_table(fixed, model_scope={MODEL})
+    await router.start()
+    # The same server under another path: one engine, as the limiter counts it.
+    moved = _Engine(provider="engine-moved", endpoint_id=ENGINE_ID, path="/other/v1")
+    fixed.register_route(MODEL, [(moved, 1.0), (cloud, 1.0)])
+
+    stream = _stream(router)
+    await moved.wait_sent(1)
+    moved.answer(0)
+
+    assert _content(await stream) == "engine"
+    assert cloud.calls == 0
+
+
 async def test_an_edit_the_pools_have_not_followed_yet_is_not_dispatched():
     engine, cloud = _Engine(), _Cloud()
     # The same engine under a new endpoint id: its queue is registered, but the
@@ -479,12 +556,15 @@ async def test_an_edit_the_pools_have_not_followed_yet_is_not_dispatched():
 
 
 async def test_a_stopped_router_does_not_register_again():
-    router = await _greedy(_Engine(), _Cloud())
+    engine = _Engine()
+    router = await _greedy(engine, _Cloud())
     await router.stop()
 
-    await router.chat_completion(MODEL, MESSAGES)
+    resp = await router.chat_completion(MODEL, MESSAGES)
 
     assert get_upstream_limiter().engine_queue_limit(ENGINE_URL) is None
+    # It has no queue at its engine any more, so it sends the engine nothing.
+    assert (resp["choices"][0]["message"]["content"], engine.chat_sent) == ("cloud", 0)
 
 
 @pytest.mark.parametrize("missing", ["engine", "cloud"])
@@ -790,6 +870,58 @@ async def test_an_engine_left_full_beside_one_that_failed_takes_the_request_back
     assert _content(chunks) == "engine"
     routing = _routing(chunks)
     assert (routing["offload"], routing["offload_endpoint_id"]) == (OFFLOAD_SPILLOVER, CLOUD_ID)
+    # Back to the engine that was full, not to the one that failed on it.
+    assert failing.sent_count == 1
+    await ahead
+
+
+async def test_a_request_two_engines_refused_is_not_sent_to_the_cloud(monkeypatch):
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    first = _Engine(provider="engine-a", fail_with=_BadRequest("unknown field"))
+    second = _Engine(port=18004, provider="engine-b", fail_with=_BadRequest("unknown field"))
+    cloud = _Cloud()
+    router = await _greedy(first, second, cloud)
+
+    with pytest.raises(_BadRequest):
+        await _stream(router)
+
+    # The local pool's walk ended at the shared bound; the cloud is not a third route.
+    assert (first.sent_count, second.sent_count, cloud.calls) == (1, 1, 0)
+
+
+async def test_a_cloud_route_sent_the_request_counts_however_its_failure_is_charged():
+    engine = _Engine()
+    throttled = _Cloud(
+        provider="cloud-a",
+        endpoint_id=f"{MODEL}:cloud-a",
+        unsent_with=UpstreamSaturated("no outbound slot"),
+    )
+    timed_out = _Cloud(
+        provider="cloud-b",
+        endpoint_id=f"{MODEL}:cloud-b",
+        fail_with=UpstreamRequestTimedOut(
+            request_info=SimpleNamespace(real_url=CLOUD_URL),  # type: ignore[arg-type]
+            history=(),
+            status=504,
+            message="upstream_timeout",
+        ),
+    )
+    router = await _greedy(engine, throttled, timed_out)
+    ahead = await _busy_engine(router, engine)
+    throttled_first = RoutingRequestOptions(preferred_endpoint_id=f"{MODEL}:cloud-a")
+
+    behind = _stream(router, throttled_first)
+    await _until(lambda: timed_out.calls >= 1 and _line()["waiting"] == 1)
+    engine.answer(0)
+    await engine.wait_sent(2)
+    engine.answer(1)
+
+    # Route b answered 504 after it was sent: the request was offloaded, to b.
+    routing = _routing(await behind)
+    assert (routing["offload"], routing["offload_endpoint_id"]) == (
+        OFFLOAD_SPILLOVER,
+        f"{MODEL}:cloud-b",
+    )
     await ahead
 
 
@@ -848,7 +980,7 @@ async def test_a_prompt_no_window_fits_is_refused_with_why():
 
 
 async def test_a_cloud_that_never_left_the_gateway_does_not_mark_the_request_offloaded():
-    engine, cloud = _Engine(), _Cloud(fail_with=UpstreamSaturated("no outbound slot"))
+    engine, cloud = _Engine(), _Cloud(unsent_with=UpstreamSaturated("no outbound slot"))
     router = await _greedy(engine, cloud)
     ahead = await _busy_engine(router, engine)
 

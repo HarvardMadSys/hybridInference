@@ -39,7 +39,9 @@ from routing.hybrid_stream_frames import carries_routing, is_client_visible, tag
 from routing.routers import (
     AllCircuitsOpenError,
     TargetUnavailableError,
-    request_refusals_end_fallback,
+    counts_as_request_refusal,
+    dispatch_walk,
+    refusals_reach_limit,
     select_surfaced_error,
 )
 
@@ -134,17 +136,20 @@ class AttemptLedger:
     def refusals_end_plan(self, model_id: str) -> bool:
         """Return whether enough routes refused the request itself to stop the plan.
 
-        The single router's bound (``request_refusals_end_fallback``), so a
-        composed model sends a malformed request to no more routes than the
-        shared router would.
+        The single router's bound (``refusals_reach_limit``), so a composed model
+        sends a malformed request to no more routes than the shared router
+        would. A pool that walked several routes raises one error but records
+        each route that refused the request on the way (``DispatchWalk.refused``),
+        and every one of them counts.
         """
-        return request_refusals_end_fallback(
-            model_id,
-            [
-                (record.get("endpoint_id"), error)
-                for record, error in zip(self.attempts, self.errors, strict=False)
-            ],
-        )
+        refused: list[str | None] = []
+        for record, error in zip(self.attempts, self.errors, strict=False):
+            walk = dispatch_walk(error)
+            if walk is not None:
+                refused.extend(walk.refused)
+            elif counts_as_request_refusal(error):
+                refused.append(record.get("endpoint_id"))
+        return refusals_reach_limit(model_id, refused)
 
     def raise_after(
         self,
