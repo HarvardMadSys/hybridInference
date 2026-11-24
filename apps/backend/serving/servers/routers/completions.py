@@ -20,6 +20,7 @@ from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
 from routing.telemetry import is_uncharged_failure
 from serving.adapters.dispatch_watch import DispatchRecord
+from serving.adapters.upstream_limiter import get_upstream_limiter
 from serving.auto_mode import (
     AutoModelUnavailable,
     apply_to_chat_request,
@@ -193,6 +194,40 @@ async def _should_force_chat_completions_streaming(
         return await runtime_settings.get_bool("force_chat_completions_streaming")
     except KeyError:
         return False
+
+
+def _queues_at_an_engine(route: Any) -> bool:
+    """Return whether a route of the model reaches an engine with a registered queue.
+
+    The engine's queue gives a request's place back at the engine's first
+    output (``serving.adapters.upstream_limiter``). A non-streaming request has
+    no output until its whole reply, so it would hold the place for the entire
+    generation and the next request would wait for it. Sent upstream as a
+    stream and buffered, as ``force_chat_completions_streaming`` does for every
+    model, it frees the place as the engine starts answering.
+    """
+    limiter = get_upstream_limiter()
+    return any(
+        limiter.engine_queue_limit(getattr(adapter.config, "base_url", None)) is not None
+        for adapter, _weight in getattr(route, "adapters", None) or ()
+    )
+
+
+def _buffers_for_an_engine_queue(options: ChatOptions, params: dict[str, Any], route: Any) -> bool:
+    """Return whether a non-streaming request goes upstream as a buffered stream.
+
+    For a model a registered engine queue serves (``_queues_at_an_engine``),
+    on the routes that may buffer (``ChatOptions.buffers_for_engine_queues``).
+    Not for a request whose ``response_format`` asks for JSON: only the
+    non-streaming path checks the reply against it and asks again
+    (``conform_reply``), so buffering it would change the answer. That request
+    keeps the engine's place until its reply is whole.
+    """
+    return (
+        options.buffers_for_engine_queues
+        and requested_format(params) is None
+        and _queues_at_an_engine(route)
+    )
 
 
 _FORCE_STREAMING_KEEPALIVE_S = 15
@@ -634,15 +669,19 @@ class ChatOptions:
     ``runtime_settings`` decides two things only: whether a non-streaming
     request is streamed upstream and buffered (``force_chat_completions_streaming``),
     and whether a trusted probe is logged (``log_synthetic_probes``). Without
-    settings neither applies. Nothing here touches access, billing or routing.
+    settings neither applies. ``buffers_for_engine_queues`` buffers a
+    non-streaming request the same way, whatever the settings say, when its
+    model reaches an engine with a registered queue (``_queues_at_an_engine``).
+    Nothing here touches access, billing or routing.
     """
 
     runtime_settings: RuntimeSettings | None
+    buffers_for_engine_queues: bool = False
 
     @classmethod
     def online(cls, runtime_settings: RuntimeSettings | None) -> ChatOptions:
         """``/v1/chat/completions`` and the compatibility routes."""
-        return cls(runtime_settings=runtime_settings)
+        return cls(runtime_settings=runtime_settings, buffers_for_engine_queues=True)
 
     @classmethod
     def delegated(cls) -> ChatOptions:
@@ -1481,6 +1520,10 @@ async def execute_chat(
     active_router = router_exec
     if model_router_registry is not None and pin_provider is None:
         active_router = model_router_registry.get_router(model)
+    if not effective_stream and _buffers_for_an_engine_queue(options, params, route):
+        force_streaming = True
+        effective_stream = True
+        params["stream"] = True
 
     # Thread the external request id into params so the router correlates its
     # routing metadata, prefix-cache stash, and observation under one id instead
