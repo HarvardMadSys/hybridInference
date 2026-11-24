@@ -1355,6 +1355,24 @@ class UpstreamConcurrencyLimiter:
         ]:
             del self._gates[address]
 
+    def engine_has_room(self, base_url: str | None) -> bool:
+        """Return whether a dispatch to the engine *base_url* reaches would go at once now.
+
+        A read: nothing is granted, woken or counted. True for an engine with no
+        registered queue, which takes every dispatch straight; otherwise whether
+        the requests it has been sent without a first token, and those waiting
+        their turn, leave a place for one more. For a surface that picks among
+        several engines itself, so it can send a request to the one with room.
+        """
+        address = _engine_address(base_url)
+        limit = self._queue_limits.get(address)
+        if limit is None:
+            return True
+        gate = self._gates.get(address)
+        if gate is None:
+            return True
+        return gate.pending + len(gate.waiters) < limit
+
     def engine_queue_limit(self, base_url: str | None) -> int | None:
         """Return the registered limit of the engine *base_url* reaches, or None."""
         return self._queue_limits.get(_engine_address(base_url))

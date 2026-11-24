@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
+import time
 from typing import TYPE_CHECKING, Any
 
 import pytest
@@ -60,7 +62,15 @@ class _Route(BaseAdapter):
 
     native_format = "anthropic"
 
-    def __init__(self, provider: str, base_url: str, endpoint_id: str) -> None:
+    def __init__(
+        self,
+        provider: str,
+        base_url: str,
+        endpoint_id: str,
+        *,
+        input_modalities: list[str] | None = None,
+        context_length: int = 8192,
+    ) -> None:
         super().__init__(
             ModelConfig(
                 id=MODEL,
@@ -72,6 +82,8 @@ class _Route(BaseAdapter):
                 max_output_length=1024,
                 supported_params=["max_tokens", "stream"],
                 pricing=PRICING,
+                input_modalities=input_modalities or ["text"],
+                context_length=context_length,
             )
         )
         #: Requests that got past the outbound slot, so reached the upstream.
@@ -199,6 +211,22 @@ def _waiting() -> int:
     return get_upstream_limiter().engine_snapshot()[ENGINE_ADDRESS]["waiting"]
 
 
+#: A Cutoff whose deadline is 0.1 s after arrival for any prompt.
+SHORT_CUTOFF = {
+    "ttft_budget": {"fixed_ms": 1100, "per_token_ms": 0},
+    "cloud_ttft": {"fixed_ms": 1000, "per_input_token_ms": 0},
+    "margin_ms": 0,
+}
+#: A prompt the estimate puts at about 2500 tokens.
+LONG_TEXT = "x" * 10_000
+
+
+async def _until_waiting() -> None:
+    async with asyncio.timeout(5):
+        while _waiting() != 1:
+            await asyncio.sleep(0.005)
+
+
 async def test_a_free_engine_takes_the_request_before_a_cloud_route_listed_first(
     anthropic_test_client, make_greedy, engine, cloud, logged
 ):
@@ -287,6 +315,233 @@ async def test_a_request_no_local_engine_can_take_goes_to_the_cloud_as_a_last_re
 
     assert resp.json()["content"][0]["text"] == "cloud"
     assert [row["metadata"].get("offload") for row in logged] == ["last_resort"]
+
+
+async def test_a_second_pass_with_no_cloud_route_left_is_refused_not_sent_to_the_engine(
+    anthropic_test_client, anthropic_compat_router, make_greedy, engine, cloud, logged
+):
+    await make_greedy(cutoff=SHORT_CUTOFF)
+    seat = await _take_the_engine()
+
+    post = asyncio.create_task(
+        anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+    )
+    await _until_waiting()
+    # The cloud route is disabled while the request waits for its engine.
+    anthropic_compat_router.register_route(MODEL, [(cloud, 0.0), (engine, 1.0)])
+    async with asyncio.timeout(5):
+        resp = await post
+
+    assert resp.status_code == 503
+    assert (engine.reached, cloud.reached) == (0, 0)
+    # The request is logged once, as the failure it was, with why it left its engine.
+    assert [
+        (row["provider"], row["status_code"], row["metadata"]["offload"]) for row in logged
+    ] == [("router", 503, "queue_wait")]
+    seat.release(status_code=200)
+
+
+async def test_a_stream_whose_second_pass_is_refused_logs_the_failure(
+    anthropic_test_client, anthropic_compat_router, make_greedy, engine, cloud, logged
+):
+    await make_greedy(cutoff=SHORT_CUTOFF)
+    seat = await _take_the_engine()
+
+    async def read() -> bytes:
+        async with anthropic_test_client.stream(
+            "POST", "/v1/messages", json=_body(stream=True), headers=_auth()
+        ) as resp:
+            return b"".join([chunk async for chunk in resp.aiter_bytes()])
+
+    stream = asyncio.create_task(read())
+    await _until_waiting()
+    anthropic_compat_router.register_route(MODEL, [(cloud, 0.0), (engine, 1.0)])
+    async with asyncio.timeout(5):
+        body = await stream
+
+    # The stream had answered 200: the failure is an error event, and a log row.
+    assert b"event: error" in body
+    assert [(row["status_code"], row["metadata"]["offload"]) for row in logged] == [
+        (503, "queue_wait")
+    ]
+    seat.release(status_code=200)
+
+
+async def test_a_prompt_no_route_can_fit_is_refused_as_too_long(
+    anthropic_test_client, anthropic_compat_router, make_greedy, logged
+):
+    small_engine = _Route("engine", ENGINE_URL, f"{MODEL}:local-18003", context_length=100)
+    small_cloud = _Route(
+        "cloud", "https://cloud.example/v1", f"{MODEL}:cloud-api", context_length=100
+    )
+    anthropic_compat_router.register_route(MODEL, [(small_cloud, 1.0), (small_engine, 1.0)])
+    await make_greedy()
+
+    resp = await anthropic_test_client.post(
+        "/v1/messages",
+        json=_body(messages=[{"role": "user", "content": LONG_TEXT}]),
+        headers=_auth(),
+    )
+
+    assert resp.status_code == 400
+    assert (small_engine.reached, small_cloud.reached) == (0, 0)
+
+
+async def test_a_prompt_over_the_cloud_limit_with_no_local_engine_is_refused(
+    anthropic_test_client, anthropic_compat_router, make_greedy, engine, cloud, logged
+):
+    anthropic_compat_router.register_route(MODEL, [(cloud, 1.0), (engine, 0.0)])
+    await make_greedy(cloud_max_input_tokens=100)
+
+    resp = await anthropic_test_client.post(
+        "/v1/messages",
+        json=_body(messages=[{"role": "user", "content": LONG_TEXT}]),
+        headers=_auth(),
+    )
+
+    assert resp.status_code == 503
+    assert cloud.reached == 0
+
+
+async def test_a_second_pass_takes_the_cloud_routes_as_they_are_when_it_runs(
+    anthropic_test_client, anthropic_compat_router, make_greedy, engine, cloud, logged
+):
+    router = await make_greedy(cutoff=SHORT_CUTOFF)
+    seat = await _take_the_engine()
+    new_cloud = _Route("cloud-new", "https://cloud-new.example/v1", f"{MODEL}:cloud-new")
+
+    post = asyncio.create_task(
+        anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+    )
+    await _until_waiting()
+    # The engine leads the new table, so only the router's live cloud range
+    # (not the surface's own pick) can take the request to the new cloud route.
+    anthropic_compat_router.register_route(MODEL, [(engine, 1.0), (new_cloud, 1.0)])
+    router.refresh_route_table()
+    async with asyncio.timeout(5):
+        resp = await post
+
+    assert resp.json()["content"][0]["text"] == "cloud-new"
+    assert cloud.reached == 0
+    seat.release(status_code=200)
+
+
+async def test_the_second_pass_is_the_same_request_with_its_wait_counted(
+    anthropic_test_client, make_greedy, logged, caplog, monkeypatch
+):
+    from serving.servers.routers import anthropic_messages as amod
+
+    pins: list[bool] = []
+    reroute = amod._maybe_reroute_small_reasoning_call
+
+    async def spy(*args: Any, pin_model: bool = False, **kwargs: Any) -> Any:
+        pins.append(pin_model)
+        return await reroute(*args, pin_model=pin_model, **kwargs)
+
+    monkeypatch.setattr(amod, "_maybe_reroute_small_reasoning_call", spy)
+    await make_greedy(cutoff=SHORT_CUTOFF)
+    seat = await _take_the_engine()
+
+    started = time.monotonic()
+    with caplog.at_level(logging.INFO, logger=amod.__name__):
+        resp = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert resp.json()["content"][0]["text"] == "cloud"
+    (row,) = logged
+    # The queue wait is in its latency, and the route_offload line names its row.
+    assert row["latency_ms"] >= 90
+    assert time.monotonic() - started >= 0.09
+    offloads = [record for record in caplog.records if record.getMessage() == "route_offload"]
+    assert [record.request_id for record in offloads] == [row["request_id"]]
+    # The second pass may not reroute the request to another model.
+    assert pins == [False, True]
+    seat.release(status_code=200)
+
+
+async def test_a_request_with_an_image_skips_an_engine_that_cannot_read_it(
+    anthropic_test_client, anthropic_compat_router, make_greedy, logged, caplog
+):
+    from serving.servers.routers import anthropic_messages as amod
+
+    text_engine = _Route("engine", ENGINE_URL, f"{MODEL}:local-18003")
+    image_cloud = _Route(
+        "cloud",
+        "https://cloud.example/v1",
+        f"{MODEL}:cloud-api",
+        input_modalities=["text", "image"],
+    )
+    anthropic_compat_router.register_route(MODEL, [(text_engine, 1.0), (image_cloud, 1.0)])
+    await make_greedy()
+    image = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "AA=="},
+    }
+
+    with caplog.at_level(logging.INFO, logger=amod.__name__):
+        resp = await anthropic_test_client.post(
+            "/v1/messages",
+            json=_body(messages=[{"role": "user", "content": [image]}]),
+            headers=_auth(),
+        )
+
+    assert resp.json()["content"][0]["text"] == "cloud"
+    assert text_engine.reached == 0
+    assert [row["metadata"].get("offload") for row in logged] == ["last_resort"]
+    assert [
+        record.reason for record in caplog.records if record.getMessage() == "route_offload"
+    ] == ["last_resort"]
+
+
+async def test_a_request_with_an_image_waits_for_its_engine_when_no_cloud_route_reads_it(
+    anthropic_test_client, anthropic_compat_router, make_greedy, logged
+):
+    image_engine = _Route(
+        "engine", ENGINE_URL, f"{MODEL}:local-18003", input_modalities=["text", "image"]
+    )
+    text_cloud = _Route("cloud", "https://cloud.example/v1", f"{MODEL}:cloud-api")
+    anthropic_compat_router.register_route(MODEL, [(text_cloud, 1.0), (image_engine, 1.0)])
+    await make_greedy(cutoff=SHORT_CUTOFF)
+    seat = await _take_the_engine()
+    image = {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": "AA=="},
+    }
+
+    post = asyncio.create_task(
+        anthropic_test_client.post(
+            "/v1/messages",
+            json=_body(messages=[{"role": "user", "content": [image]}]),
+            headers=_auth(),
+        )
+    )
+    await _until_waiting()
+    # Well past the deadline a text-only cloud would have set: no cloud route
+    # can read the image, so the request has none and keeps its place in line.
+    await asyncio.sleep(0.3)
+    assert not post.done()
+    seat.release(status_code=200)
+    async with asyncio.timeout(5):
+        resp = await post
+
+    assert resp.json()["content"][0]["text"] == "engine"
+    assert text_cloud.reached == 0
+    assert [row["metadata"].get("offload") for row in logged] == [None]
+
+
+async def test_a_full_engine_is_passed_for_one_with_a_free_place(
+    anthropic_test_client, anthropic_compat_router, make_greedy, engine, cloud, logged
+):
+    second = _Route("engine-b", "http://localhost:18004/v1", f"{MODEL}:local-18004")
+    anthropic_compat_router.register_route(MODEL, [(cloud, 1.0), (engine, 1.0), (second, 1.0)])
+    await make_greedy()
+    seat = await _take_the_engine()
+
+    resp = await anthropic_test_client.post("/v1/messages", json=_body(), headers=_auth())
+
+    assert resp.json()["content"][0]["text"] == "engine-b"
+    assert (engine.reached, cloud.reached) == (0, 0)
+    assert [row["metadata"].get("offload") for row in logged] == [None]
+    seat.release(status_code=200)
 
 
 async def test_a_model_routed_by_fixed_keeps_this_surfaces_own_pick(
