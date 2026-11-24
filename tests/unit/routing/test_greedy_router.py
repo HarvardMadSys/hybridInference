@@ -1165,6 +1165,33 @@ async def test_a_prompt_too_long_for_the_only_route_in_its_range_is_refused():
         await router.chat_completion(MODEL, LONG_MESSAGES, routing_options=cloud_only)
 
 
+# -------------------------------------------- a surface that picks its own
+
+
+async def test_a_surface_plan_follows_the_routers_own_rule():
+    router = await _greedy(_Engine(), _Cloud(), cutoff=SHORT_CUTOFF)
+
+    plan = router.surface_plan(MODEL, 10)
+
+    assert (plan.local, plan.cloud) == (frozenset({ENGINE_ID}), frozenset({CLOUD_ID}))
+    assert plan.deadline is not None and plan.deadline > time.monotonic()
+    assert (plan.spillover, plan.offload) == (False, OFFLOAD_QUEUE_WAIT)
+
+
+async def test_a_surface_plan_spills_over_and_sets_no_deadline_when_no_cloud_takes_it():
+    router = await _greedy(_Engine(), _Cloud())
+
+    spill = router.surface_plan(MODEL, 10)
+    local_only = router.surface_plan(MODEL, 10, imposed=frozenset({ENGINE_ID}))
+
+    assert (spill.spillover, spill.offload) == (True, OFFLOAD_SPILLOVER)
+    assert (local_only.local, local_only.cloud, local_only.deadline) == (
+        frozenset({ENGINE_ID}),
+        frozenset(),
+        None,
+    )
+
+
 # -------------------------------------------------------------- feedback
 
 
