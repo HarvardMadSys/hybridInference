@@ -95,6 +95,18 @@ def _data_lines(message: SSEMessage) -> list[str]:
     return [line.strip() for line in message.data.split("\n") if line.strip()]
 
 
+def _carries_output(message: SSEMessage) -> bool:
+    """Return whether one passthrough event carries generated output (``is_output_event``)."""
+    for payload in _data_lines(message):
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and is_output_event(event):
+            return True
+    return False
+
+
 def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
     """Fold the usage counts in one passthrough event into *usage*."""
     from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
@@ -403,7 +415,7 @@ class AnthropicAdapter(BaseAdapter):
         # the whole body iteration below — a generation in flight, not just an
         # open response — and released on every exit, client disconnect included.
         async with (
-            self._upstream_slot(),
+            self._upstream_slot() as slot,
             session.post(
                 self._upstream_url(),
                 json=payload,
@@ -431,7 +443,7 @@ class AnthropicAdapter(BaseAdapter):
                     # router waiting on a first token must hear it now.
                     if not saw_output and is_output_event(evt):
                         saw_output = True
-                        report_first_token()
+                        report_first_token(slot)
 
                     result = handle_stream_event(evt, accum)
 
@@ -555,7 +567,7 @@ class AnthropicAdapter(BaseAdapter):
 
         # Slot held for the whole passthrough stream; see stream_chat_completion.
         async with (
-            self._upstream_slot(),
+            self._upstream_slot() as slot,
             session.post(
                 self._upstream_url(),
                 json=forward,
@@ -573,9 +585,16 @@ class AnthropicAdapter(BaseAdapter):
                     headers=resp.headers,
                 )
             parser = SSEParser()
+            saw_output = False
             async for chunk in resp.content.iter_any():
                 yield chunk
                 for message in _feed(parser, chunk):
+                    # The bytes went on verbatim above; this only reads them. A
+                    # self-hosted engine behind this route frees its queue's
+                    # place for the next request once it starts answering.
+                    if not saw_output and _carries_output(message):
+                        saw_output = True
+                        report_first_token(slot)
                     _count_usage(message, usage)
             # Clean EOF with the last event left unterminated: complete it for
             # usage extraction, or this request's output tokens go uncounted.

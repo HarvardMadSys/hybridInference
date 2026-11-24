@@ -2314,15 +2314,71 @@ class UpstreamConcurrencyConfig(BaseModel):
     acquire_timeout_sec: float
 
 
+class UpstreamEngineQueueWaitBucket(BaseModel):
+    """How many waits in an engine's queue ended within one bound.
+
+    ``le_seconds`` is the bucket's upper bound, inclusive, above the previous
+    bucket's; ``None`` for the last bucket, every longer wait.
+    """
+
+    le_seconds: float | None
+    count: int
+
+
+class UpstreamEngineQueue(BaseModel):
+    """One local engine's queue in this gateway, live and since the queue was created.
+
+    ``engine`` is the ``host:port`` the queue counts dispatches to. ``limit`` is
+    how many of them may lack a first token before the rest wait: the engine's
+    own when ``registered`` (by ``owners``), or else the one the queue-wait
+    offload's latest held dispatch brought. ``held`` is whether the offload's
+    held dispatches use the queue. A queue that is neither is one nobody
+    registers any more, listed until the requests it counted are done.
+    ``pending`` and ``waiting`` are the places taken and the dispatches in line
+    right now.
+
+    The counters say how dispatches left the line -- ``sent_at_once``,
+    ``sent_after_wait``, ``overflowed`` (sent past the limit when the acquire
+    timeout ran out), ``expired`` (left unsent at their deadline) and
+    ``cancelled`` -- and how places were given back: at the engine's first
+    output, at the end of an attempt answered without a first-token report
+    (``released_answered``: a request that answers whole, or an adapter that
+    does not report one), or at the end of one that failed first. ``waits`` and
+    the ``wait_*`` fields cover the dispatches that joined the line.
+    """
+
+    engine: str
+    limit: int
+    registered: bool
+    owners: list[str]
+    held: bool
+    pending: int
+    waiting: int
+    sent_at_once: int
+    sent_after_wait: int
+    overflowed: int
+    expired: int
+    cancelled: int
+    released_on_first_token: int
+    released_answered: int
+    released_unanswered: int
+    waits: int
+    wait_seconds_total: float
+    wait_seconds_max: float
+    wait_buckets: list[UpstreamEngineQueueWaitBucket]
+
+
 class UpstreamConcurrencyResponse(BaseModel):
     """Every outbound concurrency bucket plus the config they are tuned against.
 
     ``buckets`` is empty until traffic creates one, which is the ordinary state
-    of an idle gateway rather than a fault.
+    of an idle gateway rather than a fault. ``engines`` lists the local engines
+    with a queue here: every registered one, and any a held dispatch reached.
     """
 
     config: UpstreamConcurrencyConfig
     buckets: list[UpstreamConcurrencyBucket]
+    engines: list[UpstreamEngineQueue] = Field(default_factory=list)
 
 
 class OffloadRouteItem(BaseModel):

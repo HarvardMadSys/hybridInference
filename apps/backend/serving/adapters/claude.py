@@ -440,7 +440,7 @@ class ClaudeAdapter(BaseAdapter):
                 # waiting on a first token must hear it now.
                 if not saw_output and is_output_event(chunk_data):
                     saw_output = True
-                    report_first_token()
+                    report_first_token(slot)
 
                 # Normal streaming events — delegate to shared handler
                 result = handle_stream_event(chunk_data, accumulator)

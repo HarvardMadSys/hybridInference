@@ -49,8 +49,8 @@ does its own admission control and has no account quota to protect, so queueing
 in front of it would only add latency to a server that is already scheduling the
 work. Routes declare ``deployment_type`` explicitly; the default ``auto``
 reuses ``registry._LOCAL_HOSTS`` for backward-compatible hostname detection.
-The one queue a local endpoint can have here is the engine hold below, which a
-router asks for and which counts something else entirely.
+The one queue a local endpoint can have here is the engine queue below, which
+counts something else entirely.
 
 **A pooled route looks for room before it waits.** A request whose key is at
 its limit takes a sibling key's free slot instead, when one has one
@@ -68,11 +68,13 @@ endpoint for this gateway's own admission decision (see
 same reason).
 
 **A dispatch may wait less.** A router with somewhere better to send a request
-than the back of this queue -- an admin-designated offload route -- pushes a
-deadline (``req_ctx.UPSTREAM_QUEUE_DEADLINE``) around the dispatch. A waiter
-still queued at that deadline leaves exactly as a timed-out one does and raises
-:class:`UpstreamQueueWaitExpired`. The deadline can only shorten the wait: one
-further out than ``acquire_timeout`` changes nothing.
+than the back of this queue -- an admin-designated offload route, or a caller
+that decides itself where a request that waited too long goes -- pushes a
+deadline (``req_ctx.UPSTREAM_QUEUE_DEADLINE``, as :func:`dispatch_queue_context`
+builds it) around the dispatch. A waiter still queued at that deadline leaves
+exactly as a timed-out one does and raises :class:`UpstreamQueueWaitExpired`.
+The deadline can only shorten the wait: one further out than ``acquire_timeout``
+changes nothing.
 
 **A dispatch may be watched.** The same router times how long an engine takes to
 start answering (``routing.engine_wait``), and that clock must not run while the
@@ -80,21 +82,39 @@ request is still here. A dispatch's watch is told when the request starts waitin
 for a slot and when it gets one -- including at once, and from an exempt local
 endpoint (``serving.adapters.dispatch_watch``).
 
-**A local engine may be held for.** An engine queues what it cannot schedule yet
-where this gateway cannot see it, so a router with an offload route to use
-instead can ask for that queue to form here. A dispatch carrying an
-:class:`EngineHold` (``req_ctx.UPSTREAM_ENGINE_HOLD``) is sent to its local engine
-only while fewer than the hold's limit of the engine's held dispatches have gone
-without a first token. The rest wait in arrival order, per engine, whatever the
-limiter's own switch says; an engine's line counts against the limit its latest
-dispatch brought, so a policy change applies to the whole line at once. A dispatch's queue deadline ends the wait as above,
-with :class:`UpstreamQueueWaitExpired`. One with no deadline of its own has
-nowhere else to go, so it waits at most the acquire timeout for its turn and is
-then sent anyway: the hold never fails a request, it only decides where the
-request waits. A place frees when the adapter reports the engine's first output
-(``dispatch_watch.report_first_token``), or at the latest when the slot is
-released, so a stream the engine is already answering never counts and nothing
-caps how many the engine runs at once.
+**A local engine may be queued for.** An engine queues what it cannot schedule
+yet where this gateway cannot see it, so a router that would rather decide where
+a waiting request goes can have that queue form here instead. An engine gets a
+queue in one of two ways:
+
+- **Registered** (:meth:`UpstreamConcurrencyLimiter.set_engine_queues`). The
+  limit belongs to the engine, and every dispatch to it is counted and queued --
+  streaming or not, pinned or not, from any surface -- since every dispatch to a
+  local engine passes through :meth:`UpstreamConcurrencyLimiter.acquire`. Owners
+  that share an engine must agree on its limit.
+- **Held** (``req_ctx.UPSTREAM_ENGINE_HOLD``, an :class:`EngineHold`). The
+  dispatch brings the limit, an engine's line counts against the limit its
+  latest held dispatch brought, and only dispatches carrying a hold are counted.
+  This is the queue-wait offload's path and goes away with it. On a registered
+  engine the registered limit applies instead.
+
+Either way a dispatch is sent while fewer than the limit of the engine's counted
+dispatches have gone without a first token, and the rest wait in arrival order,
+whatever the limiter's own switch says. A dispatch's queue deadline ends the
+wait as above, with :class:`UpstreamQueueWaitExpired`, and one whose deadline has
+already passed leaves at once when there is no room. One with no deadline of
+its own has nowhere else to go, so it waits at most the acquire timeout for its
+turn and is then sent anyway: the queue never fails a request, it only decides
+where the request waits. A place frees when the adapter reports the engine's
+first output with the slot it holds (``dispatch_watch.report_first_token``), or
+at the latest when the slot is released, so a stream the engine is already
+answering never counts and nothing caps how many the engine runs at once.
+
+The queue lives in this process's memory, so registering one is refused when
+several worker processes serve the deployment (``serving.utils.workers``): each
+would count only its own share of what the engine is sent.
+:meth:`UpstreamConcurrencyLimiter.engine_snapshot` reports every engine's queue
+and what it has done.
 
 Counters are plain ints under the asyncio single-thread invariant, exactly as
 ``servers/concurrency._UserSlot`` documents: every mutation below happens in a
@@ -106,11 +126,13 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 import time
+from bisect import bisect_left
 from collections import deque
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 import aiohttp
@@ -120,9 +142,10 @@ from serving.adapters.dispatch_watch import report_queued, report_sent
 from serving.config.settings import get_settings
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
+from serving.utils.workers import several_workers
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
 logger = get_logger(__name__)
 
@@ -153,6 +176,25 @@ class UpstreamQueueWaitExpired(UpstreamSaturated):
     request still never reached the provider, and every ``UpstreamSaturated``
     reader (key rotation, the breaker exemption, the Anthropic surface) must keep
     treating it that way.
+    """
+
+
+class EngineQueueConflict(ValueError):
+    """An engine queue was registered with a limit another owner disagrees with.
+
+    Raised by :meth:`UpstreamConcurrencyLimiter.set_engine_queues` before it
+    changes anything. One engine has one queue, so every owner sending to it
+    must count against the same limit; two limits would let whichever owner
+    dispatched last decide for the other.
+    """
+
+
+class EngineQueueUnavailable(RuntimeError):
+    """An engine queue was registered where this process cannot keep one.
+
+    The queue lives in this process's memory. With several worker processes
+    serving the deployment, each would count only the dispatches it sent itself
+    and let the engine take several times the limit.
     """
 
 
@@ -203,6 +245,14 @@ def is_local_endpoint(base_url: str | None, *, deployment_type: DeploymentType =
     return host in _LOCAL_HOSTS
 
 
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    """Return the event loop running this code, or None outside one."""
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
 def _engine_address(base_url: str | None) -> str:
     """Return the ``host:port`` one local engine is reached at, its hold's key.
 
@@ -221,23 +271,32 @@ def _engine_address(base_url: str | None) -> str:
     return f"{host}:{port}"
 
 
+def _valid_limit(limit: object) -> int:
+    """Return an engine queue's limit, or raise ValueError when it is not one."""
+    if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
+        raise ValueError("an engine queue's limit must be a whole number of at least 1")
+    return limit
+
+
 class EngineHold:
     """One streaming dispatch's place in line for a local engine.
 
     A router pushes one around a streaming attempt (``req_ctx.UPSTREAM_ENGINE_HOLD``)
     to have :meth:`UpstreamConcurrencyLimiter.acquire` hold the dispatch while its
-    local engine already has ``limit`` held dispatches without a first token.
+    local engine already has ``limit`` counted dispatches without a first token.
     The limiter binds the place it grants here, so the adapter's first-token
     report (:meth:`on_first_token`) can give it up while the stream carries on.
     The slot the adapter holds gives it up too, whichever comes first.
+
+    This is the queue-wait offload's path. An engine registered with the limiter
+    (:meth:`UpstreamConcurrencyLimiter.set_engine_queues`) counts every dispatch
+    without one, and against its own limit rather than the hold's.
     """
 
     __slots__ = ("_admission", "limit")
 
     def __init__(self, limit: int) -> None:
-        if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
-            raise ValueError("an engine hold's limit must be a whole number of at least 1")
-        self.limit = limit
+        self.limit = _valid_limit(limit)
         self._admission: _EngineAdmission | None = None
 
     def bind(self, admission: _EngineAdmission) -> None:
@@ -248,19 +307,99 @@ class EngineHold:
         """Give the place up: the engine has started answering."""
         admission = self._admission
         if admission is not None:
-            admission.release()
+            admission.release(_FIRST_TOKEN)
+
+
+#: Upper bounds, in seconds, of the buckets an engine queue counts its waits in.
+#: One bucket more counts every longer wait.
+ENGINE_WAIT_BUCKETS_S = (0.1, 0.5, 1.0, 5.0, 15.0, 30.0, 60.0)
+
+# How a place at an engine was given back (see _EngineQueueStats).
+_FIRST_TOKEN = "first_token"
+_ANSWERED = "answered"
+_UNANSWERED = "unanswered"
+
+
+@dataclass
+class _EngineQueueStats:
+    """What one engine's queue has done since it was created.
+
+    How dispatches left the line: sent at once, sent after waiting, sent past
+    the limit when the acquire timeout ran out (``overflowed``), left at their
+    deadline unsent (``expired``, whether they waited or found the deadline
+    already gone), or cancelled while waiting. How places were given back: at
+    the engine's first output, at the end of an attempt the upstream answered
+    without a first-token report (``released_answered``), or at the end of one
+    that failed or was abandoned first. A ``released_answered`` count that keeps
+    rising means an adapter is not reporting first tokens, or the engine is being
+    sent requests that answer whole: each holds its place for the whole
+    generation. And how long each dispatch that joined the line waited, counted
+    in :data:`ENGINE_WAIT_BUCKETS_S`.
+    """
+
+    sent_at_once: int = 0
+    sent_after_wait: int = 0
+    overflowed: int = 0
+    expired: int = 0
+    cancelled: int = 0
+    released_on_first_token: int = 0
+    released_answered: int = 0
+    released_unanswered: int = 0
+    waits: int = 0
+    wait_seconds_total: float = 0.0
+    wait_seconds_max: float = 0.0
+    wait_buckets: list[int] = field(default_factory=lambda: [0] * (len(ENGINE_WAIT_BUCKETS_S) + 1))
+
+    def waited(self, seconds: float) -> None:
+        """Count one wait in line that has ended, however it ended."""
+        seconds = max(0.0, seconds)
+        self.waits += 1
+        self.wait_seconds_total += seconds
+        self.wait_seconds_max = max(self.wait_seconds_max, seconds)
+        self.wait_buckets[bisect_left(ENGINE_WAIT_BUCKETS_S, seconds)] += 1
+
+    def released(self, outcome: str) -> None:
+        """Count one place given back, by how (``_FIRST_TOKEN`` and the rest)."""
+        if outcome == _FIRST_TOKEN:
+            self.released_on_first_token += 1
+        elif outcome == _ANSWERED:
+            self.released_answered += 1
+        else:
+            self.released_unanswered += 1
+
+    def as_dict(self) -> dict[str, Any]:
+        """Return the counters, with each wait bucket labelled by its upper bound."""
+        return {
+            "sent_at_once": self.sent_at_once,
+            "sent_after_wait": self.sent_after_wait,
+            "overflowed": self.overflowed,
+            "expired": self.expired,
+            "cancelled": self.cancelled,
+            "released_on_first_token": self.released_on_first_token,
+            "released_answered": self.released_answered,
+            "released_unanswered": self.released_unanswered,
+            "waits": self.waits,
+            "wait_seconds_total": self.wait_seconds_total,
+            "wait_seconds_max": self.wait_seconds_max,
+            "wait_buckets": [
+                {"le_seconds": bound, "count": count}
+                for bound, count in zip(
+                    (*ENGINE_WAIT_BUCKETS_S, None), self.wait_buckets, strict=True
+                )
+            ],
+        }
 
 
 @dataclass
 class _EngineGate:
-    """The held dispatches one local engine was sent that have no first token yet.
+    """The counted dispatches one local engine was sent that have no first token yet.
 
     ``pending`` counts the places granted and not yet given up, and waiters
-    queue in arrival order. ``limit`` is the one the latest dispatch brought, so
-    a policy change applies from the next request on, to the whole line: a
-    request queued under the old limit is not left blocking the ones behind it.
-    Mutated only from blocks with no ``await``, the invariant :class:`_Bucket`
-    documents.
+    queue in arrival order. ``limit`` is the engine's registered limit, or for an
+    unregistered engine the one the latest held dispatch brought, so a policy
+    change applies from the next request on, to the whole line: a request queued
+    under the old limit is not left blocking the ones behind it. Mutated only
+    from blocks with no ``await``, the invariant :class:`_Bucket` documents.
     """
 
     address: str
@@ -271,6 +410,10 @@ class _EngineGate:
     # Bumped when the gate drops its state for a new loop, so a place granted on
     # the old loop is not given back into the new count.
     epoch: int = 0
+    stats: _EngineQueueStats = field(default_factory=_EngineQueueStats)
+    # Whether a held dispatch (the queue-wait offload's path) has used this
+    # queue: such a queue is kept whether or not anyone registers the engine.
+    held: bool = False
 
     def rebind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Adopt *loop*, dropping the places and waiters of a previous one."""
@@ -296,12 +439,19 @@ class _EngineGate:
         self.pending += 1
         return _EngineAdmission(self)
 
-    def give_back(self, epoch: int) -> None:
-        """Uncount one dispatch granted in *epoch* and let the next one go."""
+    def give_back(self, epoch: int, outcome: str | None = None) -> None:
+        """Uncount one dispatch granted in *epoch* and let the next one go.
+
+        ``outcome`` is how the dispatch gave its place up, for the stats; None
+        for a place granted to a waiter that left in the same tick, which no
+        request used.
+        """
         if epoch != self.epoch:
             return
         if self.pending > 0:
             self.pending -= 1
+        if outcome is not None:
+            self.stats.released(outcome)
         self.wake_waiters()
 
     def wake_waiters(self) -> None:
@@ -328,6 +478,26 @@ class _EngineGate:
         if waiter.done() and not waiter.cancelled():
             self.give_back(self.epoch)
 
+    def send_line_on(self) -> None:
+        """Send every waiter on now, past the limit: the queue no longer holds anyone.
+
+        Each is counted as sent, as a woken waiter is, so its place is given
+        back the usual way. For a queue nobody registers any more, whose new
+        arrivals go straight to the engine: leaving the line to wait behind them
+        would only make the earliest requests the latest.
+        """
+        while self.waiters:
+            waiter = self.waiters.popleft()
+            if waiter.done():
+                continue
+            self.pending += 1
+            waiter.set_result(None)
+
+    @property
+    def idle(self) -> bool:
+        """Whether no dispatch holds a place here or waits for one."""
+        return self.pending == 0 and not self.waiters
+
 
 class _EngineAdmission:
     """One place granted at a local engine, given back exactly once."""
@@ -338,13 +508,13 @@ class _EngineAdmission:
         self._gate: _EngineGate | None = gate
         self._epoch = gate.epoch
 
-    def release(self) -> None:
-        """Give the place back; later calls do nothing."""
+    def release(self, outcome: str) -> None:
+        """Give the place back, counted under *outcome*; later calls do nothing."""
         gate = self._gate
         if gate is None:
             return
         self._gate = None
-        gate.give_back(self._epoch)
+        gate.give_back(self._epoch, outcome)
 
 
 @dataclass
@@ -540,7 +710,9 @@ class UpstreamSlot:
 
     A slot with no bucket is the form handed back when the limiter is disabled
     or the endpoint is local. It holds the dispatch's place at a local engine
-    when a hold granted one (:class:`EngineHold`), and otherwise nothing at all.
+    when the engine's queue granted one, and otherwise nothing at all. The
+    adapter gives that place up through the slot when the engine starts
+    answering (:meth:`first_token`), so no request context is needed to find it.
     """
 
     __slots__ = ("_admission", "_bucket", "_released")
@@ -559,6 +731,22 @@ class UpstreamSlot:
         """Whether this slot still holds capacity (False once released or inert)."""
         return not self._released
 
+    def first_token(self) -> None:
+        """Give up the place at a local engine: the engine has started answering.
+
+        A stream the engine is answering no longer counts against its queue, so
+        the next request in line can go. Anything else the slot holds -- an
+        outbound bucket's place -- is kept until :meth:`release`. Idempotent, and
+        a no-op for a slot that holds no place at an engine.
+        """
+        admission = self._admission
+        if admission is None:
+            return
+        self._admission = None
+        admission.release(_FIRST_TOKEN)
+        if self._bucket is None:
+            self._released = True
+
     def release(self, *, status_code: int | None = None) -> None:
         """Return the slot and report the upstream outcome.
 
@@ -573,9 +761,9 @@ class UpstreamSlot:
         admission = self._admission
         self._admission = None
         if admission is not None:
-            # Already given up if the engine started answering; a stream that
+            # Already given up if the engine started answering; a request that
             # ended first gives it up here.
-            admission.release()
+            admission.release(_ANSWERED if status_code == 200 else _UNANSWERED)
         bucket = self._bucket
         self._bucket = None
         if bucket is not None:
@@ -613,6 +801,10 @@ class UpstreamConcurrencyLimiter:
         self._probe_interval_s = max(0.0, float(probe_interval_s))
         self._buckets: dict[tuple[str, str], _Bucket] = {}
         self._gates: dict[str, _EngineGate] = {}
+        # Registered engine queues: each owner's engines and their limits, and
+        # the limit in force at each registered engine (owners agree on it).
+        self._queue_owners: dict[str, dict[str, int]] = {}
+        self._queue_limits: dict[str, int] = {}
 
     @classmethod
     def from_settings(cls) -> UpstreamConcurrencyLimiter:
@@ -676,8 +868,8 @@ class UpstreamConcurrencyLimiter:
                 pooled adapter buckets by the key it just acquired rather than
                 by the route. Never stored; only its fingerprint is.
             base_url: The endpoint's base URL, used to exempt local inference
-                servers from the limit, and to find the engine a held dispatch
-                waits for.
+                servers from the limit, and to find the engine queue a dispatch
+                to one waits in.
             deployment_type: Explicit engine or provider classification; auto
                 uses the existing local-host heuristic.
 
@@ -687,8 +879,8 @@ class UpstreamConcurrencyLimiter:
 
         Raises:
             UpstreamQueueWaitExpired: The dispatch's own queue-wait deadline
-                passed first (see :meth:`_queue_wait`), or passed while it was
-                held for its local engine (see :meth:`_admit_to_engine`).
+                passed first (see :meth:`_queue_wait`), or passed while it waited
+                in its local engine's queue (see :meth:`_admit_to_engine`).
             UpstreamSaturated: No slot came free within the acquire timeout.
         """
         if is_local_endpoint(base_url, deployment_type=deployment_type):
@@ -781,44 +973,58 @@ class UpstreamConcurrencyLimiter:
     async def _admit_to_engine(self, base_url: str | None) -> UpstreamSlot:
         """Send a dispatch to its local engine, holding it here first if it must wait.
 
-        A dispatch with no :class:`EngineHold` goes straight to the engine, with
-        an inert slot. One with a hold sets the engine's limit to its own, and
-        goes while fewer than that many of the engine's held dispatches lack a
-        first token. Otherwise it waits its turn: until its queue deadline, when
-        it has one, or else for at most the acquire timeout, after which it is
-        sent anyway, past the limit.
+        A dispatch to an engine with no queue -- not registered, and the
+        dispatch carries no :class:`EngineHold` -- goes straight to the engine,
+        with an inert slot. Otherwise it counts against the engine's limit: the
+        registered one, or else its hold's, which then becomes the engine's. It
+        goes while fewer than that many of the engine's counted dispatches lack
+        a first token. Otherwise it waits its turn: until its queue deadline,
+        when it has one, or else for at most the acquire timeout, after which it
+        is sent anyway, past the limit.
 
         Raises:
             UpstreamQueueWaitExpired: The dispatch's queue deadline passed while
-                it was held.
+                it waited, or had passed when it arrived to a full engine.
         """
-        hold = req_ctx.get().get(req_ctx.UPSTREAM_ENGINE_HOLD)
-        if not isinstance(hold, EngineHold):
-            report_sent()
-            return _INERT_SLOT
+        held = req_ctx.get().get(req_ctx.UPSTREAM_ENGINE_HOLD)
+        hold = held if isinstance(held, EngineHold) else None
+        limit = self._queue_limits.get(_engine_address(base_url))
+        if limit is None:
+            if hold is None:
+                report_sent()
+                return _INERT_SLOT
+            limit = hold.limit
 
         loop = asyncio.get_running_loop()
         gate = self._gate_for(base_url)
         gate.rebind_loop(loop)
-        if gate.admits(hold.limit):
+        if hold is not None:
+            gate.held = True
+        if gate.admits(limit):
+            gate.stats.sent_at_once += 1
             return self._send_to_engine(gate.grant(), hold)
 
         wait, deadline_bound = self._hold_wait()
         if deadline_bound and wait <= 0:
+            gate.stats.expired += 1
             raise self._engine_hold_expired(gate)
 
         report_queued()
         waiter: asyncio.Future[None] = loop.create_future()
         gate.waiters.append(waiter)
+        joined = time.monotonic()
         try:
             await asyncio.wait_for(waiter, wait)
         except TimeoutError:
             gate.abandon(waiter)
+            gate.stats.waited(time.monotonic() - joined)
             if deadline_bound:
+                gate.stats.expired += 1
                 raise self._engine_hold_expired(gate) from None
             # Its turn has not come, and nothing else can take this request:
             # send it on, over the limit, to queue at the engine as it would
-            # have with no hold at all.
+            # have with no queue here at all.
+            gate.stats.overflowed += 1
             logger.warning(
                 "engine_hold_overflowed",
                 extra={
@@ -835,14 +1041,19 @@ class UpstreamConcurrencyLimiter:
             # Cancellation (client disconnect, router timeout) leaves the line
             # the same way, and surfaces as itself.
             gate.abandon(waiter)
+            gate.stats.waited(time.monotonic() - joined)
+            gate.stats.cancelled += 1
             raise
         # Woken: ``wake_waiters`` already counted this dispatch's place.
+        gate.stats.waited(time.monotonic() - joined)
+        gate.stats.sent_after_wait += 1
         return self._send_to_engine(_EngineAdmission(gate), hold)
 
     @staticmethod
-    def _send_to_engine(admission: _EngineAdmission, hold: EngineHold) -> UpstreamSlot:
-        """Bind a granted place to its dispatch's hold and let the request go."""
-        hold.bind(admission)
+    def _send_to_engine(admission: _EngineAdmission, hold: EngineHold | None) -> UpstreamSlot:
+        """Hand a granted place to the slot (and any hold) and let the request go."""
+        if hold is not None:
+            hold.bind(admission)
         report_sent()
         return UpstreamSlot(None, admission)
 
@@ -941,13 +1152,171 @@ class UpstreamConcurrencyLimiter:
         return bucket
 
     def _gate_for(self, base_url: str | None) -> _EngineGate:
-        """Return the hold for one local engine, creating it on first use."""
-        address = _engine_address(base_url)
+        """Return the queue for one local engine, creating it on first use."""
+        return self._gate_at(_engine_address(base_url))
+
+    def _gate_at(self, address: str) -> _EngineGate:
+        """Return the queue for the engine at ``host:port``, creating it on first use."""
         gate = self._gates.get(address)
         if gate is None:
             gate = _EngineGate(address=address)
             self._gates[address] = gate
         return gate
+
+    # -- registered engine queues ---------------------------------------------
+
+    def set_engine_queues(self, owner: str, limits: Mapping[str, int]) -> None:
+        """Register the engine queues *owner* needs, replacing the ones it had.
+
+        Each registered engine counts every dispatch it is sent against its
+        limit, whatever the dispatch carries (see the module docstring). An
+        engine stays registered while any owner registers it, and owners that
+        share one must give it the same limit. A changed limit applies to the
+        engine's line at once: a raised one sends waiters on now.
+
+        Nothing changes when this raises.
+
+        Args:
+            owner: Who keeps these queues -- a model, say. Registering again
+                under the same owner replaces its whole set, so a rebuilt router
+                for the same model takes over its predecessor's queues, counts
+                and waiters included.
+            limits: Each local engine's base URL and its limit: how many
+                dispatches to it may lack a first token before the rest wait.
+                Base URLs that reach one server (``host:port``) are one engine.
+                Empty clears the owner's queues, like :meth:`clear_engine_queues`.
+
+        Raises:
+            ValueError: A limit is not a whole number of at least 1.
+            EngineQueueConflict: An engine is given two limits, by this owner
+                or by this owner and another.
+            EngineQueueUnavailable: Several worker processes serve this
+                deployment, so no process sees every dispatch to an engine.
+        """
+        wanted: dict[str, int] = {}
+        for base_url, limit in limits.items():
+            address = _engine_address(base_url)
+            limit = _valid_limit(limit)
+            if wanted.setdefault(address, limit) != limit:
+                raise EngineQueueConflict(
+                    f"Local engine {address!r} was given two limits by {owner!r}: "
+                    f"{wanted[address]} and {limit}"
+                )
+        if wanted and several_workers():
+            raise EngineQueueUnavailable(
+                "Engine queues count dispatches in process memory, and several worker "
+                "processes may serve this deployment (a worker count above one, uvicorn "
+                "--workers or --reload, or gunicorn): each would let its engines take "
+                "the limit again. Run one worker per gateway instance to use them."
+            )
+        for other, theirs in self._queue_owners.items():
+            if other == owner:
+                continue
+            for address, limit in wanted.items():
+                if address in theirs and theirs[address] != limit:
+                    raise EngineQueueConflict(
+                        f"Local engine {address!r} is registered by {other!r} with limit "
+                        f"{theirs[address]}; {owner!r} asked for {limit}. Owners sharing "
+                        "an engine must give it the same limit."
+                    )
+
+        if wanted:
+            self._queue_owners[owner] = wanted
+        else:
+            self._queue_owners.pop(owner, None)
+        before = self._queue_limits
+        self._queue_limits = {
+            address: limit
+            for theirs in self._queue_owners.values()
+            for address, limit in theirs.items()
+        }
+        for address, limit in self._queue_limits.items():
+            if before.get(address) == limit:
+                continue
+            gate = self._gate_at(address)
+            gate.limit = limit
+            # Waiters belong to the loop that queued them; on any other, the
+            # next dispatch or freed place sends them on under the new limit.
+            if gate.loop is not None and gate.loop is _running_loop():
+                gate.wake_waiters()
+            logger.info(
+                "engine_queue_registered",
+                extra={
+                    "event": "engine_queue_registered",
+                    "engine": address,
+                    "limit": limit,
+                    "previous_limit": before.get(address),
+                },
+            )
+        for address in before.keys() - self._queue_limits.keys():
+            gate = self._gates.get(address)
+            # Nobody queues for this engine any more, so its new arrivals go
+            # straight to it: send the line on now rather than behind them. A
+            # queue the offload's held dispatches also use keeps its line.
+            if (
+                gate is not None
+                and not gate.held
+                and gate.loop is not None
+                and gate.loop is _running_loop()
+            ):
+                gate.send_line_on()
+            logger.info(
+                "engine_queue_unregistered",
+                extra={"event": "engine_queue_unregistered", "engine": address},
+            )
+        self._drop_idle_gates()
+
+    def clear_engine_queues(self, owner: str) -> None:
+        """Drop the engine queues *owner* registered.
+
+        An engine another owner still registers keeps its queue. One nobody
+        does any more stops counting new dispatches and sends anyone still
+        waiting on at once; those it already counted give their places back as
+        they always would, and the queue is forgotten once they have. A queue
+        the queue-wait offload's held dispatches also use is kept, line and all.
+        """
+        self.set_engine_queues(owner, {})
+
+    def _drop_idle_gates(self) -> None:
+        """Forget the queues nobody registers or holds for, once nothing is in them."""
+        for address in [
+            address
+            for address, gate in self._gates.items()
+            if address not in self._queue_limits and not gate.held and gate.idle
+        ]:
+            del self._gates[address]
+
+    def engine_queue_limit(self, base_url: str | None) -> int | None:
+        """Return the registered limit of the engine *base_url* reaches, or None."""
+        return self._queue_limits.get(_engine_address(base_url))
+
+    def engine_snapshot(self) -> dict[str, dict[str, Any]]:
+        """Return each engine queue's live state and counters, keyed by ``host:port``.
+
+        Lists every registered engine, traffic or not, every engine a held
+        dispatch has reached, and an engine nobody registers any more until its
+        counted dispatches are done. ``limit`` is the one in force,
+        ``registered`` whether it is the engine's own, ``owners`` who registered
+        it, and ``held`` whether the queue-wait offload's held dispatches use the
+        queue. ``pending`` and ``waiting`` are the places taken and the
+        dispatches in line now; the rest are :class:`_EngineQueueStats` since
+        the queue was created.
+        """
+        self._drop_idle_gates()
+        return {
+            address: {
+                "limit": self._queue_limits.get(address, gate.limit),
+                "registered": address in self._queue_limits,
+                "owners": sorted(
+                    owner for owner, theirs in self._queue_owners.items() if address in theirs
+                ),
+                "held": gate.held,
+                "pending": gate.pending,
+                "waiting": len(gate.waiters),
+                **gate.stats.as_dict(),
+            }
+            for address, gate in self._gates.items()
+        }
 
     def snapshot(self) -> dict[tuple[str, str], dict[str, int | bool]]:
         """Return each bucket's live AIMD state, keyed by (provider, fingerprint).
@@ -992,6 +1361,35 @@ def reset_upstream_limiter(limiter: UpstreamConcurrencyLimiter | None = None) ->
     """
     global _LIMITER
     _LIMITER = limiter
+
+
+def dispatch_queue_context(
+    *, deadline: float | None, hold: EngineHold | None = None
+) -> dict[str, Any]:
+    """Return the request-context entries that carry one dispatch's queue terms here.
+
+    The one place a router writes what :meth:`UpstreamConcurrencyLimiter.acquire`
+    reads; push them around the dispatch with ``req_ctx.push(**...)``. Both are
+    always written, so a dispatch never inherits an outer one's terms.
+
+    Args:
+        deadline: The ``time.monotonic()`` time the dispatch stops waiting --
+            for an outbound slot, or in its local engine's queue -- and leaves
+            with :class:`UpstreamQueueWaitExpired`, unsent. None waits as long as
+            the limiter would.
+        hold: The queue-wait offload's per-request engine hold, or None. A
+            registered engine counts the dispatch without one.
+
+    Raises:
+        ValueError: ``deadline`` is not a finite number.
+    """
+    if deadline is not None and (
+        isinstance(deadline, bool)
+        or not isinstance(deadline, (int, float))
+        or not math.isfinite(deadline)
+    ):
+        raise ValueError("a dispatch's queue deadline must be a finite time.monotonic() value")
+    return {req_ctx.UPSTREAM_QUEUE_DEADLINE: deadline, req_ctx.UPSTREAM_ENGINE_HOLD: hold}
 
 
 async def acquire_upstream_slot(
