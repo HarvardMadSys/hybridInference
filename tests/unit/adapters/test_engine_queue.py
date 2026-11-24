@@ -588,6 +588,32 @@ def test_an_engine_another_owner_registers_keeps_its_queue_when_one_clears():
     assert limiter.engine_queue_limit(ENGINE) == 1
 
 
+def test_a_registration_token_clears_only_the_registration_it_names():
+    limiter = _limiter()
+    replaced = limiter.set_engine_queues(OWNER, {ENGINE: 1})
+    current = limiter.set_engine_queues(OWNER, {ENGINE: 2})
+
+    # The router that registered first, stopping after its successor started.
+    limiter.clear_engine_queues(OWNER, token=replaced)
+    assert limiter.engine_queue_limit(ENGINE) == 2
+
+    limiter.clear_engine_queues(OWNER, token=current)
+    assert limiter.engine_queue_limit(ENGINE) is None
+
+
+def test_a_token_names_one_owner_and_clearing_without_one_drops_whatever_it_has():
+    limiter = _limiter()
+    token = limiter.set_engine_queues(OWNER, {ENGINE: 1})
+    limiter.set_engine_queues("model-b", {OTHER_ENGINE: 1})
+
+    limiter.clear_engine_queues("model-b", token=token)
+    assert limiter.engine_queue_limit(OTHER_ENGINE) == 1
+
+    limiter.clear_engine_queues("model-b")
+    assert limiter.engine_queue_limit(OTHER_ENGINE) is None
+    assert limiter.engine_queue_limit(ENGINE) == 1
+
+
 def test_an_engine_queue_is_refused_while_several_workers_serve(monkeypatch):
     monkeypatch.setattr("serving.adapters.upstream_limiter.several_workers", lambda: True)
     limiter = _limiter()

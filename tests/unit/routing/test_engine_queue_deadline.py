@@ -23,7 +23,7 @@ import pytest
 
 from routing.offload import OffloadPolicy
 from routing.protocols import RoutingRequestOptions
-from routing.routers import FixedRouter
+from routing.routers import FixedRouter, engines_left_unsent
 from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.adapters.dispatch_watch import report_first_token
 from serving.adapters.upstream_limiter import (
@@ -57,16 +57,23 @@ class _Engine(BaseAdapter):
     the engine's queue up through its slot when it answers, as the real adapters do.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        port: int = 18003,
+        provider: str = "engine",
+        fail_with: BaseException | None = None,
+    ) -> None:
         super().__init__(
             ModelConfig(
                 id=MODEL,
                 name=MODEL,
-                provider="engine",
-                base_url=ENGINE_URL,
-                endpoint_id=ENGINE_ID,
+                provider=provider,
+                base_url=f"http://localhost:{port}/v1",
+                endpoint_id=f"{MODEL}:local-{port}",
             )
         )
+        self.fail_with = fail_with
         self.terms: list[dict[str, Any]] = []
         self.answers: list[asyncio.Event] = []
         self.chat_sent = 0
@@ -100,7 +107,9 @@ class _Engine(BaseAdapter):
         self._record_terms()
         async with upstream_slot(self.config.provider, KEY, base_url=self.config.base_url):
             self.chat_sent += 1
-            return self.format_response(content="engine", model=MODEL)
+            if self.fail_with is not None:
+                raise self.fail_with
+            return self.format_response(content=self.config.provider, model=MODEL)
 
     async def stream_chat_completion(
         self, messages: list[dict[str, Any]], **params: Any
@@ -109,6 +118,8 @@ class _Engine(BaseAdapter):
         async with upstream_slot(self.config.provider, KEY, base_url=self.config.base_url) as slot:
             answered = asyncio.Event()
             self.answers.append(answered)
+            if self.fail_with is not None:
+                raise self.fail_with
             yield _chunk({"role": "assistant"})
             try:
                 await answered.wait()
@@ -116,7 +127,7 @@ class _Engine(BaseAdapter):
                 self.cancelled += 1
                 raise
             report_first_token(slot)
-            yield _chunk({"content": "engine"})
+            yield _chunk({"content": self.config.provider})
             yield _chunk({}, finish_reason="stop")
 
 
@@ -225,9 +236,39 @@ def _content(chunks: list[str]) -> str:
     return text
 
 
-def _line() -> dict[str, int]:
-    state = get_upstream_limiter().engine_snapshot()[ENGINE_ADDRESS]
+def _line(address: str = ENGINE_ADDRESS) -> dict[str, int]:
+    state = get_upstream_limiter().engine_snapshot()[address]
     return {"pending": state["pending"], "waiting": state["waiting"]}
+
+
+def _expired(address: str = ENGINE_ADDRESS) -> int:
+    return get_upstream_limiter().engine_snapshot()[address]["expired"]
+
+
+OTHER_URL = "http://localhost:18004/v1"
+OTHER_ADDRESS = "localhost:18004"
+OTHER_ID = f"{MODEL}:local-18004"
+
+
+def _two_engines(
+    first: _Engine, second: _Engine, cloud: _Cloud
+) -> tuple[FixedRouter, RoutingRequestOptions]:
+    """A route of two registered engines, ``first`` drawn first, and options with a spent deadline."""
+    get_upstream_limiter().set_engine_queues(MODEL, {ENGINE_URL: 1, OTHER_URL: 1})
+    policy = OffloadPolicy(route_id="offload", wait_seconds=OFFLOAD_WAIT_S, engine_queue_limit=5)
+    router = FixedRouter(offload_policy_resolver=_Policies(policy))
+    router.register_route(MODEL, [(first, 1.0), (second, 1.0), (cloud, 1.0)])
+    return router, RoutingRequestOptions(
+        endpoint_scope=frozenset({ENGINE_ID, OTHER_ID}),
+        engine_queue_deadline=time.monotonic() - 1,
+    )
+
+
+async def _hold(router: FixedRouter, engine: _Engine) -> asyncio.Task[str]:
+    """Take the engine's one seat with a stream pinned to it, whose first token the test holds."""
+    ahead = _stream(router, RoutingRequestOptions(pin_provider=engine.config.provider))
+    await engine.wait_sent(1)
+    return ahead
 
 
 async def _until(predicate) -> None:
@@ -296,6 +337,86 @@ async def test_a_spent_deadline_leaves_a_full_engine_unsent():
     assert _line() == {"pending": 1, "waiting": 0}
     engine.answer(0)
     assert await ahead == "engine"
+
+
+async def test_a_spent_deadline_leaves_the_engine_once_and_is_not_tried_again():
+    engine, cloud = _Engine(), _Cloud()
+    router = _router(engine, cloud)
+    ahead = _stream(router, _local(5))
+    await engine.wait_sent(1)
+
+    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+        await _stream(router, _local(-1))
+
+    # One expiry: an attempt the caller's deadline ended is not retried.
+    assert _expired() == 1
+    assert caught.value._routing["failed_attempts"] == []  # type: ignore[attr-defined]
+    engine.answer(0)
+    await ahead
+
+
+async def test_an_engine_left_unsent_is_no_failure_beside_one_that_failed():
+    busy, failing, cloud = _Engine(), _Engine(port=18004, provider="engine-b"), _Cloud()
+    failing.fail_with = RuntimeError("engine b down")
+    router, options = _two_engines(busy, failing, cloud)
+    ahead = await _hold(router, busy)
+    dropped: list[str] = []
+    router._drop_affinity = dropped.append  # type: ignore[method-assign]
+
+    with pytest.raises(RuntimeError, match="engine b down") as caught:
+        await _stream(router, options)
+
+    # The real failure is the one reported; the full engine is named apart.
+    routing = caught.value._routing  # type: ignore[attr-defined]
+    assert [attempt["endpoint_id"] for attempt in routing["failed_attempts"]] == [OTHER_ID]
+    assert engines_left_unsent(caught.value) == (ENGINE_ID,)
+    assert (dropped, _expired()) == ([], 1)
+    busy.answer(0)
+    await ahead
+
+
+async def test_a_failure_before_an_engine_left_unsent_still_names_that_engine():
+    failing = _Engine(fail_with=RuntimeError("engine a down"))
+    busy, cloud = _Engine(port=18004, provider="engine-b"), _Cloud()
+    router, options = _two_engines(failing, busy, cloud)
+    ahead = await _hold(router, busy)
+
+    with pytest.raises(RuntimeError, match="engine a down") as caught:
+        await _stream(router, options)
+
+    assert engines_left_unsent(caught.value) == (OTHER_ID,)
+    assert _expired(OTHER_ADDRESS) == 1
+    busy.answer(0)
+    await ahead
+
+
+async def test_every_engine_left_unsent_reports_the_queue_and_no_failed_attempt():
+    first, second, cloud = _Engine(), _Engine(port=18004, provider="engine-b"), _Cloud()
+    router, options = _two_engines(first, second, cloud)
+    held = [await _hold(router, first), await _hold(router, second)]
+
+    with pytest.raises(UpstreamQueueWaitExpired) as caught:
+        await _stream(router, options)
+
+    assert caught.value._routing["failed_attempts"] == []  # type: ignore[attr-defined]
+    assert engines_left_unsent(caught.value) == (ENGINE_ID, OTHER_ID)
+    assert (_expired(), _expired(OTHER_ADDRESS)) == (1, 1)
+    first.answer(0)
+    second.answer(0)
+    await asyncio.gather(*held)
+
+
+async def test_a_non_streaming_request_goes_to_the_engine_with_a_seat_and_records_no_failure():
+    busy, free, cloud = _Engine(), _Engine(port=18004, provider="engine-b"), _Cloud()
+    router, options = _two_engines(busy, free, cloud)
+    ahead = await _hold(router, busy)
+
+    resp = await router.chat_completion(MODEL, MESSAGES, routing_options=options)
+
+    assert resp["choices"][0]["message"]["content"] == "engine-b"
+    assert resp["_routing"].get("failed_attempts", []) == []
+    busy.answer(0)
+    await ahead
 
 
 async def test_a_request_waits_for_a_seat_until_its_deadline_and_then_leaves():

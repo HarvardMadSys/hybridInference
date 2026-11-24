@@ -673,17 +673,17 @@ async def test_module_singleton_is_cached_and_resettable():
 
 
 def _adapter(**overrides) -> OpenAICompatAdapter:
-    config = ModelConfig(
-        id="glm-4.7",
-        name="GLM 4.7",
-        provider=PROVIDER,
-        base_url=REMOTE,
-        api_key=KEY_A,
-        provider_model_id="glm-4.7",
-        processor="default",
-        supported_params=["temperature", "max_tokens"],
-        **overrides,
-    )
+    fields = {
+        "id": "glm-4.7",
+        "name": "GLM 4.7",
+        "provider": PROVIDER,
+        "base_url": REMOTE,
+        "api_key": KEY_A,
+        "provider_model_id": "glm-4.7",
+        "processor": "default",
+        "supported_params": ["temperature", "max_tokens"],
+    }
+    config = ModelConfig(**{**fields, **overrides})
     adapter = OpenAICompatAdapter(config)
     # Give the adapter its own HTTP client rather than the process-wide
     # ``AsyncHTTPClient.shared()`` singleton. These tests stub methods on it, and
@@ -958,6 +958,58 @@ async def test_one_deadline_bounds_the_wait_across_every_pooled_key(monkeypatch)
         assert time.monotonic() - started < 2.0
         assert _state(limiter, KEY_A)["waiting"] == 0
         assert _state(limiter, KEY_B)["waiting"] == 0
+    finally:
+        reset_upstream_limiter()
+
+
+async def test_a_self_hosted_engines_queue_expiry_ends_the_dispatch_at_the_first_key(
+    monkeypatch,
+):
+    """Every key of a self-hosted engine waits in its one line: no key gets past it."""
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    limiter.set_engine_queues("model", {LOCAL: 1})
+    reset_upstream_limiter(limiter)
+    try:
+        adapter = _adapter(base_url=LOCAL, api_keys=[KEY_A, KEY_B])
+        seat = await limiter.acquire(PROVIDER, KEY_A, base_url=LOCAL)
+
+        async def never_called(**_kwargs):  # pragma: no cover - must not run
+            raise AssertionError("no request may be sent past a full engine")
+
+        monkeypatch.setattr(adapter.http, "json_post", never_called)
+
+        with _queue_deadline(-1), pytest.raises(UpstreamQueueWaitExpired):
+            await adapter.chat_completion([{"role": "user", "content": "x"}])
+
+        # One expiry, not one per key, and no key was muted for it.
+        assert limiter.engine_snapshot()["localhost:12003"]["expired"] == 1
+        assert adapter._key_pool is not None
+        assert adapter._key_pool.can_serve_role(None)
+        seat.release(status_code=200)
+    finally:
+        reset_upstream_limiter()
+
+
+async def test_a_self_hosted_engines_queue_expiry_ends_a_stream_at_the_first_key(monkeypatch):
+    limiter = _limiter(initial_limit=1, acquire_timeout=5.0)
+    limiter.set_engine_queues("model", {LOCAL: 1})
+    reset_upstream_limiter(limiter)
+    try:
+        adapter = _adapter(base_url=LOCAL, api_keys=[KEY_A, KEY_B])
+        seat = await limiter.acquire(PROVIDER, KEY_A, base_url=LOCAL)
+
+        async def never_called(*_args, **_kwargs):  # pragma: no cover - must not run
+            raise AssertionError("no request may be sent past a full engine")
+            yield
+
+        monkeypatch.setattr(adapter.http, "stream_post", never_called)
+
+        with _queue_deadline(-1), pytest.raises(UpstreamQueueWaitExpired):
+            async for _ in adapter.stream_chat_completion([{"role": "user", "content": "x"}]):
+                pass
+
+        assert limiter.engine_snapshot()["localhost:12003"]["expired"] == 1
+        seat.release(status_code=200)
     finally:
         reset_upstream_limiter()
 
