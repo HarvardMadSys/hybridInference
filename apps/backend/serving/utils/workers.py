@@ -1,14 +1,15 @@
 """How many worker processes serve this deployment.
 
 State kept in process memory — RouteWise's quota accounting, the target of a
-self-restart — is only ever one worker's. Whatever must know whether that is the
-whole deployment asks here.
+self-restart, a local engine's queue — is only ever one worker's. Whatever must
+know whether that is the whole deployment asks here.
 """
 
 from __future__ import annotations
 
 import multiprocessing
 import os
+import sys
 
 #: The variables ASGI servers and their launchers read the worker count from.
 WORKER_COUNT_ENV_KEYS = (
@@ -47,3 +48,19 @@ def spawned_by_worker_manager() -> bool:
     or one its reloader starts again only when a file changes.
     """
     return multiprocessing.parent_process() is not None
+
+
+def several_workers() -> bool:
+    """Return whether other worker processes may serve this port beside this one.
+
+    True when a worker count above one is configured, when a process manager
+    started this process (:func:`spawned_by_worker_manager`, which cannot tell
+    ``uvicorn --workers`` from ``uvicorn --reload``), or under gunicorn, which
+    forks its workers where neither check sees them.
+    """
+    workers = configured_worker_count()
+    return (
+        (workers is not None and workers > 1)
+        or spawned_by_worker_manager()
+        or "gunicorn" in sys.modules
+    )

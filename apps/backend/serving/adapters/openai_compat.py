@@ -1759,10 +1759,11 @@ class OpenAICompatAdapter(BaseAdapter):
                         # The engine has started answering, even if the processor
                         # below holds this output back: a router waiting on a
                         # first token must hear it now, not when the processor
-                        # lets something through (``dispatch_watch``).
+                        # lets something through (``dispatch_watch``), and the
+                        # engine's queue can send its next request.
                         if not saw_output and _frame_has_output(raw_choices):
                             saw_output = True
-                            report_first_token()
+                            report_first_token(active_slot)
 
                         # Process output format (returns a list of chunks)
                         processed_chunks = processor.process_stream_chunk(data)

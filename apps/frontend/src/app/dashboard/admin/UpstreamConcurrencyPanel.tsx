@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { getUpstreamConcurrency } from '@/lib/api/admin';
-import type { UpstreamConcurrencyResponse } from '@/lib/api/admin';
+import type { UpstreamConcurrencyResponse, UpstreamEngineQueue } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 // The gateway learns these limits from live 429s and successes, so a stale view
@@ -11,6 +11,94 @@ import { getErrorMessage } from '@/lib/utils/errors';
 // fast enough to watch a limit walk down under pressure, slow enough that an
 // idle admin tab is not a traffic source of its own.
 const REFRESH_INTERVAL_MS = 10_000;
+
+function formatWait(seconds: number): string {
+  if (seconds <= 0) return '—';
+  if (seconds < 1) return `${Math.round(seconds * 1000)} ms`;
+  return `${seconds.toFixed(1)} s`;
+}
+
+function countClass(value: number): string {
+  return value > 0 ? 'font-medium text-amber-600' : 'text-gray-400';
+}
+
+// Who keeps the queue: a registration, the queue-wait offload's held requests,
+// or nobody any more (listed only until the requests it counted are done).
+function queueSource(queue: UpstreamEngineQueue): string {
+  if (queue.registered) return `Registered by ${queue.owners.join(', ')}`;
+  if (queue.held) return 'Queue-wait offload';
+  return 'No longer registered';
+}
+
+// The gateway's queue in front of each local engine that has one. Shown only
+// when some engine does, so most deployments never see it.
+function EngineQueuesTable({ engines }: { engines: UpstreamEngineQueue[] }) {
+  return (
+    <div className="mt-4" data-testid="engine-queues">
+      <h4 className="text-[13px] font-semibold text-gray-900">Local engine queues</h4>
+      <p className="mt-1 text-[12px] text-gray-500">
+        Requests each local engine was sent that have no first token yet, and the line the gateway
+        holds behind them: a request waits here, where its router can still send it elsewhere,
+        instead of inside the engine. Counts are since the gateway started.
+      </p>
+      <div className="mt-2 overflow-x-auto rounded-lg border border-gray-200">
+        <table className="min-w-[760px] w-full text-[13px]">
+          <thead className="bg-gray-50 text-left text-[12px] uppercase tracking-wide text-gray-500">
+            <tr>
+              <th className="px-3 py-2">Engine</th>
+              <th className="px-3 py-2 text-right">Limit</th>
+              <th className="px-3 py-2 text-right">Awaiting first token</th>
+              <th className="px-3 py-2 text-right">Waiting</th>
+              <th className="px-3 py-2 text-right">Sent</th>
+              <th className="px-3 py-2 text-right">Left unsent</th>
+              <th className="px-3 py-2 text-right">Sent past limit</th>
+              <th className="px-3 py-2 text-right">Longest wait</th>
+              <th className="px-3 py-2 text-right">Held to the end</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-gray-100 bg-white">
+            {engines.map((queue) => (
+              <tr key={queue.engine}>
+                <td className="px-3 py-2">
+                  <div className="font-mono text-[12px] text-gray-900">{queue.engine}</div>
+                  <div className="text-[11px] text-gray-400">{queueSource(queue)}</div>
+                </td>
+                <td
+                  className="px-3 py-2 text-right tabular-nums text-gray-900"
+                  data-testid={`engine-limit-${queue.engine}`}
+                >
+                  {queue.limit}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-gray-700">{queue.pending}</td>
+                <td className={`px-3 py-2 text-right tabular-nums ${countClass(queue.waiting)}`}>
+                  {queue.waiting}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-gray-700">
+                  {queue.sent_at_once + queue.sent_after_wait}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-gray-700">{queue.expired}</td>
+                <td className={`px-3 py-2 text-right tabular-nums ${countClass(queue.overflowed)}`}>
+                  {queue.overflowed}
+                </td>
+                <td className="px-3 py-2 text-right tabular-nums text-gray-500">
+                  {formatWait(queue.wait_seconds_max)}
+                </td>
+                <td
+                  className={`px-3 py-2 text-right tabular-nums ${countClass(
+                    queue.released_answered,
+                  )}`}
+                  title="Requests that held their place for the whole generation: answered whole, or by an adapter that reports no first token."
+                >
+                  {queue.released_answered}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
 
 export function UpstreamConcurrencyPanel() {
   const [state, setState] = useState<UpstreamConcurrencyResponse | null>(null);
@@ -48,6 +136,7 @@ export function UpstreamConcurrencyPanel() {
 
   const config = state?.config;
   const buckets = state?.buckets ?? [];
+  const engines = state?.engines ?? [];
 
   return (
     <section className="rounded-lg border border-gray-200 bg-white p-4">
@@ -176,6 +265,8 @@ export function UpstreamConcurrencyPanel() {
           </table>
         </div>
       )}
+
+      {engines.length > 0 && <EngineQueuesTable engines={engines} />}
     </section>
   );
 }

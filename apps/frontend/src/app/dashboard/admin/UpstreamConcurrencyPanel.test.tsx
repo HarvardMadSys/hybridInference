@@ -44,6 +44,36 @@ const busy: UpstreamConcurrencyResponse = {
   ],
 };
 
+const queued: UpstreamConcurrencyResponse = {
+  ...idle,
+  engines: [
+    {
+      engine: '10.0.0.5:8000',
+      limit: 1,
+      registered: true,
+      owners: ['qwen-local'],
+      held: false,
+      pending: 1,
+      waiting: 3,
+      sent_at_once: 40,
+      sent_after_wait: 12,
+      overflowed: 0,
+      expired: 5,
+      cancelled: 1,
+      released_on_first_token: 50,
+      released_answered: 2,
+      released_unanswered: 0,
+      waits: 18,
+      wait_seconds_total: 9.5,
+      wait_seconds_max: 2.25,
+      wait_buckets: [
+        { le_seconds: 0.1, count: 2 },
+        { le_seconds: null, count: 16 },
+      ],
+    },
+  ],
+};
+
 function rowFor(fingerprint: string): HTMLElement {
   return screen.getByText(fingerprint).closest('tr') as HTMLElement;
 }
@@ -94,6 +124,50 @@ describe('UpstreamConcurrencyPanel', () => {
 
     expect(await screen.findByText(/No remote traffic yet/)).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('lists each local engine queue with its line and counters', async () => {
+    vi.mocked(getUpstreamConcurrency).mockResolvedValue(queued);
+
+    render(<UpstreamConcurrencyPanel />);
+
+    const section = await screen.findByTestId('engine-queues');
+    const row = within(section).getByText('10.0.0.5:8000').closest('tr') as HTMLElement;
+    expect(within(row).getByText('Registered by qwen-local')).toBeInTheDocument();
+    expect(within(row).getByTestId('engine-limit-10.0.0.5:8000')).toHaveTextContent('1');
+    // Waiting, sent (at once plus after waiting), left unsent, longest wait.
+    expect(within(row).getByText('3')).toBeInTheDocument();
+    expect(within(row).getByText('52')).toBeInTheDocument();
+    expect(within(row).getByText('5')).toBeInTheDocument();
+    expect(within(row).getByText('2.3 s')).toBeInTheDocument();
+    // The engine queue does not hide the remote buckets' empty state.
+    expect(screen.getByText(/No remote traffic yet/)).toBeInTheDocument();
+  });
+
+  it('says who keeps each engine queue', async () => {
+    const [registered] = queued.engines ?? [];
+    vi.mocked(getUpstreamConcurrency).mockResolvedValue({
+      ...idle,
+      engines: [
+        { ...registered, engine: 'localhost:18003', registered: false, owners: [], held: true },
+        { ...registered, engine: 'localhost:18004', registered: false, owners: [], held: false },
+      ],
+    });
+
+    render(<UpstreamConcurrencyPanel />);
+
+    const section = await screen.findByTestId('engine-queues');
+    const offload = within(section).getByText('localhost:18003').closest('tr') as HTMLElement;
+    expect(within(offload).getByText('Queue-wait offload')).toBeInTheDocument();
+    const draining = within(section).getByText('localhost:18004').closest('tr') as HTMLElement;
+    expect(within(draining).getByText('No longer registered')).toBeInTheDocument();
+  });
+
+  it('shows no engine section when no engine has a queue', async () => {
+    render(<UpstreamConcurrencyPanel />);
+
+    await screen.findByText('bbbbbbbb2222');
+    expect(screen.queryByTestId('engine-queues')).not.toBeInTheDocument();
   });
 
   it('warns when the limiter is switched off', async () => {
