@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any
 
 import pytest
 
-from routing import hybrid as hybrid_module, hybrid_stream_frames as frames_module
+from routing import hybrid_stream_frames as frames_module, pool_attempts as attempts_module
 from routing.decisions import RoutingDecision
 from routing.hybrid import HybridRouter
 from routing.hybrid_stream_frames import carries_routing, is_client_visible, tag_backend_chunk
@@ -204,7 +204,8 @@ async def test_parsing_does_not_grow_with_the_stream(monkeypatch):
         return real_loads(*args, **kwargs)
 
     monkeypatch.setattr(frames_module.json, "loads", counting)
-    monkeypatch.setattr(hybrid_module.json, "loads", counting)
+    # The dispatch record's parsing, which the attempt runner now does.
+    monkeypatch.setattr(attempts_module.json, "loads", counting)
 
     counts = []
     for content_chunks in (10, 200):
