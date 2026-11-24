@@ -28,6 +28,7 @@ from serving.adapters.upstream_limiter import (
     EngineQueueUnavailable,
     UpstreamConcurrencyLimiter,
     UpstreamQueueWaitExpired,
+    _EngineGate,
     _EngineQueueStats,
     dispatch_queue_context,
     reset_upstream_limiter,
@@ -485,7 +486,7 @@ def test_an_idle_queue_is_forgotten_as_soon_as_it_is_cleared():
     assert limiter.engine_snapshot() == {}
 
 
-async def test_a_queue_the_offload_path_also_uses_is_kept_line_and_all():
+async def test_held_dispatches_keep_their_line_when_nobody_registers_the_engine():
     limiter = _registered(limit=1)
     first = await _send(limiter, hold=EngineHold(1))
     behind = asyncio.ensure_future(_send(limiter, hold=EngineHold(1)))
@@ -499,7 +500,82 @@ async def test_a_queue_the_offload_path_also_uses_is_kept_line_and_all():
     assert (state["registered"], state["held"], state["waiting"]) == (False, True, 1)
     first.release(status_code=200)
     (await behind).release(status_code=200)
-    assert _queue(limiter)["pending"] == 0
+    # Nothing is in the queue any more, held or not: it is forgotten.
+    assert ENGINE_ADDRESS not in limiter.engine_snapshot()
+
+
+async def test_clearing_sends_unheld_waiters_on_though_held_traffic_used_the_queue_before():
+    limiter = _registered(limit=1)
+    # The offload's held traffic used this engine's queue, and is done.
+    (await _send(limiter, hold=EngineHold(1))).release(status_code=200)
+    first = await _send(limiter)
+    behind = asyncio.ensure_future(_send(limiter, deadline_in=5))
+    await _settle()
+    assert _queue(limiter)["held"] is False
+
+    limiter.clear_engine_queues(OWNER)
+    second = await behind
+    arrival = await _send(limiter)
+
+    # The waiter went on at once, and the new arrival goes straight through.
+    assert second.held and not arrival.held
+    assert _line(limiter) == {"pending": 2, "waiting": 0}
+    first.release(status_code=200)
+    second.release(status_code=200)
+    assert ENGINE_ADDRESS not in limiter.engine_snapshot()
+
+
+async def test_clearing_sends_the_unheld_waiters_on_and_keeps_the_held_ones_in_line():
+    limiter = _registered(limit=1)
+    first = await _send(limiter)
+    held_hold = EngineHold(1)
+    held_waiter = asyncio.ensure_future(_send(limiter, hold=held_hold))
+    unheld_waiter = asyncio.ensure_future(_send(limiter, deadline_in=5))
+    await _settle()
+    assert _queue(limiter)["held"] is True
+
+    limiter.clear_engine_queues(OWNER)
+    sent = await unheld_waiter
+
+    state = _queue(limiter)
+    assert (state["pending"], state["waiting"], state["held"]) == (2, 1, True)
+    assert not held_waiter.done()
+    first.release(status_code=200)
+    sent.release(status_code=200)
+    held = await held_waiter
+    held_hold.on_first_token()
+    held.release(status_code=200)
+    assert ENGINE_ADDRESS not in limiter.engine_snapshot()
+
+
+async def test_a_held_dispatch_keeps_an_unregistered_queue_until_it_is_done():
+    limiter = _limiter()
+    hold = EngineHold(1)
+    slot = await _send(limiter, hold=hold)
+
+    assert _queue(limiter)["held"] is True
+    hold.on_first_token()
+
+    # Its place is back and nothing waits: no hold in the queue any more.
+    assert ENGINE_ADDRESS not in limiter.engine_snapshot()
+    slot.release(status_code=200)
+
+
+def test_a_held_place_granted_as_its_waiter_gave_up_goes_back_with_its_hold():
+    """The grant and the timeout can land in the same tick; neither count may leak."""
+
+    async def race() -> dict[str, int]:
+        gate = _EngineGate(address=ENGINE_ADDRESS)
+        gate.rebind_loop(asyncio.get_running_loop())
+        ahead = gate.grant(held=True)
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        gate.join(waiter, held=True)
+        ahead.release("first_token")  # the engine answers: the waiter is granted
+        assert waiter.done() and (gate.pending, gate.held_pending) == (1, 1)
+        gate.abandon(waiter)  # ...but its wait had already run out
+        return {"pending": gate.pending, "held_pending": gate.held_pending, "held": gate.held}
+
+    assert asyncio.run(race()) == {"pending": 0, "held_pending": 0, "held": False}
 
 
 def test_an_engine_another_owner_registers_keeps_its_queue_when_one_clears():
@@ -640,20 +716,32 @@ async def test_the_adapter_gives_a_registered_engines_place_up_at_its_first_outp
     ) == (1, 1, 0)
 
 
-async def test_the_messages_passthrough_gives_a_self_hosted_engines_place_up_at_its_first_output(
-    installed, monkeypatch
-):
-    # An Anthropic-protocol route to a self-hosted engine, as SGLang and vLLM can
-    # serve one: /v1/messages streams it through the native passthrough.
-    frames = [
-        b"event: message_start\n"
-        b'data: {"type":"message_start","message":{"usage":{"input_tokens":3,"output_tokens":0}}}\n\n',
-        b"event: content_block_start\n"
-        b'data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n',
-        b"event: content_block_delta\n"
-        b'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"hi"}}\n\n',
-        b'event: message_stop\ndata: {"type":"message_stop"}\n\n',
-    ]
+def _sse(event: dict, *, terminated: bool = True) -> bytes:
+    """One Anthropic SSE frame; an unterminated one lacks its closing blank line."""
+    frame = f"event: {event['type']}\ndata: {json.dumps(event)}\n"
+    return (frame + "\n" if terminated else frame).encode()
+
+
+_MESSAGE_START = {"type": "message_start", "message": {"usage": {"input_tokens": 3}}}
+_EMPTY_TEXT_START = {
+    "type": "content_block_start",
+    "index": 0,
+    "content_block": {"type": "text", "text": ""},
+}
+_TEXT_DELTA = {
+    "type": "content_block_delta",
+    "index": 0,
+    "delta": {"type": "text_delta", "text": "hi"},
+}
+_MESSAGE_STOP = {"type": "message_stop"}
+
+
+async def _stream_passthrough(monkeypatch, limiter, frames: list[bytes]) -> list[int]:
+    """Stream *frames* through the native /v1/messages passthrough to a local engine.
+
+    Returns the engine's taken places as each chunk reached the caller. The route
+    speaks the Anthropic protocol to a self-hosted engine, as SGLang and vLLM can.
+    """
 
     class _Content:
         async def iter_any(self):
@@ -694,15 +782,86 @@ async def test_the_messages_passthrough_gives_a_self_hosted_engines_place_up_at_
         "messages": [{"role": "user", "content": "hi"}],
     }
     pending: list[int] = []
-
     async for _chunk in adapter.stream_messages(body, request_id="req-1"):
-        pending.append(_line(installed)["pending"])
+        pending.append(_line(limiter)["pending"])
+    return pending
 
-    # Counted while it prefilled, and free again before the stream ended.
-    assert pending[0] == 1
-    assert pending[-1] == 0
+
+async def test_the_messages_passthrough_frees_the_place_as_the_first_output_arrives(
+    installed, monkeypatch
+):
+    frames = [_sse(_MESSAGE_START), _sse(_TEXT_DELTA), _sse(_MESSAGE_STOP)]
+
+    pending = await _stream_passthrough(monkeypatch, installed, frames)
+
+    # Free by the time the caller holds the frame with the first text in it,
+    # not only once the caller asks for the next one.
+    assert pending == [1, 0, 0]
     state = _queue(installed)
     assert (state["released_on_first_token"], state["released_answered"]) == (1, 0)
+
+
+async def test_the_messages_passthrough_holds_the_place_through_an_empty_block_start(
+    installed, monkeypatch
+):
+    frames = [_sse(_MESSAGE_START), _sse(_EMPTY_TEXT_START), _sse(_TEXT_DELTA), _sse(_MESSAGE_STOP)]
+
+    pending = await _stream_passthrough(monkeypatch, installed, frames)
+
+    # An engine may open a block before it has generated anything.
+    assert pending == [1, 1, 0, 0]
+
+
+async def test_the_messages_passthrough_hears_a_first_output_the_stream_left_unterminated(
+    installed, monkeypatch
+):
+    frames = [_sse(_MESSAGE_START), _sse(_TEXT_DELTA, terminated=False)]
+
+    pending = await _stream_passthrough(monkeypatch, installed, frames)
+
+    # The text frame only completes at the end of the body.
+    assert pending == [1, 1]
+    state = _queue(installed)
+    assert (state["pending"], state["released_on_first_token"], state["released_answered"]) == (
+        0,
+        1,
+        0,
+    )
+
+
+def _block_start(block: dict) -> dict:
+    return {"type": "content_block_start", "index": 0, "content_block": block}
+
+
+def _block_delta(delta: dict) -> dict:
+    return {"type": "content_block_delta", "index": 0, "delta": delta}
+
+
+@pytest.mark.parametrize(
+    ("event", "expected"),
+    [
+        (_MESSAGE_START, False),
+        (_EMPTY_TEXT_START, False),
+        (_block_start({"type": "thinking", "thinking": ""}), False),
+        (_block_start({"type": "text", "text": "Hi"}), True),
+        (_block_start({"type": "thinking", "thinking": "Let"}), True),
+        (_block_start({"type": "tool_use", "id": "t", "name": "f"}), True),
+        (_TEXT_DELTA, True),
+        (_block_delta({"type": "text_delta", "text": ""}), False),
+        (_block_delta({"type": "thinking_delta", "thinking": "x"}), True),
+        (_block_delta({"type": "input_json_delta", "partial_json": ""}), False),
+        (_block_delta({"type": "input_json_delta", "partial_json": "{"}), True),
+        (_block_delta({"type": "signature_delta", "signature": "s"}), False),
+        (_MESSAGE_STOP, False),
+    ],
+)
+def test_the_passthrough_counts_only_generated_output_as_a_first_token(event, expected):
+    from serving.adapters.anthropic import _carries_output
+    from serving.servers.sse import SSEParser
+
+    (message,) = SSEParser().feed(_sse(event))
+
+    assert _carries_output(message) is expected
 
 
 async def test_a_non_streaming_request_holds_its_place_until_the_response(installed, monkeypatch):

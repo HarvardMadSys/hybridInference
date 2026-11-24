@@ -96,15 +96,41 @@ def _data_lines(message: SSEMessage) -> list[str]:
 
 
 def _carries_output(message: SSEMessage) -> bool:
-    """Return whether one passthrough event carries generated output (``is_output_event``)."""
+    """Return whether one passthrough event carries generated output.
+
+    Stricter than ``claude_format.is_output_event``, which the converted streams
+    use, because what it decides here is when a self-hosted engine's queue gets
+    its place back: an engine may open a content block before it has generated
+    anything, and an empty block start is not a first token. A delta counts when
+    it carries text, thinking or tool-call JSON; a block start when it opens a
+    tool call or already carries text or thinking.
+    """
     for payload in _data_lines(message):
         try:
             event = json.loads(payload)
         except json.JSONDecodeError:
             continue
-        if isinstance(event, dict) and is_output_event(event):
+        if isinstance(event, dict) and _is_generated_output(event):
             return True
     return False
+
+
+def _is_generated_output(event: dict[str, Any]) -> bool:
+    """Return whether one parsed passthrough event carries generated output."""
+    kind = event.get("type")
+    if kind == "content_block_delta":
+        part = event.get("delta")
+        keys: tuple[str, ...] = ("text", "thinking", "partial_json")
+    elif kind == "content_block_start":
+        part = event.get("content_block")
+        if isinstance(part, dict) and part.get("type") == "tool_use":
+            return True
+        keys = ("text", "thinking")
+    else:
+        return False
+    return isinstance(part, dict) and any(
+        isinstance(part.get(key), str) and part.get(key) for key in keys
+    )
 
 
 def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
@@ -586,22 +612,27 @@ class AnthropicAdapter(BaseAdapter):
                 )
             parser = SSEParser()
             saw_output = False
-            async for chunk in resp.content.iter_any():
-                yield chunk
-                for message in _feed(parser, chunk):
-                    # The bytes went on verbatim above; this only reads them. A
-                    # self-hosted engine behind this route frees its queue's
-                    # place for the next request once it starts answering.
-                    if not saw_output and _carries_output(message):
-                        saw_output = True
-                        report_first_token(slot)
+
+            def read(messages: list[SSEMessage]) -> None:
+                # A self-hosted engine behind this route frees its queue's place
+                # for the next request the moment it starts answering.
+                nonlocal saw_output
+                if not saw_output and any(_carries_output(message) for message in messages):
+                    saw_output = True
+                    report_first_token(slot)
+                for message in messages:
                     _count_usage(message, usage)
+
+            async for chunk in resp.content.iter_any():
+                # Read before the bytes go on, not when the caller next pulls:
+                # this generator sleeps at the yield. They go on verbatim.
+                read(_feed(parser, chunk))
+                yield chunk
             # Clean EOF with the last event left unterminated: complete it for
             # usage extraction, or this request's output tokens go uncounted.
             # Only our accounting needs this -- the client already received
             # those bytes verbatim above, so nothing is added to the wire.
-            for message in parser.flush():
-                _count_usage(message, usage)
+            read(parser.flush())
 
         if usage_sink is not None:
             usage_sink.update(usage)

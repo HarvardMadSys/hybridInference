@@ -411,9 +411,21 @@ class _EngineGate:
     # the old loop is not given back into the new count.
     epoch: int = 0
     stats: _EngineQueueStats = field(default_factory=_EngineQueueStats)
-    # Whether a held dispatch (the queue-wait offload's path) has used this
-    # queue: such a queue is kept whether or not anyone registers the engine.
-    held: bool = False
+    # The held dispatches (the queue-wait offload's path) in the queue right
+    # now: how many of the places taken are theirs, and which waiters carry a
+    # hold. A waiter stays listed until its own task has taken its place.
+    held_pending: int = 0
+    held_waiting: set[asyncio.Future[None]] = field(default_factory=set)
+
+    @property
+    def held(self) -> bool:
+        """Whether a held dispatch holds a place here or waits for one right now."""
+        return self.held_pending > 0 or bool(self.held_waiting)
+
+    @property
+    def idle(self) -> bool:
+        """Whether no dispatch holds a place here or waits for one."""
+        return self.pending == 0 and not self.waiters
 
     def rebind_loop(self, loop: asyncio.AbstractEventLoop) -> None:
         """Adopt *loop*, dropping the places and waiters of a previous one."""
@@ -421,7 +433,9 @@ class _EngineGate:
             return
         self.loop = loop
         self.waiters.clear()
+        self.held_waiting.clear()
         self.pending = 0
+        self.held_pending = 0
         self.epoch += 1
 
     def admits(self, limit: int) -> bool:
@@ -434,25 +448,47 @@ class _EngineGate:
         self.wake_waiters()
         return self.pending < self.limit
 
-    def grant(self) -> _EngineAdmission:
+    def grant(self, *, held: bool = False) -> _EngineAdmission:
         """Count one more dispatch sent to the engine and return its place."""
         self.pending += 1
-        return _EngineAdmission(self)
+        if held:
+            self.held_pending += 1
+        return _EngineAdmission(self, held=held)
 
-    def give_back(self, epoch: int, outcome: str | None = None) -> None:
+    def join(self, waiter: asyncio.Future[None], *, held: bool) -> None:
+        """Put a dispatch at the back of the line."""
+        self.waiters.append(waiter)
+        if held:
+            self.held_waiting.add(waiter)
+
+    def admitted(self, waiter: asyncio.Future[None], *, held: bool) -> _EngineAdmission:
+        """Return the place a woken waiter was given; ``wake_waiters`` counted it."""
+        self.held_waiting.discard(waiter)
+        return _EngineAdmission(self, held=held)
+
+    def give_back(self, epoch: int, outcome: str | None = None, *, held: bool = False) -> None:
         """Uncount one dispatch granted in *epoch* and let the next one go.
 
         ``outcome`` is how the dispatch gave its place up, for the stats; None
         for a place granted to a waiter that left in the same tick, which no
-        request used.
+        request used. ``held`` is whether that dispatch carried a hold.
         """
         if epoch != self.epoch:
             return
         if self.pending > 0:
             self.pending -= 1
+        if held and self.held_pending > 0:
+            self.held_pending -= 1
         if outcome is not None:
             self.stats.released(outcome)
         self.wake_waiters()
+
+    def _send(self, waiter: asyncio.Future[None]) -> None:
+        """Count a waiter's place in its name and wake it."""
+        self.pending += 1
+        if waiter in self.held_waiting:
+            self.held_pending += 1
+        waiter.set_result(None)
 
     def wake_waiters(self) -> None:
         """Send the longest-waiting dispatches on while the engine has room for them.
@@ -466,8 +502,7 @@ class _EngineGate:
             if waiter.done():
                 # Timed out or cancelled in the same tick; it holds no place.
                 continue
-            self.pending += 1
-            waiter.set_result(None)
+            self._send(waiter)
 
     def abandon(self, waiter: asyncio.Future[None]) -> None:
         """Drop a waiter that gave up, giving back a place granted in the same tick."""
@@ -475,38 +510,42 @@ class _EngineGate:
         # already dropped by a wake.
         with suppress(ValueError):
             self.waiters.remove(waiter)
+        held = waiter in self.held_waiting
+        self.held_waiting.discard(waiter)
         if waiter.done() and not waiter.cancelled():
-            self.give_back(self.epoch)
+            self.give_back(self.epoch, held=held)
 
     def send_line_on(self) -> None:
-        """Send every waiter on now, past the limit: the queue no longer holds anyone.
+        """Send every waiter that carries no hold on now, past the limit.
 
-        Each is counted as sent, as a woken waiter is, so its place is given
-        back the usual way. For a queue nobody registers any more, whose new
-        arrivals go straight to the engine: leaving the line to wait behind them
-        would only make the earliest requests the latest.
+        For a queue nobody registers any more: its new arrivals go straight to
+        the engine, and leaving the line to wait behind them would only make the
+        earliest requests the latest. Each is counted as sent, as a woken waiter
+        is, so its place is given back the usual way. A waiter that carries a
+        hold keeps its place in line: the queue-wait offload still counts it
+        against the limit its hold brought.
         """
+        kept: deque[asyncio.Future[None]] = deque()
         while self.waiters:
             waiter = self.waiters.popleft()
             if waiter.done():
                 continue
-            self.pending += 1
-            waiter.set_result(None)
-
-    @property
-    def idle(self) -> bool:
-        """Whether no dispatch holds a place here or waits for one."""
-        return self.pending == 0 and not self.waiters
+            if waiter in self.held_waiting:
+                kept.append(waiter)
+                continue
+            self._send(waiter)
+        self.waiters = kept
 
 
 class _EngineAdmission:
     """One place granted at a local engine, given back exactly once."""
 
-    __slots__ = ("_epoch", "_gate")
+    __slots__ = ("_epoch", "_gate", "_held")
 
-    def __init__(self, gate: _EngineGate) -> None:
+    def __init__(self, gate: _EngineGate, *, held: bool = False) -> None:
         self._gate: _EngineGate | None = gate
         self._epoch = gate.epoch
+        self._held = held
 
     def release(self, outcome: str) -> None:
         """Give the place back, counted under *outcome*; later calls do nothing."""
@@ -514,7 +553,7 @@ class _EngineAdmission:
         if gate is None:
             return
         self._gate = None
-        gate.give_back(self._epoch, outcome)
+        gate.give_back(self._epoch, outcome, held=self._held)
 
 
 @dataclass
@@ -998,11 +1037,10 @@ class UpstreamConcurrencyLimiter:
         loop = asyncio.get_running_loop()
         gate = self._gate_for(base_url)
         gate.rebind_loop(loop)
-        if hold is not None:
-            gate.held = True
+        held = hold is not None
         if gate.admits(limit):
             gate.stats.sent_at_once += 1
-            return self._send_to_engine(gate.grant(), hold)
+            return self._send_to_engine(gate.grant(held=held), hold)
 
         wait, deadline_bound = self._hold_wait()
         if deadline_bound and wait <= 0:
@@ -1011,7 +1049,7 @@ class UpstreamConcurrencyLimiter:
 
         report_queued()
         waiter: asyncio.Future[None] = loop.create_future()
-        gate.waiters.append(waiter)
+        gate.join(waiter, held=held)
         joined = time.monotonic()
         try:
             await asyncio.wait_for(waiter, wait)
@@ -1036,7 +1074,7 @@ class UpstreamConcurrencyLimiter:
                     "timeout_sec": self._acquire_timeout,
                 },
             )
-            return self._send_to_engine(gate.grant(), hold)
+            return self._send_to_engine(gate.grant(held=held), hold)
         except BaseException:
             # Cancellation (client disconnect, router timeout) leaves the line
             # the same way, and surfaces as itself.
@@ -1047,7 +1085,7 @@ class UpstreamConcurrencyLimiter:
         # Woken: ``wake_waiters`` already counted this dispatch's place.
         gate.stats.waited(time.monotonic() - joined)
         gate.stats.sent_after_wait += 1
-        return self._send_to_engine(_EngineAdmission(gate), hold)
+        return self._send_to_engine(gate.admitted(waiter, held=held), hold)
 
     @staticmethod
     def _send_to_engine(admission: _EngineAdmission, hold: EngineHold | None) -> UpstreamSlot:
@@ -1250,15 +1288,10 @@ class UpstreamConcurrencyLimiter:
             )
         for address in before.keys() - self._queue_limits.keys():
             gate = self._gates.get(address)
-            # Nobody queues for this engine any more, so its new arrivals go
-            # straight to it: send the line on now rather than behind them. A
-            # queue the offload's held dispatches also use keeps its line.
-            if (
-                gate is not None
-                and not gate.held
-                and gate.loop is not None
-                and gate.loop is _running_loop()
-            ):
+            # Nobody queues for this engine any more, so its new arrivals that
+            # carry no hold go straight to it: send the ones in line on now
+            # rather than behind them. Held dispatches keep their places.
+            if gate is not None and gate.loop is not None and gate.loop is _running_loop():
                 gate.send_line_on()
             logger.info(
                 "engine_queue_unregistered",
@@ -1270,15 +1303,21 @@ class UpstreamConcurrencyLimiter:
         """Drop the engine queues *owner* registered.
 
         An engine another owner still registers keeps its queue. One nobody
-        does any more stops counting new dispatches and sends anyone still
-        waiting on at once; those it already counted give their places back as
-        they always would, and the queue is forgotten once they have. A queue
-        the queue-wait offload's held dispatches also use is kept, line and all.
+        does any more stops counting new dispatches that carry no hold and sends
+        every such dispatch still waiting on at once; those it already counted
+        give their places back as they always would. Held dispatches -- the
+        queue-wait offload's -- keep their places and their line. The queue is
+        forgotten once nothing is in it.
         """
         self.set_engine_queues(owner, {})
 
     def _drop_idle_gates(self) -> None:
-        """Forget the queues nobody registers or holds for, once nothing is in them."""
+        """Forget the queues nobody registers, once no dispatch is in them.
+
+        A queue with a held dispatch in it is never idle, so the offload's queue
+        lasts as long as one of its dispatches does, and a later one starts it
+        again under its own hold's limit.
+        """
         for address in [
             address
             for address, gate in self._gates.items()
@@ -1293,14 +1332,14 @@ class UpstreamConcurrencyLimiter:
     def engine_snapshot(self) -> dict[str, dict[str, Any]]:
         """Return each engine queue's live state and counters, keyed by ``host:port``.
 
-        Lists every registered engine, traffic or not, every engine a held
-        dispatch has reached, and an engine nobody registers any more until its
-        counted dispatches are done. ``limit`` is the one in force,
-        ``registered`` whether it is the engine's own, ``owners`` who registered
-        it, and ``held`` whether the queue-wait offload's held dispatches use the
-        queue. ``pending`` and ``waiting`` are the places taken and the
-        dispatches in line now; the rest are :class:`_EngineQueueStats` since
-        the queue was created.
+        Lists every registered engine, traffic or not, and every other engine
+        with a dispatch in its queue: the queue-wait offload's held dispatches,
+        or ones counted before nobody registered the engine any more. ``limit``
+        is the one in force, ``registered`` whether it is the engine's own,
+        ``owners`` who registered it, and ``held`` whether a held dispatch holds
+        a place or waits in the queue right now. ``pending`` and ``waiting`` are
+        the places taken and the dispatches in line now; the rest are
+        :class:`_EngineQueueStats` since the queue was created.
         """
         self._drop_idle_gates()
         return {

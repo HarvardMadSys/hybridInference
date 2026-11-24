@@ -1863,9 +1863,9 @@ export interface UpstreamEngineQueueWaitBucket {
 // One local engine's queue in the gateway. `limit` is how many requests sent to
 // it may lack a first token before the rest wait: the engine's own when
 // `registered` (by `owners`), else the queue-wait offload's. `held` is whether
-// the offload's held requests use the queue; a queue that is neither is one
-// nobody registers any more, listed until its requests are done. `pending` and
-// `waiting` are live; the rest count since the queue was created.
+// one of the offload's held requests is in the queue right now; a queue that is
+// neither is one nobody registers any more, listed until its requests are done.
+// `pending` and `waiting` are live; the rest count since the queue was created.
 // `released_answered` counts requests that held their place for the whole
 // generation (answered whole, or by an adapter that reports no first token).
 export interface UpstreamEngineQueue {

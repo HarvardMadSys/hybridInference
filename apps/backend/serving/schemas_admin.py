@@ -2331,9 +2331,10 @@ class UpstreamEngineQueue(BaseModel):
     ``engine`` is the ``host:port`` the queue counts dispatches to. ``limit`` is
     how many of them may lack a first token before the rest wait: the engine's
     own when ``registered`` (by ``owners``), or else the one the queue-wait
-    offload's latest held dispatch brought. ``held`` is whether the offload's
-    held dispatches use the queue. A queue that is neither is one nobody
-    registers any more, listed until the requests it counted are done.
+    offload's latest held dispatch brought. ``held`` is whether one of the
+    offload's held dispatches holds a place or waits in the queue right now. A
+    queue that is neither is one nobody registers any more, listed until the
+    requests it counted are done.
     ``pending`` and ``waiting`` are the places taken and the dispatches in line
     right now.
 
