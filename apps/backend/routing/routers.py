@@ -58,6 +58,7 @@ from routing.streaming import (
 from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
 from serving.adapters.upstream_limiter import (
     EngineHold,
+    UpstreamQueueWaitExpired,
     dispatch_queue_context,
     is_local_endpoint,
 )
@@ -534,9 +535,43 @@ def _mark_offload(routing: dict[str, Any], attempts: Sequence[_RouteAttempt]) ->
         routing.setdefault("offload_endpoint_id", endpoint_id)
 
 
+#: Where a dispatch with a caller-owned queue deadline names, on the error it
+#: raises, the engines it passed over unsent (:func:`engines_left_unsent`).
+_ENGINES_LEFT_UNSENT = "_engines_left_unsent"
+
+
+def _left_caller_queue(exc: BaseException, engine_queue_deadline: float | None) -> bool:
+    """Return whether an attempt left an engine's queue at its caller's deadline.
+
+    Only for a dispatch that carries ``RoutingRequestOptions.engine_queue_deadline``:
+    its caller decides where the request goes next, and nothing was sent. So the
+    attempt is no failure at all. It is not recorded among the failed attempts,
+    does not drop the caller's affinity -- the engine was only full, and its cache
+    still holds the conversation -- is not retried, and is never the error the
+    request is reported with while another route has one.
+    """
+    return engine_queue_deadline is not None and isinstance(exc, UpstreamQueueWaitExpired)
+
+
+def engines_left_unsent(exc: BaseException) -> tuple[str, ...]:
+    """Return the engines a failed dispatch passed over at its caller's queue deadline.
+
+    A dispatch that carries ``RoutingRequestOptions.engine_queue_deadline`` walks
+    its route as usual, and an attempt still in an engine's queue at the deadline
+    leaves it unsent (:func:`_left_caller_queue`). When every attempt left that
+    way, the dispatch raises the first one's ``UpstreamQueueWaitExpired``. When
+    another route failed, it raises that route's error, and this names the
+    engines it passed over, so the caller knows one of them could still take the
+    request.
+    """
+    return tuple(getattr(exc, _ENGINES_LEFT_UNSENT, ()))
+
+
 def _raise_surfaced_error(
     attempts: Sequence[_RouteAttempt],
     failed_attempts: list[dict[str, Any]],
+    *,
+    unsent: Sequence[tuple[BaseAdapter, BaseException]] = (),
 ) -> NoReturn:
     """Raise the error the caller is told about, once every route has failed.
 
@@ -561,7 +596,22 @@ def _raise_surfaced_error(
 
     An attempt cut short for the offload route is represented by its retry, if
     it had one (``_reported_attempts``).
+
+    ``unsent`` are the attempts that left their caller's queue deadline unsent
+    (``_left_caller_queue``), as ``(adapter, error)``: none of them is a failure.
+    With no failure the first is raised; otherwise the surfaced failure names
+    their engines (:func:`engines_left_unsent`).
     """
+    if not attempts:
+        adapter, unsent_error = unsent[0]
+        if not isinstance(getattr(unsent_error, "_routing", None), dict):
+            unsent_error._routing = {  # type: ignore[attr-defined]
+                "provider": adapter.config.provider,
+                "base_url": adapter.config.base_url,
+                "endpoint_id": endpoint_id_for_adapter(adapter),
+                "failed_attempts": failed_attempts,
+            }
+        raise unsent_error
     reported = _reported_attempts(attempts)
     selected = _select_surfaced_error(reported)
     exc = selected.error
@@ -588,6 +638,12 @@ def _raise_surfaced_error(
         # upstream keeps whatever it already decided.
         routing.setdefault("fallback", True)
     _mark_offload(routing, attempts)
+    if unsent:
+        setattr(
+            exc,
+            _ENGINES_LEFT_UNSENT,
+            tuple(endpoint_id_for_adapter(adapter) for adapter, _error in unsent),
+        )
     raise exc
 
 
@@ -2925,15 +2981,25 @@ class FixedRouter:
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [failed_attempt(execution, primary_error)]
+            # Left unsent at its caller's queue deadline: no failure at all.
+            unsent: list[tuple[BaseAdapter, BaseException]] = (
+                [(execution, primary_error)]
+                if _left_caller_queue(primary_error, engine_queue_deadline)
+                else []
+            )
+            failed_attempts = [] if unsent else [failed_attempt(execution, primary_error)]
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [
-                _RouteAttempt(
-                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
-                )
-            ]
+            attempts = (
+                []
+                if unsent
+                else [
+                    _RouteAttempt(
+                        primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                    )
+                ]
+            )
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream instead of the "router"
             # sentinel — mirrors the success-path resp["_routing"] injection.
@@ -2964,7 +3030,7 @@ class FixedRouter:
                 # candidates out of the order it planned -- and would try the
                 # same candidate twice, once here and once from the caller.
                 raise primary_error
-            if use_affinity:
+            if use_affinity and not unsent:
                 self._drop_affinity(model_id)
             refused_window = _widest_refused_window(None, primary, primary_error)
             # Every other route in declaration order, bounded by the dispatch
@@ -2980,7 +3046,8 @@ class FixedRouter:
                 prefill_tokens=prefill_tokens,
                 queue_owned=engine_queue_deadline is not None,
             )
-            order.record_failure(primary_error, primary)
+            if not unsent:
+                order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
                 adapter, offload_reason = candidate
                 # The offload route included: a window that cannot fit the
@@ -3075,6 +3142,15 @@ class FixedRouter:
                     _mark_offload(resp["_routing"], attempts)
                     return resp
                 except Exception as fallback_error:
+                    if _left_caller_queue(fallback_error, engine_queue_deadline):
+                        self._on_failure(
+                            endpoint_id,
+                            reason="chat_exception",
+                            detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
+                        )
+                        unsent.append((execution, fallback_error))
+                        continue
                     attempt = _RouteAttempt(
                         execution, fallback_error, offload_reason, adapter, fallback_report.sent
                     )
@@ -3096,7 +3172,7 @@ class FixedRouter:
                     continue
                 finally:
                     self._health_registry.end_dispatch(fallback_claim)
-            _raise_surfaced_error(attempts, failed_attempts)
+            _raise_surfaced_error(attempts, failed_attempts, unsent=unsent)
         finally:
             # Every exit, cancellation included: a claim the request keeps is a
             # cooldown the endpoint spends invisible to selection. Released after
@@ -3292,15 +3368,25 @@ class FixedRouter:
                 detail=operator_safe_error(primary_error),
                 exc=primary_error,
             )
-            failed_attempts = [failed_attempt(execution, primary_error)]
+            # Left unsent at its caller's queue deadline: no failure at all.
+            unsent: list[tuple[BaseAdapter, BaseException]] = (
+                [(execution, primary_error)]
+                if _left_caller_queue(primary_error, engine_queue_deadline)
+                else []
+            )
+            failed_attempts = [] if unsent else [failed_attempt(execution, primary_error)]
             # Kept in step with ``failed_attempts`` because that list holds only
             # rendered strings; ``_raise_surfaced_error`` below needs the exception
             # objects to decide which failure the caller is told about.
-            attempts = [
-                _RouteAttempt(
-                    primary, primary_error, primary_plan.reason, primary, primary_report.sent
-                )
-            ]
+            attempts = (
+                []
+                if unsent
+                else [
+                    _RouteAttempt(
+                        primary, primary_error, primary_plan.reason, primary, primary_report.sent
+                    )
+                ]
+            )
             # Attach routing to the surfaced error so the error-log path can
             # attribute the failure to the real upstream. Unlike the
             # non-streaming twin below, this generator never gets a chance to
@@ -3342,7 +3428,7 @@ class FixedRouter:
                 # candidates out of the order it planned -- and would try the
                 # same candidate twice, once here and once from the caller.
                 raise primary_error
-            if use_affinity:
+            if use_affinity and not unsent:
                 self._drop_affinity(model_id)
             # Once any chunk has been yielded to the client the SSE stream
             # has committed to a single provider. Falling back here would
@@ -3364,7 +3450,8 @@ class FixedRouter:
                 prefill_tokens=prefill_tokens,
                 queue_owned=engine_queue_deadline is not None,
             )
-            order.record_failure(primary_error, primary)
+            if not unsent:
+                order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
                 adapter, offload_reason = candidate
                 if _skips_for_context_window(model_id, adapter, refused_window):
@@ -3466,6 +3553,15 @@ class FixedRouter:
                             chunks_yielded = True
                     return
                 except Exception as fallback_error:
+                    if _left_caller_queue(fallback_error, engine_queue_deadline):
+                        self._on_failure(
+                            adapter_endpoint_id,
+                            reason="stream_exception",
+                            detail=operator_safe_error(fallback_error),
+                            exc=fallback_error,
+                        )
+                        unsent.append((execution, fallback_error))
+                        continue
                     attempt = _RouteAttempt(
                         execution, fallback_error, offload_reason, adapter, fallback_report.sent
                     )
@@ -3513,7 +3609,7 @@ class FixedRouter:
                     # the outer unwind would be the last one only, and every
                     # earlier attempt's probe would sit out its whole deadline.
                     self._health_registry.end_dispatch(fallback_claim)
-            _raise_surfaced_error(attempts, failed_attempts)
+            _raise_surfaced_error(attempts, failed_attempts, unsent=unsent)
         finally:
             # Backstop for every exit this generator has: an upstream error
             # before the first token, and — the case that actually leaks in

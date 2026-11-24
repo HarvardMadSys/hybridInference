@@ -27,7 +27,9 @@ on:
     # full CI and ride the normal staging deploy. The per-job path
     # classification below still keeps those runs cheap.
   pull_request:
-    branches: [main, dev]
+    # 2027-osdi-nimbus collects the greedy-router and Nimbus work before it
+    # goes to dev; its pull requests run on GitHub-hosted runners like any other.
+    branches: [main, dev, "2027-osdi-nimbus"]
 
 # Read-only unless a job asks for more. Most of these jobs run on self-hosted
 # runners that a push reaches, so the token a step could leak or misuse holds

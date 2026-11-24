@@ -26,6 +26,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving import spend_ledger
+from serving.adapters.upstream_limiter import EngineQueueConflict, EngineQueueUnavailable
 from serving.auto_mode import AutoMode, _auto_mode_from_document
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
@@ -131,6 +132,57 @@ async def _reload_effective_route_state(
         refresh_state.rebuild_pending = False
         return True
     return False
+
+
+async def _start_managed_routers(
+    managed_routers: list[ManagedRouter],
+    model_router_registry: ModelRouterRegistry,
+) -> None:
+    """Start every managed router, and fail startup for one that cannot serve safely.
+
+    Two start failures stop the gateway, because the router would otherwise
+    serve unsafely or fail every request later. A RouteWise router whose envelope
+    is not calibrated: quota-only pools need workload-derived bounds, and a
+    FixedRouter fallback would bypass their resource accounting. A greedy router
+    whose engine queues cannot be registered -- another model registers one of
+    its engines with a different limit (``EngineQueueConflict``), or several
+    worker processes serve the deployment (``EngineQueueUnavailable``): its
+    deadlines mean nothing without the queue, and it would raise the same error
+    on its first request instead. Any other start failure is logged and the
+    router serves as it can.
+    """
+    for managed_router in list(managed_routers):
+        try:
+            await managed_router.start()
+        except EnvelopeNotCalibratedError:
+            try:
+                override = model_router_registry.runtime_override_for_router(managed_router)
+            except Exception:
+                override = None
+                logger.debug(
+                    "Failed to resolve runtime override for uncalibrated router",
+                    exc_info=True,
+                )
+            if override is not None:
+                logger.error(
+                    "Runtime RouteWise override failed envelope calibration for "
+                    "model=%s; refusing unsafe fallback to strategy=%s",
+                    override.canonical_model_id,
+                    override.configured_strategy,
+                )
+            # Quota-only RouteWise pools require workload-derived [L, U]. A
+            # FixedRouter fallback would bypass their resource accounting, so
+            # both configured and runtime strategies fail closed.
+            raise
+        except (EngineQueueConflict, EngineQueueUnavailable) as exc:
+            logger.error(
+                "Managed router could not register its engine queues: %s",
+                exc,
+                extra={"event": "engine_queue_registration_failed", "error": str(exc)},
+            )
+            raise
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Managed router start() failed: {exc}")
 
 
 def _collect_routewise_routers(
@@ -1918,31 +1970,7 @@ async def initialize() -> AppServices:
     # Start managed router lifecycle hooks only after the rest of bootstrap has
     # succeeded, so a later startup failure cannot leave background tasks
     # running without a matching shutdown.
-    for managed_router in list(managed_routers):
-        try:
-            await managed_router.start()
-        except EnvelopeNotCalibratedError:
-            try:
-                override = model_router_registry.runtime_override_for_router(managed_router)
-            except Exception:
-                override = None
-                logger.debug(
-                    "Failed to resolve runtime override for uncalibrated router",
-                    exc_info=True,
-                )
-            if override is not None:
-                logger.error(
-                    "Runtime RouteWise override failed envelope calibration for "
-                    "model=%s; refusing unsafe fallback to strategy=%s",
-                    override.canonical_model_id,
-                    override.configured_strategy,
-                )
-            # Quota-only RouteWise pools require workload-derived [L, U]. A
-            # FixedRouter fallback would bypass their resource accounting, so
-            # both configured and runtime strategies fail closed.
-            raise
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.warning(f"Managed router start() failed: {exc}")
+    await _start_managed_routers(managed_routers, model_router_registry)
 
     if routewise_settings_resolver is not None:
         routewise_settings_refresh_task = asyncio.create_task(

@@ -34,6 +34,7 @@ from serving.adapters.dispatch_watch import report_first_token
 from serving.adapters.upstream_limiter import (
     EngineQueueConflict,
     UpstreamConcurrencyLimiter,
+    UpstreamSaturated,
     get_upstream_limiter,
     reset_upstream_limiter,
     upstream_slot,
@@ -66,7 +67,13 @@ class _Engine(BaseAdapter):
     """A local engine whose every request waits for the test to release its first token."""
 
     def __init__(
-        self, *, fail_with: BaseException | None = None, port: int = 18003, provider: str = "engine"
+        self,
+        *,
+        fail_with: BaseException | None = None,
+        port: int = 18003,
+        provider: str = "engine",
+        context_length: int = 8192,
+        endpoint_id: str | None = None,
     ) -> None:
         super().__init__(
             ModelConfig(
@@ -74,7 +81,8 @@ class _Engine(BaseAdapter):
                 name=MODEL,
                 provider=provider,
                 base_url=f"http://localhost:{port}/v1",
-                endpoint_id=f"{MODEL}:local-{port}",
+                endpoint_id=endpoint_id or f"{MODEL}:local-{port}",
+                context_length=context_length,
             )
         )
         self.fail_with = fail_with
@@ -147,6 +155,8 @@ class _Cloud(BaseAdapter):
             )
         )
         self.fail_with = fail_with
+        #: Raised after the first output, once the stream is committed.
+        self.fail_after_output: BaseException | None = None
         self.calls = 0
 
     async def chat_completion(
@@ -164,7 +174,15 @@ class _Cloud(BaseAdapter):
         if self.fail_with is not None:
             raise self.fail_with
         yield _chunk({"content": "cloud"})
+        if self.fail_after_output is not None:
+            raise self.fail_after_output
         yield _chunk({}, finish_reason="stop")
+
+
+class _BadRequest(Exception):
+    """An upstream's 400: the request itself is malformed."""
+
+    status = 400
 
 
 def _chunk(delta: dict[str, str], finish_reason: str | None = None) -> str:
@@ -396,6 +414,68 @@ async def test_a_router_nobody_started_registers_its_engine_on_its_first_request
 
     assert resp["_routing"]["backend"] == "local"
     assert get_upstream_limiter().engine_queue_limit(ENGINE_URL) == 1
+
+
+async def test_stopping_a_router_that_registered_on_its_first_request_clears_its_queues():
+    router = build_router("greedy", {})
+    router.attach_route_table(_fixed(_Engine(), _Cloud()), model_scope={MODEL})
+    await router.chat_completion(MODEL, MESSAGES)
+    assert get_upstream_limiter().engine_queue_limit(ENGINE_URL) == 1
+
+    assert await router.stop() is True
+
+    assert get_upstream_limiter().engine_queue_limit(ENGINE_URL) is None
+
+
+async def test_engines_a_refresh_could_not_register_are_sent_nothing():
+    engine, cloud = _Engine(), _Cloud()
+    added = _Engine(port=18004, provider="engine-b")
+    shared = _Engine(port=18005, provider="engine-c")
+    fixed = _fixed(engine, cloud)
+    fixed.register_route("m2", [(shared, 1.0), (cloud, 1.0)])
+    router = build_router("greedy", {"engine_queue_limit": 1})
+    router.attach_route_table(fixed, model_scope={MODEL})
+    other = build_router("greedy", {"engine_queue_limit": 2})
+    other.attach_route_table(fixed, model_scope={"m2"})
+    await router.start()
+    await other.start()
+    # The edit brings in a new engine and one the other model gave another limit.
+    fixed.register_route(MODEL, [(engine, 1.0), (added, 1.0), (shared, 1.0), (cloud, 1.0)])
+    router.refresh_route_table()
+    ahead = await _busy_engine(router, engine)
+
+    chunks = await _stream(router)
+
+    # Only the engine the last registration named may take it, and it is full.
+    assert _content(chunks) == "cloud"
+    assert (added.sent_count, shared.sent_count) == (0, 0)
+    engine.answer(0)
+    await ahead
+
+
+async def test_an_edit_the_pools_have_not_followed_yet_is_not_dispatched():
+    engine, cloud = _Engine(), _Cloud()
+    # The same engine under a new endpoint id: its queue is registered, but the
+    # pools' range, derived when the table was last refreshed, does not name it.
+    renamed = _Engine(provider="engine-b", endpoint_id=f"{MODEL}:local-renamed")
+    fixed = _fixed(engine, cloud)
+    router = build_router("greedy", {})
+    router.attach_route_table(fixed, model_scope={MODEL})
+    await router.start()
+
+    fixed.register_route(MODEL, [(renamed, 1.0), (cloud, 1.0)])
+    chunks = await _stream(router)
+
+    assert _content(chunks) == "cloud"
+    assert _routing(chunks)["offload"] == OFFLOAD_LAST_RESORT
+    assert renamed.sent_count == 0
+
+    # Once the router follows the edit, the engine takes requests again.
+    router.refresh_route_table()
+    stream = _stream(router)
+    await renamed.wait_sent(1)
+    renamed.answer(0)
+    assert _content(await stream) == "engine"
 
 
 async def test_a_stopped_router_does_not_register_again():
@@ -685,6 +765,118 @@ async def test_a_client_that_stops_reading_frees_the_engine_place_without_the_co
         await _until(lambda: _line()["pending"] == 0)
     finally:
         gc.enable()
+
+
+@pytest.mark.parametrize("busy_first", [True, False], ids=["busy-first", "failing-first"])
+async def test_an_engine_left_full_beside_one_that_failed_takes_the_request_back(
+    monkeypatch, busy_first
+):
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    busy = _Engine(provider="engine-a")
+    failing = _Engine(port=18004, provider="engine-b", fail_with=RuntimeError("engine b down"))
+    cloud = _Cloud(fail_with=RuntimeError("cloud down"))
+    engines = (busy, failing) if busy_first else (failing, busy)
+    router = await _greedy(*engines, cloud)
+    ahead = _stream(router, RoutingRequestOptions(pin_provider="engine-a"))
+    await busy.wait_sent(1)
+
+    behind = _stream(router)
+    await _until(lambda: cloud.calls >= 1 and _line()["waiting"] == 1)
+    busy.answer(0)
+    await busy.wait_sent(2)
+    busy.answer(1)
+
+    chunks = await behind
+    assert _content(chunks) == "engine"
+    routing = _routing(chunks)
+    assert (routing["offload"], routing["offload_endpoint_id"]) == (OFFLOAD_SPILLOVER, CLOUD_ID)
+    await ahead
+
+
+async def test_a_malformed_request_is_not_sent_back_to_a_full_engine(monkeypatch):
+    monkeypatch.setattr("random.random", lambda: 0.0)
+    busy = _Engine(provider="engine-a")
+    refusing = _Engine(port=18004, provider="engine-b", fail_with=_BadRequest("unknown field"))
+    cloud = _Cloud(fail_with=_BadRequest("unknown field"))
+    router = await _greedy(busy, refusing, cloud)
+    ahead = _stream(router, RoutingRequestOptions(pin_provider="engine-a"))
+    await busy.wait_sent(1)
+
+    async with asyncio.timeout(2):
+        with pytest.raises(_BadRequest) as caught:
+            await _stream(router)
+
+    # Two routes refused it: the full engine is not waited for a third time.
+    assert caught.value.status == 400
+    assert (busy.sent_count, cloud.calls) == (1, 1)
+    busy.answer(0)
+    await ahead
+
+
+async def test_a_prompt_too_long_for_the_engine_window_goes_straight_to_the_cloud():
+    engine, cloud = _Engine(context_length=100), _Cloud()
+    router = await _greedy(engine, cloud)
+
+    chunks = await _stream(router, messages=LONG_MESSAGES)
+
+    assert _content(chunks) == "cloud"
+    assert _routing(chunks)["offload"] == OFFLOAD_LAST_RESORT
+    assert engine.sent_count == 0
+
+
+async def test_a_cloud_route_too_small_for_the_prompt_is_never_tried():
+    engine = _Engine()
+    small = _Cloud(provider="cloud-small", endpoint_id=f"{MODEL}:cloud-small", context_length=100)
+    large = _Cloud(provider="cloud-large", endpoint_id=f"{MODEL}:cloud-large")
+    router = await _greedy(engine, small, large)
+    ahead = await _busy_engine(router, engine)
+    prefer_small = RoutingRequestOptions(preferred_endpoint_id=f"{MODEL}:cloud-small")
+
+    chunks = await _stream(router, prefer_small, messages=LONG_MESSAGES)
+
+    assert _routing(chunks)["provider"] == "cloud-large"
+    assert small.calls == 0
+    engine.answer(0)
+    await ahead
+
+
+async def test_a_prompt_no_window_fits_is_refused_with_why():
+    router = await _greedy(_Engine(context_length=100), _Cloud(context_length=100))
+
+    with pytest.raises(AllCircuitsOpenError, match="context window"):
+        await router.chat_completion(MODEL, LONG_MESSAGES)
+
+
+async def test_a_cloud_that_never_left_the_gateway_does_not_mark_the_request_offloaded():
+    engine, cloud = _Engine(), _Cloud(fail_with=UpstreamSaturated("no outbound slot"))
+    router = await _greedy(engine, cloud)
+    ahead = await _busy_engine(router, engine)
+
+    behind = _stream(router)
+    await _until(lambda: cloud.calls >= 1 and _line()["waiting"] == 1)
+    engine.answer(0)
+    await engine.wait_sent(2)
+    engine.answer(1)
+
+    chunks = await behind
+    assert _content(chunks) == "engine"
+    assert "offload" not in _routing(chunks)
+    await ahead
+
+
+async def test_a_cloud_stream_that_breaks_after_its_output_keeps_the_offload_reason():
+    engine, cloud = _Engine(), _Cloud()
+    cloud.fail_after_output = RuntimeError("cloud dropped the stream")
+    router = await _greedy(engine, cloud)
+    ahead = await _busy_engine(router, engine)
+
+    with pytest.raises(RuntimeError, match="dropped") as caught:
+        await _stream(router)
+
+    routing = caught.value._routing  # type: ignore[attr-defined]
+    assert routing["offload"] == OFFLOAD_SPILLOVER
+    engine.answer(0)
+    await ahead
 
 
 async def test_a_range_named_by_provider_reaches_the_engine_it_names():

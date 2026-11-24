@@ -291,7 +291,7 @@ async def stream_attempt(
     ``stamp`` edits the routing block of every frame the backend sends, after
     the backend tag: a backend that moves on to another of its routes sends a
     frame that replaces what the lead frame said, so a caller restates there
-    what must survive it.
+    what must survive it. An error after the commit carries it too.
 
     Raises:
         DispatchMismatchError: The instruction does not fit the backend.
@@ -355,6 +355,11 @@ async def stream_attempt(
         if remember is not None:
             remember(attempt.backend_name, getattr(exc, "_routing", None), attempt.endpoint_id)
         if committed:
+            # The attempt's last word: the error goes straight to the caller, so
+            # it says what this attempt's frames said.
+            routing = getattr(exc, "_routing", None)
+            if stamp is not None and isinstance(routing, dict):
+                stamp(routing)
             raise
         ledger.record_failure(attempt.backend_name, attempt.endpoint_id, exc)
     finally:
