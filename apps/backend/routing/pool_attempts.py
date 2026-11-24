@@ -146,18 +146,27 @@ class AttemptLedger:
             ],
         )
 
-    def raise_after(self, nothing_tried: Callable[[], BaseException]) -> NoReturn:
+    def raise_after(
+        self,
+        nothing_tried: Callable[[], BaseException],
+        *,
+        mark: Callable[[dict[str, Any]], None] | None = None,
+    ) -> NoReturn:
         """Raise the error the caller should be told about, once the plan is over.
 
         The single-router rule (``select_surfaced_error``) picks among the
-        failures, and every attempt is attached to the one raised. With no
-        failure, the first admission refusal says why nothing could be used,
-        then the first attempt that left a queue unsent. ``nothing_tried`` builds
-        the error for a plan that produced none of these.
+        failures, and every attempt is attached to the one raised; ``mark`` then
+        edits that error's routing block, when it has one. With no failure, the
+        first admission refusal says why nothing could be used, then the first
+        attempt that left a queue unsent. ``nothing_tried`` builds the error for a
+        plan that produced none of these.
         """
         if self.errors:
             surfaced = self.errors[select_surfaced_error(self.errors)]
             attach_attempt_history(surfaced, self.attempts)
+            routing = getattr(surfaced, "_routing", None)
+            if mark is not None and isinstance(routing, dict):
+                mark(routing)
             raise surfaced
         if self.refusals:
             raise self.refusals[0]
@@ -262,6 +271,7 @@ async def stream_attempt(
     ledger: AttemptLedger,
     outcome: StreamOutcome,
     lead_frame: Callable[[], str | None] | None = None,
+    stamp: Callable[[dict[str, Any]], None] | None = None,
     remember: Remember | None = None,
     left_unsent: LeftUnsent | None = None,
 ) -> AsyncIterator[Any]:
@@ -277,6 +287,11 @@ async def stream_attempt(
     the iteration with ``outcome.served`` False, so the caller can try another
     candidate; after it, the error propagates, since restarting elsewhere would
     splice a second answer into one the client already holds.
+
+    ``stamp`` edits the routing block of every frame the backend sends, after
+    the backend tag: a backend that moves on to another of its routes sends a
+    frame that replaces what the lead frame said, so a caller restates there
+    what must survive it.
 
     Raises:
         DispatchMismatchError: The instruction does not fit the backend.
@@ -308,7 +323,7 @@ async def stream_attempt(
                 yield frame
             for held in buffered:
                 committed = committed or is_client_visible(held)
-                yield tag_backend_chunk(held, attempt.backend_name)
+                yield tag_backend_chunk(held, attempt.backend_name, stamp=stamp)
             async for chunk in stream:
                 # Once committed, only a frame that can still add an endpoint to
                 # the dispatch record is read: a late routing frame may name an
@@ -316,7 +331,7 @@ async def stream_attempt(
                 if not committed or carries_routing(chunk):
                     heard(chunk)
                 committed = committed or is_client_visible(chunk)
-                yield tag_backend_chunk(chunk, attempt.backend_name)
+                yield tag_backend_chunk(chunk, attempt.backend_name, stamp=stamp)
             outcome.served = True
             return
         # A stream that ended without producing anything never reached the

@@ -200,7 +200,10 @@ def build_router(
 # Trigger registration of built-in strategies via import side effects.
 # Imports are at the bottom to avoid circular imports: the strategy modules
 # import from routing.routers / routing.routewise at their top.
-from routing.strategies import fixed  # noqa: F401
+from routing.strategies import (
+    fixed,  # noqa: F401
+    greedy,  # noqa: F401
+)
 
 try:
     from routing.strategies import routewise  # noqa: F401
