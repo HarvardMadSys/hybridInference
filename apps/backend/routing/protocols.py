@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
@@ -61,6 +62,18 @@ class RoutingRequestOptions:
             the routes batch work may use it would otherwise re-pin the owner's
             interactive requests to those routes. Load accounting by caller is
             unaffected.
+        engine_queue_deadline: The ``time.monotonic()`` time this dispatch
+            stops waiting in a self-hosted engine's queue
+            (``serving.adapters.upstream_limiter``). An attempt still in line
+            then leaves unsent, with ``UpstreamQueueWaitExpired``, and the caller
+            decides where the request goes next; a deadline already past leaves
+            at once unless the engine has room. It applies only to attempts sent
+            to a self-hosted engine, and a request that carries one gets none of
+            the router's own queue-wait offload: no offload deadline, no
+            first-token wait, no engine hold, and the route the offload policy
+            names is an ordinary candidate, in selection and in fallback alike.
+            ``None`` waits its turn. Anything but a finite number is refused
+            here, before any attempt can be charged for it.
     """
 
     pin_provider: str | None = None
@@ -71,6 +84,16 @@ class RoutingRequestOptions:
     require_target: bool = False
     required_modalities: frozenset[str] = frozenset()
     affinity: bool = True
+    engine_queue_deadline: float | None = None
+
+    def __post_init__(self) -> None:
+        deadline = self.engine_queue_deadline
+        if deadline is not None and (
+            isinstance(deadline, bool)
+            or not isinstance(deadline, (int, float))
+            or not math.isfinite(deadline)
+        ):
+            raise ValueError("engine_queue_deadline must be a finite time.monotonic() value")
 
 
 @runtime_checkable

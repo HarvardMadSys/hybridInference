@@ -56,7 +56,11 @@ from routing.streaming import (
     has_non_empty_content,
 )
 from routing.telemetry import adapter_pricing_snapshot, failed_attempt, routing_chunk
-from serving.adapters.upstream_limiter import EngineHold
+from serving.adapters.upstream_limiter import (
+    EngineHold,
+    dispatch_queue_context,
+    is_local_endpoint,
+)
 from serving.config.app_config import config_value, on_change
 from serving.exceptions import operator_safe_error
 from serving.utils import context as req_ctx
@@ -895,6 +899,33 @@ def adapter_in_endpoint_scope(adapter: BaseAdapter, scope: frozenset[str] | None
     )
 
 
+def _attempt_queue_context(
+    execution: BaseAdapter,
+    *,
+    caller_deadline: float | None,
+    offload_deadline: float | None,
+    hold: EngineHold | None,
+) -> dict[str, Any]:
+    """Return the request-context entries that carry one attempt's queue terms.
+
+    With a caller's engine-queue deadline (``RoutingRequestOptions``), an
+    attempt sent to a self-hosted engine waits in that engine's queue until it,
+    and any other attempt waits as long as the limiter would: the deadline is
+    for the engine's line, not for a cloud account's slot. Without one, the
+    deadline is this router's own, for an attempt it could still offload.
+    """
+    if caller_deadline is None:
+        deadline = offload_deadline
+    else:
+        config = execution.config
+        local = is_local_endpoint(
+            getattr(config, "base_url", None),
+            deployment_type=getattr(config, "deployment_type", "auto"),
+        )
+        deadline = caller_deadline if local else None
+    return dispatch_queue_context(deadline=deadline, hold=hold)
+
+
 def _schedules_by_priority(adapter: BaseAdapter) -> bool:
     """Return whether ``adapter`` sends the scheduling priority this router publishes.
 
@@ -1287,6 +1318,7 @@ class FixedRouter:
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
         prefill_tokens: int,
+        queue_owned: bool = False,
     ) -> _PrimaryOffload:
         """Return how a request's primary attempt relates to its offload route.
 
@@ -1296,13 +1328,17 @@ class FixedRouter:
         ``policy`` the one its stream is watched under. A caller that owns the
         candidate order (``allow_fallback`` off) gets neither: this router will
         not walk on to the offload route on its behalf. Nor does a prompt over
-        the route's max input, which can never be offloaded.
+        the route's max input, which can never be offloaded, nor a request whose
+        caller owns its engine-queue deadline (``queue_owned``): that caller
+        decides where the request goes when it waits too long.
 
         Never raises. It runs between admission and the attempt, where the
         caller holds a dispatch claim and a prefill lease it has not yet
         entered the ``try`` that returns them; an offload lookup is not worth a
         stranded claim, so a failure here routes the request without offload.
         """
+        if queue_owned:
+            return _PrimaryOffload()
         try:
             target = self._request_offload_target(
                 model_id,
@@ -1334,6 +1370,7 @@ class FixedRouter:
         endpoint_scope: frozenset[str] | None,
         required_modalities: frozenset[str] | None,
         prefill_tokens: int,
+        queue_owned: bool = False,
     ) -> tuple[FallbackOrder, OffloadPolicy | None]:
         """Return the rest of the route, in the order this request should try it.
 
@@ -1342,7 +1379,8 @@ class FixedRouter:
         dispatch scope or the request's modalities -- with the offload route, if
         the model has a usable one, placed by :class:`FallbackOrder` instead. A
         prompt over the offload route's max input does not get it at all, not
-        even last.
+        even last. A request whose caller owns its engine-queue deadline
+        (``queue_owned``) has no offload route: its candidates keep route order.
         """
         route = self.routes.get(model_id)
         if route is None:
@@ -1356,7 +1394,7 @@ class FixedRouter:
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
         )
-        target = self._offload_target(model_id, route, candidates)
+        target = None if queue_owned else self._offload_target(model_id, route, candidates)
         if target is not None and not target[1].takes_input(prefill_tokens):
             candidates = [entry for entry in candidates if entry[0] is not target[0]]
             target = None
@@ -2161,6 +2199,7 @@ class FixedRouter:
         require_target: bool = False,
         fingerprint: str | None = None,
         use_affinity: bool = True,
+        queue_owned: bool = False,
     ) -> BaseAdapter | None:
         """Select an adapter using weighted random selection with optional affinity.
 
@@ -2197,6 +2236,11 @@ class FixedRouter:
             use_affinity: Whether the caller's affinity pin is followed and
                 updated (``RoutingRequestOptions.affinity``). ``False`` leaves the
                 pin untouched; the prefill-aware draw still knows the caller.
+            queue_owned: Whether the caller owns this request's engine-queue
+                deadline (``RoutingRequestOptions.engine_queue_deadline``). The
+                request then has no offload route, so the one the model's
+                policy names is an ordinary candidate here, as it is in the
+                request's fallback order (``_fallback_order``).
 
         Returns:
             Selected adapter or None if no route configured / no match.
@@ -2284,8 +2328,9 @@ class FixedRouter:
         # sees it only when it is the last candidate standing. Everything below
         # then works on the reduced list, which is also what drops an affinity
         # pin left on the offload route by an earlier last-resort pick. A prompt
-        # over the route's max input does not see it even then.
-        target = self._offload_target(model_id, route, snapshot)
+        # over the route's max input does not see it even then. A request whose
+        # caller owns its engine-queue deadline has no offload route at all.
+        target = None if queue_owned else self._offload_target(model_id, route, snapshot)
         if target is not None:
             ordinary = [
                 (adapter, weight) for adapter, weight in allowed if adapter is not target[0]
@@ -2485,6 +2530,7 @@ class FixedRouter:
         require_target: bool = False,
         fingerprint: str | None = None,
         use_affinity: bool = True,
+        queue_owned: bool = False,
     ) -> tuple[BaseAdapter | None, DispatchClaim | None]:
         """Select an adapter and claim the dispatch slot for its endpoint.
 
@@ -2516,6 +2562,8 @@ class FixedRouter:
         this raises :class:`TargetUnavailableError` rather than reselecting over
         the rest -- reselecting is how a planned candidate silently becomes a
         different one.
+
+        ``queue_owned`` is passed to every selection (see :meth:`_select_adapter`).
         """
         if pin_provider:
             return (
@@ -2527,6 +2575,7 @@ class FixedRouter:
                     endpoint_scope=endpoint_scope,
                     fingerprint=fingerprint,
                     use_affinity=use_affinity,
+                    queue_owned=queue_owned,
                 ),
                 None,
             )
@@ -2553,6 +2602,7 @@ class FixedRouter:
                 require_target=require_target,
                 fingerprint=fingerprint,
                 use_affinity=use_affinity,
+                queue_owned=queue_owned,
             )
             if preferred is not None:
                 preferred_endpoint = endpoint_id_for_adapter(preferred)
@@ -2580,6 +2630,7 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
                 fingerprint=fingerprint,
                 use_affinity=use_affinity,
+                queue_owned=queue_owned,
             )
             if adapter is None:
                 return None, None
@@ -2743,6 +2794,11 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
+        # A caller that decides itself where a request that waited too long
+        # goes; this router then runs none of its own offload for it.
+        engine_queue_deadline = (
+            routing_options.engine_queue_deadline if routing_options is not None else None
+        )
         prefill_tokens = estimate_prefill_tokens(
             messages,
             tools=params.get("tools"),
@@ -2774,6 +2830,7 @@ class FixedRouter:
                     require_target=require_target,
                     fingerprint=fingerprint,
                     use_affinity=use_affinity,
+                    queue_owned=engine_queue_deadline is not None,
                 )
                 if primary is not None:
                     lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
@@ -2812,6 +2869,7 @@ class FixedRouter:
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
             prefill_tokens=prefill_tokens,
+            queue_owned=engine_queue_deadline is not None,
         )
         try:
             endpoint_id = endpoint_id_for_adapter(primary)
@@ -2824,11 +2882,15 @@ class FixedRouter:
                     req_ctx.UPSTREAM_PRIORITY: self._dispatch_priority(
                         execution, endpoint_id, prefill_tokens, affinity_key, fingerprint, messages
                     ),
-                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
                     # A response that arrives whole has no first token to give
-                    # its place at the engine up on.
-                    req_ctx.UPSTREAM_ENGINE_HOLD: None,
+                    # a held place at the engine up on.
+                    **_attempt_queue_context(
+                        execution,
+                        caller_deadline=engine_queue_deadline,
+                        offload_deadline=primary_plan.deadline,
+                        hold=None,
+                    ),
                 },
             ):
                 self._ensure_health(endpoint_id)
@@ -2916,6 +2978,7 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
                 prefill_tokens=prefill_tokens,
+                queue_owned=engine_queue_deadline is not None,
             )
             order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
@@ -2963,19 +3026,23 @@ class FixedRouter:
                                 fingerprint,
                                 messages,
                             ),
-                            # The offload attempt queues normally: there is
-                            # nowhere left to send it.
-                            req_ctx.UPSTREAM_QUEUE_DEADLINE: (
-                                None
-                                if offload_reason is not None
-                                else self._queue_deadline(
-                                    order.offload_pending,
-                                    offload_policy,
-                                    refused_window=refused_window,
-                                )
-                            ),
                             req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
-                            req_ctx.UPSTREAM_ENGINE_HOLD: None,
+                            **_attempt_queue_context(
+                                execution,
+                                caller_deadline=engine_queue_deadline,
+                                # The offload attempt queues normally: there is
+                                # nowhere left to send it.
+                                offload_deadline=(
+                                    None
+                                    if offload_reason is not None
+                                    else self._queue_deadline(
+                                        order.offload_pending,
+                                        offload_policy,
+                                        refused_window=refused_window,
+                                    )
+                                ),
+                                hold=None,
+                            ),
                         },
                     ):
                         self._ensure_health(endpoint_id)
@@ -3073,6 +3140,11 @@ class FixedRouter:
         required_modalities = (
             routing_options.required_modalities if routing_options is not None else frozenset()
         )
+        # As in chat_completion: the caller decides where a request that
+        # waited too long goes, so no offload, first-token wait or engine hold.
+        engine_queue_deadline = (
+            routing_options.engine_queue_deadline if routing_options is not None else None
+        )
         prefill_tokens = estimate_prefill_tokens(
             messages,
             tools=params.get("tools"),
@@ -3104,6 +3176,7 @@ class FixedRouter:
                     require_target=require_target,
                     fingerprint=fingerprint,
                     use_affinity=use_affinity,
+                    queue_owned=engine_queue_deadline is not None,
                 )
                 if primary is not None:
                     lease = self._acquire_lease(primary, prefill_tokens, affinity_key, fingerprint)
@@ -3133,9 +3206,14 @@ class FixedRouter:
             endpoint_scope=endpoint_scope,
             required_modalities=required_modalities,
             prefill_tokens=prefill_tokens,
+            queue_owned=engine_queue_deadline is not None,
         )
-        # For every stream of this request, whatever its offload plan says.
-        engine_queue_limit = self._engine_queue_limit(model_id)
+        # For every stream of this request, whatever its offload plan says --
+        # unless its caller owns the queue terms, and the engine's registered
+        # queue alone decides how many go ahead of it.
+        engine_queue_limit = (
+            None if engine_queue_deadline is not None else self._engine_queue_limit(model_id)
+        )
         chunks_yielded = False
         primary_report = _DispatchReport(self._prefill_load)
         primary_report.attach(lease)
@@ -3157,9 +3235,13 @@ class FixedRouter:
                         fingerprint,
                         messages,
                     ),
-                    req_ctx.UPSTREAM_QUEUE_DEADLINE: primary_plan.deadline,
                     req_ctx.UPSTREAM_DISPATCH_WATCH: primary_report,
-                    req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
+                    **_attempt_queue_context(
+                        execution,
+                        caller_deadline=engine_queue_deadline,
+                        offload_deadline=primary_plan.deadline,
+                        hold=self._hold_for(engine_queue_limit),
+                    ),
                 },
             ):
                 # Emit synthetic _routing chunk so completions.py can recover
@@ -3280,6 +3362,7 @@ class FixedRouter:
                 endpoint_scope=endpoint_scope,
                 required_modalities=required_modalities,
                 prefill_tokens=prefill_tokens,
+                queue_owned=engine_queue_deadline is not None,
             )
             order.record_failure(primary_error, primary)
             while (candidate := order.next()) is not None:
@@ -3336,9 +3419,13 @@ class FixedRouter:
                                 fingerprint,
                                 messages,
                             ),
-                            req_ctx.UPSTREAM_QUEUE_DEADLINE: queue_deadline,
                             req_ctx.UPSTREAM_DISPATCH_WATCH: fallback_report,
-                            req_ctx.UPSTREAM_ENGINE_HOLD: self._hold_for(engine_queue_limit),
+                            **_attempt_queue_context(
+                                execution,
+                                caller_deadline=engine_queue_deadline,
+                                offload_deadline=queue_deadline,
+                                hold=self._hold_for(engine_queue_limit),
+                            ),
                         },
                     ):
                         # This attempt's reason when it is the offload route,

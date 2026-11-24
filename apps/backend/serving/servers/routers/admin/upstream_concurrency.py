@@ -8,6 +8,12 @@ log line shows the transitions but never the standing value. Without a read-only
 view of it, an operator answering "why is this provider queueing?" has to
 reconstruct the current limit from the log history.
 
+The same limiter keeps the queue in front of each local engine that has one, so
+this view lists those too (``engines``): the limit, the line right now, and
+counters since the queue was created -- how requests left the line and how long
+they waited, and how their places were given back. The gateway has no metrics
+exporter; these counters are the record.
+
 The gateway runs a single uvicorn worker (``deploy/docker/Dockerfile.backend``
 sets no ``--workers``), so the limiter singleton this reads *is* the gateway's
 whole outbound state, not one worker's slice of it.
@@ -27,6 +33,7 @@ from serving.schemas_admin import (
     UpstreamConcurrencyBucket,
     UpstreamConcurrencyConfig,
     UpstreamConcurrencyResponse,
+    UpstreamEngineQueue,
 )
 from serving.servers.deps import verify_admin_access
 
@@ -37,11 +44,13 @@ router = APIRouter(prefix="/admin")
 async def get_upstream_concurrency(
     _admin_id: str = Depends(verify_admin_access),
 ) -> UpstreamConcurrencyResponse:
-    """Return every outbound concurrency bucket's live state and the config.
+    """Return every outbound concurrency bucket's live state, the config, and engine queues.
 
     Buckets are created by traffic, so an idle gateway answers with an empty
     list; that is the honest answer rather than an error. Local inference
-    servers are exempt from the limiter entirely and so never appear here.
+    servers are exempt from the buckets; the ones with a queue in this gateway
+    are listed under ``engines`` instead, a registered one even before its first
+    request.
 
     Only the key fingerprint identifies a bucket's credential — the limiter
     never stores the raw key, so there is nothing here to redact.
@@ -63,6 +72,13 @@ async def get_upstream_concurrency(
     # Buckets come out in creation order, which reshuffles the table every time
     # a new key sees its first request. Sort so a polling UI keeps rows put.
     buckets.sort(key=lambda bucket: (bucket.provider, bucket.key_fingerprint))
+    engines = sorted(
+        (
+            UpstreamEngineQueue(engine=address, **state)
+            for address, state in limiter.engine_snapshot().items()
+        ),
+        key=lambda queue: queue.engine,
+    )
 
     return UpstreamConcurrencyResponse(
         config=UpstreamConcurrencyConfig(
@@ -73,4 +89,5 @@ async def get_upstream_concurrency(
             acquire_timeout_sec=limiter.acquire_timeout,
         ),
         buckets=buckets,
+        engines=engines,
     )

@@ -187,7 +187,54 @@ async def test_local_endpoints_never_appear(app, limiter) -> None:
     """Local inference servers are exempt from the limiter, so they have no bucket."""
     await limiter.acquire(PROVIDER, KEY_A, base_url=LOCAL)
 
-    assert (await _get(app)).json()["buckets"] == []
+    body = (await _get(app)).json()
+    assert body["buckets"] == []
+    # Nor a queue: this engine was never registered or held for.
+    assert body["engines"] == []
+
+
+# -------------------------------------------------------------- engine queues
+
+
+@pytest.mark.asyncio
+async def test_a_registered_engine_queue_is_listed_before_any_traffic(app, limiter) -> None:
+    limiter.set_engine_queues("model-a", {LOCAL: 2})
+
+    (engine,) = (await _get(app)).json()["engines"]
+
+    assert engine["engine"] == "localhost:12003"
+    assert (engine["limit"], engine["registered"], engine["owners"], engine["held"]) == (
+        2,
+        True,
+        ["model-a"],
+        False,
+    )
+    assert (engine["pending"], engine["waiting"], engine["waits"]) == (0, 0, 0)
+    assert [bucket["count"] for bucket in engine["wait_buckets"]] == [0] * len(
+        engine["wait_buckets"]
+    )
+    assert engine["wait_buckets"][-1]["le_seconds"] is None
+
+
+@pytest.mark.asyncio
+async def test_an_engine_queue_shows_its_line_and_what_it_has_done(app, limiter) -> None:
+    limiter.set_engine_queues("model-a", {LOCAL: 1})
+    first = await limiter.acquire(PROVIDER, KEY_A, base_url=LOCAL)
+    queued = asyncio.ensure_future(limiter.acquire(PROVIDER, KEY_A, base_url=LOCAL))
+    await asyncio.sleep(0)
+
+    (engine,) = (await _get(app)).json()["engines"]
+    assert (engine["pending"], engine["waiting"]) == (1, 1)
+
+    first.first_token()
+    second = await queued
+    second.release(status_code=200)
+    first.release(status_code=200)
+
+    (engine,) = (await _get(app)).json()["engines"]
+    assert (engine["pending"], engine["waiting"]) == (0, 0)
+    assert (engine["sent_at_once"], engine["sent_after_wait"], engine["waits"]) == (1, 1, 1)
+    assert (engine["released_on_first_token"], engine["released_answered"]) == (1, 1)
 
 
 # ------------------------------------------------------------------- secrecy

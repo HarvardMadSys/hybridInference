@@ -95,6 +95,44 @@ def _data_lines(message: SSEMessage) -> list[str]:
     return [line.strip() for line in message.data.split("\n") if line.strip()]
 
 
+def _carries_output(message: SSEMessage) -> bool:
+    """Return whether one passthrough event carries generated output.
+
+    Stricter than ``claude_format.is_output_event``, which the converted streams
+    use, because what it decides here is when a self-hosted engine's queue gets
+    its place back: an engine may open a content block before it has generated
+    anything, and an empty block start is not a first token. A delta counts when
+    it carries text, thinking or tool-call JSON; a block start when it opens a
+    tool call or already carries text or thinking.
+    """
+    for payload in _data_lines(message):
+        try:
+            event = json.loads(payload)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict) and _is_generated_output(event):
+            return True
+    return False
+
+
+def _is_generated_output(event: dict[str, Any]) -> bool:
+    """Return whether one parsed passthrough event carries generated output."""
+    kind = event.get("type")
+    if kind == "content_block_delta":
+        part = event.get("delta")
+        keys: tuple[str, ...] = ("text", "thinking", "partial_json")
+    elif kind == "content_block_start":
+        part = event.get("content_block")
+        if isinstance(part, dict) and part.get("type") == "tool_use":
+            return True
+        keys = ("text", "thinking")
+    else:
+        return False
+    return isinstance(part, dict) and any(
+        isinstance(part.get(key), str) and part.get(key) for key in keys
+    )
+
+
 def _count_usage(message: SSEMessage, usage: dict[str, int]) -> None:
     """Fold the usage counts in one passthrough event into *usage*."""
     from serving.adapters.anthropic_translator import extract_anthropic_usage_from_sse
@@ -403,7 +441,7 @@ class AnthropicAdapter(BaseAdapter):
         # the whole body iteration below — a generation in flight, not just an
         # open response — and released on every exit, client disconnect included.
         async with (
-            self._upstream_slot(),
+            self._upstream_slot() as slot,
             session.post(
                 self._upstream_url(),
                 json=payload,
@@ -431,7 +469,7 @@ class AnthropicAdapter(BaseAdapter):
                     # router waiting on a first token must hear it now.
                     if not saw_output and is_output_event(evt):
                         saw_output = True
-                        report_first_token()
+                        report_first_token(slot)
 
                     result = handle_stream_event(evt, accum)
 
@@ -555,7 +593,7 @@ class AnthropicAdapter(BaseAdapter):
 
         # Slot held for the whole passthrough stream; see stream_chat_completion.
         async with (
-            self._upstream_slot(),
+            self._upstream_slot() as slot,
             session.post(
                 self._upstream_url(),
                 json=forward,
@@ -573,16 +611,28 @@ class AnthropicAdapter(BaseAdapter):
                     headers=resp.headers,
                 )
             parser = SSEParser()
-            async for chunk in resp.content.iter_any():
-                yield chunk
-                for message in _feed(parser, chunk):
+            saw_output = False
+
+            def read(messages: list[SSEMessage]) -> None:
+                # A self-hosted engine behind this route frees its queue's place
+                # for the next request the moment it starts answering.
+                nonlocal saw_output
+                if not saw_output and any(_carries_output(message) for message in messages):
+                    saw_output = True
+                    report_first_token(slot)
+                for message in messages:
                     _count_usage(message, usage)
+
+            async for chunk in resp.content.iter_any():
+                # Read before the bytes go on, not when the caller next pulls:
+                # this generator sleeps at the yield. They go on verbatim.
+                read(_feed(parser, chunk))
+                yield chunk
             # Clean EOF with the last event left unterminated: complete it for
             # usage extraction, or this request's output tokens go uncounted.
             # Only our accounting needs this -- the client already received
             # those bytes verbatim above, so nothing is added to the wire.
-            for message in parser.flush():
-                _count_usage(message, usage)
+            read(parser.flush())
 
         if usage_sink is not None:
             usage_sink.update(usage)

@@ -1853,11 +1853,50 @@ export interface UpstreamConcurrencyConfig {
   acquire_timeout_sec: number;
 }
 
+// How many waits in an engine's queue ended within one bound: `le_seconds` is
+// the inclusive upper bound, null for the last bucket (every longer wait).
+export interface UpstreamEngineQueueWaitBucket {
+  le_seconds: number | null;
+  count: number;
+}
+
+// One local engine's queue in the gateway. `limit` is how many requests sent to
+// it may lack a first token before the rest wait: the engine's own when
+// `registered` (by `owners`), else the queue-wait offload's. `held` is whether
+// one of the offload's held requests is in the queue right now; a queue that is
+// neither is one nobody registers any more, listed until its requests are done.
+// `pending` and `waiting` are live; the rest count since the queue was created.
+// `released_answered` counts requests that held their place for the whole
+// generation (answered whole, or by an adapter that reports no first token).
+export interface UpstreamEngineQueue {
+  engine: string;
+  limit: number;
+  registered: boolean;
+  owners: string[];
+  held: boolean;
+  pending: number;
+  waiting: number;
+  sent_at_once: number;
+  sent_after_wait: number;
+  overflowed: number;
+  expired: number;
+  cancelled: number;
+  released_on_first_token: number;
+  released_answered: number;
+  released_unanswered: number;
+  waits: number;
+  wait_seconds_total: number;
+  wait_seconds_max: number;
+  wait_buckets: UpstreamEngineQueueWaitBucket[];
+}
+
 // `buckets` is empty until traffic creates one, which is the ordinary state of
-// an idle gateway rather than a failure.
+// an idle gateway rather than a failure. `engines` lists the local engines with
+// a queue in the gateway; most deployments have none.
 export interface UpstreamConcurrencyResponse {
   config: UpstreamConcurrencyConfig;
   buckets: UpstreamConcurrencyBucket[];
+  engines?: UpstreamEngineQueue[];
 }
 
 export async function getUpstreamConcurrency(): Promise<UpstreamConcurrencyResponse> {

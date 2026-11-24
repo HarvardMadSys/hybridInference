@@ -15,13 +15,16 @@ what only the serving layer knows:
   the upstream's answer, before anything it does with that output can hold it
   back from the router.
 
-The first-token report also reaches the dispatch's place in line for a local
-engine (``upstream_limiter.EngineHold``, ``req_ctx.UPSTREAM_ENGINE_HOLD``), which
-gives it up so the next held request can go.
+The first-token report also gives up the dispatch's place in its local engine's
+queue, so the next request in line can go: through the outbound slot the adapter
+passes in (``upstream_limiter.UpstreamSlot.first_token``), and through the
+queue-wait offload's per-request hold (``upstream_limiter.EngineHold``,
+``req_ctx.UPSTREAM_ENGINE_HOLD``) while that path exists. They hold the same
+place, given up once.
 
-Each is a no-op when the dispatch has no watch or hold, and a failing one is
-logged and ignored: both only refine routing, and must never cost a request its
-slot or its answer.
+Each is a no-op when the dispatch has no watch, hold or place, and a failing one
+is logged and ignored: they only refine routing, and must never cost a request
+its slot or its answer.
 
 :func:`report_sent` also marks the handler's :class:`DispatchRecord`
 (``req_ctx.UPSTREAM_DISPATCH_RECORD``), which a non-streaming handler pushes
@@ -32,9 +35,13 @@ it left the gateway.
 from __future__ import annotations
 
 import asyncio
+from typing import TYPE_CHECKING
 
 from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
+
+if TYPE_CHECKING:
+    from serving.adapters.upstream_limiter import UpstreamSlot
 
 logger = get_logger(__name__)
 
@@ -91,15 +98,35 @@ def report_sent() -> None:
     _tell("on_sent", key=req_ctx.UPSTREAM_DISPATCH_RECORD)
 
 
-def report_first_token() -> None:
-    """Tell the watch, and the engine hold, that the upstream has started answering.
+def report_first_token(slot: UpstreamSlot | None = None) -> None:
+    """Tell the watch, and the engine queue, that the upstream has started answering.
 
     Call it once, at the first frame carrying generated output -- text,
     reasoning, or any part of a tool call -- as read from the upstream, before a
     processor or accumulator can hold that output back.
+
+    Args:
+        slot: The outbound slot the adapter holds for this request. Its place
+            in a local engine's queue is given up here, so the engine's next
+            request can go while this one streams; without it the place is held
+            until the slot is released, at the end of the generation.
     """
     _tell("on_first_token")
     _tell("on_first_token", key=req_ctx.UPSTREAM_ENGINE_HOLD)
+    if slot is None:
+        return
+    try:
+        slot.first_token()
+    except Exception:
+        logger.error(
+            "upstream_dispatch_watch_failed",
+            exc_info=True,
+            extra={
+                "event": "upstream_dispatch_watch_failed",
+                "hook": "first_token",
+                "target": "slot",
+            },
+        )
 
 
 def _attempt() -> object:

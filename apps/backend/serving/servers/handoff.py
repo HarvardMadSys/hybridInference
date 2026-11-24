@@ -265,22 +265,14 @@ def _batch(services: Any) -> dict[str, Any]:
 
 def refusal_to_drain() -> str | None:
     """Why this process cannot take part in a handoff, or None when it can."""
-    from serving.utils.workers import configured_worker_count, spawned_by_worker_manager
+    from serving.utils.workers import several_workers
 
-    workers = configured_worker_count()
-    # gunicorn forks its workers, so neither of the checks below sees them.
-    if (workers is not None and workers > 1) or spawned_by_worker_manager() or _under_gunicorn():
+    if several_workers():
         return (
             "Several worker processes serve this port. A handoff drains one process, "
             "and a call reaches whichever worker accepts it; run one worker per instance."
         )
     return None
-
-
-def _under_gunicorn() -> bool:
-    import sys
-
-    return "gunicorn" in sys.modules
 
 
 def drain(services: Any, *, by: str, handoff: Handoff | None = None) -> bool:
