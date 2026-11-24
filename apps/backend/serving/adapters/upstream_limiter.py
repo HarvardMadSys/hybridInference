@@ -271,6 +271,16 @@ def _engine_address(base_url: str | None) -> str:
     return f"{host}:{port}"
 
 
+def engine_address(base_url: str | None) -> str:
+    """Return the ``host:port`` this limiter knows the engine at *base_url* by.
+
+    For a caller that keeps its own record of the engines it registered and has
+    to compare routes with it the way the limiter does: two base URLs that
+    reach one server are one engine.
+    """
+    return _engine_address(base_url)
+
+
 def _valid_limit(limit: object) -> int:
     """Return an engine queue's limit, or raise ValueError when it is not one."""
     if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
@@ -844,6 +854,8 @@ class UpstreamConcurrencyLimiter:
         # the limit in force at each registered engine (owners agree on it).
         self._queue_owners: dict[str, dict[str, int]] = {}
         self._queue_limits: dict[str, int] = {}
+        # Each owner's latest registration, so only it can clear the owner's set.
+        self._queue_tokens: dict[str, object] = {}
 
     @classmethod
     def from_settings(cls) -> UpstreamConcurrencyLimiter:
@@ -1203,7 +1215,7 @@ class UpstreamConcurrencyLimiter:
 
     # -- registered engine queues ---------------------------------------------
 
-    def set_engine_queues(self, owner: str, limits: Mapping[str, int]) -> None:
+    def set_engine_queues(self, owner: str, limits: Mapping[str, int]) -> object:
         """Register the engine queues *owner* needs, replacing the ones it had.
 
         Each registered engine counts every dispatch it is sent against its
@@ -1223,6 +1235,12 @@ class UpstreamConcurrencyLimiter:
                 dispatches to it may lack a first token before the rest wait.
                 Base URLs that reach one server (``host:port``) are one engine.
                 Empty clears the owner's queues, like :meth:`clear_engine_queues`.
+
+        Returns:
+            A token naming this registration. Handed to
+            :meth:`clear_engine_queues`, it clears the owner's queues only while
+            they are still the ones this call registered: a router replaced by
+            one for the same model cannot clear its successor's.
 
         Raises:
             ValueError: A limit is not a whole number of at least 1.
@@ -1258,10 +1276,13 @@ class UpstreamConcurrencyLimiter:
                         "an engine must give it the same limit."
                     )
 
+        token = object()
         if wanted:
             self._queue_owners[owner] = wanted
+            self._queue_tokens[owner] = token
         else:
             self._queue_owners.pop(owner, None)
+            self._queue_tokens.pop(owner, None)
         before = self._queue_limits
         self._queue_limits = {
             address: limit
@@ -1298,8 +1319,9 @@ class UpstreamConcurrencyLimiter:
                 extra={"event": "engine_queue_unregistered", "engine": address},
             )
         self._drop_idle_gates()
+        return token
 
-    def clear_engine_queues(self, owner: str) -> None:
+    def clear_engine_queues(self, owner: str, *, token: object | None = None) -> None:
         """Drop the engine queues *owner* registered.
 
         An engine another owner still registers keeps its queue. One nobody
@@ -1308,7 +1330,15 @@ class UpstreamConcurrencyLimiter:
         give their places back as they always would. Held dispatches -- the
         queue-wait offload's -- keep their places and their line. The queue is
         forgotten once nothing is in it.
+
+        Args:
+            owner: Whose queues to drop.
+            token: The registration to drop, as :meth:`set_engine_queues`
+                returned it. When the owner has registered again since, nothing
+                changes. None drops whatever the owner has.
         """
+        if token is not None and self._queue_tokens.get(owner) is not token:
+            return
         self.set_engine_queues(owner, {})
 
     def _drop_idle_gates(self) -> None:

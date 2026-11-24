@@ -46,6 +46,7 @@ from .profiles import (
 from .reasoning_effort import EFFORT_PARAM, EffortContract, effort_contract, translate_effort
 from .remote_media import inline_remote_media
 from .upstream_limiter import (
+    UpstreamQueueWaitExpired,
     UpstreamSaturated,
     UpstreamSlot,
     acquire_upstream_slot,
@@ -893,6 +894,18 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return headers
 
+    def _left_engine_queue(self, exc: UpstreamSaturated) -> bool:
+        """Return whether a wait ended at its deadline in this self-hosted engine's queue.
+
+        Every key of a self-hosted engine waits in the engine's one line
+        (``UpstreamConcurrencyLimiter._admit_to_engine``), so another key cannot
+        get past it. A cloud key's wait is for that key's own allowance, and a
+        sibling key may have room, deadline or not.
+        """
+        return isinstance(exc, UpstreamQueueWaitExpired) and is_local_endpoint(
+            self.config.base_url, deployment_type=self.config.deployment_type
+        )
+
     async def _acquire_upstream_slot(self, api_key: str | None) -> UpstreamSlot:
         """Take an outbound concurrency slot for the key this request will use.
 
@@ -967,7 +980,10 @@ class OpenAICompatAdapter(BaseAdapter):
         request (see ``upstream_limiter``). In the pooled branch a saturated key
         rotates like any other key-specific failure — a sibling key may have
         room — and only a request that finds every usable key saturated fails
-        with ``UpstreamSaturated``.
+        with ``UpstreamSaturated``. A deadline that ends the wait in a
+        self-hosted engine's queue (``UpstreamQueueWaitExpired``) is not about the
+        key: every key reaches the same engine and waits in its one line, so it
+        propagates at once instead of passing through every key.
 
         ``max_body_bytes``, when given, bounds the response body read (see
         ``AsyncHTTPClient.json_post``); otherwise the client's default applies.
@@ -1055,6 +1071,12 @@ class OpenAICompatAdapter(BaseAdapter):
                 try:
                     slot = await self._acquire_upstream_slot(api_key)
                 except UpstreamSaturated as saturated:
+                    if self._left_engine_queue(saturated):
+                        # The engine's line ran out the request's deadline, not
+                        # this key's allowance: another key would wait in the same
+                        # line. Nothing was sent, so the lease goes back neutrally.
+                        self._key_pool.release(lease, status_code=None)
+                        raise
                     # This key's outbound allowance stayed full. Rotate rather
                     # than fail: sibling keys are separate accounts with their
                     # own allowances, and ``tried`` already holds this one so the
@@ -1233,6 +1255,10 @@ class OpenAICompatAdapter(BaseAdapter):
                 try:
                     slot = await self._acquire_upstream_slot(api_key)
                 except UpstreamSaturated as saturated:
+                    if self._left_engine_queue(saturated):
+                        # As in the non-streaming path: the engine's line, not the key.
+                        self._key_pool.release(lease, status_code=None)
+                        raise
                     # Same rotation as the non-streaming path: this key's
                     # outbound allowance stayed full, a sibling's may not be.
                     # Neutral lease release — nothing was sent, so the key is

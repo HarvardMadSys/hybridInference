@@ -25,7 +25,10 @@ two or three times on its way through this layer.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = ["carries_routing", "is_client_visible", "tag_backend_chunk"]
 
@@ -80,12 +83,18 @@ def is_client_visible(chunk: Any) -> bool:
     return bool(payload.get("choices")) or payload.get("usage") is not None
 
 
-def tag_backend_chunk(chunk: Any, backend_name: str) -> Any:
+def tag_backend_chunk(
+    chunk: Any,
+    backend_name: str,
+    *,
+    stamp: Callable[[dict[str, Any]], None] | None = None,
+) -> Any:
     """Record the serving backend in an SSE chunk's routing payload.
 
     Only ``data:`` frames that already carry a ``_routing`` object are touched;
     everything else -- keep-alives, content deltas, the terminal ``[DONE]`` --
-    is forwarded byte-for-byte.
+    is forwarded byte-for-byte. ``stamp`` then edits the same routing object in
+    place, so a caller adds what it must say without decoding the frame again.
     """
     if not isinstance(chunk, str) or not chunk.startswith("data: "):
         return chunk
@@ -104,4 +113,6 @@ def tag_backend_chunk(chunk: Any, backend_name: str) -> Any:
     if not isinstance(routing, dict):
         return chunk
     routing.setdefault("backend", backend_name)
+    if stamp is not None:
+        stamp(routing)
     return f"data: {json.dumps(payload)}\n\n"

@@ -40,46 +40,39 @@ Deliberate non-goals, matching the current design:
 The metadata this layer records and the frames it inspects have their own homes:
 :mod:`routing.hybrid_attempt_history` builds the ``_routing`` attempt records and
 the history frame, :mod:`routing.hybrid_stream_frames` decides whether a chunk is
-client-visible and tags it with its backend. This module still owns the
-coordination that uses them -- which attempt runs next, which error surfaces,
-and when a stream is committed.
+client-visible and tags it with its backend, and :mod:`routing.pool_attempts`
+runs one attempt -- its outcome, when a stream is committed, which error a caller
+is told about -- the same way for every router that composes backends. This
+module owns the plan: which attempt runs next, and when the plan stops.
 """
 
 from __future__ import annotations
 
-import json
+from contextlib import aclosing
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any
 
 from routing.decisions import BackendSelection, RoutingDecision, RoutingTarget
-from routing.dispatch import (
-    DispatchMismatchError,
-    EndpointBinding,
-    backend_pool_id,
-    check_dispatch,
-    dispatch_for_attempt,
-)
 from routing.hybrid_attempt_history import (
-    attach_attempt_history,
     attempt_history_chunk,
-    attempt_record,
     merge_attempt_history,
     tag_backend,
     tag_preference,
 )
-from routing.hybrid_stream_frames import carries_routing, is_client_visible, tag_backend_chunk
-from routing.protocols import RoutingRequestOptions
-from routing.routers import (
-    AllCircuitsOpenError,
-    TargetUnavailableError,
-    request_refusals_end_fallback,
-    select_surfaced_error,
+from routing.pool_attempts import (
+    AttemptLedger,
+    PoolAttempt,
+    StreamOutcome,
+    chat_attempt,
+    stream_attempt,
 )
+from routing.protocols import RoutingRequestOptions
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Sequence
+    from collections.abc import AsyncIterator, Callable
 
     from routing.backends import RoutingBackend
+    from routing.dispatch import EndpointBinding
     from routing.routers import RoutingObservation
 
 __all__ = [
@@ -320,90 +313,36 @@ class HybridRouter:
             self._backends[decision.backend], decision.target, model_id
         )
 
-        attempts: list[dict[str, Any]] = []
-        errors: list[BaseException] = []
-        # Admission refusals: nothing was sent, so there is no upstream fault to
-        # record. Kept apart from ``errors`` so that a plan which was entirely
-        # unavailable still reports *why*, without inventing a failed attempt.
-        refusals: list[BaseException] = []
-        dispatched: set[str] = set()
+        ledger = AttemptLedger()
+        remember = self._rememberer(params.get("request_id"), model_id)
         for index, attempt in enumerate(plan):
-            if attempt.endpoint_id is not None and attempt.endpoint_id in dispatched:
+            if attempt.endpoint_id is not None and attempt.endpoint_id in ledger.dispatched:
                 # The primary attempt may substitute a candidate the plan has not
                 # reached yet, so the plan can still name an endpoint that has
                 # already run. The single router never retried an endpoint it had
                 # dispatched; retrying here would double both the upstream request
                 # and the failure it recorded.
                 continue
-            backend = self._backends[attempt.backend]
-            binding = _binding_for_attempt(backend, model_id, attempt)
-            # The instruction is what makes this attempt binding rather than
-            # advisory, and it is checked before the backend runs: a mismatch is
-            # a composition error, so it must not be dispatched, counted as an
-            # attempt, or recorded as an upstream fault.
-            check_dispatch(
-                backend,
-                dispatch_for_attempt(
-                    pool_id=backend_pool_id(backend),
-                    model_id=model_id,
-                    binding=binding,
-                    exact=attempt.exact,
-                ),
-                model_id,
+            failures = len(ledger.errors)
+            response = await chat_attempt(
+                self._pool_attempt(model_id, attempt, routing_options, decision, index),
+                model_id=model_id,
+                messages=messages,
+                params=params,
+                ledger=ledger,
+                remember=remember,
             )
-            try:
-                response = await backend.chat_completion(
-                    model_id,
-                    messages,
-                    routing_options=_attempt_options(
-                        routing_options, backend, attempt, model_id, binding
-                    ),
-                    target=decision.target if index == 0 else None,
-                    **params,
-                )
-            except (TargetUnavailableError, AllCircuitsOpenError) as exc:
-                # Whether this attempt was an exact binding or a pool delegation,
-                # nothing reached an upstream: the endpoint was not admissible or
-                # had no capacity left. Recording it would report a provider
-                # fault for an endpoint nothing was sent to, and the single
-                # router had no attempt to record here either.
-                refusals.append(exc)
-                continue
-            except DispatchMismatchError:
-                # A composition error raised inside the backend, from a range
-                # check the plan could not make on its own. Nothing was sent, so
-                # it must not be recorded as an attempted upstream, and it must
-                # not fall through to a backend the composition never chose for
-                # this request.
-                raise
-            except Exception as exc:
-                self._remember_backend_decision(
-                    params.get("request_id"),
-                    attempt.backend,
-                    model_id,
-                    routing=getattr(exc, "_routing", None),
-                    endpoint_id=attempt.endpoint_id,
-                )
-                attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
-                errors.append(exc)
-                _remember_dispatched(dispatched, attempt, exc)
-                if _refusals_end_plan(model_id, attempts, errors):
+            if response is None:
+                if len(ledger.errors) > failures and ledger.refusals_end_plan(model_id):
                     break
                 continue
-            self._remember_backend_decision(
-                params.get("request_id"),
-                attempt.backend,
-                model_id,
-                routing=response.get("_routing"),
-                endpoint_id=attempt.endpoint_id,
-            )
-            merge_attempt_history(response, attempts)
+            merge_attempt_history(response, ledger.attempts)
             tag_backend(response, attempt.backend)
             # Resolve on the success path too: the metadata must say whether the
             # policy's target was in range regardless of which attempt answered.
             tag_preference(response, decision.target, preferred_endpoint)
             return response
-        _raise_after_attempts(errors, attempts, refusals, model_id)
+        ledger.raise_after(lambda: _nothing_attempted(model_id))
 
     def stream_chat_completion(
         self,
@@ -667,26 +606,51 @@ class HybridRouter:
                 if isinstance(endpoint, str) and endpoint:
                     record.endpoints[endpoint] = backend_name
 
-    def _remember_stream_dispatch(
-        self, request_id: Any, attempt: _Attempt, model_id: str, chunk: Any
-    ) -> None:
-        """Capture routing frames while forwarding the original stream unchanged.
+    def _rememberer(self, request_id: Any, model_id: str) -> Callable[[str, Any, str | None], None]:
+        """Return one request's feedback-attribution hook for the attempt runner.
 
-        A frame that cannot carry ``_routing`` (``carries_routing``) is not
-        parsed: it still records which backend is serving, which is all it
-        contributes.
+        Each attempt that reached an upstream reports the backend that ran it,
+        the ``_routing`` block it produced and the endpoint the plan named, and
+        the dispatch record keeps which endpoint belongs to which backend.
         """
-        payload = chunk if isinstance(chunk, dict) else {}
-        if isinstance(chunk, str) and chunk.startswith("data: ") and carries_routing(chunk):
-            try:
-                payload = json.loads(chunk[6:].strip())
-            except ValueError:
-                payload = {}
-        self._remember_backend_decision(
-            request_id,
-            attempt.backend,
-            model_id,
-            routing=payload.get("_routing") if isinstance(payload, dict) else None,
+
+        def remember(backend_name: str, routing: Any, endpoint_id: str | None) -> None:
+            self._remember_backend_decision(
+                request_id,
+                backend_name,
+                model_id,
+                routing=routing,
+                endpoint_id=endpoint_id,
+            )
+
+        return remember
+
+    def _pool_attempt(
+        self,
+        model_id: str,
+        attempt: _Attempt,
+        routing_options: RoutingRequestOptions | None,
+        decision: RoutingDecision,
+        index: int,
+    ) -> PoolAttempt:
+        """Turn one planned attempt into the dispatch the attempt runner makes.
+
+        The binding comes from the backend, which is what knows its endpoints,
+        and the instruction it makes is checked before the backend runs
+        (``routing.pool_attempts``): a mismatch is a composition error, never an
+        attempt or an upstream fault. Only the first attempt passes the policy's
+        target on.
+        """
+        backend = self._backends[attempt.backend]
+        binding = _binding_for_attempt(backend, model_id, attempt)
+        return PoolAttempt(
+            backend=backend,
+            backend_name=attempt.backend,
+            endpoint_id=attempt.endpoint_id,
+            binding=binding,
+            exact=attempt.exact,
+            routing_options=_attempt_options(routing_options, backend, attempt, model_id, binding),
+            target=decision.target if index == 0 else None,
         )
 
     def get_provider_status(self) -> dict[str, dict[str, Any]]:
@@ -777,7 +741,12 @@ async def _fallback_stream(
     routing_options: RoutingRequestOptions | None,
     params: dict[str, Any],
 ) -> AsyncIterator[Any]:
-    """Forward the first attempt the client can see, else try the next candidate."""
+    """Forward the first attempt the client can see, else try the next candidate.
+
+    Each attempt runs through :func:`routing.pool_attempts.stream_attempt`, which
+    commits it at its first client-visible chunk. An attempt after a failed one
+    opens with the history frame that names the failures before it.
+    """
     decision = router.select_decision(
         model_id,
         messages,
@@ -785,119 +754,49 @@ async def _fallback_stream(
         **params,
     )
     plan = router._attempt_plan(model_id, messages, decision, routing_options, params)
-    attempts: list[dict[str, Any]] = []
-    errors: list[BaseException] = []
-    refusals: list[BaseException] = []
     preferred_endpoint = _resolved_endpoint(
         router.backend(decision.backend), decision.target, model_id
     )
-    dispatched: set[str] = set()
+    ledger = AttemptLedger()
+    remember = router._rememberer(params.get("request_id"), model_id)
+
+    def history_frame() -> str | None:
+        if not ledger.attempts:
+            return None
+        return attempt_history_chunk(
+            ledger.attempts,
+            target=decision.target,
+            resolved_endpoint=preferred_endpoint,
+        )
+
     for index, attempt in enumerate(plan):
-        if attempt.endpoint_id is not None and attempt.endpoint_id in dispatched:
+        if attempt.endpoint_id is not None and attempt.endpoint_id in ledger.dispatched:
             # See HybridRouter.chat_completion: the plan can name an endpoint a
             # substituted primary already ran, and it must not run twice.
             continue
-        backend = router.backend(attempt.backend)
-        binding = _binding_for_attempt(backend, model_id, attempt)
-        # Same check, same reason as the non-streaming path: refuse a mismatched
-        # instruction before the generator can produce any upstream I/O.
-        check_dispatch(
-            backend,
-            dispatch_for_attempt(
-                pool_id=backend_pool_id(backend),
+        failures = len(ledger.errors)
+        outcome = StreamOutcome()
+        # Closed with this generator, so a client that leaves closes the
+        # backend's stream at once rather than whenever it is collected.
+        async with aclosing(
+            stream_attempt(
+                router._pool_attempt(model_id, attempt, routing_options, decision, index),
                 model_id=model_id,
-                binding=binding,
-                exact=attempt.exact,
-            ),
-            model_id,
-        )
-        stream = backend.stream_chat_completion(
-            model_id,
-            messages,
-            routing_options=_attempt_options(routing_options, backend, attempt, model_id, binding),
-            target=decision.target if index == 0 else None,
-            **params,
-        )
-        buffered: list[Any] = []
-        aclose = getattr(stream, "aclose", None)
-        # Commitment begins at the first chunk the *client* can see, which is not
-        # the first chunk forwarded. Every backend emits a synthetic routing frame
-        # before anything else (``{"choices": [], "_routing": {...}}``), and the
-        # serving layer drops that frame before the response leaves the gateway,
-        # so counting it as output would refuse a fallback that a failure before
-        # the first visible byte is still entitled to take. The single-router path
-        # draws the line in the same place: its ``chunks_yielded`` flag is set by
-        # the adapter's chunks and never by its own synthetic frame.
-        committed = False
-        try:
-            async for chunk in stream:
-                router._remember_stream_dispatch(params.get("request_id"), attempt, model_id, chunk)
-                buffered.append(chunk)
-                break
-            if buffered:
-                # Output exists; forward what was held for the fallback decision,
-                # then stream the rest through, recording commitment as it goes.
-                if attempts:
-                    yield attempt_history_chunk(
-                        attempts,
-                        target=decision.target,
-                        resolved_endpoint=preferred_endpoint,
-                    )
-                for held in buffered:
-                    committed = committed or is_client_visible(held)
-                    yield tag_backend_chunk(held, attempt.backend)
-                async for chunk in stream:
-                    # Once committed, the dispatch record already names this
-                    # backend and no other attempt can run, so only a frame
-                    # that can still add an endpoint to it is read: a late
-                    # routing frame may name an attempt (a hedge leg) that
-                    # no earlier frame did, and feedback for it is routed by
-                    # that name.
-                    if not committed or carries_routing(chunk):
-                        router._remember_stream_dispatch(
-                            params.get("request_id"), attempt, model_id, chunk
-                        )
-                    committed = committed or is_client_visible(chunk)
-                    yield tag_backend_chunk(chunk, attempt.backend)
-                return
-            # A stream that ended without producing anything never reached the
-            # client, so it is a failed attempt and the plan may continue.
-            empty_error = RuntimeError("stream produced no output")
-            attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, empty_error))
-            errors.append(empty_error)
-        except (TargetUnavailableError, AllCircuitsOpenError) as exc:
-            if committed:  # pragma: no cover - unavailability precedes any output
-                raise
-            # Same disposition as the non-streaming path: an admission refusal is
-            # not an upstream failure, for a leaf and for a pool alike.
-            refusals.append(exc)
-        except DispatchMismatchError:
-            # Same composition error, same disposition as the non-streaming path:
-            # propagate it rather than recording a provider failure or continuing.
-            raise
-        except Exception as exc:
-            router._remember_backend_decision(
-                params.get("request_id"),
-                attempt.backend,
-                model_id,
-                routing=getattr(exc, "_routing", None),
-                endpoint_id=attempt.endpoint_id,
+                messages=messages,
+                params=params,
+                ledger=ledger,
+                outcome=outcome,
+                lead_frame=history_frame,
+                remember=remember,
             )
-            if committed:
-                # The client already holds part of this answer. Restarting on
-                # another candidate would emit a stream no backend ever generated,
-                # so the failure propagates exactly as the single-router path
-                # propagates it.
-                raise
-            attempts.append(attempt_record(attempt.backend, attempt.endpoint_id, exc))
-            errors.append(exc)
-            _remember_dispatched(dispatched, attempt, exc)
-            if _refusals_end_plan(model_id, attempts, errors):
-                break
-        finally:
-            if callable(aclose):
-                await aclose()
-    _raise_after_attempts(errors, attempts, refusals, model_id)
+        ) as chunks:
+            async for chunk in chunks:
+                yield chunk
+        if outcome.served:
+            return
+        if len(ledger.errors) > failures and ledger.refusals_end_plan(model_id):
+            break
+    ledger.raise_after(lambda: _nothing_attempted(model_id))
 
 
 def _attempt_options(
@@ -1018,77 +917,12 @@ def _resolved_endpoint(backend: Any, target: RoutingTarget | None, model_id: str
         return None
 
 
-def _remember_dispatched(
-    dispatched: set[str],
-    attempt: _Attempt,
-    exc: BaseException,
-) -> None:
-    """Record the endpoint a failed attempt actually ran, if one can be named.
+def _nothing_attempted(model_id: str) -> HybridRoutingError:
+    """Build the error for a plan that reached no backend at all.
 
-    The router reports the endpoint it dispatched in the error's ``_routing``
-    block, and that can differ from the one the plan named: the primary attempt's
-    target is a preference, so a target the router cannot admit is replaced by its
-    own selection. The plan has to learn which endpoint that was, or it will
-    dispatch it a second time.
+    The ledger raises a failure or an admission refusal when it has one
+    (``AttemptLedger.raise_after``), so this is only for a plan with neither.
     """
-    routing = getattr(exc, "_routing", None)
-    observed = routing.get("endpoint_id") if isinstance(routing, dict) else None
-    if not isinstance(observed, str) or not observed:
-        observed = attempt.endpoint_id
-    if observed is not None:
-        dispatched.add(observed)
-
-
-def _refusals_end_plan(
-    model_id: str,
-    attempts: Sequence[dict[str, Any]],
-    errors: Sequence[BaseException],
-) -> bool:
-    """Return whether the plan stops because enough routes refused the request itself.
-
-    The single router's bound (``request_refusals_end_fallback``) applied to the
-    plan this layer walks, so a composed model sends a malformed request to no
-    more routes than the shared router would. ``attempts`` and ``errors`` are
-    appended together, one record per failed attempt.
-    """
-    return request_refusals_end_fallback(
-        model_id,
-        [
-            (record.get("endpoint_id"), error)
-            for record, error in zip(attempts, errors, strict=False)
-        ],
-    )
-
-
-def _raise_after_attempts(
-    errors: Sequence[BaseException],
-    attempts: list[dict[str, Any]],
-    refusals: Sequence[BaseException],
-    model_id: str,
-) -> None:
-    """Raise the error the caller should be told about, once every attempt failed.
-
-    Reuses the single-router rule (``select_surfaced_error``): the primary
-    attempt's error by default, displaced only by a later attempt's
-    request-describing status. Which failure the caller is told about therefore
-    does not depend on which domain happened to be planned first.
-
-    Every attempt is attached to whichever error is raised, so the error-log path
-    can attribute each endpoint that was tried rather than only the one whose
-    exception won.
-
-    A plan that never reached an upstream has no attempts to report and no
-    surfacing rule to apply. It still has to say why nothing could be used, so the
-    first admission refusal -- the reason the attempt chosen for this request was
-    refused -- is raised instead of a generic "every backend failed".
-    """
-    if errors:
-        surfaced = errors[select_surfaced_error(errors)]
-        attach_attempt_history(surfaced, attempts)
-        raise surfaced
-    if refusals:
-        raise refusals[0]
-    raise HybridRoutingError(
-        f"every configured backend failed for model {model_id}: "
-        f"{[attempt['backend'] for attempt in attempts] or 'no backend attempted'}"
+    return HybridRoutingError(
+        f"every configured backend failed for model {model_id}: no backend attempted"
     )
