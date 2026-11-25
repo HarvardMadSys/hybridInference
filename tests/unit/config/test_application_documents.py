@@ -244,7 +244,7 @@ async def test_mcp_servers_document_validates_store_entries(configuration):
                 "id": "docs",
                 "name": "Docs",
                 "url": "https://docs.example/mcp",
-                "headers": {"Authorization": "${DOCS_TOKEN}"},
+                "headers": {"Authorization": "${MCP_DOCS_TOKEN}"},
             }
         ]
     }

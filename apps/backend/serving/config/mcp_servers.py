@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_HEADER_REFERENCE = re.compile(r"^\$\{MCP_[A-Za-z0-9_]*\}$")
 _MAX_HEADERS = 32
 
 
@@ -60,6 +61,11 @@ class McpServerEntry(BaseModel):
     def _bounded_headers(cls, value: dict[str, str]) -> dict[str, str]:
         if len(value) > _MAX_HEADERS:
             raise ValueError(f"must hold at most {_MAX_HEADERS} headers")
+        for name, reference in value.items():
+            if not _HEADER_REFERENCE.fullmatch(reference):
+                raise ValueError(
+                    f"header {name} must reference an MCP_ secret setting as ${{MCP_NAME}}"
+                )
         return value
 
 
