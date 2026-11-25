@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from serving import mcp_client
 from serving.config.mcp_servers import McpServerEntry, McpServersDocument
@@ -46,14 +46,21 @@ _tools_body = json_body_after(_require_internal, McpServerBody)
 _call_body = json_body_after(_require_internal, McpCallBody)
 
 
-def _catalog() -> McpServersDocument:
+def _catalog() -> McpServersDocument | None:
     from serving.config import documents
 
-    return McpServersDocument.model_validate(documents.get("mcp"))
+    try:
+        return McpServersDocument.model_validate(documents.get("mcp"))
+    except ValidationError as exc:
+        logger.warning("MCP server store is invalid", exc_info=exc)
+        return None
 
 
 def _store_entry(server_id: str) -> McpServerEntry:
-    for entry in _catalog().servers:
+    catalog = _catalog()
+    if catalog is None:
+        raise HTTPException(503, "The MCP server store is unavailable.")
+    for entry in catalog.servers:
         if entry.id == server_id:
             return entry
     raise HTTPException(404, "That MCP server is not in the store.")
@@ -89,7 +96,10 @@ def _refuse(exc: mcp_client.McpError) -> HTTPException:
 async def list_servers(
     _caller: dict[str, Any] = Depends(_require_internal),
 ) -> dict[str, Any]:
-    """Return the store's servers without their credentials."""
+    """Return the store's servers without their credentials. An invalid document is empty."""
+    catalog = _catalog()
+    if catalog is None:
+        return {"servers": []}
     return {
         "servers": [
             {
@@ -100,7 +110,7 @@ async def list_servers(
                 "docsUrl": entry.docs_url,
                 "iconUrl": entry.icon_url,
             }
-            for entry in _catalog().servers
+            for entry in catalog.servers
         ]
     }
 

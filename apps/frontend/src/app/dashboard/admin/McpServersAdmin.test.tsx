@@ -95,7 +95,7 @@ describe('McpServersAdmin', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Add server' }));
 
     expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-      'must reference a secret setting as ${NAME}',
+      'must reference an MCP_ secret setting as ${MCP_NAME}',
     );
     expect(createAdminMcpServer).not.toHaveBeenCalled();
   });

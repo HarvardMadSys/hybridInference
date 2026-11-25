@@ -23,7 +23,7 @@ BASE: dict[str, Any] = {
             "name": "Docs",
             "description": "Find pages",
             "url": "https://docs.example/mcp",
-            "headers": {"Authorization": "${DOCS_TOKEN}"},
+            "headers": {"Authorization": "${MCP_DOCS_TOKEN}"},
             "docs_url": "https://docs.example",
             "icon_url": "",
         }
@@ -55,7 +55,7 @@ async def test_lists_the_store_with_header_references() -> None:
         response = await client.get("/admin/mcp-servers")
 
     assert response.status_code == 200
-    assert response.json()["servers"][0]["headers"] == {"Authorization": "${DOCS_TOKEN}"}
+    assert response.json()["servers"][0]["headers"] == {"Authorization": "${MCP_DOCS_TOKEN}"}
     assert response.json()["servers"][0]["id"] == "docs"
 
 
@@ -97,7 +97,7 @@ async def test_replaces_and_removes_a_server() -> None:
                 "name": "Docs 2",
                 "description": "Find pages",
                 "url": "https://docs.example/mcp",
-                "headers": {"Authorization": "${DOCS_TOKEN}"},
+                "headers": {"Authorization": "${MCP_DOCS_TOKEN}"},
             },
         )
         removed = await client.delete("/admin/mcp-servers/docs")
@@ -114,3 +114,41 @@ async def test_refuses_an_unknown_server() -> None:
         response = await client.delete("/admin/mcp-servers/missing")
 
     assert response.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_refuses_a_header_that_is_not_an_mcp_secret() -> None:
+    async with _client() as client:
+        response = await client.post(
+            "/admin/mcp-servers",
+            json={
+                "id": "wiki",
+                "name": "Wiki",
+                "url": "https://wiki.example/mcp",
+                "headers": {"Authorization": "${GITHUB_TOKEN}"},
+            },
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_edits_are_conditional_on_the_document_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    seen: dict[str, Any] = {}
+
+    async def _update(*_args: Any, **kwargs: Any) -> list[Any]:
+        seen.update(kwargs)
+        return []
+
+    monkeypatch.setattr(mcp_servers.app_config, "source_version", lambda: "v-before")
+    monkeypatch.setattr(mcp_servers.app_config, "update", _update)
+    async with _client() as client:
+        response = await client.post(
+            "/admin/mcp-servers",
+            json={"id": "wiki", "name": "Wiki", "url": "https://wiki.example/mcp"},
+        )
+
+    assert response.status_code == 201
+    assert seen["expected_version"] == "v-before"

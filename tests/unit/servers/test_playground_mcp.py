@@ -734,7 +734,7 @@ def _store_document():
                     "name": "Docs search",
                     "description": "Find pages",
                     "url": "https://docs.example/mcp",
-                    "headers": {"Authorization": "${DOCS_MCP_TOKEN}"},
+                    "headers": {"Authorization": "${MCP_DOCS_TOKEN}"},
                 }
             ]
         }
@@ -760,7 +760,7 @@ async def test_the_store_lists_servers_without_credentials(monkeypatch: pytest.M
             }
         ]
     }
-    assert "DOCS_MCP_TOKEN" not in response.text
+    assert "MCP_DOCS_TOKEN" not in response.text
 
 
 @pytest.mark.asyncio
@@ -839,3 +839,20 @@ async def test_a_request_names_either_a_url_or_a_store_server() -> None:
         )
 
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_an_invalid_store_is_empty_and_unavailable(monkeypatch: pytest.MonkeyPatch) -> None:
+    from serving.config import documents
+
+    monkeypatch.setattr(documents, "get", lambda _kind: {"servers": [{"id": "Bad"}]})
+    async with _client(INTERNAL) as client:
+        listed = await client.get("/internal/playground/mcp/servers")
+        tools = await client.post(
+            "/internal/playground/mcp/tools",
+            json={"server_id": "docs", "connection_id": "conn-1"},
+        )
+
+    assert listed.status_code == 200
+    assert listed.json() == {"servers": []}
+    assert tools.status_code == 503

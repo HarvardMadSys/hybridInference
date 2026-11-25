@@ -332,7 +332,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "MCP_SERVERS",
         "application",
         "MCP server store as JSON. Each entry offers a connection target in the playground; "
-        "header values reference separate secret settings as ${NAME}. Omit for an empty store.",
+        "header values reference separate MCP_* secret settings as ${MCP_NAME}. Omit for an empty store.",
         type="text",
         validator=_document_validator("MCP_SERVERS"),
     ),

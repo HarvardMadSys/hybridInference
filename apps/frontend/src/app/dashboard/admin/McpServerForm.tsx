@@ -181,7 +181,8 @@ export function McpServerForm({
             <div>
               <span className="text-[13px] font-medium text-gray-900">Headers</span>
               <p className="mt-0.5 text-xs text-gray-500">
-                A value references a separate secret setting as <code>{'${NAME}'}</code>.
+                A value references a separate <code>MCP_*</code> secret setting as{' '}
+                <code>{'${MCP_NAME}'}</code>.
               </p>
               <div className="mt-2 space-y-2">
                 {draft.headers.map((row, index) => (
