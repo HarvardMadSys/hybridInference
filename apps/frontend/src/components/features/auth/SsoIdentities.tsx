@@ -113,11 +113,6 @@ type OwnerProof = { kind: 'password' } | { kind: 'sso'; reauth: SsoReauth } | { 
 const CONFIRM_BOX = 'mt-3 space-y-3 rounded-lg border border-gray-200 bg-gray-50/70 p-3';
 
 /**
- * Why the account's only way in stays: said before it is tried, and when it is
- * refused. A member of an organization cannot set a password, so it is not
- * told to: its organization's single sign-on is how the account is signed in to.
- */
-/**
  * The two sentences the gateway refuses an unlink with. Both are a 409 with
  * nothing else to tell them apart, so the sentence is what is read: the
  * identity a member has from its own organization, and the last way in.
@@ -144,6 +139,11 @@ export function unlinkRefusal(error: unknown, t: Translate, ssoOnly: boolean): s
   return ssoRefusalMessage(error) ?? getErrorMessage(error);
 }
 
+/**
+ * Why the account's only way in stays: said before it is tried, and when it is
+ * refused. A member of an organization cannot set a password, so it is not
+ * told to: its organization's single sign-on is how the account is signed in to.
+ */
 function lastMethod(t: Translate, ssoOnly: boolean): string {
   if (ssoOnly) {
     return t(
