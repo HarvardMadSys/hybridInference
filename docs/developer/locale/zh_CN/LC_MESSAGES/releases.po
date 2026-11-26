@@ -105,8 +105,16 @@ msgid "The exact container artifact, which may differ from the host checkout"
 msgstr "确切的容器产物，可能和宿主机上检出的代码不一致"
 
 #: ../developer/releases.md:25
-msgid "Backend and console candidates are published by hand: a maintainer runs the `Publish Images` workflow from `dev`, which refuses a commit without a successful CI run and tags the images `dev-<full-sha>` with short-SHA aliases. Most `dev` commits therefore have no image. A candidate tag identifies development output; it does not mean a date release exists for that commit. The `0.1.0` values in `pyproject.toml` and `apps/frontend/package.json` are package metadata and do not identify a particular deployed build."
-msgstr "后端和控制台的候选镜像由人工发布：维护者在 `dev` 上运行 `Publish Images` 工作流，它会拒绝没有成功 CI 运行的 commit，并给镜像打上 `dev-<full-sha>` tag 和短 SHA 别名。因此大多数 `dev` commit 没有镜像。候选 tag 只说明这是开发产物，不代表这个 commit 有对应的日期版本。`pyproject.toml` 和 `apps/frontend/package.json` 里的 `0.1.0` 只是包元数据，看不出实际部署的是哪个构建。"
+msgid ""
+"CI publishes backend and console candidates with `dev-<full-sha>` tags "
+"and short-SHA aliases. A candidate tag identifies development output; it "
+"does not mean a date release exists for that commit. The `0.1.0` values "
+"in `pyproject.toml` and `apps/frontend/package.json` are package metadata"
+" and do not identify a particular deployed build."
+msgstr ""
+"CI 会把后端和控制台的候选镜像打上 `dev-<full-sha>` tag，并附带短 SHA 别名。候选 tag "
+"只说明这是开发产物，不代表这个 commit 有对应的日期版本。`pyproject.toml` 和 "
+"`apps/frontend/package.json` 里的 `0.1.0` 只是包元数据，看不出实际部署的是哪个构建。"
 
 #: ../developer/releases.md:31
 msgid ""

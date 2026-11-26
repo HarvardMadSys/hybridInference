@@ -29,20 +29,34 @@ def _triggers(workflow: dict) -> dict:
         "deploy-staging.yml",
         "deploy-staging-digest.yml",
         "rag-index.yml",
-        # Superseded by the dispatch-only publish-images.yml.
-        "build-candidates.yml",
     ],
 )
 def test_retired_workflows_are_absent(workflow_name: str) -> None:
     assert not (WORKFLOWS / workflow_name).exists()
 
 
+def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
+    steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
+    tags = next(
+        step["with"]["tags"] for step in steps if step.get("name") == "Build and push backend"
+    )
+    summary = next(step["run"] for step in steps if step.get("name") == "Candidate summary")
+
+    assert "manual-${{ github.sha }}" in tags
+    assert "dev-" not in tags
+    assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
+    assert "automatic dev CI multi-arch candidate" in summary
+    assert "Deploy Staging by Digest" not in summary
+
+
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     """A path filter here withholds the run itself, not just the jobs.
 
-    Publish Images refuses a commit without a successful CI push run on dev,
-    and a filtered push creates no workflow run at all, so a docs-only commit
-    at dev's HEAD could never be published. Cheapness is the per-job change
+    Pushes carried a docs-only `paths-ignore` until #1283 made every green dev
+    SHA publish a backend candidate for the distribution repo's bump bot. A
+    filtered push creates no workflow run at all, so nothing downstream can
+    rescue it — not a job-level condition, and not the staging deploy that
+    hangs off this workflow's completion. Cheapness is the per-job change
     classification's job, which is asserted separately.
     """
     triggers = _triggers(_workflow("ci.yml"))
@@ -54,61 +68,37 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     assert triggers["schedule"]
 
 
-PUBLISH = "publish-images.yml"
-PUBLISH_JOBS = [
-    "publish-backend-precheck",
-    "publish-backend-arm64",
-    "publish-backend-amd64",
-    "publish-backend",
-    "publish-console-precheck",
-    "publish-console-arm64",
-    "publish-console-amd64",
-    "publish-console",
-]
+@pytest.mark.parametrize(
+    "job_name",
+    [
+        "publish-backend-precheck",
+        "publish-backend-arm64",
+        "publish-backend-amd64",
+        "publish-backend",
+        "publish-console-precheck",
+        "publish-console-arm64",
+        "publish-console-amd64",
+        "publish-console",
+    ],
+)
+def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
+    """Publishing must depend on ci-gate's verdict, not on ancestor luck.
 
-
-def test_images_are_published_only_by_hand() -> None:
-    """No push, schedule or other workflow's completion publishes an image.
-
-    Automatic publishing was retired after the 2026-11-22 incident: a person
-    dispatches Publish Images, and deploys what it printed by hand.
+    A job `if` without a status function gets an implicit success() that
+    evaluates the whole transitive needs chain; docker-build — an ancestor
+    through ci-gate — is legitimately skipped on many pushes, and that
+    implicit check silently skipped publishing (observed on dev@04b4f305:
+    gate green, publish skipped). !cancelled() suppresses the implicit
+    check so the explicit conditions are the only gate — on every job of
+    the publish pipeline, arch halves and stitch alike.
     """
-    assert set(_triggers(_workflow(PUBLISH))) == {"workflow_dispatch"}
-    for path in _workflow_files():
-        if path.name == PUBLISH:
-            continue
-        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
-        for name, job in workflow["jobs"].items():
-            permissions = job.get("permissions", workflow.get("permissions"))
-            assert not (isinstance(permissions, dict) and permissions.get("packages") == "write"), (
-                path.name,
-                name,
-            )
-            for step in job.get("steps") or []:
-                assert "build-push-action" not in str(step.get("uses", "")) or (
-                    (step.get("with") or {}).get("push") in (None, False)
-                    and "push=true" not in str((step.get("with") or {}).get("outputs", ""))
-                ), (path.name, name)
-                run = str(step.get("run", ""))
-                # `--push` as a whole flag, not ops/ci's `--push-before`.
-                assert not re.search(r"imagetools create|docker push|--push(?![\w-])", run), (
-                    path.name,
-                    name,
-                )
+    job = _workflow("ci.yml")["jobs"][job_name]
 
-
-def test_publishing_requires_dev_and_green_ci_for_the_commit() -> None:
-    """The verify job is the gate, and every publish job waits on it."""
-    jobs = _workflow(PUBLISH)["jobs"]
-    check = next(step for step in jobs["verify"]["steps"] if step.get("id") == "check")["run"]
-
-    assert '"${REF}" != "refs/heads/dev"' in check
-    assert "actions/workflows/ci.yml/runs?branch=dev&event=push&status=success" in check
-    assert "head_sha=${GITHUB_SHA}" in check
-    assert "|| true" not in check
-    assert jobs["verify"]["permissions"] == {"contents": "read", "actions": "read"}
-    for name in PUBLISH_JOBS:
-        assert "verify" in jobs[name]["needs"], name
+    assert "ci-gate" in job["needs"]
+    assert "!cancelled()" in job["if"]
+    assert "github.event_name == 'push'" in job["if"]
+    assert "github.ref == 'refs/heads/dev'" in job["if"]
+    assert "needs.ci-gate.result == 'success'" in job["if"]
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])
@@ -119,10 +109,10 @@ def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     suppressing the implicit success(), nothing else stops it from tagging a
     half-published candidate whose other half failed.
     """
-    job = _workflow(PUBLISH)["jobs"][f"publish-{image}"]
+    job = _workflow("ci.yml")["jobs"][f"publish-{image}"]
 
     assert set(job["needs"]) == {
-        "verify",
+        "ci-gate",
         f"publish-{image}-precheck",
         f"publish-{image}-arm64",
         f"publish-{image}-amd64",
@@ -142,7 +132,7 @@ def test_publish_existence_verdict_has_a_single_source(image: str) -> None:
     Every downstream job must therefore read the precheck's output, and no
     publish job other than the precheck may query the Packages API itself.
     """
-    jobs = _workflow(PUBLISH)["jobs"]
+    jobs = _workflow("ci.yml")["jobs"]
     verdict = f"needs.publish-{image}-precheck.outputs.existing"
 
     for name in (f"publish-{image}-arm64", f"publish-{image}-amd64"):
@@ -166,7 +156,7 @@ def test_publish_precheck_discards_packages_api_error_payload(image: str) -> Non
     when ``|| true`` erased the command failure, and skipped both native builds.
     ``pipefail`` plus an explicit failure branch must clear that payload.
     """
-    job = _workflow(PUBLISH)["jobs"][f"publish-{image}-precheck"]
+    job = _workflow("ci.yml")["jobs"][f"publish-{image}-precheck"]
     lookup = next(step for step in job["steps"] if step.get("id") == "existing")["run"]
 
     assert "set -euo pipefail" in lookup
@@ -178,7 +168,7 @@ def test_publish_precheck_discards_packages_api_error_payload(image: str) -> Non
 
 def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
     """The canonical console is the white-label artifact W7 promises."""
-    jobs = _workflow(PUBLISH)["jobs"]
+    jobs = _workflow("ci.yml")["jobs"]
 
     for arch in ("arm64", "amd64"):
         job = jobs[f"publish-console-{arch}"]
@@ -190,7 +180,7 @@ def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
         assert "hybridinference-console" in build["outputs"]
         assert "NEXT_PUBLIC_API_BASE=" in args
         assert "NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}" in args
-        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ needs.verify.outputs.timestamp }}" in args
+        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}" in args
         assert "NEXT_PUBLIC_APP_NAME" not in args
         assert "NEXT_PUBLIC_TEAM_JSON" not in args
         assert "NEXT_PUBLIC_SPONSORS_JSON" not in args
@@ -200,7 +190,7 @@ def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
 
 def test_both_console_platforms_scan_the_published_payload_for_identity() -> None:
     """Build arguments are policy; inspect the actual bytes before stitching."""
-    jobs = _workflow(PUBLISH)["jobs"]
+    jobs = _workflow("ci.yml")["jobs"]
 
     for arch in ("arm64", "amd64"):
         job = jobs[f"publish-console-{arch}"]
@@ -224,17 +214,22 @@ def test_publish_builds_are_native_never_emulated() -> None:
 
     qemu-user cannot run uv's static binary: the emulated amd64 half of a
     combined multi-platform build segfaulted `uv sync` instantly (observed
-    on dev@2e4edfa4, exit code 139).
+    on dev@2e4edfa4, exit code 139). The dispatch-only Build Candidate Images
+    tool picks the hosted runner native to its platform input.
     """
     for workflow, name, job, _ in _jobs():
         for step in job.get("steps") or []:
             assert "setup-qemu-action" not in str(step.get("uses", "")), (workflow, name)
             platforms = str((step.get("with") or {}).get("platforms", ""))
             assert "," not in platforms, f"{workflow}:{name}: emulated multi-platform build"
-    jobs = _workflow(PUBLISH)["jobs"]
+    jobs = _workflow("ci.yml")["jobs"]
     for image in ("backend", "console"):
         assert jobs[f"publish-{image}-arm64"]["runs-on"] == "ubuntu-24.04-arm"
         assert jobs[f"publish-{image}-amd64"]["runs-on"] == "ubuntu-latest"
+    diagnostic = _workflow("build-candidates.yml")["jobs"]["build"]["runs-on"]
+    assert diagnostic == (
+        "${{ inputs.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}"
+    )
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
@@ -645,8 +640,8 @@ def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
                     # the step ends.
                     assert re.search(r'DOCKER_CONFIG="\$\{\w+\}" docker login', line), line
                     assert "trap 'rm -rf" in run, (workflow, name)
-    # Six publish jobs and the tutorial's restore drill.
-    assert logins >= 7
+    # Six publish jobs, the diagnostic build and the tutorial's restore drill.
+    assert logins >= 8
 
 
 def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
@@ -668,8 +663,7 @@ def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
                     workflow,
                     name,
                 )
-    # Four publish builds and Tutorial E2E.
-    assert checkouts >= 5
+    assert checkouts >= 6
 
 
 def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
@@ -697,13 +691,17 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
 def test_no_workflow_names_a_self_hosted_runner() -> None:
     """The self-hosted runners were retired after the 2026-11-22 incident.
 
-    A job that named one would queue until GitHub cancelled it a day later,
-    which is how every dev push run since 2026-11-20 ended.
+    A job that named one queued until GitHub cancelled it a day later, which
+    is how every dev push run since 2026-11-20 ended, publishing included.
     """
-    for workflow, name, job, _ in _jobs():
+    jobs = _jobs()
+    for workflow, name, job, _ in jobs:
         runs_on = str(job.get("runs-on", ""))
-        assert runs_on in ("ubuntu-latest", "ubuntu-24.04-arm"), (workflow, name, runs_on)
+        assert "self-hosted" not in runs_on, (workflow, name, runs_on)
+        assert "ubuntu-" in runs_on, (workflow, name, runs_on)
     assert not (ROOT / ".github" / "actionlint.yaml").exists()
+    # CI, the publish jobs, the diagnostic build and the release.
+    assert len(jobs) >= 20
 
 
 def test_gitleaks_installs_into_runner_temp_and_onto_the_path(tmp_path: Path) -> None:
