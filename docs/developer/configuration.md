@@ -410,6 +410,9 @@ The CLI never prints a secret value.
 The console shows **Ask admin to configure**. Administrators can open Settings
 or create a model in Routing. Other users should contact their administrator.
 No borrowed provider, model, key or deployment identity is silently selected.
+Provider keys and URLs the model catalog references never count as missing:
+until one is set, the route that needs it is skipped (with its model, unless the
+route is `optional: true`) and the backend log names it.
 
 ## Environment variables
 

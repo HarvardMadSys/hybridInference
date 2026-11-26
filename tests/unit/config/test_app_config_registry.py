@@ -448,43 +448,49 @@ def test_discovery_marks_what_a_non_optional_route_needs(tmp_path) -> None:
     found = registry.discover_references(models, None, None)
 
     assert "COMMENTED_OUT" not in found
-    # The first route inherits the model's base_url and api_key.
-    assert found["SHARED_BASE"].required
-    assert found["MODEL_KEY"].required
-    assert found["SHARED_BASE"].used_by == {"chat-a"}
-    # Referenced, but a blank value does not skip the model.
-    assert not found["UPSTREAM_MODEL"].required
-    # Only an optional route needs it.
-    assert not found["CANARY_KEY"].required
-    assert found["CANARY_KEY"].used_by == {"chat-a"}
-    # A key list fails only when every member is empty.
-    assert not found["POOL_KEY"].required
-    assert found["POOL_KEY"].key_groups == [("POOL_KEY", "POOL_KEY2")]
-    # A literal key keeps its route alive on its own.
-    assert not found["MIXED_KEY"].key_groups
+    # Every reference is recorded with the models that use it, whatever its field.
+    for key in ("SHARED_BASE", "MODEL_KEY", "UPSTREAM_MODEL", "CANARY_KEY"):
+        assert found[key].used_by == {"chat-a"}
+    for key in ("POOL_KEY", "POOL_KEY2"):
+        assert found[key].used_by == {"chat-b"}
+    assert found["MIXED_KEY"].used_by == {"chat-c"}
+    # Keys from a credential field are secret whatever their names.
+    assert found["MODEL_KEY"].credential
+    assert found["POOL_KEY"].credential
 
 
-def test_key_groups_are_required_together(tmp_path) -> None:
+def test_model_registry_references_are_never_required(tmp_path) -> None:
+    """Provider keys and URLs may be missing: none makes the deployment incomplete.
+
+    The registry already skips a route (``optional: true``) or drops its model
+    when one is unset; a required setting on top would mark the deployment
+    incomplete for every provider it does not use.
+    """
     models = _write(
         tmp_path,
         "models.yaml",
         """
         models:
+          - id: chat-a
+            base_url: ${SHARED_BASE}
+            api_key: ${MODEL_KEY}
           - id: chat-b
             route:
               - kind: openrouter
-                base_url: https://openrouter.ai/api/v1
+                base_url: ${POOL_BASE}
                 api_keys:
                   - ${POOL_KEY}
                   - ${POOL_KEY2}
+              - kind: openai_compat
+                base_url: https://canary.example/v1
+                api_key: ${CANARY_KEY}
+                optional: true
         """,
     )
     entries = registry.build_entries(registry.discover_references(models, None, None), {}, {})
-    first, second = entries["POOL_KEY"], entries["POOL_KEY2"]
-    assert first.is_required(_context({}))
-    assert second.is_required(_context({}))
-    assert not first.is_required(_context({"POOL_KEY2": "set"}))
-    assert not second.is_required(_context({"POOL_KEY2": "set"}))
+    nothing_set = _context({})
+    for key in ("SHARED_BASE", "MODEL_KEY", "POOL_BASE", "POOL_KEY", "POOL_KEY2", "CANARY_KEY"):
+        assert not entries[key].is_required(nothing_set), key
 
 
 def test_discovered_entries_take_secrecy_from_their_names(tmp_path) -> None:
@@ -523,7 +529,9 @@ def test_discovery_merges_into_static_entries(tmp_path) -> None:
     entry = entries["OPENROUTER_API_KEY"]
     assert entry.origin == "static"
     assert entry.used_by == ("chat",)
-    assert entry.is_required(_context())
+    assert entry.secret
+    # A reference adds no requirement to the static entry either.
+    assert not entry.is_required(_context())
 
 
 def test_routing_and_alert_references(tmp_path) -> None:
@@ -547,9 +555,9 @@ def test_routing_and_alert_references(tmp_path) -> None:
     )
     found = registry.discover_references(None, routing, alerts)
     assert found["LOCAL_DEPLOYMENT_URL"].used_by == {"model-a", "model-b"}
-    assert not found["LOCAL_DEPLOYMENT_URL"].required
     assert found["ALERT_SINK_WEBHOOK"].category == "alerts"
     entries = registry.build_entries(found, {}, {})
+    assert not entries["LOCAL_DEPLOYMENT_URL"].is_required(_context())
     assert entries["ALERT_SINK_WEBHOOK"].secret
 
 

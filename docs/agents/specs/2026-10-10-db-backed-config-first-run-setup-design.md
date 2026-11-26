@@ -139,7 +139,11 @@ Entries come from four places:
    (`alerts` for the alerts file). Secret when the name contains `KEY`,
    `TOKEN`, `SECRET`, `PASSWORD`, `WEBHOOK` or `PRIVATE`. Required when a
    models.yaml route that is not `optional: true` references it. Each carries
-   `used_by` (model ids).
+   `used_by` (model ids). *Superseded 2026-11-26: a reference is never
+   required. A missing provider key or URL already skips its route, or drops
+   its model, when the registry loads; counting it as a missing setting too
+   marked deployments incomplete for every provider they do not use, and
+   `optional: true` is a routing decision, not a reporting one.*
 3. **Numbered provider keys** — `<BASE>2` … `<BASE>20` for the providers in
    `dynamic_keys._PROVIDER_ENV_KEY_VARS`, listed when present in the database or
    environment.

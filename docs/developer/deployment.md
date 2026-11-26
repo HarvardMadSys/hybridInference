@@ -547,9 +547,8 @@ exceptions below. The switches
 on the **Settings** tab are copied into their own store the same way. The
 existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
 sessions and API keys keep working, and a database that already has accounts
-never shows the setup page. If the console then reports missing settings for
-credentials the deployment leaves unset on purpose, mark those routes
-`optional: true` in the model registry; see
+never shows the setup page. Provider credentials the deployment leaves unset
+are not reported as missing settings; see
 [Missing settings](configuration.md#missing-settings).
 
 From then on the database value wins. Editing such a line in `.env` changes

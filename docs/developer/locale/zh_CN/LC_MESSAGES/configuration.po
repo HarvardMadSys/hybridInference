@@ -2769,8 +2769,8 @@ msgstr "恢复 CLI 读取同一个数据库，并执行相同的验证："
 msgid "A JSON file passed to `document` is explicit import input, not a runtime source. The CLI never prints a secret value."
 msgstr "传给 `document` 的 JSON 文件是显式导入输入，不是运行时来源。CLI 绝不打印秘密值。"
 
-msgid "The console shows **Ask admin to configure**. Administrators can open Settings or create a model in Routing. Other users should contact their administrator. No borrowed provider, model, key or deployment identity is silently selected."
-msgstr "控制台显示 **Ask admin to configure**。管理员可打开 Settings，或在 Routing 中创建模型。其他用户应联系管理员。系统不会默默选择借用的供应商、模型、密钥或部署标识。"
+msgid "The console shows **Ask admin to configure**. Administrators can open Settings or create a model in Routing. Other users should contact their administrator. No borrowed provider, model, key or deployment identity is silently selected. Provider keys and URLs the model catalog references never count as missing: until one is set, the route that needs it is skipped (with its model, unless the route is `optional: true`) and the backend log names it."
+msgstr "控制台显示 **Ask admin to configure**。管理员可打开 Settings，或在 Routing 中创建模型。其他用户应联系管理员。系统不会默默选择借用的供应商、模型、密钥或部署标识。模型目录引用的供应商密钥和 URL 永远不算缺失：在设置之前，需要它的路由会被跳过（除非该路由标了 `optional: true`，否则连同整个模型一起跳过），后端日志会写明是哪一个。"
 
 msgid "Keep the database connection and infrastructure wiring in `.env`. Use Admin for application changes after first boot. See `.env.example` for the remaining infrastructure settings."
 msgstr "数据库连接和基础设施连接设置保留在 `.env` 中。首次启动后，通过 Admin 修改应用。其余基础设施设置见 `.env.example`。"
