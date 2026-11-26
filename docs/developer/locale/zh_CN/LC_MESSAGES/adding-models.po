@@ -491,6 +491,20 @@ msgstr ""
 "route)。通常按路由设置，而不是按模型设置"
 
 #: ../developer/adding-models.md
+msgid "`admission`"
+msgstr ""
+
+#: ../developer/adding-models.md
+msgid ""
+"Which admission process answers at this endpoint in the engine's place. "
+"`\"nimbus\"`: a Nimbus router in admission-only mode beside the engine; its "
+"409 with a `nimbus` object in the body is read as a decline, a request that "
+"reached no engine, and not as an upstream error. Route-level only"
+msgstr ""
+"在该端点代替引擎应答的准入进程。`\"nimbus\"`：部署在引擎旁、以准入模式运行的 Nimbus 路由器；"
+"其请求体中带有 `nimbus` 对象的 409 响应会被视为退回（即未到达引擎的请求），而非上游错误。仅限路由级别设置"
+
+#: ../developer/adding-models.md
 msgid "`route_metadata`"
 msgstr ""
 
