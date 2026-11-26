@@ -270,3 +270,19 @@ async def test_mcp_servers_document_validates_store_entries(configuration):
                 }
             ),
         )
+    with pytest.raises(DocumentError):
+        validate(
+            "MCP_SERVERS",
+            json.dumps(
+                {
+                    "servers": [
+                        {
+                            "id": "docs",
+                            "name": "Docs",
+                            "url": "https://docs.example/mcp",
+                            "headers": {"Authorization": "${MCP_}"},
+                        }
+                    ]
+                }
+            ),
+        )
