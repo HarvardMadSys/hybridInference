@@ -56,7 +56,7 @@ def _errors(caplog) -> list[str]:
         _model("invalid-middle", provider="Not A Slug!"),
         _model("invalid-middle", include_usage_in_stream="false"),
         _model("invalid-middle", embeddings_path="/v1/../embeddings"),
-        {**_model("invalid-middle"), "router": "nimbus"},
+        {**_model("invalid-middle"), "router": "skylark"},
     ],
     ids=["provider label", "capability flag", "embeddings path", "router"],
 )

@@ -204,7 +204,7 @@ _REFUSED = {
         "pricing_source and pricing_schedule cannot be combined",
     ),
     "unknown router": (
-        {"models": [_model(router="nimbus")]},
+        {"models": [_model(router="skylark")]},
         "router names no routing strategy",
     ),
     "invalid router params": (
