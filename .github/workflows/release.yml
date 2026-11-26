@@ -32,12 +32,9 @@ concurrency:
 jobs:
   release:
     name: Release main
-    # Self-hosted rather than a GitHub-hosted runner: hosted jobs are refused
-    # outright when the account's Actions billing lapses or hits its spending
-    # limit, which once stalled this pipeline silently (run 31068821298 left
-    # main 29 commits behind dev). The `trusted-automation` label already
-    # provides the `gh` CLI the release step needs.
-    runs-on: [self-hosted, Linux, trusted-automation]
+    # GitHub-hosted: the self-hosted runners were retired after the
+    # 2026-11-22 incident. A release only tags a commit; it deploys nothing.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
