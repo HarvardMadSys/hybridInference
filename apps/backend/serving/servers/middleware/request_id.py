@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime as dt
 import re
 import secrets
+import time
 from typing import TYPE_CHECKING
 
 from serving.pricing import get_pricing_snapshot
@@ -65,6 +66,9 @@ class RequestIdMiddleware:
             client_user_agent=user_agent or None,
             pricing_time=dt.datetime.now(dt.UTC),
             pricing_snapshot=get_pricing_snapshot(),
+            # When the request reached this gateway, for a route that tells its
+            # engine's admission process how long the request has been held.
+            **{req_ctx.REQUEST_RECEIVED: time.monotonic()},
         )
 
         req_id_bytes = req_id.encode("latin-1")

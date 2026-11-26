@@ -27,6 +27,7 @@ from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_t
 
 from .base import BaseAdapter, UsageInfo
 from .dispatch_watch import report_first_token, report_queued
+from .engine_admission import admission_headers
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -892,6 +893,11 @@ class OpenAICompatAdapter(BaseAdapter):
         extra_headers = getattr(self.config, "extra_headers", None)
         if isinstance(extra_headers, dict):
             headers.update(extra_headers)
+
+        # What the admission process answering at this route is told about the
+        # request: last, so a configured header cannot stand in for it.
+        if self.config.admission == "nimbus":
+            headers.update(admission_headers())
 
         return headers
 

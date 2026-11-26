@@ -1,7 +1,7 @@
 # 接入 Nimbus：把本地路由交给引擎旁的准入进程
 
 - 日期：2026-11-26
-- 状态：草案，待评审。第 1 阶段（认出退回）和本文在同一个分支上实现，没有模型选用新策略时不改变任何运行行为；其余阶段尚未实施。
+- 状态：草案，待评审。第 1 阶段（认出退回）和第 2 阶段（路由策略和流式 chat）已实现，没有模型选用新策略时不改变任何运行行为；第 3、4 阶段尚未实施。
 - 前序设计：[Greedy Router 设计](2026-11-23-greedy-router-design.zh.md)。那份设计的 3.4 节说 Nimbus 的接入是另一份设计，就是本文。
 - 顺序：fixed → greedy → Nimbus。`FixedRouter` 和 `greedy` 都保留，本文只新增一种按模型选用的路由策略。
 - 代码参照：hybridInference `2027-osdi-nimbus` @ `3921ac7d`；Nimbus `murphy/llm-nimbus-full` @ `f95fd30`（准入模式在这个分支上，还没有合并）。
@@ -114,6 +114,7 @@ Nimbus 按引擎的 decode step 做决定，需要精确的 token 数、引擎�
   - `declined_at_arrival`：即使引擎空着、单独为它 prefill，也赶不上它的首 token 预算。
   - `declined_at_latest_start`：等到本地最晚开始时刻仍然排不上，并且策略不能证明留下它是安全的。
   这三种都是“本地确实接不了”。云端又接不住时，请求以 5.1 节的 503 结束。
+- 没有策略描述的派发也传 `inf`：调用方把请求 pin 到了这条路由（这类请求绕过按模型的策略，由共享的 `FixedRouter` 直接执行），或者调用方自己定了端点。这时退回之后没有人接手，Nimbus 按自己 profile 里的 provider 线算 cutoff 只会白白退回。这样的请求被退回时同样以 503 结束：策略里遇到的由策略转成 503，绕过策略的由入口转（第 3 阶段）。
 
 **`X-Nimbus-Elapsed-Ms`**：请求从网关收到，到网关把它发给 Nimbus，已经过去多少毫秒。Nimbus 把自己的“收到时刻”往前拨这么多。
 
@@ -167,6 +168,8 @@ Nimbus 按引擎的 decode step 做决定，需要精确的 token 数、引擎�
   - 选了这个策略的模型，至少有一条带标记的本地路由和一条云端路由。
   - 带标记的路由指向的地址，没有登记引擎队列，也没有不带标记的路由指向同一个地址。
   - 带标记的路由只声明文本输入。
+  - 带标记的路由按网关的分类是自建的（`deployment_type: self_hosted`，或主机名被认作本地）。否则它的请求会先在网关的出站限流里排队，Nimbus 看到的到达时间就错了。
+  - 模型的其余路由都是云端路由。一条不带标记的自建路由前面既没有 Nimbus 也没有网关的引擎队列，这个策略不给它发请求，加载时直接拒绝。
 
 **部署约束，网关查不了：** 网关的配置里只有 Nimbus 的地址，看不到它背后引擎的地址，所以“没有路由绕过 Nimbus 直连引擎”没法自动检查。它写进部署文档；能做到时让引擎只监听本机地址，从网络上堵住。
 
@@ -174,7 +177,7 @@ Nimbus 按引擎的 decode step 做决定，需要精确的 token 数、引擎�
 
 - 一台引擎一个 Nimbus 进程，一条本地路由。
 - 一个请求只发给一个 Nimbus。被它退回之后不再试另一个：退回可能发生在 cutoff，这时剩下的时间只够云端。
-- 发给哪一个，沿用 `FixedRouter` 现有的选择（权重、会话亲和）。会话亲和在这里更重要：同一个会话的后续请求回到同一台引擎，才能用上它的 KV 缓存。
+- 发给哪一个，沿用 `FixedRouter` 现有的选择（权重、会话亲和）。实现上是本地这一步关掉池内的 fallback（`allow_fallback=False`）：池选出一条路由、试一次，退回或失败都直接交给云端这一步。会话亲和在这里更重要：同一个会话的后续请求回到同一台引擎，才能用上它的 KV 缓存。
 - 网关看不到哪个 Nimbus 更空。先按现有规则选；要不要让 Nimbus 暴露负载供网关选路，是第 9 节的问题。
 
 ### 5.6 非流式请求
@@ -221,7 +224,7 @@ Nimbus 靠连接断开来取消请求。网关在客户端断开时必须关掉�
 
 - 退回记一条 `route_offload`：`router` 是这个策略的名字，`reason` 是 Nimbus 给的 `decision`（`declined_at_arrival`、`declined_at_cutoff`、`declined_at_latest_start`、`declined_over_context`），外加 `ttft_left_ms` 和 Nimbus 的 `request_id`。
 - 请求日志的 `_routing["offload"]` 写同一个 `reason`。
-- 管理台的 Spillover 列把这些请求算进去，按 `reason` 可以分开看。
+- 管理台的 Offloaded 表已经按 `reason` 计数，不认识的 `reason` 归进 Other 一列，所以这些请求不改前端就会被算进去；要给它们单独的列是前端的改动，没有做。
 - 两边的记录靠 `X-Nimbus-Request-Id` 对上（5.2 节）：Nimbus 内部用自己的计数器，把网关的 id 另记一栏。
 - `api_logs.ttft_ms` 仍按网关的口径：从网关收到请求算起。
 

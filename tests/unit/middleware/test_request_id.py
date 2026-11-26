@@ -156,6 +156,9 @@ _PINNED_REQUEST_SCOPED_KEYS = frozenset(
         "model",
         "pricing_time",
         "pricing_snapshot",
+        # When the gateway received the request. Seeded for every HTTP request;
+        # a scope that seeds nothing must not report the last one's arrival.
+        "request_received",
         # Written durably by the Anthropic Messages surface, which has no
         # fallback to publish around and hands its upstream to a background
         # reader task. A leftover value would rank the next request -- a
@@ -214,6 +217,10 @@ async def test_every_request_scoped_key_is_cleared() -> None:
             assert isinstance(pricing_time, dt.datetime)
             assert pricing_time.tzinfo is not None
             assert pricing_time.utcoffset() == dt.timedelta(0)
+            continue
+        if key == req_ctx.REQUEST_RECEIVED:
+            # Seeded like the pricing time: this request's own, never the stale one.
+            assert isinstance(captured.get(key), float)
             continue
         assert captured.get(key) is None, f"{key} leaked from the previous request"
 
