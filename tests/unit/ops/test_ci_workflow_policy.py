@@ -29,34 +29,20 @@ def _triggers(workflow: dict) -> dict:
         "deploy-staging.yml",
         "deploy-staging-digest.yml",
         "rag-index.yml",
+        # Superseded by the dispatch-only publish-images.yml.
+        "build-candidates.yml",
     ],
 )
 def test_retired_workflows_are_absent(workflow_name: str) -> None:
     assert not (WORKFLOWS / workflow_name).exists()
 
 
-def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
-    steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
-    tags = next(
-        step["with"]["tags"] for step in steps if step.get("name") == "Build and push backend"
-    )
-    summary = next(step["run"] for step in steps if step.get("name") == "Candidate summary")
-
-    assert "manual-${{ github.sha }}" in tags
-    assert "dev-" not in tags
-    assert "Diagnostic only: upstream.lock never consumes manual-* tags" in summary
-    assert "automatic dev CI multi-arch candidate" in summary
-    assert "Deploy Staging by Digest" not in summary
-
-
 def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     """A path filter here withholds the run itself, not just the jobs.
 
-    Pushes carried a docs-only `paths-ignore` until #1283 made every green dev
-    SHA publish a backend candidate for the distribution repo's bump bot. A
-    filtered push creates no workflow run at all, so nothing downstream can
-    rescue it — not a job-level condition, and not the staging deploy that
-    hangs off this workflow's completion. Cheapness is the per-job change
+    Publish Images refuses a commit without a successful CI push run on dev,
+    and a filtered push creates no workflow run at all, so a docs-only commit
+    at dev's HEAD could never be published. Cheapness is the per-job change
     classification's job, which is asserted separately.
     """
     triggers = _triggers(_workflow("ci.yml"))
@@ -68,37 +54,56 @@ def test_no_trigger_is_path_filtered_so_every_sha_gets_a_run() -> None:
     assert triggers["schedule"]
 
 
-@pytest.mark.parametrize(
-    "job_name",
-    [
-        "publish-backend-precheck",
-        "publish-backend-arm64",
-        "publish-backend-amd64",
-        "publish-backend",
-        "publish-console-precheck",
-        "publish-console-arm64",
-        "publish-console-amd64",
-        "publish-console",
-    ],
-)
-def test_publish_gate_survives_skipped_ancestors(job_name: str) -> None:
-    """Publishing must depend on ci-gate's verdict, not on ancestor luck.
+PUBLISH = "publish-images.yml"
+PUBLISH_JOBS = [
+    "publish-backend-precheck",
+    "publish-backend-arm64",
+    "publish-backend-amd64",
+    "publish-backend",
+    "publish-console-precheck",
+    "publish-console-arm64",
+    "publish-console-amd64",
+    "publish-console",
+]
 
-    A job `if` without a status function gets an implicit success() that
-    evaluates the whole transitive needs chain; docker-build — an ancestor
-    through ci-gate — is legitimately skipped on many pushes, and that
-    implicit check silently skipped publishing (observed on dev@04b4f305:
-    gate green, publish skipped). !cancelled() suppresses the implicit
-    check so the explicit conditions are the only gate — on every job of
-    the publish pipeline, arch halves and stitch alike.
+
+def test_images_are_published_only_by_hand() -> None:
+    """No push, schedule or other workflow's completion publishes an image.
+
+    Automatic publishing was retired after the 2026-11-22 incident: a person
+    dispatches Publish Images, and deploys what it printed by hand.
     """
-    job = _workflow("ci.yml")["jobs"][job_name]
+    assert set(_triggers(_workflow(PUBLISH))) == {"workflow_dispatch"}
+    for path in _workflow_files():
+        if path.name == PUBLISH:
+            continue
+        workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for name, job in workflow["jobs"].items():
+            permissions = job.get("permissions", workflow.get("permissions"))
+            assert not (isinstance(permissions, dict) and permissions.get("packages") == "write"), (
+                path.name,
+                name,
+            )
+            for step in job.get("steps") or []:
+                assert "build-push-action" not in str(step.get("uses", "")) or (
+                    (step.get("with") or {}).get("push") in (None, False)
+                    and "push=true" not in str((step.get("with") or {}).get("outputs", ""))
+                ), (path.name, name)
+                assert "imagetools create" not in str(step.get("run", "")), (path.name, name)
 
-    assert "ci-gate" in job["needs"]
-    assert "!cancelled()" in job["if"]
-    assert "github.event_name == 'push'" in job["if"]
-    assert "github.ref == 'refs/heads/dev'" in job["if"]
-    assert "needs.ci-gate.result == 'success'" in job["if"]
+
+def test_publishing_requires_dev_and_green_ci_for_the_commit() -> None:
+    """The verify job is the gate, and every publish job waits on it."""
+    jobs = _workflow(PUBLISH)["jobs"]
+    check = next(step for step in jobs["verify"]["steps"] if step.get("id") == "check")["run"]
+
+    assert '"${REF}" != "refs/heads/dev"' in check
+    assert "actions/workflows/ci.yml/runs?branch=dev&event=push&status=success" in check
+    assert "head_sha=${GITHUB_SHA}" in check
+    assert "|| true" not in check
+    assert jobs["verify"]["permissions"] == {"contents": "read", "actions": "read"}
+    for name in PUBLISH_JOBS:
+        assert "verify" in jobs[name]["needs"], name
 
 
 @pytest.mark.parametrize("image", ["backend", "console"])
@@ -109,10 +114,10 @@ def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     suppressing the implicit success(), nothing else stops it from tagging a
     half-published candidate whose other half failed.
     """
-    job = _workflow("ci.yml")["jobs"][f"publish-{image}"]
+    job = _workflow(PUBLISH)["jobs"][f"publish-{image}"]
 
     assert set(job["needs"]) == {
-        "ci-gate",
+        "verify",
         f"publish-{image}-precheck",
         f"publish-{image}-arm64",
         f"publish-{image}-amd64",
@@ -132,7 +137,7 @@ def test_publish_existence_verdict_has_a_single_source(image: str) -> None:
     Every downstream job must therefore read the precheck's output, and no
     publish job other than the precheck may query the Packages API itself.
     """
-    jobs = _workflow("ci.yml")["jobs"]
+    jobs = _workflow(PUBLISH)["jobs"]
     verdict = f"needs.publish-{image}-precheck.outputs.existing"
 
     for name in (f"publish-{image}-arm64", f"publish-{image}-amd64"):
@@ -156,7 +161,7 @@ def test_publish_precheck_discards_packages_api_error_payload(image: str) -> Non
     when ``|| true`` erased the command failure, and skipped both native builds.
     ``pipefail`` plus an explicit failure branch must clear that payload.
     """
-    job = _workflow("ci.yml")["jobs"][f"publish-{image}-precheck"]
+    job = _workflow(PUBLISH)["jobs"][f"publish-{image}-precheck"]
     lookup = next(step for step in job["steps"] if step.get("id") == "existing")["run"]
 
     assert "set -euo pipefail" in lookup
@@ -168,7 +173,7 @@ def test_publish_precheck_discards_packages_api_error_payload(image: str) -> Non
 
 def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
     """The canonical console is the white-label artifact W7 promises."""
-    jobs = _workflow("ci.yml")["jobs"]
+    jobs = _workflow(PUBLISH)["jobs"]
 
     for arch in ("arm64", "amd64"):
         job = jobs[f"publish-console-{arch}"]
@@ -180,7 +185,7 @@ def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
         assert "hybridinference-console" in build["outputs"]
         assert "NEXT_PUBLIC_API_BASE=" in args
         assert "NEXT_PUBLIC_BUILD_SHA=${{ github.sha }}" in args
-        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ github.event.head_commit.timestamp }}" in args
+        assert "NEXT_PUBLIC_BUILD_TIMESTAMP=${{ needs.verify.outputs.timestamp }}" in args
         assert "NEXT_PUBLIC_APP_NAME" not in args
         assert "NEXT_PUBLIC_TEAM_JSON" not in args
         assert "NEXT_PUBLIC_SPONSORS_JSON" not in args
@@ -190,7 +195,7 @@ def test_console_candidate_build_has_no_distribution_identity_inputs() -> None:
 
 def test_both_console_platforms_scan_the_published_payload_for_identity() -> None:
     """Build arguments are policy; inspect the actual bytes before stitching."""
-    jobs = _workflow("ci.yml")["jobs"]
+    jobs = _workflow(PUBLISH)["jobs"]
 
     for arch in ("arm64", "amd64"):
         job = jobs[f"publish-console-{arch}"]
@@ -214,17 +219,17 @@ def test_publish_builds_are_native_never_emulated() -> None:
 
     qemu-user cannot run uv's static binary: the emulated amd64 half of a
     combined multi-platform build segfaulted `uv sync` instantly (observed
-    on dev@2e4edfa4, exit code 139). Scoped to ci.yml — the dispatch-only
-    Build Candidate Images tool takes an operator-chosen platform input and
-    is that operator's judgment call.
+    on dev@2e4edfa4, exit code 139).
     """
-    jobs = _workflow("ci.yml")["jobs"]
-
-    for name, job in jobs.items():
+    for workflow, name, job, _ in _jobs():
         for step in job.get("steps") or []:
-            assert "setup-qemu-action" not in str(step.get("uses", "")), name
+            assert "setup-qemu-action" not in str(step.get("uses", "")), (workflow, name)
             platforms = str((step.get("with") or {}).get("platforms", ""))
-            assert "," not in platforms, f"{name}: emulated multi-platform build"
+            assert "," not in platforms, f"{workflow}:{name}: emulated multi-platform build"
+    jobs = _workflow(PUBLISH)["jobs"]
+    for image in ("backend", "console"):
+        assert jobs[f"publish-{image}-arm64"]["runs-on"] == "ubuntu-24.04-arm"
+        assert jobs[f"publish-{image}-amd64"]["runs-on"] == "ubuntu-latest"
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
@@ -396,12 +401,7 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert changes["outputs"]["tutorial_e2e"] == "${{ steps.validate.outputs.tutorial_e2e }}"
     assert "needs.changes.outputs.tutorial_e2e == 'true'" in job["if"]
     assert "github.event_name != 'pull_request'" not in job["if"]
-    # PR events (untrusted after the repo is public) run GitHub-hosted; every
-    # trusted event keeps the self-hosted image-verify pool.
-    assert job["runs-on"] == (
-        "${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm'"
-        ' || fromJSON(\'["self-hosted", "Linux", "ARM64", "image-verify-arm64"]\') }}'
-    )
+    assert job["runs-on"] == "ubuntu-24.04-arm"
 
     expected_names = {
         "EXAMPLE_BACKEND_CONTAINER_NAME",
@@ -569,8 +569,7 @@ def _workflow_files() -> list[Path]:
 def test_every_workflow_states_its_token_permissions(path: Path) -> None:
     """A workflow without a ``permissions`` block gets the repository default.
 
-    That default can be read-write on every scope, and these jobs run on
-    self-hosted runners a push reaches.
+    That default can be read-write on every scope.
     """
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -614,11 +613,11 @@ def _jobs() -> list[tuple[str, str, dict, dict]]:
 
 
 def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
-    """The runner account's ``~/.docker/config.json`` is shared by every job on its host.
+    """A ``packages: write`` login never lands in the runner account's ``~/.docker``.
 
-    Push CI on unreviewed branches runs on the same self-hosted hosts as the
-    publish jobs, so a ``packages: write`` login written there could be read
-    and reused by other code for as long as the publishing job ran.
+    Hosted runners are discarded with the job, so this is defence in depth: on
+    a persistent runner that file is shared by every job on the host, and the
+    login could be read and reused by other code while the publishing job ran.
     """
     isolate = 'echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"'
     remove = 'rm -f "${RUNNER_TEMP}/docker-config/config.json"'
@@ -641,16 +640,16 @@ def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
                     # the step ends.
                     assert re.search(r'DOCKER_CONFIG="\$\{\w+\}" docker login', line), line
                     assert "trap 'rm -rf" in run, (workflow, name)
-    # Six publish jobs, the diagnostic build and the tutorial's restore drill.
-    assert logins >= 8
+    # Six publish jobs and the tutorial's restore drill.
+    assert logins >= 7
 
 
 def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
     """actions/checkout writes its token into .git/config unless told not to.
 
     Where the token has a packages scope, that is a registry credential left in
-    a persistent runner's workspace for the length of the job; nothing in these
-    jobs fetches again after the checkout.
+    the workspace for the length of the job; nothing in these jobs fetches
+    again after the checkout.
     """
     checkouts = 0
     for workflow, name, job, defaults in _jobs():
@@ -664,7 +663,8 @@ def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
                     workflow,
                     name,
                 )
-    assert checkouts >= 6
+    # Four publish builds and Tutorial E2E.
+    assert checkouts >= 5
 
 
 def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
@@ -689,48 +689,16 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
     assert syncing >= 3
 
 
-# The self-hosted runners run under accounts that have no sudo, one account per
-# repository, side by side on the same machines. So a step that a self-hosted
-# runner can take must not call sudo, and must not use a fixed name in the
-# machines' shared /tmp, where a file another account left behind cannot be
-# replaced (fs.protected_regular).
-SUDO = re.compile(r"(?:^|[\s;&|(!`{])sudo(?=\s|$)")
-SHARED_TMP = re.compile(r"(?:^|[\s=:'\"(])/tmp/")
-HOSTED_ONLY = "runner.environment == 'github-hosted'"
+def test_no_workflow_names_a_self_hosted_runner() -> None:
+    """The self-hosted runners were retired after the 2026-11-22 incident.
 
-
-def _script(step: dict) -> str:
-    """A step's shell without its comment lines, which may name sudo freely."""
-    lines = str(step.get("run", "")).splitlines()
-    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
-
-
-def _self_hosted_jobs() -> list[tuple[str, str, dict]]:
-    """Jobs whose ``runs-on`` can name a self-hosted runner, for any event."""
-    return [
-        (workflow, name, job)
-        for workflow, name, job, _ in _jobs()
-        if "self-hosted" in str(job.get("runs-on", ""))
-    ]
-
-
-def test_no_step_a_self_hosted_runner_can_run_calls_sudo() -> None:
-    """Their accounts have no sudo, so such a step fails on every trusted event.
-
-    A step that only a hosted runner may take says so in its own condition, as
-    a conjunct the whole condition depends on.
+    A job that named one would queue until GitHub cancelled it a day later,
+    which is how every dev push run since 2026-11-20 ended.
     """
-    jobs = _self_hosted_jobs()
-    for workflow, name, job in jobs:
-        for step in job.get("steps") or []:
-            if not SUDO.search(_script(step)):
-                continue
-            condition = str(step.get("if", "")).removeprefix("${{").removesuffix("}}")
-            conjuncts = [part.strip() for part in condition.split("&&")]
-            assert HOSTED_ONLY in conjuncts, (workflow, name, step.get("name"))
-    # The CI jobs a push reaches, the publish jobs, the diagnostic build and
-    # the release: the check above looked where it matters.
-    assert len(jobs) >= 15
+    for workflow, name, job, _ in _jobs():
+        runs_on = str(job.get("runs-on", ""))
+        assert runs_on in ("ubuntu-latest", "ubuntu-24.04-arm"), (workflow, name, runs_on)
+    assert not (ROOT / ".github" / "actionlint.yaml").exists()
 
 
 def test_gitleaks_installs_into_runner_temp_and_onto_the_path(tmp_path: Path) -> None:
@@ -782,15 +750,3 @@ sudo() { printf '%s\n' "sudo $*" >> "${CALLS}"; return 1; }
     recorded = calls.read_text().splitlines()
     assert [line for line in recorded if line.startswith("tar ")]
     assert not [line for line in recorded if line.startswith("sudo")]
-
-
-def test_no_self_hosted_step_uses_a_fixed_name_in_the_shared_tmp() -> None:
-    """Every runner account on a machine shares its sticky /tmp.
-
-    A file another account left at a fixed name there cannot be replaced, so the
-    step fails on whichever account comes second. RUNNER_TEMP belongs to one
-    runner process, and mktemp picks a fresh name.
-    """
-    for workflow, name, job in _self_hosted_jobs():
-        for step in job.get("steps") or []:
-            assert not SHARED_TMP.search(_script(step)), (workflow, name, step.get("name"))

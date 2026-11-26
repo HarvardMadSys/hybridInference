@@ -341,6 +341,11 @@ make restore-check BACKUP=/private/path/gateway.dump
 Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the
 distribution's own `smoke.py` when it ships one.
 
+Nothing deploys automatically. To deploy a `dev` commit as published images,
+run the `Publish Images` GitHub Actions workflow from `dev` once CI has passed
+for that commit; its summary prints the `make deploy` command with both
+digests. Run that command on the host yourself.
+
 A deploy records the running artifacts, pulls the pinned pair and migrates with
 the new backend image. With `LEGACY_MANIFEST` set it then imports the previous
 release's file-based configuration with that image; see

@@ -2407,6 +2407,9 @@ msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据
 msgid "Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings. Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in `apps/backend/serving/observability/`."
 msgstr "在 Admin Settings 中通过 `ALERT_RULES` JSON 文档设置规则和阈值。留空时使用内置阈值；修改会标记为 Restart required。规则类型及求值逻辑位于 `apps/backend/serving/observability/`。"
 
+msgid "Nothing deploys automatically. To deploy a `dev` commit as published images, run the `Publish Images` GitHub Actions workflow from `dev` once CI has passed for that commit; its summary prints the `make deploy` command with both digests. Run that command on the host yourself."
+msgstr "不会自动部署任何东西。要把某个 `dev` commit 作为已发布镜像部署，请在该 commit 的 CI 通过后，从 `dev` 运行 GitHub Actions 中的 `Publish Images` 工作流；它的摘要会打印带有两个摘要值的 `make deploy` 命令。请自己在主机上运行这条命令。"
+
 msgid "A deploy records the running artifacts, pulls the pinned pair and migrates with the new backend image. With `LEGACY_MANIFEST` set it then imports the previous release's file-based configuration with that image; see [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database). Only then does it switch the services and run the acceptance smoke. Any failure after the switch, an interrupted command included, restores the previous images and runs the acceptance on them again; the command then exits with the deploy's own error and whether the restore passed. A rollback starts the recorded previous images without running their migrations."
 msgstr "部署会记录正在运行的镜像，拉取固定的一对镜像，并用新的后端镜像执行迁移。设置了 `LEGACY_MANIFEST` 时，它接着用该镜像导入上一版本基于文件的配置；见[数据库中的模型和路由文档](configuration.md#model-and-routing-documents-in-the-database)。之后才切换服务并执行冒烟验收。切换之后的任何失败（包括命令被中断）都会恢复上一组镜像，并对它们重新执行验收；命令随后以部署本身的错误退出，并说明恢复是否通过。回退会启动记录的上一组镜像，不运行它们的迁移。"
 

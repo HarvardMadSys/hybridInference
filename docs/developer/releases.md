@@ -22,9 +22,11 @@ change notes.
 | A full commit SHA | The exact source revision; include local modifications separately |
 | An image digest, `image@sha256:…` | The exact container artifact, which may differ from the host checkout |
 
-CI publishes backend and console candidates with `dev-<full-sha>` tags and
-short-SHA aliases. A candidate tag identifies development output; it does not
-mean a date release exists for that commit. The `0.1.0` values in
+Backend and console candidates are published by hand: a maintainer runs the
+`Publish Images` workflow from `dev`, which refuses a commit without a
+successful CI run and tags the images `dev-<full-sha>` with short-SHA aliases.
+Most `dev` commits therefore have no image. A candidate tag identifies
+development output; it does not mean a date release exists for that commit. The `0.1.0` values in
 `pyproject.toml` and `apps/frontend/package.json` are package metadata and do
 not identify a particular deployed build.
 
