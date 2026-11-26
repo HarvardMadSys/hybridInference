@@ -82,6 +82,7 @@ logger = get_logger(__name__)
 
 __all__ = [
     "OFFLOAD_UNSUPPORTED_LOCAL",
+    "AdmissionSurfacePlan",
     "NimbusRouter",
     "NimbusRoutingError",
     "cloud_ttft_ms",
@@ -172,6 +173,39 @@ class _Plan:
     unsupported: str | None = None
     capped: bool = False
     too_long: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True, slots=True)
+class AdmissionSurfacePlan:
+    """Where a request goes, for a surface that dispatches its own adapter.
+
+    ``/v1/messages`` forwards an Anthropic body the router has no method for,
+    so it picks the adapter itself; this is what
+    :meth:`NimbusRouter.surface_plan` tells it, by the router's own rules.
+
+    Attributes:
+        local: The declared endpoints the request may be sent to first, empty
+            when it is not sent to an admission process at all.
+        cloud: The endpoints it may go to instead.
+        terms: What the process is told about the request.
+        unsupported: What in the request the process's route cannot serve as
+            asked, or None.
+        capped: Whether the cloud's input limit left the request no cloud route.
+        too_long: The routes left out because their configured context window
+            cannot fit the prompt.
+    """
+
+    local: frozenset[str]
+    cloud: frozenset[str]
+    terms: AdmissionTerms
+    unsupported: str | None = None
+    capped: bool = False
+    too_long: frozenset[str] = frozenset()
+
+    @property
+    def offload(self) -> str:
+        """Return ``_routing["offload"]`` for a request that is not sent to the process."""
+        return OFFLOAD_UNSUPPORTED_LOCAL if self.unsupported is not None else OFFLOAD_LAST_RESORT
 
 
 class NimbusRouter:
@@ -420,7 +454,6 @@ class NimbusRouter:
         params: dict[str, Any],
     ) -> _Plan:
         """Decide one request's steps and what the admission process is told."""
-        fixed, _local_pool, _cloud_pool = self._require_attached()
         prompt_tokens = estimate_prefill_tokens(
             messages,
             tools=params.get("tools"),
@@ -428,23 +461,12 @@ class NimbusRouter:
         )
         imposed = routing_options.endpoint_scope if routing_options is not None else None
         base = routing_options if routing_options is not None else RoutingRequestOptions()
-        unsupported = unsupported_locally(params)
-        local: frozenset[str] = frozenset()
-        too_long_local: frozenset[str] = frozenset()
-        if unsupported is None:
-            in_range = GreedyRouter._in_range(_local_pool, imposed, model_id)
-            if in_range and _asks_for_tools(params):
-                reads_tools = self._reading_tools(in_range)
-                if not reads_tools:
-                    unsupported = "tools"
-                in_range = reads_tools
-            local, too_long_local = self._fitting(model_id, in_range, prompt_tokens)
-        cloud, too_long_cloud, capped = self._cloud_range(model_id, imposed, prompt_tokens)
-        takes = bool(cloud) and GreedyRouter._cloud_takes(fixed, model_id, cloud, routing_options)
-        terms = AdmissionTerms(
-            remote_ttft_ms=(
-                cloud_ttft_ms(self._params.cloud_ttft, prompt_tokens) if takes else math.inf
-            ),
+        sides = self.surface_plan(
+            model_id,
+            prompt_tokens,
+            asks=params,
+            imposed=imposed,
+            required_modalities=base.required_modalities,
             session_id=params.get("session_id"),
             request_id=params.get("request_id"),
         )
@@ -454,8 +476,68 @@ class NimbusRouter:
             prompt_tokens=prompt_tokens,
             # One process is asked, once: it answers for its engine, and a second
             # would be asked later with less of the budget left.
-            local=replace(base, endpoint_scope=local, allow_fallback=False) if local else None,
-            terms=terms,
+            local=(
+                replace(base, endpoint_scope=sides.local, allow_fallback=False)
+                if sides.local
+                else None
+            ),
+            terms=sides.terms,
+            unsupported=sides.unsupported,
+            capped=sides.capped,
+            too_long=sides.too_long,
+        )
+
+    def surface_plan(
+        self,
+        model_id: str,
+        prompt_tokens: int,
+        *,
+        asks: Mapping[str, Any] | None = None,
+        imposed: frozenset[str] | None = None,
+        required_modalities: frozenset[str] = frozenset(),
+        session_id: str | None = None,
+        request_id: str | None = None,
+    ) -> AdmissionSurfacePlan:
+        """Plan a request for a surface that dispatches its own adapter.
+
+        The ranges, the check of what the process's route cannot serve and the
+        terms of this router's own requests, so a surface that cannot hand this
+        router its request still follows the same rule. ``asks`` is what the
+        request asks in the chat parameters' terms (``tools``, ``tool_choice``,
+        ``parallel_tool_calls``, ``response_format``), ``imposed`` the caller's
+        range, and ``required_modalities`` the media it carries, which a cloud
+        route must accept for the process to be told a cloud time at all.
+        """
+        fixed, local_pool, _cloud_pool = self._require_attached()
+        asks = asks or {}
+        unsupported = unsupported_locally(asks)
+        local: frozenset[str] = frozenset()
+        too_long_local: frozenset[str] = frozenset()
+        if unsupported is None:
+            in_range = GreedyRouter._in_range(local_pool, imposed, model_id)
+            if in_range and _asks_for_tools(asks):
+                reads_tools = self._reading_tools(in_range)
+                if not reads_tools:
+                    unsupported = "tools"
+                in_range = reads_tools
+            local, too_long_local = self._fitting(model_id, in_range, prompt_tokens)
+        cloud, too_long_cloud, capped = self._cloud_range(model_id, imposed, prompt_tokens)
+        media = (
+            RoutingRequestOptions(required_modalities=required_modalities)
+            if required_modalities
+            else None
+        )
+        takes = bool(cloud) and GreedyRouter._cloud_takes(fixed, model_id, cloud, media)
+        return AdmissionSurfacePlan(
+            local=local,
+            cloud=cloud,
+            terms=AdmissionTerms(
+                remote_ttft_ms=(
+                    cloud_ttft_ms(self._params.cloud_ttft, prompt_tokens) if takes else math.inf
+                ),
+                session_id=session_id,
+                request_id=request_id,
+            ),
             unsupported=unsupported,
             capped=capped,
             too_long=too_long_local | too_long_cloud,

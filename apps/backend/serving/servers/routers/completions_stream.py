@@ -36,6 +36,7 @@ from routing.routers import AllCircuitsOpenError, TargetUnavailableError
 from routing.telemetry import is_uncharged_failure
 from serving.adapters.dispatch_watch import DispatchRecord
 from serving.adapters.key_pool import KeyPoolExhausted
+from serving.adapters.upstream_limiter import EngineDeclined
 from serving.exceptions import UpstreamModelQueued, scrub_error_for_user
 from serving.openai_chat_serializer import resolve_mode, sanitize_chunk
 from serving.servers.routers.routing_info import (
@@ -83,7 +84,9 @@ _SENTINEL: Any = object()
 
 def _extract_exception_status_code(exc: BaseException, default: int = 500) -> int:
     """Return the HTTP status carried by common upstream exception shapes."""
-    if isinstance(exc, (AllCircuitsOpenError, TargetUnavailableError)):
+    # A decline by an engine's admission process that nothing carried to the
+    # cloud: the request reached no engine, and the decline has no status.
+    if isinstance(exc, (AllCircuitsOpenError, TargetUnavailableError, EngineDeclined)):
         return 503
 
     # Key-pool exhaustion raised before anything was sent: a local

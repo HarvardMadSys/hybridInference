@@ -32,6 +32,7 @@ from fastapi.responses import JSONResponse
 from routing.endpoint_health import failure_may_lose_prefix_cache
 from routing.endpoints import endpoint_id_for_adapter
 from routing.greedy import GreedyRouter
+from routing.nimbus import NimbusRouter
 from routing.offload import OFFLOAD_LAST_RESORT
 from routing.prefill_load import (
     conversation_fingerprint,
@@ -45,6 +46,7 @@ from serving.adapters import dispatch_watch
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.adapters.anthropic_translator import OPENAI_USAGE_SINK_KEY, normalize_inline_system
 from serving.adapters.dispatch_watch import DispatchRecord
+from serving.adapters.engine_admission import admission_context
 from serving.adapters.key_pool import KeyPool, KeyPoolExhausted
 from serving.adapters.reasoning_effort import (
     ReasoningEffortRefused,
@@ -52,6 +54,7 @@ from serving.adapters.reasoning_effort import (
     translate_effort,
 )
 from serving.adapters.upstream_limiter import (
+    EngineDeclined,
     UpstreamQueueWaitExpired,
     UpstreamSaturated,
     dispatch_queue_context,
@@ -569,7 +572,7 @@ def _prompt_tokens(body: dict[str, Any], adapter) -> int:
 _SPILLED: Any = object()
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _GreedySpill:
     """A greedy model's request on its way to a local engine, and what happens if it stays full.
 
@@ -580,10 +583,17 @@ class _GreedySpill:
     routes as they are then (:class:`_SpillCarry`), and logged with ``offload``
     as the reason it left its engine. That is this surface's one fallback: the
     cloud failing is the client's answer.
+
+    A nimbus model's request is the same with the engine's line kept by its
+    admission process (``routing.nimbus``): no ``deadline``, and what ends the
+    wait is the process's decline (``EngineDeclined``), whose own reason
+    replaces ``offload`` then.
     """
 
-    deadline: float
+    deadline: float | None
     offload: str
+    #: The router whose rule this is, for the ``route_offload`` line.
+    router: str = "greedy"
 
 
 @dataclass(slots=True)
@@ -644,6 +654,42 @@ def _greedy_router(services: MessagesServices, canonical: str) -> GreedyRouter |
     return router if isinstance(router, GreedyRouter) else None
 
 
+def _nimbus_router(services: MessagesServices, canonical: str) -> NimbusRouter | None:
+    """Return the router of ``canonical`` when it is a nimbus one (``router: nimbus``)."""
+    registry = getattr(services.app_services, "model_router_registry", None)
+    if registry is None:
+        return None
+    try:
+        router = registry.get_router(canonical)
+    except Exception:  # pragma: no cover - a model the registry cannot build is not nimbus
+        return None
+    return router if isinstance(router, NimbusRouter) else None
+
+
+def _admission_asks(body: dict[str, Any]) -> dict[str, Any]:
+    """Return what a Messages body asks of an admission process's route, in chat terms.
+
+    The tools and the tool choice, as the translator sends them to an
+    OpenAI-backed route, which is what the nimbus router judges
+    (``routing.nimbus.unsupported_locally``): a call the request forces or
+    keeps single is one the process refuses. The structured-output schema is
+    not here: this surface sends an OpenAI-backed route none.
+    """
+    asks: dict[str, Any] = {}
+    if body.get("tools"):
+        asks["tools"] = body["tools"]
+    choice = body.get("tool_choice")
+    if isinstance(choice, dict):
+        kind = choice.get("type")
+        if kind in ("auto", "none"):
+            asks["tool_choice"] = kind
+        elif kind in ("any", "tool"):
+            asks["tool_choice"] = "required"
+        if choice.get("disable_parallel_tool_use") is True:
+            asks["parallel_tool_calls"] = False
+    return asks
+
+
 def _pick_on(
     router_exec,
     canonical: str,
@@ -682,8 +728,8 @@ def _pick_on(
     return adapter
 
 
-def _log_offload(model_id: str, reason: str, request_id: str) -> None:
-    """Log that a greedy model's request goes to the cloud, as the router logs its own."""
+def _log_offload(model_id: str, reason: str, request_id: str, *, router: str = "greedy") -> None:
+    """Log that a greedy or nimbus model's request goes to the cloud, as its router logs its own."""
     logger.info(
         "route_offload",
         extra={
@@ -691,7 +737,7 @@ def _log_offload(model_id: str, reason: str, request_id: str) -> None:
             "model_id": model_id,
             "reason": reason,
             "request_id": request_id,
-            "router": "greedy",
+            "router": router,
             "surface": "anthropic_messages",
         },
     )
@@ -704,6 +750,11 @@ async def _unless_spilled(dispatch: Awaitable[Any], spill: _GreedySpill | None) 
     except UpstreamQueueWaitExpired:
         if spill is None:
             raise
+        return _SPILLED
+    except EngineDeclined as declined:
+        if spill is None:
+            raise
+        spill.offload = declined.decision
         return _SPILLED
 
 
@@ -2587,10 +2638,81 @@ async def execute_messages(
             # No local engine could take it at all.
             offload_reason = OFFLOAD_LAST_RESORT
             _log_offload(canonical, OFFLOAD_LAST_RESORT, request_id)
-    # The deadline goes with the dispatch into its engine's queue.
-    queue_terms = (
-        dispatch_queue_context(deadline=greedy_spill.deadline) if greedy_spill is not None else {}
+    # A nimbus model's request goes to the admission process beside its engine
+    # first, and to the cloud when the process declines it (routing/nimbus.py).
+    # The same shape as the greedy model's above, with the process keeping the
+    # engine's line: this surface asks the router where, tells the process what
+    # the router would, and serves a declined request once more on the cloud.
+    admission_terms: dict[str, Any] = {}
+    nimbus = (
+        _nimbus_router(services, canonical)
+        if greedy is None
+        and auto_selection is None
+        and reroute_info is None
+        and constraints.adapter_requirement is None
+        else None
     )
+    if nimbus is not None:
+        plan_messages, plan_tools = _prefill_inputs(body)
+        modalities = _message_modalities(body)
+        asked = nimbus.surface_plan(
+            canonical,
+            estimate_prefill_tokens(plan_messages, tools=plan_tools),
+            asks=_admission_asks(body),
+            required_modalities=modalities,
+            session_id=declared_session.session_id if declared_session is not None else None,
+            request_id=request_id,
+        )
+        user_role = (user_ctx or {}).get("role", "free")
+        # A second pass goes to the cloud routes as they are now, never back to
+        # the process that declined it.
+        local = (
+            None
+            if carry is not None
+            else _pick_on(router_exec, canonical, user_role, asked.local, modalities=modalities)
+        )
+        chosen = local or _pick_on(
+            router_exec, canonical, user_role, asked.cloud, modalities=modalities
+        )
+        if chosen is None:
+            if asked.too_long and not (asked.local or asked.cloud):
+                return _greedy_refusal(
+                    400,
+                    f"Prompt is too long for every route of model '{model_id}'",
+                    "prompt_too_long",
+                )
+            return _greedy_refusal(
+                503,
+                f"No provider is currently available for model '{model_id}'",
+                "no_provider_available",
+            )
+        if chosen is not adapter:
+            try:
+                require_source_pricing(chosen.config)
+            except HTTPException as exc:
+                return _messages_error(
+                    exc.status_code, safe_detail_text(exc.detail, exc.status_code)
+                )
+            adapter = chosen
+        if local is not None:
+            # Its reason is the process's own, known when it declines.
+            greedy_spill = _GreedySpill(deadline=None, offload=OFFLOAD_LAST_RESORT, router="nimbus")
+            admission_terms = admission_context(asked.terms)
+        elif offload_reason is None:
+            # Never sent to the process: its route cannot serve the request as
+            # asked, or none could take it at all.
+            offload_reason = asked.offload
+            _log_offload(canonical, offload_reason, request_id, router="nimbus")
+    # The deadline goes with the dispatch into its engine's queue, and what an
+    # admission process is told with the dispatch to its route.
+    queue_terms = {
+        **(
+            dispatch_queue_context(deadline=greedy_spill.deadline)
+            if greedy_spill is not None and greedy_spill.deadline is not None
+            else {}
+        ),
+        **admission_terms,
+    }
 
     async def _serve_on_cloud(spill: _GreedySpill) -> MessagesOutcome:
         """Serve the request once more, as the client sent it, on the model's cloud routes.
@@ -2600,7 +2722,7 @@ async def execute_messages(
         second pass that fails before it reaches a cloud route logs nothing, so
         its failure is logged here: the stream may already have answered 200.
         """
-        _log_offload(canonical, spill.offload, request_id)
+        _log_offload(canonical, spill.offload, request_id, router=spill.router)
         handed = _SpillCarry(request_id=request_id, start=start, offload=spill.offload)
         outcome = await execute_messages(
             _copy_of(request_payload_for_log),
@@ -3051,9 +3173,11 @@ async def execute_messages(
                         if isinstance(item, Exception):
                             if (
                                 greedy_spill is not None
-                                and isinstance(item, UpstreamQueueWaitExpired)
+                                and isinstance(item, (UpstreamQueueWaitExpired, EngineDeclined))
                                 and not sent_frames
                             ):
+                                if isinstance(item, EngineDeclined):
+                                    greedy_spill.offload = item.decision
                                 spilled = True
                                 break
                             raise item
@@ -3150,12 +3274,18 @@ async def execute_messages(
                 # ``_record_dispatch_failure`` is still called for the log trail;
                 # ``endpoint_health`` filters this exception out of the breaker
                 # itself, since the endpoint was never asked.
+                #
+                # A decline by an engine's admission process that no second pass
+                # takes to the cloud is not a rate limit: nothing can serve the
+                # request, which this surface answers as overloaded.
+                declined = isinstance(exc, EngineDeclined)
                 stream_failed = True
-                stream_status_code = 429
-                stream_error_message = scrub_error_for_user(None, request_id, 429)
+                stream_status_code = 503 if declined else 429
+                stream_error_message = scrub_error_for_user(None, request_id, stream_status_code)
                 stream_error_operator = operator_safe_error(exc)
                 logger.warning(
-                    f"[{request_id}] Streaming dispatch failed: upstream concurrency saturated"
+                    f"[{request_id}] Streaming dispatch failed: "
+                    + ("its engine declined it" if declined else "upstream concurrency saturated")
                 )
                 _record_dispatch_failure(
                     dispatch_endpoint_id,
@@ -3166,7 +3296,7 @@ async def execute_messages(
                 err = {
                     "type": "error",
                     "error": {
-                        "type": "rate_limit_error",
+                        "type": "overloaded_error" if declined else "rate_limit_error",
                         "message": stream_error_message,
                     },
                 }
@@ -3425,7 +3555,11 @@ async def execute_messages(
         # up front and has no fallback chain to try instead. The retry-after is
         # one second, not a mute window: a slot frees the moment any in-flight
         # generation finishes.
-        error_message = scrub_error_for_user(None, request_id, 429)
+        #
+        # A decline by an engine's admission process that no second pass takes
+        # to the cloud is not a rate limit: nothing can serve the request.
+        saturated_status = 503 if isinstance(exc, EngineDeclined) else 429
+        error_message = scrub_error_for_user(None, request_id, saturated_status)
         logger.warning(f"[{request_id}] Adapter messages() failed: upstream concurrency saturated")
         _record_dispatch_failure(
             dispatch_endpoint_id,
@@ -3443,12 +3577,12 @@ async def execute_messages(
             messages_for_log=messages_for_log,
             request_payload_for_log=request_payload_for_log,
             start=start,
-            status_code=429,
+            status_code=saturated_status,
             error_message=error_message,
             operator_error=operator_safe_error(exc),
             completions_logger=completions_logger,
         )
-        return _messages_error(429, error_message, headers={"retry-after": "1"})
+        return _messages_error(saturated_status, error_message, headers={"retry-after": "1"})
     except TimeoutError as exc:
         # Upstream exceeded the (generous) completion timeout. Surface a 504
         # gateway-timeout rather than a generic 502 "Internal server error" so
