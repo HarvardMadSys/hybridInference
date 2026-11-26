@@ -179,6 +179,45 @@ class UpstreamQueueWaitExpired(UpstreamSaturated):
     """
 
 
+class EngineDeclined(UpstreamSaturated):
+    """The admission process beside a self-hosted engine declined the request.
+
+    Raised by the OpenAI-compatible adapter for a route that declares such a
+    process (``ModelConfig.admission``) when it answers with its decline
+    instead of a response: it judged that the engine cannot serve the request
+    in time, and sent the engine nothing. The sibling of
+    :class:`UpstreamQueueWaitExpired`, with the engine's line kept by that
+    process instead of by this gateway, and a subclass for the same reason:
+    the request reached no engine, so every ``UpstreamSaturated`` reader (the
+    breaker exemption, the attempt telemetry) must treat it that way. It is
+    raised once the route has answered, never by
+    :meth:`UpstreamConcurrencyLimiter.acquire`, so it does not pass through
+    the adapter's rotation to another key.
+
+    Like its base it carries no ``status`` / ``status_code`` / ``code``: the
+    409 the process answered with is its own protocol, not a verdict on the
+    request, and a caller that surfaces this error chooses the status.
+
+    Attributes:
+        decision: The process's reason, such as ``declined_at_cutoff``.
+        ttft_left_ms: What was left of the request's first-token budget when
+            it was declined, in milliseconds, or None when not reported.
+        engine_request_id: The process's own id for the request, or None.
+    """
+
+    def __init__(
+        self,
+        decision: str,
+        *,
+        ttft_left_ms: float | None = None,
+        engine_request_id: str | None = None,
+    ) -> None:
+        super().__init__(f"the engine's admission declined the request: {decision}")
+        self.decision = decision
+        self.ttft_left_ms = ttft_left_ms
+        self.engine_request_id = engine_request_id
+
+
 class EngineQueueConflict(ValueError):
     """An engine queue was registered with a limit another owner disagrees with.
 

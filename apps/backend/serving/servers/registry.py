@@ -26,7 +26,7 @@ from serving.adapters import (
     OpenAICompatAdapter,
     OpenRouterAdapter,
 )
-from serving.adapters.base import BaseAdapter, validate_deployment_type
+from serving.adapters.base import BaseAdapter, validate_admission, validate_deployment_type
 from serving.adapters.reasoning_effort import (
     EFFORT_MAP_FIELD,
     MAX_MAP_ENTRIES,
@@ -291,6 +291,9 @@ _MAX_TOKENS = 10_000_000
 _ROUTE_ONLY_FIELDS = {
     "deployment_type": "",
     "embeddings_path": "",
+    "admission": (
+        ": it states what answers at one address, the engine or an admission process beside it"
+    ),
     "include_usage_in_stream": (
         ": whether an upstream answers stream_options.include_usage is a fact about "
         "one endpoint, not about every route a model has"
@@ -476,6 +479,11 @@ def _check_route(model: dict[str, Any], route: dict[str, Any], where: str) -> No
     if "deployment_type" in route:
         try:
             validate_deployment_type(route["deployment_type"])
+        except ValueError as exc:
+            raise RegistryConfigError(f"{exc} ({where})") from None
+    if "admission" in route:
+        try:
+            validate_admission(route["admission"])
         except ValueError as exc:
             raise RegistryConfigError(f"{exc} ({where})") from None
     for flag in ("include_usage_in_stream", "null_cache_details_means_miss"):
@@ -1290,6 +1298,15 @@ def register_from_models_document(
                     ]
                 else:
                     adapter_cfg.pop("null_cache_details_means_miss", None)
+
+                # Which admission process answers at this endpoint in the
+                # engine's place. Route-level only, like the flag above: it
+                # states what one address serves, and inherited by a cloud
+                # fallback it would have that route's 409s read as declines.
+                if "admission" in r:
+                    adapter_cfg["admission"] = r["admission"]
+                else:
+                    adapter_cfg.pop("admission", None)
 
                 # Whether this upstream answers `stream_options.include_usage`
                 # with a final usage chunk. Route-level, because it is a fact
