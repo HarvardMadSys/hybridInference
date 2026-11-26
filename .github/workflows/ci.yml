@@ -1232,6 +1232,7 @@ jobs:
         env:
           PREVIOUS_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           GHCR_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           if [ -z "${PREVIOUS_SHA}" ] || [ -z "${PREVIOUS_SHA//0/}" ]; then
             echo "::notice title=Restore drill skipped::no previous commit to restore"
@@ -1244,21 +1245,32 @@ jobs:
           printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # The newest published candidate at or before the previous commit:
           # what a deployment would roll back to. Candidates are published by
-          # hand (publish-images.yml), so most commits have none; the window
-          # covers dev's first-parent history back across many of them (the
-          # checkout has the full history).
-          image=""
-          for sha in $(git rev-list --first-parent --max-count=200 "${PREVIOUS_SHA}"); do
-            candidate="ghcr.io/harvardmadsys/hybridinference-backend:dev-${sha}"
-            if DOCKER_CONFIG="${docker_cfg}" docker manifest inspect "${candidate}" >/dev/null 2>&1; then
-              image="${candidate}"
-              break
+          # hand (publish-images.yml), so most commits have none. Read the
+          # published dev-<sha> tags from the Packages API, newest versions
+          # first, and stop at the first page holding one of the previous
+          # commit's first-parent ancestors (the checkout has the full
+          # history); within that page the ancestor order decides.
+          ancestors="$(mktemp)"
+          git rev-list --first-parent "${PREVIOUS_SHA}" > "${ancestors}"
+          sha=""
+          page=1
+          while [ -z "${sha}" ]; do
+            if ! versions="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100&page=${page}")"; then
+              echo "::warning title=Restore drill skipped::could not list the published backend candidates"
+              exit 0
             fi
+            [ "$(jq 'length' <<< "${versions}")" -gt 0 ] || break
+            published="$(jq -r '.[].metadata.container.tags[]? | select(test("^dev-[0-9a-f]{40}$")) | ltrimstr("dev-")' <<< "${versions}")"
+            if [ -n "${published}" ]; then
+              sha="$(grep -F -x -f <(printf '%s\n' "${published}") "${ancestors}" | head -n 1 || true)"
+            fi
+            page=$((page + 1))
           done
-          if [ -z "${image}" ]; then
-            echo "::warning title=Restore drill skipped::no candidate published for ${PREVIOUS_SHA} or its 199 first-parent ancestors"
+          if [ -z "${sha}" ]; then
+            echo "::warning title=Restore drill skipped::no candidate published for ${PREVIOUS_SHA} or any of its first-parent ancestors"
             exit 0
           fi
+          image="ghcr.io/harvardmadsys/hybridinference-backend:dev-${sha}"
           [ "${image}" = "ghcr.io/harvardmadsys/hybridinference-backend:dev-${PREVIOUS_SHA}" ] \
             || echo "::notice title=Restore drill::${PREVIOUS_SHA} has no candidate; restoring ${image}"
           DOCKER_CONFIG="${docker_cfg}" docker pull --quiet "${image}"

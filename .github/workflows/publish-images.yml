@@ -35,8 +35,9 @@ on:
 permissions:
   contents: read
 
-# One publication at a time; a second dispatch waits instead of racing the
-# first on the same tags.
+# One publication at a time, so two dispatches never race on the same tags.
+# GitHub keeps at most one pending run per group: a newer dispatch replaces a
+# queued one, which is harmless because both publish dev's HEAD.
 concurrency:
   group: publish-images
   cancel-in-progress: false
@@ -67,7 +68,8 @@ jobs:
           fi
           # Fail closed: zero successful runs means "not proven", and an API
           # error stops the run rather than publishing unverified code.
-          runs="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=dev&event=push&status=success&head_sha=${GITHUB_SHA}&per_page=1"                    --jq '.total_count')"
+          runs="$(gh api "/repos/${GITHUB_REPOSITORY}/actions/workflows/ci.yml/runs?branch=dev&event=push&status=success&head_sha=${GITHUB_SHA}&per_page=1" \
+                   --jq '.total_count')"
           if [ "${runs}" -lt 1 ]; then
             echo "::error title=CI not green::No successful CI push run on dev for ${GITHUB_SHA}. Wait for it, or re-run it, then dispatch again."
             exit 1
@@ -88,8 +90,8 @@ jobs:
     # stitch had neither a full digest pair nor an existing verdict it
     # trusted (the round-1 P2). A single verdict makes that impossible.
     # Query errors deliberately report "no candidate" (fail-open): the cost
-    # is an idempotent rebuild + re-tag of identical content, never a wrong
-    # publish.
+    # is a rebuild that re-points the tag at an equivalent but not
+    # bit-identical image, never a publish of a different commit.
     needs: [verify]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -106,8 +108,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+          # --paginate: every publish adds several versions (per-arch digests,
+          # attestations, the index), so the newest page alone misses an older
+          # SHA's tag, and a rebuild would move that tag to a new digest.
+          if ! digest="$(gh api --paginate "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name")"; then
             echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
             digest=""
           fi
@@ -116,6 +121,7 @@ jobs:
           else
             echo "no candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
           fi
+          digest="$(printf '%s\n' "${digest}" | head -n 1)"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   publish-backend-arm64:
@@ -363,8 +369,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+          # --paginate: every publish adds several versions (per-arch digests,
+          # attestations, the index), so the newest page alone misses an older
+          # SHA's tag, and a rebuild would move that tag to a new digest.
+          if ! digest="$(gh api --paginate "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
+                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name")"; then
             echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
             digest=""
           fi
@@ -373,6 +382,7 @@ jobs:
           else
             echo "no console candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
           fi
+          digest="$(printf '%s\n' "${digest}" | head -n 1)"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   publish-console-arm64:

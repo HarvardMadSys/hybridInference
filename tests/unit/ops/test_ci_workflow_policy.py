@@ -89,7 +89,12 @@ def test_images_are_published_only_by_hand() -> None:
                     (step.get("with") or {}).get("push") in (None, False)
                     and "push=true" not in str((step.get("with") or {}).get("outputs", ""))
                 ), (path.name, name)
-                assert "imagetools create" not in str(step.get("run", "")), (path.name, name)
+                run = str(step.get("run", ""))
+                # `--push` as a whole flag, not ops/ci's `--push-before`.
+                assert not re.search(r"imagetools create|docker push|--push(?![\w-])", run), (
+                    path.name,
+                    name,
+                )
 
 
 def test_publishing_requires_dev_and_green_ci_for_the_commit() -> None:
