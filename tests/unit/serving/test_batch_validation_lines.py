@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import AsyncIterator, Callable
 from typing import Any
 
 from serving.batch.validation import LineTooLong, iter_lines
@@ -149,24 +150,61 @@ async def test_an_unfinished_line_over_the_cap_fails_before_more_is_read():
     assert store.reads == 1
 
 
-async def test_chunks_of_short_lines_are_split_in_linear_time():
-    """Four 1 MiB chunks of 4-byte lines.
+Splitter = Callable[[list[bytes]], AsyncIterator[tuple[int, bytes]]]
 
-    Copying the rest of the chunk at every line took about 20 s for these on
-    the machine this was written on; the offset scan takes under half a second.
-    """
+
+async def _split_once(splitter: Splitter, chunk_bytes: int) -> float:
+    """Seconds to split four chunks of 4-byte lines once."""
     line = b"abc\n"
-    chunk = line * (1024 * 1024 // len(line))
-    store = _Chunks([chunk] * 4)
-
+    chunk = line * (chunk_bytes // len(line))
     started = time.perf_counter()
     count = 0
-    async for _ in iter_lines(store, "f", max_line_bytes=1024):
+    async for _ in splitter([chunk] * 4):
         count += 1
     elapsed = time.perf_counter() - started
-
     assert count == 4 * len(chunk) // len(line)
-    assert elapsed < 4.0, f"split {count} lines in {elapsed:.1f}s"
+    return elapsed
+
+
+async def _growth(splitter: Splitter, small_bytes: int, large_bytes: int) -> tuple[float, float]:
+    """Best of three timings at each size, alternating sizes.
+
+    Alternating keeps a slowdown that comes and goes on a shared runner (a
+    noisy neighbour, throttling) from landing on one side of the ratio only.
+    """
+    small = large = float("inf")
+    for _ in range(3):
+        small = min(small, await _split_once(splitter, small_bytes))
+        large = min(large, await _split_once(splitter, large_bytes))
+    return small, large
+
+
+async def _offset_scan(chunks: list[bytes]) -> AsyncIterator[tuple[int, bytes]]:
+    async for item in iter_lines(_Chunks(chunks), "f", max_line_bytes=1024):
+        yield item
+
+
+async def test_chunks_of_short_lines_are_split_in_linear_time():
+    """Four times the lines per chunk must cost about four times as long.
+
+    Copying the rest of the chunk at every line (``_reference``) is quadratic
+    in a chunk of short lines: four times the lines cost about sixteen times
+    as long, about 20 s for four 1 MiB chunks on the machine this was first
+    written on. The offset scan stays linear. Measured from 128 KiB to 512 KiB
+    chunks, the offset scan grew 3.2-4.8x and ``_reference`` 11.2-14.6x, with
+    and without coverage tracing. Re-measure ``_reference`` with ``_growth``
+    before changing the splitter, the sizes or the bound: the margin under
+    coverage is about 1.4x.
+
+    The test compares two sizes on the same machine instead of holding a
+    wall-clock bound: CI pushes run under coverage tracing on shared hosted
+    runners, where the linear scan alone took 4.9 s for four 1 MiB chunks,
+    and a fixed bound cannot tell that from a slow machine.
+    """
+    small, large = await _growth(_offset_scan, 128 * 1024, 512 * 1024)
+
+    ratio = large / small
+    assert ratio < 8, f"4x the lines took {ratio:.1f}x as long ({small:.2f}s -> {large:.2f}s)"
 
 
 async def test_file_parser_rejects_overflowing_numbers_even_inside_freeform_fields():
