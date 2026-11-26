@@ -1,18 +1,12 @@
 name: CI
 
-# Unreviewed code on self-hosted runners. A push to murphy/dev/* and a
-# dispatch on any ref run that ref's code, which no one has reviewed, on the
-# persistent self-hosted hosts with sudo and docker, which is root there. The
-# publish jobs below run on hosts of the same pool. In this repository they
-# keep their registry login in a Docker config of their own and leave no token
-# in the checkout, which takes the publishing credential out of the places
-# every job shares; nothing here protects a job on a host that earlier code
-# already owns. These would, and they are the operator's choices to make:
-#   - drop the murphy/dev/* trigger, so that only reviewed code (dev, main)
-#     runs here and pull requests run GitHub-hosted;
-#   - gate workflow_dispatch behind a protected environment, or route it to
-#     GitHub-hosted runners as pull requests are;
-#   - publish from dedicated or ephemeral runners that run nothing else.
+# Every job runs on a GitHub-hosted runner, discarded with the job. The
+# self-hosted runners were retired after the 2026-11-22 incident, and a job
+# that still named one queued for a day and was cancelled, so from 2026-11-20
+# no dev push run finished and no candidate was published. A push to
+# murphy/dev/* or a dispatch on any ref runs that ref's code, unreviewed, but
+# on a fresh machine with a read-only token; only a green dev push reaches the
+# publish jobs, the one place a packages: write token is issued.
 on:
   workflow_dispatch:
   schedule:
@@ -29,10 +23,9 @@ on:
   pull_request:
     branches: [main, dev]
 
-# Read-only unless a job asks for more. Most of these jobs run on self-hosted
-# runners that a push reaches, so the token a step could leak or misuse holds
-# no write scope by default; the jobs that pull or publish candidate images
-# name the package scope they need.
+# Read-only unless a job asks for more: the token a step could leak or misuse
+# holds no write scope by default, and the jobs that pull or publish candidate
+# images name the package scope they need.
 permissions:
   contents: read
 
@@ -49,22 +42,15 @@ env:
   UV_SYSTEM_PYTHON: 1
   NODE_VERSION: "22"
   GITLEAKS_VERSION: "8.30.1"
-  # The audit runs on self-hosted runners for pushes: an exact release, not
-  # whatever PyPI calls latest when the job starts.
+  # An exact release, not whatever PyPI calls latest when the job starts.
   PIP_AUDIT_VERSION: "2.10.1"
 
 jobs:
   changes:
     name: Classify Changes
-    # Fork safety on a public repository: pull_request events carry code the
-    # runner has not vetted, so they run on GitHub-hosted runners (free and
-    # unlimited-minutes for public repos). Every trusted event -- push,
-    # schedule, workflow_dispatch -- keeps its self-hosted runner byte-for-byte
-    # unchanged, so the dev -> candidate-image pipeline never depends on the
-    # hosted path. The same split (arm jobs go to ubuntu-24.04-arm) is applied
-    # to every job that a pull_request can reach; the publish jobs are
-    # push-only and stay self-hosted unconditionally.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    # Every event runs on GitHub-hosted runners (free and unlimited-minutes
+    # for public repos); arm64 jobs use ubuntu-24.04-arm.
+    runs-on: ubuntu-latest
     outputs:
       backend: ${{ steps.validate.outputs.backend }}
       frontend: ${{ steps.validate.outputs.frontend }}
@@ -129,8 +115,7 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.backend == 'true')
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -211,8 +196,7 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.frontend == 'true')
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ./apps/frontend
@@ -283,7 +267,7 @@ jobs:
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.site_ui == 'true')
     # A daemon is the point of this job, so it needs a runner that has one.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     env:
       # Image tags and container names belong to one run: on a self-hosted
       # runner a second run of this job can overlap this one, and a fixed name
@@ -417,8 +401,7 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.docs == 'true')
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -495,8 +478,7 @@ jobs:
       needs.changes.outputs.python_tests == 'true')
     # Service containers need Docker socket access; keep these jobs off the
     # generic-pool hosts that lack that access.
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -758,8 +740,7 @@ jobs:
 
   security:
     name: Security Scan
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
@@ -847,8 +828,7 @@ jobs:
       needs.changes.result != 'success' ||
       needs.changes.outputs.docker_matrix != '[]')
     # Buildx needs Docker daemon access; pin image verification to ARM64.
-    # PR events run GitHub-hosted (arm); see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm' || fromJSON('["self-hosted", "Linux", "ARM64", "image-verify-arm64"]') }}
+    runs-on: ubuntu-24.04-arm
     strategy:
       fail-fast: false
       matrix:
@@ -1001,8 +981,7 @@ jobs:
       (needs.changes.result != 'success' ||
       needs.changes.outputs.full == 'true' ||
       needs.changes.outputs.tutorial_e2e == 'true')
-    # PR events run GitHub-hosted (arm); see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm' || fromJSON('["self-hosted", "Linux", "ARM64", "image-verify-arm64"]') }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     # packages: read pulls the previous backend candidate for the restore drill.
     permissions:
@@ -1504,8 +1483,7 @@ jobs:
   ci-gate:
     name: CI Gate
     if: always()
-    # PR events run GitHub-hosted; see the fork-safety note on Classify Changes.
-    runs-on: ${{ github.event_name == 'pull_request' && 'ubuntu-latest' || fromJSON('["self-hosted", "Linux", "ci-general"]') }}
+    runs-on: ubuntu-latest
     needs:
       - changes
       - backend-quality
@@ -1558,8 +1536,8 @@ jobs:
   # classification: a docs-only push still gets a candidate — the bump bot
   # pins exact SHAs and would otherwise wait forever on one.
   #
-  # Multi-arch is built as two NATIVE builds stitched into one manifest
-  # list, never QEMU emulation: the amd64 half under qemu-user on the arm64
+  # Multi-arch is built as two NATIVE builds, on ubuntu-24.04-arm and
+  # ubuntu-latest, stitched into one manifest list, never QEMU emulation: the amd64 half under qemu-user on the arm64
   # runner segfaulted `uv sync` instantly (dev@2e4edfa4, exit 139 —
   # qemu-user cannot run uv's static binary). Each half pushes by digest
   # with no tag; the stitch job below is the only thing that creates the
@@ -1577,11 +1555,11 @@ jobs:
   # Credentials (every job that logs in to the registry, here and in
   # build-candidates.yml): the login goes in a Docker config of the job's own
   # under RUNNER_TEMP, never in the runner account's ~/.docker/config.json.
-  # Every job on these hosts reads and writes that file, push CI on unreviewed
-  # branches included, and the job's packages: write token would sit there
-  # for as long as the job ran; two publish jobs on one host could also log
-  # each other out of it. A last step removes the login, and the runner empties
-  # RUNNER_TEMP after the job anyway. The CLI plugins stay visible, since
+  # Hosted runners are discarded with the job, so this is defence in depth:
+  # on a persistent runner every job reads and writes that file, and the
+  # job's packages: write token would sit there for as long as the job ran.
+  # A last step removes the login, and the runner empties RUNNER_TEMP after
+  # the job anyway. The CLI plugins stay visible, since
   # buildx may be installed for the runner account alone. The checkouts here
   # leave no token in .git/config either.
   publish-backend-precheck:
@@ -1598,7 +1576,7 @@ jobs:
     # publish.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     # The Packages API lookup below reads this repository's container images.
     permissions:
@@ -1629,7 +1607,7 @@ jobs:
     name: Publish backend candidate (arm64)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1699,14 +1677,10 @@ jobs:
 
   publish-backend-amd64:
     name: Publish backend candidate (amd64)
-    # Native twin of the arm64 half, on the dedicated x86_64 build runner.
-    # Deliberately NOT on the production serving host: a runner in the docker
-    # group is root-equivalent on its machine, so builds live alongside the
-    # other CI-class workloads on the build host, never with production
-    # serving.
+    # Native twin of the arm64 half, on a hosted x86_64 runner.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck]
-    runs-on: [self-hosted, Linux, x64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1778,7 +1752,7 @@ jobs:
     # the precheck's single query, the same one the arch jobs obeyed.
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-backend-arm64.result == 'success' && needs.publish-backend-amd64.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck, publish-backend-arm64, publish-backend-amd64]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read
@@ -1867,7 +1841,7 @@ jobs:
     name: Publish console candidate (precheck)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     # The Packages API lookup below reads this repository's container images.
     permissions:
@@ -1898,7 +1872,7 @@ jobs:
     name: Publish console candidate (arm64)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-console-precheck]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
     permissions:
       contents: read
@@ -1984,7 +1958,7 @@ jobs:
     name: Publish console candidate (amd64)
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-console-precheck]
-    runs-on: [self-hosted, Linux, x64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 45
     permissions:
       contents: read
@@ -2068,7 +2042,7 @@ jobs:
     name: Publish console candidate
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-console-arm64.result == 'success' && needs.publish-console-amd64.result == 'success' }}
     needs: [ci-gate, publish-console-precheck, publish-console-arm64, publish-console-amd64]
-    runs-on: [self-hosted, Linux, arm64-docker]
+    runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
       contents: read

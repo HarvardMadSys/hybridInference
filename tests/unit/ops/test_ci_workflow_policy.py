@@ -214,17 +214,22 @@ def test_publish_builds_are_native_never_emulated() -> None:
 
     qemu-user cannot run uv's static binary: the emulated amd64 half of a
     combined multi-platform build segfaulted `uv sync` instantly (observed
-    on dev@2e4edfa4, exit code 139). Scoped to ci.yml — the dispatch-only
-    Build Candidate Images tool takes an operator-chosen platform input and
-    is that operator's judgment call.
+    on dev@2e4edfa4, exit code 139). The dispatch-only Build Candidate Images
+    tool picks the hosted runner native to its platform input.
     """
-    jobs = _workflow("ci.yml")["jobs"]
-
-    for name, job in jobs.items():
+    for workflow, name, job, _ in _jobs():
         for step in job.get("steps") or []:
-            assert "setup-qemu-action" not in str(step.get("uses", "")), name
+            assert "setup-qemu-action" not in str(step.get("uses", "")), (workflow, name)
             platforms = str((step.get("with") or {}).get("platforms", ""))
-            assert "," not in platforms, f"{name}: emulated multi-platform build"
+            assert "," not in platforms, f"{workflow}:{name}: emulated multi-platform build"
+    jobs = _workflow("ci.yml")["jobs"]
+    for image in ("backend", "console"):
+        assert jobs[f"publish-{image}-arm64"]["runs-on"] == "ubuntu-24.04-arm"
+        assert jobs[f"publish-{image}-amd64"]["runs-on"] == "ubuntu-latest"
+    diagnostic = _workflow("build-candidates.yml")["jobs"]["build"]["runs-on"]
+    assert diagnostic == (
+        "${{ inputs.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}"
+    )
 
 
 def test_python_tests_signal_controls_only_the_pytest_job() -> None:
@@ -396,12 +401,7 @@ def test_tutorial_e2e_builds_and_runs_the_exact_linear_transition() -> None:
     assert changes["outputs"]["tutorial_e2e"] == "${{ steps.validate.outputs.tutorial_e2e }}"
     assert "needs.changes.outputs.tutorial_e2e == 'true'" in job["if"]
     assert "github.event_name != 'pull_request'" not in job["if"]
-    # PR events (untrusted after the repo is public) run GitHub-hosted; every
-    # trusted event keeps the self-hosted image-verify pool.
-    assert job["runs-on"] == (
-        "${{ github.event_name == 'pull_request' && 'ubuntu-24.04-arm'"
-        ' || fromJSON(\'["self-hosted", "Linux", "ARM64", "image-verify-arm64"]\') }}'
-    )
+    assert job["runs-on"] == "ubuntu-24.04-arm"
 
     expected_names = {
         "EXAMPLE_BACKEND_CONTAINER_NAME",
@@ -569,8 +569,7 @@ def _workflow_files() -> list[Path]:
 def test_every_workflow_states_its_token_permissions(path: Path) -> None:
     """A workflow without a ``permissions`` block gets the repository default.
 
-    That default can be read-write on every scope, and these jobs run on
-    self-hosted runners a push reaches.
+    That default can be read-write on every scope.
     """
     workflow = yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -614,11 +613,11 @@ def _jobs() -> list[tuple[str, str, dict, dict]]:
 
 
 def test_every_registry_login_stays_in_a_docker_config_of_its_own() -> None:
-    """The runner account's ``~/.docker/config.json`` is shared by every job on its host.
+    """A ``packages: write`` login never lands in the runner account's ``~/.docker``.
 
-    Push CI on unreviewed branches runs on the same self-hosted hosts as the
-    publish jobs, so a ``packages: write`` login written there could be read
-    and reused by other code for as long as the publishing job ran.
+    Hosted runners are discarded with the job, so this is defence in depth: on
+    a persistent runner that file is shared by every job on the host, and the
+    login could be read and reused by other code while the publishing job ran.
     """
     isolate = 'echo "DOCKER_CONFIG=${docker_config}" >> "${GITHUB_ENV}"'
     remove = 'rm -f "${RUNNER_TEMP}/docker-config/config.json"'
@@ -649,8 +648,8 @@ def test_no_checkout_leaves_a_package_token_in_the_workspace() -> None:
     """actions/checkout writes its token into .git/config unless told not to.
 
     Where the token has a packages scope, that is a registry credential left in
-    a persistent runner's workspace for the length of the job; nothing in these
-    jobs fetches again after the checkout.
+    the workspace for the length of the job; nothing in these jobs fetches
+    again after the checkout.
     """
     checkouts = 0
     for workflow, name, job, defaults in _jobs():
@@ -689,48 +688,20 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
     assert syncing >= 3
 
 
-# The self-hosted runners run under accounts that have no sudo, one account per
-# repository, side by side on the same machines. So a step that a self-hosted
-# runner can take must not call sudo, and must not use a fixed name in the
-# machines' shared /tmp, where a file another account left behind cannot be
-# replaced (fs.protected_regular).
-SUDO = re.compile(r"(?:^|[\s;&|(!`{])sudo(?=\s|$)")
-SHARED_TMP = re.compile(r"(?:^|[\s=:'\"(])/tmp/")
-HOSTED_ONLY = "runner.environment == 'github-hosted'"
+def test_no_workflow_names_a_self_hosted_runner() -> None:
+    """The self-hosted runners were retired after the 2026-11-22 incident.
 
-
-def _script(step: dict) -> str:
-    """A step's shell without its comment lines, which may name sudo freely."""
-    lines = str(step.get("run", "")).splitlines()
-    return "\n".join(line for line in lines if not line.lstrip().startswith("#"))
-
-
-def _self_hosted_jobs() -> list[tuple[str, str, dict]]:
-    """Jobs whose ``runs-on`` can name a self-hosted runner, for any event."""
-    return [
-        (workflow, name, job)
-        for workflow, name, job, _ in _jobs()
-        if "self-hosted" in str(job.get("runs-on", ""))
-    ]
-
-
-def test_no_step_a_self_hosted_runner_can_run_calls_sudo() -> None:
-    """Their accounts have no sudo, so such a step fails on every trusted event.
-
-    A step that only a hosted runner may take says so in its own condition, as
-    a conjunct the whole condition depends on.
+    A job that named one queued until GitHub cancelled it a day later, which
+    is how every dev push run since 2026-11-20 ended, publishing included.
     """
-    jobs = _self_hosted_jobs()
-    for workflow, name, job in jobs:
-        for step in job.get("steps") or []:
-            if not SUDO.search(_script(step)):
-                continue
-            condition = str(step.get("if", "")).removeprefix("${{").removesuffix("}}")
-            conjuncts = [part.strip() for part in condition.split("&&")]
-            assert HOSTED_ONLY in conjuncts, (workflow, name, step.get("name"))
-    # The CI jobs a push reaches, the publish jobs, the diagnostic build and
-    # the release: the check above looked where it matters.
-    assert len(jobs) >= 15
+    jobs = _jobs()
+    for workflow, name, job, _ in jobs:
+        runs_on = str(job.get("runs-on", ""))
+        assert "self-hosted" not in runs_on, (workflow, name, runs_on)
+        assert "ubuntu-" in runs_on, (workflow, name, runs_on)
+    assert not (ROOT / ".github" / "actionlint.yaml").exists()
+    # CI, the publish jobs, the diagnostic build and the release.
+    assert len(jobs) >= 20
 
 
 def test_gitleaks_installs_into_runner_temp_and_onto_the_path(tmp_path: Path) -> None:
@@ -782,15 +753,3 @@ sudo() { printf '%s\n' "sudo $*" >> "${CALLS}"; return 1; }
     recorded = calls.read_text().splitlines()
     assert [line for line in recorded if line.startswith("tar ")]
     assert not [line for line in recorded if line.startswith("sudo")]
-
-
-def test_no_self_hosted_step_uses_a_fixed_name_in_the_shared_tmp() -> None:
-    """Every runner account on a machine shares its sticky /tmp.
-
-    A file another account left at a fixed name there cannot be replaced, so the
-    step fails on whichever account comes second. RUNNER_TEMP belongs to one
-    runner process, and mktemp picks a fresh name.
-    """
-    for workflow, name, job in _self_hosted_jobs():
-        for step in job.get("steps") or []:
-            assert not SHARED_TMP.search(_script(step)), (workflow, name, step.get("name"))
