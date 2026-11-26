@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -64,6 +65,42 @@ logger = get_logger(__name__)
 _INCOMPLETE_STREAM_ERROR = (
     "Upstream stream ended without a terminal finish_reason or [DONE] sentinel"
 )
+
+
+def _stream_payload(chunk: Any) -> dict[str, Any] | None:
+    """Return the JSON object one chunk of this adapter's stream carries, or None."""
+    line = chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
+    if not isinstance(line, str) or not line.startswith("data:"):
+        return None
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return None
+    try:
+        payload = json.loads(data)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _merge_tool_call(calls: dict[int, dict[str, Any]], delta: Any) -> None:
+    """Add one streamed piece of a tool call to the calls gathered so far, by index."""
+    if not isinstance(delta, dict):
+        return
+    index = delta.get("index")
+    index = index if isinstance(index, int) and not isinstance(index, bool) else 0
+    call = calls.setdefault(
+        index, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+    )
+    if delta.get("id"):
+        call["id"] = delta["id"]
+    if delta.get("type"):
+        call["type"] = delta["type"]
+    function = delta.get("function")
+    if isinstance(function, dict):
+        if isinstance(function.get("name"), str):
+            call["function"]["name"] += function["name"]
+        if isinstance(function.get("arguments"), str):
+            call["function"]["arguments"] += function["arguments"]
 
 
 class UpstreamStreamError(aiohttp.ClientError):
@@ -1521,6 +1558,12 @@ class OpenAICompatAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dict
         """
+        # An admission process serves streams only, and its queue reads a closed
+        # connection as a cancellation: the request goes as a stream, and the
+        # reply is put together here.
+        if self.config.admission == "nimbus":
+            return await self._chat_completion_from_stream(messages, params)
+
         # Before anything else this request would fetch or send, and once: the
         # route's map as it is now, whatever an admin edit does meanwhile.
         effort = self._resolve_effort(params)
@@ -2005,6 +2048,56 @@ class OpenAICompatAdapter(BaseAdapter):
         return await self._post_with_pool(
             url, payload, max_body_bytes=embeddings_response_limit(input_data)
         )
+
+    async def _chat_completion_from_stream(
+        self, messages: list[dict[str, Any]], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Serve a non-streaming request from a route that only streams.
+
+        The request is sent as this adapter's own stream, so everything that
+        path does still happens -- the key and the outbound slot, the output
+        processor, the usage the stream ends with, a decline raised before any
+        output -- and the chunks are put together into the reply a
+        non-streaming call returns: the text, the reasoning, the tool calls by
+        index, the finish reason, and the usage.
+        """
+        text: list[str] = []
+        reasoning: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        finish_reason = "stop"
+        usage: dict[str, Any] | None = None
+        stream = self.stream_chat_completion(messages, **{**params, "stream": True})
+        async with aclosing(stream) as chunks:
+            async for chunk in chunks:
+                payload = _stream_payload(chunk)
+                if payload is None:
+                    continue
+                if isinstance(payload.get("usage"), dict) and payload["usage"]:
+                    usage = payload["usage"]
+                for choice in payload.get("choices") or ():
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta.get("content"), str):
+                        text.append(delta["content"])
+                    thought = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(thought, str):
+                        reasoning.append(thought)
+                    for call in delta.get("tool_calls") or ():
+                        _merge_tool_call(calls, call)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+        tool_calls = [calls[index] for index in sorted(calls)]
+        response = self.format_response(
+            content="".join(text) if text or not tool_calls else None,
+            model=self.config.id,
+            tool_calls=tool_calls or None,
+            reasoning_content="".join(reasoning) if reasoning else None,
+            finish_reason=finish_reason,
+        )
+        if usage is not None:
+            response["usage"] = usage
+        return response
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""

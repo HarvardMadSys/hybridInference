@@ -1,7 +1,7 @@
 # 接入 Nimbus：把本地路由交给引擎旁的准入进程
 
 - 日期：2026-11-26
-- 状态：草案，待评审。第 1 阶段（认出退回）和第 2 阶段（路由策略和流式 chat）已实现，没有模型选用新策略时不改变任何运行行为；第 3、4 阶段尚未实施。
+- 状态：草案，待评审。第 1 阶段（认出退回）、第 2 阶段（路由策略和流式 chat）和第 3 阶段（非流式 chat 和 `/v1/messages`）已实现，没有模型选用新策略、也没有路由带标记时不改变任何运行行为；第 4 阶段（联调）尚未实施。
 - 前序设计：[Greedy Router 设计](2026-11-23-greedy-router-design.zh.md)。那份设计的 3.4 节说 Nimbus 的接入是另一份设计，就是本文。
 - 顺序：fixed → greedy → Nimbus。`FixedRouter` 和 `greedy` 都保留，本文只新增一种按模型选用的路由策略。
 - 代码参照：hybridInference `2027-osdi-nimbus` @ `3921ac7d`；Nimbus `murphy/llm-nimbus-full` @ `f95fd30`（准入模式在这个分支上，还没有合并）。
@@ -184,6 +184,7 @@ Nimbus 按引擎的 decode step 做决定，需要精确的 token 数、引擎�
 
 - Nimbus 只接流式请求。发给带标记路由的非流式 chat 请求，在网关里转成流式再缓冲，沿用 `completions` 里引擎队列那条路径；把它的条件从“登记了引擎队列”扩成“登记了引擎队列，或路由带标记”。
 - 带 `response_format` 的请求不发给 Nimbus，见 5.10 节。
+- 适配器这一层另有一道：发给带标记路由的非流式调用，适配器一律改成向上游发流式请求，再把 chunk 拼回完整的回复（正文、reasoning、按 index 合并的 tool call、finish reason、usage）。所以没有走缓冲路径的非流式调用，比如被 pin 到这条路由的请求，也不会因为非流式吃到 400。
 
 ### 5.7 `/v1/messages`
 
@@ -191,8 +192,10 @@ Nimbus 按引擎的 decode step 做决定，需要精确的 token 数、引擎�
 - 要做的三件事：
   - **认出这个策略。** 今天这个入口只认 `GreedyRouter`（`_greedy_router`）。改成两种策略都认，本地优先、云端第二遍的选法共用。
   - **退回触发第二遍。** `_unless_spilled` 今天只接 `UpstreamQueueWaitExpired`，加上 `EngineDeclined`。第二遍沿用 `_SpillCarry`：同一个 request id 和起始时刻，只走云端路由。
-  - **非流式的 messages。** `BaseAdapter.messages` 调的是非流式的 `chat_completion`，发给 Nimbus 会得到 400。带标记的路由改成向上游发流式请求，在适配器里拼回完整的回复。
+  - **非流式的 messages。** `BaseAdapter.messages` 调的是非流式的 `chat_completion`，发给 Nimbus 会得到 400。带标记的路由改成向上游发流式请求，在适配器里拼回完整的回复（5.6 节的那一道）。
 - 带图片的请求不发给带标记的路由，沿用现有的 `required_modalities`。
+- 这个入口按 Anthropic 的写法判断 5.10 节的那几类：`tool_choice` 的 `any` 和 `tool` 是强制调用，`disable_parallel_tool_use` 是不许并行。结构化输出的 schema 不在判断里：这个入口本来就不把它发给 OpenAI 兼容的路由。
+- 没有第二遍可走的退回（模型没有选用这个策略却有带标记的路由、auto 或改路由的请求、batch）在这个入口答成 503 `overloaded_error`，不是它对 `UpstreamSaturated` 的 429。
 - Nimbus 接不了的那几类请求在选路时就跳过，见 5.10 节。
 
 ### 5.8 客户端断开

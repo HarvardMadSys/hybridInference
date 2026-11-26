@@ -60,7 +60,15 @@ def _answer(status: int, body: Any) -> aiohttp.ClientResponseError:
 
 
 async def _chat(adapter: OpenAICompatAdapter, error: BaseException) -> None:
+    # A declared route is sent a non-streaming request as a stream; any other
+    # route gets the plain POST. The upstream answers both the same way here.
     adapter.http.json_post_with_retry = AsyncMock(side_effect=error)
+
+    async def _stream_post(*, url, json, headers, timeout):
+        raise error
+        yield ""  # pragma: no cover - makes this an async generator
+
+    adapter.http.stream_post = _stream_post
     await adapter.chat_completion(_ASK)
 
 
@@ -157,6 +165,124 @@ async def test_a_decline_is_not_retried_on_another_key_and_mutes_none(mode):
     for key in adapter._key_pool._keys:
         assert key.cooldown_until == 0.0
         assert key.consecutive_failures == 0
+
+
+def _frame(delta: dict[str, Any], finish: str | None = None, **extra: Any) -> str:
+    chunk = {
+        "id": "c1",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": "qwen-local",
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+        **extra,
+    }
+    return f"data: {json.dumps(chunk)}"
+
+
+async def _streamed_reply(adapter: OpenAICompatAdapter, frames: list[str]) -> dict[str, Any]:
+    """Answer the adapter's stream with ``frames``; a plain POST would fail the test."""
+    sent: list[dict[str, Any]] = []
+
+    async def _stream_post(*, url, json, headers, timeout):
+        sent.append(json)
+        for frame in frames:
+            yield frame
+
+    adapter.http.stream_post = _stream_post
+    adapter.http.json_post_with_retry = AsyncMock(side_effect=AssertionError("not a stream"))
+    adapter.http.json_post = AsyncMock(side_effect=AssertionError("not a stream"))
+    reply = await adapter.chat_completion(_ASK)
+    assert sent and sent[0]["stream"] is True
+    return reply
+
+
+async def test_a_non_streaming_request_to_a_declared_route_goes_as_a_stream():
+    # The process serves streams only; the reply is put together from the chunks.
+    reply = await _streamed_reply(
+        _adapter(admission="nimbus"),
+        [
+            _frame({"role": "assistant"}),
+            _frame({"reasoning_content": "think "}),
+            _frame({"reasoning_content": "hard"}),
+            _frame({"content": "Hel"}),
+            _frame({"content": "lo"}),
+            _frame({}, "stop"),
+            _frame({}, usage={"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}),
+            "data: [DONE]",
+        ],
+    )
+
+    assert reply["object"] == "chat.completion"
+    [choice] = reply["choices"]
+    assert choice["message"]["content"] == "Hello"
+    assert choice["message"]["reasoning_content"] == "think hard"
+    assert choice["finish_reason"] == "stop"
+    assert reply["usage"]["prompt_tokens"] == 7
+    assert reply["usage"]["completion_tokens"] == 3
+
+
+async def test_tool_calls_streamed_in_pieces_come_back_whole():
+    def call(index: int, **function: str) -> dict[str, Any]:
+        return {"tool_calls": [{"index": index, "function": function}]}
+
+    reply = await _streamed_reply(
+        _adapter(admission="nimbus", supports_tools=True),
+        [
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call_a",
+                            "type": "function",
+                            "function": {"name": "read", "arguments": ""},
+                        }
+                    ]
+                }
+            ),
+            _frame(call(0, arguments='{"path":')),
+            _frame(call(0, arguments=' "a.py"}')),
+            _frame(
+                {
+                    "tool_calls": [
+                        {
+                            "index": 1,
+                            "id": "call_b",
+                            "type": "function",
+                            "function": {"name": "list", "arguments": "{}"},
+                        }
+                    ]
+                }
+            ),
+            _frame({}, "tool_calls"),
+            "data: [DONE]",
+        ],
+    )
+
+    [choice] = reply["choices"]
+    assert choice["finish_reason"] == "tool_calls"
+    assert choice["message"]["content"] is None
+    first, second = choice["message"]["tool_calls"]
+    assert (first["id"], first["function"]["name"]) == ("call_a", "read")
+    assert json.loads(first["function"]["arguments"]) == {"path": "a.py"}
+    assert (second["id"], second["function"]) == ("call_b", {"name": "list", "arguments": "{}"})
+
+
+async def test_a_route_that_declares_nothing_still_gets_a_plain_post():
+    adapter = _adapter(admission=None)
+    adapter.http.json_post_with_retry = AsyncMock(
+        return_value={
+            "choices": [
+                {"message": {"role": "assistant", "content": "42"}, "finish_reason": "stop"}
+            ],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+        }
+    )
+
+    reply = await adapter.chat_completion(_ASK)
+
+    assert reply["choices"][0]["message"]["content"] == "42"
+    adapter.http.json_post_with_retry.assert_awaited_once()
 
 
 def test_a_decline_reached_no_engine_and_blames_no_endpoint():
