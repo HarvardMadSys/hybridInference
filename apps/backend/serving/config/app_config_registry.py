@@ -744,9 +744,11 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "smtp_host",
         "email",
-        "SMTP server host. The server's TLS certificate must be valid for this name.",
+        "SMTP server host. Required while public signup requires email verification. "
+        "The server's TLS certificate must be valid for this name.",
         "str",
         setup=True,
+        required=_smtp_required,
     ),
     _setting(
         "smtp_port",

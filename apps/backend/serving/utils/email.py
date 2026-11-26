@@ -58,7 +58,7 @@ def is_email_enabled() -> bool:
         True if the selected provider is configured, False otherwise.
     """
     if settings.email_provider == "smtp":
-        return bool(settings.smtp_user and settings.smtp_password)
+        return bool(settings.smtp_host and settings.smtp_user and settings.smtp_password)
     provider = get_email_provider(settings.email_provider)
     return provider is not None and provider.is_configured()
 
