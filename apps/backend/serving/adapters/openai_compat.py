@@ -46,6 +46,7 @@ from .profiles import (
 from .reasoning_effort import EFFORT_PARAM, EffortContract, effort_contract, translate_effort
 from .remote_media import inline_remote_media
 from .upstream_limiter import (
+    EngineDeclined,
     UpstreamQueueWaitExpired,
     UpstreamSaturated,
     UpstreamSlot,
@@ -894,6 +895,38 @@ class OpenAICompatAdapter(BaseAdapter):
 
         return headers
 
+    def _engine_declined(self, exc: BaseException) -> EngineDeclined | None:
+        """Return the decline ``exc`` carries from this route's admission process, or None.
+
+        Only a route that declares such a process (``ModelConfig.admission``) is
+        read this way, and only its 409 whose body has a ``nimbus`` object. Any
+        other answer, and the same answer from a route that declares nothing,
+        stays the upstream error it is.
+        """
+        if self.config.admission != "nimbus":
+            return None
+        if not isinstance(exc, aiohttp.ClientResponseError) or exc.status != 409:
+            return None
+        try:
+            answer = json.loads(getattr(exc, "error_body", "") or "")
+        except ValueError:
+            return None
+        told = answer.get("nimbus") if isinstance(answer, dict) else None
+        if not isinstance(told, dict):
+            return None
+        decision = told.get("decision")
+        left = told.get("ttft_left_ms")
+        engine_request_id = told.get("request_id")
+        return EngineDeclined(
+            decision if isinstance(decision, str) and decision else "declined",
+            ttft_left_ms=(
+                float(left)
+                if isinstance(left, (int, float)) and not isinstance(left, bool)
+                else None
+            ),
+            engine_request_id=engine_request_id if isinstance(engine_request_id, str) else None,
+        )
+
     def _left_engine_queue(self, exc: UpstreamSaturated) -> bool:
         """Return whether a wait ended at its deadline in this self-hosted engine's queue.
 
@@ -1524,7 +1557,13 @@ class OpenAICompatAdapter(BaseAdapter):
         if _log_payload:
             logger.debug(f"[OpenAICompat] Payload: {payload}")
 
-        response = await self._post_with_pool(url, payload)
+        try:
+            response = await self._post_with_pool(url, payload)
+        except aiohttp.ClientResponseError as exc:
+            declined = self._engine_declined(exc)
+            if declined is None:
+                raise
+            raise declined from exc
 
         # Process output format (e.g. remove XML tags)
         processor = get_processor(self._processor_model_id, override=self._processor_override)
@@ -1683,14 +1722,22 @@ class OpenAICompatAdapter(BaseAdapter):
         active_lease = None
         active_slot: UpstreamSlot | None = None
 
-        async for it, lease, first, slot in self._open_stream_with_pool(
-            url, payload, timeout=stream_timeout
-        ):
-            stream_iter = it
-            active_lease = lease
-            active_slot = slot
-            primed = first
-            break  # helper yields exactly once
+        try:
+            async for it, lease, first, slot in self._open_stream_with_pool(
+                url, payload, timeout=stream_timeout
+            ):
+                stream_iter = it
+                active_lease = lease
+                active_slot = slot
+                primed = first
+                break  # helper yields exactly once
+        except aiohttp.ClientResponseError as exc:
+            # The route answered before any output, with its admission
+            # process's decline: nothing was sent to the engine.
+            declined = self._engine_declined(exc)
+            if declined is None:
+                raise
+            raise declined from exc
 
         idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
         stream_endpoint_id = getattr(self.config, "endpoint_id", None) or self.config.provider

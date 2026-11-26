@@ -26,6 +26,18 @@ def validate_deployment_type(value: object) -> DeploymentType:
     return cast("DeploymentType", value)
 
 
+Admission = Literal["nimbus"]
+
+
+def validate_admission(value: object) -> Admission | None:
+    """Validate which admission process answers at an endpoint, without coercion."""
+    if value is None:
+        return None
+    if value != "nimbus":
+        raise ValueError('admission must be "nimbus" when given')
+    return "nimbus"
+
+
 @dataclass
 class UsageInfo:
     """Token usage statistics with cache and reasoning token support."""
@@ -184,6 +196,15 @@ class ModelConfig:
     # (higher integer first): vLLM's priority policy reads the opposite way, and
     # a remote provider has no reason to accept the field at all.
     priority_scheduling: bool = False
+    # Which admission process answers at this endpoint in the engine's place,
+    # or None when the endpoint is the engine itself. ``"nimbus"``: a Nimbus
+    # router in admission-only mode beside the engine, which holds the engine's
+    # queue itself and may decline a request back to this gateway with a 409
+    # whose body has a ``nimbus`` object. The OpenAI-compatible adapter raises
+    # that answer as ``EngineDeclined`` rather than as an upstream error; from
+    # a route that declares nothing, the same answer stays an ordinary 409.
+    # Route-level only: it states what one address serves.
+    admission: Admission | None = None
     # Whether a ``*_tokens_details`` key that arrives null from this endpoint
     # means "measured, nothing cached" (0) rather than "this server does not
     # report cache usage" (None). The two are identical on the wire: sglang with
@@ -244,6 +265,7 @@ class ModelConfig:
         request/transport fields back to ``{}`` here as a last line of defense.
         """
         self.deployment_type = validate_deployment_type(self.deployment_type)
+        self.admission = validate_admission(self.admission)
         if self.pricing_currency not in ("USD", "CNY"):
             raise ValueError("pricing_currency must be USD or CNY")
         for _name in ("extra_body", "extra_headers", "extra_query", "route_metadata"):

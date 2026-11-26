@@ -74,6 +74,7 @@ itself and are read only at the model level.
 | `processor` | string | No | Output-processor override for `OpenAICompatAdapter`, bypassing model-ID auto-detection. Accepted: `"default"`, `"glm"`, `"qwen_coder"`, `"think_block"` |
 | `extra_body` | dict | No | Default fields merged into OpenAI-compatible upstream request bodies. Core fields and validated client parameters win |
 | `priority_scheduling` | bool | No | The endpoint runs an sglang server started with `--enable-priority-scheduling`; see [Prioritizing decode on an sglang route](add-local-model.md#prioritizing-decode-on-an-sglang-route). Normally set per route, not per model |
+| `admission` | string | No | Which admission process answers at this endpoint in the engine's place. `"nimbus"`: a Nimbus router in admission-only mode beside the engine; its 409 with a `nimbus` object in the body is read as a decline, a request that reached no engine, and not as an upstream error. Route-level only |
 | `route_metadata` | dict | No | Free-form per-route metadata consumed by routing strategies |
 | `pricing` | dict | No | Base cost information in `pricing_currency`. `prompt`, `completion`, `input_cache_reads` and `input_cache_writes` are per 1M tokens; `request` is per request and `image` per image |
 | `pricing_currency` | string | No | `USD` (default) or `CNY`; applies to configured `pricing` and `pricing_schedule`. See [Accounting Currency](accounting.md) for normalization into the deployment ledger |
