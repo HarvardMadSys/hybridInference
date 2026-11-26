@@ -12,7 +12,9 @@ test that passes on the default would pass with no gate at all.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 
 import pytest
@@ -25,7 +27,7 @@ from serving.grant_auth import (
     authenticate_grant_model_call,
 )
 from serving.grants import mint_grant_token
-from serving.spend_ledger import spend_check_of
+from serving.spend_ledger import SpendCheck, ledger_for, spend_check_of
 
 CUSTOM_QUOTA = 5.0
 
@@ -39,9 +41,18 @@ def _signing_secret(monkeypatch):
 
 
 class FakeStore:
-    """Just the four reads the grant path makes."""
+    """Just the four reads the grant path makes, and where a finished request's cost goes."""
+
+    atomic_cost_increments = True
+
+    async def increment_user_costs(self, increments: list[Any]) -> None:
+        self.written.extend(increments)
+
+    async def get_user_cost_today_amount(self, user_id: str) -> Decimal:
+        return Decimal(str(self.spend))
 
     def __init__(self) -> None:
+        self.written: list[Any] = []
         self.users = {"user_1": {"id": "user_1", "role": "pro", "status": "active"}}
         self.keys: list[dict[str, Any]] = [
             {"id": 1, "user_id": "user_1", "quota_daily_cost_usd": CUSTOM_QUOTA, "role": "pro"}
@@ -478,3 +489,117 @@ async def test_grant_uses_default_project_attribution_and_limits(store, token) -
     with pytest.raises(AgentQuotaExceeded) as caught:
         await authenticate_grant_model_call(token, op_store=store)
     assert caught.value.refusal.scope == "project"
+
+
+# ---------------------------------------------------------------------------
+# The organization's month: read with the quota row, so before everything else
+# ---------------------------------------------------------------------------
+
+
+def _in_an_organization(store: FakeStore, **columns: Any) -> None:
+    """Make the grant's owner a member of an organization with a $1.00 month."""
+    store.keys[0].update(
+        organization_id="o-1",
+        organization_name="Example University",
+        organization_limit_usd=1.0,
+        organization_spent_month_usd=0.0,
+        **columns,
+    )
+
+
+def _another_member_seen_here(store: FakeStore, limit: Any = 1.0) -> Any:
+    """The ledger of *store*, with a gate that has seen a second member of the organization."""
+    ledger = ledger_for(store)
+    SpendCheck(
+        ledger=ledger,
+        user_id="user_2",
+        key_id=None,
+        read_at=time.monotonic(),
+        account_quota_usd=limit * 1000,
+        account_spent_usd=limit * 0,
+        organization_id="o-1",
+        organization_name="Example University",
+        organization_limit_usd=limit,
+    ).refusal()
+    return ledger
+
+
+def _a_cost_lands_during_the_quota_read(store: FakeStore, monkeypatch, ledger: Any, cost: Any):
+    """The other member's request ends, and its cost is written, while the row travels back."""
+    read = store.get_quota_context_for_user
+
+    async def read_while_a_cost_lands(user_id: str):
+        rows = await read(user_id)  # what the database answered: nothing spent yet
+        ledger.record("user_2", cost)
+        assert await ledger.flush()
+        return rows
+
+    monkeypatch.setattr(store, "get_quota_context_for_user", read_while_a_cost_lands)
+
+
+async def test_the_spend_reads_are_timed_from_before_the_quota_row(store, token, monkeypatch):
+    """``read_at`` is from before the first read of a counter, and the quota row has two."""
+    _in_an_organization(store)
+    read = store.get_quota_context_for_user
+    began: list[float] = []
+
+    async def timed(user_id: str):
+        began.append(time.monotonic())
+        return await read(user_id)
+
+    monkeypatch.setattr(store, "get_quota_context_for_user", timed)
+    context = await authenticate_grant_model_call(token, op_store=store)
+
+    assert spend_check_of(context).read_at <= began[0]
+
+
+async def test_a_cost_that_lands_during_the_quota_read_counts_for_the_organization(
+    store, token, monkeypatch
+):
+    """The organization's counter arrives with the quota row, before the account's spend.
+
+    Another member's request ends while that row is read: its cost is not in the
+    row, and the ledger adds it only for a check that began before it landed. With
+    the read timed from after the row, the grant passed a month that was spent.
+    """
+    _in_an_organization(store)
+    ledger = _another_member_seen_here(store)
+    _a_cost_lands_during_the_quota_read(store, monkeypatch, ledger, 1.0)
+
+    with pytest.raises(AgentQuotaExceeded) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+
+    assert caught.value.refusal.scope == "organization"
+    assert caught.value.refusal.window == "month"
+    assert caught.value.spent_usd == pytest.approx(1.0)
+
+
+async def test_a_cost_that_lands_during_the_quota_read_counts_on_a_native_ledger(
+    store, token, monkeypatch
+):
+    """The same on a ledger that is not in USD: one time for both paths."""
+    from serving import accounting
+    from serving.accounting import AccountingPolicy
+
+    monkeypatch.setattr(
+        accounting,
+        "_policy",
+        AccountingPolicy(
+            currency="CNY",
+            usd_to_currency_rate=Decimal("7"),
+            rate_date="2026-11-05",
+            rate_source="https://example.test/synthetic-fixed-rate",
+        ),
+    )
+    _in_an_organization(
+        store,
+        organization_limit_amount=Decimal("7"),
+        organization_spent_month_amount=Decimal("0"),
+    )
+    ledger = _another_member_seen_here(store, limit=Decimal("7"))
+    _a_cost_lands_during_the_quota_read(store, monkeypatch, ledger, Decimal("7"))
+
+    with pytest.raises(AgentQuotaExceeded) as caught:
+        await authenticate_grant_model_call(token, op_store=store)
+
+    assert caught.value.refusal.scope == "organization"

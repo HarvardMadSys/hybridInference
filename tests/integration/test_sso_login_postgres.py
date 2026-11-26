@@ -393,6 +393,8 @@ async def test_an_existing_account_is_linked_only_after_its_owner_signs_in(
         "provider_id": "example-univ",
         "provider_name": "Example University",
         "email": EMAIL,
+        # The provider belongs to no organization: the link takes no password.
+        "sso_only_after_link": False,
     }
 
     # Accepting needs the account's owner to be signed in.

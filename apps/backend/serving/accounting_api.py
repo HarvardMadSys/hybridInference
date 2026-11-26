@@ -25,7 +25,9 @@ MONEY_FIELDS = frozenset(
         "daily_limit_usd",
         "monthly_limit_usd",
         "spent_today_usd",
+        "spent_7d_usd",
         "spent_month_usd",
+        "spent_alltime_usd",
         "remaining_today_usd",
         "quota_daily_cost_usd",
         "quota_monthly_cost_usd",
@@ -39,6 +41,9 @@ MONEY_FIELDS = frozenset(
         "min_spend_today_usd",
         "budget_daily_usd",
         "budget_monthly_usd",
+        "default_member_monthly_limit_usd",
+        "own_monthly_limit_usd",
+        "platform_monthly_limit_usd",
     }
 )
 

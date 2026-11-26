@@ -14,6 +14,7 @@ from typing import Any
 
 from fastapi import HTTPException, Request
 
+from serving import organizations
 from serving.schemas_auth import PhoneVerifyRequest
 from serving.servers.routers.phone_auth_routes import verify_phone_code
 from serving.utils import password as password_utils
@@ -56,6 +57,12 @@ async def confirm_account_owner(
             way to give one; 429 when rate-limited; 503 when its only proof is
             a phone code and SMS is off.
     """
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        # A member of an organization has no password to give and cannot set
+        # one, and its phone is no way in: it confirms where it signs in, at
+        # its identity provider, whatever else the account still holds.
+        user_row = {**user_row, "password_hash": None, "phone": None, "phone_verified": False}
+
     if user_row.get("password_hash"):
         identifier = account_identifier(user_row) or user_row["id"]
         # The same limits as sign-in, including the device cookie's own budget:

@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from serving import organizations
 from serving.accounting_api import native_only
 from serving.batch import admission
 from serving.batch.config import batch_config, may_use_batch
@@ -60,7 +61,6 @@ from serving.batch.console_prepare import (
 )
 from serving.batch.delivery import stream_upload
 from serving.batch.targets import AdmissionContext
-from serving.model_access import get_disabled_models_from_preferences
 from serving.servers.auth import (
     StoredKeyQuotaExceeded,
     StoredKeyRejected,
@@ -146,9 +146,7 @@ async def session_model_context(current_user: dict[str, Any], op_store: Any) -> 
     """
     disabled: list[str] = []
     if op_store:
-        disabled = get_disabled_models_from_preferences(
-            await op_store.get_user_preferences(current_user["user_id"])
-        )
+        disabled = await organizations.disabled_models_of_account(op_store, current_user["user_id"])
     return {**current_user, "disabled_models": disabled}
 
 
@@ -702,6 +700,12 @@ async def create_console_batch(
         elif exc.scope == "project":
             code = "project_budget_exceeded"
             message = f"The project this batch runs under has spent its {period} budget; raise it on the project's page, or submit after it renews"
+        elif exc.scope == "organization":
+            code = "monthly_quota_exceeded"
+            message = (
+                "Your organization has reached its monthly limit; submit after it renews, or "
+                "ask an administrator of your organization"
+            )
         else:
             code = "quota_exceeded" if exc.window == "day" else "monthly_quota_exceeded"
             message = f"Your {period} quota is spent; submit after it renews"

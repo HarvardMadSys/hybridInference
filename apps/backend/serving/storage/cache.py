@@ -24,6 +24,8 @@ from .cache_backend import (
     InMemoryCache as InMemoryCache,
     _snapshot,
 )
+from .organizations import UPDATED
+from .sso import LINKED
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -780,6 +782,7 @@ class CachedOperationalStore(OperationalStore):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        organization_id: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -795,6 +798,7 @@ class CachedOperationalStore(OperationalStore):
             active_within_hours=active_within_hours,
             anomaly=anomaly,
             include_usage_totals=include_usage_totals,
+            organization_id=organization_id,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:
@@ -1169,8 +1173,18 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.list_user_identities(user_id)
 
     async def link_user_identity(self, **fields: Any) -> str:
-        """Link an identity to an active account; say why not when it cannot be."""
-        return await self._store.link_user_identity(**fields)
+        """Link an identity to an active account; say why not when it cannot be.
+
+        A link through an organization's provider makes the account a member,
+        so the cached lookups of its keys are dropped: they carry no
+        organization, and would be checked against none until they expire.
+        """
+        outcome = await self._store.link_user_identity(**fields)
+        if outcome == LINKED:
+            await self.invalidate_user_auth_caches(fields["user_id"])
+            # A member has no password: the cached row may hold the one it had.
+            await self._cache.delete(self._user_key(fields["user_id"]))
+        return outcome
 
     async def touch_user_identity(self, identity_id: str) -> None:
         """Record that an identity just signed in."""
@@ -1215,6 +1229,193 @@ class CachedOperationalStore(OperationalStore):
     async def delete_sso_pending_link(self, token_hash: str) -> None:
         """Drop a pending link its browser declined."""
         return await self._store.delete_sso_pending_link(token_hash)
+
+    # -- organizations -------------------------------------------------------
+    #
+    # Nothing here is cached. A change that reaches what the auth lookups
+    # return (a member's status or role, a limit, the name) evicts the cached
+    # auth entries it concerns, as the account writes above do.
+
+    async def create_organization(self, **fields: Any) -> tuple[str, int]:
+        """Create an organization with its SSO connections and their members."""
+        result = await self._store.create_organization(**fields)
+        if result[1]:
+            # The new members' lookups now carry the organization's limits.
+            await self.invalidate_auth_caches()
+            await self._forget_new_members()
+        return result
+
+    async def _forget_new_members(self) -> None:
+        """Evict every cached account row: a join took the password of some of them.
+
+        An attach makes members of accounts the caller does not name, so every
+        row goes, as every auth entry does beside it.
+        """
+        await self._cache.delete_pattern(self._user_key("*"))
+
+    async def get_organization(self, organization_id: str) -> Row | None:
+        """One organization with its member count and the ids of its SSO connections."""
+        return await self._store.get_organization(organization_id)
+
+    async def list_organizations(self) -> list[Row]:
+        """Every organization, by name."""
+        return await self._store.list_organizations()
+
+    async def rename_organization(self, organization_id: str, name: str, **fields: Any) -> str:
+        """Give an organization another name, then evict the cached auth entries."""
+        outcome = await self._store.rename_organization(organization_id, name, **fields)
+        if outcome == UPDATED:
+            # The lookup of each member's keys carries the name: a refusal at
+            # the limit of the organization names it.
+            await self.invalidate_auth_caches()
+        return outcome
+
+    async def set_organization_limit(
+        self, organization_id: str, limit: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear one of an organization's limits, then evict the cached auth entries."""
+        result = await self._store.set_organization_limit(organization_id, limit, **fields)
+        # A limit of the organization reaches every member; one eviction for
+        # all of them costs each a lookup, which a change this rare can afford.
+        await self.invalidate_auth_caches()
+        return result
+
+    async def get_provider_organization(self, provider_id: str) -> str | None:
+        """The organization an ``SSO_PROVIDERS`` entry belongs to, if any."""
+        return await self._store.get_provider_organization(provider_id)
+
+    async def attach_organization_connection(
+        self, organization_id: str, provider_id: str, **fields: Any
+    ) -> tuple[str, int]:
+        """Attach a provider to an organization and make its accounts members."""
+        result = await self._store.attach_organization_connection(
+            organization_id, provider_id, **fields
+        )
+        if result[1]:
+            await self.invalidate_auth_caches()
+            await self._forget_new_members()
+        return result
+
+    async def detach_organization_connection(
+        self, organization_id: str, provider_id: str, **fields: Any
+    ) -> bool:
+        """Detach a provider from its organization; the members stay."""
+        return await self._store.detach_organization_connection(
+            organization_id, provider_id, **fields
+        )
+
+    async def get_organization_membership(self, user_id: str) -> Row | None:
+        """The organization an account belongs to and its role there, if any."""
+        return await self._store.get_organization_membership(user_id)
+
+    async def set_organization_member_role(
+        self, organization_id: str, user_id: str, role: str, **fields: Any
+    ) -> str:
+        """Give a member the administrator role, or take it back, then evict its cached auth."""
+        outcome = await self._store.set_organization_member_role(
+            organization_id, user_id, role, **fields
+        )
+        if outcome == UPDATED:
+            # The role decides the quota and the models the lookups carry: an
+            # administrator has no limit and no model list from its
+            # organization. The cached row of the account carries the list too.
+            await self.invalidate_user_auth_caches(user_id)
+            await self._cache.delete(self._user_key(user_id))
+        return outcome
+
+    async def remove_organization_member(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> str:
+        """Suspend a member's account, then invalidate it as a suspension does."""
+        result = await self._store.remove_organization_member(organization_id, user_id, **fields)
+        await self._cache.delete(self._user_key(user_id))
+        await self._forget_sessions(user_id)
+        await self.invalidate_user_auth_caches(user_id)
+        return result
+
+    async def restore_organization_member(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> str:
+        """Make a removed member active again, then invalidate its cached account."""
+        result = await self._store.restore_organization_member(organization_id, user_id, **fields)
+        await self._cache.delete(self._user_key(user_id))
+        await self.invalidate_user_auth_caches(user_id)
+        return result
+
+    async def set_organization_member_limit(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear a member's monthly quota, then evict its keys' cached auth entries."""
+        result = await self._store.set_organization_member_limit(organization_id, user_id, **fields)
+        await self.invalidate_user_auth_caches(user_id)
+        return result
+
+    async def set_organization_member_models(
+        self, organization_id: str, user_id: str, models: Any, **fields: Any
+    ) -> tuple[str, list[str], list[str]]:
+        """Replace the models that are off for a member, then evict what carries the old list.
+
+        The cached lookups of its keys, and the cached row of the account,
+        which the grant and the internal lookups read the list from.
+        """
+        result = await self._store.set_organization_member_models(
+            organization_id, user_id, models, **fields
+        )
+        await self.invalidate_user_auth_caches(user_id)
+        await self._cache.delete(self._user_key(user_id))
+        return result
+
+    async def revoke_organization_member_key(
+        self, organization_id: str, user_id: str, key_id: int, **fields: Any
+    ) -> tuple[str, str | None]:
+        """Revoke one key of a member, then evict the cached lookups that would still pass it."""
+        result = await self._store.revoke_organization_member_key(
+            organization_id, user_id, key_id, **fields
+        )
+        await self.invalidate_user_auth_caches(user_id)
+        if result[1] and result[1] != user_id:
+            await self.invalidate_user_auth_caches(result[1])
+        return result
+
+    async def clear_organization_member_removal(self, user_id: str) -> None:
+        """Forget that the organization removed an account."""
+        return await self._store.clear_organization_member_removal(user_id)
+
+    async def get_organization_spend_scope(self, user_id: str) -> Row | None:
+        """The organization of an account as the request path checks it; None for none."""
+        return await self._store.get_organization_spend_scope(user_id)
+
+    async def list_organization_administrators(self, organization_id: str) -> list[Row]:
+        """The members that have the administrator role, by email."""
+        return await self._store.list_organization_administrators(organization_id)
+
+    async def get_organization_month_spend(self, organization_id: str) -> Row:
+        """What the organization's counter holds for this UTC month."""
+        return await self._store.get_organization_month_spend(organization_id)
+
+    async def list_organization_members(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of members with their usage in a span of UTC days."""
+        return await self._store.list_organization_members(organization_id, **fields)
+
+    async def get_organization_usage(self, organization_id: str, **fields: Any) -> Row:
+        """The organization's totals, series and models in a span of UTC days."""
+        return await self._store.get_organization_usage(organization_id, **fields)
+
+    async def get_organization_request_volume(self, organization_id: str) -> Row:
+        """The requests of the members in the last hour, day, week and month."""
+        return await self._store.get_organization_request_volume(organization_id)
+
+    async def list_organization_requests(self, organization_id: str, **fields: Any) -> list[Row]:
+        """Requests of the organization's members, newest first, without their content."""
+        return await self._store.list_organization_requests(organization_id, **fields)
+
+    async def list_organization_audit(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of the audit rows that belong to an organization, newest first."""
+        return await self._store.list_organization_audit(organization_id, **fields)
 
     # -- login events (pass-through) -----------------------------------------
 
@@ -1316,6 +1517,12 @@ class CachedOperationalStore(OperationalStore):
         """Delegate to wrapped store."""
         return await self._store.delete_user_reset_tokens(user_id)
 
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give an account a password unless it is SSO-only, then evict its cached row."""
+        written = await self._store.set_user_password(user_id, password_hash)
+        await self._cache.delete(self._user_key(user_id))
+        return written
+
     async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
         """Delegate, then forget the reset account's cached user row and session liveness."""
         redemption = await self._store.redeem_reset_token(token, password_hash=password_hash)
@@ -1408,6 +1615,7 @@ class CachedOperationalStore(OperationalStore):
         success: bool = True,
         actor: AuditActor | None = None,
         target: AuditTarget | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.log_admin_action(
@@ -1418,6 +1626,7 @@ class CachedOperationalStore(OperationalStore):
             success=success,
             actor=actor,
             target=target,
+            organization_id=organization_id,
         )
 
     async def list_audit_log(
@@ -1425,6 +1634,7 @@ class CachedOperationalStore(OperationalStore):
         *,
         action: str | None = None,
         target_user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -1432,6 +1642,7 @@ class CachedOperationalStore(OperationalStore):
         return await self._store.list_audit_log(
             action=action,
             target_user_id=target_user_id,
+            organization_id=organization_id,
             limit=limit,
             offset=offset,
         )

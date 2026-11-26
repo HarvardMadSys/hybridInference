@@ -32,16 +32,28 @@ if TYPE_CHECKING:
 # The attribution columns, in the order every statement below lists them.
 ATTRIBUTION_COLUMNS = ("actor_type", "actor_id", "source_ip", "target_type", "target_id")
 
+#: The organization a row belongs to, NULL for a row of none. Added by migration
+#: ``0023_orgs``; like the attribution columns, every write names it.
+ORGANIZATION_COLUMN = "organization_id"
+
 # The legacy columns keep their parameter positions ($1-$5).
+INSERT_COLUMNS = (
+    "admin_ip",
+    "action",
+    "target_user_id",
+    "details",
+    "success",
+    *ATTRIBUTION_COLUMNS,
+    ORGANIZATION_COLUMN,
+)
 INSERT_SQL = (
     "INSERT INTO admin_audit_log "
-    "(admin_ip, action, target_user_id, details, success, "
-    f"{', '.join(ATTRIBUTION_COLUMNS)}) "
-    "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10)"
+    f"({', '.join(INSERT_COLUMNS)}) "
+    "VALUES ($1, $2, $3, $4::jsonb, $5, $6, $7, $8, $9, $10, $11)"
 )
 
 SELECT_COLUMNS = "id, timestamp, admin_ip, action, target_user_id, details, success, " + ", ".join(
-    ATTRIBUTION_COLUMNS
+    (*ATTRIBUTION_COLUMNS, ORGANIZATION_COLUMN)
 )
 
 
@@ -66,4 +78,5 @@ async def insert_audit_row(
         columns.source_ip,
         columns.target_type,
         columns.target_id,
+        columns.organization_id,
     )

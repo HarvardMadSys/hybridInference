@@ -643,6 +643,33 @@ async def test_a_spent_monthly_quota_pauses_the_owners_batches_and_checks_again_
     assert dispatch.calls == []
 
 
+async def test_a_spent_organization_limit_pauses_the_owners_batches_like_its_monthly_quota(
+    worker, dispatch, auth
+):
+    """Every batch of the owner waits, and is checked again within the hour."""
+    auth.outcome = StoredKeyQuotaExceeded(
+        quota_usd=1000.0,
+        spent_usd=1000.0,
+        reset_at=datetime.now(UTC) + timedelta(days=20),
+        scope="organization",
+        window="month",
+    )
+    store = FakeStore()
+    store.add(2)
+    scheduler = worker(store)
+
+    scheduler.start()
+    await until(lambda: OWNER in store.paused)
+    await settle()
+
+    # The kind the console already explains, for the whole account, not one key.
+    assert store.pause_reasons[OWNER] == "monthly_quota"
+    assert store.pause_key_hashes[OWNER] is None
+    assert store.paused[OWNER] <= datetime.now(UTC) + timedelta(seconds=SLOW.budget_recheck_seconds)
+    assert store.count("queued") == 2
+    assert dispatch.calls == []
+
+
 async def test_a_spent_key_budget_pauses_only_that_keys_batches(worker, dispatch, auth):
     """The account's other keys still have budget; only this key's batches wait."""
     auth.outcome = StoredKeyQuotaExceeded(

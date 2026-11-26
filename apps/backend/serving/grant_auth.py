@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING, Any
 
 from serving import grants, quota
 from serving.accounting import get_accounting_policy, money_decimal
-from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
+from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, disabled_models_of
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
 from serving.utils.logging import get_logger
 
@@ -164,6 +164,10 @@ async def _quota_check(
             returns more than its one quota row, or if either read fails.
             Every branch refuses; none defaults to "no ceiling".
     """
+    # Before the first read of a spend counter (see SpendCheck.read_at): the
+    # quota row carries what the Default project and the organization have
+    # spent, so a cost that lands while that row is read must still count.
+    read_at = time.monotonic()
     try:
         keys = await op_store.get_quota_context_for_user(user_id)
     except Exception as exc:
@@ -204,9 +208,8 @@ async def _quota_check(
     if context is not None:
         context.update(keys[0])
     if get_accounting_policy().native:
-        return await _native_quota_check(op_store, user_id, keys[0])
+        return await _native_quota_check(op_store, user_id, keys[0], read_at)
     monthly = keys[0].get("quota_monthly_cost_usd")
-    read_at = time.monotonic()
     try:
         spent = await op_store.get_user_cost_today(user_id)
         spent_month = (
@@ -237,19 +240,22 @@ async def _quota_check(
         project_spent_month_usd=float(keys[0].get("project_spent_month_usd") or 0.0),
         project_id=keys[0].get("project_id"),
         project_name=keys[0].get("project_name"),
+        **quota.organization_fields(keys[0], native=False),
     )
 
 
-async def _native_quota_check(op_store: Any, user_id: str, key: Mapping[str, Any]) -> SpendCheck:
+async def _native_quota_check(
+    op_store: Any, user_id: str, key: Mapping[str, Any], read_at: float
+) -> SpendCheck:
     """The account's and its Default project's limits, read in the native ledger.
 
     The same reads and the same ledger as the USD check, from the native
     columns and counters as exact decimals (see :class:`SpendCheck`). Reads
     fail closed exactly like the USD reads: an unmeasurable spend refuses with
-    503 rather than letting the call through unmetered.
+    503 rather than letting the call through unmetered. *read_at* is from
+    before *key* was read: it carries spend counters too.
     """
     monthly = quota.native_limit(key, "quota_monthly_cost_amount", "quota_monthly_cost_usd")
-    read_at = time.monotonic()
     try:
         limit_amount, spent_amount = await quota.daily_amounts(op_store, user_id, key)
         spent_month = (
@@ -285,6 +291,7 @@ async def _native_quota_check(op_store: Any, user_id: str, key: Mapping[str, Any
         project_spent_month_usd=money_decimal(key.get("project_spent_month_amount") or 0),
         project_id=key.get("project_id"),
         project_name=key.get("project_name"),
+        **quota.organization_fields(key, native=True),
     )
 
 
@@ -331,7 +338,7 @@ async def authenticate_grant_model_call(
         # an account's concurrency stopped applying the moment the call arrived
         # from an agent — a per-user control with a hole in it, and one nobody
         # would think to test for.
-        "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+        "disabled_models": disabled_models_of(user),
         "max_concurrent_requests": user.get("max_concurrent_requests"),
         # Attribution, unchanged: api_logs.agent_job_id is what the owner's
         # cost report reads, and it keeps working across the token change.

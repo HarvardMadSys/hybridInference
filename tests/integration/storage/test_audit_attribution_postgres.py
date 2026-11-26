@@ -81,6 +81,9 @@ async def test_the_migration_is_additive_idempotent_and_keeps_old_rows(legacy_co
 async def test_new_rows_on_a_migrated_table_carry_their_attribution(legacy_conn):
     conn = legacy_conn
     await ensure_admin_audit_log_schema(conn)
+    # The baseline stops at the attribution columns; the writer also names the
+    # column a later revision (``0023_orgs``) adds.
+    await conn.execute("ALTER TABLE admin_audit_log ADD COLUMN organization_id TEXT")
     columns = audit_columns(
         admin_ip=None,
         target_user_id=None,
@@ -100,6 +103,7 @@ async def test_new_rows_on_a_migrated_table_carry_their_attribution(legacy_conn)
         "glm-4.6",
         None,
     )
+    assert row["organization_id"] is None
 
 
 @pytest_asyncio.fixture

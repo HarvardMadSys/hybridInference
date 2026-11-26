@@ -157,6 +157,22 @@ def test_a_password_change_says_what_happened_and_how_to_recover(smtp, first, ve
     assert "signed out" in parts["text/plain"]
 
 
+def test_a_member_of_an_organization_is_told_how_its_account_signs_in(smtp):
+    """In place of a reset link: the account has no password."""
+    assert email_mod.send_sso_sign_in_email("member@example.edu", "Example <University>")
+
+    msg, parts = _only_message(smtp)
+    assert msg["To"] == "member@example.edu"
+    assert msg["Subject"] == "How to sign in to your Acme account"
+    assert "has no password" in parts["text/plain"]
+    assert "Example <University>" in parts["text/plain"]
+    assert "https://console.acme.test/login" in parts["text/plain"]
+    # The name of the organization is text, never markup.
+    assert "Example &lt;University&gt;" in parts["text/html"]
+    assert "<University>" not in parts["text/html"]
+    assert "reset-password" not in parts["text/html"] + parts["text/plain"]
+
+
 def test_a_deletion_tells_the_deleted_address(smtp):
     assert email_mod.send_account_deleted_email("owner@example.com") is True
 

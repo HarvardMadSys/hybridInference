@@ -135,6 +135,10 @@ class _Store:
     async def get_quota_context_for_user(self, user_id: str) -> list[dict[str, Any]]:
         return [{"quota_daily_cost_usd": self.daily_quota, "quota_monthly_cost_usd": None}]
 
+    async def get_user_preferences(self, user_id: str) -> dict[str, Any]:
+        """The playground reads the models that are off for the account; none here."""
+        return {}
+
     async def get_user_cost_today(self, user_id: str) -> float:
         return self.spent_today
 

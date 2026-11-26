@@ -119,6 +119,20 @@ class AccountStore:
         """Update columns of the account, as the operational store does."""
         await self._store.update_user_fields(user_id, **fields)
 
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give the account a password; False for a member of an organization.
+
+        The operational store decides it under the lock on the account, as the
+        gateway's own write does. A database from before organizations has no
+        members: there the password is written as any other field.
+        """
+        async with self._pool.acquire() as conn:
+            table = await conn.fetchrow("SELECT to_regclass('org_memberships') AS found")
+        if table is None or table.get("found") is None:
+            await self._store.update_user_fields(user_id, password_hash=password_hash)
+            return True
+        return await self._store.set_user_password(user_id, password_hash)
+
     async def delete_user_sessions(self, user_id: str) -> None:
         """Revoke every session of the account, as the operational store does."""
         await self._store.delete_user_sessions(user_id)
@@ -190,9 +204,14 @@ async def reset_password(store: Any, identifier: str, new_password: str) -> dict
             f"No account has the login name or email address {identifier!r}. Nothing was changed."
         )
 
-    await store.update_user_fields(
-        account["id"], password_hash=password_utils.hash_password(new_password)
+    written = await store.set_user_password(
+        account["id"], password_utils.hash_password(new_password)
     )
+    if not written:
+        raise ResetPasswordError(
+            f"The account {identifier!r} is a member of an organization. It signs in through "
+            "single sign-on only, and a password would not sign it in. Nothing was changed."
+        )
     await store.delete_user_sessions(account["id"])
     return account
 

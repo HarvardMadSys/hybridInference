@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from serving import organizations
 from serving.audit import AuditTarget
 from serving.auth import sso_accounts
 from serving.exceptions import (
@@ -30,7 +31,7 @@ from serving.exceptions import (
     generic_message_for_status,
     user_safe_error_for_log,
 )
-from serving.model_access import get_disabled_models_from_preferences, route_canonical_model_id
+from serving.model_access import route_canonical_model_id
 from serving.quota import DEFAULT_DAILY_QUOTA_USD
 from serving.schemas import ModelList
 from serving.schemas_auth import (
@@ -58,6 +59,7 @@ from serving.schemas_auth import (
     UserInfo,
     UserProfileUpdate,
 )
+from serving.schemas_organization import OrganizationRef
 from serving.servers.auth import (
     decrypt_api_key,
     encrypt_api_key,
@@ -368,11 +370,14 @@ async def get_current_user_info(
     if not user_row:
         raise UserNotFoundError(current_user["user_id"])
 
-    # Only an account with neither a password nor a verified phone confirms
-    # sensitive actions at its identity provider, so only it is looked up.
+    membership = await organizations.membership_of(op_store, user_row["id"])
+    sso_only = organizations.is_sso_only(user_row, membership)
+    # An account with neither a password nor a verified phone confirms
+    # sensitive actions at its identity provider, and so does a member of an
+    # organization, whatever its account holds: only for those is it looked up.
     reauth_provider = (
         await sso_accounts.account_provider(op_store, user_row["id"])
-        if sso_accounts.confirms_through_provider(user_row)
+        if sso_only or sso_accounts.confirms_through_provider(user_row)
         else None
     )
     return UserInfo(
@@ -381,7 +386,9 @@ async def get_current_user_info(
         login_name=user_row.get("login_name"),
         phone=user_row.get("phone"),
         phone_verified=user_row.get("phone_verified", False),
-        has_password=bool(user_row.get("password_hash")),
+        # A password that stayed on a member signs nobody in and confirms
+        # nothing: for the console the account has none.
+        has_password=bool(user_row.get("password_hash")) and not sso_only,
         sso_reauth_provider=sso_accounts.provider_ref(reauth_provider),
         user_name=user_row["user_name"],
         avatar_url=await op_store.get_user_avatar(user_row["id"]),
@@ -392,6 +399,16 @@ async def get_current_user_info(
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
         locale=_extract_locale_preference(_coerce_preferences(user_row.get("preferences"))),
+        organization=(
+            OrganizationRef(
+                id=membership["organization_id"],
+                name=membership["organization_name"],
+                role=membership["role"],
+            )
+            if membership
+            else None
+        ),
+        sso_only=sso_only,
     )
 
 
@@ -406,8 +423,8 @@ async def get_user_models(
     """List models available to the current dashboard user."""
     disabled_models: list[str] = []
     if op_store:
-        disabled_models = get_disabled_models_from_preferences(
-            await op_store.get_user_preferences(current_user["user_id"])
+        disabled_models = await organizations.disabled_models_of_account(
+            op_store, current_user["user_id"]
         )
     return await _build_model_list_async(
         router_exec=router_exec,
@@ -1358,6 +1375,7 @@ async def update_profile(
         is_admin=(user_row["role"] or "free") == "admin",
         created_at=user_row["created_at"],
         last_login_at=user_row["last_login_at"],
+        sso_only=await organizations.signs_in_through_sso_only(op_store, user_row),
     )
 
 
@@ -1389,6 +1407,9 @@ async def change_password(
     if not user_row:
         raise HTTPException(status_code=404, detail="User not found")
 
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
+
     first_password = not user_row.get("password_hash")
     # The current password, or for a first password (a new way in, which the
     # session alone cannot add) a code sent to the account's phone.
@@ -1408,7 +1429,10 @@ async def change_password(
 
     # A signed-in owner, confirmed just above: not refused for a busy queue.
     new_password_hash = await password_utils.hash_password_async(body.new_password, shed=False)
-    await op_store.update_user_fields(current_user["user_id"], password_hash=new_password_hash)
+    # Decided again where it is written: the account can have become a member
+    # of an organization since the check above.
+    if not await op_store.set_user_password(current_user["user_id"], new_password_hash):
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
     # Whoever else holds a session (the reason to change a password, often)
     # loses it; this one stays signed in.
     revoked = await op_store.revoke_user_sessions(

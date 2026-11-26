@@ -85,7 +85,7 @@ async def db():
     )
     try:
         async with pool.acquire() as conn:
-            for table in ("users", "api_keys", "user_daily_cost"):
+            for table in ("users", "api_keys", "user_daily_cost", "orgs", "org_memberships"):
                 await conn.execute(f"CREATE TABLE {table} (LIKE public.{table} INCLUDING ALL)")
             await mig.ensure_api_logs_tables(conn)
             for i, uid in enumerate(_USERS):

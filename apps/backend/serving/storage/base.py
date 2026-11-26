@@ -118,11 +118,12 @@ class ResetRedemption(NamedTuple):
 
     *outcome* is ``"reset"`` when the password was replaced, and otherwise why
     the link was refused: ``"invalid"`` (no such link, or no such account),
-    ``"used"`` or ``"expired"``. *user_id* is the account reset, for
-    ``"reset"`` only.
+    ``"used"``, ``"expired"``, or ``"sso_only"`` (the account is a member of
+    an organization, which has no password). *user_id* is the account reset,
+    for ``"reset"`` only.
     """
 
-    outcome: Literal["reset", "invalid", "used", "expired"]
+    outcome: Literal["reset", "invalid", "used", "expired", "sso_only"]
     user_id: str | None = None
 
 
@@ -169,6 +170,21 @@ API_KEYS_MUTABLE_COLUMNS: dict[str, str] = {
 # ---------------------------------------------------------------------------
 # OperationalStore — users, keys, sessions, tokens, audit
 # ---------------------------------------------------------------------------
+
+
+class OrganizationsUnavailableError(RuntimeError):
+    """This store keeps no organizations.
+
+    What the organization methods of a store raise when it does not implement
+    them. A caller that treats such a store as one with no organization
+    catches this and nothing wider: a :class:`RuntimeError` is also what a
+    store raises when it cannot answer now
+    (:class:`~serving.storage.pools.DatabaseBusyError`), and an account whose
+    organization could not be read is not an account in none.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("Organizations are unavailable in this store")
 
 
 class OperationalStore(ABC):
@@ -291,6 +307,126 @@ class OperationalStore(ABC):
     async def delete_sso_pending_link(self, token_hash: str) -> None:
         """Drop a pending link its browser declined."""
         raise RuntimeError("Single sign-on is unavailable in this store")
+
+    # -- organizations (optional for legacy store implementations) -----------
+
+    async def create_organization(self, **fields: Any) -> tuple[str, int]:
+        """Create an organization with its SSO connections and their members."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization(self, organization_id: str) -> Row | None:
+        """One organization with its member count and the ids of its SSO connections."""
+        raise OrganizationsUnavailableError
+
+    async def list_organizations(self) -> list[Row]:
+        """Every organization, by name."""
+        raise OrganizationsUnavailableError
+
+    async def rename_organization(self, organization_id: str, name: str, **fields: Any) -> str:
+        """Give an organization another name."""
+        raise OrganizationsUnavailableError
+
+    async def set_organization_limit(
+        self, organization_id: str, limit: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear one of an organization's limits."""
+        raise OrganizationsUnavailableError
+
+    async def get_provider_organization(self, provider_id: str) -> str | None:
+        """The organization an ``SSO_PROVIDERS`` entry belongs to, if any."""
+        raise OrganizationsUnavailableError
+
+    async def attach_organization_connection(
+        self, organization_id: str, provider_id: str, **fields: Any
+    ) -> tuple[str, int]:
+        """Attach a provider to an organization and make its accounts members."""
+        raise OrganizationsUnavailableError
+
+    async def detach_organization_connection(
+        self, organization_id: str, provider_id: str, **fields: Any
+    ) -> bool:
+        """Detach a provider from its organization; the members stay."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization_membership(self, user_id: str) -> Row | None:
+        """The organization an account belongs to and its role there, if any."""
+        raise OrganizationsUnavailableError
+
+    async def set_organization_member_models(
+        self, organization_id: str, user_id: str, models: Any, **fields: Any
+    ) -> tuple[str, list[str], list[str]]:
+        """Replace the models an organization turned off for one member."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization_request_volume(self, organization_id: str) -> Row:
+        """The requests of the members in the last hour, day, week and month."""
+        raise OrganizationsUnavailableError
+
+    async def revoke_organization_member_key(
+        self, organization_id: str, user_id: str, key_id: int, **fields: Any
+    ) -> tuple[str, str | None]:
+        """Revoke one API key of a member."""
+        raise OrganizationsUnavailableError
+
+    async def set_organization_member_role(
+        self, organization_id: str, user_id: str, role: str, **fields: Any
+    ) -> str:
+        """Give a member the administrator role, or take it back."""
+        raise OrganizationsUnavailableError
+
+    async def remove_organization_member(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> str:
+        """Suspend a member's account for its organization."""
+        raise OrganizationsUnavailableError
+
+    async def restore_organization_member(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> str:
+        """Make a member the organization removed active again."""
+        raise OrganizationsUnavailableError
+
+    async def set_organization_member_limit(
+        self, organization_id: str, user_id: str, **fields: Any
+    ) -> tuple[str, Any, Any]:
+        """Set or clear the monthly limit an organization has for one member."""
+        raise OrganizationsUnavailableError
+
+    async def clear_organization_member_removal(self, user_id: str) -> None:
+        """Forget that the organization removed an account."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization_spend_scope(self, user_id: str) -> Row | None:
+        """The organization of an account as the request path checks it; None for none."""
+        raise OrganizationsUnavailableError
+
+    async def list_organization_administrators(self, organization_id: str) -> list[Row]:
+        """The members that have the administrator role, by email."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization_month_spend(self, organization_id: str) -> Row:
+        """What the organization's counter holds for this UTC month."""
+        raise OrganizationsUnavailableError
+
+    async def list_organization_members(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of members with their usage in a span of UTC days."""
+        raise OrganizationsUnavailableError
+
+    async def get_organization_usage(self, organization_id: str, **fields: Any) -> Row:
+        """The organization's totals, series and models in a span of UTC days."""
+        raise OrganizationsUnavailableError
+
+    async def list_organization_requests(self, organization_id: str, **fields: Any) -> list[Row]:
+        """Requests of the organization's members, newest first, without their content."""
+        raise OrganizationsUnavailableError
+
+    async def list_organization_audit(
+        self, organization_id: str, **fields: Any
+    ) -> tuple[int, list[Row]]:
+        """One page of the audit rows that belong to an organization, newest first."""
+        raise OrganizationsUnavailableError
 
     # -- users ---------------------------------------------------------------
 
@@ -559,6 +695,7 @@ class OperationalStore(ABC):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        organization_id: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -579,6 +716,10 @@ class OperationalStore(ABC):
         Additional kw-only filters (all default to ``None`` — no-op):
         - ``min_cost_today`` / ``min_cost_month``: filter to users whose
           today/month spend meets the threshold (USD).
+        - ``organization_id``: keep the members of one organization, or with
+          ``"none"`` the accounts in no organization. Each row has
+          ``organization_id``, ``organization_name`` and ``organization_role``,
+          NULL for an account in none.
         - ``quota_state``: ``"default"``/``"custom"`` filter on the user's
           active key quota; ``"near"``/``"over"`` compare today's spend
           against quota.
@@ -1360,6 +1501,16 @@ class OperationalStore(ABC):
     async def delete_user_reset_tokens(self, user_id: str) -> None:
         """Delete all reset tokens for a user."""
 
+    async def set_user_password(self, user_id: str, password_hash: str) -> bool:
+        """Give an account a password, unless it signs in through single sign-on only.
+
+        False, with nothing written, for a member of an organization that is
+        not a platform administrator. A store that keeps no organizations
+        writes the password as any other field.
+        """
+        await self.update_user_fields(user_id, password_hash=password_hash)
+        return True
+
     @abstractmethod
     async def redeem_reset_token(self, token: str, *, password_hash: str) -> ResetRedemption:
         """Spend reset link *token* on a new password, all in one transaction.
@@ -1483,6 +1634,7 @@ class OperationalStore(ABC):
         success: bool = True,
         actor: AuditActor | None = None,
         target: AuditTarget | None = None,
+        organization_id: str | None = None,
     ) -> None:
         """Insert a row into admin_audit_log.
 
@@ -1494,7 +1646,8 @@ class OperationalStore(ABC):
         stored raw as given, and every attribution column NULL. A legacy
         *target_user_id* stays untyped; its type is never inferred from it.
         Passing a legacy argument together with the actor or target it would
-        contradict raises ``ValueError``.
+        contradict raises ``ValueError``. *organization_id* is the
+        organization the row belongs to, None for a row of none.
         """
 
     @abstractmethod
@@ -1503,6 +1656,7 @@ class OperationalStore(ABC):
         *,
         action: str | None = None,
         target_user_id: str | None = None,
+        organization_id: str | None = None,
         limit: int = 50,
         offset: int = 0,
     ) -> tuple[int, list[Row]]:
@@ -1510,7 +1664,8 @@ class OperationalStore(ABC):
 
         Each row has the legacy columns and the attribution columns
         (``actor_type``, ``actor_id``, ``target_type``, ``target_id``), NULL
-        for a row written without them.
+        for a row written without them. *organization_id* keeps only the rows
+        of that organization.
         """
 
     @abstractmethod

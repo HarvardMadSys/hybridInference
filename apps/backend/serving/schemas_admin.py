@@ -29,6 +29,7 @@ from serving.adapters.reasoning_effort import stored_effort_map, validate_effort
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
 from serving.schemas_auth import SsoIdentity
+from serving.schemas_organization import OrganizationRef
 
 
 class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
@@ -225,6 +226,8 @@ class UserListItem(MoneyResponse):
     has_key: bool = False
     key_prefix: str | None = None
     key_status: str | None = None
+    #: The organization the account is a member of and its role there, if any.
+    organization: OrganizationRef | None = None
     usage_today_usd: Decimal = Field(default=Decimal("0"))
     usage_month_usd: Decimal = Field(default=Decimal("0"))
     usage_alltime_usd: Decimal = Field(default=Decimal("0"))
@@ -539,6 +542,8 @@ class UserDetailResponse(MoneyResponse):
     suspension_message: str | None = None
     # The single sign-on identities linked to the account.
     sso_identities: list[SsoIdentity] = Field(default_factory=list)
+    #: The organization the account is a member of and its role there, if any.
+    organization: OrganizationRef | None = None
     # Mean conversation depth across this user's chat requests (all-time).
     # ``avg_turns`` is the average message count, ``avg_user_turns`` the average
     # user-message count; both None when the user has no chat-style requests.
@@ -640,6 +645,8 @@ class AuditLogEntry(BaseModel):
     source_ip: str | None = None
     target_type: str | None = None
     target_id: str | None = None
+    #: The organization the row belongs to; null for a row of none.
+    organization_id: str | None = None
 
 
 class ListAuditLogResponse(BaseModel):

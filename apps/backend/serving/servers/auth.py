@@ -14,7 +14,7 @@ from typing import Any
 from cryptography.fernet import Fernet
 from fastapi import Depends, Header, HTTPException, Request
 
-from serving import grants, quota
+from serving import grants, organizations, quota
 from serving.accounting import get_accounting_policy, money_decimal
 from serving.audit import AuditActor, AuditTarget, audit_columns
 from serving.config.app_config import config_value
@@ -27,8 +27,9 @@ from serving.grant_auth import (
 )
 from serving.model_access import (
     KEY_ALLOWED_MODELS_KEY,
+    ORGANIZATION_DISABLED_MODELS_KEY,
     PROJECT_ALLOWED_MODELS_KEY,
-    get_disabled_models_from_preferences,
+    disabled_models_of,
 )
 from serving.observability import detached_tasks
 from serving.observability.rejection_log import (
@@ -462,6 +463,10 @@ async def _spend_check(
     by key (``X-On-Behalf-Of``) carries its account's quotas
     (:func:`_account_quotas`), and its month's spend is read here.
 
+    The organization the account is a member of comes last, and its month's
+    spend likewise: with the lookup, or read for an identity that came without
+    (:func:`serving.organizations.check_fields`).
+
     ``read_at`` is when the first of these reads began
     (:attr:`~serving.spend_ledger.SpendCheck.read_at`). The check counts, on
     top of what was read, what the spend ledger knows and the counters do not
@@ -480,6 +485,7 @@ async def _spend_check(
         key_id=api_key_id,
         read_at=read_at,
         **counters,
+        **await organizations.check_fields(op_store, identity, native=False),
     )
 
 
@@ -629,6 +635,7 @@ async def _native_spend_check(
         project_spent_month_usd=money_decimal(project_month),
         project_id=identity.get("project_id"),
         project_name=identity.get("project_name"),
+        **await organizations.check_fields(op_store, identity, native=True),
     )
     return check, limit_amount, spent_amount
 
@@ -650,6 +657,12 @@ async def _gate(
     amounts (:func:`_native_spend_check`), and the USD values are their
     equivalents at the fixed policy rate. ``spent_usd`` is today's spend when
     the auth lookup carried it, else None and it is read here.
+
+    The check also carries the organization the account is a member of, with
+    its monthly limit and what its counter held: the last of the levels a
+    request is checked against. An identity resolved by key has it from its
+    lookup; one resolved by account has it from the read of its account's
+    quotas (:func:`_account_quotas`).
     """
     policy = get_accounting_policy()
     user_id = identity["user_id"]
@@ -755,7 +768,7 @@ def _user_context(
         "spent_today_usd": spent_today_usd,
         "quota_remaining_cost_usd": quota_daily_cost_usd - spent_today_usd,
         "is_admin": user_role == "admin",
-        "disabled_models": get_disabled_models_from_preferences(identity.get("preferences")),
+        "disabled_models": disabled_models_of(identity),
         "max_concurrent_requests": identity.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation;
@@ -1084,7 +1097,11 @@ async def _resolve_effective_identity(
     # The end user's own quotas, daily and monthly, gate what is spent on their
     # behalf; their spend counters are keyed by user_id, so they meet the same
     # limits as their own key would.
-    daily, monthly, daily_amount, monthly_amount = await _account_quotas(op_store, target)
+    # And the organization the end user is a member of: what is spent on their
+    # behalf counts against its limit as their own requests do.
+    daily, monthly, daily_amount, monthly_amount, organization = await _account_quotas(
+        op_store, target
+    )
     return {
         "user_id": target["id"],
         "user_name": target.get("user_name"),
@@ -1094,11 +1111,17 @@ async def _resolve_effective_identity(
         "quota_daily_cost_amount": daily_amount,
         "quota_monthly_cost_amount": monthly_amount,
         "preferences": target.get("preferences"),
+        # With the models its organization turned off for it: on behalf of an
+        # account, a model is refused as it is for the account's own key.
+        ORGANIZATION_DISABLED_MODELS_KEY: target.get(ORGANIZATION_DISABLED_MODELS_KEY),
         "max_concurrent_requests": target.get("max_concurrent_requests"),
+        **organization,
     }
 
 
-async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any, Any, Any]:
+async def _account_quotas(
+    op_store: Any, user: dict[str, Any]
+) -> tuple[Any, Any, Any, Any, dict[str, Any]]:
     """The daily and monthly cost quotas of *user*'s account, for spending on their behalf.
 
     The account's quotas are stored on each of its API keys (any live one
@@ -1106,6 +1129,14 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
     has none stored, so it gets what its first key would: its role's default
     daily quota and no monthly quota -- not the far larger default that a key
     row with no quota stands for.
+
+    The last element is the organization the account is a member of, as the
+    columns an identity carries it in (:data:`serving.organizations.ORGANIZATION_COLUMNS`),
+    empty for an account in none. The monthly quota of a member is the lower
+    of the account's own and what its organization has for it (the limit it
+    set for the member, else its default): from the same row for an account
+    with a key, read on its own for one without -- an administrator of the
+    organization sets a limit for a member that has no key too.
     """
     rows = await op_store.get_quota_context_for_user(user["id"])
     if rows:
@@ -1115,7 +1146,9 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
             row.get("quota_monthly_cost_usd"),
             quota.native_limit(row, "quota_daily_cost_amount", "quota_daily_cost_usd"),
             quota.native_limit(row, "quota_monthly_cost_amount", "quota_monthly_cost_usd"),
+            organizations.columns_of(row),
         )
+    scope = await organizations.spend_scope_of(op_store, user["id"]) or {}
     # Imported here: the router imports this module.
     from serving.config.runtime_settings import get_runtime_settings_instance
     from serving.servers.routers.user_routes import get_default_daily_quota_for_role
@@ -1126,7 +1159,13 @@ async def _account_quotas(op_store: Any, user: dict[str, Any]) -> tuple[Any, Any
         runtime_settings = None
     role = user.get("role") or "free"
     daily = await get_default_daily_quota_for_role(role, runtime_settings)
-    return daily, None, get_accounting_policy().from_usd(daily), None
+    return (
+        daily,
+        scope.get("quota_monthly_cost_usd"),
+        get_accounting_policy().from_usd(daily),
+        quota.native_limit(scope, "quota_monthly_cost_amount", "quota_monthly_cost_usd"),
+        organizations.columns_of(scope),
+    )
 
 
 # The only routes an agent-job token may reach. An allowlist rather than a
@@ -1733,7 +1772,7 @@ async def optional_verify_api_key(
         "role": user_role,
         "authenticated": True,
         "is_admin": user_role == "admin",
-        "disabled_models": get_disabled_models_from_preferences(row.get("preferences")),
+        "disabled_models": disabled_models_of(row),
         "max_concurrent_requests": row.get("max_concurrent_requests"),
         # key_hash identifies the specific hyi-xxx key in use (a user may
         # have multiple). Used as the affinity key for multi-key API rotation.
@@ -1768,6 +1807,7 @@ async def log_admin_action(
     *,
     actor: AuditActor | None = None,
     target: AuditTarget | None = None,
+    organization_id: str | None = None,
 ) -> None:
     """Log an action to the audit trail.
 
@@ -1790,6 +1830,7 @@ async def log_admin_action(
         success: Whether the action succeeded
         actor: Who acted
         target: What was acted on
+        organization_id: The organization the row belongs to, if any
     """
     if not action:
         raise ValueError("log_admin_action needs an action")
@@ -1798,6 +1839,9 @@ async def log_admin_action(
 
     # Use store method if available (new path)
     if hasattr(db_logger, "log_admin_action"):
+        # Named only for a row that has one, so a store written before
+        # organizations existed keeps receiving the call it knows.
+        scope = {"organization_id": organization_id} if organization_id is not None else {}
         await db_logger.log_admin_action(
             admin_ip=admin_ip,
             action=action,
@@ -1806,6 +1850,7 @@ async def log_admin_action(
             success=success,
             actor=actor,
             target=target,
+            **scope,
         )
         return
 
@@ -1816,7 +1861,11 @@ async def log_admin_action(
     from serving.storage.audit_schema import insert_audit_row
 
     columns = audit_columns(
-        admin_ip=admin_ip, target_user_id=target_user_id, actor=actor, target=target
+        admin_ip=admin_ip,
+        target_user_id=target_user_id,
+        actor=actor,
+        target=target,
+        organization_id=organization_id,
     )
     async with db_logger.pool.acquire() as conn:
         await insert_audit_row(

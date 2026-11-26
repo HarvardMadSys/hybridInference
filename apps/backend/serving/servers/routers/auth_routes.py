@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 
+from serving import organizations
 from serving.audit import AuditActor, AuditTarget
 from serving.auth import sso_accounts
 from serving.auth.browser_sessions import (
@@ -32,7 +33,12 @@ from serving.auth.signup_policy import (
     is_public_signup_enabled,
 )
 from serving.config.settings import get_signup_notify_emails, is_admin_email, settings
-from serving.exceptions import AccountSuspendedError, SelfDeleteRefused
+from serving.exceptions import (
+    WRONG_CREDENTIALS_DETAIL,
+    AccountSuspendedError,
+    SelfDeleteRefused,
+    SsoSignInRequiredError,
+)
 from serving.schemas_auth import (
     AccountsResponse,
     AccountSummary,
@@ -72,6 +78,7 @@ from serving.utils.email import (
     send_account_deleted_email,
     send_email_changed_email,
     send_new_registration_admin_email,
+    send_sso_sign_in_email,
     send_verification_email,
 )
 from serving.utils.email_blocklist import is_email_domain_blocked
@@ -386,6 +393,21 @@ async def signup(
     )
 
 
+async def _wrong_credentials(op_store: Any, identifier: str) -> Exception:
+    """The refusal of a wrong name or password, the same for every cause.
+
+    For an address whose domain an organization's SSO connection answers for,
+    it also names that connection: the accounts of that organization have no
+    password, and a member who types an old one must be told where to go. It
+    depends on the address alone, so it is the same for an account that does
+    not exist, a wrong password and a member.
+    """
+    provider = await organizations.organization_provider_for(op_store, identifier)
+    if provider is not None:
+        return SsoSignInRequiredError(provider.display_name)
+    return HTTPException(status_code=401, detail=WRONG_CREDENTIALS_DETAIL)
+
+
 @router.post("/login", response_model=LoginResponse)
 async def login(
     request: Request,
@@ -492,11 +514,18 @@ async def login(
 
     if not user_row:
         await _record("failure", failure_reason="user_not_found", user_id=None)
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise await _wrong_credentials(op_store, identifier)
 
     if not password_matches:
         await _record("failure", failure_reason="invalid_password", user_id=user_row["id"])
-        raise HTTPException(status_code=401, detail="Invalid email or password")
+        raise await _wrong_credentials(op_store, identifier)
+
+    # A member of an organization has no password: the join took it. One that
+    # stayed (the account was a platform administrator then) signs nobody in,
+    # and is answered as a wrong one, as for an account that never had one.
+    if await organizations.signs_in_through_sso_only(op_store, user_row):
+        await _record("failure", failure_reason="sso_only", user_id=user_row["id"])
+        raise await _wrong_credentials(op_store, identifier)
 
     # Check account status *before* email verification. A suspended, rejected,
     # or pending account must be reported as such: otherwise an account that is
@@ -897,7 +926,13 @@ async def switch_account(
         access_token=access_token,
         token_type="bearer",
         expires_in=get_access_token_expire_minutes() * 60,
-        user=account_user_info(account, role=user_role),
+        user=account_user_info(
+            account,
+            role=user_role,
+            sso_only=await organizations.signs_in_through_sso_only(
+                op_store, {"id": account["user_id"], "role": user_role, "email": account["email"]}
+            ),
+        ),
     )
 
 
@@ -1056,6 +1091,22 @@ async def forgot_password(
             message="If an account exists with this email, a password reset link has been sent."
         )
 
+    # A member of an organization signs in through single sign-on and has no
+    # password to reset: no link is made. The answer is the one every address
+    # gets, so it does not tell who is a member.
+    membership = await organizations.membership_of(op_store, user_row["id"])
+    if organizations.is_sso_only(user_row, membership):
+        # In place of the link, a message to the owner alone: how the account
+        # is signed in to. The page still gives every address one answer.
+        if is_email_enabled():
+            background_tasks.add_task(
+                send_sso_sign_in_email, user_row["email"], membership["organization_name"]
+            )
+        logger.info(f"Password reset not sent to organization member: {user_row['id']}")
+        return PasswordResetResponse(
+            message="If an account exists with this email, a password reset link has been sent."
+        )
+
     # Every request let through mails a link that works, the same one while it
     # has most of its life left: repeated requests add no rows, and someone
     # asking for another person's reset only sends that person working links.
@@ -1133,6 +1184,10 @@ async def reset_password(
 
     password_hash_str = await password_utils.hash_password_async(body.new_password)
     redemption = await op_store.redeem_reset_token(body.token, password_hash=password_hash_str)
+    if redemption.outcome == "sso_only":
+        # The link is good; the account became a member of an organization
+        # after it was sent, and has no password any more.
+        raise HTTPException(status_code=403, detail=organizations.SSO_ONLY_DETAIL)
     if redemption.outcome != "reset":
         raise _reset_refused(redemption.outcome)
 

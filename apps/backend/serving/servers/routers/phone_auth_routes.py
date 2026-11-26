@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
+from serving import organizations
 from serving.audit import AuditActor, AuditTarget
 from serving.auth.browser_sessions import complete_sign_in, hash_refresh_token, prepare_sign_in
 from serving.auth.signup_policy import allowlist_is_empty, is_public_signup_enabled
@@ -374,6 +375,13 @@ async def phone_login(
     if not user.get("phone_verified"):
         await record("failure", "phone_unverified")
         raise HTTPException(403, "Phone number is not verified.")
+    if await organizations.signs_in_through_sso_only(op_store, user):
+        # The code is good, so its holder owns the phone and is told why: the
+        # identity provider of the organization decides who signs in.
+        await record("failure", "sso_only")
+        raise HTTPException(
+            403, "This account belongs to an organization. Sign in through single sign-on."
+        )
     try:
         browser = await prepare_sign_in(op_store, request, user["id"])
     except HTTPException:

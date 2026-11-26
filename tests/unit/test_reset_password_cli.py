@@ -75,6 +75,9 @@ def _store(account: dict[str, Any] | None) -> MagicMock:
     store.get_user_by_login_name = AsyncMock(return_value=account)
     store.update_user_fields = AsyncMock()
     store.delete_user_sessions = AsyncMock()
+    # The write that decides: false for a member of an organization, which
+    # gets no password from the tool.
+    store.set_user_password = AsyncMock(return_value=True)
     return store
 
 
@@ -120,9 +123,8 @@ class TestResetPassword:
         assert account is ADMIN
         store.get_user_by_login_name.assert_awaited_once_with("Admin")
         store.get_user_by_email.assert_not_awaited()
-        (user_id,) = store.update_user_fields.await_args.args
+        user_id, new_hash = store.set_user_password.await_args.args
         assert user_id == "u-admin"
-        new_hash = store.update_user_fields.await_args.kwargs["password_hash"]
         assert password_utils.verify_password(STRONG, new_hash)
         store.delete_user_sessions.assert_awaited_once_with("u-admin")
 
@@ -140,7 +142,7 @@ class TestResetPassword:
         with pytest.raises(cli.ResetPasswordError, match="No account"):
             await cli.reset_password(store, "ghost", STRONG)
 
-        store.update_user_fields.assert_not_awaited()
+        store.set_user_password.assert_not_awaited()
         store.delete_user_sessions.assert_not_awaited()
 
     async def test_weak_password_never_reaches_the_database(self):
@@ -150,7 +152,7 @@ class TestResetPassword:
             await cli.reset_password(store, "admin", "password")
 
         store.get_user_by_login_name.assert_not_awaited()
-        store.update_user_fields.assert_not_awaited()
+        store.set_user_password.assert_not_awaited()
 
 
 class TestDescribe:
@@ -336,3 +338,16 @@ async def test_the_database_is_reached_with_the_db_settings_alone(monkeypatch):
     with pytest.raises(cli.ResetPasswordError, match=r"Could not connect to the database"):
         await cli._reset_with_database("admin", "a-new-Passw0rd")
     assert (seen["host"], seen["port"]) == ("db.internal", 6543)
+
+
+class TestMemberOfAnOrganization:
+    async def test_the_tool_refuses_and_changes_nothing(self):
+        """A member signs in through single sign-on only: a password would not sign it in."""
+        store = _store({"id": "u-1", "email": "member@example.edu"})
+        store.set_user_password = AsyncMock(return_value=False)
+
+        with pytest.raises(cli.ResetPasswordError, match="single sign-on"):
+            await cli.reset_password(store, "member@example.edu", "A-new-passw0rd-of-mine")
+
+        # Its sessions stay: nothing about the account was changed.
+        store.delete_user_sessions.assert_not_awaited()

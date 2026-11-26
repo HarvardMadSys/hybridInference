@@ -5,10 +5,11 @@ from __future__ import annotations
 import json as _json
 import logging
 from decimal import Decimal
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
+from serving import organizations
 from serving.accounting import get_accounting_policy
 from serving.accounting_api import native_quota_updates, primary_amounts
 from serving.audit import AuditActor, AuditTarget
@@ -67,6 +68,7 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
+from serving.schemas_organization import OrganizationRef
 from serving.servers.auth import log_admin_action
 from serving.servers.deps import (
     AppServices,
@@ -102,6 +104,28 @@ def _user_label(user_row: dict) -> str:
     )
 
 
+def _membership_ref(membership: Any) -> OrganizationRef | None:
+    """The organization of an account, from its membership; None for none."""
+    if not membership:
+        return None
+    return OrganizationRef(
+        id=membership["organization_id"],
+        name=membership["organization_name"],
+        role=membership["role"],
+    )
+
+
+def _organization_of(row: Any) -> OrganizationRef | None:
+    """The organization of an account, from a row that carries its membership; None for none."""
+    if not row or not row.get("organization_id"):
+        return None
+    return OrganizationRef(
+        id=row["organization_id"],
+        name=row["organization_name"],
+        role=row["organization_role"],
+    )
+
+
 @router.get("/users", response_model=ListUsersResponse)
 async def list_users(
     request: Request,
@@ -127,6 +151,7 @@ async def list_users(
     active_within_hours: int | None = Query(None, ge=1),
     anomaly: bool | None = None,
     include_usage_totals: bool = True,
+    organization_id: str | None = Query(None, max_length=64),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -158,6 +183,9 @@ async def list_users(
     - anomaly: when ``true``, keep only users whose today's spend is
       anomalously high vs. their prior 7-day average (today >= $1, history
       >= 3 days, today >= 5x avg).
+    - organization_id: keep the members of one organization, or with ``none``
+      the accounts in no organization. Each row has ``organization``, its
+      id, name and the role of the account there, or null.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -184,6 +212,7 @@ async def list_users(
         active_within_hours=active_within_hours,
         anomaly=anomaly,
         include_usage_totals=include_usage_totals,
+        organization_id=organization_id,
     )
 
     status_counts = StatusCounts(
@@ -221,6 +250,7 @@ async def list_users(
                 has_key=row.get("key_prefix") is not None,
                 key_prefix=row.get("key_prefix"),
                 key_status=row.get("key_status"),
+                organization=_organization_of(row),
                 usage_today_usd=Decimal(str(row.get("usage_today", 0))),
                 usage_month_usd=Decimal(str(row.get("usage_month", 0))),
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
@@ -860,6 +890,7 @@ async def get_user_detail(
         admin_note=user_row.get("admin_note"),
         suspension_message=user_row.get("suspension_message"),
         sso_identities=await sso_accounts.identity_summaries(op_store, user_id),
+        organization=_membership_ref(await organizations.membership_of(op_store, user_id)),
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,
@@ -1087,6 +1118,15 @@ async def update_user(
         await op_store.suspend_user(user_id, **fields)
     elif user_table_updates:
         await op_store.update_user_fields(user_id, **user_table_updates)
+        if new_status == "active" or user_table_updates.get("suspension_message"):
+            # Made active here, by the platform: if an organization had
+            # removed this member, that removal is over, and the account's
+            # next suspension is not the organization's to undo. The same when
+            # the platform writes why the account is suspended: an account
+            # cannot be suspended twice, so this is how the platform takes a
+            # removal over, and the organization's restore would otherwise
+            # make the account active and erase the reason.
+            await organizations.forget_removal(op_store, user_id)
 
     # Update key-level fields. ``key_fields`` (with the native amounts added by
     # ``native_quota_updates`` above) was validated before any write, so a
@@ -1198,6 +1238,7 @@ async def list_audit_actions(
 async def list_audit_log(
     action: str | None = None,
     target_user_id: str | None = None,
+    organization_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
     admin_id: str = Depends(verify_admin_access),
@@ -1213,6 +1254,7 @@ async def list_audit_log(
     Query Parameters:
     - action: Filter by action type (e.g. approve_user, reject_user)
     - target_user_id: Filter by affected user (matches ``target_user_id``)
+    - organization_id: Only the rows that belong to this organization
     - limit: Max results (default: 50)
     - offset: Pagination offset
 
@@ -1221,8 +1263,9 @@ async def list_audit_log(
     if not op_store:
         raise HTTPException(500, "Database not configured")
 
+    scope = {"organization_id": organization_id} if organization_id else {}
     total, rows = await op_store.list_audit_log(
-        action=action, target_user_id=target_user_id, limit=limit, offset=offset
+        action=action, target_user_id=target_user_id, limit=limit, offset=offset, **scope
     )
 
     entries = []
@@ -1248,6 +1291,7 @@ async def list_audit_log(
                 source_ip=row.get("source_ip"),
                 target_type=row.get("target_type"),
                 target_id=row.get("target_id"),
+                organization_id=row.get("organization_id"),
             )
         )
 

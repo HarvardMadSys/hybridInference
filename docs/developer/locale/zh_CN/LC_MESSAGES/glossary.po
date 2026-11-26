@@ -437,3 +437,27 @@ msgstr "关联（link）"
 
 msgid "The record that an identity at an identity provider signs in to one account. An account can hold links to several identity providers."
 msgstr "一条记录，表示某个身份提供方上的身份登录到某个账号。一个账号可以关联多个身份提供方。"
+
+msgid "Organization"
+msgstr "机构（organization）"
+
+msgid "A record that owns SSO connections and the accounts of its members, with a monthly limit and its own administrators. [Organizations](organizations.md) explains how to set one up."
+msgstr "一条记录，拥有若干 SSO 连接和成员的账号，带有每月上限和自己的管理员。设置方法见[机构](organizations.md)。"
+
+msgid "SSO connection"
+msgstr "SSO 连接（SSO connection）"
+
+msgid "One entry of `SSO_PROVIDERS`, seen from the organization that owns it. A connection belongs to one organization at most."
+msgstr "从拥有它的机构来看，`SSO_PROVIDERS` 里的一个条目。一个连接最多属于一个机构。"
+
+msgid "Member"
+msgstr "成员（member）"
+
+msgid "An account that belongs to an organization: it has an email in the `domains` of an SSO connection of the organization, and a link through that connection."
+msgstr "属于某个机构的账号：它的邮箱在该机构某个 SSO 连接的 `domains` 之内，并且有通过这个连接建立的关联。"
+
+msgid "Organization administrator"
+msgstr "机构管理员（organization administrator）"
+
+msgid "A member that sees the usage of the organization's members and manages them. The role is separate from the `admin` role of the deployment."
+msgstr "能查看本机构成员的用量并管理成员的成员。这个角色与部署的 `admin` 角色互相独立。"
