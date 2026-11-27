@@ -227,10 +227,12 @@ class Settings(BaseSettings):
 
     # Email (optional). Provider names are validated against the extensions
     # registered before app_config loads, not a distribution-specific enum.
+    # No SMTP server is assumed: a deployment that sends mail over SMTP names
+    # its own host and account.
     email_provider: str = "smtp"
-    smtp_host: str = "smtp.resend.com"
+    smtp_host: str = ""
     smtp_port: int = 587
-    smtp_user: str = "resend"
+    smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@localhost"
     smtp_from_name: str = "HybridInference"

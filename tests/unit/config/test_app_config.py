@@ -734,9 +734,9 @@ def test_smtp_is_required_only_while_signup_needs_verification(
     app_config.use_environment(database_enabled=True)
 
     missing = app_config.get_config_health().missing
-    assert ("SMTP_PASSWORD" in missing) is required
-    # SMTP_USER defaults to "resend", so it is set either way.
-    assert "SMTP_USER" not in missing
+    # No SMTP server or account is assumed, so all three are required together.
+    for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"):
+        assert (key in missing) is required
 
 
 @pytest.mark.parametrize("email_enabled", [True, False])
@@ -745,6 +745,7 @@ def test_smtp_health_uses_the_deployments_mail_transport(
 ) -> None:
     from serving.utils import email
 
+    monkeypatch.setenv("SMTP_HOST", "")
     monkeypatch.setenv("SMTP_USER", "")
     monkeypatch.setenv("SMTP_PASSWORD", "")
     monkeypatch.setenv("SIGNUP_ENABLED", "true")
@@ -754,8 +755,8 @@ def test_smtp_health_uses_the_deployments_mail_transport(
     app_config.use_environment(database_enabled=True)
 
     missing = app_config.get_config_health().missing
-    assert ("SMTP_USER" in missing) is not email_enabled
-    assert ("SMTP_PASSWORD" in missing) is not email_enabled
+    for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"):
+        assert (key in missing) is not email_enabled
 
 
 def test_a_variable_the_model_registry_references_is_never_missing(config_env) -> None:

@@ -206,7 +206,7 @@ def test_auth_secrets_are_required_unless_database_free_and_auth_off() -> None:
 
 
 def test_smtp_credentials_are_required_while_signup_needs_verification() -> None:
-    for key in ("SMTP_USER", "SMTP_PASSWORD"):
+    for key in ("SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"):
         entry = registry.static_entry(key)
         assert entry is not None
         assert entry.is_required(_context(email_verification_needed=True))
