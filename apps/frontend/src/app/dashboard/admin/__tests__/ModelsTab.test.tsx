@@ -71,6 +71,7 @@ import {
 import { updateModelConcurrency, updateModelVisibility } from '@/lib/api/admin';
 
 import { ModelsTab } from '../ModelsTab';
+import { LEAVE_MESSAGE } from '../useLeaveGuard';
 
 function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
   return {
@@ -326,5 +327,53 @@ describe('Admin → Models', () => {
       'does not support database-backed configuration',
     );
     expect(sectionTitles()).toEqual(['Model Visibility', 'Model Concurrency Limit']);
+  });
+
+  it('asks before leaving with an unsaved change, in the catalog or an override', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    window.history.replaceState(null, '', '/dashboard/admin/models');
+    await renderModels();
+    const routing = screen.getByRole('link', { name: 'Routing' });
+
+    // Nothing unsaved: no question.
+    fireEvent.click(routing);
+    expect(confirm).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '64000' },
+    });
+    expect(fireEvent.click(routing)).toBe(false);
+    expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+
+    // Back to the saved value, then an override left unsaved.
+    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '128000' },
+    });
+    confirm.mockClear();
+    fireEvent.click(routing);
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    expect(fireEvent.click(routing)).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it('points to Settings when the backend keeps the catalog with the other documents', async () => {
+    const old = config();
+    vi.mocked(getConfig).mockResolvedValue({
+      ...old,
+      categories: old.categories.filter((category) => category.id !== 'models'),
+      entries: old.entries.map((item) =>
+        item.key === 'MODEL_CATALOG' ? { ...item, category: 'application' } : item,
+      ),
+    });
+    await renderModels();
+
+    expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings → Application' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/settings?tab=application',
+    );
+    expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });
 });
