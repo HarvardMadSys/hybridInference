@@ -844,15 +844,14 @@ msgstr ""
 
 #: ../developer/deployment.md:177
 msgid ""
-"A few older build-time options remain for existing build pipelines: the "
-"old branding variables, which Compose still accepts as build arguments, "
-"and two agent build arguments that it no longer sets. Standard builds do "
-"not need them. Anything that really is a `NEXT_PUBLIC_*` build value is "
+"The old branding variables remain as build-time options for existing build "
+"pipelines; Compose still accepts them as build arguments, and standard "
+"builds do not need them. Anything that really is a `NEXT_PUBLIC_*` build value is "
 "compiled into the browser bundle and needs `make build s=frontend`; see "
 "[The public path table](public-path-table.md)."
 msgstr ""
-"为了兼容现有的构建流水线，还保留了几个旧的构建期选项：旧的品牌变量（Compose 仍然接受这些构建参数），以及两个 Compose "
-"已经不再设置的 agent 构建参数。标准构建用不到它们。真正的 `NEXT_PUBLIC_*` 构建值会编译进浏览器 bundle，改了就要运行"
+"为了兼容现有的构建流水线，旧的品牌变量仍保留为构建期选项：Compose 仍然接受这些构建参数，标准构建用不到它们。"
+"真正的 `NEXT_PUBLIC_*` 构建值会编译进浏览器 bundle，改了就要运行"
 " `make build s=frontend`；见[公开路径表](public-path-table.md)。"
 
 #: ../developer/deployment.md:184

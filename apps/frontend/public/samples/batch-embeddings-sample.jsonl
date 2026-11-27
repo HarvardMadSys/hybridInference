@@ -1,3 +1,0 @@
-{"custom_id":"doc-1","method":"POST","url":"/v1/embeddings","body":{"model":"your-embedding-model","input":"The quick brown fox."}}
-{"custom_id":"doc-2","method":"POST","url":"/v1/embeddings","body":{"model":"your-embedding-model","input":["first passage","second passage"]}}
-{"custom_id":"doc-3","method":"POST","url":"/v1/embeddings","body":{"model":"your-embedding-model","input":"批处理任务的示例文本。"}}

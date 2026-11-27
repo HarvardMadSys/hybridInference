@@ -38,8 +38,6 @@ function loadConfig(env: Record<string, string | undefined> = {}) {
   return require('./next.config.js');
 }
 
-const NEUTRAL = { AGENT_WEB_INTERNAL_URL: undefined, AGENT_CONTROL_PLANE_INTERNAL_URL: undefined };
-
 describe('the rewrites', () => {
   const saved = { ...process.env };
   afterEach(() => {
@@ -47,14 +45,25 @@ describe('the rewrites', () => {
   });
 
   it('outwait the gateway’s own limits instead of answering 500 at 30s', () => {
-    expect(loadConfig(NEUTRAL).experimental.proxyTimeout).toBeGreaterThanOrEqual(60 * 60 * 1000);
+    expect(loadConfig().experimental.proxyTimeout).toBeGreaterThanOrEqual(60 * 60 * 1000);
+  });
+
+  it('pins server-side backend fetches to the rewrite target selected at build time', async () => {
+    const backend = 'http://custom-backend:9090';
+    const config = loadConfig({ BACKEND_INTERNAL_URL: backend });
+    const { afterFiles } = await config.rewrites();
+
+    expect(config.env.BUILT_BACKEND_INTERNAL_URL).toBe(backend);
+    expect(afterFiles.every(({ destination }: Rewrite) => destination.startsWith(backend))).toBe(
+      true,
+    );
   });
 
   // The gateway serves only GET on each of these. Anything that takes a body
   // belongs in a route handler (src/lib/server/gatewayProxy.ts), and a new
   // rewrite has to be added here on purpose.
   it('forward only the gateway’s public GET documents', async () => {
-    const { beforeFiles, afterFiles, fallback = [] } = await loadConfig(NEUTRAL).rewrites();
+    const { beforeFiles = [], afterFiles, fallback = [] } = await loadConfig().rewrites();
 
     expect(beforeFiles).toEqual([]);
     expect(fallback).toEqual([]);
@@ -67,7 +76,7 @@ describe('the rewrites', () => {
   });
 
   it('take no gateway request that carries a body', async () => {
-    const { afterFiles } = await loadConfig(NEUTRAL).rewrites();
+    const { afterFiles } = await loadConfig().rewrites();
     const routes = afterFiles.map((rule: Rewrite) => buildCustomRoute('rewrite', rule, '', false));
 
     for (const path of [
@@ -102,20 +111,9 @@ describe('the body Next copies', () => {
   // one anonymous caller can pin per request. Pages take no body, and the
   // rewrites above forward GETs; nothing reads a body this would cut short.
   it('is a few KiB, now that nothing that takes a body is copied', () => {
-    const limit = loadConfig(NEUTRAL).experimental.middlewareClientMaxBodySize;
+    const limit = loadConfig().experimental.middlewareClientMaxBodySize;
 
     expect(limit).toBeGreaterThan(0);
     expect(limit).toBeLessThanOrEqual(64 * 1024);
-  });
-
-  // An image built with the legacy `/agents` rewrites forwards the agent's
-  // API bodies through them, as it always has.
-  it('stays at 32MiB in a build with the legacy agent rewrites compiled in', () => {
-    const config = loadConfig({
-      AGENT_WEB_INTERNAL_URL: 'http://agent-web:3000',
-      AGENT_CONTROL_PLANE_INTERNAL_URL: 'http://agent-control-plane:8000',
-    });
-
-    expect(config.experimental.middlewareClientMaxBodySize).toBe(32 * 1024 * 1024);
   });
 });

@@ -30,8 +30,6 @@ import { BatchCategoryBadge } from './BatchCategoryBadge';
 import { usePagedBatches } from './usePagedBatches';
 import { WebhookSettings } from './WebhookSettings';
 
-export { progress } from './batchText';
-
 function BatchRow({
   batch,
   busy,

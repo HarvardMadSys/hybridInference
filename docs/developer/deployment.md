@@ -516,9 +516,9 @@ something invalid, the console shows a configuration error with a retry button
 instead of guessing. Check the frontend logs and whether the backend is up,
 then retry. The example deployment needs no extra settings for this.
 
-A few older build-time options remain for existing build pipelines: the old
-branding variables, which Compose still accepts as build arguments, and two
-agent build arguments that it no longer sets. Standard builds do not need them.
+The old branding variables remain as build-time options for existing build
+pipelines; Compose still accepts them as build arguments, and standard builds
+do not need them.
 Anything that really is a `NEXT_PUBLIC_*` build value is compiled into the
 browser bundle and needs `make build s=frontend`; see
 [The public path table](public-path-table.md).

@@ -551,27 +551,6 @@ msgstr ""
 "`X-Forwarded-For`、`-Proto` 或 `-Port` 时，Next "
 "会根据连接自己补上。在信任其中任何一个之前，请先看[在控制台后面](trusted-proxies-and-client-ips.md#behind-the-console)。调用方一断开，发往网关的请求会立即取消。"
 
-#: ../developer/public-path-table.md:121
-msgid "Legacy `beforeFiles` compatibility"
-msgstr "旧版 `beforeFiles` 兼容"
-
-#: ../developer/public-path-table.md:123
-msgid ""
-"`next.config.js` still emits the same three rules as `beforeFiles` rewrites "
-"when both agent URLs are supplied **while building** the image, as some "
-"older distribution pipelines do. This repository's Compose does not pass "
-"them, and its images use the runtime handler above. Because `beforeFiles` "
-"wins over a filesystem route, an image built with those values keeps its "
-"baked-in targets and cannot be retargeted by changing only the container "
-"environment. Such an image also keeps `middlewareClientMaxBodySize` at 32 "
-"MiB, because those rewrites carry the agent's request bodies."
-msgstr ""
-"如果在**构建**镜像时同时提供了两个 agent URL（一些较旧的发行版流水线就是这么做的），`next.config.js` "
-"仍会把同样的三条规则生成为 `beforeFiles` rewrite。本仓库的 Compose 不传这两个值，它的镜像用的是上面的运行时 "
-"handler。由于 `beforeFiles` "
-"的优先级高于文件系统路由，用这些值构建出的镜像会保留构建时写死的目标地址，只改容器的环境变量无法让它指向新目标。这样的镜像还会把 "
-"`middlewareClientMaxBodySize` 保持在 32 MiB，因为这些 rewrite 要转发 agent 的请求体。"
-
 #: ../developer/public-path-table.md:130
 msgid "`afterFiles` — the gateway"
 msgstr "`afterFiles`——网关"

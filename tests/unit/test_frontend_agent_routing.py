@@ -1,9 +1,7 @@
-"""The runtime `/agents` route is authoritative in upstream Compose builds.
+"""The console's `/agents` targets and branding directory are runtime settings.
 
-The Dockerfile still accepts explicit agent build args as a compatibility
-bridge for pre-W7 downstream pipelines. Upstream Compose must not copy its
-runtime targets into those args, because a compiled ``beforeFiles`` rewrite
-would outrank the runtime route handler.
+The `/agents` route handler reads its targets on every request, so upstream
+Compose supplies them to the running container and never to the build.
 """
 
 from __future__ import annotations
@@ -14,7 +12,6 @@ import yaml
 
 REPO = Path(__file__).resolve().parents[2]
 COMPOSE = REPO / "deploy" / "docker" / "docker-compose.yml"
-DOCKERFILE = REPO / "deploy" / "docker" / "Dockerfile.frontend"
 
 AGENT_URLS = ("AGENT_WEB_INTERNAL_URL", "AGENT_CONTROL_PLANE_INTERNAL_URL")
 SITE_ASSETS_DIR = "SITE_ASSETS_DIR"
@@ -59,13 +56,3 @@ def test_site_assets_directory_is_runtime_only() -> None:
     frontend = _frontend()
     assert frontend["environment"][SITE_ASSETS_DIR] == f"${{{SITE_ASSETS_DIR}-}}"
     assert SITE_ASSETS_DIR not in frontend["build"]["args"]
-
-
-def test_the_dockerfile_carries_them_into_the_build() -> None:
-    """A build arg compose passes and the Dockerfile never declares is dropped."""
-    text = DOCKERFILE.read_text(encoding="utf-8")
-    for name in AGENT_URLS:
-        assert f"ARG {name}=" in text, f"{name} is not declared as an ARG"
-        assert f"ENV {name}=${name}" in text, (
-            f"{name} is declared but never promoted to ENV, so `next build` does not see it"
-        )
