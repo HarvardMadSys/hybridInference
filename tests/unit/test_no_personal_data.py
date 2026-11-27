@@ -1,7 +1,6 @@
 """No tracked file may name a real person's mailbox.
 
-The pre-publication checklist in
-``docs/agents/specs/2026-06-18-opensource-decoupling.zh.md`` calls for a
+The pre-publication checklist calls for a
 public-surface audit covering "internal domains, host topology comments, real
 email addresses". This is the email half.
 

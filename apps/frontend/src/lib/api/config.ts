@@ -1,7 +1,7 @@
 // Database-backed application configuration (admin) and backend restart.
 //
-// Shapes mirror `GET /admin/config` in
-// docs/agents/specs/2026-10-10-db-backed-config-first-run-setup-design.md.
+// Shapes mirror `GET /admin/config` (`ConfigResponse` in
+// apps/backend/serving/schemas_config.py).
 
 import { fetchWithAuth, getAccessToken } from './client';
 import { apiErrorFromResponse, readJson } from './detail';

@@ -33,8 +33,7 @@ transaction makes usable (:meth:`BatchStore.create_console_batch`).
 Errors name the line, the ``custom_id`` and the field, never the content of a
 request. At most :data:`MAX_ERRORS` are listed, with the total. Scans are
 bounded per process (:data:`MAX_SCANS`, one per user) and in time
-(:data:`SCAN_TIMEOUT_SECONDS`); see
-``docs/agents/specs/2026-10-28-batch-ui-create-design.zh.md``.
+(:data:`SCAN_TIMEOUT_SECONDS`).
 """
 
 from __future__ import annotations

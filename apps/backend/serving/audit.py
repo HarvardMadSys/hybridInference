@@ -23,8 +23,6 @@ name, and an untyped ``target_user_id`` shown as stored. Nothing guesses a
 legacy row's actor, source or target from the shape of those values.
 
 Both objects are frozen and built per request; nothing here is process state.
-The design record is
-``docs/agents/specs/2026-10-25-audit-attribution-design.md``.
 """
 
 from __future__ import annotations

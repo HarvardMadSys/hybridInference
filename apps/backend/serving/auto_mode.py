@@ -26,7 +26,7 @@ caller asked for, error messages do too, and the console's request history
 shows the auto model. Operators see the served model in the log and the admin
 views.
 
-Design: ``docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md``.
+Behaviour: ``docs/developer/routing.md`` (Auto models).
 """
 
 from __future__ import annotations

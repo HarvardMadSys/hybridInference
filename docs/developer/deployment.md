@@ -1010,8 +1010,7 @@ one with its password:
 ```
 
 `TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
-those changes before the console asks for a new one. The design is in
-[the design record](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-11-15-admin-two-factor-design.md).
+those changes before the console asks for a new one.
 
 ## Database
 

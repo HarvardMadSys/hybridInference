@@ -42,10 +42,7 @@ This router owns admission and the HTTP shapes:
   retired Message Batches API (``/v1/messages/batches``) stored, which are
   read, cancelled, deleted and downloaded here like any other.
 
-Design records: ``docs/agents/specs/2026-10-25-batch-inference-design.md``,
-``docs/agents/specs/2026-10-26-batch-api-expansion-design.zh.md``,
-``docs/agents/specs/2026-10-27-batch-default-availability-amendment.zh.md`` and
-``docs/agents/specs/2026-10-28-unified-batch-api-amendment.zh.md``.
+User documentation: ``docs/developer/batches.md``.
 """
 
 from __future__ import annotations

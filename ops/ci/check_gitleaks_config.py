@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Check exception scope and exercise gitleaks with synthetic credentials.
 
-Run with the pinned CI Python (3.12) and gitleaks. Every exception file and both
-archive directories receive new credentials that must still be detected.
+Run with the pinned CI Python (3.12) and gitleaks. Every exception file and the
+design-record directories receive new credentials that must still be detected.
 """
 
 from __future__ import annotations
@@ -60,7 +60,7 @@ def read_exceptions(config: dict) -> dict[str, list[tuple[str, str]]]:
 
 
 def regression_cases(fixtures: dict[str, list[tuple[str, str]]]) -> tuple[dict, Counter]:
-    """Exercise all exception files, archives and the reviewed cross-file cases."""
+    """Exercise all exception files, design records and the reviewed cross-file cases."""
     # Assemble values so the source file does not carry credential literals.
     payload = "".join(["Q7mKp2XvR9", "tLbN4wZcE6", "yHsA1dJfG3", "uT8oViM5rPabc"])
     sentinels = {
@@ -73,8 +73,6 @@ def regression_cases(fixtures: dict[str, list[tuple[str, str]]]) -> tuple[dict, 
     names = set(fixtures) | {
         "docs/agents/plans/new-plan.md",
         "docs/agents/specs/new-spec.md",
-        "docs/agents/plans/archive/new-plan.md",
-        "docs/agents/specs/archive/new-spec.md",
         "tests/new_worker_test.py",
     }
     cases = {}
@@ -161,7 +159,7 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         return 1
-    print("Secret scan regression OK: every exception file and both archives checked.")
+    print("Secret scan regression OK: every exception file and the design records checked.")
     return 0
 
 

@@ -6,7 +6,7 @@ useDefault = true
 # another credential beside that sample must still be detected.
 
 [[allowlists]]
-description = "Quota tests and their archived test snippets use deterministic dummy keys."
+description = "Quota tests use deterministic dummy keys."
 targetRules = ["generic-api-key"]
 condition = "AND"
 paths = ['''^tests/servers/test_admin_provider_quotas\.py$''']
@@ -19,27 +19,6 @@ regexes = [
   '''^db_key_long_enough_3456$''',
   '''^db_key_global_123456$''',
   '''^db_key_route_bound_123456$''',
-]
-
-[[allowlists]]
-description = "Quota tests and their archived test snippets use deterministic dummy keys."
-targetRules = ["generic-api-key"]
-condition = "AND"
-paths = ['''^docs/agents/plans/archive/2026-04-30-admin-provider-quotas\.md$''']
-regexes = [
-  '''^cpk_abcdef1234567890xyz$''',
-  '''^zai_abc1234567890xyz9$''',
-]
-
-[[allowlists]]
-description = "Quota tests and their archived test snippets use deterministic dummy keys."
-targetRules = ["generic-api-key"]
-condition = "AND"
-paths = ['''^docs/agents/plans/archive/2026-05-05-per-key-provider-quota\.md$''']
-regexes = [
-  '''^key1_long_enough_1234$''',
-  '''^key2_long_enough_5678$''',
-  '''^key3_long_enough_9012$''',
 ]
 
 [[allowlists]]

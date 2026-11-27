@@ -22,8 +22,8 @@ This module is the arithmetic and the policy that needs no database:
 
 The rows live in ``user_two_factor``, ``two_factor_recovery_codes`` and two
 columns of ``auth_sessions`` (migration ``0019_two_factor``); the routes are in
-``serving.servers.routers.two_factor_routes``. The design record is
-``docs/agents/specs/2026-11-15-admin-two-factor-design.md``.
+``serving.servers.routers.two_factor_routes``. Operators: ``docs/developer/deployment.md``
+(Requiring two-factor authentication of administrators).
 """
 
 from __future__ import annotations

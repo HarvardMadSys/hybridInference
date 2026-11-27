@@ -2,7 +2,7 @@
 
 The gateway's half of the split is five settings. None of them used to appear
 in `.env.example`, so the only place an operator could learn they exist was a
-plan document under `docs/agents/plans/`. An unset
+plan document. An unset
 `GATEWAY_GRANT_DISPATCH_TOKEN` makes the whole internal API answer 404, which
 is correct and indistinguishable from "this build has no internal API":
 exactly the shape that costs an afternoon during a cutover window.
