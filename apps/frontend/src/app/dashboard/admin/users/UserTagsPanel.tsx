@@ -596,6 +596,12 @@ export function UserTagsPanel({
                     <p className="text-[12px] text-gray-500">{tag.description}</p>
                   )}
                   <p className="text-[12px] text-gray-700">{limitsSummary(tag, format)}</p>
+                  {tag.amounts_need_review && (
+                    <p role="alert" className="text-[12px] text-red-600">
+                      Its quotas were saved in another currency, which this ledger has no rate for,
+                      so they allow no spend. Edit the tag and enter both quotas again.
+                    </p>
+                  )}
                   <p className="text-[12px] text-gray-500">{ruleSummary(tag)}</p>
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">

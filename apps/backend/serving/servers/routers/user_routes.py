@@ -80,7 +80,13 @@ from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.base import USER_PREFERENCES_MAX_BYTES
 from serving.storage.utils import coerce_json_object
-from serving.user_tags import tag_concurrency_cap, within_tag_cap
+from serving.user_tags import (
+    TAG_QUOTA_DAILY_KEY,
+    TAG_QUOTA_MONTHLY_KEY,
+    apply_tag_quotas,
+    tag_concurrency_cap,
+    within_tag_cap,
+)
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
@@ -1220,9 +1226,29 @@ async def get_usage(
             ),
         )
 
-    quota_daily_cost_usd = key_row.get("quota_daily_cost_usd")
+    # The key's copy of the account quota, held to the account's user tags'
+    # quotas, as the gate holds it (serving.user_tags): the console must not
+    # show a budget the gateway refuses.
+    held = apply_tag_quotas(
+        {
+            "quota_daily_cost_usd": key_row.get("quota_daily_cost_usd"),
+            "quota_daily_cost_amount": key_row.get("quota_daily_cost_amount"),
+            "quota_monthly_cost_usd": key_row.get("quota_monthly_cost_usd"),
+            "quota_monthly_cost_amount": key_row.get("quota_monthly_cost_amount"),
+            TAG_QUOTA_DAILY_KEY: current_user.get(TAG_QUOTA_DAILY_KEY),
+            TAG_QUOTA_MONTHLY_KEY: current_user.get(TAG_QUOTA_MONTHLY_KEY),
+        }
+    )
+    quota_daily_cost_usd = held["quota_daily_cost_usd"]
     daily_limit = 1000.0 if quota_daily_cost_usd is None else float(quota_daily_cost_usd)
-    monthly_limit = None
+    # The monthly limit is reported where a user tag sets one; the account's
+    # own is not shown here, as before tags.
+    monthly_limit = (
+        float(held["quota_monthly_cost_usd"])
+        if current_user.get(TAG_QUOTA_MONTHLY_KEY) is not None
+        and held["quota_monthly_cost_usd"] is not None
+        else None
+    )
     quota_reset_at = _get_daily_quota_reset_at()
 
     # Fetch usage from log store (for period breakdown) and op store (for today's quota counter)
@@ -1268,7 +1294,7 @@ async def get_usage(
     native_quota = {}
     policy = get_accounting_policy()
     if policy.native:
-        native_daily = key_row.get("quota_daily_cost_amount")
+        native_daily = held.get("quota_daily_cost_amount")
         if native_daily is None:
             native_daily = policy.from_usd(daily_limit)
         native_spent = await op_store.get_user_cost_today_amount(current_user["user_id"])

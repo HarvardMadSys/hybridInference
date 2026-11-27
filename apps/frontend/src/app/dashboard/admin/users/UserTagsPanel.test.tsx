@@ -150,6 +150,19 @@ it('saves the limits an administrator sets on a tag', async () => {
   );
 });
 
+it('warns about quotas saved in a currency the ledger cannot convert', async () => {
+  vi.mocked(listUserTags).mockResolvedValue({
+    tags: [{ ...lab, amounts_need_review: true }],
+    currency: 'USD',
+  });
+  renderPanel();
+
+  fireEvent.click(await screen.findByRole('button', { name: 'Manage tags' }));
+  expect(within(screen.getByTestId('user-tag-lab-a')).getByRole('alert')).toHaveTextContent(
+    'allow no spend',
+  );
+});
+
 it('previews the accounts a changed rule matches before it is saved', async () => {
   vi.mocked(listUserTags).mockResolvedValue({ tags: [unattended], currency: 'USD' });
   vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });

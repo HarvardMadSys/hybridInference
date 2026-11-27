@@ -172,6 +172,34 @@ async def test_refuses_an_invalid_tag(client, payload, status):
     store.create_user_tag.assert_not_awaited()
 
 
+async def test_amounts_in_a_currency_without_a_rate_are_flagged_and_re_entered_whole(client):
+    http, store = client
+    unreadable = {"accounting_currency": "EUR", "quota_daily_cost": Decimal("9")}
+    store.list_user_tags.return_value = [_tag("lab-a", **unreadable)]
+    store.get_user_tag.side_effect = lambda name: _tag(name, **unreadable)
+
+    listed = (await http.get("/admin/user-tags", headers=AUTH)).json()["tags"][0]
+    assert listed["amounts_need_review"] is True
+    # Enforced as no spend until re-entered.
+    assert Decimal(str(listed["quota_daily_cost"])) == 0
+
+    response = await http.patch(
+        "/admin/user-tags/lab-a",
+        headers=AUTH,
+        json={"quota_daily_cost": 5, "currency": "USD"},
+    )
+    assert response.status_code == 409
+    store.update_user_tag.assert_not_awaited()
+
+    response = await http.patch(
+        "/admin/user-tags/lab-a",
+        headers=AUTH,
+        json={"quota_daily_cost": 5, "quota_monthly_cost": None, "currency": "USD"},
+    )
+    assert response.status_code == 200, response.text
+    assert store.update_user_tag.await_args.args[1]["accounting_currency"] == "USD"
+
+
 async def test_a_taken_name_is_a_conflict(client):
     http, store = client
     store.create_user_tag.side_effect = None
@@ -334,10 +362,14 @@ async def test_runs_a_rule_now_only_when_it_is_on(client):
     response = await http.post("/admin/user-tags/unattended/detect", headers=AUTH)
     assert response.status_code == 200
     assert response.json() == {"added": ["u1"]}
-    assert store.detect_user_tag_members.await_args.kwargs == {
-        "window_hours": 12,
-        "min_active_hours": 12,
-    }
+    assert store.detect_user_tag_members.await_args.args == ("unattended",)
     assert _audited(store, "user_tag.detect")["details"] == {"added": ["u1"]}
     response = await http.post("/admin/user-tags/lab-a/detect", headers=AUTH)
+    assert response.status_code == 409
+
+
+async def test_a_rule_turned_off_meanwhile_is_a_conflict(client):
+    http, store = client
+    store.detect_user_tag_members.return_value = None
+    response = await http.post("/admin/user-tags/unattended/detect", headers=AUTH)
     assert response.status_code == 409

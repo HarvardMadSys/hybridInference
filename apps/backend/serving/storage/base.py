@@ -1126,10 +1126,12 @@ class OperationalStore(ABC):
         """
 
     @abstractmethod
-    async def detect_user_tag_members(
-        self, name: str, *, window_hours: int, min_active_hours: int
-    ) -> list[str]:
-        """Apply an automatic rule now; return the ids of the accounts that gained the tag."""
+    async def detect_user_tag_members(self, name: str) -> list[str] | None:
+        """Apply a tag's saved automatic rule now; return the ids of the accounts that gained it.
+
+        None when the tag is gone or its rule is off, as read under the tag's
+        lock.
+        """
 
     # -- second factor ---------------------------------------------------------
     #

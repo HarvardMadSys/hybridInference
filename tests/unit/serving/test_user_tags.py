@@ -103,8 +103,25 @@ class TestLedgerAmount:
         assert ledger_amount("10", "USD") == Decimal("72.0")
         assert ledger_amount("10", "CNY") == Decimal(10)
 
-    def test_an_amount_in_an_unknown_unit_is_not_applied(self):
-        assert ledger_amount("10", "EUR") is None
+    def test_an_amount_in_an_unknown_unit_fails_closed(self):
+        """A limit is there to restrict: one that cannot be read allows no spend."""
+        assert ledger_amount("10", "EUR") == Decimal(0)
+        limits = combine_tag_limits(
+            [{**_policy("t", quota_daily_cost="10"), "accounting_currency": "EUR"}]
+        )
+        assert limits.quota_daily_cost == Decimal(0)
+
+    def test_such_a_tag_is_flagged_for_review(self):
+        assert user_tags.amounts_need_review(
+            {"accounting_currency": "EUR", "quota_daily_cost": "10"}
+        )
+        assert not user_tags.amounts_need_review(
+            {"accounting_currency": "EUR", "quota_daily_cost": None, "quota_monthly_cost": None}
+        )
+        assert not user_tags.amounts_need_review(
+            {"accounting_currency": "USD", "quota_daily_cost": "10"}
+        )
+        assert not user_tags.amounts_need_review({"accounting_currency": None})
 
 
 def _row(**fields):

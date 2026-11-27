@@ -7,11 +7,15 @@ least ``auto_min_active_hours`` of the last ``auto_window_hours`` hours
 an administrator takes it away (:mod:`serving.user_tags`), so a run only ever
 adds members.
 
-One run at a time across every replica: a run holds a transaction-scoped
-advisory lock and a replica that cannot take it skips its turn. The writes go
-through the run's own connection, not the cached store, so a process serves
-the new memberships once its cached entries expire (30 s for an auth context,
-60 s for a user row).
+One run at a time across every replica: a run holds a session advisory lock
+on its connection and a replica that cannot take it skips its turn. Each tag
+is applied in a transaction of its own, so its lock -- the one an
+administrator's removal or deletion of that tag waits on -- is held for that
+tag's scan of the log only, and a tag deleted or turned off since the run
+listed it is skipped rather than failing the run. The writes go through the
+run's own connection, not the cached store, so a process serves the new
+memberships once its cached entries expire (30 s for an auth context, 60 s
+for a user row).
 """
 
 from __future__ import annotations
@@ -29,36 +33,37 @@ logger = get_logger(__name__)
 #: hour: an account is tagged within ten minutes of matching.
 DETECT_INTERVAL_MINUTES = 10
 
-#: The advisory lock one run holds, shared by every replica.
-_RUN_LOCK_SQL = (
-    "SELECT pg_try_advisory_xact_lock(hashtextextended('hybridinference:user-tag-detector', 0))"
-)
+#: The advisory lock one run holds, shared by every replica; session-scoped,
+#: released when the run ends (:data:`_RUN_UNLOCK_SQL`).
+_RUN_LOCK_KEY = "hashtextextended('hybridinference:user-tag-detector', 0)"
+_RUN_LOCK_SQL = f"SELECT pg_try_advisory_lock({_RUN_LOCK_KEY})"
+_RUN_UNLOCK_SQL = f"SELECT pg_advisory_unlock({_RUN_LOCK_KEY})"
 
-#: The tags whose rules run, with their bounds.
-_AUTO_TAGS_SQL = (
-    "SELECT name, auto_window_hours, auto_min_active_hours FROM user_tags "
-    "WHERE auto_enabled ORDER BY name"
-)
+#: The tags whose rules run. Each one's bounds are read again under its lock.
+_AUTO_TAGS_SQL = "SELECT name FROM user_tags WHERE auto_enabled ORDER BY name"
 
 
 async def run_rules(pool: Any) -> dict[str, list[str]] | None:
     """Apply every automatic rule once; return the accounts each tag gained.
 
-    None when another replica's run holds the lock. Raises what the database
-    raises; :func:`detector_job` is the scheduler's wrapper that never does.
+    None when another replica's run holds the lock. A tag deleted or turned
+    off after the run listed it is left out. Raises what the database raises;
+    :func:`detector_job` is the scheduler's wrapper that never does.
     """
-    async with pool.acquire() as conn, conn.transaction():
+    async with pool.acquire() as conn:
         if not await conn.fetchval(_RUN_LOCK_SQL):
             return None
-        added: dict[str, list[str]] = {}
-        for tag in await conn.fetch(_AUTO_TAGS_SQL):
-            added[tag["name"]] = await detect_members(
-                conn,
-                tag["name"],
-                window_hours=int(tag["auto_window_hours"]),
-                min_active_hours=int(tag["auto_min_active_hours"]),
-            )
-        return added
+        try:
+            added: dict[str, list[str]] = {}
+            for tag in await conn.fetch(_AUTO_TAGS_SQL):
+                async with conn.transaction():
+                    gained = await detect_members(conn, tag["name"])
+                if gained is not None:
+                    added[tag["name"]] = gained
+            return added
+        finally:
+            # The connection goes back to the pool: the lock must not go with it.
+            await conn.execute(_RUN_UNLOCK_SQL)
 
 
 async def detector_job(pool: Any) -> None:

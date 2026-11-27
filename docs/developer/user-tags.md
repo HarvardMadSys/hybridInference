@@ -23,7 +23,7 @@ own limit and the limits of every tag it carries:
 |---|---|
 | Daily cost quota | The lowest of the account's own and each tag's. An account with no daily quota of its own counts as the 1000 USD default. |
 | Monthly cost quota | The lowest of the account's own (none means no limit) and each tag's. |
-| Concurrent requests | The lowest of the account's cap (its own override, else its role's) and each tag's. The tag cap also limits an unlimited role, and applies to the concurrency-exempt and token-counting budgets too. |
+| Concurrent requests | The lowest of the account's cap (its own override, else its role's) and each tag's. The tag cap also limits an unlimited role. Like the account's own cap, it applies to each concurrency budget separately: ordinary requests, requests to concurrency-exempt models and token counting can each reach it. |
 | Models | The member may use only models on **every** tag's allowlist, on top of the role, disabled-model, key and project checks. A tag without an allowlist doesn't restrict models. Allowlists that share no model allow none. |
 
 So a tag can only narrow what an account may do. An automatic tag can't loosen
@@ -45,7 +45,9 @@ cached auth lookups expire).
 
 Amounts are in the ledger currency ([Accounting](accounting.md)). A write that
 sets an amount names the currency it was read in, and is refused (409) if the
-ledger's currency has changed since.
+ledger's currency has changed since. A quota saved in a currency the ledger has
+no rate for is enforced as 0 (no spend) until an administrator enters it again;
+the console flags such a tag.
 
 ## The automatic rule
 

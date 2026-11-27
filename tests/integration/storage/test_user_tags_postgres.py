@@ -265,21 +265,15 @@ async def test_the_rule_counts_distinct_recent_hours_and_respects_a_dismissal(st
     )
     assert {every_hour, with_a_gap} <= {row["user_id"] for row in looser}
 
-    added = await store.detect_user_tag_members(
-        "tagtest-auto", window_hours=12, min_active_hours=12
-    )
+    added = await store.detect_user_tag_members("tagtest-auto")
     assert every_hour in added and with_a_gap not in added
     assert (await store.get_user_tag_memberships(every_hour))[0]["source"] == "auto"
     # A second run adds nothing new.
-    assert every_hour not in await store.detect_user_tag_members(
-        "tagtest-auto", window_hours=12, min_active_hours=12
-    )
+    assert every_hour not in await store.detect_user_tag_members("tagtest-auto")
 
     # Dismissed: the requests before the dismissal no longer count.
     await store.remove_user_tag_member("tagtest-auto", every_hour, removed_by="admin-1")
-    assert every_hour not in await store.detect_user_tag_members(
-        "tagtest-auto", window_hours=12, min_active_hours=12
-    )
+    assert every_hour not in await store.detect_user_tag_members("tagtest-auto")
     # Twelve hours of requests after the dismissal bring it back.
     async with store._pool.acquire() as conn:
         await conn.execute(
@@ -287,9 +281,7 @@ async def test_the_rule_counts_distinct_recent_hours_and_respects_a_dismissal(st
             "WHERE user_id = $1 AND tag = 'tagtest-auto'",
             every_hour,
         )
-    assert every_hour in await store.detect_user_tag_members(
-        "tagtest-auto", window_hours=12, min_active_hours=12
-    )
+    assert every_hour in await store.detect_user_tag_members("tagtest-auto")
 
 
 async def test_the_scheduled_run_applies_every_rule_that_is_on(store):
@@ -308,6 +300,23 @@ async def test_the_scheduled_run_applies_every_rule_that_is_on(store):
     assert busy in added["tagtest-auto"]
     assert "tagtest-hand" not in added
     assert await store.get_tags_for_users([busy]) == {busy: ["tagtest-auto"]}
+
+
+async def test_a_rule_turned_off_or_a_deleted_tag_is_left_alone(store):
+    await store.create_user_tag(
+        "tagtest-hand", {"auto_window_hours": 3, "auto_min_active_hours": 3}
+    )
+    busy = await _user(store, "busy")
+    await _requests(store, busy, [0.1, 1.1, 2.1])
+    assert await store.detect_user_tag_members("tagtest-hand") is None
+    assert await store.detect_user_tag_members("tagtest-missing") is None
+    assert await store.get_tags_for_users([busy]) == {}
+
+
+async def test_a_run_releases_its_lock(store):
+    """The run lock is a session lock on a pooled connection: it must not stay with it."""
+    for _ in range(3):
+        assert await run_rules(store._pool) is not None
 
 
 async def test_the_users_list_filters_by_tag(store):

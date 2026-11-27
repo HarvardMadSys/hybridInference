@@ -2305,6 +2305,8 @@ export interface UserTag {
   auto_enabled: boolean;
   auto_window_hours: number;
   auto_min_active_hours: number;
+  /** An amount was saved in a currency the ledger has no rate for: enforced as 0 until re-entered. */
+  amounts_need_review?: boolean;
   manual_members: number;
   auto_members: number;
   dismissed_members: number;

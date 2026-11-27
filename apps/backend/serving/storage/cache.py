@@ -1031,14 +1031,10 @@ class CachedOperationalStore(OperationalStore):
             name, window_hours=window_hours, min_active_hours=min_active_hours, limit=limit
         )
 
-    async def detect_user_tag_members(
-        self, name: str, *, window_hours: int, min_active_hours: int
-    ) -> list[str]:
+    async def detect_user_tag_members(self, name: str) -> list[str] | None:
         """Delegate then evict the entries of every account that gained the tag."""
-        added = await self._store.detect_user_tag_members(
-            name, window_hours=window_hours, min_active_hours=min_active_hours
-        )
-        for user_id in added:
+        added = await self._store.detect_user_tag_members(name)
+        for user_id in added or ():
             await self._forget_tag_holder(user_id)
         return added
 

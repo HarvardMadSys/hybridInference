@@ -49,7 +49,12 @@ from serving.servers.deps import (
     verify_admin_access,
 )
 from serving.storage.user_tags import TAG_WRITABLE_COLUMNS
-from serving.user_tags import MAX_WINDOW_HOURS, combine_tag_limits, ledger_amount
+from serving.user_tags import (
+    MAX_WINDOW_HOURS,
+    amounts_need_review,
+    combine_tag_limits,
+    ledger_amount,
+)
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -83,6 +88,7 @@ def _tag_item(row: dict[str, Any]) -> UserTagItem:
         auto_enabled=bool(row.get("auto_enabled")),
         auto_window_hours=int(row["auto_window_hours"]),
         auto_min_active_hours=int(row["auto_min_active_hours"]),
+        amounts_need_review=amounts_need_review(row),
         manual_members=int(row.get("manual_members") or 0),
         auto_members=int(row.get("auto_members") or 0),
         dismissed_members=int(row.get("dismissed_members") or 0),
@@ -158,6 +164,16 @@ def _column_values(
         if payload.currency != ledger:
             raise HTTPException(409, "Accounting currency changed; reload before saving")
         values["accounting_currency"] = ledger
+        if (
+            current is not None
+            and amounts_need_review(current)
+            and not {"quota_daily_cost", "quota_monthly_cost"} <= sent
+        ):
+            raise HTTPException(
+                409,
+                f"This tag's amounts were saved in {current.get('accounting_currency')}, "
+                f"which has no rate to {ledger}: re-enter both quotas",
+            )
         # The other amount, stored in an earlier currency, is re-written in this one.
         for field in ("quota_daily_cost", "quota_monthly_cost"):
             if field not in values and current is not None:
@@ -467,11 +483,10 @@ async def run_user_tag_rule(
     tag = await _require_tag(op_store, name)
     if not tag.get("auto_enabled"):
         raise HTTPException(409, f"{name!r} has no automatic rule turned on")
-    added = await op_store.detect_user_tag_members(
-        name,
-        window_hours=int(tag["auto_window_hours"]),
-        min_active_hours=int(tag["auto_min_active_hours"]),
-    )
+    added = await op_store.detect_user_tag_members(name)
+    if added is None:
+        # Deleted or turned off since it was read above.
+        raise HTTPException(409, f"{name!r} has no automatic rule turned on")
     await _audit(
         op_store, actor, "user_tag.detect", AuditTarget("user_tag", name), {"added": added}
     )

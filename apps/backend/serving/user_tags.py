@@ -107,13 +107,15 @@ def is_valid_tag_name(name: object) -> bool:
 
 
 def ledger_amount(value: Any, currency: str | None) -> Decimal | None:
-    """A tag's stored amount in today's ledger currency, or None.
+    """A tag's stored amount in today's ledger currency, or None for no amount.
 
     An amount is stored with the currency it was written in. One in the
     ledger's currency (or written before any was recorded) is used as it is;
     a USD amount on a ledger since moved to another currency comes in at the
-    policy's fixed rate. Any other unit has no known rate: the amount is not
-    applied, and the mismatch is logged for an administrator to re-enter it.
+    policy's fixed rate. Any other unit has no known rate, and the limit fails
+    closed: it reads as 0, no spend, until an administrator re-enters it
+    (:func:`amounts_need_review` flags the tag). A tag's limits exist to
+    restrict; an unreadable one must not lift the restriction.
     """
     if value is None:
         return None
@@ -128,11 +130,24 @@ def ledger_amount(value: Any, currency: str | None) -> Decimal | None:
     if currency == "USD":
         return _plain(policy.from_usd(amount))
     logger.error(
-        "user_tags: ignoring an amount stored in %s on a %s ledger; re-enter it",
+        "user_tags: an amount stored in %s has no rate on a %s ledger; "
+        "enforcing it as 0 until it is re-entered",
         currency,
         policy.currency,
     )
-    return None
+    return Decimal(0)
+
+
+def amounts_need_review(row: Mapping[str, Any]) -> bool:
+    """Whether a tag row holds an amount in a currency the ledger has no rate for.
+
+    Such an amount is enforced as 0 (:func:`ledger_amount`) until it is
+    written again in the ledger's currency.
+    """
+    currency = row.get("accounting_currency")
+    if currency is None or currency in (get_accounting_policy().currency, "USD"):
+        return False
+    return row.get("quota_daily_cost") is not None or row.get("quota_monthly_cost") is not None
 
 
 def _plain(amount: Decimal) -> Decimal:

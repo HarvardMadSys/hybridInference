@@ -169,16 +169,26 @@ async def preview_members(
     return [dict(row) for row in rows]
 
 
-async def detect_members(
-    conn: Any, tag: str, *, window_hours: int, min_active_hours: int
-) -> list[str]:
+async def detect_members(conn: Any, tag: str) -> list[str] | None:
     """Give *tag* to every account its rule matches now; return the accounts that gained it.
 
     Takes the tag's advisory lock (:func:`lock_tag`), so the caller runs it in
-    a transaction, which the lock lasts for.
+    a transaction of its own, which the lock lasts for: one tag's scan of the
+    log at a time, not a whole run's. The rule is read once the lock is held,
+    so a tag deleted or turned off since the caller looked is left alone:
+    ``None`` then.
     """
     await lock_tag(conn, tag)
-    rows = await conn.fetch(_APPLY_SQL, tag, window_hours, min_active_hours)
+    rule = await conn.fetchrow(
+        "SELECT auto_window_hours, auto_min_active_hours FROM user_tags "
+        "WHERE name = $1 AND auto_enabled",
+        tag,
+    )
+    if rule is None:
+        return None
+    rows = await conn.fetch(
+        _APPLY_SQL, tag, int(rule["auto_window_hours"]), int(rule["auto_min_active_hours"])
+    )
     return [row["user_id"] for row in rows]
 
 
@@ -403,11 +413,7 @@ class PostgresUserTagsMixin:
                 limit=limit,
             )
 
-    async def detect_user_tag_members(
-        self, name: str, *, window_hours: int, min_active_hours: int
-    ) -> list[str]:
-        """Apply a tag's rule now; return the accounts that gained the tag."""
+    async def detect_user_tag_members(self, name: str) -> list[str] | None:
+        """Apply a tag's saved rule now; the accounts that gained it, or None with no rule on."""
         async with self._pool.acquire() as conn, conn.transaction():
-            return await detect_members(
-                conn, name, window_hours=window_hours, min_active_hours=min_active_hours
-            )
+            return await detect_members(conn, name)

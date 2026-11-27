@@ -3336,6 +3336,11 @@ class UserTagItem(BaseModel):
     auto_enabled: bool
     auto_window_hours: int
     auto_min_active_hours: int
+    amounts_need_review: bool = Field(
+        False,
+        description="An amount was saved in a currency the ledger has no rate for; "
+        "it is enforced as 0 until re-entered",
+    )
     manual_members: int = 0
     auto_members: int = 0
     dismissed_members: int = 0
