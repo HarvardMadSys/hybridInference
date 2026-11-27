@@ -45,7 +45,7 @@ def test_admin_router_has_expected_route_count() -> None:
 
     Bump this number deliberately when adding/removing admin routes.
     """
-    expected = 172  # includes role-quota, provider-key verification/probe, key min-role (db+env)
+    expected = 173  # includes role-quota, provider-key verification/probe, key min-role (db+env)
     # (incl. disable/enable/enable-env and the by-ref disable/enable pair used
     # by the quota dashboard), visibility, concurrency,
     # global + per-model routewise settings/probes/decisions, routing-weight,
@@ -111,6 +111,7 @@ def test_admin_router_has_expected_route_count() -> None:
     # 162 -> 163: settings PATCH, several runtime settings behind one confirmation.
     # 163 -> 172: user-tags list/create/update/delete, members list/add/remove,
     # and the automatic rule's preview and run-now.
+    # 172 -> 173: provider-keys/remove-env, removing an environment-sourced key.
     routes = [r for r in _admin_api_routes() if r.path.startswith("/admin")]
     assert len(routes) == expected, (
         f"admin route count drifted: expected {expected}, got {len(routes)}"

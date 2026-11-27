@@ -38,6 +38,7 @@ import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
 import { RuntimeSettingsSection } from './RuntimeSettingsSection';
 import { SignupPolicySection } from './SignupPolicySection';
+import { useLeaveGuard } from './useLeaveGuard';
 import {
   CATEGORIES_ELSEWHERE,
   DEFAULT_SETTINGS_TAB,
@@ -157,6 +158,13 @@ export function SettingsTab({
   // so a sub-tab can say it has some while another is shown.
   const [unsavedBySection, setUnsavedBySection] = useState<Record<string, number>>({});
   const unsavedReporters = useRef(new Map<string, (count: number) => void>());
+
+  // A sub-tab keeps its changes while another is shown; another admin tab,
+  // being a page of its own, would not, so leaving with any unsaved asks first.
+  useLeaveGuard(
+    editor.groups.reduce((total, group) => total + editor.dirtyCount(group), 0) +
+      Object.values(unsavedBySection).reduce((total, count) => total + count, 0),
+  );
 
   useEffect(() => {
     setActiveTab(initialTab);

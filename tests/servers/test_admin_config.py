@@ -135,11 +135,13 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "invalid",
         "used_by",
         "security_relevant",
+        "document",
         "updated_at",
         "updated_by",
         "group",
         "apply_mode",
     }
+    assert smtp["document"] is False
     assert smtp["security_relevant"] is True
     assert smtp["choices"] == []
     assert smtp["applies_when"] == {"key": "EMAIL_PROVIDER", "values": ["smtp"]}

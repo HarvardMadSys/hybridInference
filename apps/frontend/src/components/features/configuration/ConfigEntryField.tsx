@@ -16,20 +16,11 @@ import {
   settleDraft,
   type ConfigDraft,
 } from './configDrafts';
+import { DocumentEditor } from './DocumentEditor';
+import { NOT_A_LOGIN_FIELD } from './notALoginField';
 
-/**
- * Marks a field that holds a credential other than the administrator's own, so
- * password-manager extensions (1Password, LastPass, Bitwarden, Dashlane)
- * neither fill it nor offer to save what is typed into it. Browsers' built-in
- * managers go by `autocomplete` instead: give the field `"new-password"` (or
- * `"off"`) and its form `autoComplete="off"`.
- */
-export const NOT_A_LOGIN_FIELD = {
-  'data-1p-ignore': true,
-  'data-lpignore': 'true',
-  'data-bwignore': true,
-  'data-form-type': 'other',
-} as const;
+// Exported from here too, where the settings' other editors import it.
+export { NOT_A_LOGIN_FIELD };
 
 type BadgeTone = 'red' | 'amber' | 'blue' | 'gray';
 
@@ -147,6 +138,7 @@ export function ConfigEntryField({
 }) {
   const baseId = useId();
   const controlId = `${baseId}-control`;
+  const labelId = `${baseId}-label`;
   const descriptionId = `${baseId}-description`;
   const notesId = `${baseId}-notes`;
   const errorId = `${baseId}-error`;
@@ -163,6 +155,9 @@ export function ConfigEntryField({
   // applies in its place, and the row is still there to remove.
   const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
   const offerMarkSecret = !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
+  // A JSON document edited as fields, or as JSON (see the text editor below).
+  const documentEditor =
+    entry.document === true && entry.type === 'text' && !entry.secret && !locked && !resetPending;
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -255,21 +250,38 @@ export function ConfigEntryField({
       </div>
     );
   } else if (entry.type === 'text') {
-    control = (
+    const text = (
       <textarea
         id={controlId}
-        rows={4}
+        rows={entry.document ? 8 : 4}
         spellCheck={false}
         autoComplete="off"
         {...NOT_A_LOGIN_FIELD}
         value={String(currentInput(entry, draft))}
         placeholder={entry.default !== null ? String(entry.default) : undefined}
         disabled={disabled}
+        // A document's name labels whichever view is shown, so it names this one too.
+        aria-labelledby={entry.document ? labelId : undefined}
         aria-describedby={describedBy}
         aria-invalid={error ? true : undefined}
         onChange={(event) => setValue(event.target.value)}
         className={`${error ? INPUT_ERROR_CLASS : INPUT_CLASS} font-mono`}
       />
+    );
+    // A JSON document is edited one value at a time; the text is its JSON view.
+    control = entry.document ? (
+      <DocumentEditor
+        entry={entry}
+        draft={draft}
+        onChange={onChange}
+        json={text}
+        labelId={labelId}
+        describedBy={describedBy}
+        serverError={serverError}
+        disabled={disabled}
+      />
+    ) : (
+      text
     );
   } else {
     const numeric = entry.type === 'int' || entry.type === 'float';
@@ -297,7 +309,8 @@ export function ConfigEntryField({
   }
 
   const compact = presentation === 'compact';
-  const split = layout === 'split';
+  // A document's fields want the row's whole width, under its name.
+  const split = layout === 'split' && !entry.document;
   const badges = configBadges(entry).filter(
     (badge) =>
       !compact ||
@@ -319,7 +332,10 @@ export function ConfigEntryField({
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
             <label
-              htmlFor={controlId}
+              id={labelId}
+              // A document's fields have no one control to point at: they and
+              // its JSON view name themselves after this label instead.
+              htmlFor={documentEditor ? undefined : controlId}
               className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
             >
               {label}

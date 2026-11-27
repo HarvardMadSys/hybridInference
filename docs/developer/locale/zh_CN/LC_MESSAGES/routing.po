@@ -1727,6 +1727,10 @@ msgstr ""
 "来自环境变量的凭据在数据库里没有自己的行，所以它的预留以哈希为键。这有两个后果：一是 key "
 "退出轮换后，预留仍然保留（把变量加回来，它会按原来预留的层级回来）；二是管理列表里可能出现一条预留，而对应的凭据哪里都没有配置——列出来是为了让你能解除它，而不是让它一直潜伏着。"
 
+#: ../developer/routing.md
+msgid "`POST /admin/provider-keys/remove-env` deletes an environment key. It takes the same `provider` and `env_key_id` body as disable. Disable leaves the saved setting and keeps the key listed so it can be turned back on. Remove blanks every saved setting that holds the credential — an empty admin row, so a still-set environment variable does not restore it — and tombstones the hash as removed. The key leaves the admin list and the pools. Enabling a removed key is refused until the credential is configured again. A database row holding the same credential is left alone; delete that row instead."
+msgstr "`POST /admin/provider-keys/remove-env` 删除一个来自环境变量的 key。它和停用接受同样的 `provider` 与 `env_key_id` 请求体。停用会保留已保存的设置，key 仍然列在列表里，可以重新启用。删除则清空所有保存了该凭据的设置——写入一条空的管理员行，所以仍然设置着的环境变量不会把它恢复——并把该哈希标记为已删除。这个 key 会离开管理列表和各个池。在重新配置该凭据之前，启用已删除的 key 会被拒绝。保存同一凭据的数据库行不受影响；请改为删除那一行。"
+
 #: ../developer/routing.md:632
 msgid ""
 "`apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, "

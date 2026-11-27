@@ -503,6 +503,35 @@ describe('Admin → Settings sub-tabs', () => {
     expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings', { scroll: false });
   });
 
+  it('asks before another admin tab while any sub-tab holds an unsaved change', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    window.history.replaceState(null, '', '/dashboard/admin/settings');
+    // Another admin tab's link, as the tab bar above the page renders it.
+    const models = document.body.appendChild(document.createElement('a'));
+    models.href = '/dashboard/admin/models';
+    try {
+      await renderLoaded('Access');
+      fireEvent.click(models);
+      expect(confirm).not.toHaveBeenCalled();
+
+      fireEvent.change(screen.getByLabelText('SIGNUP_NOTIFY_EMAILS'), {
+        target: { value: 'admins@example.test' },
+      });
+      // Shown or not, the sub-tab's change would be lost with the page.
+      await openSettingsTab('Common');
+      expect(fireEvent.click(models)).toBe(false);
+      expect(confirm).toHaveBeenCalledTimes(1);
+
+      await openSettingsTab(/^Access/);
+      fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Sign-up' }));
+      fireEvent.click(models);
+      expect(confirm).toHaveBeenCalledTimes(1);
+    } finally {
+      models.remove();
+      confirm.mockRestore();
+    }
+  });
+
   it('keeps unsaved changes while another sub-tab is open, and says where they are', async () => {
     await renderLoaded('Access');
     expect(screen.getByRole('tab', { name: 'Access' })).toHaveAttribute('aria-selected', 'true');

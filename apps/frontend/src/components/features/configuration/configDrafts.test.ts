@@ -116,6 +116,19 @@ describe('the PATCH body', () => {
     expect(errors).toEqual({ PORT: 'Enter a whole number.', RATIO: 'Enter a number.' });
   });
 
+  it('holds back an edit its editor says is not valid yet, even one at the saved value', () => {
+    const catalog = entry({ key: 'MODEL_CATALOG', type: 'text', value: '{"a": 1}' });
+    const draft = { kind: 'value' as const, value: '{"a": 1}', error: 'a: Enter a number.' };
+
+    expect(isDirty(catalog, draft)).toBe(true);
+    expect(settleDraft(catalog, draft)).toBe(draft);
+    expect(draftError(catalog, draft)).toBe('a: Enter a number.');
+    expect(buildPatch([catalog], { MODEL_CATALOG: draft })).toEqual({
+      values: {},
+      errors: { MODEL_CATALOG: 'a: Enter a number.' },
+    });
+  });
+
   it('ignores an edit back to the current value', () => {
     const port = entry({ key: 'PORT', type: 'int', value: 25 });
     const flag = entry({ key: 'FLAG', type: 'bool', value: true });

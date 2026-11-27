@@ -71,6 +71,7 @@ import {
 import { updateModelConcurrency, updateModelVisibility } from '@/lib/api/admin';
 
 import { ModelsTab } from '../ModelsTab';
+import { LEAVE_MESSAGE } from '../useLeaveGuard';
 
 function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
   return {
@@ -100,7 +101,8 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
   };
 }
 
-const CATALOG = '{"models": [{"id": "gpt-4o-mini"}]}';
+const CATALOG =
+  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "context_length": 128000}]}';
 const v = (revision: number) => ({ epoch: 'e1', revision });
 
 /** The catalog in its category, beside categories Settings shows, one of them missing a value. */
@@ -121,6 +123,7 @@ function config(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
         one_time: true,
         restart_required: true,
         security_relevant: true,
+        document: true,
       }),
       entry({
         key: 'SITE_BRANDING',
@@ -200,7 +203,14 @@ describe('Admin → Models', () => {
       'Model Visibility',
       'Model Concurrency Limit',
     ]);
-    expect(screen.getByLabelText('MODEL_CATALOG')).toHaveValue(CATALOG);
+    // The catalog, one field per value.
+    const catalog = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
+    expect(
+      catalog.getAllByRole('textbox').map((field) => (field as HTMLInputElement).value),
+    ).toEqual(['gpt-4o-mini', 'GPT-4o mini', '128000']);
+    expect(catalog.getByRole('textbox', { name: 'models[0].context_length' })).toHaveValue(
+      '128000',
+    );
     // Settings' categories, and its list of missing settings, stay on Settings.
     expect(screen.queryByLabelText('SITE_BRANDING')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
@@ -229,10 +239,15 @@ describe('Admin → Models', () => {
     );
     await renderModels();
     const catalog = await screen.findByRole('region', { name: 'Model catalog' });
-    const edited = '{"models": []}';
+    // The document saved whole, indented, with the field's new value as its type.
+    const edited = JSON.stringify(
+      { models: [{ id: 'gpt-4o-mini', name: 'GPT-4o mini', context_length: 64000 }] },
+      null,
+      2,
+    );
 
-    fireEvent.change(within(catalog).getByLabelText('MODEL_CATALOG'), {
-      target: { value: edited },
+    fireEvent.change(within(catalog).getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '64000' },
     });
     fireEvent.click(within(catalog).getByRole('button', { name: 'Save changes to Model catalog' }));
     const dialog = await screen.findByRole('dialog', {
@@ -312,5 +327,53 @@ describe('Admin → Models', () => {
       'does not support database-backed configuration',
     );
     expect(sectionTitles()).toEqual(['Model Visibility', 'Model Concurrency Limit']);
+  });
+
+  it('asks before leaving with an unsaved change, in the catalog or an override', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    window.history.replaceState(null, '', '/dashboard/admin/models');
+    await renderModels();
+    const routing = screen.getByRole('link', { name: 'Routing' });
+
+    // Nothing unsaved: no question.
+    fireEvent.click(routing);
+    expect(confirm).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '64000' },
+    });
+    expect(fireEvent.click(routing)).toBe(false);
+    expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+
+    // Back to the saved value, then an override left unsaved.
+    fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '128000' },
+    });
+    confirm.mockClear();
+    fireEvent.click(routing);
+    expect(confirm).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByLabelText('Concurrency exemption for gpt-4o-mini'));
+    expect(fireEvent.click(routing)).toBe(false);
+    expect(confirm).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  it('points to Settings when the backend keeps the catalog with the other documents', async () => {
+    const old = config();
+    vi.mocked(getConfig).mockResolvedValue({
+      ...old,
+      categories: old.categories.filter((category) => category.id !== 'models'),
+      entries: old.entries.map((item) =>
+        item.key === 'MODEL_CATALOG' ? { ...item, category: 'application' } : item,
+      ),
+    });
+    await renderModels();
+
+    expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Settings → Application' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/settings?tab=application',
+    );
+    expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });
 });

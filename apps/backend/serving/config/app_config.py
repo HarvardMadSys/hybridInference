@@ -2164,6 +2164,8 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
     (:func:`~serving.config.app_config_registry.is_offered`), except one that
     needs the administrator: missing, refused, or waiting for a restart.
     """
+    from serving.config.documents import KEY_KINDS
+
     state = _STATE
     health = refresh_health()
     context = _requirement_context()
@@ -2224,6 +2226,8 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "invalid": invalid,
                 "used_by": list(entry.used_by),
                 "security_relevant": _security_relevant_entry(key, entry),
+                # A JSON object, which the console edits one value at a time.
+                "document": key in KEY_KINDS,
                 "updated_at": stamped.updated_at if stamped is not None else None,
                 "updated_by": stamped.updated_by if stamped is not None else None,
                 "group": registry.managed_group(key),
