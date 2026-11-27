@@ -1,6 +1,15 @@
 'use client';
 
-import { createContext, Fragment, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  createContext,
+  Fragment,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { CHECKBOX } from '@/components/features/admin/adminStyles';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { useMoney } from '@/lib/hooks/useMoney';
@@ -35,6 +44,11 @@ interface UserTableProps {
   hiddenColumns?: ColumnId[];
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
+  /**
+   * An account a link asked to open (`?open=<id>`, from Recent Requests): its
+   * details open once the list shows it.
+   */
+  openUserId?: string | null;
   // Write handlers. Each throws on failure: a confirmation the table opens
   // stays open with the error, and a direct write shows it where it was made.
   onApprove: (userId: string) => Promise<void>;
@@ -119,6 +133,7 @@ export function UserTable(props: UserTableProps) {
     hiddenColumns = [],
     filterState,
     onSortChange,
+    openUserId = null,
   } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
@@ -227,14 +242,7 @@ export function UserTable(props: UserTableProps) {
     </th>
   );
 
-  const toggleDetail = async (userId: string) => {
-    // A write in flight belongs to the open row: it stays open until the write ends.
-    if (confirmation.busy) return;
-    if (expandedId === userId) {
-      setExpandedId(null);
-      setDetail(null);
-      return;
-    }
+  const openDetail = useCallback(async (userId: string) => {
     setExpandedId(userId);
     setDetailLoading(true);
     setDetail(null);
@@ -247,7 +255,28 @@ export function UserTable(props: UserTableProps) {
     } finally {
       setDetailLoading(false);
     }
+  }, []);
+
+  const toggleDetail = async (userId: string) => {
+    // A write in flight belongs to the open row: it stays open until the write ends.
+    if (confirmation.busy) return;
+    if (expandedId === userId) {
+      setExpandedId(null);
+      setDetail(null);
+      return;
+    }
+    await openDetail(userId);
   };
+
+  // The account a link named opens as soon as the list shows it, and only
+  // once: a refetch must not reopen the row after the admin has closed it.
+  const openedFromLink = useRef<string | null>(null);
+  useEffect(() => {
+    if (!openUserId || openedFromLink.current === openUserId) return;
+    if (!users.some((u) => u.id === openUserId)) return;
+    openedFromLink.current = openUserId;
+    void openDetail(openUserId);
+  }, [openUserId, users, openDetail]);
 
   const collapse = () => {
     setExpandedId(null);

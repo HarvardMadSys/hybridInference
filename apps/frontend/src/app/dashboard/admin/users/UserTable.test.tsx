@@ -1373,6 +1373,50 @@ describe('UserTable suspension message', () => {
   });
 });
 
+describe('UserTable opening the account a link names', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture());
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('opens the account once the list shows it', async () => {
+    // Still loading: nothing to open yet.
+    const { rerender } = renderTable(baseUser, { users: [], openUserId: 'user-1' });
+    expect(getUserDetail).not.toHaveBeenCalled();
+
+    rerender(<UserTable {...tableProps(baseUser, { openUserId: 'user-1' })} />);
+
+    expect(await screen.findByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+    expect(getUserDetail).toHaveBeenCalledWith('user-1');
+  });
+
+  it('leaves the account closed after the admin closes it, when the list is fetched again', async () => {
+    const { rerender } = renderTable(baseUser, { openUserId: 'user-1' });
+    await screen.findByRole('textbox', { name: 'Admin note' });
+
+    fireEvent.click(screen.getByText('user@example.com'));
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
+
+    // A refetch hands the table a new list holding the same account.
+    rerender(<UserTable {...tableProps({ ...baseUser }, { openUserId: 'user-1' })} />);
+
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
+    expect(getUserDetail).toHaveBeenCalledTimes(1);
+  });
+
+  it('opens no account when no link names one', () => {
+    renderTable(baseUser);
+
+    expect(getUserDetail).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
+  });
+});
+
 describe('UserTable account actions', () => {
   beforeEach(() => {
     vi.clearAllMocks();

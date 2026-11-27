@@ -30,6 +30,7 @@ import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { OPEN_USER_PARAM } from './lib/userLink';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
 import type { Density, FilterState, UserRow } from './types';
@@ -58,6 +59,9 @@ export default function UsersTab() {
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
   );
+  // An account a link asked to open. Not a filter: changing the filters
+  // rewrites the address without it.
+  const openUserId = searchParams.get(OPEN_USER_PARAM);
   const [density, setDensity] = useState<Density>('comfortable');
 
   // Pagination state. `page` is zero-based; `pageSize` is persisted across
@@ -373,6 +377,7 @@ export default function UsersTab() {
               hiddenColumns={hiddenColumns}
               filterState={filterState}
               onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+              openUserId={openUserId}
               {...handlers}
             />
             <div className="border-t border-gray-200 px-3">

@@ -27,6 +27,7 @@ import {
   getRequestMetrics,
   listRecentRequests,
 } from '@/lib/api/admin';
+import { userDetailHref } from '@/app/dashboard/admin/users/lib/userLink';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { formatRouteWiseDecision } from '@/lib/utils/routewise';
 import { InlineErrorText } from '@/components/ui/InlineErrorText';
@@ -1426,16 +1427,17 @@ export function RequestsTab({
                         </td>
                         <td className="whitespace-nowrap px-3 py-2.5 text-[12px] font-mono text-gray-500">
                           {req.user_id ? (
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setReqUserFilter(req.user_id!);
-                                setReqOffset(0);
-                              }}
+                            // The account, on the Users tab: a link, so it can
+                            // also open in a new tab and leave this list as it is.
+                            <Link
+                              href={userDetailHref(req.user_id)}
+                              prefetch={false}
+                              // The row itself expands on click; this leaves it.
+                              onClick={(e) => e.stopPropagation()}
                               className="block max-w-[220px] text-left transition hover:text-gray-900 hover:underline"
                               title={`${req.user_name || req.user_id}${
                                 req.user_email ? ` <${req.user_email}>` : ''
-                              }`}
+                              } — click to open in Users`}
                             >
                               <span className="block truncate font-sans text-[13px] font-medium text-gray-800">
                                 {req.user_name || req.user_id}
@@ -1449,13 +1451,13 @@ export function RequestsTab({
                                   {req.user_id.slice(0, 12)}…
                                 </span>
                               )}
-                            </button>
+                            </Link>
                           ) : req.credential_owner_id ? (
                             // Identified, never authenticated: the key names
                             // this account, which is not the same claim as the
                             // account having made the request. Shown plainly
-                            // rather than as a filter chip for that reason —
-                            // the row is not part of that user's history.
+                            // rather than linked as the requester for that
+                            // reason — the row is not part of that user's history.
                             <span
                               className="block max-w-[220px] truncate font-sans text-[13px] text-gray-500"
                               title={`${req.credential_owner_id} — ${CREDENTIAL_STATE_TITLE}`}
