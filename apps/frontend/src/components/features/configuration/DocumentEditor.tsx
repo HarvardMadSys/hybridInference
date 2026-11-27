@@ -9,6 +9,7 @@ import { currentInput, settleDraft, type ConfigDraft } from './configDrafts';
 import {
   documentFields,
   documentText,
+  keepsItsValues,
   parseDocument,
   pathLabel,
   sameJson,
@@ -42,8 +43,10 @@ function withoutError(entry: ConfigEntry, draft: ConfigDraft): ConfigDraft | und
  * document's JSON text, so saving, discarding and conflicts work as they do
  * for any setting.
  *
- * It opens on the fields when the document has any, and on the JSON
- * otherwise. Text that is not a JSON object has no fields to show.
+ * It opens on the fields when the document has a value to type into, and on
+ * the JSON otherwise. Text that is not a JSON object has no fields to show,
+ * and nor does a document with an integer beyond 2^53: writing it back from
+ * fields would round that integer, though nobody edited it.
  */
 export function DocumentEditor({
   entry,
@@ -69,10 +72,14 @@ export function DocumentEditor({
 }) {
   const text = String(currentInput(entry, draft));
   const parsed = useMemo(() => parseDocument(text), [text]);
+  const exact = useMemo(() => keepsItsValues(text), [text]);
+  const fieldsAvailable = parsed !== null && exact;
   const [view, setView] = useState<View>(() =>
-    parsed !== null && documentFields(parsed).length > 0 ? 'fields' : 'json',
+    fieldsAvailable && documentFields(parsed).some((field) => field.kind !== 'empty')
+      ? 'fields'
+      : 'json',
   );
-  const shown: View = view === 'fields' && parsed !== null ? 'fields' : 'json';
+  const shown: View = view === 'fields' && fieldsAvailable ? 'fields' : 'json';
 
   const choose = (next: View) => {
     // A field that is not a value of its type stays behind in the fields:
@@ -86,6 +93,9 @@ export function DocumentEditor({
   let note = 'The whole document as JSON.';
   if (shown === 'fields') note = 'One field per value. Add or remove entries in JSON.';
   else if (parsed === null) note = 'This text is not a JSON object, so it has no fields to show.';
+  else if (!exact) {
+    note = 'This document holds a number too large to edit as fields without rounding it.';
+  }
 
   return (
     <div className="max-w-4xl">
@@ -101,7 +111,7 @@ export function DocumentEditor({
               key={option}
               type="button"
               aria-pressed={shown === option}
-              disabled={option === 'fields' && parsed === null}
+              disabled={option === 'fields' && !fieldsAvailable}
               title={
                 option === 'fields' && parsed === null
                   ? 'Correct the JSON to edit it as fields'
@@ -140,6 +150,8 @@ export function DocumentEditor({
 interface Typing {
   /** The draft this was typed onto, or that the last edit here made. */
   draft: ConfigDraft | undefined;
+  /** The saved document's text then, which a reload or another save can replace. */
+  saved: string;
   /** The document's text when typing began: the fields are its fields. */
   base: string;
   /** What each field holds now, by field id; a field not typed into is absent. */
@@ -182,18 +194,22 @@ function DocumentFields({
   disabled: boolean;
 }) {
   const baseId = useId();
+  const savedText = String(currentInput(entry, undefined));
   const [typing, setTyping] = useState<Typing>(() => ({
     draft,
+    saved: savedText,
     base: String(currentInput(entry, draft)),
     texts: {},
   }));
   const [filter, setFilter] = useState('');
 
   let current = typing;
-  if (typing.draft !== draft) {
-    // Changed somewhere else -- Discard, the JSON view, a save, a reload:
-    // the fields start again from the document as it is now.
-    current = { draft, base: String(currentInput(entry, draft)), texts: {} };
+  // Changed somewhere else -- Discard, the JSON view, a save, a reload -- or,
+  // with nothing unsaved here, a newer saved document after a conflict,
+  // another key's save or a restore: the fields start again from the
+  // document as it is now, so an edit never builds on one that is gone.
+  if (typing.draft !== draft || (draft === undefined && typing.saved !== savedText)) {
+    current = { draft, saved: savedText, base: String(currentInput(entry, draft)), texts: {} };
     setTyping(current);
   }
 
@@ -205,7 +221,6 @@ function DocumentFields({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const savedText = String(currentInput(entry, undefined));
   const saved = useMemo(() => parseDocument(savedText), [savedText]);
   const base = useMemo(() => parseDocument(current.base) ?? {}, [current.base]);
   const fields = useMemo(() => documentFields(base), [base]);
@@ -229,7 +244,7 @@ function DocumentFields({
         ...(invalid.length > 0 ? { error: problemSummary(invalid, applied.errors) } : {}),
       };
     }
-    setTyping({ draft: next, base: current.base, texts });
+    setTyping({ draft: next, saved: savedText, base: current.base, texts });
     onChange(entry.key, next);
   };
 
@@ -322,11 +337,25 @@ function FieldRow({
       [hint ? hintId : null, error ? errorId : null].filter(Boolean).join(' ') || undefined,
     className: invalid ? `${TEXT_FIELD} ${FIELD_INVALID}` : TEXT_FIELD,
   };
+  const row =
+    'grid grid-cols-1 gap-1 px-3 py-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] sm:gap-3';
+  if (field.kind === 'empty') {
+    // Whether it takes strings or objects is not known: nothing to type into.
+    return (
+      <div className={row} data-document-field={field.label}>
+        <span className="min-w-0 font-mono text-[12px] text-gray-800 [overflow-wrap:anywhere] sm:pt-1.5">
+          <PathLabel field={field} />
+        </span>
+        <p className="min-w-0 text-[12px] text-gray-400 sm:pt-1.5">
+          {field.text === '[]'
+            ? 'An empty list. Add its items in JSON.'
+            : 'Empty. Add its keys in JSON.'}
+        </p>
+      </div>
+    );
+  }
   return (
-    <div
-      className="grid grid-cols-1 gap-1 px-3 py-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] sm:gap-3"
-      data-document-field={field.label}
-    >
+    <div className={row} data-document-field={field.label}>
       <div className="min-w-0 sm:pt-1.5">
         <label
           htmlFor={id}

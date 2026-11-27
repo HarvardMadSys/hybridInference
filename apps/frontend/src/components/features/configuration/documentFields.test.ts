@@ -4,6 +4,7 @@ import {
   documentFields,
   documentText,
   fieldValue,
+  keepsItsValues,
   parseDocument,
   pathLabel,
   pathPointer,
@@ -45,10 +46,7 @@ describe('documentFields', () => {
   });
 
   it('keeps a list as one field only when it reads back unchanged', () => {
-    expect(summary({ routers: [], scopes: ['openid', 'email'] })).toEqual([
-      'routers list ',
-      'scopes list openid, email',
-    ]);
+    expect(summary({ scopes: ['openid', 'email'] })).toEqual(['scopes list openid, email']);
     // A comma, padding, an empty item or a number would not survive the round trip.
     expect(summary({ stop: ['a,b', ' c'], sizes: [1, 2], empty: [''] })).toEqual([
       'stop[0] string a,b',
@@ -59,9 +57,14 @@ describe('documentFields', () => {
     ]);
   });
 
-  it('has nothing to show for an empty object, which stays in the document', () => {
-    const document = { branding: {}, name: 'x' };
-    expect(summary(document)).toEqual(['name string x']);
+  it('shows an empty list or object, which could hold strings or objects alike, but types nothing', () => {
+    const document = { local_deployment: [], branding: {}, name: 'x' };
+    expect(summary(document)).toEqual([
+      'local_deployment empty []',
+      'branding empty {}',
+      'name string x',
+    ]);
+    expect(fieldValue('empty', 'anything')).toEqual({ error: 'Add to it in JSON.' });
     expect(withFieldTexts(document, documentFields(document), {}).document).toEqual(document);
   });
 
@@ -93,12 +96,30 @@ describe('fieldValue', () => {
     }
   });
 
-  it('takes a value never set for what it reads as', () => {
+  it('takes what is typed into a value never set as text, unless it is empty or null', () => {
     expect(fieldValue('null', '')).toEqual({ value: null });
-    expect(fieldValue('null', 'null')).toEqual({ value: null });
-    expect(fieldValue('null', '30')).toEqual({ value: 30 });
-    expect(fieldValue('null', 'true')).toEqual({ value: true });
+    expect(fieldValue('null', ' null ')).toEqual({ value: null });
+    // Nothing says it is a number: a year or a version stays text.
+    expect(fieldValue('null', '2024')).toEqual({ value: '2024' });
+    expect(fieldValue('null', '1.10')).toEqual({ value: '1.10' });
+    expect(fieldValue('null', 'true')).toEqual({ value: 'true' });
     expect(fieldValue('null', 'eu-west')).toEqual({ value: 'eu-west' });
+  });
+});
+
+describe('keepsItsValues', () => {
+  it('refuses a document an integer beyond 2^53 would come back from rounded', () => {
+    expect(keepsItsValues('{"id": 9007199254740991}')).toBe(true);
+    expect(keepsItsValues('{"id": 9007199254740993}')).toBe(false);
+    expect(keepsItsValues('{"ids": [1, -9007199254740993]}')).toBe(false);
+  });
+
+  it('keeps what a round trip changes only in how it is written', () => {
+    // A long decimal and an exponent are doubles for the gateway too.
+    expect(keepsItsValues('{"weight": 1.0, "big": 1e300, "p": 0.1000000000000000055}')).toBe(true);
+    // Digits in a string are text, escaped quotes included.
+    expect(keepsItsValues('{"note": "id 9007199254740993 \\" 12345678901234567890"}')).toBe(true);
+    expect(keepsItsValues('')).toBe(true);
   });
 });
 

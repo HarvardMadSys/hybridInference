@@ -155,6 +155,9 @@ export function ConfigEntryField({
   // applies in its place, and the row is still there to remove.
   const canReset = Boolean(onReset) && hasStoredValue(entry) && !entry.immutable && !locked;
   const offerMarkSecret = !resetPending && Boolean(onMarkSecret) && canMarkSecret(entry);
+  // A JSON document edited as fields, or as JSON (see the text editor below).
+  const documentEditor =
+    entry.document === true && entry.type === 'text' && !entry.secret && !locked && !resetPending;
 
   // An edit back to the starting value is no edit, so it leaves no draft.
   const setValue = (value: string | boolean) =>
@@ -257,6 +260,8 @@ export function ConfigEntryField({
         value={String(currentInput(entry, draft))}
         placeholder={entry.default !== null ? String(entry.default) : undefined}
         disabled={disabled}
+        // A document's name labels whichever view is shown, so it names this one too.
+        aria-labelledby={entry.document ? labelId : undefined}
         aria-describedby={describedBy}
         aria-invalid={error ? true : undefined}
         onChange={(event) => setValue(event.target.value)}
@@ -328,7 +333,9 @@ export function ConfigEntryField({
           <div className="flex flex-wrap items-center gap-1.5">
             <label
               id={labelId}
-              htmlFor={controlId}
+              // A document's fields have no one control to point at: they and
+              // its JSON view name themselves after this label instead.
+              htmlFor={documentEditor ? undefined : controlId}
               className={`break-all text-[13px] font-medium text-gray-900 ${compact ? '' : 'font-mono'}`}
             >
               {label}

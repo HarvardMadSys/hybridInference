@@ -5,9 +5,11 @@
 // document is still saved whole, as JSON.
 //
 // A field keeps the type of the value it came from: a number stays a number,
-// `true` a boolean. An array of strings is one field, its items separated by
-// commas; any other array is a field per item. Adding or removing a key or an
-// item changes the document's shape, which the JSON view does.
+// `true` a boolean, and a value never set (`null`) takes what is typed as
+// text. An array of strings is one field, its items separated by commas; any
+// other array is a field per item. An empty list or object shows, but holds
+// nothing to type into: what it should hold is not known. Adding or removing
+// a key or an item changes the document's shape, which the JSON view does.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | JsonObject;
 export interface JsonObject {
@@ -15,8 +17,8 @@ export interface JsonObject {
 }
 export type PathSegment = string | number;
 
-/** What a field holds, from the value it came from. */
-export type FieldKind = 'string' | 'number' | 'boolean' | 'null' | 'list';
+/** What a field holds, from the value it came from. `empty` is `[]` or `{}`, shown only. */
+export type FieldKind = 'string' | 'number' | 'boolean' | 'null' | 'list' | 'empty';
 
 export interface DocumentField {
   /** Stable while the document keeps its shape: the path, as JSON. */
@@ -54,6 +56,42 @@ export function documentText(document: JsonObject): string {
   return JSON.stringify(document, null, 2);
 }
 
+// A JSON number where it starts, read in place; `y` keeps the scan linear.
+const NUMBER_AT = /-?\d+(\.\d+)?([eE][+-]?\d+)?/y;
+
+/**
+ * Whether reading `text` and writing it back keeps every value the gateway
+ * reads: not when it holds an integer beyond 2^53, which JavaScript rounds.
+ * Other changes a round trip makes leave the document the gateway reads as it
+ * was: `1.0` written `1` is the same number, and a repeated key keeps its
+ * last value, as the gateway's own reader does.
+ */
+export function keepsItsValues(text: string): boolean {
+  let i = 0;
+  while (i < text.length) {
+    const char = text[i];
+    if (char === '"') {
+      // Past the string, its escapes included: a number in it is text.
+      i += 1;
+      while (i < text.length && text[i] !== '"') i += text[i] === '\\' ? 2 : 1;
+      i += 1;
+    } else if (char === '-' || (char >= '0' && char <= '9')) {
+      NUMBER_AT.lastIndex = i;
+      const match = NUMBER_AT.exec(text);
+      if (!match) {
+        i += 1;
+        continue;
+      }
+      const integer = match[1] === undefined && match[2] === undefined;
+      if (integer && !Number.isSafeInteger(Number(match[0]))) return false;
+      i += match[0].length;
+    } else {
+      i += 1;
+    }
+  }
+  return true;
+}
+
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_-]*$/;
 
 /** `models[0].route[0].base_url`; a key that is no plain name is quoted: `labels["a.b"]`. */
@@ -77,7 +115,7 @@ export function pathPointer(path: readonly PathSegment[]): string {
 /**
  * Whether an array reads as one comma-separated field and back unchanged:
  * every item a string that holds no comma or line break and is not padded or
- * empty. An empty array is such a list too.
+ * empty.
  */
 function isPlainList(value: readonly JsonValue[]): value is string[] {
   return value.every(
@@ -107,10 +145,14 @@ export function documentFields(document: JsonObject): DocumentField[] {
     });
   const visit = (value: JsonValue, path: PathSegment[]) => {
     if (Array.isArray(value)) {
-      if (isPlainList(value)) add(path, 'list', value.join(', '));
+      // Empty, it could hold strings or objects alike: shown, and filled in JSON.
+      if (value.length === 0) add(path, 'empty', '[]');
+      else if (isPlainList(value)) add(path, 'list', value.join(', '));
       else value.forEach((item, index) => visit(item, [...path, index]));
     } else if (isJsonObject(value)) {
-      for (const [key, item] of Object.entries(value)) visit(item, [...path, key]);
+      const entries = Object.entries(value);
+      if (entries.length === 0) add(path, 'empty', '{}');
+      for (const [key, item] of entries) visit(item, [...path, key]);
     } else {
       add(path, kindOf(value), value === null ? '' : String(value));
     }
@@ -147,13 +189,12 @@ export function fieldValue(
       if (trimmed.toLowerCase() === 'false') return { value: false };
       return { error: 'Enter true or false.' };
     case 'null':
-      // Empty, nothing was ever set: what is typed is taken for what it reads as.
+      // Nothing was ever set, so nothing says what this holds: what is typed
+      // is text -- `2024` stays "2024" -- unless it is left empty or `null`.
       if (trimmed === '' || trimmed === 'null') return { value: null };
-      if (trimmed === 'true' || trimmed === 'false') return { value: trimmed === 'true' };
-      if (JSON_NUMBER.test(trimmed) && Number.isFinite(Number(trimmed))) {
-        return { value: Number(trimmed) };
-      }
       return { value: text };
+    case 'empty':
+      return { error: 'Add to it in JSON.' };
   }
 }
 

@@ -86,6 +86,19 @@ afterEach(() => {
 });
 
 describe('a JSON document as fields', () => {
+  it('follows a newer saved document while nothing is unsaved here, and edits build on it', () => {
+    // A conflict reload, another key's save, a restore: the page takes the
+    // newer configuration while this document has no draft.
+    const { rerender } = renderDocument();
+    const newer = JSON.parse(CATALOG);
+    newer.models[0].context_length = 8192;
+    rerender(<Harness entry={documentEntry({ value: JSON.stringify(newer) })} />);
+
+    expect(field('models[0].context_length')).toHaveValue('8192');
+    type('models[0].id', 'renamed');
+    expect(draftDocument().models[0]).toMatchObject({ id: 'renamed', context_length: 8192 });
+  });
+
   it('shows one field per value, each a simple string, under the setting', () => {
     renderDocument();
 
@@ -243,6 +256,43 @@ describe('a JSON document as fields', () => {
     );
     expect(shown).toHaveLength(1);
     expect(shown[0]).toHaveValue('value 13');
+  });
+
+  it('keeps a document with an integer beyond 2^53 in JSON, which fields would round', () => {
+    const big = '{"models": [{"id": "example-chat", "seed": 9007199254740993}]}';
+    renderDocument(documentEntry({ value: big }));
+
+    expect(screen.getByRole('button', { name: 'JSON' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByRole('button', { name: 'Fields' })).toBeDisabled();
+    expect(screen.getByText(/a number too large to edit as fields/)).toBeInTheDocument();
+    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveValue(big);
+  });
+
+  it('shows an empty list without a field to type into, and saves a never-set value as text', () => {
+    renderDocument(
+      documentEntry({ value: JSON.stringify({ local_deployment: [], release: null, name: 'x' }) }),
+    );
+
+    const fields = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
+    expect(fields.getByText('An empty list. Add its items in JSON.')).toBeInTheDocument();
+    expect(fields.getAllByRole('textbox')).toHaveLength(2);
+    expect(field('release')).toHaveAttribute('placeholder', 'null');
+
+    type('release', '2024');
+    expect(draftDocument()).toEqual({ local_deployment: [], release: '2024', name: 'x' });
+  });
+
+  it("labels the fields and the JSON view with the setting's name, and points at neither", () => {
+    renderDocument();
+    const label = screen.getByText('MODEL_CATALOG', { selector: 'label' });
+    expect(label).not.toHaveAttribute('for');
+    expect(screen.getByRole('group', { name: 'MODEL_CATALOG' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'JSON' }));
+    expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveAttribute(
+      'aria-labelledby',
+      label.id,
+    );
   });
 
   it('is plain text on a backend that does not say it is a document', () => {
