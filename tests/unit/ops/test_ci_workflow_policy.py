@@ -134,6 +134,32 @@ def test_publish_stitch_requires_both_native_halves(image: str) -> None:
     assert f"needs.publish-{image}-amd64.result == 'success'" in job["if"]
 
 
+def test_a_later_release_queues_behind_an_earlier_release_publish() -> None:
+    """A main run publishes a release's images, so nothing may cancel it.
+
+    A dispatch on main publishes only main's current tip, so a release whose
+    run a later main move cancelled could never get images. Other refs keep
+    cancelling superseded runs.
+    """
+    concurrency = _workflow("ci.yml")["concurrency"]
+
+    assert concurrency["cancel-in-progress"] == "${{ github.ref != 'refs/heads/main' }}"
+
+
+def test_restore_drill_orders_releases_by_tag_name() -> None:
+    """Release tags are lightweight; their creatordate is the commit's date.
+
+    The YYYYMMDD[.N] name is the release order, and a version sort puts .10
+    after .9.
+    """
+    steps = _workflow("ci.yml")["jobs"]["tutorial-e2e"]["steps"]
+    drill = next(step for step in steps if step.get("id") == "demo-previous-smoke")["run"]
+
+    assert "--sort=-v:refname" in drill
+    assert "creatordate" not in drill
+    assert "for prefix in sha dev" in drill
+
+
 @pytest.mark.parametrize("image", ["backend", "console"])
 def test_published_images_are_tagged_by_commit_not_branch(image: str) -> None:
     """Release images carry sha-<sha>; the precheck looks up the same tag.

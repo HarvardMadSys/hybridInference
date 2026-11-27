@@ -33,7 +33,13 @@ permissions:
 concurrency:
   # Keep daily/manual backstops from cancelling a deployment-triggering push.
   group: ci-v2-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # main moves only for a release, and its run publishes that release's
+  # images: a later move must queue behind it, not cancel it, or the earlier
+  # release is left without images (a dispatch on main publishes only main's
+  # current tip). GitHub keeps one pending run per group, so a third move
+  # while one runs and one waits still replaces the waiting one; release.yml
+  # queues the same way. Elsewhere a newer push supersedes the older run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PYTHON_VERSION: "3.12"
@@ -1245,11 +1251,13 @@ jobs:
           printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           # Images are published only for releases, so the image a deployment
           # would restore is the newest release at or before the previous
-          # commit (the checkout has the full history and its tags). Releases
+          # commit (the checkout has the full history and its tags). Release
+          # tags are lightweight, so their date is the commit's, not the
+          # release's: order by the YYYYMMDD[.N] name instead. Releases
           # cut before that change carry only the older dev-<sha> tag. A main
           # move can cancel the publish of the one before it, so try a few.
           image=""
-          for tag in $(git tag --merged "${PREVIOUS_SHA}" --sort=-creatordate \
+          for tag in $(git tag --merged "${PREVIOUS_SHA}" --sort=-v:refname \
                          | grep -E '^[0-9]{8}(\.[0-9]+)?$' | head -5); do
             sha="$(git rev-list -n 1 "refs/tags/${tag}")"
             for prefix in sha dev; do
