@@ -37,7 +37,6 @@ DEPLOY = REPO / "deploy"
 _KNOWN_LAUNCH_FILES = {
     DEPLOY / "docker" / "Dockerfile.backend",
     DEPLOY / "systemd" / "hybrid_inference.service",
-    DEPLOY / "systemd" / "hybrid_inference.staging.service",
     REPO / "config" / "examples" / "routewise-options.md",
 }
 

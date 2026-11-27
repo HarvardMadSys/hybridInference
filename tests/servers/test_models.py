@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
-import os
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock
@@ -402,20 +400,6 @@ async def test_concurrent_model_requests_consistent(models_client: AsyncClient):
     results = await asyncio.gather(*tasks)
     first = results[0].json()
     assert all(r.json() == first for r in results)
-
-
-@pytest.mark.asyncio
-@pytest.mark.perf
-@pytest.mark.skipif(
-    os.getenv("RUN_PERF") != "1",
-    reason="Performance tests are disabled by default (set RUN_PERF=1 to enable)",
-)
-async def test_models_endpoint_performance(models_client: AsyncClient):
-    start = time.perf_counter()
-    resp = await models_client.get("/v1/models")
-    elapsed = time.perf_counter() - start
-    assert resp.status_code == status.HTTP_200_OK
-    assert elapsed < 0.2
 
 
 # ---------------------------------------------------------------------------

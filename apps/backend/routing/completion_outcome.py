@@ -63,27 +63,6 @@ class CompletionOutcome(StrEnum):
         """
         return self in (CompletionOutcome.PROGRESS, CompletionOutcome.COMPLETE)
 
-    @classmethod
-    def from_response(
-        cls,
-        *,
-        content: str | None,
-        usage: dict[str, Any] | None,
-        http_status: int | None,
-        terminal: bool,
-    ) -> CompletionOutcome:
-        """Classify a single response.
-
-        ``usage`` is the provider's own reported usage mapping, when available.
-        ``http_status`` of None means no HTTP response was obtained.
-        """
-        return classify_completion_outcome(
-            content=content,
-            usage=usage,
-            http_status=http_status,
-            terminal=terminal,
-        )
-
 
 #: Provider warmup / placeholder notices recognized by the shared classifier.
 _DEFAULT_TRANSIENT_MARKERS: tuple[str, ...] = (

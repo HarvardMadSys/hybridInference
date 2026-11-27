@@ -64,11 +64,6 @@ class PagedStore:
             total += size
         return page, len(page) < len(rows)
 
-    async def iter_items(self, batch_id, *, after=0, limit=500):
-        """The count-only pages an earlier version read, decoded whole."""
-        self.pages.append({"max_bytes": None, "statuses": None, "limit": limit})
-        return [dict(r) for r in self.rows if r["id"] > after][:limit]
-
     async def extend_batch_work(self, **_kwargs: Any) -> bool:
         self.extended += 1
         return True

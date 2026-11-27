@@ -73,7 +73,7 @@ def test_apply_installs_the_loaded_block():
 
 
 def test_a_config_with_no_state_changes_block_still_yields_defaults():
-    # ``load_alert_config`` on a file with only ``rules:`` returns the default
+    # An alerts document with only ``rules:`` validates to the default
     # container rather than None, so the apply path cannot install a null policy.
     apply_state_change_policy(AlertConfig().state_changes)
     assert circuit_open_policy().cooldown_sec == 300

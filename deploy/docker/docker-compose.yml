@@ -192,7 +192,6 @@ services:
         # distributions can combine with the Next.js rewrites below.
         NEXT_PUBLIC_API_BASE: ${NEXT_PUBLIC_API_BASE-http://localhost:8080}
         BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL-http://backend:8080}
-        NEXT_PUBLIC_DEPLOY_TARGET: ${NEXT_PUBLIC_DEPLOY_TARGET:-production}
         NEXT_PUBLIC_BUILD_SHA: ${BUILD_SHA:-}
         NEXT_PUBLIC_BUILD_TIMESTAMP: ${BUILD_TIMESTAMP:-}
         NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${NEXT_PUBLIC_TURNSTILE_SITE_KEY:-}
@@ -219,10 +218,6 @@ services:
         NEXT_PUBLIC_DATA_POLICY_NOTICE: ${NEXT_PUBLIC_DATA_POLICY_NOTICE-}
         NEXT_PUBLIC_TEAM_JSON: ${NEXT_PUBLIC_TEAM_JSON-}
         NEXT_PUBLIC_SPONSORS_JSON: ${NEXT_PUBLIC_SPONSORS_JSON-}
-        # Agent targets are deliberately absent here. The Dockerfile still
-        # accepts them for pre-W7 downstream build pipelines, but passing this
-        # deployment's runtime values into a source build would compile legacy
-        # beforeFiles rewrites that outrank the runtime route handler below.
     container_name: hybridinference-frontend
     restart: unless-stopped
     # A ceiling on what this container can take from the host. The console

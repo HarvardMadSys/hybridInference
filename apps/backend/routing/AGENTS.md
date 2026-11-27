@@ -67,35 +67,17 @@ The following invariants should survive implementation changes:
   boundary is missing. Broad edits are acceptable only when the change explains
   why the concern cannot be localized.
 - Do not perform cleanup merely to make transitional structure look uniform.
-  Consult the newest applicable dated spec or plan before broad architectural
-  changes, and state when a current structure is intentionally transitional.
+  Consult the design record below before broad architectural changes, and
+  state when a current structure is intentionally transitional.
 
-### Dated design and implementation records
+### Design record
 
-The router, leaf and pool contracts follow the agreed composable-routing
-design that the root [AGENTS.md](../../../AGENTS.md) summarises in section 6.2.
-The following are dated records and retain their historical status; they are
-not evergreen replacements for this guide:
-
-- [Composable hybrid routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
-  is the agreed contract for routers, leaves and pools, with its opt-in wiring
-  and deferred work.
-- [Hybrid routing abstraction design](../../../docs/agents/specs/2026-09-12-hybrid-routing-abstraction-design.zh.md)
-  and its [implementation plan](../../../docs/agents/plans/2026-09-13-hybrid-routing-implementation.zh.md)
-  precede that design.
-- [RouteWise current body router design](../../../docs/agents/specs/2026-05-17-routewise-current-body-router-design.md)
-  is a draft proposal for the RouteWise body-router semantics.
-- [RouteWise session/cache-aware routing design](../../../docs/agents/specs/2026-06-01-routewise-session-cache-aware-routing-design.md)
-  is a draft proposal whose status records a pending paper-boundary decision.
-- [Routing config expressiveness plan](../../../docs/agents/plans/2026-05-03-routing-config-expressiveness.md)
-  is a staged plan for one configuration migration, not a declaration of the
-  routing target architecture.
-
-Check [`docs/agents/specs/`](../../../docs/agents/specs/),
-[`docs/agents/plans/`](../../../docs/agents/plans/), and
-[`docs/reviews/`](../../../docs/reviews/) for newer or more applicable
-records. A review or plan records what was proposed or verified at that time;
-it does not by itself promote transitional code to a durable contract.
+The router, leaf and pool contracts follow the
+[composable hybrid routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md),
+which the root [AGENTS.md](../../../AGENTS.md) summarises in section 6.2. It is
+the agreed contract for routers, leaves and pools, with its opt-in wiring and
+deferred work. A dated record does not by itself promote transitional code to a
+durable contract.
 
 ## Verification
 
@@ -108,7 +90,7 @@ unrelated ceremony:
 - serving integration tests when a routing/serving boundary is crossed;
 - repository lint and format gates for every changed file.
 
-The implementation plan or PR should record the exact commands and results.
+The PR should record the exact commands and results.
 
 ## Nested guidance
 

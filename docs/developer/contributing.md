@@ -126,7 +126,6 @@ docs/
   agents/         design specs and plans
 ops/              maintenance and CI helper scripts (admin, ci, db)
 tests/            see the test tiers below
-benchmark/        benchmarking scripts
 ```
 
 The backend packages are `serving` and `routing`, rooted at `apps/backend`.
@@ -286,8 +285,7 @@ sidebar with one task in mind. Write for that reader:
 - **Name a file only when the reader will open or edit it.** Do not cite
   functions or line numbers to prove a statement; tests and review do that.
 - **Describe the software as it is now.** What changed, how it used to work and
-  how you checked belong in the pull request, the release notes or
-  `docs/reviews/`.
+  how you checked belong in the pull request or the release notes.
 - **Leave out the details of any one installation** — its hosts, model ids,
   accounts and measurements. They belong in that distribution's own
   documentation.

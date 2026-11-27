@@ -63,7 +63,6 @@ from serving.utils import context as req_ctx
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
-_LEGACY_ROUTING_OPTION_UNSET = object()
 
 # ============================================================================
 # Exceptions
@@ -1072,19 +1071,11 @@ class FixedRouter:
         params: dict[str, Any],
     ) -> str | None:
         """Resolve the explicit pin without forwarding router controls upstream."""
-        option_pin = routing_options.pin_provider if routing_options is not None else None
-        legacy_pin = params.pop("pin_provider", _LEGACY_ROUTING_OPTION_UNSET)
-        if legacy_pin is _LEGACY_ROUTING_OPTION_UNSET:
-            return option_pin
-        if legacy_pin is None:
-            return option_pin
-        # One-release compatibility for direct FixedRouter callers. The public
-        # serving path uses RoutingRequestOptions and never enters this branch.
-        if option_pin is not None:
-            raise TypeError("pin_provider was supplied both directly and in routing_options")
-        if not isinstance(legacy_pin, str):
-            raise TypeError("pin_provider must be a string or None")
-        return legacy_pin
+        if "pin_provider" in params:
+            # A router control in the upstream parameters would be sent to the
+            # provider; the pin travels in routing_options only.
+            raise TypeError("pin_provider belongs in routing_options")
+        return routing_options.pin_provider if routing_options is not None else None
 
     def _ensure_health(self, endpoint_id: str) -> None:
         self._health_registry.ensure(endpoint_id)

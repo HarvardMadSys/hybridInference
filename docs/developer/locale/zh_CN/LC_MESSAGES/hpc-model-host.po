@@ -368,4 +368,3 @@ msgid ""
 msgstr ""
 "`refreshed_at` 是代理最近一次读取调度器队列的时间；作业的 `nodes`、`started_at` 和 `ends_at` "
 "描述运行中的作业，`expected_start_at` 则是调度器自己对等待中作业开始时间的估计。"
-

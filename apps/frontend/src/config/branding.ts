@@ -143,7 +143,7 @@ export const branding: Branding = {
   // developer home derives one from NEXT_PUBLIC_API_BASE (else the page
   // origin), so a console built against a real API never advertises a
   // localhost default, and never someone else's hosted service. The model id
-  // matches config/examples/models.openrouter.yaml.
+  // matches config/examples/models.openrouter.json.
   exampleApiBase: process.env.NEXT_PUBLIC_EXAMPLE_API_BASE || '',
   exampleApiKeyEnvVar: process.env.NEXT_PUBLIC_EXAMPLE_API_KEY_ENV_VAR || 'HYBRIDINFERENCE_API_KEY',
   exampleModel: process.env.NEXT_PUBLIC_EXAMPLE_MODEL || 'llama-3.3-70b',

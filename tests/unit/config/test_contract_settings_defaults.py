@@ -2,7 +2,6 @@
 
 Characterization tests pinning the CURRENT default values of the
 site-specific settings that the neutral-upstream / distribution split
-(docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 will parameterize. The branding/DistributionConfig PRs are expected to update
 these assertions deliberately; an unexpected failure here means a refactor
 changed a production default by accident.

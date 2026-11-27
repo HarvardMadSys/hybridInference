@@ -1006,8 +1006,6 @@ until it can serve. The admin API refuses to create a model named `auto` or
 `auto-<anything>`.
 
 The admin playground and the console's own model list do not offer auto models.
-The design is in
-[the auto mode design](https://github.com/HarvardMadSys/hybridInference/blob/dev/docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md).
 
 ## API endpoints
 

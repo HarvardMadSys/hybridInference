@@ -37,7 +37,6 @@ from typing import TypeAlias
 
 IPAddress: TypeAlias = ipaddress.IPv4Address | ipaddress.IPv6Address
 
-IPV4_MAPPED = ipaddress.ip_network("::ffff:0:0/96")
 IPV4_COMPATIBLE = ipaddress.ip_network("::/96")
 IPV4_TRANSLATED = ipaddress.ip_network("::ffff:0:0:0/96")
 NAT64_WELL_KNOWN = ipaddress.ip_network("64:ff9b::/96")

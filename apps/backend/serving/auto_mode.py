@@ -3,8 +3,8 @@
 ``routing.model_selection`` decides which candidate serves a request. Everything
 around that decision that depends on the gateway is here:
 
-- loading the ``auto:`` section of ``models.yaml`` at startup and holding the
-  session store (:func:`load_auto_mode`, :class:`AutoMode`);
+- building auto mode from the ``auto:`` section of the model catalog and
+  holding the session store (:func:`auto_mode_from_document`, :class:`AutoMode`);
 - the runtime switch, ``auto_mode_enabled``, off by default
   (:func:`auto_mode_for`);
 - the catalog: the candidates this caller may use, as the route table declares
@@ -26,7 +26,7 @@ caller asked for, error messages do too, and the console's request history
 shows the auto model. Operators see the served model in the log and the admin
 views.
 
-Design: ``docs/agents/specs/2026-10-13-auto-mode-model-selection-design.zh.md``.
+Behaviour: ``docs/developer/routing.md`` (Auto models).
 """
 
 from __future__ import annotations
@@ -34,8 +34,6 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
-import yaml
 
 from routing.model_selection import (
     AUTO_MODEL_ID,
@@ -64,7 +62,6 @@ from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
     from collections.abc import Hashable, Mapping, Sequence
-    from pathlib import Path
 
     from serving.adapters.base import ModelConfig
     from serving.utils.session_identity import SessionIdentity
@@ -81,9 +78,9 @@ __all__ = [
     "apply_to_anthropic_body",
     "apply_to_chat_request",
     "auto_mode_for",
+    "auto_mode_from_document",
     "candidate_info",
     "hide_served_model",
-    "load_auto_mode",
     "openai_features",
     "served_model_names",
     "session_key",
@@ -381,43 +378,7 @@ async def auto_mode_for(model_id: Any, services: Any) -> AutoMode | None:
     return auto_mode
 
 
-def load_auto_mode(path: Path, routes: Mapping[str, Any]) -> AutoMode | None:
-    """Load the ``auto:`` section of the models registry at ``path``.
-
-    Called once the route table is complete, so the section is checked against
-    every model the gateway starts with. Returns ``None`` -- auto off, the models
-    themselves unaffected -- when the file has no section, the section is
-    invalid, or a tier is named like a registered model. Each problem is logged.
-    """
-    try:
-        data = yaml.safe_load(path.read_text()) or {}
-    except (OSError, yaml.YAMLError) as exc:
-        logger.error(f"Auto mode is off: could not read {path}: {exc}")
-        return None
-    return _auto_mode_from_document(data, routes)
-
-
-def load_auto_mode_from_text(text: str, routes: Mapping[str, Any]) -> AutoMode | None:
-    """Load the ``auto:`` section of a stored model registry.
-
-    Args:
-        text: The route-catalog models document.
-        routes: The route table the section is checked against.
-
-    Returns:
-        The configured auto mode, or ``None`` when the document has no section
-        or the section cannot be used. A problem is logged and the models
-        themselves are left as they are.
-    """
-    try:
-        data = yaml.safe_load(text) or {}
-    except yaml.YAMLError as exc:
-        logger.error(f"Auto mode is off: could not read the database route catalog: {exc}")
-        return None
-    return _auto_mode_from_document(data, routes)
-
-
-def _auto_mode_from_document(data: Any, routes: Mapping[str, Any]) -> AutoMode | None:
+def auto_mode_from_document(data: Any, routes: Mapping[str, Any]) -> AutoMode | None:
     """Build auto mode from a parsed registry, or ``None`` to leave it off."""
     raw = data.get("auto") if isinstance(data, dict) else None
     if raw is None:

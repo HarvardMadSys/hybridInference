@@ -632,17 +632,6 @@ class OperationalStore(ABC):
     ) -> None:
         """Set status='rejected', record reviewer and reason."""
 
-    @abstractmethod
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Return ``{status_value: count}`` for all statuses."""
-
-    @abstractmethod
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Return ``{"total": N, "dau": N, "mau": N}``.
-
-        Derived from ``users.last_login_at`` — does not touch api_logs.
-        """
-
     # -- api keys ------------------------------------------------------------
 
     async def invalidate_auth_caches(self) -> None:  # noqa: B027

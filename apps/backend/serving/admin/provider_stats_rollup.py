@@ -1,7 +1,5 @@
 """Hourly rollup of api_logs into provider_hourly_stats.
 
-Spec: docs/agents/specs/archive/2026-05-02-per-provider-hourly-performance-design.md
-
 Each hour the hourly job or the startup backfill rolls up also gets a row in
 ``provider_hourly_coverage``, written in the same transaction as the hour's
 stats. Quiet hours get one too:

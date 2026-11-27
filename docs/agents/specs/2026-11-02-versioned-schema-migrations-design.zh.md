@@ -5,10 +5,10 @@
 - 范围：`apps/backend/serving/` 中所有建表、改表的代码，启动流程里的 schema 步骤，后端镜像，
   上游自带的部署示例（`deploy/docker/`、`deploy/systemd/`、`distributions/example/`），
   以及发行版部署脚本需要满足的约定（§6）。发行版自己的脚本由发行版修改
-- 取代：[2026-05-03 Alembic 迁移设计](2026-05-03-alembic-migrations-design.md)（草案，未实施）。
+- 取代：2026-05-03 Alembic 迁移设计（草案，未实施）。
   §13 逐条说明不同之处和原因
 - 相关记录：#1551（provider-stats 回填改为每次启动执行）、
-  [测试数据库契约](2026-10-18-test-database-contract-design.zh.md)
+  测试数据库契约（2026-10-18）
 
 ## 1. 背景
 

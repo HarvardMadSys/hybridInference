@@ -13,8 +13,7 @@ The batch availability gate still applies first -- without a batch store or
 with ``BATCH_ENABLED`` off these paths are ``404``, as every batch route is.
 Other paths under these prefixes, and other methods, are not retired
 operations and keep the ordinary ``404``/``405``. None of these routes is in
-the OpenAPI document. See
-``docs/agents/specs/2026-10-28-unified-batch-api-amendment.zh.md``.
+the OpenAPI document.
 """
 
 from __future__ import annotations

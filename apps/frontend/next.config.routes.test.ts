@@ -61,7 +61,7 @@ function samplePaths(route: string): string[] {
 }
 
 async function rewriteTaking(path: string): Promise<Rewrite | undefined> {
-  const { beforeFiles, afterFiles, fallback = [] } = await config.rewrites();
+  const { beforeFiles = [], afterFiles, fallback = [] } = await config.rewrites();
   return [...beforeFiles, ...afterFiles, ...fallback].find((rule: Rewrite) =>
     buildCustomRoute('rewrite', rule, '', false).match(path),
   );
@@ -79,16 +79,6 @@ describe('the rewrites and the route handlers', () => {
       for (const path of samplePaths(route)) {
         expect(await rewriteTaking(path), `${path} (${route})`).toBeUndefined();
       }
-    }
-  });
-
-  it('send batch uploads to their streaming handler, not through a rewrite', async () => {
-    for (const path of [
-      '/user/batch-files',
-      '/user/batch-files/file-1',
-      '/user/batch-files/file-1/content',
-    ]) {
-      expect(await rewriteTaking(path), path).toBeUndefined();
     }
   });
 });

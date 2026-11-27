@@ -860,35 +860,3 @@ msgstr ""
 "都放在**同一个**模块里（`serving.analytics.automation_score`），管理端点和 CLI "
 "共用它，所以两边的算法永远保持一致。纯评分函数不依赖数据库，单元测试在 "
 "`tests/unit/test_user_automation_score.py`。"
-
-#~ msgid "the 25/50/75th percentiles of positive `prompt_tokens`;"
-#~ msgstr "正的 `prompt_tokens` 的 25/50/75 分位数；"
-
-#~ msgid ""
-#~ "`clamp01((Hnorm - 0.5) / (0.92 - "
-#~ "0.5))`, `Hnorm = ShannonEntropy(hours) / "
-#~ "log2(24)`"
-#~ msgstr ""
-
-#~ msgid "`0.00 – 0.35`"
-#~ msgstr ""
-
-#~ msgid "`0.35 – 0.60`"
-#~ msgstr ""
-
-#~ msgid "`0.60 – 0.80`"
-#~ msgstr ""
-
-#~ msgid "`0.80 – 1.00`"
-#~ msgstr ""
-
-#~ msgid "Where it lives"
-#~ msgstr "代码位置"
-
-#~ msgid ""
-#~ "This signal isolates the user input, "
-#~ "which the metadata in `metadata->>'agent'` "
-#~ "and the per-message hash make hard"
-#~ " to spoof without actually varying "
-#~ "the content."
-#~ msgstr "这个信号把用户输入单独隔离出来，再配合 `metadata->>'agent'` 里的元数据和逐消息哈希，不真正改变内容就很难伪造。"

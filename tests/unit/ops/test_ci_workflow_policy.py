@@ -21,20 +21,6 @@ def _triggers(workflow: dict) -> dict:
     return workflow.get("on") or workflow[True]
 
 
-@pytest.mark.parametrize(
-    "workflow_name",
-    [
-        "deploy.yml",
-        "deploy-rollback.yml",
-        "deploy-staging.yml",
-        "deploy-staging-digest.yml",
-        "rag-index.yml",
-    ],
-)
-def test_retired_workflows_are_absent(workflow_name: str) -> None:
-    assert not (WORKFLOWS / workflow_name).exists()
-
-
 def test_manual_candidate_cannot_be_mistaken_for_lock_input() -> None:
     steps = _workflow("build-candidates.yml")["jobs"]["build"]["steps"]
     tags = next(
@@ -278,59 +264,6 @@ def test_site_ui_container_job_cannot_strand_containers() -> None:
     assert 'docker rm -f "${SITE_UI_RUN}-example"' in teardown["run"]
     assert '"${SITE_UI_RUN}-neutral:ci" "${SITE_UI_RUN}-example:ci"' in teardown["run"]
     assert steps[-1] is teardown
-
-
-def test_w5c_retired_services_and_ci_wiring_are_absent() -> None:
-    jobs = _workflow("ci.yml")["jobs"]
-    retired_paths = (
-        ROOT / "services/status-monitor-worker",
-        ROOT / "services/alert-control-plane-worker",
-        ROOT / "services/freeinference-harness",
-    )
-
-    assert all(not path.exists() for path in retired_paths)
-    assert "alert-control-plane-check" not in jobs
-    assert "alert-control-plane-check" not in jobs["ci-gate"]["needs"]
-    assert "status_monitor" not in jobs["changes"]["outputs"]
-    assert "alert_control_plane" not in jobs["changes"]["outputs"]
-
-
-def test_w5d_retired_ops_assets_are_absent() -> None:
-    """The distribution repository owns the db toolkit, proxies, and units.
-
-    Production cron and the staging proxy unit already execute the consuming
-    repository's copies, so these upstream copies must not come back. The
-    backend-coupled analysis remnant under ops/db/ stays deliberately.
-    """
-    retired_paths = (
-        ROOT / "ops/lib",
-        ROOT / "ops/h200_idle_proxy",
-        ROOT / "ops/spark_idle_proxy",
-        ROOT / "ops/local_deployment_proxy",
-        ROOT / "ops/db/backup.sh",
-        ROOT / "ops/db/restore.sh",
-        ROOT / "ops/db/export_logs.py",
-        ROOT / "ops/db/analysis/trace_viewer",
-        ROOT / "deploy/systemd/spark_idle_proxy.service",
-        ROOT / "deploy/systemd/spark_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_proxy.service",
-        ROOT / "deploy/systemd/h200_idle_proxy_b.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel_b@.service",
-        ROOT / "deploy/systemd/h200_ondemand_proxy.service",
-        ROOT / "deploy/systemd/h200_ondemand_tunnel@.service",
-        ROOT / "deploy/systemd/local_deployment_proxy.service",
-        ROOT / "deploy/systemd/local_deployment_tunnel@.service",
-    )
-
-    assert all(not path.exists() for path in retired_paths)
-    kept_remnant = (
-        ROOT / "ops/db/analysis/user_automation_score.py",
-        ROOT / "ops/db/analysis/user_prompt_sample.py",
-        ROOT / "ops/db/analysis/geo_hourly_export.py",
-        ROOT / "ops/db/backfill_num_user_turns.py",
-    )
-    assert all(path.exists() for path in kept_remnant)
 
 
 def test_backend_matrix_keeps_the_fast_stage_one_smoke() -> None:

@@ -7,8 +7,9 @@ name. Entries come from four places:
    variable the backend reads directly, except the environment-only names in
    :data:`ENVIRONMENT_ONLY` and the runtime settings, which live in
    ``site_settings`` and have their own admin tab.
-2. **Discovered** — every ``${VAR}`` reference in the active model registry,
-   routing file and alert rules (:func:`discover_references`).
+2. **Discovered** — every ``${VAR}`` reference in the stored model catalog,
+   routing policy, alert rules and single sign-on providers
+   (:func:`discover_documents`).
 3. **Numbered provider keys** — ``<KEY>1`` … ``<KEY>20`` beside each provider
    key the key pools scan, listed when the database or the environment has one.
 4. **Custom** — any other well-formed name an administrator adds for a
@@ -27,8 +28,6 @@ from dataclasses import dataclass, replace
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any, Literal
 
-import yaml
-
 from serving.config.revisions import GroupContract
 from serving.config.runtime_settings import RUNTIME_SETTINGS_REGISTRY
 
@@ -42,7 +41,6 @@ from serving.config.settings import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
 
 ValueType = Literal["str", "text", "int", "float", "bool", "list"]
 Origin = Literal["static", "discovered", "numbered", "custom"]
@@ -1805,8 +1803,6 @@ RETIRED_SETTINGS: Mapping[str, str] = {
 
 #: ``Settings`` fields deliberately left out of the registry, and why.
 UNREGISTERED_SETTINGS_FIELDS: Mapping[str, str] = {
-    "turnstile_site_key": "The console renders the captcha with its own site key; the "
-    "backend never reads this one.",
     "trusted_proxies_parsed": "Derived from TRUSTED_PROXIES.",
     "trusted_direct_client_parsed": "Derived from TRUSTED_DIRECT_CLIENT_NETWORKS.",
     "trusted_cloudflare_parsed": "Derived from TRUSTED_CLOUDFLARE_NETWORKS.",
@@ -2146,23 +2142,6 @@ def _credential_references(value: Any) -> set[str]:
     return names
 
 
-def _load_yaml(path: Path | None) -> Any:
-    if path is None or not path.is_file():
-        return None
-    try:
-        return yaml.safe_load(path.read_text())
-    except (OSError, yaml.YAMLError):
-        return None
-
-
-def _load_yaml_text(text: str) -> Any:
-    """Parse a stored document. An unreadable document contributes no references."""
-    try:
-        return yaml.safe_load(text)
-    except yaml.YAMLError:
-        return None
-
-
 def _discovered_description(reference: DiscoveredReference) -> str:
     if reference.category == "providers":
         return "Referenced by the model registry."
@@ -2252,50 +2231,6 @@ def discover_documents(
     return found
 
 
-def discover_references(
-    models_path: Path | None,
-    routing_path: Path | None,
-    alerts_path: Path | None,
-    *,
-    models_text: str | None = None,
-    routing_text: str | None = None,
-    alerts_text: str | None = None,
-) -> dict[str, DiscoveredReference]:
-    """Find every ``${VAR}`` reference in the three configuration files.
-
-    Files are parsed rather than searched, so a ``${VAR}`` in a comment counts
-    for nothing. A missing or unreadable file contributes no references. A
-    reference from a field that carries a credential is marked as one
-    (:attr:`DiscoveredReference.credential`).
-
-    A stored catalog document replaces its file. Passing the text, including an
-    empty string, does not fall back to the path. Alerts have no stored
-    document and always come from the file.
-
-    Args:
-        models_path: Model registry file, used when ``models_text`` is None.
-        routing_path: Routing file, used when ``routing_text`` is None.
-        alerts_path: Alerts file.
-        models_text: Stored model registry, when the database has that row.
-        routing_text: Stored routing document, when the database has that row.
-        alerts_text: Explicit stored alert document; used instead of a file when provided.
-    """
-    found: dict[str, DiscoveredReference] = {}
-    models = _load_yaml_text(models_text) if models_text is not None else _load_yaml(models_path)
-    routing = (
-        _load_yaml_text(routing_text) if routing_text is not None else _load_yaml(routing_path)
-    )
-    alerts = _load_yaml_text(alerts_text) if alerts_text is not None else _load_yaml(alerts_path)
-    _discover_models(models, found)
-    _discover_routing(routing, found)
-    _discover_alerts(alerts, found)
-    for data in (models, routing, alerts):
-        for key in _credential_references(data):
-            if key in found:
-                found[key].credential = True
-    return found
-
-
 def build_entries(
     discovered: Mapping[str, DiscoveredReference],
     stored: Mapping[str, bool],
@@ -2309,7 +2244,7 @@ def build_entries(
     or the name would make it.
 
     Args:
-        discovered: References found by :func:`discover_references`.
+        discovered: References found by :func:`discover_documents`.
         stored: Keys that have a database row, mapped to the row's secret flag.
         environ: The process environment, for numbered provider keys.
         reset: Keys an administrator reset, mapped to the reset row's secret
