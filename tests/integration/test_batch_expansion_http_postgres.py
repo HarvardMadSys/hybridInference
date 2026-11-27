@@ -1245,8 +1245,18 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         assert event["type"] == "message_batch.ended" and event["data"] == {"id": legacy_id}
         assert sealed_when_sent
         assert webhooks.verify(secret, {k.lower(): v for k, v in headers.items()}, payload)
-        events = (await client.get("/v1/batch_webhook/events", headers=KEY)).json()["data"]
-        assert {(e["batch_id"], e["type"], e["status"]) for e in events} == {
+
+        # The receiver has each request before the gateway has its response, and
+        # the event is recorded delivered only after that: a read made as soon as
+        # both requests arrived can still find one pending.
+        async def recorded_delivered():
+            events = (await client.get("/v1/batch_webhook/events", headers=KEY)).json()["data"]
+            delivered = {e["batch_id"] for e in events if e["status"] == "delivered"}
+            recorded = {(e["batch_id"], e["type"], e["status"]) for e in events}
+            return recorded if delivered >= {batch_id, legacy_id} else None
+
+        recorded = await _until(recorded_delivered, what="both events to be recorded delivered")
+        assert recorded == {
             (batch_id, "batch.completed", "delivered"),
             (legacy_id, "message_batch.ended", "delivered"),
         }
