@@ -60,7 +60,7 @@ function webhook(key: string): ConfigEntry {
 /**
  * One setting or more in each category a sub-tab names, and one in a category
  * none names. Some are usually set once, in a category with others or alone.
- * The model catalog's category is Admin → Models', which this page leaves out.
+ * The model catalog's category is Providers → Models', which this page leaves out.
  */
 const CONFIG: ConfigResponse = {
   categories: [
@@ -362,7 +362,7 @@ describe('Admin → Settings sub-tabs', () => {
       ],
       Access: ['Signup Policy', 'Sign-up', 'Security'],
       'Providers & Routing': ['Providers', 'Routing'],
-      // The documents besides the model catalog, which Admin → Models edits.
+      // The documents besides the model catalog, which Providers → Models edits.
       Application: ['Application'],
       Batch: ['Batch inference', 'Batch Concurrency'],
       Alerts: ['Alert Notifications', 'Alert Types', 'Alerts'],
@@ -389,7 +389,7 @@ describe('Admin → Settings sub-tabs', () => {
     ).toBeInTheDocument();
   });
 
-  it('leaves the model configuration to Admin → Models: not listed, searched or read', async () => {
+  it('leaves the model configuration to Providers → Models: not listed, searched or read', async () => {
     await renderLoaded();
 
     expect(screen.queryByRole('tab', { name: /^Models/ })).not.toBeInTheDocument();
@@ -403,7 +403,7 @@ describe('Admin → Settings sub-tabs', () => {
 
     // The Application sub-tab says where the catalog went, and keeps the other documents.
     await openSettingsTab('Application');
-    expect(screen.getByText(/The model catalog is on the Models tab\.$/)).toBeVisible();
+    expect(screen.getByText(/The model catalog is under Providers → Models\.$/)).toBeVisible();
     expect(rowsOf('Application')).toEqual(['SITE_BRANDING']);
 
     // A search looks through this page's categories only.
@@ -508,7 +508,7 @@ describe('Admin → Settings sub-tabs', () => {
     window.history.replaceState(null, '', '/dashboard/admin/settings');
     // Another admin tab's link, as the tab bar above the page renders it.
     const models = document.body.appendChild(document.createElement('a'));
-    models.href = '/dashboard/admin/models';
+    models.href = '/dashboard/admin/providers/models';
     try {
       await renderLoaded('Access');
       fireEvent.click(models);

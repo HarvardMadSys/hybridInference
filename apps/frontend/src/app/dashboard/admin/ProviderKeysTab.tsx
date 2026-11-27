@@ -24,6 +24,8 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Select } from '@/components/ui/Select';
 
+import { useLeaveGuard } from './useLeaveGuard';
+
 interface Props {
   refreshKey?: number;
   initialProvider?: string;
@@ -316,8 +318,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   const tiersTarget = `${selectedProvider} key tiers`;
   const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
   // Unsaved tier changes hold the provider selector and adding a key, which
-  // would switch the page to another provider's keys.
+  // would switch the page to another provider's keys. Leaving the page, for
+  // another Providers section or tab, asks first.
   const tiersChanged = changedTiers.length > 0;
+  useLeaveGuard(changedTiers.length);
 
   const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
     setTierDrafts((prev) => {

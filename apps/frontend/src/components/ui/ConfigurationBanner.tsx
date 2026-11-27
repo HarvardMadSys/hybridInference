@@ -22,7 +22,7 @@ import { useT } from '@/components/providers/useT';
  * and Admin → Settings, which list the missing settings themselves.
  *
  * The flag is the server-rendered site configuration's, so a save on the
- * Settings or Models tab calls `router.refresh()` to update it.
+ * Settings tab or on Providers → Models calls `router.refresh()` to update it.
  */
 export function ConfigurationBanner(): JSX.Element | null {
   const { setup, configuration } = useSiteConfig();
@@ -73,8 +73,9 @@ function MissingConfigurationNotice({ onModels }: { onModels: boolean }): JSX.El
             >
               Open Settings
             </Link>
-            {/* The other way to be incomplete: no model at all. Models holds the
-                catalog, and points to Routing, where a model is created. */}
+            {/* The other way to be incomplete: no model at all. Providers →
+                Models holds the catalog, and points to Routing, where a model
+                is created. */}
             {onModels ? null : (
               <Link
                 href={ADMIN_MODELS_PATH}

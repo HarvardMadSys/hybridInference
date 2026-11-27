@@ -51,7 +51,7 @@ class Category:
     """A group of entries in the admin console.
 
     Each is a section of the Settings tab, except the model catalog, which the
-    Models tab shows with the per-model overrides.
+    Providers tab's Models section shows with the per-model overrides.
     """
 
     id: str
@@ -1805,8 +1805,8 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
 #: nor written here, and every boot that finds one warns about it once. An
 #: administrator may still delete the row.
 RETIRED_SETTINGS: Mapping[str, str] = {
-    "MODELS_CONFIG_PATH": "the model catalog is configured in Admin Models",
-    "MODELS_CONFIG": "the model catalog is configured in Admin Models",
+    "MODELS_CONFIG_PATH": "the model catalog is configured in Admin Providers > Models",
+    "MODELS_CONFIG": "the model catalog is configured in Admin Providers > Models",
     "ROUTING_CONFIG_PATH": "application documents are configured in Admin Settings",
     "ROUTING_CONFIG": "application documents are configured in Admin Settings",
     "ALERTS_CONFIG_PATH": "application documents are configured in Admin Settings",

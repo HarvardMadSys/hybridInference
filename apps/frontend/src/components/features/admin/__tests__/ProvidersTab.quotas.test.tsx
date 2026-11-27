@@ -3,7 +3,16 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { ProvidersTab } from '../ProvidersTab';
+import {
+  ProviderAvailabilitySection,
+  ProviderKeysSection,
+  ProviderOverviewSection,
+  ProviderQuotasSection,
+} from '../ProvidersTab';
+import { ProviderSelectionProvider } from '../providerSelection';
+
+const pushMock = vi.hoisted(() => vi.fn());
+vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
 
 vi.mock('@/lib/api/admin', () => ({
   getProviderQuotas: vi.fn(),
@@ -16,9 +25,6 @@ vi.mock('react-hot-toast', () => ({
   default: { error: vi.fn(), success: vi.fn() },
 }));
 
-vi.mock('@/components/features/admin/PerformanceTab', () => ({
-  PerformanceTab: () => null,
-}));
 vi.mock('@/app/dashboard/admin/ProviderKeysTab', () => ({
   ProviderKeysTab: ({
     initialProvider,
@@ -103,8 +109,7 @@ const QUOTA_USAGES = [
 ];
 
 async function openQuotas(expectedText = 'ZAI #1') {
-  render(<ProvidersTab />);
-  fireEvent.click(screen.getByRole('tab', { name: 'Quotas' }));
+  render(<ProviderQuotasSection />);
   await screen.findByText(expectedText);
 }
 
@@ -114,7 +119,7 @@ async function clickSwitch(name: string) {
   });
 }
 
-describe('ProvidersTab quotas', () => {
+describe('Providers → Quotas', () => {
   beforeEach(() => {
     vi.mocked(getProviderQuotas).mockResolvedValue({
       generated_at: '2026-08-04T00:00:00Z',
@@ -141,14 +146,39 @@ describe('ProvidersTab quotas', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens the requested provider keys and retains selection across tabs', () => {
-    render(<ProvidersTab />);
+  it('opens Keys on the provider "Manage keys" names, and keeps the one chosen there', () => {
+    // The Providers layout keeps the selection while its pages come and go.
+    const { rerender } = render(
+      <ProviderSelectionProvider>
+        <ProviderOverviewSection />
+      </ProviderSelectionProvider>,
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Manage keys for zai' }));
-    expect(screen.getByRole('tab', { name: 'Keys' })).toHaveAttribute('aria-selected', 'true');
+    expect(pushMock).toHaveBeenCalledWith('/dashboard/admin/providers/keys');
+
+    rerender(
+      <ProviderSelectionProvider>
+        <ProviderKeysSection />
+      </ProviderSelectionProvider>,
+    );
+    // The stand-in for the keys view chooses openrouter when clicked.
     fireEvent.click(screen.getByRole('button', { name: 'Keys for zai' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'Overview' }));
-    fireEvent.click(screen.getByRole('tab', { name: 'Keys' }));
+    rerender(
+      <ProviderSelectionProvider>
+        <ProviderOverviewSection />
+      </ProviderSelectionProvider>,
+    );
+    rerender(
+      <ProviderSelectionProvider>
+        <ProviderKeysSection />
+      </ProviderSelectionProvider>,
+    );
     expect(screen.getByRole('button', { name: 'Keys for openrouter' })).toBeInTheDocument();
+  });
+
+  it('opens Keys on the first provider when nothing has chosen one', () => {
+    render(<ProviderKeysSection />);
+    expect(screen.getByRole('button', { name: 'Keys for' })).toBeInTheDocument();
   });
 
   it('explains an empty quota response and links to framework setup documentation', async () => {
@@ -159,7 +189,6 @@ describe('ProvidersTab quotas', () => {
 
     await openQuotas('No quota data to display.');
 
-    expect(screen.getByRole('tab', { name: 'Quotas' })).toHaveAttribute('aria-selected', 'true');
     expect(
       screen.getByText('Quota reporting requires a configured backend extension and data source.'),
     ).toBeInTheDocument();
@@ -473,7 +502,7 @@ describe('ProvidersTab quotas', () => {
   });
 });
 
-describe('ProvidersTab availability', () => {
+describe('Providers → Availability', () => {
   beforeEach(() => {
     vi.mocked(getRoutableProviders).mockResolvedValue({
       providers: [
@@ -506,8 +535,7 @@ describe('ProvidersTab availability', () => {
   });
 
   async function openAvailability() {
-    render(<ProvidersTab />);
-    fireEvent.click(screen.getByRole('tab', { name: 'Availability' }));
+    render(<ProviderAvailabilitySection />);
     await screen.findByRole('switch', { name: 'Disable zai' });
   }
 

@@ -28,8 +28,10 @@ describe('the Admin → Settings address', () => {
     expect(redirectMock).not.toHaveBeenCalled();
   });
 
-  it('sends a link to the old Models sub-tab to Admin → Models', async () => {
-    await expect(open({ tab: 'models' })).rejects.toThrow('NEXT_REDIRECT /dashboard/admin/models');
+  it('sends a link to the old Models sub-tab to Providers → Models', async () => {
+    await expect(open({ tab: 'models' })).rejects.toThrow(
+      'NEXT_REDIRECT /dashboard/admin/providers/models',
+    );
   });
 
   it('keeps an old link to the missing settings here, on Application', async () => {

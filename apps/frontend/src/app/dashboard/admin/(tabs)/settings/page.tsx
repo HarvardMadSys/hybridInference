@@ -14,7 +14,7 @@ interface PageProps {
 export default async function Page({ searchParams }: PageProps) {
   const params = await searchParams;
   const missingOnly = params?.missing === '1';
-  // The Models sub-tab became Admin → Models. An old link to it lands there,
+  // The Models sub-tab became Providers → Models. An old link to it lands there,
   // unless it asked for the missing settings, which only this tab lists: then
   // on Application, which kept the sub-tab's other documents.
   const legacyModels = params?.tab === 'models';

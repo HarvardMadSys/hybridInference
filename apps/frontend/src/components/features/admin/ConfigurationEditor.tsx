@@ -215,7 +215,7 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
 /**
  * The database-backed configuration, grouped by category: on Admin → Settings
  * every category but the model catalog, spread over the page's sub-tabs, and
- * on Admin → Models the catalog.
+ * on Admin → Providers → Models the catalog.
  *
  * One editor holds every category's state, so a change waits unsaved while
  * the administrator looks at another sub-tab. Settings are edited in place,

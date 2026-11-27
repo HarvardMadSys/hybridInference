@@ -11,7 +11,7 @@ import { chooseOption } from '@/test-utils/select';
 const navigateToMock = vi.fn();
 
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/dashboard/admin/models',
+  usePathname: () => '/dashboard/admin/providers/models',
   useRouter: () => ({ replace: vi.fn(), refresh: vi.fn() }),
 }));
 
@@ -193,7 +193,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe('Admin → Models', () => {
+describe('Admin → Providers → Models', () => {
   it('holds the model catalog and the per-model overrides, and nothing else of the configuration', async () => {
     await renderModels();
 
@@ -285,7 +285,9 @@ describe('Admin → Models', () => {
       }),
     );
 
-    await waitFor(() => expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/models'));
+    await waitFor(() =>
+      expect(navigateToMock).toHaveBeenCalledWith('/dashboard/admin/providers/models'),
+    );
     expect(restartBackend).toHaveBeenCalledTimes(1);
   });
 
@@ -331,7 +333,7 @@ describe('Admin → Models', () => {
 
   it('asks before leaving with an unsaved change, in the catalog or an override', async () => {
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    window.history.replaceState(null, '', '/dashboard/admin/models');
+    window.history.replaceState(null, '', '/dashboard/admin/providers/models');
     await renderModels();
     const routing = screen.getByRole('link', { name: 'Routing' });
 
@@ -344,6 +346,11 @@ describe('Admin → Models', () => {
     });
     expect(fireEvent.click(routing)).toBe(false);
     expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+    // Another Providers section is a page of its own as well.
+    const keys = document.body.appendChild(document.createElement('a'));
+    keys.href = '/dashboard/admin/providers/keys';
+    expect(fireEvent.click(keys)).toBe(false);
+    keys.remove();
 
     // Back to the saved value, then an override left unsaved.
     fireEvent.change(screen.getByRole('textbox', { name: 'models[0].context_length' }), {

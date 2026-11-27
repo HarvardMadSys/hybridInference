@@ -5,13 +5,16 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AdminTabNav } from './AdminTabNav';
 
+let pathname = '/dashboard/admin/settings';
+
 vi.mock('next/navigation', () => ({
-  usePathname: () => '/dashboard/admin/settings',
+  usePathname: () => pathname,
 }));
 
 describe('AdminTabNav', () => {
   afterEach(() => {
     cleanup();
+    pathname = '/dashboard/admin/settings';
   });
 
   it('shows routing as a top-level admin tab', () => {
@@ -31,19 +34,27 @@ describe('AdminTabNav', () => {
     );
   });
 
-  it('gives the model configuration a tab of its own, between Providers and Routing', () => {
+  it('keeps the model configuration under Providers, not as a tab of its own', () => {
     render(<AdminTabNav />);
 
-    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute(
-      'href',
-      '/dashboard/admin/models',
-    );
+    expect(screen.queryByRole('link', { name: 'Models' })).not.toBeInTheDocument();
     const names = screen.getAllByRole('link').map((link) => link.textContent);
     expect(names.slice(names.indexOf('Providers'), names.indexOf('Routing') + 1)).toEqual([
       'Providers',
-      'Models',
       'Routing',
     ]);
+  });
+
+  it('marks Providers as the tab shown on each of its sections', () => {
+    for (const path of ['/dashboard/admin/providers', '/dashboard/admin/providers/models']) {
+      pathname = path;
+      render(<AdminTabNav />);
+      expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute(
+        'aria-current',
+        'page',
+      );
+      cleanup();
+    }
   });
 
   it('keeps Token Usage under Analytics, not as a tab of its own', () => {

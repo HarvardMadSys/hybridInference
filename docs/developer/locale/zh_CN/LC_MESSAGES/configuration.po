@@ -1216,14 +1216,6 @@ msgstr ""
 "database)）在这张表里没有对应的行，所以这个标签页可以禁用它、把它预留给某个层级，但不能删除。要去掉它，就在 "
 "**Configuration** 标签页上清空这个变量，再重启后端。"
 
-#: ../developer/configuration.md
-msgid "Models tab"
-msgstr "Models 标签页"
-
-#: ../developer/configuration.md
-msgid "Edit the model catalog here, and the runtime overrides that apply on top of it: the role each model requires, and whether its requests count toward the per-user concurrency limit. Neither override changes the catalog."
-msgstr "在此编辑模型目录，以及叠加其上的运行时覆盖项：每个模型要求的角色，以及它的请求是否计入每用户并发上限。这两种覆盖项都不会修改目录。"
-
 #: ../developer/configuration.md:371
 msgid "Routing tab"
 msgstr "Routing 标签页"
@@ -2523,8 +2515,8 @@ msgstr "`p95_latency_per_provider` 按上游服务商，从每个请求的请求
 msgid "`failed_request_rate` counts a request as failed when it ends in a 5xx, or in a 4xx an upstream returned. A 4xx the gateway issues itself, such as a 404 for a path that does not exist or a 422 for a body that does not validate, is not a service failure and does not count, and neither does a 429. `client_error_burst` counts the relayed client errors that bypass the circuit breaker, and `min_distinct_callers` (default `1`) sets how many API keys, grants or anonymous addresses they must come from before it pages. At `1`, one caller replaying a broken conversation pages, and so can any one key that sends malformed requests on purpose. A gateway that hands keys to the public can set it to `2` or more and then sees a single caller's loop only in the logs."
 msgstr "`failed_request_rate` 在请求以 5xx 结束，或以上游返回的 4xx 结束时，把它算作失败。网关自己给出的 4xx，例如访问不存在的路径得到的 404，或者请求体未通过校验得到的 422，不属于服务故障，不计入；429 也不计入。`client_error_burst` 统计绕过熔断器、由上游转发回来的客户端错误，`min_distinct_callers`（默认 `1`）规定这些错误至少要来自多少个 API 密钥、授权或匿名地址，才会发出告警。设为 `1` 时，一个调用方反复重放一段已损坏的对话就会触发告警，任何一个故意发送畸形请求的密钥也同样可以触发。向公众发放密钥的网关可以把它设为 `2` 或更高，这样单个调用方陷入的循环就只会出现在日志里。"
 
-msgid "Configure the gateway in **Admin → Settings**, **Models**, **Providers** and **Routing**. Application configuration is stored in PostgreSQL. The gateway does not load model, routing, alert, distribution or branding YAML at runtime. Docker Compose and GitHub Actions still use their infrastructure YAML files."
-msgstr "在 **Admin → Settings**、**Models**、**Providers** 和 **Routing** 中配置网关。应用配置存储在 PostgreSQL 中。网关在运行时不加载模型、路由、告警、分发或品牌 YAML。Docker Compose 和 GitHub Actions 仍使用基础设施 YAML 文件。"
+msgid "Configure the gateway in **Admin → Settings**, **Providers** and **Routing**. Application configuration is stored in PostgreSQL. The gateway does not load model, routing, alert, distribution or branding YAML at runtime. Docker Compose and GitHub Actions still use their infrastructure YAML files."
+msgstr "在 **Admin → Settings**、**Providers** 和 **Routing** 中配置网关。应用配置存储在 PostgreSQL 中。网关在运行时不加载模型、路由、告警、分发或品牌 YAML。Docker Compose 和 GitHub Actions 仍使用基础设施 YAML 文件。"
 
 msgid "A fresh database has no assumed provider or model. The console remains available for first-run setup and shows **Ask admin to configure** when required configuration or models are missing. Users never see secret values or private configuration paths."
 msgstr "新数据库没有预设的供应商或模型。控制台仍可用于首次设置；缺少必要配置或模型时，会显示 **Ask admin to configure**。用户不会看到秘密值或私有配置路径。"
@@ -2535,8 +2527,8 @@ msgstr "管理位置"
 msgid "Application settings and documents"
 msgstr "应用设置和文档"
 
-msgid "`app_config`, edited in Admin Settings, the model catalog in Admin Models"
-msgstr "`app_config`，在 Admin Settings 中编辑；模型目录在 Admin Models 中编辑"
+msgid "`app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models"
+msgstr "`app_config`，在 Admin Settings 中编辑；模型目录在 Admin Providers → Models 中编辑"
 
 msgid "Providers, credentials, live routes and overrides"
 msgstr "供应商、凭据、实时路由和覆盖项"
@@ -2559,8 +2551,8 @@ msgstr "`.ops.env`，从 `.ops.env.example` 复制"
 msgid "Application documents"
 msgstr "应用文档"
 
-msgid "**Admin → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
-msgstr "**Admin → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+msgid "**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "**Admin → Providers → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
 #: ../developer/configuration.md
 msgid "Admin shows each document as fields, one per value, named by its path, such as `models[0].route[0].base_url`. Each field is a plain string. A number or `true`/`false` keeps its type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch the document to **JSON**. A save from the fields stores the whole document as indented JSON."
@@ -2641,8 +2633,8 @@ msgstr "运行时不再使用路由文件。需要部署级策略时，在 Admin
 msgid "The retired model/routing/alert path variables and distribution active/dark modes no longer select configuration. Use the application documents instead. The standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values do not configure it."
 msgstr "已停用的模型、路由、告警路径变量和分发 active/dark 模式不再选择配置。请使用应用文档。独立云代理管理自己的设置；网关中废弃的 `AGENT_*` 值不会配置该代理。"
 
-msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. **Admin → Models** shows **Applied in each backend process** beside the model catalog, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
-msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。**Admin → Models** 在模型目录旁显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
+msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. **Admin → Providers → Models** shows **Applied in each backend process** beside the model catalog, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
+msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。**Admin → Providers → Models** 在模型目录旁显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
 
 msgid "Catalog changes marked **Restart required** still need a controlled backend restart. A save is not evidence that every process has applied the change."
 msgstr "标记为 **Restart required** 的目录修改仍需要受控重启后端。保存成功不能证明所有进程都已应用修改。"
@@ -2655,8 +2647,36 @@ msgstr "某个进程无法应用某个模型的修改时，会继续使用该模
 msgid "Disabling a key that routes pin takes it out of service in every process until it is enabled again, and Admin refuses a disabled key when a route is created or edited. Deleting a pinned key leaves running processes on the route without that key, and a restarted process leaves the route out: repoint the routes before deleting the key."
 msgstr "停用被路由固定的密钥后，它会在每个进程中停止服务，直到重新启用；创建或编辑路由时，Admin 会拒绝已停用的密钥。删除被固定的密钥后，正在运行的进程会继续保留该路由但不再使用这个密钥，重启的进程则不再加载该路由：请先把这些路由改指向其他密钥，再删除它。"
 
-msgid "Add and verify providers and keys here. Credentials remain write-only. Built-in adapter kinds and catalog-owned provider names remain reserved."
-msgstr "在此添加并验证供应商和密钥。凭据仍为只写。内置适配器种类和目录管理的供应商名称仍为保留名称。"
+msgid "Providers has a page for each part of the upstream setup, each with its own address:"
+msgstr "Providers 为上游配置的每个部分各设一个页面，每个页面都有自己的地址："
+
+#: ../developer/configuration.md
+msgid "**Overview** lists the providers. Add, verify, edit or delete a custom provider here; **Manage keys** opens that provider's keys."
+msgstr "**Overview** 列出各个供应商。在此添加、验证、编辑或删除自定义供应商；**Manage keys** 会打开该供应商的密钥。"
+
+#: ../developer/configuration.md
+msgid "**Keys** adds and verifies a provider's keys, reserves one for a user tier, and disables or removes it. It also lists the upstream concurrency of every key in use."
+msgstr "**Keys** 添加并验证供应商的密钥，可以把密钥预留给某个用户层级，也可以停用或删除它。它还列出每个在用密钥的上游并发。"
+
+#: ../developer/configuration.md
+msgid "**Models** edits the model catalog, and the runtime overrides that apply on top of it: the role each model requires, and whether its requests count toward the per-user concurrency limit. Neither override changes the catalog."
+msgstr "**Models** 编辑模型目录，以及叠加其上的运行时覆盖项：每个模型要求的角色，以及它的请求是否计入每用户并发上限。这两种覆盖项都不会修改目录。"
+
+#: ../developer/configuration.md
+msgid "**Availability** takes a provider out of routing for every model, and puts it back."
+msgstr "**Availability** 让某个供应商退出所有模型的路由，也可以让它恢复。"
+
+#: ../developer/configuration.md
+msgid "**Quotas** shows what each key has used of its plan's limits, where a quota extension reports them."
+msgstr "**Quotas** 显示每个密钥已用掉其套餐限额的多少，前提是有配额扩展上报这些数据。"
+
+#: ../developer/configuration.md
+msgid "**Performance** shows how each model's providers perform: latency, errors, cache hits and throughput."
+msgstr "**Performance** 显示每个模型的各个供应商表现如何：延迟、错误、缓存命中和吞吐量。"
+
+#: ../developer/configuration.md
+msgid "Credentials remain write-only. Built-in adapter kinds and catalog-owned provider names remain reserved."
+msgstr "凭据仍为只写。内置适配器种类和目录管理的供应商名称仍为保留名称。"
 
 msgid "Create models, verify routes, edit their targets and capabilities, adjust weights, and disable or remove routes. Resetting a catalog-route override returns it to its database catalog baseline. The legacy API source label `yaml` and `yaml_weight` field remain compatibility names for that baseline."
 msgstr "创建模型、验证路由、修改目标和能力、调整权重，以及禁用或删除路由。重置目录路由的覆盖项会恢复其数据库目录基线。旧 API 来源标签 `yaml` 和 `yaml_weight` 字段保留为该基线的兼容名称。"

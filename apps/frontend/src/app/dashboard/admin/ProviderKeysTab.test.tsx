@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { ProviderKeysTab } from './ProviderKeysTab';
+import { LEAVE_MESSAGE } from './useLeaveGuard';
 
 vi.mock('@/lib/api/admin', () => ({
   addProviderKey: vi.fn(),
@@ -552,6 +553,32 @@ describe('ProviderKeysTab tier reservation', () => {
         ['chutes', NEW_SECRET, undefined, 'free'],
       ]);
       expect(setProviderKeyMinRole).not.toHaveBeenCalled();
+    });
+
+    it('asks before leaving the page, for another Providers section or tab', async () => {
+      const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+      window.history.replaceState(null, '', '/dashboard/admin/providers/keys');
+      // Another section's link, as the section control above the page renders it.
+      const models = document.body.appendChild(document.createElement('a'));
+      models.href = '/dashboard/admin/providers/models';
+      try {
+        render(<ProviderKeysTab initialProvider="zai" />);
+        await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+        fireEvent.click(models);
+        expect(confirm).not.toHaveBeenCalled();
+
+        chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+        expect(fireEvent.click(models)).toBe(false);
+        expect(confirm).toHaveBeenCalledWith(LEAVE_MESSAGE);
+
+        fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
+        confirm.mockClear();
+        fireEvent.click(models);
+        expect(confirm).not.toHaveBeenCalled();
+      } finally {
+        models.remove();
+        confirm.mockRestore();
+      }
     });
   });
 
