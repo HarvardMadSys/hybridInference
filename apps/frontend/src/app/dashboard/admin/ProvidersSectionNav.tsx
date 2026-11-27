@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
@@ -12,7 +12,7 @@ import {
   PROVIDER_PERFORMANCE_PATH,
   PROVIDER_QUOTAS_PATH,
 } from '@/components/features/admin/providerRoutes';
-import { revealHorizontally } from '@/components/ui/revealHorizontally';
+import { useRevealCurrent } from '@/components/ui/useRevealCurrent';
 
 /**
  * The Providers tab's pages, in the order a deployment is set up and then
@@ -36,11 +36,7 @@ export function ProvidersSectionNav() {
 
   // Six sections are wider than a phone: the control scrolls sideways, and
   // brings the current section into view on load and after every navigation.
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    const active = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (scroller && active) revealHorizontally(scroller, active);
-  }, [pathname]);
+  useRevealCurrent(scrollerRef, pathname);
 
   return (
     // The padding keeps focus rings inside the scroller; the negative top

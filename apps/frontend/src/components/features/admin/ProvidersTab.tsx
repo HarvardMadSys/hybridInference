@@ -527,11 +527,11 @@ export function ProviderAvailabilitySection() {
 /** Overview: the provider registry. "Manage keys" opens Keys on that provider. */
 export function ProviderOverviewSection() {
   const router = useRouter();
-  const { setProvider } = useProviderSelection();
+  const { request } = useProviderSelection();
   return (
     <ProviderOverviewTab
       onManageKeys={(provider) => {
-        setProvider(provider);
+        request(provider);
         router.push(PROVIDER_KEYS_PATH);
       }}
     />
@@ -540,10 +540,17 @@ export function ProviderOverviewSection() {
 
 /** Keys: a provider's keys, and the upstream concurrency of every key the gateway calls. */
 export function ProviderKeysSection() {
-  const { provider, setProvider } = useProviderSelection();
+  const { provider, requested, show } = useProviderSelection();
+  // Read once, as Keys opens: its own report of what it shows must not change
+  // how it opened.
+  const [opening] = useState(() => ({ provider, requested }));
   return (
     <div className="space-y-6">
-      <ProviderKeysTab initialProvider={provider} onProviderChange={setProvider} />
+      <ProviderKeysTab
+        initialProvider={opening.provider}
+        keepUnlistedProvider={opening.requested}
+        onProviderChange={show}
+      />
       {/* Not scoped to the selected provider: the limiter buckets by key, so
           this lists every key the gateway is currently calling. */}
       <UpstreamConcurrencyPanel />

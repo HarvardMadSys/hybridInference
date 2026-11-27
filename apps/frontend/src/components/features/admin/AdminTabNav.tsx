@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useRef } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { revealHorizontally } from '@/components/ui/revealHorizontally';
+import { useRevealCurrent } from '@/components/ui/useRevealCurrent';
 
 const TABS = [
   { slug: 'users', label: 'Users' },
@@ -23,11 +23,7 @@ export function AdminTabNav() {
 
   // On a phone the row is wider than the screen: bring the current tab into
   // view on first load and after every navigation.
-  useEffect(() => {
-    const scroller = scrollerRef.current;
-    const active = scroller?.querySelector<HTMLElement>('[aria-current="page"]');
-    if (scroller && active) revealHorizontally(scroller, active);
-  }, [pathname]);
+  useRevealCurrent(scrollerRef, pathname);
 
   return (
     // One row that scrolls sideways on a narrow screen rather than wrapping

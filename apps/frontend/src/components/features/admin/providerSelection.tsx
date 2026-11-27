@@ -1,15 +1,29 @@
 'use client';
 
-import { createContext, useContext, useMemo, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useMemo, useState, type ReactNode } from 'react';
 
 interface ProviderSelection {
-  /** The provider Keys shows: the one Overview's "Manage keys" named, or the one last chosen on Keys. */
+  /** The provider Keys opens on: the one Overview's "Manage keys" asked for, or the one Keys showed last. */
   provider: string;
-  setProvider: (provider: string) => void;
+  /**
+   * Whether "Manage keys" asked for it. Keys then keeps it even when it has no
+   * keys to manage, and says so. One Keys only showed last gives way to the
+   * first provider once it is no longer listed: deleted on Overview, say.
+   */
+  requested: boolean;
+  /** "Manage keys" asks for a provider. */
+  request: (provider: string) => void;
+  /** Keys reports the provider it shows. */
+  show: (provider: string) => void;
 }
 
 // Outside the Providers layout (a section rendered on its own) nothing is kept.
-const Selection = createContext<ProviderSelection>({ provider: '', setProvider: () => {} });
+const Selection = createContext<ProviderSelection>({
+  provider: '',
+  requested: false,
+  request: () => {},
+  show: () => {},
+});
 
 /**
  * Keeps the provider Keys shows while the administrator moves between the
@@ -18,8 +32,23 @@ const Selection = createContext<ProviderSelection>({ provider: '', setProvider: 
  * provider it showed last.
  */
 export function ProviderSelectionProvider({ children }: { children: ReactNode }) {
-  const [provider, setProvider] = useState('');
-  const value = useMemo(() => ({ provider, setProvider }), [provider]);
+  const [selection, setSelection] = useState({ provider: '', requested: false });
+  const request = useCallback(
+    (provider: string) => setSelection({ provider, requested: true }),
+    [],
+  );
+  // Keys reports what it shows on every change, its first render included: a
+  // report of what is already kept changes nothing.
+  const show = useCallback(
+    (provider: string) =>
+      setSelection((current) =>
+        current.provider === provider && !current.requested
+          ? current
+          : { provider, requested: false },
+      ),
+    [],
+  );
+  const value = useMemo(() => ({ ...selection, request, show }), [selection, request, show]);
   return <Selection.Provider value={value}>{children}</Selection.Provider>;
 }
 

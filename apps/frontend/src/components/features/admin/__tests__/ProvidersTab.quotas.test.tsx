@@ -28,11 +28,20 @@ vi.mock('react-hot-toast', () => ({
 vi.mock('@/app/dashboard/admin/ProviderKeysTab', () => ({
   ProviderKeysTab: ({
     initialProvider,
+    keepUnlistedProvider,
     onProviderChange,
   }: {
     initialProvider: string;
+    keepUnlistedProvider: boolean;
     onProviderChange: (provider: string) => void;
-  }) => <button onClick={() => onProviderChange('openrouter')}>Keys for {initialProvider}</button>,
+  }) => (
+    <button
+      data-asked-for={String(keepUnlistedProvider)}
+      onClick={() => onProviderChange('openrouter')}
+    >
+      Keys for {initialProvider}
+    </button>
+  ),
 }));
 vi.mock('@/app/dashboard/admin/ProviderOverviewTab', () => ({
   ProviderOverviewTab: ({ onManageKeys }: { onManageKeys: (provider: string) => void }) => (
@@ -146,7 +155,7 @@ describe('Providers → Quotas', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens Keys on the provider "Manage keys" names, and keeps the one chosen there', () => {
+  it('opens Keys on the provider "Manage keys" asks for, and keeps the one chosen there', () => {
     // The Providers layout keeps the selection while its pages come and go.
     const { rerender } = render(
       <ProviderSelectionProvider>
@@ -161,8 +170,16 @@ describe('Providers → Quotas', () => {
         <ProviderKeysSection />
       </ProviderSelectionProvider>,
     );
-    // The stand-in for the keys view chooses openrouter when clicked.
-    fireEvent.click(screen.getByRole('button', { name: 'Keys for zai' }));
+    // Asked for: Keys keeps it even when it has no keys to manage.
+    const asked = screen.getByRole('button', { name: 'Keys for zai' });
+    expect(asked).toHaveAttribute('data-asked-for', 'true');
+    // The stand-in for the keys view chooses openrouter when clicked. What it
+    // reports is kept for next time; Keys has already opened.
+    fireEvent.click(asked);
+    expect(screen.getByRole('button', { name: 'Keys for zai' })).toHaveAttribute(
+      'data-asked-for',
+      'true',
+    );
     rerender(
       <ProviderSelectionProvider>
         <ProviderOverviewSection />
@@ -173,12 +190,19 @@ describe('Providers → Quotas', () => {
         <ProviderKeysSection />
       </ProviderSelectionProvider>,
     );
-    expect(screen.getByRole('button', { name: 'Keys for openrouter' })).toBeInTheDocument();
+    // Only shown last: Keys gives it up once it is no longer listed.
+    expect(screen.getByRole('button', { name: 'Keys for openrouter' })).toHaveAttribute(
+      'data-asked-for',
+      'false',
+    );
   });
 
-  it('opens Keys on the first provider when nothing has chosen one', () => {
+  it('passes Keys no provider when nothing has chosen one', () => {
     render(<ProviderKeysSection />);
-    expect(screen.getByRole('button', { name: 'Keys for' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Keys for' })).toHaveAttribute(
+      'data-asked-for',
+      'false',
+    );
   });
 
   it('explains an empty quota response and links to framework setup documentation', async () => {

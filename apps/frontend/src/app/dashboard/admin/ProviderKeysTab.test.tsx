@@ -164,6 +164,45 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
   });
 
+  it('opens on the first provider when none is asked for', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    render(<ProviderKeysTab onProviderChange={onProviderChange} />);
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'openrouter');
+    expect(onProviderChange).toHaveBeenLastCalledWith('openrouter');
+  });
+
+  it('gives way to the first provider when the one only shown last is no longer listed', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    // Shown last, then deleted on Overview: not asked for, so not kept.
+    render(
+      <ProviderKeysTab
+        initialProvider="deleted-provider"
+        keepUnlistedProvider={false}
+        onProviderChange={onProviderChange}
+      />,
+    );
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'openrouter');
+    expect(screen.queryByText(/Key management is unavailable/)).not.toBeInTheDocument();
+    expect(onProviderChange).toHaveBeenLastCalledWith('openrouter');
+    await openAddForm();
+    expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'openrouter');
+  });
+
+  it('keeps the provider shown last while it is still listed', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    render(<ProviderKeysTab initialProvider="zai" keepUnlistedProvider={false} />);
+
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+    expect(listProviderKeys).not.toHaveBeenCalledWith('openrouter');
+  });
+
   it('edits reservations in place, with no Edit step and no save bar until a change', async () => {
     render(<ProviderKeysTab />);
 
