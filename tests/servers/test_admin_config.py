@@ -151,16 +151,17 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
 
 
 @pytest.mark.asyncio
-async def test_get_reports_a_variable_a_model_needs(config_client) -> None:
+async def test_get_reports_a_variable_a_model_uses(config_client) -> None:
     client, _store, _audit = config_client
 
     body = (await client.get("/admin/config", headers=AUTH)).json()
 
     entry = _entries(body)["CHAT_UPSTREAM_KEY"]
-    assert entry["missing"] is True and entry["required"] is True
+    # Listed with the model that uses it; a provider key may still be missing.
+    assert entry["missing"] is False and entry["required"] is False
     assert entry["used_by"] == ["chat"]
     assert entry["secret"] is True
-    assert "CHAT_UPSTREAM_KEY" in body["missing"]
+    assert "CHAT_UPSTREAM_KEY" not in body["missing"]
 
 
 @pytest.mark.asyncio
