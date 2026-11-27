@@ -34,8 +34,8 @@ msgstr "对接一个身份提供方"
 msgid "**Register the gateway at the identity provider** as a confidential client that uses the authorization code flow. Set its redirect URI to `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you will give the provider below. Note the client id and the client secret."
 msgstr "**在身份提供方那边登记网关**，登记为使用授权码流程的机密客户端。把重定向 URI 设为 `<FRONTEND_URL>/auth/sso/<id>/callback`，其中 `<id>` 是你下面要给这个身份提供方起的短名。记下 client id 和 client secret。"
 
-msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, under **Admin → Settings → Models**, in the **Application** section:"
-msgstr "**描述这个身份提供方**：在 **Admin → Settings → Models** 的 **Application** 部分，填写 `SSO_PROVIDERS` 设置："
+msgid "**Describe the provider** in the `SSO_PROVIDERS` setting, under **Admin → Settings → Application**:"
+msgstr "**描述这个身份提供方**：在 **Admin → Settings → Application** 中，填写 `SSO_PROVIDERS` 设置："
 
 msgid "`client_secret` names a secret setting. It never holds the secret itself."
 msgstr "`client_secret` 填的是一个密钥设置的名字，不是密钥本身。"

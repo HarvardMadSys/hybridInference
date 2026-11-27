@@ -50,7 +50,11 @@ Origin = Literal["static", "discovered", "numbered", "custom"]
 
 @dataclass(frozen=True)
 class Category:
-    """A group of entries on the admin Settings tab."""
+    """A group of entries in the admin console.
+
+    Each is a section of the Settings tab, except the model catalog, which the
+    Models tab shows with the per-model overrides.
+    """
 
     id: str
     label: str
@@ -71,9 +75,14 @@ def _sms_provider_registered() -> bool:
 
 CATEGORIES: tuple[Category, ...] = (
     Category(
+        "models",
+        "Model catalog",
+        "Model metadata, aliases, router parameters and base routes.",
+    ),
+    Category(
         "application",
         "Application",
-        "Models, routing policy, alert rules and public site configuration.",
+        "Routing policy, alert rules, public site configuration and single sign-on.",
     ),
     Category("general", "General", "Public addresses, site identity and logging."),
     Category(
@@ -312,7 +321,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     *(
         ConfigEntry(
             key,
-            "application",
+            category,
             description,
             type="text",
             setup=True,
@@ -320,29 +329,34 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
             restart_required=restart,
             validator=_document_validator(key),
         )
-        for key, description, restart in (
+        for key, category, description, restart in (
             (
                 "MODEL_CATALOG",
+                "models",
                 "Model catalog as JSON. Add models and routes here or in Admin Routing. Credentials reference separate secret settings as ${NAME}.",
                 True,
             ),
             (
                 "ROUTING_POLICY",
+                "application",
                 "Optional routing policy as JSON. Omit to use the default Fixed router.",
                 True,
             ),
             (
                 "ALERT_RULES",
+                "application",
                 "Alert thresholds and rule switches as JSON. Omit to use built-in thresholds.",
                 True,
             ),
             (
                 "SITE_CONFIGURATION",
+                "application",
                 "Public site identity and feature policy as JSON. No file paths are accepted.",
                 False,
             ),
             (
                 "SITE_BRANDING",
+                "application",
                 "Public branding as JSON. Only validated public branding fields are accepted.",
                 False,
             ),
@@ -1793,8 +1807,8 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
 #: nor written here, and every boot that finds one warns about it once. An
 #: administrator may still delete the row.
 RETIRED_SETTINGS: Mapping[str, str] = {
-    "MODELS_CONFIG_PATH": "application documents are configured in Admin Settings",
-    "MODELS_CONFIG": "application documents are configured in Admin Settings",
+    "MODELS_CONFIG_PATH": "the model catalog is configured in Admin Models",
+    "MODELS_CONFIG": "the model catalog is configured in Admin Models",
     "ROUTING_CONFIG_PATH": "application documents are configured in Admin Settings",
     "ROUTING_CONFIG": "application documents are configured in Admin Settings",
     "ALERTS_CONFIG_PATH": "application documents are configured in Admin Settings",

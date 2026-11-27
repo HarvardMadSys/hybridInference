@@ -1,7 +1,7 @@
 # Configuration
 
-Configure the gateway in **Admin → Settings**, **Providers** and **Routing**.
-Application configuration is stored in PostgreSQL. The gateway does not load
+Configure the gateway in **Admin → Settings**, **Models**, **Providers** and
+**Routing**. Application configuration is stored in PostgreSQL. The gateway does not load
 model, routing, alert, distribution or branding YAML at runtime. Docker Compose
 and GitHub Actions still use their infrastructure YAML files.
 
@@ -14,16 +14,18 @@ configuration paths.
 
 | Configuration | Owner |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings |
+| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Models |
 | Providers, credentials, live routes and overrides | Admin Providers and Routing |
 | Database connection, host ports and container networking | `.env` and Compose |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
 
 ### Application documents
 
-The Models settings sub-tab includes these validated JSON documents. They use
-the same conditional saves, audit, security confirmation and backup controls as
-other settings. No JSON file is a runtime fallback either.
+**Admin → Models** edits `MODEL_CATALOG`, with each model's runtime role and
+concurrency overrides beside it; **Admin → Settings → Application** edits the
+other documents. All of them are validated JSON and use the same conditional
+saves, audit, security confirmation and backup controls as other settings. No
+JSON file is a runtime fallback either.
 
 | Setting | Purpose | Application |
 |---|---|---|
@@ -169,10 +171,10 @@ and the files, once no earlier release will run.
 
 Provider/key changes and ordinary route edits are persisted in the operational
 store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. The Models settings sub-tab shows
-**Applied in each backend process**, including failed, stale or unsupported
-processes. A stale process is never counted as successfully updated. Compare the
-registered process count with your deployment inventory.
+model transitions, normally within ten seconds. **Admin → Models** shows
+**Applied in each backend process** beside the model catalog, including failed,
+stale or unsupported processes. A stale process is never counted as successfully
+updated. Compare the registered process count with your deployment inventory.
 
 Catalog changes marked **Restart required** still need a controlled backend
 restart. A save is not evidence that every process has applied the change.
@@ -209,6 +211,12 @@ again for every connection the probe opens. Routes saved earlier keep serving:
 the switch governs what Admin accepts and probes, not existing inference
 traffic. Restrict the gateway's egress at the network layer as well.
 
+### Models tab
+
+Edit the model catalog here, and the runtime overrides that apply on top of it:
+the role each model requires, and whether its requests count toward the
+per-user concurrency limit. Neither override changes the catalog.
+
 ### Routing tab
 
 Create models, verify routes, edit their targets and capabilities, adjust
@@ -233,9 +241,9 @@ it up on reload without rewriting their catalog. Route listings include
 
 ### Settings tab
 
-Edit application documents, credentials, delivery settings, network policy,
-runtime switches and quotas here. Required fields and restart requirements are
-shown beside each setting.
+Edit the application documents other than the model catalog, credentials,
+delivery settings, network policy, runtime switches and quotas here. Required
+fields and restart requirements are shown beside each setting.
 
 ### How the two layers combine
 
@@ -408,7 +416,7 @@ The CLI never prints a secret value.
 ### Missing settings
 
 The console shows **Ask admin to configure**. Administrators can open Settings
-or create a model in Routing. Other users should contact their administrator.
+or Models from it, or create a model in Routing. Other users should contact their administrator.
 No borrowed provider, model, key or deployment identity is silently selected.
 Provider keys and URLs the model catalog references never count as missing:
 until one is set, the route that needs it is skipped (with its model, unless the

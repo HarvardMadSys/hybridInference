@@ -1216,6 +1216,14 @@ msgstr ""
 "database)）在这张表里没有对应的行，所以这个标签页可以禁用它、把它预留给某个层级，但不能删除。要去掉它，就在 "
 "**Configuration** 标签页上清空这个变量，再重启后端。"
 
+#: ../developer/configuration.md
+msgid "Models tab"
+msgstr "Models 标签页"
+
+#: ../developer/configuration.md
+msgid "Edit the model catalog here, and the runtime overrides that apply on top of it: the role each model requires, and whether its requests count toward the per-user concurrency limit. Neither override changes the catalog."
+msgstr "在此编辑模型目录，以及叠加其上的运行时覆盖项：每个模型要求的角色，以及它的请求是否计入每用户并发上限。这两种覆盖项都不会修改目录。"
+
 #: ../developer/configuration.md:371
 msgid "Routing tab"
 msgstr "Routing 标签页"
@@ -2696,8 +2704,8 @@ msgstr "`p95_latency_per_provider` 按上游服务商，从每个请求的请求
 msgid "`failed_request_rate` counts a request as failed when it ends in a 5xx, or in a 4xx an upstream returned. A 4xx the gateway issues itself, such as a 404 for a path that does not exist or a 422 for a body that does not validate, is not a service failure and does not count, and neither does a 429. `client_error_burst` counts the relayed client errors that bypass the circuit breaker, and `min_distinct_callers` (default `1`) sets how many API keys, grants or anonymous addresses they must come from before it pages. At `1`, one caller replaying a broken conversation pages, and so can any one key that sends malformed requests on purpose. A gateway that hands keys to the public can set it to `2` or more and then sees a single caller's loop only in the logs."
 msgstr "`failed_request_rate` 在请求以 5xx 结束，或以上游返回的 4xx 结束时，把它算作失败。网关自己给出的 4xx，例如访问不存在的路径得到的 404，或者请求体未通过校验得到的 422，不属于服务故障，不计入；429 也不计入。`client_error_burst` 统计绕过熔断器、由上游转发回来的客户端错误，`min_distinct_callers`（默认 `1`）规定这些错误至少要来自多少个 API 密钥、授权或匿名地址，才会发出告警。设为 `1` 时，一个调用方反复重放一段已损坏的对话就会触发告警，任何一个故意发送畸形请求的密钥也同样可以触发。向公众发放密钥的网关可以把它设为 `2` 或更高，这样单个调用方陷入的循环就只会出现在日志里。"
 
-msgid "Configure the gateway in **Admin → Settings**, **Providers** and **Routing**. Application configuration is stored in PostgreSQL. The gateway does not load model, routing, alert, distribution or branding YAML at runtime. Docker Compose and GitHub Actions still use their infrastructure YAML files."
-msgstr "在 **Admin → Settings**、**Providers** 和 **Routing** 中配置网关。应用配置存储在 PostgreSQL 中。网关在运行时不加载模型、路由、告警、分发或品牌 YAML。Docker Compose 和 GitHub Actions 仍使用基础设施 YAML 文件。"
+msgid "Configure the gateway in **Admin → Settings**, **Models**, **Providers** and **Routing**. Application configuration is stored in PostgreSQL. The gateway does not load model, routing, alert, distribution or branding YAML at runtime. Docker Compose and GitHub Actions still use their infrastructure YAML files."
+msgstr "在 **Admin → Settings**、**Models**、**Providers** 和 **Routing** 中配置网关。应用配置存储在 PostgreSQL 中。网关在运行时不加载模型、路由、告警、分发或品牌 YAML。Docker Compose 和 GitHub Actions 仍使用基础设施 YAML 文件。"
 
 msgid "A fresh database has no assumed provider or model. The console remains available for first-run setup and shows **Ask admin to configure** when required configuration or models are missing. Users never see secret values or private configuration paths."
 msgstr "新数据库没有预设的供应商或模型。控制台仍可用于首次设置；缺少必要配置或模型时，会显示 **Ask admin to configure**。用户不会看到秘密值或私有配置路径。"
@@ -2708,8 +2716,8 @@ msgstr "管理位置"
 msgid "Application settings and documents"
 msgstr "应用设置和文档"
 
-msgid "`app_config`, edited in Admin Settings"
-msgstr "`app_config`，在 Admin Settings 中编辑"
+msgid "`app_config`, edited in Admin Settings, the model catalog in Admin Models"
+msgstr "`app_config`，在 Admin Settings 中编辑；模型目录在 Admin Models 中编辑"
 
 msgid "Providers, credentials, live routes and overrides"
 msgstr "供应商、凭据、实时路由和覆盖项"
@@ -2732,8 +2740,8 @@ msgstr "`.ops.env`，从 `.ops.env.example` 复制"
 msgid "Application documents"
 msgstr "应用文档"
 
-msgid "The Models settings sub-tab includes these validated JSON documents. They use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
-msgstr "Models 设置子标签页包含以下经过验证的 JSON 文档。它们与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+msgid "**Admin → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "**Admin → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
 msgid "Purpose"
 msgstr "用途"
@@ -2810,8 +2818,8 @@ msgstr "运行时不再使用路由文件。需要部署级策略时，在 Admin
 msgid "The retired model/routing/alert path variables and distribution active/dark modes no longer select configuration. Use the application documents instead. The standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values do not configure it."
 msgstr "已停用的模型、路由、告警路径变量和分发 active/dark 模式不再选择配置。请使用应用文档。独立云代理管理自己的设置；网关中废弃的 `AGENT_*` 值不会配置该代理。"
 
-msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. The Models settings sub-tab shows **Applied in each backend process**, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
-msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。Models 设置子标签页显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
+msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. **Admin → Models** shows **Applied in each backend process** beside the model catalog, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
+msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。**Admin → Models** 在模型目录旁显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
 
 msgid "Catalog changes marked **Restart required** still need a controlled backend restart. A save is not evidence that every process has applied the change."
 msgstr "标记为 **Restart required** 的目录修改仍需要受控重启后端。保存成功不能证明所有进程都已应用修改。"
@@ -2830,8 +2838,8 @@ msgstr "在此添加并验证供应商和密钥。凭据仍为只写。内置适
 msgid "Create models, verify routes, edit their targets and capabilities, adjust weights, and disable or remove routes. Resetting a catalog-route override returns it to its database catalog baseline. The legacy API source label `yaml` and `yaml_weight` field remain compatibility names for that baseline."
 msgstr "创建模型、验证路由、修改目标和能力、调整权重，以及禁用或删除路由。重置目录路由的覆盖项会恢复其数据库目录基线。旧 API 来源标签 `yaml` 和 `yaml_weight` 字段保留为该基线的兼容名称。"
 
-msgid "Edit application documents, credentials, delivery settings, network policy, runtime switches and quotas here. Required fields and restart requirements are shown beside each setting."
-msgstr "在此编辑应用文档、凭据、消息投递设置、网络策略、运行时开关和配额。每项设置旁都会显示必填项和重启要求。"
+msgid "Edit the application documents other than the model catalog, credentials, delivery settings, network policy, runtime switches and quotas here. Required fields and restart requirements are shown beside each setting."
+msgstr "在此编辑模型目录以外的应用文档、凭据、消息投递设置、网络策略、运行时开关和配额。每项设置旁都会显示必填项和重启要求。"
 
 msgid "The model catalog provides the baseline. Stored runtime models, routes, strategy/capability overrides, weights and availability choices apply on top. Changing an override never edits the baseline document."
 msgstr "模型目录提供基线。持久化的运行时模型、路由、策略与能力覆盖项、权重及可用性选择叠加其上。修改覆盖项不会编辑基线文档。"
@@ -2864,8 +2872,8 @@ msgstr "恢复 CLI 读取同一个数据库，并执行相同的验证："
 msgid "A JSON file passed to `document` is explicit import input, not a runtime source. The CLI never prints a secret value."
 msgstr "传给 `document` 的 JSON 文件是显式导入输入，不是运行时来源。CLI 绝不打印秘密值。"
 
-msgid "The console shows **Ask admin to configure**. Administrators can open Settings or create a model in Routing. Other users should contact their administrator. No borrowed provider, model, key or deployment identity is silently selected. Provider keys and URLs the model catalog references never count as missing: until one is set, the route that needs it is skipped (with its model, unless the route is `optional: true`) and the backend log names it."
-msgstr "控制台显示 **Ask admin to configure**。管理员可打开 Settings，或在 Routing 中创建模型。其他用户应联系管理员。系统不会默默选择借用的供应商、模型、密钥或部署标识。模型目录引用的供应商密钥和 URL 永远不算缺失：在设置之前，需要它的路由会被跳过（除非该路由标了 `optional: true`，否则连同整个模型一起跳过），后端日志会写明是哪一个。"
+msgid "The console shows **Ask admin to configure**. Administrators can open Settings or Models from it, or create a model in Routing. Other users should contact their administrator. No borrowed provider, model, key or deployment identity is silently selected. Provider keys and URLs the model catalog references never count as missing: until one is set, the route that needs it is skipped (with its model, unless the route is `optional: true`) and the backend log names it."
+msgstr "控制台显示 **Ask admin to configure**。管理员可从这里打开 Settings 或 Models，或在 Routing 中创建模型。其他用户应联系管理员。系统不会默默选择借用的供应商、模型、密钥或部署标识。模型目录引用的供应商密钥和 URL 永远不算缺失：在设置之前，需要它的路由会被跳过（除非该路由标了 `optional: true`，否则连同整个模型一起跳过），后端日志会写明是哪一个。"
 
 msgid "Keep the database connection and infrastructure wiring in `.env`. Use Admin for application changes after first boot. See `.env.example` for the remaining infrastructure settings."
 msgstr "数据库连接和基础设施连接设置保留在 `.env` 中。首次启动后，通过 Admin 修改应用。其余基础设施设置见 `.env.example`。"

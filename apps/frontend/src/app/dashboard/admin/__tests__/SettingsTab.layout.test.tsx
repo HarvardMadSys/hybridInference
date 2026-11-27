@@ -60,9 +60,12 @@ function webhook(key: string): ConfigEntry {
 /**
  * One setting or more in each category a sub-tab names, and one in a category
  * none names. Some are usually set once, in a category with others or alone.
+ * The model catalog's category is Admin → Models', which this page leaves out.
  */
 const CONFIG: ConfigResponse = {
   categories: [
+    { id: 'models', label: 'Model catalog', description: 'Model metadata.' },
+    { id: 'application', label: 'Application', description: 'Site documents.' },
     { id: 'general', label: 'General', description: 'Site identity.' },
     { id: 'security', label: 'Security', description: 'Secrets.' },
     { id: 'signup', label: 'Sign-up', description: 'Signup notices.' },
@@ -75,6 +78,23 @@ const CONFIG: ConfigResponse = {
     { id: 'future', label: 'Future things', description: 'Added by a later backend.' },
   ],
   entries: [
+    entry({
+      key: 'MODEL_CATALOG',
+      category: 'models',
+      type: 'text',
+      value: '{"models": []}',
+      description: 'Model catalog as JSON.',
+      one_time: true,
+      restart_required: true,
+    }),
+    entry({
+      key: 'SITE_BRANDING',
+      category: 'application',
+      type: 'text',
+      value: '{}',
+      description: 'Public branding as JSON.',
+      one_time: true,
+    }),
     entry({ key: 'SITE_NAME', category: 'general', value: 'Gateway', one_time: true }),
     entry({ key: 'LOG_LEVEL', category: 'general', value: 'INFO' }),
     entry({ key: 'COOKIE_DOMAIN', category: 'security', one_time: true }),
@@ -181,7 +201,12 @@ vi.mock('@/lib/api/admin', async () => {
 });
 
 import { getConfig, patchConfig } from '@/lib/api/config';
-import { listRuntimeSettings, updateRuntimeSetting } from '@/lib/api/admin';
+import {
+  listModelConcurrency,
+  listModelVisibility,
+  listRuntimeSettings,
+  updateRuntimeSetting,
+} from '@/lib/api/admin';
 
 afterEach(() => {
   cleanup();
@@ -314,7 +339,7 @@ describe('Admin → Settings sub-tabs', () => {
       'Common',
       'Access',
       'Providers & Routing, 1 missing',
-      'Models',
+      'Application',
       'Batch',
       'Alerts',
       'Setup, 1 missing',
@@ -337,10 +362,11 @@ describe('Admin → Settings sub-tabs', () => {
       ],
       Access: ['Signup Policy', 'Sign-up', 'Security'],
       'Providers & Routing': ['Providers', 'Routing'],
-      Models: ['Model Visibility', 'Model Concurrency Limit'],
+      // The documents besides the model catalog, which Admin → Models edits.
+      Application: ['Application'],
       Batch: ['Batch inference', 'Batch Concurrency'],
       Alerts: ['Alert Notifications', 'Alert Types', 'Alerts'],
-      // A category no sub-tab names still has a place.
+      // A category no sub-tab names still has a place; the catalog's is not one.
       Setup: ['General', 'Email', 'Network', 'Usage Insights', 'Future things'],
       Backup: ['Backup & Restore'],
     };
@@ -361,6 +387,29 @@ describe('Admin → Settings sub-tabs', () => {
         'user_concurrency_free value',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('leaves the model configuration to Admin → Models: not listed, searched or read', async () => {
+    await renderLoaded();
+
+    expect(screen.queryByRole('tab', { name: /^Models/ })).not.toBeInTheDocument();
+    // Not on any sub-tab, shown or hidden.
+    expect(document.querySelector('[data-config-key="MODEL_CATALOG"]')).toBeNull();
+    expect(screen.queryByText('Model catalog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Model Visibility')).not.toBeInTheDocument();
+    expect(screen.queryByText('Model Concurrency Limit')).not.toBeInTheDocument();
+    expect(listModelVisibility).not.toHaveBeenCalled();
+    expect(listModelConcurrency).not.toHaveBeenCalled();
+
+    // The Application sub-tab says where the catalog went, and keeps the other documents.
+    await openSettingsTab('Application');
+    expect(screen.getByText(/The model catalog is on the Models tab\.$/)).toBeVisible();
+    expect(rowsOf('Application')).toEqual(['SITE_BRANDING']);
+
+    // A search looks through this page's categories only.
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'catalog' } });
+    expect(screen.getByText(/0 settings match, from every sub-tab/)).toBeInTheDocument();
+    expect(screen.getByText('No settings match.')).toBeInTheDocument();
   });
 
   it.each([
@@ -468,7 +517,7 @@ describe('Admin → Settings sub-tabs', () => {
     fireEvent.click(screen.getByRole('switch', { name: 'Toggle signup enabled' }));
     expect(screen.getByRole('tab', { name: 'Common, unsaved changes' })).toBeInTheDocument();
 
-    await openSettingsTab('Models');
+    await openSettingsTab('Batch');
     // Still said on the tabs that are not on screen.
     expect(screen.getByRole('tab', { name: /^Access/ })).toHaveTextContent('unsaved changes');
     expect(screen.getByRole('tab', { name: /^Common/ })).toHaveTextContent('unsaved changes');
@@ -534,7 +583,7 @@ describe('Admin → Settings sub-tabs', () => {
       'does not support database-backed configuration',
     );
     // Sub-tabs that only edit the configuration have nothing to show.
-    expectTabs(['Common', 'Access', 'Models', 'Batch', 'Alerts', 'Setup']);
+    expectTabs(['Common', 'Access', 'Batch', 'Alerts', 'Setup']);
     expect(sectionsShown()).toEqual([
       'Access Controls',
       'Per-User Concurrency',

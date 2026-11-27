@@ -35,12 +35,11 @@ import { moneyCurrency } from '@/lib/utils/money';
 import { AlertMutesSection } from './AlertMutesSection';
 import { AlertSnoozeSection } from './AlertSnoozeSection';
 import { UsageInsightsSettingsSection } from './UsageInsightsSettingsSection';
-import { ModelVisibilitySection } from './ModelVisibilitySection';
-import { ModelConcurrencySection } from './ModelConcurrencySection';
 import { BatchConcurrencySection } from './BatchConcurrencySection';
 import { RuntimeSettingsSection } from './RuntimeSettingsSection';
 import { SignupPolicySection } from './SignupPolicySection';
 import {
+  CATEGORIES_ELSEWHERE,
   DEFAULT_SETTINGS_TAB,
   RUNTIME_GROUPS,
   SETTINGS_TABS,
@@ -103,12 +102,13 @@ function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
 }
 
 /**
- * Admin → Settings: every setting an administrator changes in the console, in
- * sub-tabs (see `settingsLayout`): Common, with the settings changed most
- * often, then one sub-tab per topic, then Setup, with what is usually set
- * once. A topic's sections sit together whatever stores them: the
- * database-backed configuration, the runtime settings, and the sections with
- * an API of their own.
+ * Admin → Settings: every setting an administrator changes in the console but
+ * the model configuration, which is on Admin → Models. In sub-tabs (see
+ * `settingsLayout`): Common, with the settings changed most often, then one
+ * sub-tab per topic, then Setup, with what is usually set once. A topic's
+ * sections sit together whatever stores them: the database-backed
+ * configuration, the runtime settings, and the sections with an API of their
+ * own.
  *
  * Every sub-tab stays mounted while another is shown, so a change waits
  * unsaved, wherever it was made, until it is saved or discarded. A search or
@@ -125,7 +125,11 @@ export function SettingsTab({
   const money = useMoney();
   const router = useRouter();
   const pathname = usePathname();
-  const editor = useConfigurationEditor({ initialMissingOnly });
+  // The model catalog is on Admin → Models: not listed here, nor found by a search.
+  const editor = useConfigurationEditor({
+    initialMissingOnly,
+    excludeCategories: CATEGORIES_ELSEWHERE,
+  });
   // One confirmation for the page's confirmed writes, so only one is ever asked for.
   const confirmation = useConfirmAction();
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
@@ -356,10 +360,6 @@ export function SettingsTab({
             onToast={flashToast}
           />
         );
-      case 'model-visibility':
-        return <ModelVisibilitySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
-      case 'model-concurrency':
-        return <ModelConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
       case 'batch-concurrency':
         return <BatchConcurrencySection onToast={flashToast} onUnsavedChange={onUnsavedChange} />;
       case 'alert-snooze':

@@ -96,11 +96,11 @@ and:
    to configure**.
 4. Finish setup, then add a provider/key and create a model in **Admin → Routing**.
    Verify the route before making the model available to users. For advanced
-   metadata and aliases, edit the model catalog in **Admin → Settings → Models**.
+   metadata and aliases, edit the model catalog in **Admin → Models**.
    Follow **Restart required** markers when saving a catalog or credential.
 
 Everything set here can be changed later on the admin console's
-**Settings** tab; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
+**Settings** tab, and the model catalog on its **Models** tab; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
 explains how. [The first admin account](deployment.md#the-first-admin-account)
 covers the other ways to create an administrator and how to reset its
 password.

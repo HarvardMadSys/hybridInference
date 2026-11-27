@@ -1,3 +1,7 @@
+import { redirect } from 'next/navigation';
+
+import { ADMIN_MODELS_PATH } from '@/components/features/configuration/paths';
+
 import { SettingsTab } from '../../SettingsTab';
 import { settingsTabKey } from '../../settingsLayout';
 
@@ -9,10 +13,16 @@ interface PageProps {
 // missing" banner links: the page opens filtered to what needs a value.
 export default async function Page({ searchParams }: PageProps) {
   const params = await searchParams;
+  const missingOnly = params?.missing === '1';
+  // The Models sub-tab became Admin → Models. An old link to it lands there,
+  // unless it asked for the missing settings, which only this tab lists: then
+  // on Application, which kept the sub-tab's other documents.
+  const legacyModels = params?.tab === 'models';
+  if (legacyModels && !missingOnly) redirect(ADMIN_MODELS_PATH);
   return (
     <SettingsTab
-      initialTab={settingsTabKey(params?.tab)}
-      initialMissingOnly={params?.missing === '1'}
+      initialTab={settingsTabKey(legacyModels ? 'application' : params?.tab)}
+      initialMissingOnly={missingOnly}
     />
   );
 }

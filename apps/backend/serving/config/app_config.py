@@ -2256,7 +2256,12 @@ def entry(key: str) -> ConfigEntry | None:
 
 
 #: Categories every setting of which is security-relevant (:func:`security_relevant`).
-SECURITY_CATEGORIES: frozenset[str] = frozenset({"security", "network", "phone", "privacy"})
+#: The two that hold the application documents are among them: the model catalog
+#: and the routing policy say where requests go, the single sign-on providers who
+#: may sign in.
+SECURITY_CATEGORIES: frozenset[str] = frozenset(
+    {"security", "network", "phone", "privacy", "models", "application"}
+)
 
 #: Security-relevant settings outside :data:`SECURITY_CATEGORIES`: where mail goes,
 #: who hears about new accounts and where users are told to write, the identity
@@ -2309,7 +2314,6 @@ def _security_relevant_entry(key: str, setting: ConfigEntry | None) -> bool:
         or setting.category in SECURITY_CATEGORIES
         or setting.origin != "static"
         or key in SECURITY_SETTING_KEYS
-        or setting.category == "application"
         or key.endswith("_URL")
     )
 
