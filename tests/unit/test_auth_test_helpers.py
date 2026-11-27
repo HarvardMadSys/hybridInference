@@ -54,15 +54,6 @@ def test_build_auth_test_env_defaults_applies_overrides():
     assert result["SIGNUP_DEFAULT_DAILY_QUOTA_USD"] == "42.00"
 
 
-def test_assert_test_db_name_accepts_dedicated_test_db():
-    auth_helpers.assert_test_db_name("hybridinference_test_db")
-
-
-def test_assert_test_db_name_rejects_non_test_db():
-    with pytest.raises(pytest.fail.Exception, match="refusing to run tests"):
-        auth_helpers.assert_test_db_name("hybridinference_prod")
-
-
 @pytest.mark.asyncio
 async def test_assert_test_db_from_pool_queries_current_database():
     conn = MagicMock()

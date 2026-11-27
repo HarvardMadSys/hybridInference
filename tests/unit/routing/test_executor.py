@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
 import random
 from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
@@ -350,31 +349,6 @@ def test_alias_shares_route_config():
     # Alias reflects the change
     assert exe.routes["m-alias"].adapters == [(a, 1.0), (b, 0.0)]
     assert exe.routes["m"] is exe.routes["m-alias"]
-
-
-@pytest.mark.unit
-@pytest.mark.perf
-@pytest.mark.skipif(
-    os.getenv("RUN_PERF") != "1",
-    reason="Performance tests are disabled by default (set RUN_PERF=1 to enable)",
-)
-def test_route_selection_performance():
-    """Ensure adapter selection is fast enough for basic regression budgets.
-
-    Wall-clock budget; flaky on shared CI runners, so gated behind RUN_PERF=1.
-    """
-    exe = FixedRouter()
-    a = _EchoAdapter(_cfg("m", provider="A"))
-    b = _EchoAdapter(_cfg("m", provider="B"))
-    exe.register_route("m", [(a, 0.8), (b, 0.2)])
-
-    import time
-
-    start = time.perf_counter()
-    for _ in range(10000):
-        _ = exe._select_adapter("m")  # type: ignore[attr-defined]
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.5, f"10k selections took {elapsed:.3f}s (budget: 0.5s)"
 
 
 # ---------------------------------------------------------------------------

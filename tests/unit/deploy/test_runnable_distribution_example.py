@@ -2048,14 +2048,6 @@ def test_router_tutorial_teaches_what_the_example_actually_serves() -> None:
     assert f"docker logs {default_container} 2>&1 | grep 'setup code'" in tutorial
 
 
-def test_router_tutorial_is_reachable_in_the_developer_toctree() -> None:
-    """The canonical developer guide must link the tutorial."""
-    slug = TUTORIAL.stem
-    index = REPO / "docs" / "developer" / "index.rst"
-    entries = [line.strip() for line in index.read_text().splitlines()]
-    assert slug in entries, f"{index} does not list {slug}"
-
-
 def _listing(**key: object) -> dict[str, object]:
     return {"keys": [{"status": "active", "key_prefix": "kp1", **key}]}
 

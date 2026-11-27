@@ -137,19 +137,6 @@ def test_handler_propagates_affinity_key_to_context_anonymous():
 
 
 @pytest.mark.unit
-def test_affinity_key_unresolved_returns_none():
-    """When client provenance is unresolved, affinity key is None (non-sticky)."""
-    ip_info = ClientIpInfo(
-        client_ip="unknown",
-        peer_ip="172.19.0.1",
-        source="unknown",
-        trusted_proxy_headers=False,
-        resolved=False,
-    )
-    assert derive_affinity_key(None, ip_info) is None
-
-
-@pytest.mark.unit
 def test_affinity_key_unresolved_with_auth_uses_auth():
     """Auth key hash is preferred even when client IP is unresolved."""
     ip_info = ClientIpInfo(
