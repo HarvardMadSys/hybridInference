@@ -64,7 +64,12 @@ from serving.servers.routers.routing_info import (
 )
 from serving.servers.streaming_response import ClosingStreamingResponse, close_body
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
-from serving.servers.surface_http import client_origin, timeout_probe
+from serving.servers.surface_http import (
+    ClientDisconnectedError,
+    await_while_connected,
+    client_origin,
+    timeout_probe,
+)
 from serving.storage.utils import billable_output_tokens, json_safe
 from serving.stream import StreamQueue, pump_stream
 from serving.structured_output import conform_reply, requested_format
@@ -85,8 +90,6 @@ from serving.utils.tokens import estimate_prompt_tokens_bounded
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
-
-    from fastapi.responses import StreamingResponse
 
     from serving.auto_mode import AutoSelection
     from serving.servers.routers.completions_cost import CostTracker, PricingLookup
@@ -787,6 +790,8 @@ class ChatStream:
         return self._frames()
 
     async def _frames(self) -> AsyncIterator[Any]:
+        if self._tail is None:
+            raise RuntimeError("ChatStream must be primed or adopted before reading frames")
         self._frames_started = True
         try:
             if self._head is not None:
@@ -858,7 +863,7 @@ async def render_chat_http(outcome: ChatOutcome, request: Request, http_response
 
 async def _render_chat_stream(
     stream: ChatStream, request: Request, http_response: Response
-) -> StreamingResponse:
+) -> Response:
     if stream.buffered:
         keepalive_gen = _streaming_response_with_keepalive(
             stream.session_stream(),
@@ -868,7 +873,11 @@ async def _render_chat_stream(
         )
         first_chunk: bytes | None = None
         try:
-            first_chunk = await keepalive_gen.__anext__()
+            first_chunk = await await_while_connected(request, keepalive_gen.__anext__())
+        except ClientDisconnectedError:
+            await _close_stream_quietly(keepalive_gen)
+            await stream.aclose()
+            return Response(status_code=499)
         except StopAsyncIteration:
             first_chunk = None
         except HTTPException:
@@ -909,7 +918,11 @@ async def _render_chat_stream(
             headers=streaming_headers or None,
         )
 
-    await stream.prime()
+    try:
+        await await_while_connected(request, stream.prime())
+    except ClientDisconnectedError:
+        await stream.aclose()
+        return Response(status_code=499)
     # `no-transform` stops intermediary CDNs (e.g. Cloudflare) from buffering
     # the stream to compress it, which collapses TTFT to total latency.
     response_headers = {

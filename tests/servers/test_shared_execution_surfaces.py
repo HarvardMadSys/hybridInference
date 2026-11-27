@@ -951,6 +951,170 @@ async def test_a_primed_stream_the_client_left_is_still_finalized(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("surface", "path", "body"),
+    [
+        pytest.param("chat", "/v1/chat/completions", _chat(MID, stream=True), id="chat-stream"),
+        pytest.param(
+            "chat-buffered",
+            "/v1/chat/completions",
+            _chat(MID, stream=False),
+            id="chat-buffered",
+        ),
+        pytest.param(
+            "responses",
+            "/v1/responses",
+            {"model": MID, "input": "hi", "stream": True, "store": True},
+            id="responses-stored",
+        ),
+        pytest.param(
+            "playground",
+            "/internal/playground/chat",
+            _chat(MID),
+            id="playground-chat",
+        ),
+        pytest.param(
+            "playground",
+            "/internal/playground/responses",
+            {"model": MID, "input": "hi", "stream": True, "store": True},
+            id="playground-responses",
+        ),
+    ],
+)
+async def test_client_disconnect_while_priming_cancels_upstream_immediately(
+    gateway, monkeypatch, surface, path, body
+):
+    """A client leaving before the first byte cancels priming without waiting or storing."""
+    from serving.servers.deps import get_current_user
+    from serving.servers.routers import playground
+
+    load = _capture_interactive_load(gateway, monkeypatch)
+    adapter = gateway.adapters[MID]
+    if surface == "chat-buffered":
+        from serving.config.runtime_settings import RuntimeSettings
+
+        from .test_auto_mode_surfaces import _SettingsStore
+
+        gateway.app.state.services.runtime_settings = RuntimeSettings(
+            _SettingsStore({"force_chat_completions_streaming": True})
+        )
+    if surface == "playground":
+        gateway.app.include_router(playground.router)
+        gateway.app.dependency_overrides[get_current_user] = lambda: INTERNAL
+
+    saved: list[dict[str, Any]] = []
+
+    class _FakeResponseStore:
+        persist_enabled = True
+
+        async def save(self, **kwargs: Any) -> None:
+            saved.append(kwargs)
+
+    gateway.app.state.services.responses_store = _FakeResponseStore()
+
+    started = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def slow_prefill_stream(messages, **params):
+        started.set()
+        try:
+            await asyncio.sleep(30)
+            yield adapter.format_stream_chunk(model=MID, content="too late")
+            yield "data: [DONE]\n\n"
+        finally:
+            closed.set()
+
+    monkeypatch.setattr(adapter, "stream_chat_completion", slow_prefill_stream)
+    payload = json.dumps(body).encode()
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.3"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "root_path": "",
+        "query_string": b"",
+        "headers": [
+            (b"host", b"test"),
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(payload)).encode()),
+        ],
+        "client": ("127.0.0.1", 5001),
+        "server": ("test", 80),
+    }
+    delivered = False
+    disconnect = asyncio.Event()
+
+    async def receive():
+        nonlocal delivered
+        if not delivered:
+            delivered = True
+            return {"type": "http.request", "body": payload, "more_body": False}
+        await disconnect.wait()
+        return {"type": "http.disconnect"}
+
+    sent: list[dict[str, Any]] = []
+
+    async def send(message):
+        sent.append(message)
+
+    app_task = asyncio.create_task(gateway.app(scope, receive, send))
+    await asyncio.wait_for(started.wait(), timeout=2.0)
+    disconnect.set()
+    await asyncio.wait_for(app_task, timeout=2.0)
+
+    assert closed.is_set()
+    assert load.in_flight(MID) == 0
+    assert saved == []
+    assert any(m.get("type") == "http.response.start" and m.get("status") == 499 for m in sent)
+    rows = await _rows(gateway.log_store)
+    assert [row["status_code"] for row in rows] == [499]
+    assert rows[0]["metadata"]["terminal_state"] == "client_disconnect"
+
+
+@pytest.mark.asyncio
+async def test_await_while_connected_preserves_outer_timeout_and_tolerates_receive_errors():
+    """Receive errors neither break normal reads nor disguise an outer timeout as a disconnect."""
+    import anyio
+    from starlette.requests import Request
+
+    from serving.servers.surface_http import await_while_connected
+
+    async def broken_receive():
+        raise OSError("broken transport")
+
+    req = Request({"type": "http", "method": "POST", "path": "/", "headers": []}, broken_receive)
+
+    async def fast_value() -> str:
+        await asyncio.sleep(0.01)
+        return "ok"
+
+    assert await await_while_connected(req, fast_value()) == "ok"
+
+    with anyio.move_on_after(0.02) as outer_deadline:
+        await await_while_connected(req, asyncio.sleep(10))
+    assert outer_deadline.cancelled_caught is True
+
+
+@pytest.mark.asyncio
+async def test_unprimed_chat_stream_frames_fail_fast():
+    """Iterating ``ChatStream.frames()`` without priming fails immediately instead of silently."""
+    stream = completions.ChatStream(
+        session=None,
+        adapter_chunks=None,
+        buffered=False,
+        request_id="r",
+        model=MID,
+        request_headers={},
+        provider_header=None,
+    )
+    with pytest.raises(RuntimeError, match="primed or adopted"):
+        await stream.frames().__anext__()
+
+
+@pytest.mark.asyncio
 async def test_close_if_unstarted_closes_only_a_body_that_never_ran():
     """The release at the end of a request never cuts a body that is streaming."""
     closed: list[str] = []

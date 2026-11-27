@@ -64,10 +64,10 @@ from serving.servers.routers.completions import (
 )
 from serving.servers.routers.responses import (
     ResponsesServices,
-    ResponsesStream,
     execute_responses,
+    render_responses_http,
 )
-from serving.servers.streaming_response import ClosingStreamingResponse, close_body
+from serving.servers.streaming_response import close_body
 from serving.servers.surface_http import client_origin, timeout_probe
 from serving.spend_ledger import SPEND_CHECK_KEY
 from serving.surfaces.context import (
@@ -644,7 +644,7 @@ async def playground_responses(
     cost_tracker=Depends(get_cost_tracker),
     response_store=Depends(get_response_store),
     _streams: list[ChatStream] = Depends(release_unstarted_chat_streams, scope="request"),
-) -> JSONResponse | StreamingResponse:
+) -> Response:
     """Serve an OpenAI Responses request for the console playground.
 
     Runs the same execution as ``/v1/responses`` under the console session, so
@@ -680,15 +680,9 @@ async def playground_responses(
             response_store=response_store,
         ),
     )
-    if isinstance(result, ResponsesStream):
-        if result.chat_stream is not None:
-            _streams.append(result.chat_stream)
-        return ClosingStreamingResponse(
-            result.events,
-            media_type="text/event-stream",
-            headers=_RESPONSES_SSE_HEADERS,
-        )
-    return JSONResponse(content=result.body)
+    return await render_responses_http(
+        result, request, streams=_streams, headers=_RESPONSES_SSE_HEADERS
+    )
 
 
 @router.post("/messages", response_model=None)
