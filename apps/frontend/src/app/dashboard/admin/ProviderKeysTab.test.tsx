@@ -12,6 +12,7 @@ vi.mock('@/lib/api/admin', () => ({
   enableProviderEnvKey: vi.fn(),
   listProviderKeyProviders: vi.fn(),
   listProviderKeys: vi.fn(),
+  removeProviderEnvKey: vi.fn(),
   setProviderEnvKeyMinRole: vi.fn(),
   setProviderKeyMinRole: vi.fn(),
   setProviderKeyStatus: vi.fn(),
@@ -33,6 +34,7 @@ import {
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  removeProviderEnvKey,
   setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
   setProviderKeyStatus,
@@ -565,6 +567,43 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(await screen.findByRole('button', { name: 'Verified' })).toBeInTheDocument();
   });
 
+  it('removes an env key only after the named confirmation', async () => {
+    vi.mocked(removeProviderEnvKey).mockResolvedValue({
+      id: 'env:abc',
+      provider: 'zai',
+      pools_updated: 1,
+      cleared_settings: ['ZAI_API_KEY'],
+    });
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    const confirm = screen.getByRole('dialog', { name: `Delete key ${envKey.key_prefix}?` });
+    expect(confirm).toHaveTextContent('does not put it back');
+    clickInDialog('Cancel');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(removeProviderEnvKey).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    clickInDialog('Delete');
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(vi.mocked(removeProviderEnvKey).mock.calls).toEqual([['zai', 'env:abc']]);
+    expect(toast.success).toHaveBeenCalledWith(
+      'Key cleared from configuration. The environment variable does not put it back.',
+    );
+    expect(deleteProviderKey).not.toHaveBeenCalled();
+  });
+
+  it('keeps the env-key delete confirmation open when removal fails', async () => {
+    vi.mocked(removeProviderEnvKey).mockRejectedValueOnce(new Error('still configured'));
+    render(<ProviderKeysTab />);
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${envKey.key_prefix}` }));
+    clickInDialog('Delete');
+
+    expect(await within(dialog()).findByRole('alert')).toHaveTextContent('still configured');
+    expect(removeProviderEnvKey).toHaveBeenCalledTimes(1);
+  });
+
   it('deletes a DB key only after the named confirmation', async () => {
     vi.mocked(deleteProviderKey).mockResolvedValue({
       id: 'key-1',
@@ -744,6 +783,7 @@ describe('ProviderKeysTab tier reservation', () => {
       within(row).getByLabelText(`Reserved tier for key ${envKey.key_prefix}`),
     ).toBeInTheDocument();
     expect(within(row).queryByRole('button', { name: /disable/i })).not.toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /delete/i })).not.toBeInTheDocument();
     expect(within(row).getByText('reservation only')).toBeInTheDocument();
   });
 

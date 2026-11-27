@@ -854,6 +854,15 @@ hash. Two consequences: the reservation outlives the key leaving rotation
 admin list can show a reservation whose credential is not configured anywhere,
 so it can be lifted rather than lying in wait.
 
+`POST /admin/provider-keys/remove-env` deletes an environment key. It takes the
+same `provider` and `env_key_id` body as disable. Disable leaves the saved
+setting and keeps the key listed so it can be turned back on. Remove blanks
+every saved setting that holds the credential — an empty admin row, so a
+still-set environment variable does not restore it — and tombstones the hash
+as removed. The key leaves the admin list and the pools. Enabling a removed
+key is refused until the credential is configured again. A database row holding
+the same credential is left alone; delete that row instead.
+
 `apps/backend/serving/adapters/dynamic_keys.py` owns the enforced tier, because
 pools are built from adapter config (which carries no tier) and are rebuilt
 often. Declarations are cached per provider and refreshed from the database at

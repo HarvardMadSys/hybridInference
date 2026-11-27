@@ -3608,6 +3608,13 @@ interface EnableProviderEnvKeyResponse {
   pools_updated: number;
 }
 
+interface RemoveProviderEnvKeyResponse {
+  id: string;
+  provider: string;
+  pools_updated: number;
+  cleared_settings: string[];
+}
+
 interface SetProviderApiKeyStatusResponse {
   id: string;
   provider: string;
@@ -3734,6 +3741,18 @@ export async function enableProviderEnvKey(
     body: JSON.stringify({ provider, env_key_id: envKeyId }),
   });
   return jsonOrThrow<EnableProviderEnvKeyResponse>(resp);
+}
+
+export async function removeProviderEnvKey(
+  provider: string,
+  envKeyId: string,
+): Promise<RemoveProviderEnvKeyResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/provider-keys/remove-env', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, env_key_id: envKeyId }),
+  });
+  return jsonOrThrow<RemoveProviderEnvKeyResponse>(resp);
 }
 
 export async function setProviderKeyStatus(

@@ -437,7 +437,20 @@ async def _disabled_keys_for_provider(
     except Exception as exc:
         logger.warning("failed to load disabled env keys for provider=%s: %s", provider, exc)
         tombstones = []
+    # A removed key has nothing to turn back on until its setting holds the
+    # credential again. Fakes that predate the flag simply have no such method.
+    removed: set[str] = set()
+    list_removed = getattr(operational_store, "list_removed_provider_env_key_hashes", None)
+    if callable(list_removed):
+        try:
+            removed = set(await list_removed(provider))
+        except Exception as exc:
+            logger.warning("failed to load removed env keys for provider=%s: %s", provider, exc)
+            removed = set()
+    configured = dynamic_keys.configured_env_key_hashes(provider) if removed else set()
     for key_hash, key_prefix in tombstones:
+        if key_hash in removed and key_hash not in configured:
+            continue
         out.append(_disabled_key_result(provider, display_name, key_prefix, key_hash[:32]))
 
     try:

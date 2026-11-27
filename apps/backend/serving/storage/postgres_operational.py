@@ -5776,21 +5776,28 @@ class PostgresOperationalStore(
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
-        """Persist a tombstone for an env-sourced provider key."""
+        """Persist a tombstone for an env-sourced provider key.
+
+        The conflict update writes ``removed`` from this call, so a later
+        disable clears a key that had been removed.
+        """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO disabled_provider_env_keys "
-                "(provider, key_hash, key_prefix, disabled_by) "
-                "VALUES ($1, $2, $3, $4) "
+                "(provider, key_hash, key_prefix, disabled_by, removed) "
+                "VALUES ($1, $2, $3, $4, $5) "
                 "ON CONFLICT (provider, key_hash) DO UPDATE SET "
                 "key_prefix = EXCLUDED.key_prefix, "
                 "disabled_by = EXCLUDED.disabled_by, "
-                "disabled_at = NOW()",
+                "disabled_at = NOW(), "
+                "removed = EXCLUDED.removed",
                 provider,
                 key_hash,
                 key_prefix,
                 disabled_by,
+                removed,
             )
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
@@ -5798,6 +5805,15 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+        return {r["key_hash"] for r in rows}
+
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return env-key hashes an administrator removed for *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1 AND removed",
                 provider,
             )
         return {r["key_hash"] for r in rows}

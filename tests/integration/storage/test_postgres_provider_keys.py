@@ -224,3 +224,33 @@ async def test_an_env_key_tombstone_is_upserted_listed_newest_first_and_lifted(
     assert await store.list_disabled_provider_env_key_hashes("itest-p") == {"h-new"}
     # Per provider: the same hash elsewhere stays disabled.
     assert await store.list_disabled_provider_env_key_hashes("itest-q") == {"h-old"}
+
+
+async def test_a_removed_env_key_stays_excluded_until_a_plain_disable(
+    postgres_op_store: PostgresOperationalStore,
+):
+    """``removed`` hides a delete from re-enable, and a later disable clears it.
+
+    The hash stays in the disabled set the whole time, so pools keep excluding it.
+    """
+    store = postgres_op_store
+    await store.disable_provider_env_key(
+        provider="itest-p",
+        key_hash="h-removed",
+        key_prefix="sk-rem",
+        disabled_by="admin",
+        removed=True,
+    )
+    assert await store.list_removed_provider_env_key_hashes("itest-p") == {"h-removed"}
+    assert "h-removed" in await store.list_disabled_provider_env_key_hashes("itest-p")
+    assert await store.list_disabled_provider_env_keys("itest-p") == [("h-removed", "sk-rem")]
+
+    await store.disable_provider_env_key(
+        provider="itest-p",
+        key_hash="h-removed",
+        key_prefix="sk-rem2",
+        disabled_by="admin",
+    )
+    assert await store.list_removed_provider_env_key_hashes("itest-p") == set()
+    assert await store.list_disabled_provider_env_key_hashes("itest-p") == {"h-removed"}
+    assert await store.list_disabled_provider_env_keys("itest-p") == [("h-removed", "sk-rem2")]
