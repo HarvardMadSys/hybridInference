@@ -15,6 +15,7 @@ of them several times over.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import time
@@ -164,25 +165,38 @@ def test_glm_arguments_whose_values_never_close_are_read_in_linear_time():
 
 @pytest.mark.parametrize("processor", [GLMProcessor, QwenCoderProcessor])
 def test_a_streamed_tool_call_is_held_in_linear_time(processor):
-    """781 KiB in 4-character pieces: about 8 s when each piece was appended to a string."""
+    """8 MiB in 256-character pieces: 11-40 s when each piece was appended to a string.
+
+    Appending copies everything held so far, so the old cost grows with the
+    square of the text over the piece size, while the cost of the calls
+    themselves grows only with their number. Few, larger pieces of a larger
+    text keep the bound on the copying: 200,000 pieces of 4 characters timed
+    mostly the calls, which took 2.6 s under coverage on a busy CI runner and
+    0.15 s without it.
+    """
     proc = processor()
     head, tail = "<tool_call>write\n<arg_key>content</arg_key><arg_value>", "</arg_value>"
     if processor is QwenCoderProcessor:
         head, tail = "<tool_call>\n<function=write>\n<parameter=content>\n", "</parameter>"
     proc.process_stream_chunk({"model": "m", "choices": [{"delta": {"content": head}}]})
-    piece = {"model": "m", "choices": [{"delta": {"content": "abcd"}, "finish_reason": None}]}
+    pieces, text = 32 * 1024, "abcd" * 64
+    size = pieces * len(text)
+    # Past the cap the held call is sent on as content, and this test would
+    # fail below on a missing tool call instead of saying why.
+    assert size < processors.MAX_TOOL_CALL_CHARS, "the workload must stay under the cap"
+    piece = {"model": "m", "choices": [{"delta": {"content": text}, "finish_reason": None}]}
 
     def stream():
-        for _ in range(200_000):
+        for _ in range(pieces):
             proc.process_stream_chunk(piece)
 
     elapsed = _elapsed(stream)
 
-    assert elapsed < 2.5, f"800 KB of tool call took {elapsed:.2f}s"
+    assert elapsed < 2.5, f"8 MiB of tool call took {elapsed:.2f}s"
     proc.process_stream_chunk({"model": "m", "choices": [{"delta": {"content": tail}}]})
     (final,) = proc.flush()
     (call,) = final["choices"][0]["delta"]["tool_calls"]
-    assert len(call["function"]["arguments"]) > 800_000
+    assert len(json.loads(call["function"]["arguments"])["content"]) == size
 
 
 @pytest.mark.parametrize("processor", [ThinkBlockProcessor, ReasoningExtractProcessor])
