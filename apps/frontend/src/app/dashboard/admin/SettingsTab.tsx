@@ -212,7 +212,7 @@ export function SettingsTab({
   /**
    * Re-render the server components after a runtime setting changed. The site
    * configuration they read follows some of these settings: sign-up and email
-   * verification decide whether the email (SMTP) settings are required, and
+   * verification decide whether the email transport's settings are required, and
    * user authentication whether the sign-in secrets are — so whether the
    * "required settings are missing" banner shows.
    */

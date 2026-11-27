@@ -529,6 +529,93 @@ describe('step 2: configure', () => {
     expect(refreshMock).not.toHaveBeenCalled();
   });
 
+  it('offers SMTP or Cloudflare for email, and shows and saves only the chosen one', async () => {
+    const withSmtp = { key: 'EMAIL_PROVIDER', values: ['smtp'] };
+    const withCloudflare = { key: 'EMAIL_PROVIDER', values: ['cloudflare'] };
+    const transports: ConfigResponse = {
+      ...CONFIG,
+      entries: [
+        entry({
+          key: 'EMAIL_PROVIDER',
+          category: 'email',
+          setup: true,
+          is_set: true,
+          value: 'smtp',
+          default: 'smtp',
+          choices: ['smtp', 'cloudflare'],
+        }),
+        entry({
+          key: 'SMTP_HOST',
+          category: 'email',
+          setup: true,
+          required: true,
+          missing: true,
+          applies_when: withSmtp,
+        }),
+        entry({
+          key: 'SMTP_PASSWORD',
+          category: 'email',
+          secret: true,
+          setup: true,
+          required: true,
+          missing: true,
+          applies_when: withSmtp,
+        }),
+        entry({
+          key: 'CLOUDFLARE_ACCOUNT_ID',
+          category: 'email',
+          setup: true,
+          applies_when: withCloudflare,
+        }),
+        entry({
+          key: 'CLOUDFLARE_EMAIL_API_TOKEN',
+          category: 'email',
+          secret: true,
+          setup: true,
+          applies_when: withCloudflare,
+        }),
+        entry({ key: 'SMTP_FROM_EMAIL', category: 'email', setup: true, value: 'noreply@x.test' }),
+      ],
+      missing: ['SMTP_HOST', 'SMTP_PASSWORD'],
+    };
+    vi.mocked(getConfig).mockResolvedValue(transports);
+    vi.mocked(patchConfig).mockResolvedValue(transports);
+    await reachConfigureStep();
+
+    const email = within(screen.getByRole('region', { name: 'Email (SMTP)' }));
+    const transport = email.getByRole('combobox', { name: 'EMAIL_PROVIDER' });
+    expect(transport).toHaveTextContent('smtp');
+    expect(email.getByLabelText('SMTP_HOST')).toBeInTheDocument();
+    expect(email.queryByLabelText('CLOUDFLARE_ACCOUNT_ID')).not.toBeInTheDocument();
+
+    // An SMTP edit, then Cloudflare after all: the edit is for a transport not chosen.
+    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.x.test' } });
+    fireEvent.click(transport);
+    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+
+    expect(email.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
+    expect(email.queryByLabelText('SMTP_PASSWORD')).not.toBeInTheDocument();
+    expect(email.getByLabelText('SMTP_FROM_EMAIL')).toBeInTheDocument();
+    fireEvent.change(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID'), {
+      target: { value: '0123456789abcdef0123456789abcdef' },
+    });
+    fireEvent.change(email.getByLabelText('CLOUDFLARE_EMAIL_API_TOKEN'), {
+      target: { value: 'cf-token' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save and continue' }));
+
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: {
+          EMAIL_PROVIDER: 'cloudflare',
+          CLOUDFLARE_ACCOUNT_ID: '0123456789abcdef0123456789abcdef',
+          CLOUDFLARE_EMAIL_API_TOKEN: 'cf-token',
+        },
+      }),
+    );
+    expect(await screen.findByRole('button', { name: 'Finish' })).toBeInTheDocument();
+  });
+
   it('saves on Enter, from a form browsers do not offer to remember', async () => {
     await reachConfigureStep();
     const host = screen.getByLabelText('SMTP_HOST');

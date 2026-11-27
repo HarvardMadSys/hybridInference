@@ -1642,6 +1642,141 @@ describe('forms', () => {
   });
 });
 
+describe('the email transport', () => {
+  const ACCOUNT = '0123456789abcdef0123456789abcdef';
+
+  function transports(provider: string): ConfigResponse {
+    return makeConfig({
+      entries: [
+        entry({
+          key: 'EMAIL_PROVIDER',
+          category: 'email',
+          value: provider,
+          default: 'smtp',
+          choices: ['smtp', 'cloudflare'],
+        }),
+        entry({
+          key: 'SMTP_HOST',
+          category: 'email',
+          value: 'mx.test',
+          applies_when: { key: 'EMAIL_PROVIDER', values: ['smtp'] },
+        }),
+        entry({
+          key: 'CLOUDFLARE_ACCOUNT_ID',
+          category: 'email',
+          is_set: provider === 'cloudflare',
+          value: provider === 'cloudflare' ? ACCOUNT : null,
+          source: provider === 'cloudflare' ? 'database' : 'default',
+          applies_when: { key: 'EMAIL_PROVIDER', values: ['cloudflare'] },
+        }),
+        entry({ key: 'SMTP_FROM_EMAIL', category: 'email', value: 'noreply@example.test' }),
+      ],
+      missing: [],
+      pending_restart: [],
+    });
+  }
+
+  it("shows only the chosen transport's settings, and saves only those", async () => {
+    await renderTab(transports('smtp'));
+    const email = within(section('Email (SMTP)'));
+    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    expect(email.queryByLabelText('CLOUDFLARE_ACCOUNT_ID')).toBeNull();
+
+    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
+    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+    expect(email.queryByLabelText('SMTP_HOST')).toBeNull();
+    fireEvent.change(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID'), {
+      target: { value: ACCOUNT },
+    });
+    // The hidden SMTP edit is neither counted nor sent.
+    expect(email.getByText('2 unsaved changes')).toBeInTheDocument();
+
+    vi.mocked(patchConfig).mockResolvedValueOnce(transports('cloudflare'));
+    fireEvent.click(email.getByRole('button', { name: /^Save changes/ }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({
+        values: { EMAIL_PROVIDER: 'cloudflare', CLOUDFLARE_ACCOUNT_ID: ACCOUNT },
+      }),
+    );
+    await waitFor(() => expect(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID')).toHaveValue(ACCOUNT));
+
+    // The saved switch made that SMTP edit moot: back on SMTP, the saved host shows.
+    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
+    fireEvent.click(screen.getByRole('option', { name: 'smtp' }));
+    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    expect(email.getByText('1 unsaved change')).toBeInTheDocument();
+  });
+
+  it('discards the edits of every transport, shown or not', async () => {
+    await renderTab(transports('smtp'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
+    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+    fireEvent.click(email.getByRole('button', { name: /^Discard changes/ }));
+
+    // Back on the saved transport, with nothing left of the hidden SMTP edit.
+    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    expect(email.queryByText(/unsaved change/)).toBeNull();
+  });
+
+  it('shows a value stored in another case as the choice the backend reads it as', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({
+            key: 'LOG_LEVEL',
+            category: 'email',
+            value: 'info',
+            default: 'INFO',
+            choices: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+            case_sensitive: false,
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+    const email = within(section('Email (SMTP)'));
+    const level = email.getByRole('combobox', { name: 'LOG_LEVEL' });
+    expect(level).toHaveTextContent('INFO');
+
+    fireEvent.click(level);
+    // The five choices, and no refused-looking extra for the stored `info`.
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'DEBUG',
+      'INFO',
+      'WARNING',
+      'ERROR',
+      'CRITICAL',
+    ]);
+    fireEvent.click(screen.getByRole('option', { name: 'WARNING' }));
+    fireEvent.click(email.getByRole('button', { name: /^Save changes/ }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({ values: { LOG_LEVEL: 'WARNING' } }),
+    );
+  });
+
+  it('names a default only when there is one to go back to', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({ key: 'SMTP_HOST', category: 'email', value: 'mx.test', default: '' }),
+          entry({ key: 'SMTP_FROM_NAME', category: 'email', value: 'Acme', default: 'Gateway' }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+    const email = within(section('Email (SMTP)'));
+
+    expect(email.getByText('Gateway')).toBeInTheDocument();
+    expect(email.getAllByText(/^Default:/)).toHaveLength(1);
+  });
+});
+
 describe('editors', () => {
   it('sends numbers and booleans as their JSON types, one batch per category', async () => {
     await renderTab();

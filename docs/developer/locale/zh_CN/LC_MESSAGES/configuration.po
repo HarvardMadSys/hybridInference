@@ -40,22 +40,31 @@ msgstr "发行版 manifest、品牌、UI 模块和后端扩展见[发行版定�
 msgid "Email and SMS delivery providers"
 msgstr "邮件与短信发送服务"
 
-#: ../developer/configuration.md:14
+#: ../developer/configuration.md:436
 msgid ""
 "`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. "
-"Every other provider is an optional module that a deployment loads "
-"explicitly. A gateway that does not load a provider neither offers it nor"
-" lists its settings in **Admin > Configuration**. Without a provider "
-"beyond the built-in one, it does not list `EMAIL_PROVIDER` or "
-"`SMS_PROVIDER` either, which would have only one value to choose, and "
-"without an SMS provider it lists none of the phone settings. Selecting an"
-" unavailable provider is a configuration error; delivery never silently "
-"falls back to another provider."
+"The gateway sends mail itself in two ways: `smtp`, through an SMTP server"
+" the deployment names, and `cloudflare`, through Cloudflare Email "
+"Sending. Neither comes configured. The first-run setup step offers the "
+"choice, and it and **Admin > Configuration** show only the selected "
+"transport's settings. Every other provider is an optional module that a "
+"deployment loads explicitly. A gateway that does not load a provider "
+"neither offers it nor lists its settings. Without an SMS provider, it "
+"does not list `SMS_PROVIDER` either, which would have only one value to "
+"choose, or any of the phone settings. Selecting an unavailable provider "
+"is a configuration error; delivery never silently falls back to another "
+"provider."
 msgstr ""
 "`EMAIL_PROVIDER` 默认为 `smtp`，`SMS_PROVIDER` 默认为 "
-"`none`。其他发送服务都是部署显式加载的可选模块。未加载某个服务的网关既不提供该选项，也不会在 **Admin > "
-"Configuration** 中列出其配置。除内置服务外没有其他服务时，网关也不会列出 `EMAIL_PROVIDER` 或 "
-"`SMS_PROVIDER`，因为它们只有一个值可选；没有短信服务时，网关不会列出任何手机号相关设置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
+"`none`。网关自身可以通过两种方式发送邮件：`smtp`，经由部署指定的 SMTP 服务器发送；`cloudflare`，经由 "
+"Cloudflare Email Sending 发送。两者都不会预先配置。首次运行的设置步骤会提供这一选择，该步骤和 **Admin > "
+"Configuration** "
+"都只显示所选发送方式的配置。其他发送服务都是部署显式加载的可选模块。未加载某个服务的网关既不提供该选项，也不会列出其配置。没有短信服务时，网关也不会列出"
+" `SMS_PROVIDER`（它只有一个值可选），也不会列出任何手机号相关设置。选择不可用的服务属于配置错误；发送永远不会静默回退到其他服务。"
+
+#: ../developer/configuration.md:438
+msgid "SMTP"
+msgstr "SMTP"
 
 #: ../developer/configuration.md:16
 msgid ""
@@ -72,6 +81,92 @@ msgstr ""
 "`SMTP_PORT` 都必须支持 STARTTLS。证书必须对 `SMTP_HOST` "
 "有效，并由后端信任的证书颁发机构签发。使用自签名证书或私有机构签发证书的服务器会被拒绝，后端日志会写明是哪台服务器以及原因。请为它换用公共证书颁发机构签发的证书，或者在后端的环境中设置"
 " `SSL_CERT_FILE`，让它指向一个同时包含系统信任的颁发机构和签发该证书的机构的证书包。"
+
+#: ../developer/configuration.md:442
+msgid "Cloudflare Email Sending"
+msgstr "Cloudflare Email Sending"
+
+#: ../developer/configuration.md:444
+msgid ""
+"With `EMAIL_PROVIDER=cloudflare`, each message the gateway sends "
+"(verification, password reset, approval and rejection notices, signup "
+"alerts and admin broadcasts) is one request to Cloudflare's REST API, "
+"carrying the HTML and text bodies the gateway rendered. Cloudflare "
+"applies no template. To use it:"
+msgstr ""
+"设置 `EMAIL_PROVIDER=cloudflare` "
+"后，网关发送的每封邮件（验证、密码重置、审核通过与拒绝通知、注册提醒以及管理员群发）都是对 Cloudflare REST API "
+"的一次请求，携带网关渲染好的 HTML 和纯文本正文。Cloudflare 不套用任何模板。使用步骤："
+
+#: ../developer/configuration.md:446
+msgid ""
+"In the Cloudflare dashboard, onboard the sending domain under **Email "
+"Service > Email Sending**."
+msgstr "在 Cloudflare 控制台的 **Email Service > Email Sending** 中接入发件域名。"
+
+#: ../developer/configuration.md:447
+msgid ""
+"Create an API token with the **Email Sending: Edit** permission on that "
+"account."
+msgstr "创建一个对该账户具有 **Email Sending: Edit** 权限的 API 令牌。"
+
+#: ../developer/configuration.md:448
+msgid ""
+"Set `CLOUDFLARE_ACCOUNT_ID` to the account's Account ID, 32 hexadecimal "
+"digits, and `CLOUDFLARE_EMAIL_API_TOKEN` to the token."
+msgstr ""
+"将 `CLOUDFLARE_ACCOUNT_ID` 设为该账户的 Account ID（32 位十六进制数字），将 "
+"`CLOUDFLARE_EMAIL_API_TOKEN` 设为该令牌。"
+
+#: ../developer/configuration.md:449
+msgid ""
+"Set `SMTP_FROM_EMAIL` to an address on the onboarded domain. "
+"`SMTP_FROM_EMAIL` and `SMTP_FROM_NAME` are the sender of both built-in "
+"transports."
+msgstr ""
+"将 `SMTP_FROM_EMAIL` 设为已接入域名下的地址。`SMTP_FROM_EMAIL` 和 `SMTP_FROM_NAME` "
+"是两种内置发送方式共用的发件人。"
+
+#: ../developer/configuration.md:451
+msgid ""
+"The token is a secret: the configuration API redacts it, and anyone who "
+"holds it can send mail from every domain onboarded on that account. Both "
+"values are read on every send, so a rotated token applies without a "
+"restart. While either is empty, nothing is sent, and configuration health"
+" reports both as missing when public signup requires email verification, "
+"instead of asking for SMTP credentials."
+msgstr ""
+"该令牌属于秘密：配置 API "
+"会隐藏它，而持有它的任何人都能用该账户下所有已接入的域名发送邮件。两个值都在每次发送时读取，因此轮换令牌后无需重启即可生效。任一值为空时不会发送任何邮件；公开注册需要邮箱验证时，配置健康检查会把两者报为缺失，而不是要求填写"
+" SMTP 凭据。"
+
+#: ../developer/configuration.md:453
+msgid ""
+"A message counts as sent once Cloudflare reports it delivered or queued. "
+"A refusal, a permanent bounce or a recipient on the account's suppression"
+" list is logged with Cloudflare's error code, and the send fails. Calls "
+"are not automatically retried, because a timeout can follow acceptance. "
+"On the Workers Free plan, Cloudflare delivers only to verified "
+"destination addresses."
+msgstr ""
+"Cloudflare 报告邮件已投递或已排队后，该邮件才算发送成功。请求被拒绝、永久退信或收件人在账户的抑制列表中时，日志会记录 "
+"Cloudflare 的错误码，本次发送失败。调用不会自动重试，因为超时可能发生在请求已被接受之后。在 Workers Free "
+"套餐下，Cloudflare 只向已验证的目标地址投递。"
+
+#: ../developer/configuration.md:455
+msgid ""
+"Cloudflare also accepts SMTP submission at `smtp.mx.cloudflare.net`, port"
+" 465, user `api_token`, with the token as the password, which the `smtp` "
+"transport can use instead. The `cloudflare` transport adds Cloudflare's "
+"answer for each message: delivered, queued, bounced or suppressed."
+msgstr ""
+"Cloudflare 也接受 SMTP 提交：服务器 `smtp.mx.cloudflare.net`，端口 465，用户名 "
+"`api_token`，密码为该令牌；`smtp` 发送方式可以改用这种方式。`cloudflare` 发送方式额外提供 Cloudflare "
+"对每封邮件给出的结果：已投递、已排队、退信或被抑制。"
+
+#: ../developer/configuration.md:457
+msgid "Extension providers"
+msgstr "扩展发送服务"
 
 #: ../developer/configuration.md:18
 msgid ""

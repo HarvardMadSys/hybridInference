@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 
 import { ConfigEntryField } from '@/components/features/configuration/ConfigEntryField';
 import {
+  applicableEntries,
   buildPatch,
   errorForKey,
   groupEntries,
@@ -45,8 +46,9 @@ type SignupValues = Partial<Record<SignupKey, boolean>>;
  * Step 2: who may sign up, then the settings this deployment needs now — every
  * entry the registry marks for setup, and anything required that has no value.
  * Sign-up comes first on the page and in the save, because it decides whether
- * the email (SMTP) settings are required. One "Save and continue" writes the
- * sign-up settings, then the configuration batch.
+ * the email settings are required. The email transport is a choice, SMTP or
+ * Cloudflare, and only the chosen one's settings are shown and saved. One
+ * "Save and continue" writes the sign-up settings, then the configuration batch.
  */
 export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) => void }) {
   const router = useRouter();
@@ -103,12 +105,19 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
     void load();
   }, [load]);
 
-  // The entries this step shows are fixed when it loads; a save moves on.
+  // The entries this step offers are fixed when it loads; a save moves on. Of
+  // those, it shows the ones that apply to the choices made on it so far: the
+  // SMTP settings while SMTP is the email transport, Cloudflare's while it is.
   const groups = useMemo(() => {
     if (!config) return [];
-    const wanted = config.entries.filter((entry) => entry.setup || entry.missing);
-    return groupEntries(config.categories, wanted);
-  }, [config]);
+    const wanted = new Set(
+      config.entries.filter((entry) => entry.setup || entry.missing).map((entry) => entry.key),
+    );
+    const shown = applicableEntries(config.entries, drafts).filter((entry) =>
+      wanted.has(entry.key),
+    );
+    return groupEntries(config.categories, shown);
+  }, [config, drafts]);
 
   const onDraftChange = useCallback((key: string, draft: ConfigDraft | undefined) => {
     setDrafts((prev) => {
@@ -247,8 +256,8 @@ export function ConfigureStep({ onSaved }: { onSaved: (config: ConfigResponse) =
             Sign-up
           </h2>
           <p className="mt-0.5 text-[13px] text-gray-500">
-            With both on, new users verify their email, so the email (SMTP) settings below become
-            required.
+            With both on, new users verify their email, so the settings of the email transport
+            chosen below become required.
           </p>
           <div className="mt-1 divide-y divide-gray-100">
             {signupKeys.map(({ key, label, fallbackDescription }) => {

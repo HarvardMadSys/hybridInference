@@ -153,6 +153,19 @@ Requirement = bool | Callable[[RequirementContext], bool]
 
 
 @dataclass(frozen=True)
+class AppliesWhen:
+    """The setting does something only while the setting *key* holds one of *values*.
+
+    The console shows it beside that choice and hides it while another is
+    selected: the SMTP settings while Cloudflare carries the mail, for example.
+    Whether the setting is required is its own ``required`` rule.
+    """
+
+    key: str
+    values: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class ConfigEntry:
     """One setting the database-backed configuration manages."""
 
@@ -194,6 +207,8 @@ class ConfigEntry:
     #: The key whose value applies while this one is empty.
     fallback_key: str | None = None
     validator: Callable[[str], None] | None = None
+    #: Applies only while another setting has one of some values (:class:`AppliesWhen`).
+    applies_when: AppliesWhen | None = None
 
     def is_required(self, context: RequirementContext) -> bool:
         """Evaluate ``required`` against the effective configuration."""
@@ -228,12 +243,26 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 
 
 def _smtp_required(context: RequirementContext) -> bool:
-    # Without mail, a new account can never verify its address.
+    # Without mail, a new account can never verify its address. No value means
+    # the default, smtp, as the console also reads it when showing _WITH_SMTP.
     return (
         context.value("EMAIL_PROVIDER") in ("", "smtp")
         and context.email_verification_needed
         and not context.email_enabled
     )
+
+
+def _cloudflare_email_required(context: RequirementContext) -> bool:
+    return (
+        context.value("EMAIL_PROVIDER") == "cloudflare"
+        and context.email_verification_needed
+        and not context.email_enabled
+    )
+
+
+#: The settings that apply while each built-in transport carries the mail.
+_WITH_SMTP = AppliesWhen("EMAIL_PROVIDER", ("smtp",))
+_WITH_CLOUDFLARE = AppliesWhen("EMAIL_PROVIDER", ("cloudflare",))
 
 
 def _env_string(value: Any) -> str | None:
@@ -735,8 +764,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
     _setting(
         "email_provider",
         "email",
-        "Outgoing email transport; SMTP preserves existing behavior.",
+        "Outgoing email transport: smtp, or cloudflare for Cloudflare Email Sending. Only "
+        "the selected transport's settings apply; a loaded extension can offer others.",
         "str",
+        # static_entries() lists every built-in and registered transport here.
         choices=("smtp",),
         case_sensitive=True,
         setup=True,
@@ -749,6 +780,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         setup=True,
         required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_port",
@@ -758,6 +790,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         setup=True,
         minimum=1,
         maximum=65_535,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_user",
@@ -766,6 +799,7 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "str",
         setup=True,
         required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
     _setting(
         "smtp_password",
@@ -775,9 +809,44 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         secret=True,
         setup=True,
         required=_smtp_required,
+        applies_when=_WITH_SMTP,
     ),
-    _setting("smtp_from_email", "email", "Sender address of outgoing mail.", "str", setup=True),
-    _setting("smtp_from_name", "email", "Sender name of outgoing mail.", "str", setup=True),
+    _setting(
+        "cloudflare_account_id",
+        "email",
+        "Cloudflare account id (32 hexadecimal digits) whose Email Sending carries the mail. "
+        "Required while public signup requires email verification.",
+        "str",
+        setup=True,
+        required=_cloudflare_email_required,
+        applies_when=_WITH_CLOUDFLARE,
+    ),
+    _setting(
+        "cloudflare_email_api_token",
+        "email",
+        "Cloudflare API token with the Email Sending: Edit permission on that account. "
+        "Required while public signup requires email verification.",
+        "str",
+        secret=True,
+        setup=True,
+        required=_cloudflare_email_required,
+        applies_when=_WITH_CLOUDFLARE,
+    ),
+    _setting(
+        "smtp_from_email",
+        "email",
+        "Sender address of outgoing mail, over SMTP or Cloudflare. With Cloudflare, its "
+        "domain must be onboarded for Email Sending.",
+        "str",
+        setup=True,
+    ),
+    _setting(
+        "smtp_from_name",
+        "email",
+        "Sender name of outgoing mail, over SMTP or Cloudflare.",
+        "str",
+        setup=True,
+    ),
     # --- providers ---------------------------------------------------------
     _setting(
         "provider_route_types",

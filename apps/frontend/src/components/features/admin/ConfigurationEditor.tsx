@@ -65,6 +65,7 @@ import {
 } from '@/components/features/configuration/RestartBackend';
 import {
   CUSTOM_KEY_PATTERN,
+  applicableEntries,
   buildPatch,
   errorForKey,
   groupEntries,
@@ -72,6 +73,7 @@ import {
   looksSecret,
   matchesQuery,
   withoutKeys,
+  withoutMootDrafts,
   type ConfigDraft,
   type ConfigDrafts,
   type ConfigGroup,
@@ -309,7 +311,9 @@ export function useConfigurationEditor({
   const applyResponse = useCallback(
     (next: ConfigResponse, writtenKeys: readonly string[]) => {
       setConfig(next);
-      setDrafts((prev) => withoutKeys(prev, writtenKeys));
+      setDrafts((prev) =>
+        withoutMootDrafts(withoutKeys(prev, writtenKeys), next.entries, writtenKeys),
+      );
       setEntryErrors((prev) => withoutKeys(prev, writtenKeys));
       setPendingResets((prev) => withoutKeys(prev, writtenKeys));
       setPendingSecrets((prev) => withoutKeys(prev, writtenKeys));
@@ -377,9 +381,13 @@ export function useConfigurationEditor({
     }
   };
 
+  // Only the settings that apply to the choices shown now: the SMTP settings
+  // while SMTP is the email transport, Cloudflare's while it is. The others are
+  // neither shown, counted nor saved; their edits wait for their transport.
   const groups = useMemo(
-    () => (config ? groupEntries(config.categories, config.entries) : []),
-    [config],
+    () =>
+      config ? groupEntries(config.categories, applicableEntries(config.entries, drafts)) : [],
+    [config, drafts],
   );
 
   /**
@@ -677,7 +685,11 @@ export function useConfigurationEditor({
       setAlertChannelDraft(null);
       setAlertTestResult(null);
     }
-    const keys = group.entries.map((entry) => entry.key);
+    // Every setting of the category, the ones another choice hides included:
+    // an SMTP edit made before switching to Cloudflare is discarded too.
+    const keys = (config?.entries ?? group.entries)
+      .filter((entry) => entry.category === group.id)
+      .map((entry) => entry.key);
     setDrafts((prev) => withoutKeys(prev, keys));
     setEntryErrors((prev) => withoutKeys(prev, keys));
     setPendingResets((prev) => withoutKeys(prev, keys));

@@ -141,6 +141,75 @@ export function withoutKeys<T>(
   return next;
 }
 
+/**
+ * The choice `value` is, compared as the backend compares it: exactly for a
+ * case-sensitive setting, otherwise ignoring case (`info` is `INFO`).
+ * `undefined` when it is none of them.
+ */
+export function matchingChoice(entry: ConfigEntry, value: string): string | undefined {
+  const choices = entry.choices ?? [];
+  if (entry.case_sensitive) return choices.find((choice) => choice === value);
+  const folded = value.toLowerCase();
+  return choices.find((choice) => choice.toLowerCase() === folded);
+}
+
+/**
+ * Whether the entry applies with the values the editor shows now, unsaved
+ * edits included: its `applies_when` setting holds one of the listed values.
+ * A deciding setting with no value holds its default, as the backend reads it.
+ * An entry without a condition always applies, as does one whose deciding
+ * setting is not among `entries` (nothing on the page can change it).
+ */
+export function appliesNow(
+  entry: ConfigEntry,
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): boolean {
+  const condition = entry.applies_when;
+  if (!condition) return true;
+  const decider = entries.find((candidate) => candidate.key === condition.key);
+  if (!decider) return true;
+  const current =
+    String(currentInput(decider, drafts[decider.key])) || String(decider.default ?? '');
+  return condition.values.includes(matchingChoice(decider, current) ?? current);
+}
+
+/**
+ * The entries to show with the values the editor shows now: those that apply,
+ * and any whose stored value was refused, which still needs correcting or a
+ * reset whichever transport is selected.
+ */
+export function applicableEntries(
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): ConfigEntry[] {
+  return entries.filter((entry) => appliesNow(entry, entries, drafts) || entry.invalid != null);
+}
+
+/**
+ * `drafts` without the edits a save just made moot: once `EMAIL_PROVIDER` is
+ * saved as `cloudflare`, an unsaved SMTP edit belongs to a transport no longer
+ * in use, and would otherwise come back when SMTP is chosen again. Only the
+ * settings whose deciding setting is among `writtenKeys` are dropped.
+ */
+export function withoutMootDrafts(
+  drafts: ConfigDrafts,
+  entries: readonly ConfigEntry[],
+  writtenKeys: readonly string[],
+): ConfigDrafts {
+  const written = new Set(writtenKeys);
+  const moot = entries
+    .filter(
+      (entry) =>
+        entry.key in drafts &&
+        entry.applies_when != null &&
+        written.has(entry.applies_when.key) &&
+        !appliesNow(entry, entries, drafts),
+    )
+    .map((entry) => entry.key);
+  return moot.length > 0 ? withoutKeys(drafts, moot) : drafts;
+}
+
 export interface ConfigGroup {
   id: string;
   label: string;

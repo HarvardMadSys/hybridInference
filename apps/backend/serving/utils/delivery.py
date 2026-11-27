@@ -1,4 +1,9 @@
-"""Delivery transports registered by explicitly loaded backend extensions."""
+"""Delivery transports: the gateway's built-in names and the providers extensions register.
+
+The built-in email transports (:data:`BUILTIN_EMAIL_PROVIDERS`) are sent by
+``serving.utils.email`` itself; every other transport is registered here by a
+module listed in ``BACKEND_EXTENSIONS``.
+"""
 
 from __future__ import annotations
 
@@ -45,6 +50,15 @@ class SmsProvider:
     send: Callable[[str, str], bool]
 
 
+#: The email transports the gateway provides itself, in the order the console
+#: offers them: SMTP, and Cloudflare Email Sending's REST API. Neither is assumed;
+#: an administrator selects one and configures it.
+BUILTIN_EMAIL_PROVIDERS: tuple[str, ...] = ("smtp", "cloudflare")
+
+#: Names an extension cannot register: the built-in transports, and the SMS
+#: choice that turns phone delivery off.
+_RESERVED_NAMES = frozenset({*BUILTIN_EMAIL_PROVIDERS, "none"})
+
 _email_providers: dict[str, EmailProvider] = {}
 _sms_providers: dict[str, SmsProvider] = {}
 _PROVIDER_NAME = re.compile(r"[a-z][a-z0-9_]*", re.ASCII)
@@ -55,7 +69,7 @@ def _validate_provider(
 ) -> None:
     if not _PROVIDER_NAME.fullmatch(name):
         raise ValueError(f"Invalid delivery provider name: {name!r}")
-    if name in {"smtp", "none"}:
+    if name in _RESERVED_NAMES:
         raise ValueError(f"Delivery provider name is reserved: {name!r}")
     for callback in (is_configured, send):
         if (
@@ -104,7 +118,7 @@ def register_sms_provider(
 
 def email_provider_names() -> tuple[str, ...]:
     """Return the built-in and explicitly registered email provider choices."""
-    return ("smtp", *sorted(_email_providers))
+    return (*BUILTIN_EMAIL_PROVIDERS, *sorted(_email_providers))
 
 
 def sms_provider_names() -> tuple[str, ...]:

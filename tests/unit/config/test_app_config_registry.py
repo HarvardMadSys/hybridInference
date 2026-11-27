@@ -225,6 +225,7 @@ _DISTINCT_VALUES = {
     "sms_provider": "sample_sms",
     "sms_default_country_code": "86",
     "sms_allowed_prefixes": "+86",
+    "cloudflare_account_id": "0123456789abcdef0123456789abcdef",
 }
 # Values a field cannot take on its own, by the cross-field rules (field names).
 _PREREQUISITES = {
@@ -761,7 +762,8 @@ def test_core_has_no_distribution_delivery_settings(extension_registry) -> None:
     entries = {entry.key: entry for entry in registry.static_entries()}
     assert not any(key.startswith("TENCENT_") for key in entries)
     assert {"SMS_REGION", "SMS_SDK_APP_ID", "SMS_SIGN_NAME", "SMS_TEMPLATE_ID"}.isdisjoint(entries)
-    assert entries["EMAIL_PROVIDER"].choices == ("smtp",)
+    # SMTP and Cloudflare are built in; neither is a distribution's.
+    assert entries["EMAIL_PROVIDER"].choices == ("smtp", "cloudflare")
     assert entries["SMS_PROVIDER"].choices == ("none",)
     assert not any(name.startswith("tencent_") for name in Settings.model_fields)
 
