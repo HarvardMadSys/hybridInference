@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen, waitFor } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import UsersTab from './index';
@@ -99,6 +99,10 @@ beforeEach(() => {
   });
   vi.mocked(getUserDetail).mockResolvedValue(detail);
   vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+  // As the real router does, a rewrite changes the address the tab reads next.
+  address.router.replace.mockImplementation((url: string) => {
+    address.search = new URL(url, 'https://console.test').searchParams;
+  });
 });
 afterEach(cleanup);
 
@@ -135,4 +139,33 @@ it('opens no account on an ordinary visit', async () => {
   expect(await screen.findByText('Fixture user')).toBeInTheDocument();
   expect(getUserDetail).not.toHaveBeenCalled();
   expect(address.router.replace).not.toHaveBeenCalled();
+});
+
+it('says when the account a link names is not listed, and drops `open`', async () => {
+  vi.mocked(listUsers).mockResolvedValue({
+    total: 0,
+    users: [],
+    status_counts: {
+      all: 0,
+      active: 0,
+      pending_approval: 0,
+      suspended: 0,
+      rejected: 0,
+      deleted: 0,
+    },
+  });
+  address.search = new URL(userDetailHref('gone-user'), 'https://console.test').searchParams;
+  renderUsers();
+
+  expect(await screen.findByText(/No account with the ID/)).toHaveTextContent(
+    'No account with the ID gone-user is listed. It may have been permanently deleted.',
+  );
+  expect(address.router.replace).toHaveBeenCalledWith('/dashboard/admin/users?q=gone-user', {
+    scroll: false,
+  });
+  expect(getUserDetail).not.toHaveBeenCalled();
+
+  // Any filter change moves on from the link.
+  fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+  await waitFor(() => expect(screen.queryByText(/No account with the ID/)).toBeNull());
 });

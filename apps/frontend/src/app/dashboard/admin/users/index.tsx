@@ -61,9 +61,11 @@ export default function UsersTab() {
     filterStateFromUrl(searchParams, currency),
   );
   // An account a link asked to open. Not a filter: it leaves the address once
-  // the account is open (below), and a filter change rewrites the address
-  // without it.
+  // the account is open or found missing (below), and a filter change rewrites
+  // the address without it.
   const openUserId = searchParams.get(OPEN_USER_PARAM);
+  // The id a link named that the loaded list did not show, until a filter changes.
+  const [missingOpenUserId, setMissingOpenUserId] = useState<string | null>(null);
   const [density, setDensity] = useState<Density>('comfortable');
 
   // Pagination state. `page` is zero-based; `pageSize` is persisted across
@@ -87,6 +89,7 @@ export default function UsersTab() {
     (next: FilterState) => {
       setFilterState(next);
       setPage(0);
+      setMissingOpenUserId(null);
       const qs = filterStateToUrl(next, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -161,6 +164,16 @@ export default function UsersTab() {
 
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
+
+  // A link to an account the loaded list does not show, such as one deleted
+  // since the link was made: say so, then drop `open` as an opened link does.
+  const listSettled = usersQuery.isSuccess && !usersQuery.isFetching;
+  const openUserListed = openUserId !== null && users.some((u) => u.id === openUserId);
+  useEffect(() => {
+    if (!openUserId || !listSettled || openUserListed) return;
+    setMissingOpenUserId(openUserId);
+    dropOpenUser();
+  }, [openUserId, listSettled, openUserListed, dropOpenUser]);
   const usageTotalsQuery = useBulkUsageTotals(
     users
       .filter((u) => u.usage_alltime_requests == null || u.usage_alltime_tokens == null)
@@ -376,6 +389,13 @@ export default function UsersTab() {
             >
               Retry statistics
             </button>
+          </div>
+        )}
+        {missingOpenUserId && (
+          <div role="status" className="m-3 text-[13px] text-gray-500">
+            No account with the ID{' '}
+            <span className="font-mono text-gray-700">{missingOpenUserId}</span> is listed. It may
+            have been permanently deleted.
           </div>
         )}
         {!usersQuery.isLoading && (
