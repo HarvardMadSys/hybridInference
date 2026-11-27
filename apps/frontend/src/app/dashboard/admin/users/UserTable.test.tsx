@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { chooseOption } from '@/test-utils/select';
 import '@testing-library/jest-dom/vitest';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import toast from 'react-hot-toast';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -1371,6 +1371,129 @@ describe('UserTable suspension message', () => {
     await waitFor(() => expect(onUpdate).toHaveBeenCalledTimes(2));
     expect(onUpdate).toHaveBeenLastCalledWith('user-1', { suspension_message: 'Contact support' });
     await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+  });
+});
+
+describe('UserTable opening the account a link names', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listModelVisibility).mockResolvedValue({ models: [] });
+    vi.mocked(getUserDetail).mockResolvedValue(detailFixture());
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it('opens the account once the list shows it', async () => {
+    const onOpenedFromLink = vi.fn();
+    // Still loading: nothing to open yet.
+    const { rerender } = renderTable(baseUser, {
+      users: [],
+      openUserId: 'user-1',
+      onOpenedFromLink,
+    });
+    expect(getUserDetail).not.toHaveBeenCalled();
+    expect(onOpenedFromLink).not.toHaveBeenCalled();
+
+    rerender(<UserTable {...tableProps(baseUser, { openUserId: 'user-1', onOpenedFromLink })} />);
+
+    expect(await screen.findByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+    expect(getUserDetail).toHaveBeenCalledWith('user-1');
+    expect(onOpenedFromLink).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the account closed after the admin closes it, when the list is fetched again', async () => {
+    const { rerender } = renderTable(baseUser, { openUserId: 'user-1' });
+    await screen.findByRole('textbox', { name: 'Admin note' });
+
+    fireEvent.click(screen.getByText('user@example.com'));
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
+
+    // A refetch hands the table a new list holding the same account.
+    rerender(<UserTable {...tableProps({ ...baseUser }, { openUserId: 'user-1' })} />);
+
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
+    expect(getUserDetail).toHaveBeenCalledTimes(1);
+  });
+
+  const other: UserRow = {
+    ...baseUser,
+    id: 'user-2',
+    email: 'other@example.com',
+    user_name: 'Other',
+  };
+
+  it('keeps a late answer for the linked account out of the row the admin opened instead', async () => {
+    let answerLinked!: (detail: UserDetail) => void;
+    vi.mocked(getUserDetail).mockImplementation((userId: string) =>
+      userId === 'user-1'
+        ? new Promise<UserDetail>((resolve) => {
+            answerLinked = resolve;
+          })
+        : Promise.resolve(
+            detailFixture({ id: 'user-2', email: 'other@example.com', admin_note: 'Other note' }),
+          ),
+    );
+    renderTable(baseUser, { users: [baseUser, other], openUserId: 'user-1' });
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledWith('user-1'));
+
+    // The admin opens another account before the linked one has loaded.
+    fireEvent.click(screen.getByText('other@example.com'));
+    expect(await screen.findByRole('textbox', { name: 'Admin note' })).toHaveValue('Other note');
+
+    await act(async () => answerLinked(detailFixture({ admin_note: 'Linked note' })));
+
+    expect(screen.getByRole('textbox', { name: 'Admin note' })).toHaveValue('Other note');
+  });
+
+  it('keeps the row the admin opened instead when the linked account fails late', async () => {
+    let failLinked!: (error: Error) => void;
+    vi.mocked(getUserDetail).mockImplementation((userId: string) =>
+      userId === 'user-1'
+        ? new Promise<UserDetail>((_, reject) => {
+            failLinked = reject;
+          })
+        : Promise.resolve(detailFixture({ id: 'user-2', email: 'other@example.com' })),
+    );
+    renderTable(baseUser, { users: [baseUser, other], openUserId: 'user-1' });
+    await waitFor(() => expect(getUserDetail).toHaveBeenCalledWith('user-1'));
+
+    fireEvent.click(screen.getByText('other@example.com'));
+    await screen.findByRole('textbox', { name: 'Admin note' });
+
+    await act(async () => failLinked(new Error('Not found')));
+
+    expect(screen.getByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+  });
+
+  it('waits for a write in flight before opening the account a link names', async () => {
+    let finish!: () => void;
+    const onApprove = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const pending: UserRow = { ...other, status: 'pending_approval' };
+    const props = { users: [pending, baseUser], onApprove };
+    const { rerender } = renderTable(baseUser, props);
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    // A link names an account while the approval is still running.
+    rerender(<UserTable {...tableProps(baseUser, { ...props, openUserId: 'user-1' })} />);
+    expect(getUserDetail).not.toHaveBeenCalled();
+
+    finish();
+    expect(await screen.findByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+    expect(getUserDetail).toHaveBeenCalledWith('user-1');
+  });
+
+  it('opens no account when no link names one', () => {
+    renderTable(baseUser);
+
+    expect(getUserDetail).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox', { name: 'Admin note' })).toBeNull();
   });
 });
 

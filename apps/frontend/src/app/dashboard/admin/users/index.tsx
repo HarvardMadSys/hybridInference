@@ -31,6 +31,7 @@ import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { OPEN_USER_PARAM } from './lib/userLink';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
 import type { Density, FilterState, UserRow } from './types';
@@ -59,6 +60,10 @@ export default function UsersTab() {
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
   );
+  // An account a link asked to open. Not a filter: it leaves the address once
+  // the account is open (below), and a filter change rewrites the address
+  // without it.
+  const openUserId = searchParams.get(OPEN_USER_PARAM);
   const [density, setDensity] = useState<Density>('comfortable');
 
   // Pagination state. `page` is zero-based; `pageSize` is persisted across
@@ -87,6 +92,15 @@ export default function UsersTab() {
     },
     [pathname, router, currency],
   );
+
+  // The link has done its work once the account is open: the same address
+  // without `open`, so a reload or a copy of it opens nothing.
+  const dropOpenUser = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete(OPEN_USER_PARAM);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [searchParams, pathname, router]);
 
   // Persisted density
   useEffect(() => {
@@ -379,6 +393,8 @@ export default function UsersTab() {
               hiddenColumns={hiddenColumns}
               filterState={filterState}
               onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+              openUserId={openUserId}
+              onOpenedFromLink={dropOpenUser}
               {...handlers}
             />
             <div className="border-t border-gray-200 px-3">

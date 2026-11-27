@@ -201,6 +201,25 @@ describe('RequestsTab row expansion', () => {
     expect(getRecentRequestContent).not.toHaveBeenCalled();
   });
 
+  it("links a row's user to that account on the Users tab, without expanding the row", async () => {
+    render(<RequestsTab />);
+
+    const link = await screen.findByRole('link', { name: /Ada/ });
+    expect(link).toHaveAttribute('href', '/dashboard/admin/users?q=user_1&open=user_1');
+    expect(link).toHaveTextContent('ada@example.com');
+
+    // Nothing here stops the browser from following the link.
+    expect(fireEvent.click(link)).toBe(true);
+
+    // Going to the account neither opens the request nor narrows this list.
+    expect(screen.queryByText('Request ID:')).not.toBeInTheDocument();
+    expect(getRecentRequestContent).not.toHaveBeenCalled();
+    expect(screen.getByRole('textbox', { name: 'Filter by user ID, name, or email…' })).toHaveValue(
+      '',
+    );
+    expect(listRecentRequests).toHaveBeenCalledTimes(1);
+  });
+
   it('loads the per-endpoint performance panel with the tab filters', async () => {
     render(<RequestsTab />);
 
@@ -626,9 +645,9 @@ describe('RequestsTab credential state', () => {
     expect(screen.getAllByText('user_1').length).toBeGreaterThan(0);
   });
 
-  it('does not offer the named account as a filter chip', async () => {
-    // Filtering by a user means "this user's requests". These are not: the
-    // row is a refusal of someone holding their key.
+  it('does not present the named account as the one who made the request', async () => {
+    // A request's user links to that account as its requester. This row has
+    // none: it is a refusal of someone holding the account's key.
     mockList([
       makeRequest({
         status_code: 429,
@@ -644,6 +663,7 @@ describe('RequestsTab credential state', () => {
     render(<RequestsTab />);
 
     await screen.findByText('revoked key');
+    expect(screen.queryByRole('link', { name: /user_1/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /user_1/ })).not.toBeInTheDocument();
   });
 
