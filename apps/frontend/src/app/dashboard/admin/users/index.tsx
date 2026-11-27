@@ -64,8 +64,11 @@ export default function UsersTab() {
   // the account is open or found missing (below), and a filter change rewrites
   // the address without it.
   const openUserId = searchParams.get(OPEN_USER_PARAM);
-  // The id a link named that the loaded list did not show, until a filter changes.
-  const [missingOpenUserId, setMissingOpenUserId] = useState<string | null>(null);
+  // An id a link named that the list for its filters did not show, with those
+  // filters as an address: the note about it lasts as long as they do.
+  const [missingOpenUser, setMissingOpenUser] = useState<{ id: string; filters: string } | null>(
+    null,
+  );
   const [density, setDensity] = useState<Density>('comfortable');
 
   // Pagination state. `page` is zero-based; `pageSize` is persisted across
@@ -89,7 +92,6 @@ export default function UsersTab() {
     (next: FilterState) => {
       setFilterState(next);
       setPage(0);
-      setMissingOpenUserId(null);
       const qs = filterStateToUrl(next, currency);
       router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
     },
@@ -165,15 +167,26 @@ export default function UsersTab() {
   const users = usersQuery.data?.users ?? [];
   const total = usersQuery.data?.total ?? 0;
 
-  // A link to an account the loaded list does not show, such as one deleted
-  // since the link was made: say so, then drop `open` as an opened link does.
-  const listSettled = usersQuery.isSuccess && !usersQuery.isFetching;
+  // A link to an account the list does not show, such as one deleted since
+  // the link was made: say so, then drop `open` as an opened link does. Only a
+  // settled list for the filters the address names counts. When an address
+  // with `open` reaches a tab already showing other filters, the list is the
+  // old one until the sync above catches up.
+  const filters = filterStateToUrl(filterState, currency);
+  const listMatchesAddress =
+    filters === filterStateToUrl(filterStateFromUrl(searchParams, currency), currency);
+  const listSettled = usersQuery.isSuccess && !usersQuery.isFetching && listMatchesAddress;
   const openUserListed = openUserId !== null && users.some((u) => u.id === openUserId);
   useEffect(() => {
     if (!openUserId || !listSettled || openUserListed) return;
-    setMissingOpenUserId(openUserId);
+    setMissingOpenUser({ id: openUserId, filters });
     dropOpenUser();
-  }, [openUserId, listSettled, openUserListed, dropOpenUser]);
+  }, [openUserId, listSettled, openUserListed, filters, dropOpenUser]);
+  // Any change of filters, from a control or a step back or forward, ends it.
+  useEffect(() => {
+    setMissingOpenUser((missing) => (missing && missing.filters !== filters ? null : missing));
+  }, [filters]);
+  const missingOpenUserId = missingOpenUser?.filters === filters ? missingOpenUser.id : null;
   const usageTotalsQuery = useBulkUsageTotals(
     users
       .filter((u) => u.usage_alltime_requests == null || u.usage_alltime_tokens == null)

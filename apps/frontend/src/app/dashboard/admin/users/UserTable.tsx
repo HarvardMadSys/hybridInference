@@ -266,8 +266,9 @@ export function UserTable(props: UserTableProps) {
         if (seq !== detailSeq.current) return;
         setExpandedId(null);
         // Said for a click and for a link alike: a link that opens nothing
-        // would otherwise look broken.
-        toast.error(`Could not load this user's details: ${getErrorMessage(error)}`);
+        // would otherwise look broken. Either request can be the one that
+        // failed (the user's details or the model list), so the reason says which.
+        toast.error(`Could not open this user: ${getErrorMessage(error)}`);
       } finally {
         if (seq === detailSeq.current) setDetailLoading(false);
       }

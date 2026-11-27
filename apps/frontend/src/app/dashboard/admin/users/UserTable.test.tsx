@@ -1467,7 +1467,7 @@ describe('UserTable opening the account a link names', () => {
     expect(screen.getByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
     // Its failure no longer concerns anything on screen.
     expect(toast.error).not.toHaveBeenCalledWith(
-      expect.stringContaining("Could not load this user's details"),
+      expect.stringContaining('Could not open this user'),
     );
   });
 
@@ -1476,9 +1476,7 @@ describe('UserTable opening the account a link names', () => {
     renderTable(baseUser, { openUserId: 'user-1' });
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "Could not load this user's details: Request failed (500)",
-      ),
+      expect(toast.error).toHaveBeenCalledWith('Could not open this user: Request failed (500)'),
     );
     expect(screen.getByText('user@example.com').closest('tr')).toHaveAttribute(
       'aria-expanded',
@@ -1493,9 +1491,7 @@ describe('UserTable opening the account a link names', () => {
     fireEvent.click(screen.getByText('user@example.com'));
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "Could not load this user's details: Request failed (500)",
-      ),
+      expect(toast.error).toHaveBeenCalledWith('Could not open this user: Request failed (500)'),
     );
     expect(screen.getByText('user@example.com').closest('tr')).toHaveAttribute(
       'aria-expanded',
