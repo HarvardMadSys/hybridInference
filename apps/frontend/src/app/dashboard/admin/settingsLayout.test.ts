@@ -56,7 +56,7 @@ describe('settingsLayout', () => {
     expect(tabOfCategory('added-later')).toBe('setup');
   });
 
-  it('leaves the model catalog to Admin → Models, and names it on no sub-tab', () => {
+  it('leaves the model catalog to Providers → Models, and names it on no sub-tab', () => {
     expect(MODEL_CATALOG_CATEGORY).toBe('models');
     expect([...CATEGORIES_ELSEWHERE]).toEqual(['models']);
     expect(SETTINGS_TABS.map((tab) => tab.key)).not.toContain('models');

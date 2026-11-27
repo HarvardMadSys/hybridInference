@@ -1,6 +1,14 @@
 'use client';
 
+/**
+ * The sections of Admin → Providers that are written here: Overview and Keys,
+ * which share the provider Keys shows, and Availability and Quotas. Each is a
+ * page of its own under the tab (see `ProvidersSectionNav`); Models and
+ * Performance are pages too.
+ */
+
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import {
   ProviderQuotaResult,
@@ -12,20 +20,11 @@ import {
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
-import { PerformanceTab } from '@/components/features/admin/PerformanceTab';
+import { PROVIDER_KEYS_PATH } from '@/components/features/admin/providerRoutes';
+import { useProviderSelection } from '@/components/features/admin/providerSelection';
 import { ProviderKeysTab } from '@/app/dashboard/admin/ProviderKeysTab';
 import { ProviderOverviewTab } from '@/app/dashboard/admin/ProviderOverviewTab';
 import { UpstreamConcurrencyPanel } from '@/app/dashboard/admin/UpstreamConcurrencyPanel';
-
-type SubTab = 'overview' | 'availability' | 'quotas' | 'keys' | 'performance';
-
-const SUB_TABS: { key: SubTab; label: string }[] = [
-  { key: 'overview', label: 'Overview' },
-  { key: 'availability', label: 'Availability' },
-  { key: 'quotas', label: 'Quotas' },
-  { key: 'keys', label: 'Keys' },
-  { key: 'performance', label: 'Performance' },
-];
 
 function pct(used: number | null, limit: number | null): number | null {
   if (used == null || limit == null || limit <= 0) return null;
@@ -265,7 +264,8 @@ function ProviderCard({
   );
 }
 
-function QuotasSection() {
+/** Quotas: what each key's plan has used of its limits, with a switch for the key and its provider. */
+export function ProviderQuotasSection() {
   const toast = useAccountToast();
   // Deployment docs may describe an operator's service, not backend extensions.
   const quotaDocsUrl =
@@ -388,7 +388,8 @@ function QuotasSection() {
   );
 }
 
-function AvailabilitySection() {
+/** Availability: every provider in the routing table, each with the switch that takes it out of routing. */
+export function ProviderAvailabilitySection() {
   const toast = useAccountToast();
   const [providers, setProviders] = useState<RoutableProvider[]>([]);
   const [loading, setLoading] = useState(false);
@@ -523,62 +524,36 @@ function AvailabilitySection() {
   );
 }
 
-export function ProvidersTab() {
-  const [active, setActive] = useState<SubTab>('overview');
-  const [selectedProvider, setSelectedProvider] = useState('');
-
+/** Overview: the provider registry. "Manage keys" opens Keys on that provider. */
+export function ProviderOverviewSection() {
+  const router = useRouter();
+  const { request } = useProviderSelection();
   return (
-    <div className="mt-6">
-      <div
-        role="tablist"
-        aria-label="Providers sub-tabs"
-        className="mb-4 flex flex-wrap items-center gap-1 border-b border-gray-200"
-      >
-        {SUB_TABS.map((tab) => {
-          const isActive = active === tab.key;
-          return (
-            <button
-              key={tab.key}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => setActive(tab.key)}
-              className={`-mb-px border-b-2 px-3.5 py-1.5 text-[13px] font-medium transition ${
-                isActive
-                  ? 'border-gray-900 text-gray-900'
-                  : 'border-transparent text-gray-500 hover:text-gray-900'
-              }`}
-            >
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+    <ProviderOverviewTab
+      onManageKeys={(provider) => {
+        request(provider);
+        router.push(PROVIDER_KEYS_PATH);
+      }}
+    />
+  );
+}
 
-      {active === 'overview' ? (
-        <ProviderOverviewTab
-          onManageKeys={(provider) => {
-            setSelectedProvider(provider);
-            setActive('keys');
-          }}
-        />
-      ) : active === 'availability' ? (
-        <AvailabilitySection />
-      ) : active === 'quotas' ? (
-        <QuotasSection />
-      ) : active === 'keys' ? (
-        <div className="space-y-6">
-          <ProviderKeysTab
-            initialProvider={selectedProvider}
-            onProviderChange={setSelectedProvider}
-          />
-          {/* Not scoped to the selected provider: the limiter buckets by key, so
-              this lists every key the gateway is currently calling. */}
-          <UpstreamConcurrencyPanel />
-        </div>
-      ) : (
-        <PerformanceTab />
-      )}
+/** Keys: a provider's keys, and the upstream concurrency of every key the gateway calls. */
+export function ProviderKeysSection() {
+  const { provider, requested, show } = useProviderSelection();
+  // Read once, as Keys opens: its own report of what it shows must not change
+  // how it opened.
+  const [opening] = useState(() => ({ provider, requested }));
+  return (
+    <div className="space-y-6">
+      <ProviderKeysTab
+        initialProvider={opening.provider}
+        keepUnlistedProvider={opening.requested}
+        onProviderChange={show}
+      />
+      {/* Not scoped to the selected provider: the limiter buckets by key, so
+          this lists every key the gateway is currently calling. */}
+      <UpstreamConcurrencyPanel />
     </div>
   );
 }

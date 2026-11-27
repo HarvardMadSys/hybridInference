@@ -146,8 +146,10 @@ async def test_delayed_write_waits_for_an_erasure_in_progress(pool):
     # Wait until the write is blocked on the fence lock, not by sleeping blindly.
     async with pool.acquire() as probe:
         for _ in range(200):
+            # This database's waiters only: pg_locks covers the whole server.
             waiting = await probe.fetchval(
-                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+                "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+                "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
             )
             if waiting:
                 break

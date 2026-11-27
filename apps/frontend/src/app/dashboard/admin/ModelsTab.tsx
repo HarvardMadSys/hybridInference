@@ -20,17 +20,18 @@ import { useLeaveGuard } from './useLeaveGuard';
 const LINK = 'font-medium text-gray-700 underline hover:text-gray-900';
 
 /**
- * Admin → Models: the model catalog, and the runtime overrides that apply on
- * top of it without changing it -- the role each model requires, and which
- * models the per-user concurrency limit leaves out. A model's routes and
- * weights are on the Routing tab; the other application documents on
+ * Admin → Providers → Models: the model catalog, and the runtime overrides
+ * that apply on top of it without changing it -- the role each model requires,
+ * and which models the per-user concurrency limit leaves out. A model's routes
+ * and weights are on the Routing tab; the other application documents on
  * Settings → Application.
  *
  * Each section saves on its own. The catalog is edited as on Settings: a save
  * asks for the administrator's password, and the notice above it offers the
  * restart the catalog waits for. The missing required settings are Settings'
  * to list; the console's banner points there. While any section holds an
- * unsaved change, leaving the page asks first.
+ * unsaved change, leaving the page asks first: for another Providers section
+ * too, since each is a page of its own.
  */
 export function ModelsTab() {
   const toast = useAccountToast();
@@ -55,7 +56,7 @@ export function ModelsTab() {
     editor.config.entries.some((entry) => entry.key === 'MODEL_CATALOG');
 
   return (
-    <div className="mt-6 space-y-4">
+    <div className="space-y-4">
       <p className="max-w-3xl text-[12px] leading-relaxed text-gray-500">
         The model catalog, and the runtime overrides that apply on top of it without changing it.
         Create a model, or change its routes and weights, on the{' '}

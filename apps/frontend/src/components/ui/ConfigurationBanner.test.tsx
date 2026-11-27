@@ -74,12 +74,12 @@ describe('ConfigurationBanner', () => {
     // A deployment with no model at all.
     expect(screen.getByRole('link', { name: 'Open Models' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/models',
+      '/dashboard/admin/providers/models',
     );
   });
 
-  it('does not offer the Models tab on the Models tab', () => {
-    renderBanner({ pathname: '/dashboard/admin/models' });
+  it('does not offer Models on Providers → Models', () => {
+    renderBanner({ pathname: '/dashboard/admin/providers/models' });
 
     expect(screen.getByRole('status')).toHaveTextContent('Ask admin to configure');
     expect(screen.getByRole('link', { name: 'Open Settings' })).toBeInTheDocument();

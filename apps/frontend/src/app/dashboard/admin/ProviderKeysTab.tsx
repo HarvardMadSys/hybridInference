@@ -24,9 +24,17 @@ import {
 import { getErrorMessage } from '@/lib/utils/errors';
 import { Select } from '@/components/ui/Select';
 
+import { useLeaveGuard } from './useLeaveGuard';
+
 interface Props {
   refreshKey?: number;
   initialProvider?: string;
+  /**
+   * Keep `initialProvider` when it is not listed, and say that its keys are not
+   * managed here: it was asked for. Off, it is only the provider shown last,
+   * and one no longer listed gives way to the first provider.
+   */
+  keepUnlistedProvider?: boolean;
   onProviderChange?: (provider: string) => void;
 }
 
@@ -68,7 +76,12 @@ function formatRelative(s: string | null): string {
   return `${d}d ago`;
 }
 
-export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProviderChange }: Props) {
+export function ProviderKeysTab({
+  refreshKey = 0,
+  initialProvider = '',
+  keepUnlistedProvider = true,
+  onProviderChange,
+}: Props) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
   const [providers, setProviders] = useState<string[]>([]);
@@ -98,13 +111,15 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
       setProviders(names);
       setProvidersLoaded(true);
       if (names.length > 0) {
-        setSelectedProvider((current) => current || names[0]);
-        setFormProvider((current) => current || names[0]);
+        const pick = (current: string) =>
+          current && (keepUnlistedProvider || names.includes(current)) ? current : names[0];
+        setSelectedProvider(pick);
+        setFormProvider(pick);
       }
     } catch (err) {
       toast.error(`Failed to load providers: ${getErrorMessage(err)}`);
     }
-  }, [toast]);
+  }, [keepUnlistedProvider, toast]);
 
   const loadKeys = useCallback(
     async (provider: string) => {
@@ -316,8 +331,10 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
   const tiersTarget = `${selectedProvider} key tiers`;
   const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
   // Unsaved tier changes hold the provider selector and adding a key, which
-  // would switch the page to another provider's keys.
+  // would switch the page to another provider's keys. Leaving the page, for
+  // another Providers section or tab, asks first.
   const tiersChanged = changedTiers.length > 0;
+  useLeaveGuard(changedTiers.length);
 
   const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
     setTierDrafts((prev) => {

@@ -104,12 +104,12 @@ function TabMeta({ dirty, missing }: { dirty: number; missing: number }) {
 
 /**
  * Admin → Settings: every setting an administrator changes in the console but
- * the model configuration, which is on Admin → Models. In sub-tabs (see
- * `settingsLayout`): Common, with the settings changed most often, then one
- * sub-tab per topic, then Setup, with what is usually set once. A topic's
- * sections sit together whatever stores them: the database-backed
- * configuration, the runtime settings, and the sections with an API of their
- * own.
+ * the model configuration, which is on Admin → Providers → Models. In
+ * sub-tabs (see `settingsLayout`): Common, with the settings changed most
+ * often, then one sub-tab per topic, then Setup, with what is usually set
+ * once. A topic's sections sit together whatever stores them: the
+ * database-backed configuration, the runtime settings, and the sections with
+ * an API of their own.
  *
  * Every sub-tab stays mounted while another is shown, so a change waits
  * unsaved, wherever it was made, until it is saved or discarded. A search or
@@ -126,7 +126,7 @@ export function SettingsTab({
   const money = useMoney();
   const router = useRouter();
   const pathname = usePathname();
-  // The model catalog is on Admin → Models: not listed here, nor found by a search.
+  // The model catalog is on Providers → Models: not listed here, nor found by a search.
   const editor = useConfigurationEditor({
     initialMissingOnly,
     excludeCategories: CATEGORIES_ELSEWHERE,

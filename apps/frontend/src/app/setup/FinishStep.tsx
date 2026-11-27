@@ -26,7 +26,7 @@ export function FinishStep({ config }: { config: ConfigResponse }) {
     <div className="space-y-5">
       <p className="text-sm text-gray-700">
         The administrator account is ready and you are signed in. Everything here can be changed
-        later in Admin: the model catalog on the Models tab, the rest on the Settings tab.
+        later in Admin: the model catalog under Providers → Models, the rest on the Settings tab.
       </p>
 
       {config.missing.length > 0 ? (

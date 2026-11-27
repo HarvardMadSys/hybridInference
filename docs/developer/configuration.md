@@ -1,7 +1,7 @@
 # Configuration
 
-Configure the gateway in **Admin → Settings**, **Models**, **Providers** and
-**Routing**. Application configuration is stored in PostgreSQL. The gateway does not load
+Configure the gateway in **Admin → Settings**, **Providers** and **Routing**.
+Application configuration is stored in PostgreSQL. The gateway does not load
 model, routing, alert, distribution or branding YAML at runtime. Docker Compose
 and GitHub Actions still use their infrastructure YAML files.
 
@@ -14,16 +14,16 @@ configuration paths.
 
 | Configuration | Owner |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Models |
+| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models |
 | Providers, credentials, live routes and overrides | Admin Providers and Routing |
 | Database connection, host ports and container networking | `.env` and Compose |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
 
 ### Application documents
 
-**Admin → Models** edits `MODEL_CATALOG`, with each model's runtime role and
-concurrency overrides beside it; **Admin → Settings → Application** edits the
-other documents. All of them are validated JSON and use the same conditional
+**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime
+role and concurrency overrides beside it; **Admin → Settings → Application**
+edits the other documents. All of them are validated JSON and use the same conditional
 saves, audit, security confirmation and backup controls as other settings. No
 JSON file is a runtime fallback either.
 
@@ -177,8 +177,8 @@ and the files, once no earlier release will run.
 
 Provider/key changes and ordinary route edits are persisted in the operational
 store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. **Admin → Models** shows
-**Applied in each backend process** beside the model catalog, including failed,
+model transitions, normally within ten seconds. **Admin → Providers → Models**
+shows **Applied in each backend process** beside the model catalog, including failed,
 stale or unsupported processes. A stale process is never counted as successfully
 updated. Compare the registered process count with your deployment inventory.
 
@@ -198,8 +198,26 @@ before deleting the key.
 
 ### Providers tab
 
-Add and verify providers and keys here. Credentials remain write-only. Built-in
-adapter kinds and catalog-owned provider names remain reserved.
+Providers has a page for each part of the upstream setup, each with its own
+address:
+
+- **Overview** lists the providers. Add, verify, edit or delete a custom
+  provider here; **Manage keys** opens that provider's keys.
+- **Keys** adds and verifies a provider's keys, reserves one for a user tier,
+  and disables or removes it. It also lists the upstream concurrency of every
+  key in use.
+- **Models** edits the model catalog, and the runtime overrides that apply on
+  top of it: the role each model requires, and whether its requests count
+  toward the per-user concurrency limit. Neither override changes the catalog.
+- **Availability** takes a provider out of routing for every model, and puts it
+  back.
+- **Quotas** shows what each key has used of its plan's limits, where a quota
+  extension reports them.
+- **Performance** shows how each model's providers perform: latency, errors,
+  cache hits and throughput.
+
+Credentials remain write-only. Built-in adapter kinds and catalog-owned provider
+names remain reserved.
 
 A provider's Base URL may name any host, private and loopback ones included,
 so that a self-hosted engine (vLLM, SGLang, Ollama) can be added. Cloud
@@ -216,12 +234,6 @@ resolve to public addresses. This is checked when the URL is validated and
 again for every connection the probe opens. Routes saved earlier keep serving:
 the switch governs what Admin accepts and probes, not existing inference
 traffic. Restrict the gateway's egress at the network layer as well.
-
-### Models tab
-
-Edit the model catalog here, and the runtime overrides that apply on top of it:
-the role each model requires, and whether its requests count toward the
-per-user concurrency limit. Neither override changes the catalog.
 
 ### Routing tab
 
