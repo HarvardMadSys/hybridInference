@@ -14,7 +14,16 @@ import type { ConfigCategory, ConfigEntry, ConfigScalar, ConfigValueType } from 
  * `clear`, which stores the empty string.
  */
 export type ConfigDraft =
-  | { kind: 'value'; value: string | boolean }
+  | {
+      kind: 'value';
+      value: string | boolean;
+      /**
+       * Why the edit cannot be saved yet, from an editor that converts what is
+       * typed: a document's field that is not a value of its type. The draft
+       * counts as a change, and nothing is sent, until it is gone.
+       */
+      error?: string;
+    }
   | { kind: 'replace'; value: string }
   | { kind: 'clear' };
 
@@ -64,6 +73,7 @@ export function isDirty(entry: ConfigEntry, draft: ConfigDraft | undefined): boo
   // An empty replacement is an editor left open, not an edit: clearing a
   // secret is its own, explicit action.
   if (draft.kind === 'replace') return draft.value !== '';
+  if (draft.error) return true;
   return !sameValue(entry.type, draft.value, initialInput(entry));
 }
 
@@ -83,6 +93,7 @@ export function settleDraft(
 /** A message when a changed value cannot be sent as its type, else `null`. */
 export function draftError(entry: ConfigEntry, draft: ConfigDraft | undefined): string | null {
   if (!draft || draft.kind === 'clear' || !isDirty(entry, draft)) return null;
+  if (draft.kind === 'value' && draft.error) return draft.error;
   const raw = draft.value;
   if (typeof raw === 'boolean') return null;
   if (entry.type === 'int' && !INTEGER_PATTERN.test(raw.trim())) {

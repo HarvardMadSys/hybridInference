@@ -100,7 +100,8 @@ function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
   };
 }
 
-const CATALOG = '{"models": [{"id": "gpt-4o-mini"}]}';
+const CATALOG =
+  '{"models": [{"id": "gpt-4o-mini", "name": "GPT-4o mini", "context_length": 128000}]}';
 const v = (revision: number) => ({ epoch: 'e1', revision });
 
 /** The catalog in its category, beside categories Settings shows, one of them missing a value. */
@@ -121,6 +122,7 @@ function config(overrides: Partial<ConfigResponse> = {}): ConfigResponse {
         one_time: true,
         restart_required: true,
         security_relevant: true,
+        document: true,
       }),
       entry({
         key: 'SITE_BRANDING',
@@ -200,7 +202,14 @@ describe('Admin → Models', () => {
       'Model Visibility',
       'Model Concurrency Limit',
     ]);
-    expect(screen.getByLabelText('MODEL_CATALOG')).toHaveValue(CATALOG);
+    // The catalog, one field per value.
+    const catalog = within(screen.getByRole('group', { name: 'MODEL_CATALOG' }));
+    expect(
+      catalog.getAllByRole('textbox').map((field) => (field as HTMLInputElement).value),
+    ).toEqual(['gpt-4o-mini', 'GPT-4o mini', '128000']);
+    expect(catalog.getByRole('textbox', { name: 'models[0].context_length' })).toHaveValue(
+      '128000',
+    );
     // Settings' categories, and its list of missing settings, stay on Settings.
     expect(screen.queryByLabelText('SITE_BRANDING')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('SMTP_HOST')).not.toBeInTheDocument();
@@ -229,10 +238,15 @@ describe('Admin → Models', () => {
     );
     await renderModels();
     const catalog = await screen.findByRole('region', { name: 'Model catalog' });
-    const edited = '{"models": []}';
+    // The document saved whole, indented, with the field's new value as its type.
+    const edited = JSON.stringify(
+      { models: [{ id: 'gpt-4o-mini', name: 'GPT-4o mini', context_length: 64000 }] },
+      null,
+      2,
+    );
 
-    fireEvent.change(within(catalog).getByLabelText('MODEL_CATALOG'), {
-      target: { value: edited },
+    fireEvent.change(within(catalog).getByRole('textbox', { name: 'models[0].context_length' }), {
+      target: { value: '64000' },
     });
     fireEvent.click(within(catalog).getByRole('button', { name: 'Save changes to Model catalog' }));
     const dialog = await screen.findByRole('dialog', {

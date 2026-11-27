@@ -2562,6 +2562,10 @@ msgstr "应用文档"
 msgid "**Admin → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
 msgstr "**Admin → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
+#: ../developer/configuration.md
+msgid "Admin shows each document as fields, one per value, named by its path, such as `models[0].route[0].base_url`. Each field is a plain string. A number or `true`/`false` keeps its type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch the document to **JSON**. A save from the fields stores the whole document as indented JSON."
+msgstr "Admin 把每个文档显示为字段，每个值一个字段，以值所在的路径命名，例如 `models[0].route[0].base_url`。每个字段都是普通字符串。数字和 `true`/`false` 保持原有类型，字符串列表是一个以逗号分隔的字段。要增加或删除键或列表项，请把文档切换到 **JSON**。从字段保存时，整个文档以缩进的 JSON 存储。"
+
 msgid "Purpose"
 msgstr "用途"
 

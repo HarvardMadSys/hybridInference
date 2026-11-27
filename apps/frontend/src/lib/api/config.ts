@@ -109,6 +109,13 @@ export interface ConfigEntry {
    * are sent. An older backend omits it, and asks for nothing.
    */
   security_relevant?: boolean;
+  /**
+   * An application document, such as `MODEL_CATALOG`: a JSON object, which
+   * the console edits as one field per value. Its value is still the whole
+   * document's JSON text. An older backend omits it, and the document is
+   * edited as text.
+   */
+  document?: boolean;
   /** When the database row was last written; `null` when there is none. */
   updated_at: string | null;
   updated_by: string | null;

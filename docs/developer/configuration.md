@@ -27,6 +27,12 @@ other documents. All of them are validated JSON and use the same conditional
 saves, audit, security confirmation and backup controls as other settings. No
 JSON file is a runtime fallback either.
 
+Admin shows each document as fields, one per value, named by its path, such as
+`models[0].route[0].base_url`. Each field is a plain string. A number or
+`true`/`false` keeps its type, and a list of strings is one comma-separated
+field. To add or remove a key or a list item, switch the document to **JSON**.
+A save from the fields stores the whole document as indented JSON.
+
 | Setting | Purpose | Application |
 |---|---|---|
 | `MODEL_CATALOG` | Model metadata, aliases, router parameters and base routes | Backend restart |

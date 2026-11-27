@@ -96,6 +96,11 @@ class ConfigEntryItem(BaseModel):
         description="Changing or resetting it needs the signed-in administrator's password, "
         "and the admin token cannot; a configuration restore lists it for confirmation",
     )
+    document: bool = Field(
+        False,
+        description="An application document: a JSON object, which the console edits as one "
+        "field per value. Its value still travels as the document's JSON text",
+    )
     updated_at: datetime | None = None
     updated_by: str | None = None
     group: str | None = Field(
