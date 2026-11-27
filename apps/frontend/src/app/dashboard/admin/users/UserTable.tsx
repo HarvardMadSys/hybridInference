@@ -296,6 +296,18 @@ export function UserTable(props: UserTableProps) {
     onOpenedFromLink?.();
   }, [openUserId, users, openDetail, confirmation.busy, onOpenedFromLink]);
 
+  // Re-read the open user's detail after a write made from its panel directly.
+  const refreshDetail = async () => {
+    if (!expandedId) return;
+    const userId = expandedId;
+    try {
+      const refreshed = await getUserDetail(userId);
+      setDetail((prev) => (prev && prev.id === userId ? refreshed : prev));
+    } catch {
+      // The write landed; the panel shows what it read before until reopened.
+    }
+  };
+
   // A confirmation can stay open while the list refetches (filters, paging).
   // Refuse to act on a row the admin can no longer see; nothing is written.
   const ensureListed = (userId: string, label: string) => {
@@ -802,6 +814,7 @@ export function UserTable(props: UserTableProps) {
                               onResume={resume}
                               onRequestDelete={requestDelete}
                               onRequestHardDelete={requestHardDelete}
+                              onTagsChanged={refreshDetail}
                             />
                           ) : null}
                         </div>

@@ -18,6 +18,7 @@ from fastapi import Depends, Header, HTTPException, Request
 from serving.audit import AuditActor
 from serving.auth.two_factor import admin_two_factor_required, require_session_two_factor
 from serving.config.settings import get_settings
+from serving.user_tags import tag_context
 from serving.utils.logging import get_logger
 from serving.utils.phone_auth import phone_identity_unverified
 from serving.utils.request_ip import get_client_ip
@@ -457,6 +458,10 @@ async def get_current_user(
         "max_concurrent_requests": user_row.get("max_concurrent_requests"),
         # The auth session this token was issued for; ``auth_sessions.sid``.
         "sid": payload.get("sid"),
+        # The account's user tags, with the concurrency cap and model
+        # allowlist they set (serving.user_tags): the console's model lists
+        # and its report of the cap read them.
+        **tag_context(user_row),
     }
 
 

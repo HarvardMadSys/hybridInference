@@ -88,6 +88,7 @@ vi.mock('@/lib/api/admin', () => ({
   hardDeleteUser: vi.fn(),
 }));
 vi.mock('./SummaryCards', () => ({ SummaryCards: () => null }));
+vi.mock('./UserTagsPanel', () => ({ UserTagsPanel: () => null }));
 vi.mock('./SavedViews', () => ({ SavedViews: () => null }));
 vi.mock('./FilterBar', () => ({ FilterBar: () => null }));
 vi.mock('./hooks/useUserCostHistory', () => ({ useBulkCostHistory: () => ({ data: {} }) }));

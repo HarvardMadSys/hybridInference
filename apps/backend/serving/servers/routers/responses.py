@@ -61,13 +61,18 @@ from serving.servers.routers.completions import (
     release_unstarted_chat_streams,
 )
 from serving.servers.streaming_response import ClosingStreamingResponse, close_body
-from serving.servers.surface_http import client_origin, timeout_probe
+from serving.servers.surface_http import (
+    ClientDisconnectedError,
+    await_while_connected,
+    client_origin,
+    timeout_probe,
+)
 from serving.storage.responses_store import decode_conversation
 from serving.surfaces.context import ExecutionContext, admission_from, read_only
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
 logger = get_logger(__name__)
 router = APIRouter()
@@ -146,13 +151,16 @@ class ResponsesResult:
 class ResponsesStream:
     """A streaming request: Responses SSE events, re-framed from the chat stream.
 
-    The chat stream behind it is already primed (its uncommitted failures were
-    raised before this existed). Terminal events are emitted only once the
-    response is stored; an interrupted stream is stored as ``incomplete``.
+    ``chat_stream`` is not yet primed when :func:`execute_responses` returns;
+    :func:`render_responses_http` primes it before starting the HTTP response
+    so uncommitted upstream failures surface with their real HTTP status and a
+    client disconnect during priming cancels the upstream stream immediately.
+    Terminal events are emitted only once the response is stored; an
+    interrupted stream is stored as ``incomplete``.
     """
 
     events: AsyncIterator[bytes]
-    #: The primed chat stream the events re-frame (None if chat answered unary).
+    #: The unprimed chat stream the events re-frame (None if chat answered unary).
     chat_stream: ChatStream | None = None
 
 
@@ -255,12 +263,30 @@ async def create_response(
             response_store=response_store,
         ),
     )
+    return await render_responses_http(result, request, streams=_streams)
+
+
+async def render_responses_http(
+    result: ResponsesResult | ResponsesStream,
+    request: Request,
+    *,
+    streams: list[ChatStream],
+    headers: Mapping[str, str] = _SSE_HEADERS,
+) -> Response:
+    """Return the HTTP response for *result*, priming any stream while watching disconnect."""
     if isinstance(result, ResponsesStream):
         if result.chat_stream is not None:
-            # Closed at the end of the request if the response never started.
-            _streams.append(result.chat_stream)
+            # Registered before priming so an uncommitted HTTPException still
+            # releases any started stream at the end of the request.
+            streams.append(result.chat_stream)
+            try:
+                await await_while_connected(request, result.chat_stream.prime())
+            except ClientDisconnectedError:
+                await close_body(result.events, quiet=True)
+                await result.chat_stream.aclose()
+                return Response(status_code=499)
         return ClosingStreamingResponse(
-            result.events, media_type="text/event-stream", headers=_SSE_HEADERS
+            result.events, media_type="text/event-stream", headers=dict(headers)
         )
     return JSONResponse(content=result.body)
 
@@ -361,14 +387,13 @@ async def execute_responses(
     outcome = await execute_chat(chat_body, chat_ctx, services.chat, ChatOptions.delegated())
 
     if is_stream:
-        # Pre-stream failures (model not found, role gate, unsupported
-        # modality, an upstream refusal before the first byte) propagate as
-        # ``HTTPException`` here -- before any byte is sent -- so the client gets
-        # a clean JSON error rather than a broken stream.
+        # Pre-stream failures before ``execute_chat`` returns (model not found,
+        # role gate, unsupported modality) propagate as ``HTTPException`` here;
+        # ``render_responses_http`` primes ``chat_stream`` before any byte is
+        # sent so an upstream refusal before the first byte does the same.
         frames = None
         chat_stream = None
         if isinstance(outcome, ChatStream):
-            await outcome.prime()
             frames = outcome.frames()
             chat_stream = outcome
         return ResponsesStream(

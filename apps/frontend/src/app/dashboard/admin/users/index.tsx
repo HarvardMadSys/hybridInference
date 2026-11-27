@@ -18,6 +18,7 @@ import {
   type UpdateUserData,
 } from '@/lib/api/admin';
 import { SummaryCards } from './SummaryCards';
+import { UserTagsPanel } from './UserTagsPanel';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
@@ -331,6 +332,11 @@ export default function UsersTab() {
   return (
     <div className="mt-6 space-y-4">
       <SummaryCards onCardClick={onCardClick} activeView={filterState.view} />
+
+      <UserTagsPanel
+        activeTag={filterState.tag ?? null}
+        onShowMembers={(tag) => applyFilterState({ ...filterState, tag, view: null })}
+      />
 
       {/* Keep toolbar popovers visible even when the table has few or no rows.
           UserTable owns the horizontal scrolling; only its content is clipped. */}

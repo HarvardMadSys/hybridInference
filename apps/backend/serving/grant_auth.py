@@ -45,6 +45,7 @@ from serving import grants, quota
 from serving.accounting import get_accounting_policy, money_decimal
 from serving.model_access import PROJECT_ALLOWED_MODELS_KEY, get_disabled_models_from_preferences
 from serving.spend_ledger import SPEND_CHECK_KEY, SpendCheck, ledger_for
+from serving.user_tags import tag_context
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -342,6 +343,11 @@ async def authenticate_grant_model_call(
         "project_name": scope.get("project_name"),
         "project_max_concurrent_requests": scope.get("project_max_concurrent_requests"),
         PROJECT_ALLOWED_MODELS_KEY: scope.get("project_allowed_models"),
+        # The owner's user tags, for the same reason as the two above: the
+        # concurrency cap and model allowlist a tag sets hold the owner on
+        # every door. Their quotas are already the check's (the quota lookup
+        # folds them in).
+        **tag_context(user),
     }
     if check is not None:
         # The request's admission reserves against it (SpendCheck.admit).

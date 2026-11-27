@@ -31,6 +31,7 @@ vi.mock('@/lib/api/admin', () => ({
 vi.mock('./SummaryCards', () => ({ SummaryCards: () => null }));
 vi.mock('./SavedViews', () => ({ SavedViews: () => null }));
 vi.mock('./FilterBar', () => ({ FilterBar: () => null }));
+vi.mock('./UserTagsPanel', () => ({ UserTagsPanel: () => null }));
 vi.mock('./hooks/useUserCostHistory', () => ({ useBulkCostHistory: () => ({ data: {} }) }));
 vi.mock('./hooks/useUserTurnAverages', () => ({ useBulkTurnAverages: () => ({ data: {} }) }));
 vi.mock('./hooks/useUserAskQuestionFractions', () => ({

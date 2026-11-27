@@ -43,6 +43,8 @@ export interface AdminUser {
   usage_alltime_usd: number;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
+  /** The user tags that apply to the account; absent from an older gateway. */
+  tags?: string[];
 }
 
 type UserSortBy =
@@ -92,6 +94,8 @@ interface ListUsersOptions {
   activeWithinHours?: number;
   anomaly?: boolean;
   includeUsageTotals?: boolean;
+  /** Only the users a user tag applies to. */
+  tag?: string;
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -113,6 +117,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
   if (opts.includeUsageTotals !== undefined) {
     params.set('include_usage_totals', String(opts.includeUsageTotals));
   }
+  if (opts.tag) params.set('tag', opts.tag);
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }
@@ -263,6 +268,10 @@ export interface UserDetail {
   ask_question_fraction: number | null;
   /** The identities that can sign in to the account; absent from an older gateway. */
   sso_identities?: UserSsoIdentity[];
+  /** The account's user-tag memberships, dismissed ones included; absent from an older gateway. */
+  tag_memberships?: UserTagMembership[];
+  /** The limits the account's applied tags hold it to, combined (strictest wins). */
+  tag_limits?: UserTagLimits;
 }
 
 /**
@@ -2251,6 +2260,187 @@ export async function unmuteAlertType(alertType: string): Promise<AlertTypeMute>
     { method: 'DELETE' },
   );
   return jsonOrThrow<AlertTypeMute>(resp);
+}
+
+// ========================================
+// User tags
+// ========================================
+
+/** How an account came to carry a tag: by hand, by the automatic rule, or dismissed from it. */
+export type UserTagSource = 'manual' | 'auto' | 'dismissed';
+
+export interface UserTagMembership {
+  tag: string;
+  source: UserTagSource;
+  assigned_at: string;
+  /** The administrator's user id; `null` for the automatic rule. */
+  assigned_by: string | null;
+  system?: boolean;
+}
+
+export interface UserTagLimits {
+  quota_daily_cost: number | string | null;
+  quota_monthly_cost: number | string | null;
+  max_concurrent_requests: number | null;
+  allowed_models: string[] | null;
+  currency: string;
+}
+
+/**
+ * A user tag: a group of accounts and the limits it holds them to. Each limit
+ * is a ceiling over the account's own (the strictest applies); `null` sets none.
+ */
+export interface UserTag {
+  name: string;
+  description: string;
+  /** Shipped with the gateway (`unattended`): cannot be deleted. */
+  system: boolean;
+  quota_daily_cost: number | string | null;
+  quota_monthly_cost: number | string | null;
+  currency: 'USD' | 'CNY';
+  max_concurrent_requests: number | null;
+  /** The only models members may use; `null` allows every model. */
+  allowed_models: string[] | null;
+  /** Given automatically to accounts with requests in `auto_min_active_hours` of the last `auto_window_hours` hours. */
+  auto_enabled: boolean;
+  auto_window_hours: number;
+  auto_min_active_hours: number;
+  /** An amount was saved in a currency the ledger has no rate for: enforced as 0 until re-entered. */
+  amounts_need_review?: boolean;
+  manual_members: number;
+  auto_members: number;
+  dismissed_members: number;
+  created_at: string;
+  updated_at: string;
+}
+
+/** What a create or update sets. On an update only what is sent changes; `null` clears a limit. */
+export interface UserTagWrite {
+  description?: string;
+  quota_daily_cost?: number | null;
+  quota_monthly_cost?: number | null;
+  /** The currency the amounts were read in; required with an amount. */
+  currency?: 'USD' | 'CNY';
+  max_concurrent_requests?: number | null;
+  allowed_models?: string[] | null;
+  auto_enabled?: boolean;
+  auto_window_hours?: number;
+  auto_min_active_hours?: number;
+}
+
+export interface UserTagMember {
+  user_id: string;
+  email: string | null;
+  login_name: string | null;
+  phone: string | null;
+  user_name: string | null;
+  status: string | null;
+  source: UserTagSource;
+  assigned_at: string;
+  assigned_by: string | null;
+}
+
+export interface UserTagMatch {
+  user_id: string;
+  email: string | null;
+  login_name: string | null;
+  phone: string | null;
+  user_name: string | null;
+  status: string | null;
+  active_hours: number;
+  member_source: UserTagSource | null;
+}
+
+export interface UserTagPreview {
+  window_hours: number;
+  min_active_hours: number;
+  matched: UserTagMatch[];
+  truncated: boolean;
+}
+
+const tagPath = (name: string) => `/admin/user-tags/${encodeURIComponent(name)}`;
+
+export async function listUserTags(): Promise<{ tags: UserTag[]; currency: 'USD' | 'CNY' }> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/user-tags');
+  return readJson(resp);
+}
+
+export async function createUserTag(data: UserTagWrite & { name: string }): Promise<UserTag> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/user-tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return readJson(resp);
+}
+
+export async function updateUserTag(name: string, data: UserTagWrite): Promise<UserTag> {
+  const resp = await fetchWithAuth(API_BASE, tagPath(name), {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return readJson(resp);
+}
+
+export async function deleteUserTag(name: string): Promise<void> {
+  const resp = await fetchWithAuth(API_BASE, tagPath(name), { method: 'DELETE' });
+  if (!resp.ok) await readJson(resp);
+}
+
+export async function listUserTagMembers(
+  name: string,
+  opts: { sources?: UserTagSource[]; limit?: number; offset?: number } = {},
+): Promise<{ total: number; members: UserTagMember[] }> {
+  const params = new URLSearchParams();
+  for (const source of opts.sources ?? []) params.append('source', source);
+  params.set('limit', String(opts.limit ?? 100));
+  params.set('offset', String(opts.offset ?? 0));
+  const resp = await fetchWithAuth(API_BASE, `${tagPath(name)}/members?${params.toString()}`);
+  return readJson(resp);
+}
+
+export async function addUserTagMembers(
+  name: string,
+  userIds: string[],
+): Promise<{ added: string[]; unchanged: string[]; unknown: string[] }> {
+  const resp = await fetchWithAuth(API_BASE, `${tagPath(name)}/members`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_ids: userIds }),
+  });
+  return readJson(resp);
+}
+
+export async function removeUserTagMember(
+  name: string,
+  userId: string,
+): Promise<{ user_id: string; previous_source: UserTagSource; dismissed: boolean }> {
+  const resp = await fetchWithAuth(
+    API_BASE,
+    `${tagPath(name)}/members/${encodeURIComponent(userId)}`,
+    { method: 'DELETE' },
+  );
+  return readJson(resp);
+}
+
+export async function previewUserTagRule(
+  name: string,
+  bounds: { windowHours?: number; minActiveHours?: number } = {},
+): Promise<UserTagPreview> {
+  const params = new URLSearchParams();
+  if (bounds.windowHours !== undefined) params.set('window_hours', String(bounds.windowHours));
+  if (bounds.minActiveHours !== undefined) {
+    params.set('min_active_hours', String(bounds.minActiveHours));
+  }
+  const qs = params.toString();
+  const resp = await fetchWithAuth(API_BASE, `${tagPath(name)}/preview${qs ? `?${qs}` : ''}`);
+  return readJson(resp);
+}
+
+export async function runUserTagRule(name: string): Promise<{ added: string[] }> {
+  const resp = await fetchWithAuth(API_BASE, `${tagPath(name)}/detect`, { method: 'POST' });
+  return readJson(resp);
 }
 
 // ========================================

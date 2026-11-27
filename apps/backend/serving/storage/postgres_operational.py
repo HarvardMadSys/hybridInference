@@ -46,6 +46,8 @@ from serving.storage.phone_auth import PostgresPhoneAuthMixin
 from serving.storage.pools import SingleConnectionPool, request_connection
 from serving.storage.sso import PostgresSsoMixin
 from serving.storage.two_factor import PostgresTwoFactorMixin
+from serving.storage.user_tags import PostgresUserTagsMixin, user_tags_join
+from serving.user_tags import tighten_identity
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
@@ -309,6 +311,8 @@ _USER_SELECT = ", ".join(
     f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
     for column in _USER_COLUMNS
 )
+#: The tags of the ``users`` row a single-user lookup reads.
+_USER_TAGS_JOIN = user_tags_join("users.id")
 
 # A stored preferences document this large (its stored size, which reading
 # costs nothing) is one written before writes were bounded; a whole-document
@@ -431,10 +435,6 @@ _KEY_SPEND_JOIN = (
     ") ks ON TRUE "
 )
 
-#: What the owner of key ``k`` spent this UTC month, from ``user_daily_cost``,
-#: read only when the account has a monthly quota: at most a month of counter
-#: rows through the counter's primary key. Same days ``get_user_cost_period``
-#: sums, so the gate and the console agree.
 #: The account's quota as the request path enforces it, for key ``k`` joined to
 #: its account's ``account_quotas`` row ``aq`` (:data:`_ACCOUNT_QUOTA_JOIN`).
 #: The row is the record; the key's own copy stands in for an account without
@@ -450,6 +450,15 @@ _ACCOUNT_QUOTA_COLUMNS = (
 )
 _ACCOUNT_QUOTA_JOIN = "LEFT JOIN account_quotas aq ON aq.user_id = k.user_id "
 
+#: The tags of key ``k``'s account, with their limits (``ut.tag_policies``),
+#: which :func:`serving.user_tags.tighten_identity` folds into the row.
+_KEY_USER_TAGS_JOIN = user_tags_join("k.user_id")
+
+#: What the owner of key ``k`` spent this UTC month, from ``user_daily_cost``,
+#: read only when the account has a monthly quota, its own or one of its tags'
+#: (``ut``, :data:`_KEY_USER_TAGS_JOIN`, joined before it): at most a month of
+#: counter rows through the counter's primary key. Same days
+#: ``get_user_cost_period`` sums, so the gate and the console agree.
 _ACCOUNT_MONTH_SPEND_JOIN = (
     "LEFT JOIN LATERAL ("
     "  SELECT COALESCE(SUM(m.cost_usd), 0) AS account_spent_month_usd, "
@@ -457,7 +466,7 @@ _ACCOUNT_MONTH_SPEND_JOIN = (
     "           AS account_spent_month_amount "
     "  FROM user_daily_cost m "
     "  WHERE m.user_id = k.user_id "
-    f"    AND {_ACCOUNT_MONTHLY_QUOTA} IS NOT NULL "
+    f"    AND ({_ACCOUNT_MONTHLY_QUOTA} IS NOT NULL OR ut.tag_monthly_quota) "
     "    AND m.day >= to_char(date_trunc('month', NOW() AT TIME ZONE 'UTC'), 'YYYY-MM-DD')"
     ") am ON TRUE "
 )
@@ -810,7 +819,11 @@ REQUEST_PATH_READS = (
 
 
 class PostgresOperationalStore(
-    PostgresPhoneAuthMixin, PostgresSsoMixin, PostgresTwoFactorMixin, OperationalStore
+    PostgresPhoneAuthMixin,
+    PostgresSsoMixin,
+    PostgresTwoFactorMixin,
+    PostgresUserTagsMixin,
+    OperationalStore,
 ):
     """OperationalStore backed by an asyncpg connection pool."""
 
@@ -909,13 +922,19 @@ class PostgresOperationalStore(
     # -- users ---------------------------------------------------------------
 
     async def get_user_by_id(self, user_id: str) -> Row | None:
-        """Fetch a single user row by primary key."""
+        """Fetch a single user row by primary key.
+
+        With the account's tags (``user_tags``) and the concurrency cap and
+        model allowlist they set (:func:`serving.user_tags.tighten_identity`),
+        which the console and grant contexts built from this row carry.
+        """
         async with self._request_connection() as conn:
             row = await conn.fetchrow(
-                f"SELECT {_USER_SELECT} FROM users WHERE id = $1",
+                f"SELECT {_USER_SELECT}, ut.tag_policies FROM users "
+                f"{_USER_TAGS_JOIN} WHERE id = $1",
                 user_id,
             )
-        return _coerce_user_row(row)
+        return tighten_identity(_coerce_user_row(row))
 
     async def get_user_by_email(self, email: str) -> Row | None:
         """Fetch a single user row by lowercased email."""
@@ -1460,6 +1479,7 @@ class PostgresOperationalStore(
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        tag: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1487,6 +1507,8 @@ class PostgresOperationalStore(
           the last 30 days. Uses the ``provider`` column on api_logs.
         - ``active_within_hours``: ``users.last_login_at`` must be within the
           window.
+        - ``tag``: keep only users the tag applies to (a manual or automatic
+          member; not a dismissed one).
         - ``anomaly``: when ``True``, keep only *active* users whose today's
           spend is anomalously high vs. their prior 7-day average (today >=
           $1, history >= 3 days, today >= 5x avg). Uses ``user_daily_cost``
@@ -1563,6 +1585,12 @@ class PostgresOperationalStore(
                 f"  AND l.timestamp >= NOW() - INTERVAL '30 days')"
             )
             filter_params.append(provider)
+        if tag:
+            where_clauses.append(
+                f"EXISTS (SELECT 1 FROM user_tag_members tm WHERE tm.user_id = u.id "
+                f"  AND tm.tag = ${len(filter_params) + 1} AND tm.source IN ('manual', 'auto'))"
+            )
+            filter_params.append(tag)
 
         # Whether we need today/month aggregates for filtering or sorting.
         needs_today_filter = (
@@ -1973,10 +2001,12 @@ class PostgresOperationalStore(
                 "SELECT k.id, k.user_id, k.user_name, "
                 f"{_PROJECT_SCOPE_COLUMNS}, {_PROJECT_SCOPE_NATIVE_COLUMNS}, {_AUTH_KEY_COLUMNS}, "
                 f"{_KEY_NATIVE_COLUMNS}, "
-                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests "
+                f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, "
+                "ut.tag_policies "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 f"{_PROJECT_SCOPE_JOIN}"
+                f"{_KEY_USER_TAGS_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -1984,7 +2014,7 @@ class PostgresOperationalStore(
                 "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
             )
-        return _coerce_user_row(row)
+        return tighten_identity(_coerce_user_row(row))
 
     async def get_auth_context_with_spend(self, key_hash: str) -> Row | None:
         """Auth context and today's spend in one round-trip (issue #185).
@@ -2015,7 +2045,8 @@ class PostgresOperationalStore(
                 "ks.key_spent_today_amount, ks.key_spent_month_amount, "
                 f"{identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, u.max_concurrent_requests, "
                 "COALESCE(s.cost_usd, 0) AS cost_usd, "
-                "COALESCE(s.cost_amount, s.cost_usd * $2::numeric, 0) AS cost_amount "
+                "COALESCE(s.cost_amount, s.cost_usd * $2::numeric, 0) AS cost_amount, "
+                "ut.tag_policies "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 "LEFT JOIN user_daily_cost s "
@@ -2023,6 +2054,7 @@ class PostgresOperationalStore(
                 " AND s.day = to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD') "
                 f"{_PROJECT_SCOPE_JOIN}"
                 f"{_KEY_SPEND_JOIN}"
+                f"{_KEY_USER_TAGS_JOIN}"
                 f"{_ACCOUNT_MONTH_SPEND_JOIN}"
                 f"{_SCOPE_SPEND_JOIN}"
                 "WHERE k.key_hash = $1 "
@@ -2033,7 +2065,7 @@ class PostgresOperationalStore(
                 key_hash,
                 get_accounting_policy().usd_to_currency_rate,
             )
-        return _coerce_user_row(row)
+        return tighten_identity(_coerce_user_row(row))
 
     async def get_auth_context_lightweight(self, key_hash: str) -> Row | None:
         """Lightweight identity lookup (no quota check, no last_used write).
@@ -2045,10 +2077,11 @@ class PostgresOperationalStore(
             row = await conn.fetchrow(
                 f"SELECT k.user_id, {identity}, u.role, u.email_verified, {_KEY_AUTH_PREFERENCES}, "
                 "u.max_concurrent_requests, k.allowed_models, "
-                "p.allowed_models AS project_allowed_models "
+                "p.allowed_models AS project_allowed_models, ut.tag_policies "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 f"{_PROJECT_SCOPE_JOIN}"
+                f"{_KEY_USER_TAGS_JOIN}"
                 "WHERE k.key_hash = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -2056,7 +2089,7 @@ class PostgresOperationalStore(
                 "AND (k.project_id IS NULL OR p.id IS NOT NULL)",
                 key_hash,
             )
-        return _coerce_user_row(row)
+        return tighten_identity(_coerce_user_row(row))
 
     async def get_key_owner_for_audit(self, key_hash: str) -> Row | None:
         """Identity behind a presented key, with no status or expiry filter.
@@ -3456,13 +3489,14 @@ class PostgresOperationalStore(
                 f"{_ACCOUNT_QUOTA_COLUMNS}, u.role, "
                 # The native amounts beside them (``$2``: the fixed policy rate).
                 f"{_PROJECT_SCOPE_NATIVE_COLUMNS}, {_SCOPE_SPEND_NATIVE_COLUMNS}, "
-                "k.accounting_currency "
+                "k.accounting_currency, ut.tag_policies "
                 "FROM api_keys k "
                 "LEFT JOIN users u ON u.id = k.user_id "
                 f"{_ACCOUNT_QUOTA_JOIN}"
                 "LEFT JOIN projects p "
                 "  ON p.user_id = k.user_id AND p.is_default AND p.status = 'active' "
                 f"{_SCOPE_SPEND_JOIN.replace('k.project_id', 'p.id')}"
+                f"{_KEY_USER_TAGS_JOIN}"
                 "WHERE k.user_id = $1 "
                 "  AND k.status = 'active' "
                 "  AND (k.expires_at IS NULL OR k.expires_at > NOW()) "
@@ -3472,7 +3506,7 @@ class PostgresOperationalStore(
                 user_id,
                 get_accounting_policy().usd_to_currency_rate,
             )
-        return [_coerce_user_row(row) for row in rows]
+        return [tighten_identity(_coerce_user_row(row)) for row in rows]
 
     async def upsert_agent_grant(
         self,
