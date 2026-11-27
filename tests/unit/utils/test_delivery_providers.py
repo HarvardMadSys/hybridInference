@@ -72,6 +72,7 @@ def test_provider_registration_refreshes_cached_configuration_choices():
 
 def test_smtp_deployments_preserve_existing_delivery(monkeypatch):
     monkeypatch.setattr(settings, "email_provider", "smtp")
+    monkeypatch.setattr(settings, "smtp_host", "smtp.example.org")
     monkeypatch.setattr(settings, "smtp_user", "test-user")
     monkeypatch.setattr(settings, "smtp_password", "test-password")
     smtp = MagicMock()

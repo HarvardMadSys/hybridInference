@@ -942,7 +942,8 @@ Email verification is on by default, and with it on an account cannot log in
 until it has followed a link sent to the address, which restores the
 ownership check that `ADMIN_EMAILS` itself does not perform. This needs working
 SMTP; without it nobody can complete a signup, and the console reports
-`SMTP_USER` and `SMTP_PASSWORD` as missing settings.
+`SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` as missing settings. There is no
+default SMTP server: a deployment that sends mail over SMTP sets all three.
 
 `ADMIN_EMAILS` also picks the default recipients for signup approval mail. To
 narrow the notification list without changing who holds the admin role, set
