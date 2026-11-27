@@ -169,6 +169,36 @@ export async function getUsersSummary(): Promise<UsersSummary> {
   return jsonOrThrow<UsersSummary>(resp);
 }
 
+/** A service account created by an administrator: key-only, no sign-in. */
+export interface CreateServiceAccountData {
+  name: string;
+  login_name?: string;
+  role?: 'free' | 'pro' | 'internal';
+  password?: string;
+}
+
+export interface CreateServiceAccountResponse {
+  user_id: string;
+  login_name: string;
+  name: string;
+  role: string;
+  /** Plaintext API key, returned only by this creation call. */
+  api_key: string;
+  key_prefix: string;
+  warning: string;
+}
+
+export async function createServiceAccount(
+  data: CreateServiceAccountData,
+): Promise<CreateServiceAccountResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/service-accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return jsonOrThrow<CreateServiceAccountResponse>(resp);
+}
+
 export async function approveUser(userId: string, note?: string): Promise<ApproveRejectResponse> {
   const resp = await fetchWithAuth(API_BASE, `/admin/users/${encodeURIComponent(userId)}/approve`, {
     method: 'POST',

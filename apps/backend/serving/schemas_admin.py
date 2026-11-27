@@ -77,6 +77,55 @@ class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
     quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
 
 
+class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported]
+    """Request payload for creating a service account (admin only).
+
+    A service account is a user row with no email and an unknowable
+    password, used only through the API key this creation issues.
+    """
+
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Display name, e.g. 'Nightly eval bot'"
+    )
+    login_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=255,
+        description="Unique login slug; derived from the name when omitted",
+    )
+    role: Literal["free", "pro", "internal"] = Field(
+        "free", description="Account role; service accounts never hold the admin role"
+    )
+    quota_daily_cost_usd: Decimal = Field(
+        Decimal("1000.00"), ge=0, description="Daily cost quota in USD"
+    )
+    quota_monthly_cost_usd: Decimal | None = Field(
+        None, ge=0, description="Monthly cost quota in USD (optional)"
+    )
+    expires_at: datetime | None = Field(None, description="API key expiration timestamp (optional)")
+    notes: str | None = Field(None, description="Admin notes stored on the issued key")
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: creating an account "
+        "with a live credential always needs it (403 for the admin token)",
+    )
+
+
+class CreateServiceAccountResponse(MoneyResponse):  # type: ignore[no-any-unimported]
+    """Response payload for successful service-account creation."""
+
+    user_id: str
+    login_name: str
+    name: str
+    role: str
+    api_key: str = Field(..., description="Plaintext API key (shown only once)")
+    key_prefix: str = Field(..., description="First 12 characters for identification")
+    warning: str = Field(
+        default="⚠️ Save this API key now. It cannot be retrieved later.",
+        description="Security warning",
+    )
+
+
 class CreateAPIKeyResponse(MoneyResponse):  # type: ignore[no-any-unimported]
     """Response payload for successful API key creation."""
 
@@ -221,6 +270,8 @@ class UserListItem(MoneyResponse):
     reviewed_by: str | None = None
     # Free-text use case submitted at signup; helps admins review pending users.
     signup_reason: str | None = None
+    # Admin-created API-key-only account (no email, no browser sign-in).
+    is_service_account: bool = False
     # Free-text admin-only annotation about the user (any status).
     admin_note: str | None = None
     created_at: datetime

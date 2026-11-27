@@ -686,6 +686,7 @@ class CachedOperationalStore(OperationalStore):
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Delegate to wrapped store."""
         return await self._store.create_user(
@@ -697,6 +698,7 @@ class CachedOperationalStore(OperationalStore):
             status=status,
             signup_reason=signup_reason,
             login_name=login_name,
+            is_service_account=is_service_account,
         )
 
     async def get_or_create_setup_code(

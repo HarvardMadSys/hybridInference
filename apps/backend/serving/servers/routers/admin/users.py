@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re
+import secrets
 from decimal import Decimal
 from typing import Literal
 
@@ -36,6 +38,8 @@ from serving.schemas_admin import (
     BulkUserCostHistoryResponse,
     BulkUserTurnAveragesResponse,
     BulkUserUsageTotalsResponse,
+    CreateServiceAccountRequest,
+    CreateServiceAccountResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     HardDeleteUserRequest,
@@ -67,7 +71,7 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
-from serving.servers.auth import log_admin_action
+from serving.servers.auth import generate_api_key, hash_api_key, log_admin_action
 from serving.servers.deps import (
     AppServices,
     get_admin_audit_actor,
@@ -85,6 +89,8 @@ from serving.servers.routers.admin.providers import _enumerate_routable_provider
 from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.servers.routers.admin.user_tags import tag_memberships_payload
 from serving.storage import sso as sso_store
+from serving.utils import password as password_utils
+from serving.utils.jwt import generate_ulid
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -222,6 +228,7 @@ async def list_users(
                 reviewed_at=row.get("reviewed_at"),
                 reviewed_by=row.get("reviewed_by"),
                 signup_reason=row.get("signup_reason"),
+                is_service_account=bool(row.get("is_service_account", False)),
                 admin_note=row.get("admin_note"),
                 created_at=row["created_at"],
                 last_login_at=row.get("last_login_at"),
@@ -536,6 +543,91 @@ async def admin_get_user_cost_history(
             )
             for p in raw
         ],
+    )
+
+
+@router.post("/service-accounts", response_model=CreateServiceAccountResponse, status_code=201)
+async def create_service_account(
+    request: Request,
+    payload: CreateServiceAccountRequest,
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> CreateServiceAccountResponse:
+    """Create a service account and issue its first API key.
+
+    A service account is a user row with no email and an unknowable random
+    password, flagged ``is_service_account``: browser sign-in refuses it and
+    it acts only through its API keys. Minting a lasting credential for a
+    new account needs the signed-in administrator's ``password`` (400 when
+    missing or wrong, 403 for the admin token, as for key creation).
+
+    Returns the plaintext API key ONLY ONCE. Save it immediately.
+
+    Requires: Admin authentication (JWT)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    await confirm_administrator(
+        request,
+        op_store,
+        payload.password,
+        action=f"Creating service account {payload.name}",
+    )
+
+    login_name = (payload.login_name or "").strip().lower()
+    if not login_name:
+        login_name = re.sub(r"[^a-z0-9]+", "-", payload.name.strip().lower()).strip("-")
+    if not login_name:
+        raise HTTPException(422, "name does not yield a login name; pass login_name")
+    if await op_store.get_user_by_login_name(login_name):
+        raise HTTPException(409, f"Login name '{login_name}' is already in use")
+
+    user_id = generate_ulid()
+    # Nobody knows this password: it exists only so the row satisfies the
+    # same shape as a person's, and sign-in refuses service accounts anyway.
+    password_hash = await password_utils.hash_password_async(secrets.token_urlsafe(32))
+    await op_store.create_user(
+        user_id=user_id,
+        email=None,
+        password_hash=password_hash,
+        user_name=payload.name.strip(),
+        login_name=login_name,
+        status="active",
+        is_service_account=True,
+    )
+    if payload.role != "free":
+        await op_store.update_user_fields(user_id, role=payload.role)
+
+    project = await op_store.get_default_project(user_id)
+    plaintext_key = generate_api_key()
+    await op_store.create_key(
+        key_hash=hash_api_key(plaintext_key),
+        key_prefix=plaintext_key[:12],
+        user_id=user_id,
+        user_name=payload.name.strip(),
+        quota_daily_cost_usd=payload.quota_daily_cost_usd,
+        quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+        expires_at=payload.expires_at,
+        notes=payload.notes,
+        project_id=project["id"] if project is not None else None,
+        **native_quota_updates(payload),
+    )
+
+    await log_admin_action(
+        op_store,
+        action="create_service_account",
+        details={"login_name": login_name, "role": payload.role, "key_prefix": plaintext_key[:12]},
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
+    return CreateServiceAccountResponse(
+        user_id=user_id,
+        login_name=login_name,
+        name=payload.name.strip(),
+        role=payload.role,
+        api_key=plaintext_key,
+        key_prefix=plaintext_key[:12],
     )
 
 
