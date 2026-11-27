@@ -174,9 +174,15 @@ async def _until(predicate, *, timeout: float = 5.0) -> None:
 
 
 async def _advisory_waiters(pool) -> int:
+    """Count the sessions waiting for an advisory lock in this test's database.
+
+    ``pg_locks`` covers the whole server, and the other xdist workers' databases
+    are on it: a waiter in a test running there must not count here.
+    """
     async with pool.acquire() as conn:
         return await conn.fetchval(
-            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted"
+            "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND NOT granted "
+            "AND database = (SELECT oid FROM pg_database WHERE datname = current_database())"
         )
 
 
