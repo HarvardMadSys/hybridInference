@@ -3,9 +3,9 @@
 The Users table shows each user's all-time request count, token total, average
 turns, average user turns and ask-question share, and can sort by the first two.
 All used to be computed straight off ``api_logs`` -- every row a user ever
-logged, on every page load. On staging that was about 8.4 million rows for 30
-users: the list took 8 to 38 seconds and sometimes hit the proxy's 30-second
-limit. Yet only the newest day's rows can still change.
+logged, on every page load. On a staging database of millions of rows the list
+took 8 to 38 seconds and sometimes hit the proxy's 30-second limit. Yet only
+the newest day's rows can still change.
 
 So completed UTC days are counted once into ``user_usage_daily`` (one row per
 user with traffic that day) and ``user_usage_daily_coverage`` (one row per

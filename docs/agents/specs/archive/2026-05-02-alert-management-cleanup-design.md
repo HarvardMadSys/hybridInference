@@ -16,7 +16,7 @@ The alerting setup has accumulated cruft across two parallel stacks:
    Internal alerts are silent in practice.
 2. **External monitor (separate host).** `deploy/external-monitor/`
    runs an independent Prometheus + Alertmanager + blackbox-exporter +
-   llm-prober stack that posts to Slack `<slack-channel>`. This works.
+   llm-prober stack that posts to a Slack alert channel (`<slack-channel>`). This works.
 
 Two consequences:
 

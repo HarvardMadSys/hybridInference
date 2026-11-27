@@ -34,7 +34,7 @@ def _adapter() -> OpenAICompatAdapter:
             id="deepseek-v4-flash",
             name="DeepSeek-V4-Flash",
             provider="sglang",
-            base_url="http://gpu-host-5.local:8003/v1",
+            base_url="http://local-gpu:8003/v1",
             provider_model_id="deepseek-v4-flash",
             processor="default",
             supported_params=["temperature", "max_tokens"],

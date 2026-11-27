@@ -44,8 +44,8 @@ from serving.servers.deps import AppServices
 from serving.servers.middleware.error import install_error_handlers
 from serving.servers.routers import completions
 
-# Verbatim sglang usage for a cold prompt (gpu-host-5 :8003, 2026-08-28). The miss is
-# the null block; there is no `cached_tokens: 0` anywhere in it.
+# Verbatim sglang usage for a cold prompt (self-hosted SGLang, 2026-08-28). The
+# miss is the null block; there is no `cached_tokens: 0` anywhere in it.
 _COLD_USAGE = {
     "prompt_tokens": 4817,
     "total_tokens": 4818,

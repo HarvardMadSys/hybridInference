@@ -4,7 +4,7 @@
 ``/admin/performance-metrics`` computes exact percentiles and histograms over
 the successful, non-embedding requests of the last hour, day, week and month.
 Through ``idx_api_logs_timestamp`` that reads every one of those rows from the
-heap -- on production, about half of a 14 GB table of wide rows, for each of
+heap -- on production, about half of a large table of wide rows, for each of
 the four windows' two statements -- and took a minute and a half.
 
 This partial index holds exactly those rows and exactly the columns the
@@ -18,7 +18,7 @@ NULL``) and Batches → Requests the batch worker's (``IS NOT NULL``, or one
 batch's), each with a total counted over the lookback, a week by default
 (``_common.REQUEST_SOURCE_FILTERS``). Unfiltered, that total is an index-only
 scan of ``idx_api_logs_timestamp``; with the source filter it read every row of
-the week from the heap to see its ``batch_job_id``. Over 2.4 million rows,
+the week from the heap to see its ``batch_job_id``. Over millions of rows,
 cached, that took the list from about 50 ms to 900 ms, and it grows with the
 table toward the count's time budget. ``(timestamp, batch_job_id)`` puts the
 column in the index: each source's total, and one batch's, is an index-only

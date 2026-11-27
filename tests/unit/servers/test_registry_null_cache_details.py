@@ -155,9 +155,9 @@ def test_yaml_false_is_accepted_and_off(tmp_path, monkeypatch):
 
 
 # Both routes go through OpenAICompatAdapter and the default usage profile, so
-# the only thing separating them is the declaration itself. This is the shape
-# the deployment actually has: an sglang node that reports beside a DGX Spark
-# vLLM node that sends the same null whether or not the prefix cache hit.
+# the only thing separating them is the declaration itself. This is a mixed
+# shape a deployment can have: an sglang node that reports beside a vLLM node
+# that sends the same null whether or not the prefix cache hit.
 _SGLANG_PLUS_VLLM = """
 models:
   - id: ds-test
@@ -173,7 +173,7 @@ models:
         null_cache_details_means_miss: true
       - kind: vllm
         weight: 1.0
-        base_url: http://gpu-host:8002/v1
+        base_url: http://vllm-node:8002/v1
         api_keys:
           - ${LOCAL_API_KEY}
 """

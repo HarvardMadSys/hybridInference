@@ -39,8 +39,7 @@ jobs:
   build:
     name: Build and push candidates
     # GitHub-hosted, on the runner native to the chosen platform, so no
-    # build here is emulated. The self-hosted runners were retired after the
-    # 2026-11-22 incident.
+    # build here is emulated. There are no self-hosted runners.
     runs-on: ${{ inputs.platform == 'linux/arm64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:

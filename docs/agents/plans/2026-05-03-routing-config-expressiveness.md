@@ -1829,7 +1829,7 @@ gh pr create --base dev \
 - [ ] `uv run pytest tests/integration/routing -v` — green.
 - [ ] `uv run pytest test/unit -q` — green.
 - [ ] `make format` clean.
-- [ ] Manual smoke against staging after deploy: `journalctl -u staging-gateway | grep router_initialized` shows one event per model with the expected strategy.
+- [ ] Manual smoke against staging after deploy: the backend log shows one `router_initialized` event per model with the expected strategy.
 
 ## Risk + rollback
 - Rollback: single `git revert`. Legacy `routing_strategy` / `routing_parameter` shim keeps the previous `routing.yaml` loading without changes.

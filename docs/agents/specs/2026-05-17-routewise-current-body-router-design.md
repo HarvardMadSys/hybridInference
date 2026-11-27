@@ -251,8 +251,7 @@ S_Q `used / limit / reset_at` should not live only inside the in-memory
 - The Providers tab calls `/admin/provider-quotas`.
 - The backend fetches provider-side quota through
   `serving.admin.provider_quotas.gather_all()`.
-- The Chutes `Daily requests <used> / <limit> requests` card is one example of this
-  data path.
+- The Chutes `Daily requests` usage card is one example of this data path.
 
 RouteWise S_Q should reuse this fetcher with:
 

@@ -5,12 +5,9 @@ The pre-publication checklist in
 public-surface audit covering "internal domains, host topology comments, real
 email addresses". This is the email half.
 
-It found four. All were in usage examples in ``ops/db/analysis/`` docstrings,
-where someone had pasted the real command they ran — including a pair of
-addresses passed to a script whose stated purpose is showing that two accounts
-belong to one person. That is an abuse investigation of named users, recorded
-in a repository, and it does not stop being personal data because it sits in a
-comment.
+It found four, all in usage examples in ``ops/db/analysis/`` docstrings where
+a real command had been pasted with real users' addresses in it. A user's
+address does not stop being personal data because it sits in a comment.
 
 The bar here is the mailbox, not the credential: a service's own support
 address is a published fact, while a user's is theirs. So this checks the

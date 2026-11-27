@@ -348,7 +348,7 @@ class TestEnvelope3DictShortCircuit:
     def test_quota_429_keeps_its_body_and_headers_off_the_anthropic_surface(
         self, client: TestClient
     ) -> None:
-        """The high-volume 429, unchanged. This is the body ~122k requests/day see."""
+        """The high-volume 429, unchanged. This is the body most quota refusals see."""
         resp = client.get("/probe/quota")
 
         assert resp.status_code == 429

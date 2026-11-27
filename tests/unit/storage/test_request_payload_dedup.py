@@ -2,7 +2,7 @@
 
 ``messages`` and ``tools`` are written to the dedicated ``prompt`` and ``tools``
 columns of the same row, so storing them again inside the raw body was pure
-duplication — the reason ``request_payload`` grew to roughly half of a 517 GB
+duplication — the reason ``request_payload`` grew to roughly half of the
 table.
 
 The contract these tests pin is that the dedup is *verified*, never assumed: a

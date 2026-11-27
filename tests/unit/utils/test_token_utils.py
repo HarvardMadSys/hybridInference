@@ -285,7 +285,7 @@ class TestNormalizeUsageCacheTokens:
         assert result["cache_read_tokens"] == 30
 
     def test_sglang_prefix_cache_hit_flattens_to_count(self):
-        """Verbatim sglang usage for a warm prompt (gpu-host-5 :8003, 2026-08-28)."""
+        """Verbatim sglang usage for a warm prompt (self-hosted SGLang, 2026-08-28)."""
         usage = {
             "prompt_tokens": 4817,
             "total_tokens": 4818,
@@ -299,8 +299,8 @@ class TestNormalizeUsageCacheTokens:
     def test_null_details_stays_absent_without_route_context(self):
         """normalize_usage has no route context, so a null block stays unknown.
 
-        Verbatim sglang usage for a cold prompt (gpu-host-5 :8003, 2026-08-28). Its
-        miss is recorded as 0 by the adapter, which does hold the route's
+        Verbatim sglang usage for a cold prompt (self-hosted SGLang, 2026-08-28).
+        Its miss is recorded as 0 by the adapter, which does hold the route's
         ``null_cache_details_means_miss``; this helper -- used on the gateway's
         own already-normalized chunks and on the storage path -- must not guess.
         """

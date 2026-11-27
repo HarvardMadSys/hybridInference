@@ -144,9 +144,9 @@ FAILED_REQUEST_COUNT_SQL = (
 
 # Failures *and* the window's total, so a sustained low-rate defect is visible.
 # An absolute count alone is blind to it: this detector's 200-per-5-minutes
-# default is ~57,600/day, and the routing IndexError behind #1361 ran at
-# ~700/day -- roughly 1% of all traffic, about 87x below the bar -- for 18 days
-# without ever tripping it. $1 = window_minutes (int).
+# default is ~57,600/day, and the routing IndexError behind #1361 ran far below
+# that bar -- roughly 1% of all traffic -- for 18 days without ever tripping it.
+# $1 = window_minutes (int).
 FAILED_REQUEST_RATE_SQL = (
     "SELECT COUNT(*) FILTER (WHERE " + FAILURE_PREDICATE_SQL + ") AS failures, "
     "COUNT(*) AS total FROM api_logs "

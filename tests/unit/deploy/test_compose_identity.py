@@ -38,9 +38,13 @@ _DEPLOYMENT_MARKERS = (
     "junchengyang",
     "madsys",
     "harvard",
-    "12345",  # the site's Statcounter project
-    "example_security_key",  # ...and its security key
 )
+
+# Settings whose values are one site's accounts with a third party: its
+# analytics project and key, its bot-check site key. A list of known ids would
+# catch only the ids someone thought to list, and any value at all here is
+# somebody's, so each of these must default to empty.
+_SITE_ACCOUNT_SETTINGS = ("STATCOUNTER", "TURNSTILE")
 
 # The upstream project's own repository. It identifies the software, not a
 # deployment of it, so it is the one value allowed to survive as a default.
@@ -77,6 +81,21 @@ def test_no_compose_default_names_a_deployment() -> None:
     assert not offenders, (
         "these compose defaults would brand a fresh clone as someone else's "
         f"deployment; move the value into a distribution overlay: {offenders}"
+    )
+
+
+def test_no_compose_default_carries_a_site_account() -> None:
+    """A fresh clone must not report its traffic into someone's analytics."""
+    account_settings = {
+        name: default
+        for name, default in _compose_defaults().items()
+        if any(key in name for key in _SITE_ACCOUNT_SETTINGS)
+    }
+    assert account_settings, "the compose file no longer passes these settings"
+    offenders = {name: default for name, default in account_settings.items() if default}
+    assert not offenders, (
+        "these compose defaults carry one site's account identifiers; leave "
+        f"them empty and supply the values from a distribution overlay: {sorted(offenders)}"
     )
 
 

@@ -1,12 +1,12 @@
 name: CI
 
-# Every job runs on a GitHub-hosted runner, discarded with the job. The
-# self-hosted runners were retired after the 2026-11-22 incident, and a job
-# that still named one queued for a day and was cancelled, so from 2026-11-20
-# no dev push run finished and no candidate was published. A push to
-# murphy/dev/* or a dispatch on any ref runs that ref's code, unreviewed, but
-# on a fresh machine with a read-only token; only a green dev push reaches the
-# publish jobs, the one place a packages: write token is issued.
+# Every job runs on a GitHub-hosted runner, discarded with the job. There are
+# no self-hosted runners: a job that names one queues until GitHub cancels it
+# a day later, and with it the dev push run and the candidate it would have
+# published. A push to murphy/dev/* or a dispatch on any ref runs that ref's
+# code, unreviewed, but on a fresh machine with a read-only token; only a
+# green dev push reaches the publish jobs, the one place a packages: write
+# token is issued.
 on:
   workflow_dispatch:
   schedule:

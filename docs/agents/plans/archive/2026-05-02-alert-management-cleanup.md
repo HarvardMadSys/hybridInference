@@ -24,7 +24,7 @@ rendered-vs-source split entirely. Concretely:
   `api_url_file: /etc/alertmanager/secrets/slack-webhook-url` instead of
   `api_url: ${SLACK_WEBHOOK_URL}`.
 - The compose `alertmanager` service mounts a host-side webhook URL file
-  (default `/etc/freeinference/slack-webhook-url`, override via
+  (default `/etc/<deployment>/slack-webhook-url`, override via
   `ALERTMANAGER_SLACK_WEBHOOK_FILE`) read-only into the container.
 - `deploy/alertmanager/README.md` documents the file
   provisioning + reload flow (no `envsubst`).
@@ -466,15 +466,15 @@ The Slack incoming webhook URL is **not** in git. Store it in a
 deploy-side env file:
 
 ```bash
-sudo install -m 600 -o hybridinference -g hybridinference /dev/null /etc/gateway/alertmanager.env
-echo 'SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...' | sudo tee /etc/gateway/alertmanager.env
+sudo install -m 600 -o <service-user> -g <service-user> /dev/null /etc/<deployment>/alertmanager.env
+echo 'SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...' | sudo tee /etc/<deployment>/alertmanager.env
 ```
 
 At deploy time, render the live config with `envsubst`:
 
 ```bash
 set -a
-source /etc/gateway/alertmanager.env
+source /etc/<deployment>/alertmanager.env
 set +a
 envsubst < /path/to/hybridInference/deploy/alertmanager/alertmanager.yml \
   > /etc/alertmanager/alertmanager.yml
@@ -703,7 +703,7 @@ Spec: `docs/agents/specs/2026-05-02-alert-management-cleanup-design.md`
 - [ ] `promtool check config deploy/prometheus/prometheus.yml` → SUCCESS
 - [ ] `amtool check-config` on `envsubst`-rendered `alertmanager.yml` → SUCCESS
 - [ ] `uv run ruff format --check .` passes
-- [ ] On staging: provision `/etc/gateway/alertmanager.env` with the Slack webhook URL, run `envsubst` to render the live config, reload Alertmanager
+- [ ] On staging: provision `/etc/<deployment>/alertmanager.env` with the Slack webhook URL, run `envsubst` to render the live config, reload Alertmanager
 - [ ] On staging: temporarily set `ServiceDown` `for: 10s`, stop the backend process, confirm `[INT-ALERT] API Service is Down` arrives in `<slack-channel>`, then `[RESOLVED]` after restart
 - [ ] On staging: confirm `systemctl status alert-logger` reports "Unit not found" after deploy
 EOF

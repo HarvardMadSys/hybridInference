@@ -32,7 +32,7 @@ def _cfg() -> ModelConfig:
         id="deepseek-v4-flash",
         name="DeepSeek-V4-Flash",
         provider="sglang",
-        base_url="http://gpu-host-5.local:8003/v1",
+        base_url="http://local-gpu:8003/v1",
         context_length=1048576,
         max_output_length=393216,
     )
@@ -48,7 +48,7 @@ class _StallingAdapter(BaseAdapter):
         self, messages: list[dict[str, Any]], **params
     ) -> AsyncGenerator[str, None]:
         yield self.format_stream_chunk(model=self.config.id, content="par")
-        raise UpstreamStreamIdleError(180.0, endpoint_id="sglang:gpu-host-5.local:8003", frames=124)
+        raise UpstreamStreamIdleError(180.0, endpoint_id="sglang:local-gpu:8003", frames=124)
 
 
 class _DisconnectingAdapter(BaseAdapter):
@@ -66,7 +66,7 @@ class _DisconnectingAdapter(BaseAdapter):
 
 def test_idle_timeout_is_not_breaker_exempt() -> None:
     """It carries no HTTP status, so the client-error exemption cannot swallow it."""
-    exc = UpstreamStreamIdleError(180.0, endpoint_id="sglang:gpu-host-5.local:8003", frames=124)
+    exc = UpstreamStreamIdleError(180.0, endpoint_id="sglang:local-gpu:8003", frames=124)
     assert _is_client_error(exc) is False
 
 

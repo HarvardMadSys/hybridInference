@@ -28,59 +28,59 @@ const stats: PublicStats = {
   first_week_partial: true,
   last_week_partial: true,
   totals: {
-    tokens: 832_000_000_000,
-    input_tokens: 828_000_000_000,
+    tokens: 900_000_000_000,
+    input_tokens: 896_000_000_000,
     output_tokens: 4_000_000_000,
-    requests: 8_553_192,
-    accounts: 471,
-    cached_input_share: 0.9288,
+    requests: 9_000_000,
+    accounts: 300,
+    cached_input_share: 0.9,
   },
-  registrations: { approved: 1466, waiting: 1066 },
+  registrations: { approved: 1234, waiting: 1050 },
   daily: [{ date: '2026-07-31', input_tokens: 10, output_tokens: 1, requests: 2 }],
   countries: {
-    total: 83,
-    total_min_requests: 71,
+    total: 64,
+    total_min_requests: 52,
     continents: 6,
     weekly: [
-      { any: 47, min_requests: 40 },
-      { any: 55, min_requests: 48 },
+      { any: 38, min_requests: 31 },
+      { any: 44, min_requests: 36 },
     ],
-    top: [{ code: 'USA', alpha2: 'US', share: 0.4506 }],
+    top: [{ code: 'USA', alpha2: 'US', share: 0.41 }],
     all: [
       { code: 'USA', alpha2: 'US', continent: 'NA', level: 5 },
       { code: 'KEN', alpha2: 'KE', continent: 'AF', level: 1 },
     ],
   },
   languages: {
-    total: 23,
-    weekly: [11, 12],
+    total: 21,
+    weekly: [9, 10],
     items: [
-      { code: 'en', accounts: 393 },
+      { code: 'en', accounts: 250 },
       { code: 'lt', accounts: null },
     ],
-    accounts_classified: 442,
-    accounts_non_english: 181,
-    messages_sampled: 16_598,
+    accounts_classified: 280,
+    accounts_non_english: 90,
+    messages_sampled: 10_000,
   },
   agents: {
-    clients_total: 157,
-    clients_multi_account: 53,
-    products_total: 28,
+    clients_total: 120,
+    clients_multi_account: 40,
+    products_total: 25,
     weekly: [
-      { clients: 24, products: 16 },
-      { clients: 41, products: 19 },
+      { clients: 20, products: 14 },
+      { clients: 30, products: 17 },
     ],
     products: [
-      { name: 'Hermes Agent', kind: 'general', tokens: 118_000_000_000, accounts: 98 },
-      { name: 'gptme', kind: 'coding', tokens: 1_700_000, accounts: null },
-      { name: 'Cherry Studio', kind: 'chat', tokens: 7_700_000, accounts: 11 },
+      { name: 'Hermes Agent', kind: 'general', tokens: 100_000_000_000, accounts: 80 },
+      { name: 'gptme', kind: 'coding', tokens: 1_500_000, accounts: null },
+      { name: 'Cherry Studio', kind: 'chat', tokens: 5_000_000, accounts: 10 },
     ],
     kinds: [
-      { kind: 'coding', token_share: 0.685 },
-      { kind: 'general', token_share: 0.167 },
-      { kind: 'custom', token_share: 0.025 },
+      { kind: 'coding', token_share: 0.7 },
+      { kind: 'general', token_share: 0.15 },
+      { kind: 'custom', token_share: 0.03 },
       { kind: 'chat', token_share: 0.001 },
-      { kind: 'direct', token_share: 0.122 },
+      { kind: 'direct', token_share: 0.119 },
     ],
     kind_weekly: weeks.map(() => ({ coding: 0.7, general: 0.2, custom: 0, chat: 0, direct: 0.1 })),
   },
@@ -104,7 +104,7 @@ const models: NonNullable<PublicStats['models']> = {
       daily_tokens: [11],
     },
   ],
-  other: { requests: 553_192, tokens: 32_000_000_000, daily_requests: [1], daily_tokens: [1] },
+  other: { requests: 1_000_000, tokens: 100_000_000_000, daily_requests: [1], daily_tokens: [1] },
 };
 
 function mockFetch(response: Partial<Response> & { json?: () => Promise<unknown> }) {
@@ -121,15 +121,15 @@ describe('StatsPage', () => {
     mockFetch({ json: async () => stats });
     render(<StatsPage />);
 
-    expect(await screen.findByText('832B')).toBeInTheDocument();
+    expect(await screen.findByText('900B')).toBeInTheDocument();
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent(
       'Example Inference usage stats',
     );
-    expect(screen.getByText('83')).toBeInTheDocument();
-    expect(screen.getByText('23')).toBeInTheDocument();
-    expect(screen.getByText('157')).toBeInTheDocument();
-    expect(screen.getByText('Approved users').nextElementSibling).toHaveTextContent('1,466');
-    expect(screen.getByText('Waiting list').nextElementSibling).toHaveTextContent('1,066');
+    expect(screen.getByText('64')).toBeInTheDocument();
+    expect(screen.getByText('21')).toBeInTheDocument();
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText('Approved users').nextElementSibling).toHaveTextContent('1,234');
+    expect(screen.getByText('Waiting list').nextElementSibling).toHaveTextContent('1,050');
     expect(screen.getAllByText('United States').length).toBeGreaterThan(0);
     expect(screen.getByText('Hermes Agent')).toBeInTheDocument();
     // Chat apps are listed apart from the agent table.
@@ -146,7 +146,7 @@ describe('StatsPage', () => {
 
     const toggle = await screen.findByRole('button', { name: 'Traffic by model' });
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.getByText(/glm-5\.1 served 72% of all tokens/)).toBeInTheDocument();
+    expect(screen.getByText(/glm-5\.1 served 67% of all tokens/)).toBeInTheDocument();
     expect(screen.queryByText('Other models')).not.toBeInTheDocument();
     expect(screen.getByText('Models.')).toBeInTheDocument();
 
@@ -178,7 +178,7 @@ describe('StatsPage', () => {
   it('leaves out traffic by model for snapshots made before it was counted', async () => {
     mockFetch({ json: async () => stats });
     render(<StatsPage />);
-    expect(await screen.findByText('832B')).toBeInTheDocument();
+    expect(await screen.findByText('900B')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Traffic by model' })).not.toBeInTheDocument();
     expect(screen.queryByText('Models.')).not.toBeInTheDocument();
   });
@@ -199,7 +199,7 @@ describe('StatsPage', () => {
     const { registrations: _omitted, ...older } = stats;
     mockFetch({ json: async () => older });
     render(<StatsPage />);
-    expect(await screen.findByText('832B')).toBeInTheDocument();
+    expect(await screen.findByText('900B')).toBeInTheDocument();
     expect(screen.queryByText('Approved users')).not.toBeInTheDocument();
     expect(screen.queryByText('Waiting list')).not.toBeInTheDocument();
     expect(screen.queryByText('Accounts.')).not.toBeInTheDocument();
@@ -249,7 +249,7 @@ describe('StatsPage, for a reader who chose Chinese', () => {
     }
     // Country names and compact numbers follow the language too.
     expect(screen.getAllByText('美国').length).toBeGreaterThan(0);
-    expect(screen.getByText('已通过的用户').nextElementSibling).toHaveTextContent('1,466');
+    expect(screen.getByText('已通过的用户').nextElementSibling).toHaveTextContent('1,234');
     expect(screen.getByText('其他模型')).toBeInTheDocument();
 
     // No sentence escaped translation: runs of three or more English words

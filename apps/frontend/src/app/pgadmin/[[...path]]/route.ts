@@ -8,7 +8,7 @@
  * The gate used to be an Nginx `/pgadmin/` block with `auth_request`; once
  * nothing public went through Nginx that block stopped running — clicking
  * pgAdmin in the dashboard returned the console's own 404 page — and host nginx
- * was purged from both deployments on 2026-09-13.
+ * was later removed.
  *
  * A rewrite alone cannot replace it: rewrites cannot authenticate. Whether
  * pgAdmin also asks for a login depends on the host — `SERVER_MODE` defaults

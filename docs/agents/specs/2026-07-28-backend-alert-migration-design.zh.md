@@ -10,7 +10,7 @@
 > 状态：**部分定案（2026-07-28）** —— G1/G2/G3 已定；**G4（恢复语义）为新发现，阻塞 4.2** —— G1 采纳方案 B（部署期签发长期令牌，不新增组件）；G2 采纳按形状归并的 2 个新类型；G3 采纳类型化字段（保住 IP/subject 的可操作性，舍弃凭证前缀与无界文本）。4.1 起可依序实施。
 > 日期：2026-07-28
 > 前置：status-monitor 三类告警已迁移（roadmap 步骤 2/3 完成）
-> 关联：[roadmap](../plans/2026-07-25-alert-control-plane-roadmap.zh.md)、[C3c 验证档案](../../reviews/2026-07-27-c3c-staging-validation.md)
+> 关联：[roadmap](../plans/2026-07-25-alert-control-plane-roadmap.zh.md)、C3c 验证档案（已迁至 FreeInference 部署仓库）
 
 ---
 

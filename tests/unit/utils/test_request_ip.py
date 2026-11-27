@@ -996,7 +996,7 @@ def test_trust_flags_without_trusted_cidr_ignored():
 
 
 def test_regression_docker_bridge_pollution():
-    """~43K rows recorded 172.19.0.1 as client IP. Now resolves to "unknown"."""
+    """Rows recorded the Docker bridge 172.19.0.1 as client IP. Now resolves to "unknown"."""
     with _settings_env(proxy_headers=False, cf_headers=False):
         request = _request(
             {"user-agent": "OpenAI-SDK/1.0"},
@@ -1009,15 +1009,15 @@ def test_regression_docker_bridge_pollution():
 
 
 def test_regression_operator_ula_pollution():
-    """~2.4K rows recorded fd00:42:: ULA as client IP. Now returns unknown."""
+    """An upstream operator's ULA was recorded as client IP. Now returns unknown."""
     with _settings_env(
         proxy_headers=True,
         cf_headers=False,
-        proxy_nets=_networks("2001:db8::/48"),
+        proxy_nets=_networks("2001:db8:340::/48"),
     ):
         request = _request(
-            {"x-forwarded-for": "fd00:42:19:383::153, 2001:db8::1"},
-            peer_ip="2001:db8::1",
+            {"x-forwarded-for": "fd00:42:19:383::153, 2001:db8:340::1"},
+            peer_ip="2001:db8:340::1",
         )
         info = get_client_ip_info(request)
         assert info.client_ip == "unknown"

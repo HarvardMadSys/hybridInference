@@ -4,8 +4,8 @@
 see exactly what a client sent. Two of its keys are also written to their own
 columns on the *same row* — ``messages`` to ``prompt`` and ``tools`` to ``tools``
 — so keeping them inside the JSONB body stored the largest part of every request
-twice. That duplication is why ``request_payload`` grew to roughly half of a
-517 GB table.
+twice. That duplication is why ``request_payload`` grew to roughly half of the
+table.
 
 The strip belongs to the storage layer, immediately before the INSERT, and not to
 the routers that build the body: while a request is in flight, callers read

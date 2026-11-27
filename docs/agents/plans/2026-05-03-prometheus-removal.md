@@ -1765,7 +1765,7 @@ git branch -D jason/claude/observability-framework
 
 # Operational Milestone — PR 2 (Staging Enable)
 
-**No code changes.** Update staging `.env` on the staging host:
+**No code changes.** In the staging deployment's environment, set:
 
 ```bash
 ALERTS_ENABLED=true
@@ -2035,7 +2035,7 @@ git push -u origin jason/claude/strip-prometheus-infra
 gh pr create --base dev --title "Phase 3: strip Prometheus + Alertmanager infrastructure" --body "..."
 ```
 
-Monitor CI. After merge → on the production host, after deploy, manually:
+Monitor CI. After merge, a deployment that ran the old stack removes it manually after deploying:
 
 ```bash
 docker compose down alertmanager alert-logger
@@ -2053,7 +2053,7 @@ Clean up worktree.
 
 # Operational Milestone — PR 5 (Production Enable)
 
-**No code changes.** On the production host, edit `.env`:
+**No code changes.** In the production deployment's environment, set:
 
 ```bash
 ALERTS_ENABLED=true

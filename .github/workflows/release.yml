@@ -32,8 +32,8 @@ concurrency:
 jobs:
   release:
     name: Release main
-    # GitHub-hosted: the self-hosted runners were retired after the
-    # 2026-11-22 incident. A release only tags a commit; it deploys nothing.
+    # GitHub-hosted: there are no self-hosted runners. A release only tags a
+    # commit; it deploys nothing.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -27,7 +27,7 @@ Everything below already exists on branch `claude/cross-region-inference-survey-
 | Hourly geo exporter (offline research path) | [ops/db/analysis/geo_hourly_export.py](../../../ops/db/analysis/geo_hourly_export.py) | `0664fbae` |
 | Standalone globe viewer (research instrument — **keep, do not delete**) | [ops/db/analysis/geo_globe.html](../../../ops/db/analysis/geo_globe.html) | `0664fbae` + restyle `8f6a3dbd` |
 | Usage docs (workflow §5) | `ops/db/analysis/README.md` | `0664fbae` |
-| Original single-file prototype (historical reference, synthetic data) | `/path/to/global-traffic-globe.html` | not in repo |
+| Original single-file prototype (historical reference, synthetic data) | a local file outside the repository | not in repo |
 
 Facts verified against the real system (2026-07-15):
 
@@ -229,9 +229,9 @@ viewer accepts either contract: product data naturally leaves provider/flow/diag
   under ignored `var/data/geoip/`. Deploys call it best-effort and keep the last good file on
   failure. Compose sets `GEOIP_COUNTRY_DB` and `GEOIP_COUNTRY_PROVIDER=dbip-lite`.
 - [x] Hit `/admin/analytics/geo` on staging (2026-07-16): `meta.geoip.country=true`,
-  `provider=dbip-lite`, and no degraded reasons. A fresh 30-day scan returned <n> rows in
-  2.13 s; the same cached payload returned in 1.05 s (`generated_at` identical). The 7-day payload
-  returned <n> rows over 168 hours.
+  `provider=dbip-lite`, and no degraded reasons. A fresh 30-day scan returned in 2.13 s;
+  the same cached payload returned in 1.05 s (`generated_at` identical). The 7-day payload
+  covered 168 hours.
 - [ ] Fetch the aggregate with an authenticated request (for example, `curl -H 'Authorization:
   Bearer ...' '<staging>/admin/analytics/geo?days=7' -o data.json`), then serve `data.json` beside
   `ops/db/analysis/geo_globe.html` locally. A localhost viewer cannot rely on staging cookies and
@@ -297,8 +297,8 @@ viewer accepts either contract: product data naturally leaves provider/flow/diag
 - [ ] **Go/no-go before investing in PR B:** run the offline exporter (or the PR A endpoint) on
   prod for ≥14 days of history and check whether demand shows time-zone-separated peaks across
   continents. If the primary continent x time signal collapses, stop at PR A (the endpoint still
-  powers future geo analytics) and reassess. The staging 7-day sample was <region-share> and is not a
-  representative substitute for this production-demand gate.
+  powers future geo analytics) and reassess. The staging 7-day sample came from a single continent
+  and is not a representative substitute for this production-demand gate.
 - [ ] On staging, play the complete 14-day range and confirm globe bubbles and continent ribbons
   remain quantitatively comparable across hours rather than rescaling per frame. Local browser QA
   passed against a 14-day minimal-contract fixture; repeat after PR B is deployed to staging.

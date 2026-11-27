@@ -4,6 +4,10 @@
 > describe the version reviewed at the time. For current setup, use the
 > [developer guide](../developer/index.rst). Surviving code links point to current paths
 > for navigation; references to removed files are retained as text.
+>
+> Findings specific to one production deployment (its hosts, deploy
+> pipeline, secrets handling and backups) were removed from this public
+> copy on 2026-11-27. They are kept by that deployment's maintainers.
 
 This document consolidates five per-subsystem architecture reviews of the FreeInference codebase into a single deep-dive. Scope covers the FastAPI gateway and adapters (`serving/`), the routing layer (`routing/` and `routing/routewise/`), the Next.js dashboard (`frontend/`), client-side tooling (`client/`, `freeinference-harness/`, `llm-prober/`), and the operational layer (deployment, scripts, CI, observability infra). Methodology was static review of code organization, request lifecycle, coupling, file-size hotspots, and failure-handling. Out of scope: dynamic profiling, security audit, model-quality benchmarks, and external dependencies beyond their integration shape.
 
@@ -15,9 +19,6 @@ This document consolidates five per-subsystem architecture reviews of the FreeIn
 - **The admin page is a 3343-line React monolith** with 32 useState calls ([frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx)). See [frontend/](#frontend-nextjs-dashboard--admin).
 - **Cost increment and request logging are fire-and-forget** with no observability — if a user disconnects mid-stream, cost may be lost ([serving/servers/routers/completions.py:46-95](../../apps/backend/serving/servers/routers/completions.py)). See [serving/](#serving-fastapi-gateway-adapters-storage-observability).
 - **No schema migration framework.** Schema is applied by startup initialization code, with no rollback. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
-- **SSH-based git-reset deployment with no human gates or rollback automation.** Any green CI on `main` SSHes into prod and `git reset --hard`s. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
-- **Secrets sit unencrypted in `.env` files on disk** (API keys, DB passwords, JWT secret, Slack webhooks). See [infrastructure](#infrastructure--config--scripts-deployment--ops).
-- **DB backups run nightly to S3 but are never restore-tested**; RTO/RPO undocumented. See [infrastructure](#infrastructure--config--scripts-deployment--ops).
 - **`HybridClient.send_request()` is a `NotImplementedError` stub** in the load-test framework (`client/client.py:22-27`); `llm-prober/` is an empty placeholder. See [client tooling](#client-tooling-client-freeinference-harness-llm-prober).
 - **Two disjoint client tools with duplicated metrics and incompatible request models.** Black-box decoupling of `freeinference-harness/` is policy, not enforced. See [client tooling](#client-tooling-client-freeinference-harness-llm-prober).
 
@@ -396,12 +397,9 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 
 ### infrastructure / config / scripts (deployment + ops)
 
-#### Deployment Topology
-
-- **Production** (`freeinference.org`): systemd units on bare metal + Docker Compose with Nginx.
-- **Staging** (`staging.freeinference.org`): Docker Compose stack via GitHub Actions SSH trigger.
-- **systemd**: `hybrid_inference.service` (uvicorn:8080), `alertmanager.service`, `alert-logger.service`.
-- **Docker Compose** ([deploy/docker/docker-compose.yml:16](../../deploy/docker/docker-compose.yml)): postgres:16, backend, frontend, alertmanager, alert-logger.
+The deployment topology, deploy scripts and backup schedule that this
+section described belong to one production deployment and are not
+reproduced here.
 
 #### Configuration Model
 
@@ -417,25 +415,13 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 - Alertmanager 0.31.1 receives alerts from disabled Prometheus (`deploy/prometheus/prometheus.yml:33-40`).
 - `alert-logger` appends JSONL to `var/log/alert_history.jsonl`.
 - Only 3 alerts routed (`deploy/alertmanager/alertmanager.yml:12-14`): `"ServiceDown|ServiceUnreachable|DatabaseDisconnected"`; rest blackholed.
-- Nginx logs at `/var/log/nginx/{freeinference,staging}.{access,error}.log`.
 - App logs JSON to `server.log` or stderr; no centralized aggregation.
 - No Grafana dashboards, no metrics exporter, no APM.
-
-#### Scripts/ Concerns
-
-- `deploy_production.sh`, `deploy_staging.sh` — bash wrappers around `git reset` + `docker compose build`.
-- `scripts/db/backup.sh` — daily <backup schedule>. No restore verification, no dry-run.
-- Auth import scripts (`import_claude_auth.py`, `import_codex_auth.py`) — manual CLI on deploy.
-- **Missing**: unified deployment CLI, runbook automation, canary/blue-green.
 
 #### CI/CD (`.github/workflows/`)
 
 - **PR**: lint, frontend checks, Docker build (cache only), tests without coverage.
 - **Push to `main`/`dev`**: same lint + tests + codecov + security scan (gitleaks, pip-audit).
-- **`deploy-staging.yml`**: triggers on dev-branch CI success; SSH to `/path/to/hybridInference`, `git reset`, `make build`, health check.
-- **`deploy.yml`**: same for `main` → production.
-- **No pre-staging approval gates, no rollback automation**.
-- Secrets in GitHub environment/org secrets, passed to SSH runner.
 
 #### Dev Workflow
 
@@ -448,9 +434,6 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 
 1. **Monitoring gap**: Prometheus metrics endpoint disabled (`deploy/prometheus/prometheus.yml:33-40`), alerting local-only (blackhole default, 3 hard-coded alerts), no dashboards or external visibility. Production incidents invisible until human reports.
 2. **Schema migration hazard**: Static SQL schema with no version control or rollback. Deployment scripts do not run migrations. Schema mismatch between code and DB → silent failures.
-3. **Secrets in `.env` on disk**: production `.env` contains API keys, DB passwords, JWT secrets, Slack webhooks. No encryption at rest. Shared across multiple services.
-4. **SSH-based deployment without approvals**: GitHub Actions SSH into production with `git reset --hard` on any main-branch CI pass. No human gate, no rollback automation.
-5. **Backup & recovery untested**: `scripts/db/backup.sh` runs daily to S3 with GFS rotation, but no restore dry-runs or verification. RTO/RPO not documented.
 
 ## Cross-Cutting Themes
 
@@ -485,15 +468,12 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 - `RouteWiseRouter._pending_decisions[request_id]` relies on caller to invoke `record_observation()`; no callback guard, leak under throughput.
 - RouteWise shadow hedging decision log grows unbounded.
 
-### 4. Schema + deployment safety gap
+### 4. Schema safety gap
 
 **Subsystems**: storage, infrastructure.
 
 - No migration framework; schema initialization still runs in application startup paths.
 - No foreign keys between operational and log stores.
-- SSH-deploy to prod via `git reset --hard` on any green main CI; no human gate, no rollback automation.
-- Secrets in plaintext `.env` files on disk (API keys, DB passwords, JWT, Slack).
-- Backups run nightly to S3 but never restore-tested; RTO/RPO undocumented.
 
 ### 5. Tooling fragmentation
 
@@ -510,8 +490,7 @@ Fallback chain ([routing/routers.py:405-447](../../apps/backend/routing/routers.
 
 1. **Restore baseline metrics + alerting end-to-end.** Re-enable Prometheus scrape, wire real counters/histograms in `serving/observability/metrics.py`, expand Alertmanager routes beyond the 3 hard-coded names, and add at least one external uptime/probe check. This is the highest leverage move because every other concern (silent shadow drift, fire-and-forget cost, RouteWise opacity, deploy regressions) is currently undetectable.
 2. **Decompose `completions.py` and `routewise/router.py`.** Pull cost, logging, routing-observation, and role-gating into composable middleware/services; split RouteWise classification, LP, hedging, and quota into independently testable modules. The blast radius of either file is the entire request path; shrinking them unlocks unit-testability and reduces incident MTTR.
-3. **Adopt a real DB migration framework and wire it into deploy.** Replace startup-driven schema initialization with versioned migrations (Alembic or equivalent), gate deploy on migration apply, and add a nightly restore-test of `scripts/db/backup.sh`. Schema drift between code and DB is a silent-corruption class of bug; backups that have never been restored aren't backups.
-4. **Add a deployment safety gate and rollback path.** Require human approval (or canary + auto-rollback) between green CI and SSH `git reset --hard` to prod; move secrets out of plaintext `.env` to a managed store. Today any `main` merge is a one-shot to production with no undo.
-5. **Make pending-decision state observable, not silent.** Add a TTL/cleanup sweep for `_pending_decisions` in [routing/routewise/router.py](../../apps/backend/routing/routewise/router.py), bound the hedging decision log, and surface request-path failures with real metrics + alerts. These are unbounded-leak / silent-failure bugs waiting to happen at scale.
-6. **Break up the admin page and unify frontend state.** Split [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) by tab into route segments, push auth state into React Query, and route the playground stream through the API layer instead of bypassing it ([frontend/src/app/dashboard/playground/page.tsx:271](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx)). 3343 lines + 32 useState is the frontend equivalent of `completions.py`.
-7. **Consolidate client tooling around the harness contract.** Either delete `client/` and `llm-prober/` or rebuild `client/` on top of the harness's HTTP-only black-box pattern; share a single percentile/metrics implementation; add a lint rule enforcing harness's no-`serving`-imports rule. The current state has a `NotImplementedError` in a "production" load tester, an empty directory, and duplicated metrics — net negative.
+3. **Adopt a real DB migration framework and wire it into deploy.** Replace startup-driven schema initialization with versioned migrations (Alembic or equivalent), and gate deploy on migration apply. Schema drift between code and DB is a silent-corruption class of bug.
+4. **Make pending-decision state observable, not silent.** Add a TTL/cleanup sweep for `_pending_decisions` in [routing/routewise/router.py](../../apps/backend/routing/routewise/router.py), bound the hedging decision log, and surface request-path failures with real metrics + alerts. These are unbounded-leak / silent-failure bugs waiting to happen at scale.
+5. **Break up the admin page and unify frontend state.** Split [frontend/src/app/dashboard/admin/page.tsx](../../apps/frontend/src/app/dashboard/admin/page.tsx) by tab into route segments, push auth state into React Query, and route the playground stream through the API layer instead of bypassing it ([frontend/src/app/dashboard/playground/page.tsx:271](https://github.com/HarvardMadSys/hybridInference/blob/8a16097e0f1df3a2d70b17dd234c9ec49e9a1692/apps/frontend/src/app/dashboard/playground/page.tsx)). 3343 lines + 32 useState is the frontend equivalent of `completions.py`.
+6. **Consolidate client tooling around the harness contract.** Either delete `client/` and `llm-prober/` or rebuild `client/` on top of the harness's HTTP-only black-box pattern; share a single percentile/metrics implementation; add a lint rule enforcing harness's no-`serving`-imports rule. The current state has a `NotImplementedError` in a "production" load tester, an empty directory, and duplicated metrics — net negative.

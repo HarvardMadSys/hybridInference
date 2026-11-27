@@ -99,8 +99,8 @@ async def test_hand_rolled_quota_429_matches_the_shared_builder(
     """The two quota doors must answer identically -- checked on the busy one.
 
     Both the agent-grant door and the API-key door build their body with
-    ``quota.refusal_payload``; the API-key door is the one that fires ~122k
-    times a day. A "both doors agree" test written against the builder twice
+    ``quota.refusal_payload``; the API-key door is the one that fires on most
+    refusals. A "both doors agree" test written against the builder twice
     would pass while one door drifted to a body of its own, so this one drives
     the real dependency over HTTP and compares what came back against the
     builder.

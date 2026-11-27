@@ -226,7 +226,7 @@ async def test_three_poison_requests_no_longer_open_every_circuit():
     """The reviewer's repro: other callers were refused for a cooldown."""
     routes = [
         _Engine(name, _StatusError(500), on_poison_only=True)
-        for name in ("vllm-gpu-host", "sglang-local", "staging")
+        for name in ("vllm-local", "sglang-local", "staging")
     ]
     router = FixedRouter()
     router.register_route(MODEL, [(routes[0], 1.0), (routes[1], 1.0), (routes[2], 0.01)])

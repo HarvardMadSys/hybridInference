@@ -103,7 +103,7 @@ These leak real Harvard infrastructure and are the hard blockers:
   insurance. Audit every retained Git ref before publication; if private data
   is present, clean it during the coordinated history migration.
 - [ ] **Statcounter analytics block** — `apps/frontend/src/app/layout.tsx:27,31,57`
-  (project `12345`, security key `example_security_key`). Every deployer's traffic would
+  (the site's hardcoded project ID and security key). Every deployer's traffic would
   flow into Harvard's analytics account. Gate behind
   `NEXT_PUBLIC_STATCOUNTER_PROJECT_ID`, default-off.
 - [ ] Re-audit `.gitleaks.toml` so rotated/real values aren't suppressed by the

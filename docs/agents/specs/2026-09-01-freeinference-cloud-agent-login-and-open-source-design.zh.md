@@ -222,7 +222,7 @@ PR 中的 `deploy/local` 用于该功能的本地验证与 smoke，不在本文�
 | 8 | job/thread/repository 权限由 Cloud Agent 独立测试 | 已成立 | `test_other_users_jobs_are_404_not_403`、`test_the_integrations_page_never_shows_another_users_connection`、`test_one_users_connection_is_not_another_users` |
 | 9 | Self-hosted 可指向自托管 HybridInference，无需请求 FreeInference.org | **代码层成立，整体待 B 轴** | cloud-agent 全仓仅 7 处 `freeinference.org`，全在契约 `servers:` 示例与一句 docstring，**无运行时默认值**；PR #93 further 把 `GATEWAY_AUTHORIZE_URL` 从浏览器 build 时常量改成服务端可配置。完整成立还依赖第 8 节的中立上游工作流 |
 | 10 | 两仓无源码 import / 共享数据库 / 共享 provider secret | 已成立 | 仅三个 HTTP 契约 |
-| 11 | FreeInference 生产数据、密钥、运维配置不进公开仓 | **未成立** | `distributions/` 已只剩 `example`（overlay 已搬出），但中立上游 **W8 五项密钥轮换零证据**；见第 8 节 |
+| 11 | FreeInference 生产数据、密钥、运维配置不进公开仓 | **未成立** | `distributions/` 已只剩 `example`（overlay 已搬出），但中立上游 **W8（开源前的欠账清理）尚无完成证据**；见第 8 节 |
 | 12 | Cloud Agent 不新增 identity/inference provider 抽象层 | 已成立 | PR #93 未引入任何 provider 框架 |
 
 ## 8. 解耦的两条轴，以及本文只覆盖了一条
@@ -255,10 +255,10 @@ PR 中的 `deploy/local` 用于该功能的本地验证与 smoke，不在本文�
 - `distributions/` 目前只剩 `example`，FreeInference 的 overlay 已搬出本仓（仓库内可
   直接核实）；
 - 以下进度**来自 2026-09-01 的会话对账，仓库内没有同步的记录**：那份设计的执行计划
-  [`2026-08-03-repo-split-step2-execution.zh.md`](../plans/2026-08-03-repo-split-step2-execution.zh.md)
+  `2026-08-03-repo-split-step2-execution.zh.md`（已迁至 FreeInference 部署仓库）
   自身的状态注记停在 2026-08-12，跟踪 issue #738 的最后一条评论停在 07-29。按对账，
   W0–W6 已关闭、生产已在中立链路上运行；**剩 W7**（console 翻 digest，被 compose-base
-  决策阻塞）**和 W8**（五项密钥轮换，目前零证据）。读者应以执行计划的下一次对账为准，
+  决策阻塞）**和 W8**（开源前的欠账清理，目前没有完成证据）。读者应以执行计划的下一次对账为准，
   而那次对账本身是一项待办；
 - W8 未完，本文验收第 11 条就不成立；
 - 那份设计另有 10 条待决策，其中 **#5（RouteWise 是 workspace 还是正式 wheel）阻塞

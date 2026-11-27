@@ -620,7 +620,7 @@ def _rate_pool(failures: int, total: int):
 
 @pytest.mark.asyncio
 async def test_rate_rule_fires_far_below_the_absolute_threshold():
-    """The #1361 shape: ~1% of traffic failing, ~87x below the absolute bar.
+    """The #1361 shape: ~1% of traffic failing, far below the absolute bar.
 
     24 failures in a 5-minute window is nowhere near threshold=200, which is why
     a defect running at that rate went unalerted for 18 days.

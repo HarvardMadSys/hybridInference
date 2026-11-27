@@ -304,26 +304,20 @@ def test_w5d_retired_ops_assets_are_absent() -> None:
     """
     retired_paths = (
         ROOT / "ops/lib",
-        ROOT / "ops/h200_idle_proxy",
-        ROOT / "ops/spark_idle_proxy",
-        ROOT / "ops/local_deployment_proxy",
         ROOT / "ops/db/backup.sh",
         ROOT / "ops/db/restore.sh",
         ROOT / "ops/db/export_logs.py",
         ROOT / "ops/db/analysis/trace_viewer",
-        ROOT / "deploy/systemd/spark_idle_proxy.service",
-        ROOT / "deploy/systemd/spark_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_proxy.service",
-        ROOT / "deploy/systemd/h200_idle_proxy_b.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel@.service",
-        ROOT / "deploy/systemd/h200_idle_tunnel_b@.service",
-        ROOT / "deploy/systemd/h200_ondemand_proxy.service",
-        ROOT / "deploy/systemd/h200_ondemand_tunnel@.service",
-        ROOT / "deploy/systemd/local_deployment_proxy.service",
-        ROOT / "deploy/systemd/local_deployment_tunnel@.service",
     )
 
     assert all(not path.exists() for path in retired_paths)
+    # The per-host proxies and their systemd proxy and tunnel units are named
+    # after the deployment's hosts, which this public test must not name, so
+    # they are matched by shape.
+    assert not sorted(ROOT.glob("ops/*_proxy"))
+    systemd = ROOT / "deploy/systemd"
+    assert not sorted(systemd.glob("*_proxy*.service"))
+    assert not sorted(systemd.glob("*_tunnel*@.service"))
     kept_remnant = (
         ROOT / "ops/db/analysis/user_automation_score.py",
         ROOT / "ops/db/analysis/user_prompt_sample.py",
@@ -689,10 +683,10 @@ def test_no_job_caches_a_venv_that_uv_venv_replaces() -> None:
 
 
 def test_no_workflow_names_a_self_hosted_runner() -> None:
-    """The self-hosted runners were retired after the 2026-11-22 incident.
+    """Every job runs on a GitHub-hosted runner; there are no self-hosted ones.
 
-    A job that named one queued until GitHub cancelled it a day later, which
-    is how every dev push run since 2026-11-20 ended, publishing included.
+    A job that names one queues until GitHub cancels it a day later, and the
+    run it belongs to ends with it, publishing included.
     """
     jobs = _jobs()
     for workflow, name, job, _ in jobs:

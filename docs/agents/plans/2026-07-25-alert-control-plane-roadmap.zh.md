@@ -51,7 +51,7 @@
 | production 上线 | ❌ 未开始（代码中**无任何可发 production 的路径**） |
 | 删除旧 relay / webhook / secrets | ❌ 未完成 |
 | 企业微信等其他 Sink | 抽象已就位，未实现 |
-| 真实端到端验证记录 | ⚠️ **仅单模型路径** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_00000000：12:41Z firing → 14:01Z 同 thread 恢复，threshold/去重/身份/线程完整性全部实测）。storm 与 cycle 待补，见上方两行 |
+| 真实端到端验证记录 | ⚠️ **仅单模型路径** —— C3c 预发验证档案（已迁至 FreeInference 部署仓库）（incident_<id>：12:41Z firing → 14:01Z 同 thread 恢复，threshold/去重/身份/线程完整性全部实测）。storm 与 cycle 待补，见上方两行 |
 
 ### 为什么不能一次性全切
 
@@ -108,7 +108,7 @@
 | P1-B | storm 无 legacy destination 时完全静默 | ✅ closeout PR（undeliverable 日志，每周期重复直到可投递；storm 归属本身仍等 D1） |
 | P2-G | `postSlack` 原始异常可能把 webhook URL 写进日志 | ✅ closeout PR（redact，镜像 `postCodexAlert`） |
 | 文档漂移 | README 4 处失实声明 | ✅ closeout PR |
-| 真实验证 | 一次真实探测故障 firing → resolved 走 binding（专用验证目录条目即可 —— 判据是"真实部署的完整链路"，非条目的商业用途），仓库内留存消息全文 + permalink（证据力 ≥ 截图，可实时复核） | ✅ **2026-07-27 完成** —— `docs/reviews/2026-07-27-c3c-staging-validation.md`（incident_00000000，12:41Z fire → 14:01Z 同 thread 恢复）。等价性裁决见该文档 Adjudication 节；下一次自然发生的真实模型故障应链接至该文档作为补强证据（不重新阻塞） |
+| 真实验证 | 一次真实探测故障 firing → resolved 走 binding（专用验证目录条目即可 —— 判据是"真实部署的完整链路"，非条目的商业用途），仓库内留存消息全文 + permalink（证据力 ≥ 截图，可实时复核） | ✅ **2026-07-27 完成** —— C3c 预发验证档案（已迁至 FreeInference 部署仓库）（incident_<id>，12:41Z fire → 14:01Z 同 thread 恢复）。等价性裁决见该文档 Adjudication 节；下一次自然发生的真实模型故障应链接至该文档作为补强证据（不重新阻塞） |
 
 已知边界（刻意不在本批）：目录**部分塌缩**（网关只返回大目录一小部分）仍读作大量 departure，需收缩阈值（调参决策）；P2-F（pending 表不变量违例杀掉全部 per-model 告警且不自愈，当前推演不出可达路径）；P3-I（`event_receipts` 无清理 + O(n) snapshot）。
 

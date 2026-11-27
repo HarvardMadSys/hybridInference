@@ -623,7 +623,7 @@ def test_router_survives_a_crash_inside_prefill_aware_selection(monkeypatch, cap
     fallback, so before this guard any exception raised inside ``select_index``
     was terminal -- no fallback adapter, no circuit-breaker record, and a row
     logged under the ``"router"`` sentinel with no upstream attribution. That is
-    how one IndexError failed ~700 requests a day for 18 days.
+    how one IndexError failed requests every day for 18 days.
     """
     r = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="A", base_url="http://A"))

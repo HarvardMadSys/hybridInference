@@ -228,11 +228,9 @@ class TestSignupAllowlist:
         monkeypatch.setattr(
             auth_routes_mod.settings,
             "admin_emails",
-            "murphy@trusted-corp.io,haoran@trusted-corp.io,peter@trusted-corp.io",
+            "ann@trusted-corp.io,ben@trusted-corp.io,cal@trusted-corp.io",
         )
-        monkeypatch.setattr(
-            auth_routes_mod.settings, "signup_notify_emails", "peter@trusted-corp.io"
-        )
+        monkeypatch.setattr(auth_routes_mod.settings, "signup_notify_emails", "cal@trusted-corp.io")
 
         sent_to: list[str] = []
 
@@ -252,7 +250,7 @@ class TestSignupAllowlist:
             assert response.status_code == 201
 
         # Only the notify recipient is emailed, not all three admins.
-        assert sent_to == ["peter@trusted-corp.io"]
+        assert sent_to == ["cal@trusted-corp.io"]
 
     @pytest.mark.asyncio
     async def test_disposable_blocklist_precedes_allowlist(

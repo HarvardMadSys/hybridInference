@@ -88,13 +88,13 @@ auth/quota/concurrency,也已经有 `runtime_settings` 注册表和 `USER_AUTH_E
   不应公开的基础设施信息，并扫描所有保留 refs；如需清理历史，在写入冻结窗口
   协调完成。轮换 `CLOUDFLARE_API_TOKEN` 仍建议做,作为廉价保险。
 - [x] **Statcounter 分析代码块** —— `apps/frontend/src/app/layout.tsx`
-  (project `12345`,security key `example_security_key`)。
+  (站点硬编码的 project ID 与 security key)。
   已由 `branding.statcounterProjectId` 门控(空值即整块不渲染),默认值在
   #1069 改为空,compose 与 `Dockerfile.frontend` 的默认值在 #1060 一并清空。
   未配置的部署不加载 Statcounter。
 - [ ] 复查 `.gitleaks.toml`,确保轮换后的真实值不会被现有 allowlist 规则误屏蔽。
   **复查发现了一个真实缺口**:`docs/agents/(plans|specs)/*.md` 整目录白名单,
-  假设设计文档里的凭据都是样例——一把真的网关 key 恰好藏在那里(#1078)。
+  假设设计文档里的凭据都是样例——这个假设并不成立(#1078)。
   精确收窄需要能实跑 gitleaks(盲改会让 Security Scan 对所有人变红),因此改为
   在仓库自身语言里兜底:`tests/unit/test_no_committed_credentials.py` 覆盖本项目
   自己签发的凭据格式(gitleaks 默认规则不认识 `hyi-`),按字面值而非目录豁免。

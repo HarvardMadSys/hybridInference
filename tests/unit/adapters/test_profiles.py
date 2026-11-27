@@ -331,9 +331,9 @@ def test_normalize_tools_kimi_strips_type_beside_anyof() -> None:
 
     'tools.function.parameters is not a valid moonshot flavored json schema,
     details: <At path 'properties.operation': when using anyOf, type should
-    be defined in anyOf items instead of the parent schema>' (prod
-    req_00000000000000000000000000000001). Every anyOf branch below already
-    declares its own "type", so the redundant parent "type" is dropped.
+    be defined in anyOf items instead of the parent schema>' (seen in
+    production). Every anyOf branch below already declares its own "type", so
+    the redundant parent "type" is dropped.
     """
     tools = [
         {
@@ -452,9 +452,9 @@ def test_normalize_tools_minimax_defaults_missing_parameters() -> None:
     """MiniMax rejects a tool def with no "parameters" key at all:
 
     '{"type":"error","error":{"type":"bad_request_error","message":"invalid
-    params, function name or parameters is empty (2013)"...}}' (prod
-    req_00000000000000000000000000000002, tool {"name": "web_search",
-    "description": ""} with no "parameters" key).
+    params, function name or parameters is empty (2013)"...}}' (seen in
+    production for tool {"name": "web_search", "description": ""} with no
+    "parameters" key).
     """
     tools = [{"type": "function", "function": {"name": "web_search", "description": ""}}]
     result = normalize_tools_for_profile(ProviderProfile.MINIMAX, tools)
@@ -664,7 +664,7 @@ def test_normalize_messages_does_not_mutate_input() -> None:
 # null *_tokens_details: unknown by default, a reported miss only when licensed
 # ---------------------------------------------------------------------------
 
-# Verbatim sglang usage for a cold prompt (gpu-host-5 :8003, 2026-08-28).
+# Verbatim sglang usage for a cold prompt (self-hosted SGLang, 2026-08-28).
 _SGLANG_COLD = {
     "prompt_tokens": 4817,
     "total_tokens": 4818,

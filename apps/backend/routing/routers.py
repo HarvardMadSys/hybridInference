@@ -2437,7 +2437,7 @@ class FixedRouter:
         # terminal: no fallback adapter is tried, no _on_failure is recorded, and
         # the request is logged under the "router" sentinel with no upstream
         # attribution. An IndexError in select_index reached production exactly
-        # that way and failed ~700 requests a day for 18 days. Degrade to the
+        # that way and failed requests every day for 18 days. Degrade to the
         # weighted draw the tracker is an improvement on, and log loudly.
         try:
             index = self._prefill_load.select_index(

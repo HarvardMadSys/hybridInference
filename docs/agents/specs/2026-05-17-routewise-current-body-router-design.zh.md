@@ -209,7 +209,7 @@ S_Q 的 `used / limit / reset_at` 不应只存在 `QuotaManager` 内存里。当
 
 - 前端 Providers tab 调 `/admin/provider-quotas`
 - 后端通过 `serving.admin.provider_quotas.gather_all()` 拉 provider-side quota
-- 截图中的 Chutes `Daily requests <used> / <limit> requests` 就是这一路数据
+- Chutes 的 `Daily requests` 用量卡片就是这一路数据
 
 RouteWise S_Q 应复用这套 fetcher，采用：
 

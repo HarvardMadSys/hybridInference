@@ -321,12 +321,10 @@ def test_signup_notify_emails_falls_back_to_admin_emails(monkeypatch) -> None:
 
 def test_signup_notify_emails_overrides_admin_emails(monkeypatch) -> None:
     """A configured notify list narrows recipients without touching admins."""
-    monkeypatch.setattr(
-        settings_module.settings, "admin_emails", "murphy@x.com,haoran@x.com,peter@x.com"
-    )
-    monkeypatch.setattr(settings_module.settings, "signup_notify_emails", "Peter@x.com")
+    monkeypatch.setattr(settings_module.settings, "admin_emails", "ann@x.com,ben@x.com,cal@x.com")
+    monkeypatch.setattr(settings_module.settings, "signup_notify_emails", "Cal@x.com")
     # Casing preserved for SMTP delivery; only the notify recipient is returned.
-    assert get_signup_notify_emails() == ["Peter@x.com"]
+    assert get_signup_notify_emails() == ["Cal@x.com"]
 
 
 def test_has_role_treats_unknown_user_role_as_lowest() -> None:

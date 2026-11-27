@@ -51,7 +51,7 @@
 | ID | Decision | Default / recommendation | Blocks |
 |----|----------|--------------------------|--------|
 | DR1 | License for new repo | ✅ **MIT** — resolved. The source is MIT, `Copyright (c) 2026 Harvard SEAS`; the new repo carries that licence and copyright line forward. Apache-2.0 was set initially and reverted: it may contain MIT code but only while retaining the notice, and relicensing is the copyright holder's call, not this project's | B1 |
-| DR2 | GitHub App: reuse the existing org App or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotating the key that was pasted into Slack is a **prerequisite of E5**, not a nicety — it is currently a live credential in a chat history. The App id and key live in the operator's private overlay: this file is excluded from the public export, the new repository is not, so neither value may be copied into it | B4, E5 |
+| DR2 | GitHub App: reuse the existing org App or create a new one | Reuse; add new callback/setup URLs for agent domains. Rotating the App key is a **prerequisite of E5**, not a nicety. The App id and key live in the operator's private overlay: this file is excluded from the public export, the new repository is not, so neither value may be copied into it | B4, E5 |
 | DR3 | New Postgres: same instance new database (`cloud_agent`) vs new instance | Same staging instance, new database; prod decides at H3 | B4, E1 |
 | DR4 | Domains | `agents.freeinference.org` / `agents.staging.freeinference.org`; API on same host under `/api` | B4, F5 |
 | DR5 | Old job history | Leave in old DB unchanged; old UI read-only until H4. **Export a read-only archive before H4 rather than letting it become unreachable** — cheap, and the alternative is telling users their history is gone. Job/thread/attempt rows, including legacy `budget_usd`, do not migrate. Only `agent_repo_grants` + `agent_gitlab_connections` migrate, and the GitLab rows need re-wrapping (H1) | H1 |
@@ -109,7 +109,7 @@
 
 ### B4. ENVIRONMENT.md — secrets & infra checklist (M) — **mostly human**
 - Repo: new. Deps: DR2, DR3, DR4.
-- Enumerate every env var the new stack needs, who provisions it, and where it lives: `AGENT_DATABASE_URL`, `AGENT_CONTROL_TOKEN_SECRET` (new random), `AGENT_SESSION_SECRET` (new), `GATEWAY_BASE_URL`, `GATEWAY_JWKS_URL`, `GATEWAY_GRANT_DISPATCH_TOKEN`, GitHub App id/key/webhook secret, GitLab OAuth id/secret, staging domain + bore tunnel port on the staging host, sandbox image registry. Explicitly note: gateway's `API_KEY_SECRET` and `JWT_SECRET_KEY` must NEVER appear in this repo's config.
+- Enumerate every env var the new stack needs, who provisions it, and where it lives: `AGENT_DATABASE_URL`, `AGENT_CONTROL_TOKEN_SECRET` (new random), `AGENT_SESSION_SECRET` (new), `GATEWAY_BASE_URL`, `GATEWAY_JWKS_URL`, `GATEWAY_GRANT_DISPATCH_TOKEN`, GitHub App id/key/webhook secret, GitLab OAuth id/secret, staging domain and any tunnel settings, sandbox image registry. Explicitly note: gateway's `API_KEY_SECRET` and `JWT_SECRET_KEY` must NEVER appear in this repo's config.
 - **Acceptance:** staging values provisioned (secrets in the deploy host env, not in git); doc merged.
 
 ---

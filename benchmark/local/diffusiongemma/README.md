@@ -7,8 +7,8 @@
 **Engine:** vLLM (`vllm/vllm-openai:gemma`, v0.22.1rc1) via the local deployment proxy (since moved to the deployment repository), `--attention-backend TRITON_ATTN`, V2 model runner, `max_model_len=262144`, `gpu_memory_utilization=0.85`
 **Harness:** NVIDIA `genai-perf` 0.0.16 (OpenAI `/v1/completions`), plus an async fallback client for high concurrency
 
-> **Status:** this benchmark is why DiffusionGemma was **removed** from the
-> RTX-PRO-6000 serving node (#896, reverted in #898). It remains served on DGX Spark. Kept here as the
+> **Status:** this benchmark is why DiffusionGemma was **removed** from an
+> RTX PRO 6000 serving node (#896, reverted in #898). Kept here as the
 > characterization record and for the `max_denoising_steps` throughput lever.
 
 ---
@@ -21,7 +21,7 @@ serving economics, so the standard autoregressive (AR) metrics — TTFT vs TPOT,
 inter-token latency, per-token decode throughput — **do not apply**. The
 meaningful axes are **request latency** and **request throughput**.
 
-Key findings (single RTX PRO 6000, live production instance on `:8001`):
+Key findings (single RTX PRO 6000, an in-use serving instance):
 
 - **~1 s latency floor.** A request emitting ≤256 output tokens costs ~1.0 s
   regardless of how many tokens it actually returns (32-token block = 974 ms,
@@ -48,7 +48,7 @@ climbs and throughput does not.
 
 ## 2. Method
 
-Traffic was driven through the live gateway endpoint (`http://127.0.0.1:8001`,
+Traffic was driven through the local deployment proxy (`http://127.0.0.1:8001`,
 `LOCAL_DEPLOYMENT_URL`) so the proxy kept the container warm. Output length was
 requested with `ignore_eos:true`; note the block-diffusion decoder often stops
 emitting real tokens early on synthetic prompts (so `out_tok` below is the actual
@@ -115,7 +115,7 @@ Throughput plateaus at ~1.5 req/s; latency grows ~linearly.
 
 ## 4. Caveats
 
-- Measured against the **live production instance** (shared GPU 0), not an
+- Measured against an **in-use serving instance** (shared GPU 0), not an
   isolated server; absolute numbers include real-request contention and proxy
   overhead.
 - `genai-perf` is AR-oriented; its ITL / TPOT / output-token-throughput fields

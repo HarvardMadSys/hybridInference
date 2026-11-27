@@ -1,4 +1,4 @@
-"""Drive genai-perf sweeps for DiffusionGemma against the live serving node (:8001).
+"""Drive genai-perf sweeps for DiffusionGemma against a local serving endpoint (:8001).
 
 DiffusionGemma is a block-diffusion LLM: one denoising pass emits a whole block,
 so request latency tracks the *block size* (max_tokens), input length, and

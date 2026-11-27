@@ -84,7 +84,7 @@ def test_explicit_reset_timestamp_in_utc_however_spelled():
 def test_weekly_window_without_timestamp():
     detail = (
         "you (example-user) have reached your weekly usage limit, upgrade for higher "
-        "limits: or add extra usage: (ref: 00000000-0000-0000-0000-000000000000)"
+        "limits: or add extra usage: (ref: 00000000-0000-4000-8000-000000000000)"
     )
     limit = detect_usage_limit(detail, now=NOW)
     assert limit is not None

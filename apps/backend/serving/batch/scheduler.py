@@ -1427,7 +1427,7 @@ class BatchScheduler:
             # the model serves one. Each "queued" answer is an api_logs row and a
             # batch_attempts row, and a model waiting all night for a GPU job
             # otherwise wrote its whole cap of both every couple of minutes
-            # (2026-11-12: 720k of each in a day, against 15k items served).
+            # (once, dozens of each for every item it served).
             # As with a retry, once the next try would start after the window
             # closes the item fails now with this answer instead.
             self._hold_model(entry.model_id, requeue)

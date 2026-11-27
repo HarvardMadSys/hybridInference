@@ -35,7 +35,7 @@
 /zh_CN/client-ip                       /zh_CN/trusted-proxies-and-client-ips  301
 /zh_CN/client-ip.html                  /zh_CN/trusted-proxies-and-client-ips  301
 
-# Harvard-cluster runbook, generalised to any HPC host (#1330)
+# One cluster's runbook, generalised to any HPC host (#1330)
 /fasrc                                 /hpc-model-host                   301
 /fasrc.html                            /hpc-model-host                   301
 /zh_CN/fasrc                           /zh_CN/hpc-model-host             301

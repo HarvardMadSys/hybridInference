@@ -59,7 +59,7 @@ models:
         api_keys:
           - ${{ZAI_API_KEY}}
         provider_model_id: "glm-5.1"
-      # Ollama Cloud fallback
+      # Low-weight fallback
       - kind: ollama
         weight: 0.01
         base_url: ${{OLLAMA_BASE_URL}}
@@ -90,13 +90,13 @@ models:
           - ${{CHUTES_API_KEY}}
         provider_model_id: "MiniMaxAI/MiniMax-M2.5-TEE"
         provider_type: quota
-        quota_pool: provider-plan-daily
+        quota_pool: example-daily-requests
         quota_source:
           provider: chutes
           usage_label: "Daily requests"
           unit: requests
         quota:
-          limit: 5000
+          limit: 1000
       - kind: openrouter[deepinfra]
         weight: 1.0
         base_url: https://openrouter.ai/api/v1
@@ -116,7 +116,7 @@ models:
         base_url: ${{KIMI_BASE_URL}}
         api_keys:
           - ${{KIMI_API_KEY}}
-        provider_model_id: "kimi-for-coding"
+        provider_model_id: "kimi-k2.7-code"
 
   # The same two aliases again: the model that loads last answers them.
   - id: kimi-k3
@@ -154,11 +154,11 @@ models:
     max_output_length: 393216
     aliases: ["deepseek-v4", "claude-sonnet-5"]
     route:
-      # optional: skipped while H200_DEPLOYMENT_URL is unset.
+      # optional: skipped while GPU_DEPLOYMENT_URL is unset.
       - kind: sglang
         weight: 1.0
         optional: true
-        base_url: ${{H200_DEPLOYMENT_URL}}
+        base_url: ${{GPU_DEPLOYMENT_URL}}
         api_keys:
           - ${{LOCAL_API_KEY}}
       # No kind: the model's provider, deepseek.
@@ -211,7 +211,7 @@ _SETTINGS = {
 async def test_the_production_catalog_shape_registers_after_the_upgrade(monkeypatch, caplog):
     for name, value in _SETTINGS.items():
         monkeypatch.setenv(name, value)
-    for name in ("STAGING_API_KEY", "H200_DEPLOYMENT_URL", "MODEL_CATALOG"):
+    for name in ("STAGING_API_KEY", "GPU_DEPLOYMENT_URL", "MODEL_CATALOG"):
         monkeypatch.delenv(name, raising=False)
     caplog.set_level(logging.WARNING)
 
