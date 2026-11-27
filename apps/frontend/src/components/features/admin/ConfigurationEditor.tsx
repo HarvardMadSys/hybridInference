@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 
 import {
@@ -213,8 +213,9 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
 }
 
 /**
- * The configuration on Admin → Settings: every database-backed setting,
- * grouped by category, with the categories spread over the page's sub-tabs.
+ * The database-backed configuration, grouped by category: on Admin → Settings
+ * every category but the model catalog, spread over the page's sub-tabs, and
+ * on Admin → Models the catalog.
  *
  * One editor holds every category's state, so a change waits unsaved while
  * the administrator looks at another sub-tab. Settings are edited in place,
@@ -229,7 +230,15 @@ function groupKeys(group: ConfigGroup, record: Readonly<Record<string, unknown>>
  */
 export function useConfigurationEditor({
   initialMissingOnly = false,
-}: { initialMissingOnly?: boolean } = {}) {
+  excludeCategories,
+}: {
+  initialMissingOnly?: boolean;
+  /**
+   * Categories another page edits: this editor neither shows, searches nor
+   * counts them. A constant, so the categories are not regrouped every render.
+   */
+  excludeCategories?: ReadonlySet<string>;
+} = {}) {
   const toast = useAccountToast();
   const router = useRouter();
   const [config, setConfig] = useState<ConfigResponse | null>(null);
@@ -386,8 +395,12 @@ export function useConfigurationEditor({
   // neither shown, counted nor saved; their edits wait for their transport.
   const groups = useMemo(
     () =>
-      config ? groupEntries(config.categories, applicableEntries(config.entries, drafts)) : [],
-    [config, drafts],
+      config
+        ? groupEntries(config.categories, applicableEntries(config.entries, drafts)).filter(
+            (group) => !excludeCategories?.has(group.id),
+          )
+        : [],
+    [config, drafts, excludeCategories],
   );
 
   /**
@@ -1025,10 +1038,21 @@ export function matchingSettingCount(editor: ConfigurationEditor): number {
 /**
  * What needs attention whatever sub-tab is open: a configuration that could
  * not be loaded, a restart a saved setting waits for, and required settings
- * that have no value.
+ * that have no value. After a restart, the page it is on loads afresh.
  */
-export function ConfigurationNotices({ editor }: { editor: ConfigurationEditor }) {
+export function ConfigurationNotices({
+  editor,
+  showMissing = true,
+}: {
+  editor: ConfigurationEditor;
+  /**
+   * Whether to list the required settings that have no value, with a filter
+   * for them: only where the editor lists their categories.
+   */
+  showMissing?: boolean;
+}) {
   const { config, missingOnly, setMissingOnly } = editor;
+  const pathname = usePathname();
 
   if (!config) {
     if (editor.loading) return <AdminLoading size="sm" label="Loading configuration..." />;
@@ -1060,7 +1084,9 @@ export function ConfigurationNotices({ editor }: { editor: ConfigurationEditor }
           </p>
           <div className="mt-3">
             {config.restart_supported ? (
-              <RestartBackendButton onRestarted={() => navigateTo(ADMIN_SETTINGS_PATH)} />
+              <RestartBackendButton
+                onRestarted={() => navigateTo(pathname ?? ADMIN_SETTINGS_PATH)}
+              />
             ) : (
               <ManualRestartHint />
             )}
@@ -1068,7 +1094,7 @@ export function ConfigurationNotices({ editor }: { editor: ConfigurationEditor }
         </section>
       ) : null}
 
-      {config.missing.length > 0 ? (
+      {showMissing && config.missing.length > 0 ? (
         <div
           className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-[12px] text-red-800"
           role="status"
@@ -1268,7 +1294,11 @@ export function ConfigCategorySection({
             Unsaved changes to them are kept and saved with the rest.
           </p>
         ) : null}
-        {group.id === 'application' ? <LiveConfigStatus groupName="routing.runtime" /> : null}
+        {/* How live route edits stand: beside the catalog, whose routes they edit. A backend
+            older than the catalog's category of its own keeps it under Application. */}
+        {group.entries.some((entry) => entry.key === 'MODEL_CATALOG') ? (
+          <LiveConfigStatus groupName="routing.runtime" />
+        ) : null}
         {liveGroupNames(group).map((name) => (
           <LiveConfigStatus
             key={name}

@@ -12,18 +12,25 @@
  *
  * Anything the backend adds later still has a place: a runtime setting no
  * group takes is listed at the end of Common, and a configuration category no
- * sub-tab names at the end of Setup.
+ * sub-tab names at the end of Setup. The model catalog is the exception: it
+ * is on Admin → Models, with the per-model overrides, and not on this tab.
  */
 
 export type SettingsTabKey =
   | 'common'
   | 'access'
   | 'providers'
-  | 'models'
+  | 'application'
   | 'batch'
   | 'alerts'
   | 'setup'
   | 'backup';
+
+/** The configuration category of the model catalog, which Admin → Models edits. */
+export const MODEL_CATALOG_CATEGORY = 'models';
+
+/** Configuration categories another admin tab edits: Settings neither lists, searches nor counts them. */
+export const CATEGORIES_ELSEWHERE: ReadonlySet<string> = new Set([MODEL_CATALOG_CATEGORY]);
 
 /** A group of runtime settings, edited together with one Save. */
 export type RuntimeGroupKey =
@@ -39,8 +46,6 @@ export type RuntimeGroupKey =
 export type SettingsPanelKey =
   | 'usage-insights'
   | 'signup-policy'
-  | 'model-visibility'
-  | 'model-concurrency'
   | 'batch-concurrency'
   | 'alert-snooze'
   | 'alert-mutes'
@@ -95,9 +100,11 @@ export const SETTINGS_TABS: readonly SettingsTabDefinition[] = [
     blocks: [config('providers'), panel('add-variable'), config('routing')],
   },
   {
-    key: 'models',
-    label: 'Models',
-    blocks: [config('application'), panel('model-visibility'), panel('model-concurrency')],
+    key: 'application',
+    label: 'Application',
+    description:
+      'The application documents, as JSON: the routing policy, alert rules, site configuration and branding, and single sign-on. The model catalog is on the Models tab.',
+    blocks: [config('application')],
   },
   {
     key: 'batch',

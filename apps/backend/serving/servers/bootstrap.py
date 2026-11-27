@@ -797,7 +797,7 @@ async def _init_router_and_models(
     except Exception as exc:
         # Registration is all or nothing, so nothing of the catalog is served.
         logger.error(
-            "The model catalog (MODEL_CATALOG in Admin > Settings) was not registered: "
+            "The model catalog (MODEL_CATALOG in Admin > Models) was not registered: "
             f"{str(exc) or repr(exc)}. No model from it is served until an administrator "
             "corrects it; the console asks one to configure the deployment meanwhile."
         )

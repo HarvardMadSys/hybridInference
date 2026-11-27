@@ -12,7 +12,7 @@ ConfigScalar = bool | int | float | str
 
 
 class ConfigCategory(BaseModel):
-    """A group of settings on the admin Settings tab."""
+    """A group of settings in the admin console: a Settings section, or the Models tab's catalog."""
 
     id: str
     label: str

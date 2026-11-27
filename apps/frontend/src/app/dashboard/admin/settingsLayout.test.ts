@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CATEGORIES_ELSEWHERE,
   DEFAULT_SETTINGS_TAB,
+  MODEL_CATALOG_CATEGORY,
   SETTINGS_TABS,
   runtimeGroupOf,
   settingsTabKey,
@@ -21,6 +23,7 @@ describe('settingsLayout', () => {
     expect(
       Object.fromEntries(
         [
+          'application',
           'general',
           'security',
           'signup',
@@ -36,6 +39,7 @@ describe('settingsLayout', () => {
         ].map((category) => [category, tabOfCategory(category)]),
       ),
     ).toEqual({
+      application: 'application',
       general: 'setup',
       security: 'access',
       signup: 'access',
@@ -50,6 +54,16 @@ describe('settingsLayout', () => {
       privacy: 'setup',
     });
     expect(tabOfCategory('added-later')).toBe('setup');
+  });
+
+  it('leaves the model catalog to Admin → Models, and names it on no sub-tab', () => {
+    expect(MODEL_CATALOG_CATEGORY).toBe('models');
+    expect([...CATEGORIES_ELSEWHERE]).toEqual(['models']);
+    expect(SETTINGS_TABS.map((tab) => tab.key)).not.toContain('models');
+    const named = SETTINGS_TABS.flatMap((tab) =>
+      tab.blocks.flatMap((block) => (block.kind === 'config' ? [block.category] : [])),
+    );
+    expect(named).not.toContain(MODEL_CATALOG_CATEGORY);
   });
 
   it('opens on Common, which holds every runtime setting, and keeps Setup and Backup last', () => {
@@ -119,8 +133,10 @@ describe('settingsLayout', () => {
   });
 
   it('reads a sub-tab from the address, and the default from anything else', () => {
-    expect(settingsTabKey('models')).toBe('models');
+    expect(settingsTabKey('application')).toBe('application');
     expect(settingsTabKey('setup')).toBe('setup');
+    // Models is a tab of its own now; the settings page sends such a link there.
+    expect(settingsTabKey('models')).toBe('common');
     expect(settingsTabKey('nonsense')).toBe('common');
     expect(settingsTabKey(undefined)).toBe('common');
   });

@@ -31,6 +31,21 @@ describe('AdminTabNav', () => {
     );
   });
 
+  it('gives the model configuration a tab of its own, between Providers and Routing', () => {
+    render(<AdminTabNav />);
+
+    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute(
+      'href',
+      '/dashboard/admin/models',
+    );
+    const names = screen.getAllByRole('link').map((link) => link.textContent);
+    expect(names.slice(names.indexOf('Providers'), names.indexOf('Routing') + 1)).toEqual([
+      'Providers',
+      'Models',
+      'Routing',
+    ]);
+  });
+
   it('keeps Token Usage under Analytics, not as a tab of its own', () => {
     render(<AdminTabNav />);
 
