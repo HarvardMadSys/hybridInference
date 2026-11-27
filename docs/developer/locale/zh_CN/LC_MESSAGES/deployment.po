@@ -1646,17 +1646,14 @@ msgid "`make migrate`; `make up` and `make build` run it for you"
 msgstr "`make migrate`；`make up` 和 `make build` 会替你执行"
 
 #: ../developer/deployment.md
-msgid "Compose with a pinned image (`docker-compose.digest-backend.yml`)"
-msgstr "固定镜像的 Compose（`docker-compose.digest-backend.yml`）"
+msgid "Pinned images (`make deploy`)"
+msgstr "固定镜像（`make deploy`）"
 
 #: ../developer/deployment.md
 msgid ""
-"`docker compose ... run --rm --no-deps backend python -m migrations "
-"upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as "
-"the `up` that follows"
-msgstr ""
-"PostgreSQL 起来之后执行 `docker compose ... run --rm --no-deps backend python -m "
-"migrations upgrade`，用的文件和 `BACKEND_IMAGE` 要和随后的 `up` 完全一样"
+"`make deploy` runs it before switching over; `make rollback` never runs an "
+"older image's migrations"
+msgstr "`make deploy` 会在切换之前执行这一步；`make rollback` 从不执行旧镜像的迁移"
 
 #: ../developer/deployment.md
 msgid "A systemd unit (`deploy/systemd/`)"

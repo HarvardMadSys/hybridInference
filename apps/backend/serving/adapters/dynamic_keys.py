@@ -255,12 +255,6 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
         return key_hash in _disabled_env_key_hashes.get(provider, set())
 
 
-def env_key_min_role(provider: str, key_hash: str) -> str:
-    """Return the tier an env key is reserved for (``"free"`` when unreserved)."""
-    with _lock:
-        return _env_key_min_roles.get(provider, {}).get(key_hash, DEFAULT_MIN_ROLE)
-
-
 def _resolve_min_role_locked(provider: str, raw_key: str) -> str:
     """Return the tier the pool must enforce for *raw_key*.
 

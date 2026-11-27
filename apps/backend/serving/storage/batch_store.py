@@ -1347,38 +1347,6 @@ class BatchStore:
             return None
         return {"key_id": row["id"], "key_prefix": row["key_prefix"], "key_hash": row["key_hash"]}
 
-    async def iter_item_requests(
-        self,
-        batch_id: str,
-        *,
-        statuses: frozenset[str] | None = None,
-        after: int = 0,
-        limit: int = 200,
-    ) -> list[dict[str, Any]]:
-        """A page of a batch's stored requests in submission order: ``id, custom_id, request``.
-
-        Only items in ``statuses`` when given.
-        """
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch(
-                "SELECT id, custom_id, request, status FROM batch_items "
-                "WHERE batch_id = $1 AND id > $2 "
-                "AND ($3::text[] IS NULL OR status = ANY($3::text[])) ORDER BY id LIMIT $4",
-                batch_id,
-                after,
-                sorted(statuses) if statuses is not None else None,
-                limit,
-            )
-        return [
-            {
-                "id": row["id"],
-                "custom_id": row["custom_id"],
-                "request": _load_json(row["request"]),
-                "status": row["status"],
-            }
-            for row in rows
-        ]
-
     async def request_page(
         self,
         batch_id: str,
@@ -1390,9 +1358,9 @@ class BatchStore:
     ) -> tuple[list[dict[str, Any]], bool]:
         """A page of a batch's stored requests, bounded by count and by size.
 
-        Like :meth:`iter_item_requests`, but holding no more of them than fit
-        in *max_bytes* of their stored JSON text (always one at least): a
-        request may be megabytes. Each row is ``id, custom_id, request_text,
+        Requests in submission order, only those in ``statuses`` when given,
+        holding no more of them than fit in *max_bytes* of their stored JSON
+        text (always one at least): a request may be megabytes. Each row is ``id, custom_id, request_text,
         status, bytes``: the request left as its stored JSON text, for the
         caller to decode one at a time (:func:`load_request`), and ``bytes``
         the size of that text.
@@ -3193,12 +3161,6 @@ class BatchStore:
                 """
             )
         return [row["id"] for row in rows]
-
-    async def iter_items(
-        self, batch_id: str, *, after: int = 0, limit: int = 500
-    ) -> list[dict[str, Any]]:
-        """A page of a batch's items for rendering, in submission order (by id)."""
-        return await self.list_results(batch_id, after=after, limit=limit)
 
     async def commit_seal(
         self,

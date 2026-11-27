@@ -6,7 +6,7 @@ import datetime as dt
 import json
 from typing import TYPE_CHECKING, Any, Literal
 
-from serving.accounting import get_accounting_policy, money_decimal
+from serving.accounting import get_accounting_policy
 from serving.analytics.automation_score import score_users_from_logs
 from serving.storage import (
     admin_view_results,
@@ -430,16 +430,6 @@ class PostgresLogStore(LogStore):
                 agent_job_id,
             )
         return float(row["spent"]) if row and row["spent"] is not None else 0.0
-
-    async def get_agent_job_cost_amount(self, agent_job_id: str) -> Decimal:
-        """Return the primary native ledger amount for one agent job."""
-        async with self.pool.acquire() as conn:
-            amount = await conn.fetchval(
-                "SELECT COALESCE(SUM(COALESCE(cost_amount, cost_usd)), 0) "
-                "FROM api_logs WHERE agent_job_id = $1",
-                agent_job_id,
-            )
-        return money_decimal(amount)
 
     async def get_agent_job_usage(self, agent_job_id: str) -> dict[str, float]:
         """Return token and call totals charged to one agent job.

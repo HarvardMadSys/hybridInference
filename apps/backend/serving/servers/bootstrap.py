@@ -12,7 +12,6 @@ import asyncio
 import contextlib
 import datetime as dt
 import functools
-import os
 import random
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -26,7 +25,7 @@ from routing.manager import RoutingManager
 from routing.model_router_registry import ModelRouterRegistry
 from routing.routers import FixedRouter
 from serving import spend_ledger
-from serving.auto_mode import AutoMode, _auto_mode_from_document
+from serving.auto_mode import AutoMode, auto_mode_from_document
 from serving.batch.model_limits import BatchModelLimits
 from serving.config import app_config, live as live_config
 from serving.config.app_config_store import AppConfigStore, connect as connect_app_config
@@ -833,7 +832,7 @@ def _load_auto_mode(router: FixedRouter) -> AutoMode | None:
     try:
         stored_models = get_document("models")
         if stored_models is not None:
-            return _auto_mode_from_document(stored_models, router.routes)
+            return auto_mode_from_document(stored_models, router.routes)
         return None
     except Exception as exc:
         logger.warning(f"Auto mode is off: failed to load the auto section: {exc}")
@@ -992,12 +991,6 @@ async def initialize() -> AppServices:
     load_dotenv()
     setup_logging()
     load_backend_extensions()
-
-    if os.environ.get("EXPERIMENT_MODE"):
-        logger.warning(
-            "EXPERIMENT_MODE env var is set but no longer has any effect — "
-            "the flag was removed; fallback routing is now always on."
-        )
 
     # The database-backed configuration comes before everything that reads a
     # setting, and it re-applies LOG_LEVEL/LOG_FORMAT from what it loaded.

@@ -591,20 +591,19 @@ async def test_pin_success():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_legacy_pin_keyword_is_consumed_by_fixed_router():
-    """The one-release shim must pin locally instead of forwarding upstream."""
+async def test_a_pin_keyword_is_refused_instead_of_forwarded_upstream():
+    """The pin travels in routing_options; as a keyword it would reach the provider."""
     exe = FixedRouter()
     a = _EchoAdapter(_cfg("m", provider="zai"))
     b = _EchoAdapter(_cfg("m", provider="ollama"))
     exe.register_route("m", [(a, 0.8), (b, 0.2)])
 
-    resp = await exe.chat_completion(
-        "m",
-        messages=[{"role": "user", "content": "hi"}],
-        pin_provider="ollama",
-    )
-
-    assert resp["_routing"]["provider"] == "ollama"
+    with pytest.raises(TypeError, match="routing_options"):
+        await exe.chat_completion(
+            "m",
+            messages=[{"role": "user", "content": "hi"}],
+            pin_provider="ollama",
+        )
 
 
 @pytest.mark.unit

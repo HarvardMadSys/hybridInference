@@ -1032,7 +1032,7 @@ they succeed.
 | Deployment | The step |
 |---|---|
 | The bundled Compose stack | `make migrate`; `make up` and `make build` run it for you |
-| Compose with a pinned image (`docker-compose.digest-backend.yml`) | `docker compose ... run --rm --no-deps backend python -m migrations upgrade` once PostgreSQL is up, with the same files and `BACKEND_IMAGE` as the `up` that follows |
+| Pinned images (`make deploy`) | `make deploy` runs it before switching over; `make rollback` never runs an older image's migrations |
 | A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
 
 Rules for a deploy script that does this itself:

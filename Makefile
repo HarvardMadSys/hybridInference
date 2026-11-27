@@ -272,9 +272,6 @@ endif
 # distribution files and before `.env`, preserving host-local overrides.
 COMPOSE_EXTRA_ENV_FILES ?=
 COMPOSE_EXTRA_ENV_ARGS := $(patsubst %,--env-file %,$(wildcard $(COMPOSE_EXTRA_ENV_FILES)))
-# The cloud-agent runner overlay was removed at H4: agents run from their own
-# repository and their own deployment, so this stack no longer has an opt-in
-# that attaches `backend` to an agent network.
 COMPOSE_FILE_ARGS := -f deploy/docker/docker-compose.yml
 DISTRIBUTION_COMPOSE_FILE := $(if $(DISTRIBUTION_PATH),$(wildcard $(DISTRIBUTION_PATH)/deploy/docker-compose.yml),)
 ifneq ($(DISTRIBUTION_COMPOSE_FILE),)

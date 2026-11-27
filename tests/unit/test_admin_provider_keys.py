@@ -2280,7 +2280,7 @@ async def test_boot_seeding_applies_stored_env_reservations(client):
     await dynamic_keys.apply_db_keys_at_boot(store)
 
     assert adapter._key_pool.snapshot_min_roles()[env_key] == "pro"
-    assert dynamic_keys.env_key_min_role("zai", key_hash) == "pro"
+    assert dynamic_keys.resolve_key_min_role("zai", env_key) == "pro"
     # The endpoint agrees with the pool.
     listing = await http.get("/admin/provider-keys?provider=zai", headers=AUTH)
     entry = next(k for k in listing.json()["keys"] if k["source"] == "env")

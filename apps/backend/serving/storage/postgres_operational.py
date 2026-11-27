@@ -1962,32 +1962,6 @@ class PostgresOperationalStore(
                 user_id,
             )
 
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Return ``{status_value: count}`` for all statuses."""
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT status, COUNT(*) as cnt FROM users GROUP BY status")
-        return {r["status"]: r["cnt"] for r in rows}
-
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Return ``{"total": N, "dau": N, "mau": N}``."""
-        async with self._pool.acquire() as conn:
-            total_row = await conn.fetchrow(
-                "SELECT COUNT(*) as count FROM users WHERE status = 'active'"
-            )
-            dau_row = await conn.fetchrow(
-                "SELECT COUNT(DISTINCT id) as count FROM users "
-                "WHERE status = 'active' AND last_login_at >= NOW() - INTERVAL '24 hours'"
-            )
-            mau_row = await conn.fetchrow(
-                "SELECT COUNT(DISTINCT id) as count FROM users "
-                "WHERE status = 'active' AND last_login_at >= NOW() - INTERVAL '30 days'"
-            )
-        return {
-            "total": total_row["count"] if total_row else 0,
-            "dau": dau_row["count"] if dau_row else 0,
-            "mau": mau_row["count"] if mau_row else 0,
-        }
-
     # -- api keys ------------------------------------------------------------
 
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:

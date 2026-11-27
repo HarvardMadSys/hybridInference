@@ -2704,7 +2704,9 @@ def test_overlay_yaml_keys_reach_the_rules(tmp_path) -> None:
     nobody chose, with nothing to say so. Hence an end-to-end assertion from
     YAML text through ``_build_rules`` rather than a model-only check.
     """
-    from serving.observability.alert_config import load_alert_config
+    import yaml
+
+    from serving.observability.alert_config import alert_config_from_data
     from serving.observability.alert_rules import ClientErrorBurstRule, StreamFailureRateRule
 
     p = tmp_path / "alerts.yaml"
@@ -2723,7 +2725,7 @@ rules:
     cooldown_sec: 3600
 """
     )
-    cfg = load_alert_config(p)
+    cfg = alert_config_from_data(yaml.safe_load(p.read_text()))
 
     engine = AlertEngine(
         handler=AlertingLogHandler(maxsize=10),

@@ -741,14 +741,6 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
 
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_user_counts_by_status()
-
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_active_user_counts()
-
     async def list_user_activity_providers(self, *, days: int = 30) -> list[str]:
         """Delegate to wrapped store."""
         return await self._store.list_user_activity_providers(days=days)
