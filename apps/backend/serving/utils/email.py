@@ -11,7 +11,8 @@ from markdown_it import MarkdownIt
 
 from serving.config.settings import settings
 from serving.config.site_identity import get_site_identity
-from serving.utils.delivery import EmailMessage, get_email_provider
+from serving.utils import cloudflare_email
+from serving.utils.delivery import EmailMessage, EmailProvider, get_email_provider
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -51,6 +52,19 @@ def get_smtp_config() -> dict[str, str | int]:
     }
 
 
+#: The built-in transport that is not SMTP, which ``send_email`` sends itself.
+_CLOUDFLARE = EmailProvider(
+    is_configured=cloudflare_email.is_configured, send=cloudflare_email.send
+)
+
+
+def _selected_provider(name: str) -> EmailProvider | None:
+    """Return the non-SMTP transport *name* selects: built in, or an extension's."""
+    if name == "cloudflare":
+        return _CLOUDFLARE
+    return get_email_provider(name)
+
+
 def is_email_enabled() -> bool:
     """Check whether the selected email delivery provider is configured.
 
@@ -59,7 +73,7 @@ def is_email_enabled() -> bool:
     """
     if settings.email_provider == "smtp":
         return bool(settings.smtp_host and settings.smtp_user and settings.smtp_password)
-    provider = get_email_provider(settings.email_provider)
+    provider = _selected_provider(settings.email_provider)
     return provider is not None and provider.is_configured()
 
 
@@ -80,7 +94,8 @@ def send_email(
         subject: Email subject.
         html_body: HTML email body.
         text_body: Plain text email body (optional, defaults to stripped HTML).
-        template: Account event kind for template transports; ignored by SMTP.
+        template: Account event kind for template transports; ignored by SMTP
+            and Cloudflare, which send the rendered bodies.
         template_data: Optional scalar account event variables for transports.
 
     Returns:
@@ -95,7 +110,7 @@ def send_email(
         return False
 
     if settings.email_provider != "smtp":
-        provider = get_email_provider(settings.email_provider)
+        provider = _selected_provider(settings.email_provider)
         if provider is None:
             return False
         return provider.send(

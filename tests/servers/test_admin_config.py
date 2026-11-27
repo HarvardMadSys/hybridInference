@@ -126,6 +126,8 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "immutable",
         "locked",
         "setup",
+        "choices",
+        "applies_when",
         "one_time",
         "origin",
         "custom",
@@ -138,7 +140,10 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "apply_mode",
     }
     assert smtp["security_relevant"] is True
+    assert smtp["choices"] == []
+    assert smtp["applies_when"] == {"key": "EMAIL_PROVIDER", "values": ["smtp"]}
     assert entries["SITE_NAME"]["security_relevant"] is False
+    assert entries["SITE_NAME"]["applies_when"] is None
     secrets = [
         "env-smtp-password",
         *(stored.value for stored in store.rows.values() if stored.secret),
@@ -170,12 +175,12 @@ async def test_get_leaves_out_settings_with_nothing_to_choose(config_client) -> 
 
     body = (await client.get("/admin/config", headers=AUTH)).json()
 
-    # No delivery extension is loaded: email has SMTP alone, and phone sign-in
-    # has no SMS provider for its settings to tune.
-    keys = set(_entries(body))
-    assert "EMAIL_PROVIDER" not in keys
-    assert not any(key.startswith("SMS_") for key in keys)
-    assert {"SMTP_HOST", "SMTP_PASSWORD"} <= keys
+    # No delivery extension is loaded: phone sign-in has no SMS provider for its
+    # settings to tune. Email still offers its two built-in transports.
+    entries = _entries(body)
+    assert not any(key.startswith("SMS_") for key in entries)
+    assert entries["EMAIL_PROVIDER"]["choices"] == ["smtp", "cloudflare"]
+    assert {"SMTP_HOST", "SMTP_PASSWORD", "CLOUDFLARE_EMAIL_API_TOKEN"} <= set(entries)
 
 
 @pytest.mark.asyncio

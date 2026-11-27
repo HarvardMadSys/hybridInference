@@ -3,6 +3,8 @@ import { describe, expect, it } from 'vitest';
 import type { ConfigEntry } from '@/lib/api/config';
 
 import {
+  applicableEntries,
+  appliesNow,
   buildPatch,
   canMarkSecret,
   draftError,
@@ -14,6 +16,7 @@ import {
   looksSecret,
   matchesQuery,
   settleDraft,
+  withoutMootDrafts,
 } from './configDrafts';
 
 function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
@@ -305,5 +308,64 @@ describe('error details', () => {
     expect(looksSecret(name)).toBe(true);
     // The form upper-cases a name as it is typed; the rule does not depend on it.
     expect(looksSecret(name.toLowerCase())).toBe(true);
+  });
+});
+
+describe('settings that apply to one choice', () => {
+  const provider = entry({
+    key: 'EMAIL_PROVIDER',
+    value: 'smtp',
+    choices: ['smtp', 'cloudflare'],
+  });
+  const host = entry({
+    key: 'SMTP_HOST',
+    value: 'mx.test',
+    applies_when: { key: 'EMAIL_PROVIDER', values: ['smtp'] },
+  });
+  const account = entry({
+    key: 'CLOUDFLARE_ACCOUNT_ID',
+    applies_when: { key: 'EMAIL_PROVIDER', values: ['cloudflare'] },
+  });
+  const sender = entry({ key: 'SMTP_FROM_EMAIL', value: 'noreply@example.test' });
+  const entries = [provider, host, account, sender];
+
+  it('follows the choice as the editor shows it, unsaved edit included', () => {
+    expect(appliesNow(host, entries, {})).toBe(true);
+    expect(appliesNow(account, entries, {})).toBe(false);
+    const cloudflare = { EMAIL_PROVIDER: { kind: 'value', value: 'cloudflare' } } as const;
+    expect(appliesNow(host, entries, cloudflare)).toBe(false);
+    expect(appliesNow(account, entries, cloudflare)).toBe(true);
+    // No condition, or a deciding setting the page does not have: it applies.
+    expect(appliesNow(sender, entries, cloudflare)).toBe(true);
+    expect(appliesNow(account, [account], {})).toBe(true);
+  });
+
+  it('keeps a refused value in sight whichever choice is made', () => {
+    const refused = { ...account, invalid: 'must be the 32 hexadecimal digits' };
+    expect(applicableEntries([provider, host, refused, sender], {}).map((e) => e.key)).toEqual([
+      'EMAIL_PROVIDER',
+      'SMTP_HOST',
+      'CLOUDFLARE_ACCOUNT_ID',
+      'SMTP_FROM_EMAIL',
+    ]);
+    expect(applicableEntries(entries, {}).map((e) => e.key)).toEqual([
+      'EMAIL_PROVIDER',
+      'SMTP_HOST',
+      'SMTP_FROM_EMAIL',
+    ]);
+  });
+
+  it('drops the edits a saved choice made moot, and no others', () => {
+    const saved = [{ ...provider, value: 'cloudflare' }, host, account, sender];
+    const drafts = {
+      SMTP_HOST: { kind: 'value', value: 'smtp.new.test' },
+      SMTP_FROM_EMAIL: { kind: 'value', value: 'mail@example.test' },
+    } as const;
+
+    expect(withoutMootDrafts(drafts, saved, ['EMAIL_PROVIDER'])).toEqual({
+      SMTP_FROM_EMAIL: { kind: 'value', value: 'mail@example.test' },
+    });
+    // A save that did not touch the choice leaves its edits alone.
+    expect(withoutMootDrafts(drafts, saved, ['SMTP_FROM_EMAIL'])).toBe(drafts);
   });
 });

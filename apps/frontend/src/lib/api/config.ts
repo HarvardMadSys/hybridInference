@@ -34,6 +34,12 @@ export interface ConfigCategory {
   description: string;
 }
 
+/** The setting `key` decides whether another applies: it does while `key` is one of `values`. */
+export interface ConfigAppliesWhen {
+  key: string;
+  values: string[];
+}
+
 export interface ConfigEntry {
   /** The canonical environment-variable name, e.g. `SMTP_PASSWORD`. */
   key: string;
@@ -65,6 +71,17 @@ export interface ConfigEntry {
   locked?: boolean;
   /** Shown on the first-run configuration step. */
   setup: boolean;
+  /**
+   * The accepted values, in the order to offer them, when the setting is a
+   * choice (`EMAIL_PROVIDER`); empty otherwise. An older backend omits it.
+   */
+  choices?: string[];
+  /**
+   * Set when the setting does something only while another one holds certain
+   * values: the SMTP settings while `EMAIL_PROVIDER` is `smtp`. The console
+   * hides it while another value is selected. An older backend omits it.
+   */
+  applies_when?: ConfigAppliesWhen | null;
   /**
    * Usually set once, when the gateway is deployed: listed after the settings
    * changed more often. An older backend omits it, and its order stays.

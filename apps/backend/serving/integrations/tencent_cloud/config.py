@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from serving.config.app_config import config_value
-from serving.config.app_config_registry import TRUE_WORDS, ConfigEntry, RequirementContext
+from serving.config.app_config_registry import (
+    TRUE_WORDS,
+    AppliesWhen,
+    ConfigEntry,
+    RequirementContext,
+)
 from serving.config.settings import settings as core_settings
 
 
@@ -26,6 +31,10 @@ def _ses_required(context: RequirementContext) -> bool:
     )
 
 
+#: The SES settings do nothing while another transport carries the mail.
+_WITH_SES = AppliesWhen("EMAIL_PROVIDER", ("tencent_ses",))
+
+
 def _template(key: str, description: str, *, required: bool = False) -> ConfigEntry:
     # 0 has always meant "no template": stored zeros must keep booting.
     return ConfigEntry(
@@ -35,6 +44,7 @@ def _template(key: str, description: str, *, required: bool = False) -> ConfigEn
         type="int",
         minimum=0,
         required=_ses_required if required else False,
+        applies_when=_WITH_SES,
     )
 
 
@@ -66,14 +76,21 @@ ENTRIES = (
         default="ap-guangzhou",
         choices=("ap-guangzhou", "ap-hongkong"),
         case_sensitive=True,
+        applies_when=_WITH_SES,
     ),
     ConfigEntry(
         "TENCENT_SES_FROM_EMAIL",
         "email",
         "Approved Tencent SES sender address.",
         required=_ses_required,
+        applies_when=_WITH_SES,
     ),
-    ConfigEntry("TENCENT_SES_FROM_NAME", "email", "Display name for Tencent SES mail."),
+    ConfigEntry(
+        "TENCENT_SES_FROM_NAME",
+        "email",
+        "Display name for Tencent SES mail.",
+        applies_when=_WITH_SES,
+    ),
     _template(
         "TENCENT_SES_TEMPLATE_VERIFICATION", "Approved verification template ID.", required=True
     ),

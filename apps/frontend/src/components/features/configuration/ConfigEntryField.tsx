@@ -3,6 +3,7 @@
 import { useId } from 'react';
 
 import { FIELD_INVALID, TEXT_FIELD } from '@/components/features/admin/adminStyles';
+import { Select, type SelectOption } from '@/components/ui/Select';
 import type { ConfigEntry } from '@/lib/api/config';
 
 import {
@@ -200,6 +201,27 @@ export function ConfigEntryField({
         onChange={onChange}
       />
     );
+  } else if (entry.type !== 'bool' && (entry.choices?.length ?? 0) > 1) {
+    // A choice, such as the email transport: its accepted values, and nothing to
+    // mistype. A value outside them -- one the backend refused, in force from
+    // the environment -- still shows, but cannot be chosen again.
+    const value = String(currentInput(entry, draft));
+    const choices = entry.choices ?? [];
+    const options: SelectOption[] = choices.map((choice) => ({ value: choice, label: choice }));
+    if (value && !choices.includes(value)) options.push({ value, label: value, disabled: true });
+    control = (
+      <Select
+        id={controlId}
+        value={value}
+        onValueChange={(next) => setValue(next)}
+        options={options}
+        disabled={disabled}
+        aria-describedby={describedBy}
+        aria-invalid={error ? true : undefined}
+        searchable={false}
+        className="w-full sm:max-w-xs"
+      />
+    );
   } else if (entry.type === 'bool') {
     const on = currentInput(entry, draft) === true;
     control = (
@@ -363,7 +385,11 @@ export function ConfigEntryField({
               Used by <span className="font-mono">{usedBy.join(', ')}</span>
             </p>
           ) : null}
-          {!entry.secret && entry.default !== null && entry.source !== 'default' ? (
+          {/* An empty default is no value to go back to: "Default:" alone says nothing. */}
+          {!entry.secret &&
+          entry.default !== null &&
+          entry.default !== '' &&
+          entry.source !== 'default' ? (
             <p className="text-gray-400">
               Default: <span className="font-mono">{String(entry.default)}</span>
             </p>

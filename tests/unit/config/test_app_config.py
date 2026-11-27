@@ -759,6 +759,132 @@ def test_smtp_health_uses_the_deployments_mail_transport(
         assert (key in missing) is not email_enabled
 
 
+@pytest.mark.parametrize(
+    "signup_enabled,verification,required",
+    [(True, True, True), (True, False, False), (False, True, False)],
+)
+def test_cloudflare_credentials_are_required_only_while_cloudflare_must_verify_signups(
+    config_env, monkeypatch, signup_enabled, verification, required
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from serving.config.runtime_settings import init_runtime_settings
+
+    monkeypatch.setenv("EMAIL_PROVIDER", "cloudflare")
+    get_settings.cache_clear()
+    runtime = init_runtime_settings(MagicMock(list_settings=AsyncMock(return_value=[])))
+    runtime.set_cached("signup_enabled", signup_enabled)
+    runtime.set_cached("signup_require_email_verification", verification)
+
+    app_config.use_environment(database_enabled=True)
+
+    missing = app_config.get_config_health().missing
+    for key in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_EMAIL_API_TOKEN"):
+        assert (key in missing) is required
+    # Cloudflare carries the mail, so no SMTP setting is ever asked for.
+    assert not any(key.startswith("SMTP_") for key in missing)
+
+
+def test_cloudflare_credentials_are_not_asked_for_while_smtp_carries_the_mail(
+    config_env, monkeypatch
+) -> None:
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "true")
+    get_settings.cache_clear()
+    app_config.use_environment(database_enabled=True)
+
+    missing = app_config.get_config_health().missing
+    assert "SMTP_PASSWORD" in missing
+    assert not any(key.startswith("CLOUDFLARE_") for key in missing)
+
+
+CLOUDFLARE_ACCOUNT_ID = "0123456789abcdef0123456789abcdef"
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_moves_mail_to_cloudflare_in_one_save(
+    config_env, monkeypatch
+) -> None:
+    from serving.utils import cloudflare_email, email
+
+    monkeypatch.setenv("SIGNUP_ENABLED", "true")
+    monkeypatch.setenv("SIGNUP_REQUIRE_EMAIL_VERIFICATION", "true")
+    get_settings.cache_clear()
+    # Simulate process startup after the fixture clears the cached instance.
+    monkeypatch.setattr(email, "settings", get_settings())
+    monkeypatch.setattr(cloudflare_email, "settings", get_settings())
+    store = FakeAppConfigStore()
+    await _boot(store)
+    assert {"SMTP_HOST", "SMTP_USER", "SMTP_PASSWORD"} <= set(
+        app_config.get_config_health().missing
+    )
+
+    await app_config.update(
+        {
+            "EMAIL_PROVIDER": "cloudflare",
+            "CLOUDFLARE_ACCOUNT_ID": CLOUDFLARE_ACCOUNT_ID,
+            "CLOUDFLARE_EMAIL_API_TOKEN": "synthetic-cloudflare-token",
+        },
+        updated_by="admin",
+    )
+
+    assert email.is_email_enabled()
+    assert app_config.get_config_health().missing == ()
+    assert store.rows["CLOUDFLARE_EMAIL_API_TOKEN"].secret
+    assert "synthetic-cloudflare-token" not in str(app_config.describe())
+    # Clearing the token leaves the gateway unable to send, and says so.
+    await app_config.update({"CLOUDFLARE_EMAIL_API_TOKEN": ""}, updated_by="admin")
+    assert not email.is_email_enabled()
+    assert app_config.get_config_health().missing == ("CLOUDFLARE_EMAIL_API_TOKEN",)
+
+
+@pytest.mark.asyncio
+async def test_the_console_learns_each_choice_and_which_transport_a_setting_serves(
+    config_env,
+) -> None:
+    await _boot(FakeAppConfigStore())
+
+    entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
+    assert entries["EMAIL_PROVIDER"]["choices"] == ["smtp", "cloudflare"]
+    assert entries["SMTP_HOST"]["choices"] == []
+    with_smtp = {"key": "EMAIL_PROVIDER", "values": ["smtp"]}
+    with_cloudflare = {"key": "EMAIL_PROVIDER", "values": ["cloudflare"]}
+    for key in ("SMTP_HOST", "SMTP_PORT", "SMTP_USER", "SMTP_PASSWORD"):
+        assert entries[key]["applies_when"] == with_smtp, key
+    for key in ("CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_EMAIL_API_TOKEN"):
+        assert entries[key]["applies_when"] == with_cloudflare, key
+        assert entries[key]["setup"] is True, key
+    # The sender serves every built-in transport.
+    assert entries["SMTP_FROM_EMAIL"]["applies_when"] is None
+    assert entries["EMAIL_PROVIDER"]["applies_when"] is None
+
+
+def test_where_cloudflare_mail_goes_needs_the_administrators_password(config_env) -> None:
+    assert app_config.security_relevant("EMAIL_PROVIDER")
+    assert app_config.security_relevant("CLOUDFLARE_ACCOUNT_ID")
+    assert app_config.security_relevant("CLOUDFLARE_EMAIL_API_TOKEN")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "account_id",
+    ["my-account", "0123456789abcdef0123456789abcde", "../../zones/0123456789abcdef0123456789abcd"],
+)
+async def test_a_cloudflare_account_id_is_32_hexadecimal_digits(config_env, account_id) -> None:
+    store = FakeAppConfigStore()
+    await _boot(store)
+
+    with pytest.raises(app_config.ConfigUpdateError) as excinfo:
+        await app_config.update({"CLOUDFLARE_ACCOUNT_ID": account_id}, updated_by="admin")
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.detail == (
+        "CLOUDFLARE_ACCOUNT_ID: must be the 32 hexadecimal digits Cloudflare shows as the "
+        "Account ID"
+    )
+    assert store.writes == []
+
+
 def test_a_variable_the_model_registry_references_is_never_missing(config_env) -> None:
     """Provider keys and URLs may be left unset.
 
@@ -862,12 +988,13 @@ async def test_describe_compares_the_environment_as_a_typed_value(config_env, mo
 async def test_the_console_listing_leaves_out_settings_with_nothing_to_choose(
     config_env, extension_registry
 ) -> None:
-    # No extension registers a delivery provider: email has SMTP alone, and the
-    # phone settings can do nothing without an SMS provider.
+    # No extension registers a delivery provider: the phone settings can do
+    # nothing without an SMS provider, and SMS_PROVIDER has "none" alone. Email
+    # still has a choice, between the built-in SMTP and Cloudflare transports.
     await _boot(FakeAppConfigStore())
 
     offered = {entry["key"] for entry in app_config.describe(offered_only=True)["entries"]}
-    assert "EMAIL_PROVIDER" not in offered
+    assert "EMAIL_PROVIDER" in offered
     assert not {"SMS_PROVIDER", "SMS_AUTH_ENABLED", "SMS_OTP_MAX_ATTEMPTS"} & offered
     assert {"SMTP_HOST", "LOG_LEVEL", "BATCH_MIN_ROLE"} <= offered
     # The full description, which the command line lists, keeps them.
@@ -900,7 +1027,7 @@ async def test_the_console_lists_a_setting_it_does_not_offer_while_it_needs_atte
     await _boot(store)
 
     entries = {entry["key"]: entry for entry in app_config.describe(offered_only=True)["entries"]}
-    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
+    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp, cloudflare"
     assert entries["SMS_OTP_MAX_ATTEMPTS"]["invalid"] == "must be at most 10"
     assert entries["SMS_SENDER_ID"]["missing"] is True
     assert "SMS_AUTH_ENABLED" not in entries
@@ -1899,7 +2026,7 @@ async def test_unloaded_distribution_rows_list_as_custom_and_keep_their_secrecy(
     entries = {entry["key"]: entry for entry in described["entries"]}
     assert entries["EMAIL_PROVIDER"]["value"] == "smtp"
     assert entries["SMS_PROVIDER"]["value"] == "none"
-    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
+    assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp, cloudflare"
     assert entries["SMS_SIGN_NAME"]["origin"] == "custom"
     assert entries["SMS_SIGN_NAME"]["value"] == "former-sign"
     assert entries["VENDOR_DELIVERY_TOKEN"]["origin"] == "custom"

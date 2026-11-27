@@ -141,6 +141,60 @@ export function withoutKeys<T>(
   return next;
 }
 
+/**
+ * Whether the entry applies with the values the editor shows now, unsaved
+ * edits included: its `applies_when` setting holds one of the listed values.
+ * An entry without a condition always applies, as does one whose deciding
+ * setting is not among `entries` (nothing on the page can change it).
+ */
+export function appliesNow(
+  entry: ConfigEntry,
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): boolean {
+  const condition = entry.applies_when;
+  if (!condition) return true;
+  const decider = entries.find((candidate) => candidate.key === condition.key);
+  if (!decider) return true;
+  return condition.values.includes(String(currentInput(decider, drafts[decider.key])));
+}
+
+/**
+ * The entries to show with the values the editor shows now: those that apply,
+ * and any whose stored value was refused, which still needs correcting or a
+ * reset whichever transport is selected.
+ */
+export function applicableEntries(
+  entries: readonly ConfigEntry[],
+  drafts: ConfigDrafts,
+): ConfigEntry[] {
+  return entries.filter((entry) => appliesNow(entry, entries, drafts) || entry.invalid != null);
+}
+
+/**
+ * `drafts` without the edits a save just made moot: once `EMAIL_PROVIDER` is
+ * saved as `cloudflare`, an unsaved SMTP edit belongs to a transport no longer
+ * in use, and would otherwise come back when SMTP is chosen again. Only the
+ * settings whose deciding setting is among `writtenKeys` are dropped.
+ */
+export function withoutMootDrafts(
+  drafts: ConfigDrafts,
+  entries: readonly ConfigEntry[],
+  writtenKeys: readonly string[],
+): ConfigDrafts {
+  const written = new Set(writtenKeys);
+  const moot = entries
+    .filter(
+      (entry) =>
+        entry.key in drafts &&
+        entry.applies_when != null &&
+        written.has(entry.applies_when.key) &&
+        !appliesNow(entry, entries, drafts),
+    )
+    .map((entry) => entry.key);
+  return moot.length > 0 ? withoutKeys(drafts, moot) : drafts;
+}
+
 export interface ConfigGroup {
   id: string;
   label: string;

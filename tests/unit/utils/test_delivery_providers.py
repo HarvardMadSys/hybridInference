@@ -20,14 +20,16 @@ def isolated_delivery_providers(monkeypatch):
 
 
 def test_base_deployment_has_only_builtin_provider_choices():
-    assert delivery.email_provider_names() == ("smtp",)
+    assert delivery.email_provider_names() == ("smtp", "cloudflare")
     assert delivery.sms_provider_names() == ("none",)
 
 
 @pytest.mark.parametrize(
     "register", [delivery.register_email_provider, delivery.register_sms_provider]
 )
-@pytest.mark.parametrize("name", ["smtp", "none", "", "Acme", "acme-provider", "acme.provider"])
+@pytest.mark.parametrize(
+    "name", ["smtp", "cloudflare", "none", "", "Acme", "acme-provider", "acme.provider"]
+)
 def test_provider_registration_rejects_reserved_and_invalid_names(register, name):
     with pytest.raises(ValueError):
         register(name, is_configured=lambda: True, send=Mock(return_value=True))
@@ -62,11 +64,11 @@ def test_provider_registration_refreshes_cached_configuration_choices():
     def choices(key):
         return next(entry.choices for entry in static_entries() if entry.key == key)
 
-    assert choices("EMAIL_PROVIDER") == ("smtp",)
+    assert choices("EMAIL_PROVIDER") == ("smtp", "cloudflare")
     assert choices("SMS_PROVIDER") == ("none",)
     delivery.register_email_provider("example_mail", is_configured=lambda: True, send=Mock())
     delivery.register_sms_provider("example_sms", is_configured=lambda: True, send=Mock())
-    assert choices("EMAIL_PROVIDER") == ("smtp", "example_mail")
+    assert choices("EMAIL_PROVIDER") == ("smtp", "cloudflare", "example_mail")
     assert choices("SMS_PROVIDER") == ("none", "example_sms")
 
 
