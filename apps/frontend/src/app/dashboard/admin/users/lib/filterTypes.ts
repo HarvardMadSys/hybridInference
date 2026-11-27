@@ -11,6 +11,7 @@ export const DEFAULT_FILTER_STATE: FilterState = {
   provider: null,
   activeWithinHours: null,
   anomaly: null,
+  tag: null,
   view: null,
 };
 
@@ -62,6 +63,7 @@ export function filterStateFromUrl(
     provider: params.get('provider'),
     activeWithinHours: parseNumber(params.get('active_within_hours')),
     anomaly,
+    tag: params.get('tag') || null,
     view: params.get('view'),
   };
 }
@@ -80,6 +82,8 @@ export function filterStateToUrl(state: FilterState, currency: Currency = 'USD')
     out.set('active_within_hours', String(state.activeWithinHours));
   }
   if (state.anomaly !== null) out.set('anomaly', String(state.anomaly));
+  // A saved view stored before tags existed has no `tag`.
+  if (state.tag) out.set('tag', state.tag);
   if (state.view) out.set('view', state.view);
   return out.toString();
 }

@@ -7,6 +7,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from serving.config.settings import has_role
+from serving.user_tags import TAG_ALLOWED_MODELS_KEY
 
 DISABLED_MODELS_PREFERENCE_KEY = "disabled_models"
 
@@ -270,6 +271,23 @@ def is_model_outside_key_scope(canonical_model_id: str, user_ctx: dict[str, Any]
     return canonical_model_id not in set(allowed)
 
 
+def is_model_outside_tag_scope(canonical_model_id: str, user_ctx: dict[str, Any] | None) -> bool:
+    """Return True if the caller's user tags do not allow this model.
+
+    Set (``tag_allowed_models``, :mod:`serving.user_tags`) only when a tag the
+    account carries has a model allowlist; absent means its tags restrict
+    nothing. An empty list is a real answer: tags whose allowlists share no
+    model allow none. Like a key's allowlist it narrows the listings too: an
+    administrator set it so the account reaches these models and no others.
+    """
+    if not user_ctx:
+        return False
+    allowed = user_ctx.get(TAG_ALLOWED_MODELS_KEY)
+    if allowed is None:
+        return False
+    return canonical_model_id not in set(allowed)
+
+
 class ModelAccessDenial(enum.Enum):
     """Why a caller may not use a model.
 
@@ -283,6 +301,7 @@ class ModelAccessDenial(enum.Enum):
     DISABLED = "disabled"
     OUTSIDE_KEY = "outside_key"
     OUTSIDE_PROJECT = "outside_project"
+    OUTSIDE_TAG = "outside_tag"
     OUTSIDE_GRANT = "outside_grant"
 
 
@@ -315,8 +334,8 @@ async def model_access_denial(
     The check every surface applies before it serves or lists a model: the
     route is published, the caller's role meets the role the model requires
     (after the runtime visibility override), the caller has not disabled the
-    model, the caller's API key allows it, and, with ``grant_scope``, an
-    inference grant names it. Overrides,
+    model, the caller's API key and project allow it, the caller's user tags
+    allow it, and, with ``grant_scope``, an inference grant names it. Overrides,
     denylists and grants are all keyed by the canonical id, so every check reads
     the canonical id: an alias is held to the same rules as its model.
 
@@ -351,6 +370,8 @@ async def model_access_denial(
         return ModelAccessDenial.OUTSIDE_KEY
     if is_model_outside_project_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_PROJECT
+    if is_model_outside_tag_scope(canonical, user_ctx):
+        return ModelAccessDenial.OUTSIDE_TAG
     if grant_scope and is_model_outside_grant_scope(canonical, user_ctx):
         return ModelAccessDenial.OUTSIDE_GRANT
     return None

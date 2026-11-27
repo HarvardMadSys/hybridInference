@@ -83,6 +83,7 @@ from serving.servers.deps import (
 from serving.servers.routers.admin._common import _serialize_for_audit
 from serving.servers.routers.admin.providers import _enumerate_routable_providers
 from serving.servers.routers.admin.reauthentication import confirm_administrator
+from serving.servers.routers.admin.user_tags import tag_memberships_payload
 from serving.storage import sso as sso_store
 
 router = APIRouter(prefix="/admin")
@@ -127,6 +128,7 @@ async def list_users(
     active_within_hours: int | None = Query(None, ge=1),
     anomaly: bool | None = None,
     include_usage_totals: bool = True,
+    tag: str | None = Query(None, max_length=32),
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -158,6 +160,9 @@ async def list_users(
     - anomaly: when ``true``, keep only users whose today's spend is
       anomalously high vs. their prior 7-day average (today >= $1, history
       >= 3 days, today >= 5x avg).
+    - tag: keep only users a user tag applies to (``unattended``, say).
+
+    Each user carries ``tags``, the user tags that apply to it.
 
     Requires: Admin authentication (JWT or ADMIN_TOKEN)
     """
@@ -184,6 +189,7 @@ async def list_users(
         active_within_hours=active_within_hours,
         anomaly=anomaly,
         include_usage_totals=include_usage_totals,
+        tag=tag,
     )
 
     status_counts = StatusCounts(
@@ -198,6 +204,7 @@ async def list_users(
     if not rows:
         return ListUsersResponse(total=total, users=[], status_counts=status_counts)
 
+    tags_by_user = await op_store.get_tags_for_users([row["id"] for row in rows])
     users = []
     for row in rows:
         users.append(
@@ -226,6 +233,7 @@ async def list_users(
                 usage_alltime_usd=Decimal(str(row.get("usage_alltime", 0))),
                 usage_alltime_requests=row.get("usage_alltime_requests", 0),
                 usage_alltime_tokens=row.get("usage_alltime_tokens", 0),
+                tags=tags_by_user.get(row["id"], []),
                 **primary_amounts(row),
             )
         )
@@ -827,6 +835,10 @@ async def get_user_detail(
             if value is not None:
                 native_detail[f"quota_{field}"] = value
 
+    tag_memberships, tag_limits = tag_memberships_payload(
+        await op_store.get_user_tag_memberships(user_id)
+    )
+
     return UserDetailResponse(
         id=user_row["id"],
         email=user_row["email"],
@@ -860,6 +872,8 @@ async def get_user_detail(
         admin_note=user_row.get("admin_note"),
         suspension_message=user_row.get("suspension_message"),
         sso_identities=await sso_accounts.identity_summaries(op_store, user_id),
+        tag_memberships=tag_memberships,
+        tag_limits=tag_limits,
         avg_turns=avg_turns,
         avg_user_turns=avg_user_turns,
         ask_question_fraction=ask_question_fraction,

@@ -163,6 +163,7 @@ function renderTable(user: UserRow = listed) {
         provider: null,
         activeWithinHours: null,
         anomaly: null,
+        tag: null,
         view: null,
       }}
       onSortChange={vi.fn()}
