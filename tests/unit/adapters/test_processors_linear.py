@@ -15,6 +15,7 @@ of them several times over.
 
 from __future__ import annotations
 
+import json
 import random
 import re
 import time
@@ -178,10 +179,15 @@ def test_a_streamed_tool_call_is_held_in_linear_time(processor):
     if processor is QwenCoderProcessor:
         head, tail = "<tool_call>\n<function=write>\n<parameter=content>\n", "</parameter>"
     proc.process_stream_chunk({"model": "m", "choices": [{"delta": {"content": head}}]})
-    piece = {"model": "m", "choices": [{"delta": {"content": "abcd" * 64}, "finish_reason": None}]}
+    pieces, text = 32 * 1024, "abcd" * 64
+    size = pieces * len(text)
+    # Past the cap the held call is sent on as content, and this test would
+    # fail below on a missing tool call instead of saying why.
+    assert size < processors.MAX_TOOL_CALL_CHARS, "the workload must stay under the cap"
+    piece = {"model": "m", "choices": [{"delta": {"content": text}, "finish_reason": None}]}
 
     def stream():
-        for _ in range(32 * 1024):
+        for _ in range(pieces):
             proc.process_stream_chunk(piece)
 
     elapsed = _elapsed(stream)
@@ -190,7 +196,7 @@ def test_a_streamed_tool_call_is_held_in_linear_time(processor):
     proc.process_stream_chunk({"model": "m", "choices": [{"delta": {"content": tail}}]})
     (final,) = proc.flush()
     (call,) = final["choices"][0]["delta"]["tool_calls"]
-    assert len(call["function"]["arguments"]) > 8 * 1024 * 1024
+    assert len(json.loads(call["function"]["arguments"])["content"]) == size
 
 
 @pytest.mark.parametrize("processor", [ThinkBlockProcessor, ReasoningExtractProcessor])
