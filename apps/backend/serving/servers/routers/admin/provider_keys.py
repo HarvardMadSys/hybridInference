@@ -13,6 +13,7 @@ from serving.admin.provider_key_probe import (
     probe_provider_key_with_existing_route,
 )
 from serving.audit import AuditActor, AuditTarget
+from serving.config import app_config
 from serving.config.settings import ROLE_RANK
 from serving.schemas_admin import (
     AddProviderApiKeyRequest,
@@ -27,6 +28,8 @@ from serving.schemas_admin import (
     ProviderApiKeyItem,
     ProviderKeyByRefRequest,
     ProviderKeyByRefResponse,
+    RemoveProviderEnvKeyRequest,
+    RemoveProviderEnvKeyResponse,
     SetProviderApiKeyMinRoleRequest,
     SetProviderApiKeyMinRoleResponse,
     SetProviderApiKeyStatusResponse,
@@ -131,6 +134,7 @@ async def list_provider_keys(
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
 
     disabled_hashes: dict[str, set[str]] = {}
+    removed_hashes: dict[str, set[str]] = {}
     env_min_roles: dict[str, dict[str, str]] = {}
     db_min_roles: dict[str, dict[str, str]] = {}
     db_key_values: dict[str, dict[str, str]] = {}
@@ -138,6 +142,7 @@ async def list_provider_keys(
     for prov in providers_to_inspect:
         try:
             disabled_hashes[prov] = set(await op_store.list_disabled_provider_env_key_hashes(prov))
+            removed_hashes[prov] = set(await op_store.list_removed_provider_env_key_hashes(prov))
             # Env reservations are keyed by the key's full hash, so they are read
             # from the DB rather than from the (truncated) list ids. Both maps come
             # from the DB rather than from the in-process cache: a provider can be
@@ -236,8 +241,15 @@ async def list_provider_keys(
         except Exception as exc:
             raise HTTPException(503, f"Failed to load provider keys for {prov}: {exc}") from exc
         active_db_hashes = {dynamic_keys.env_key_hash(raw) for raw in db_raw_keys.get(prov, set())}
+        # A removed key stays tombstoned so pools exclude it, but it is not a
+        # disable the admin can undo — unless configuration holds the credential
+        # again, in which case Enable is how it comes back.
+        configured = dynamic_keys.configured_env_key_hashes(prov)
+        removed = removed_hashes.get(prov, set())
         for key_hash, key_prefix in tombstones:
             if key_hash in active_db_hashes:
+                continue
+            if key_hash in removed and key_hash not in configured:
                 continue
             keys.append(
                 ProviderApiKeyItem(
@@ -520,12 +532,144 @@ async def enable_provider_env_key(
     if target_hash is None:
         raise HTTPException(404, "Disabled env provider key not found")
 
+    try:
+        removed_hashes = set(await op_store.list_removed_provider_env_key_hashes(payload.provider))
+    except Exception as exc:
+        raise HTTPException(
+            503,
+            f"Failed to load provider keys for {payload.provider}: {exc}",
+        ) from exc
+    if target_hash in removed_hashes and target_hash not in dynamic_keys.configured_env_key_hashes(
+        payload.provider
+    ):
+        raise HTTPException(
+            409,
+            "This environment key was removed. Set the provider key again before enabling it.",
+        )
+
     pools_updated = await _clear_env_tombstone(op_store, payload.provider, target_hash, actor)
 
     return EnableProviderEnvKeyResponse(
         id=payload.env_key_id,
         provider=payload.provider,
         pools_updated=pools_updated,
+    )
+
+
+async def _resolve_removable_env_key(
+    op_store,
+    provider: str,
+    env_key_id: str,
+) -> tuple[str, str, str | None]:
+    """Return ``(key_hash, key_prefix, raw_key)`` for an env key that can be removed.
+
+    ``raw_key`` is None when a disabled key's value can no longer be recovered
+    from adapter config. An active database row holding the credential is
+    refused: that row is the one to delete.
+    """
+    try:
+        db_raw_keys = set(await op_store.list_provider_keys_full(provider))
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+
+    shadowed = False
+    for raw in dynamic_keys.env_key_candidates(provider):
+        if dynamic_keys.env_key_id(raw) != env_key_id:
+            continue
+        if raw in db_raw_keys:
+            shadowed = True
+            continue
+        return (dynamic_keys.env_key_hash(raw), _mask(raw), raw)
+
+    if shadowed:
+        raise HTTPException(
+            409,
+            "A database key holds this credential. Delete that key instead.",
+        )
+
+    try:
+        tombstones = await op_store.list_disabled_provider_env_keys(provider)
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    for key_hash, key_prefix in tombstones:
+        if f"env:{key_hash[:32]}" == env_key_id:
+            return (key_hash, key_prefix, dynamic_keys.find_env_key_by_hash(provider, key_hash))
+
+    raise HTTPException(404, "Env provider key not found")
+
+
+@router.post("/provider-keys/remove-env", response_model=RemoveProviderEnvKeyResponse)
+async def remove_provider_env_key(
+    payload: RemoveProviderEnvKeyRequest,
+    admin_id: str = Depends(verify_admin_access),
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> RemoveProviderEnvKeyResponse:
+    """Remove an env-sourced provider key so the environment cannot restore it.
+
+    Disable leaves the saved setting and lists the key so it can be turned back
+    on. Remove blanks every saved setting that currently holds the credential —
+    an empty row beats the environment — and tombstones the hash as removed, so
+    the key leaves the list and every worker's pools. Nothing is tombstoned when
+    clearing the setting is refused.
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    _validate_provider(payload.provider)
+    key_hash, key_prefix, raw_key = await _resolve_removable_env_key(
+        op_store,
+        payload.provider,
+        payload.env_key_id,
+    )
+
+    cleared = dynamic_keys.provider_settings_holding_key(payload.provider, key_hash)
+    if cleared:
+        try:
+            await app_config.update(dict.fromkeys(cleared, ""), updated_by=admin_id)
+        except app_config.ConfigUpdateError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+    await op_store.disable_provider_env_key(
+        provider=payload.provider,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        disabled_by=admin_id,
+        removed=True,
+    )
+    pools_updated = (
+        dynamic_keys.disable_env_key_for_provider(payload.provider, raw_key, key_hash)
+        if raw_key
+        else 0
+    )
+    await op_store.set_provider_env_key_min_role(
+        provider=payload.provider,
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        min_role="free",
+        updated_by=admin_id,
+    )
+    dynamic_keys.set_env_key_min_role(payload.provider, key_hash, "free")
+
+    await log_admin_action(
+        op_store,
+        action="remove_provider_env_key",
+        actor=actor,
+        target=AuditTarget("provider_key", payload.env_key_id),
+        details={
+            "id": payload.env_key_id,
+            "provider": payload.provider,
+            "key_prefix": key_prefix,
+            "pools_updated": pools_updated,
+            "cleared_settings": cleared,
+        },
+    )
+
+    return RemoveProviderEnvKeyResponse(
+        id=payload.env_key_id,
+        provider=payload.provider,
+        pools_updated=pools_updated,
+        cleared_settings=cleared,
     )
 
 

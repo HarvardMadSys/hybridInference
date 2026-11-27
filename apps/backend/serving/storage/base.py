@@ -2438,12 +2438,26 @@ class OperationalStore(ABC):
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
-        """Persist a tombstone for an env-sourced provider API key."""
+        """Persist a tombstone for an env-sourced provider API key.
+
+        ``removed=False`` is a disable: the key stays listed and can be
+        re-enabled. ``removed=True`` is a delete: workers still exclude the
+        hash, and a later disable (``removed=False``) clears that flag.
+        """
 
     @abstractmethod
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
-        """Return disabled env-sourced provider key hashes for ``provider``."""
+        """Return disabled env-sourced provider key hashes for ``provider``.
+
+        Includes hashes an administrator removed. Pools exclude every tombstone,
+        whether or not the admin list still shows it.
+        """
+
+    @abstractmethod
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return env-key hashes an administrator removed, not merely disabled."""
 
     @abstractmethod
     async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
@@ -2451,7 +2465,8 @@ class OperationalStore(ABC):
 
         Unlike ``list_disabled_provider_env_key_hashes`` (boot-time hash set),
         this carries the masked prefix so the admin UI can display a disabled
-        env key and offer to re-enable it.
+        env key and offer to re-enable it. Removed hashes are included; the
+        caller decides which of those to show.
         """
 
     @abstractmethod

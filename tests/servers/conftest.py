@@ -222,7 +222,13 @@ def mock_operational_store():
         if not attr_name.startswith("_"):
             method = getattr(OperationalStore, attr_name)
             if callable(method):
-                setattr(store, attr_name, AsyncMock())
+                # The admin key list turns this into a set. A bare AsyncMock
+                # returns a MagicMock, which is not iterable, so the list fails
+                # closed. Nothing is removed unless a test says so.
+                if attr_name == "list_removed_provider_env_key_hashes":
+                    setattr(store, attr_name, AsyncMock(return_value=set()))
+                else:
+                    setattr(store, attr_name, AsyncMock())
 
     # The merged auth+spend lookup answers like the two-query path it
     # replaces (issue #185): delegate to the identity lookup plus the spend

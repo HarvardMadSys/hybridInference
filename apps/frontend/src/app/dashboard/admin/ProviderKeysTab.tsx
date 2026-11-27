@@ -15,6 +15,7 @@ import {
   enableProviderEnvKey,
   listProviderKeyProviders,
   listProviderKeys,
+  removeProviderEnvKey,
   setProviderEnvKeyMinRole,
   setProviderKeyMinRole,
   setProviderKeyStatus,
@@ -235,6 +236,31 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
       run: async () => {
         await deleteProviderKey(id);
         toast.success('Key deleted');
+        await loadKeys(provider);
+      },
+    });
+  };
+
+  const requestRemoveEnv = (key: ProviderApiKeyItem) => {
+    const id = key.id;
+    if (!id) return;
+    const provider = selectedProvider;
+    confirmation.request({
+      title: `Delete key ${key.key_prefix}?`,
+      confirmLabel: 'Delete',
+      busyLabel: 'Deleting…',
+      tone: 'danger',
+      body: (
+        <p>
+          The {key.provider} key {keyName(key)} is removed from its pools and its saved setting is
+          cleared. The environment variable does not put it back.
+        </p>
+      ),
+      run: async () => {
+        await removeProviderEnvKey(key.provider, id);
+        toast.success(
+          'Key cleared from configuration. The environment variable does not put it back.',
+        );
         await loadKeys(provider);
       },
     });
@@ -515,27 +541,38 @@ export function ProviderKeysTab({ refreshKey = 0, initialProvider = '', onProvid
                               reservation only
                             </span>
                           ) : k.source === 'env' ? (
-                            disabled ? (
+                            <>
+                              {disabled ? (
+                                <button
+                                  type="button"
+                                  onClick={() => void setEnvStatus(k, true)}
+                                  disabled={!k.id || confirmation.busy}
+                                  aria-label={`Enable key ${k.key_prefix}`}
+                                  className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                >
+                                  Enable
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => void setEnvStatus(k, false)}
+                                  disabled={!k.id || confirmation.busy}
+                                  aria-label={`Disable key ${k.key_prefix}`}
+                                  className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                >
+                                  Disable
+                                </button>
+                              )}
                               <button
                                 type="button"
-                                onClick={() => void setEnvStatus(k, true)}
+                                onClick={() => requestRemoveEnv(k)}
                                 disabled={!k.id || confirmation.busy}
-                                aria-label={`Enable key ${k.key_prefix}`}
-                                className="rounded-md px-2 py-1 text-[12px] font-medium text-green-700 hover:bg-green-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
+                                aria-label={`Delete key ${k.key_prefix}`}
+                                className="rounded-md px-2 py-1 text-[12px] font-medium text-red-600 hover:bg-red-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
                               >
-                                Enable
+                                Delete
                               </button>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => void setEnvStatus(k, false)}
-                                disabled={!k.id || confirmation.busy}
-                                aria-label={`Disable key ${k.key_prefix}`}
-                                className="rounded-md px-2 py-1 text-[12px] font-medium text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-30 disabled:hover:bg-transparent"
-                              >
-                                Disable
-                              </button>
-                            )
+                            </>
                           ) : (
                             <>
                               <button
