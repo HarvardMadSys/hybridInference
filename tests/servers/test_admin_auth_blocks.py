@@ -47,6 +47,18 @@ def small_limits(monkeypatch):
 
 
 @pytest.fixture
+def frozen_clock(monkeypatch):
+    """Stop the blocklist's clock at a fixed epoch.
+
+    Recording, listing and clearing all read ``_now()``. On the wall clock,
+    whatever time passes between those steps changes what they see: a loaded
+    full-suite run listed a 1000 s block as ``retry_after_sec`` 998, and a
+    long enough stall would close the counting window or lapse the block.
+    """
+    monkeypatch.setattr("serving.utils.auth_failure_blocklist._now", lambda: 1_000_000.0)
+
+
+@pytest.fixture
 async def admin_client(monkeypatch):
     op_store = MagicMock()
     app = FastAPI()
@@ -82,7 +94,7 @@ async def test_list_is_empty_when_nothing_is_blocked(admin_client, small_limits)
 
 
 @pytest.mark.asyncio
-async def test_list_reports_an_active_block(admin_client, small_limits):
+async def test_list_reports_an_active_block(admin_client, small_limits, frozen_clock):
     client, _ = admin_client
     await record_auth_failure("203.0.113.77")
     await record_auth_failure("203.0.113.77")
@@ -111,7 +123,7 @@ async def test_list_reports_the_feature_being_off(admin_client, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_clear_lifts_the_block_and_is_audited(admin_client, small_limits):
+async def test_clear_lifts_the_block_and_is_audited(admin_client, small_limits, frozen_clock):
     client, audit = admin_client
     await record_auth_failure("203.0.113.78")
     await record_auth_failure("203.0.113.78")
@@ -154,7 +166,9 @@ async def test_clear_of_an_unblocked_source_is_200_not_404(admin_client, small_l
 
 
 @pytest.mark.asyncio
-async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_limits):
+async def test_clear_accepts_the_bucket_key_from_a_listing(
+    admin_client, small_limits, frozen_clock
+):
     """An IPv6 source is reported as its /64, and that key clears it."""
     client, _ = admin_client
     await record_auth_failure("2001:db8:1234::11")
@@ -175,7 +189,9 @@ async def test_clear_accepts_the_bucket_key_from_a_listing(admin_client, small_l
 
 
 @pytest.mark.asyncio
-async def test_audit_failure_does_not_mask_a_successful_clear(admin_client, small_limits, caplog):
+async def test_audit_failure_does_not_mask_a_successful_clear(
+    admin_client, small_limits, frozen_clock, caplog
+):
     """A store outage must not turn a lifted block into a 500.
 
     The block lives in process memory and is already lifted by the time the
