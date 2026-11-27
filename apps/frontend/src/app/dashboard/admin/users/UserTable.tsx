@@ -24,6 +24,7 @@ import type {
 } from '@/lib/api/admin';
 import { getUserDetail, listModelVisibility, unlinkUserSsoIdentity } from '@/lib/api/admin';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
+import { getErrorMessage } from '@/lib/utils/errors';
 import { userAccountLabel, userAccountLabelKind } from '@/lib/utils/userLabel';
 import type { CostHistoryPoint, Density, FilterState, UserRow as UserRowType } from './types';
 import { UserRow } from './UserRow';
@@ -250,22 +251,30 @@ export function UserTable(props: UserTableProps) {
   // land under the row open now, nor close it.
   const detailSeq = useRef(0);
 
-  const openDetail = useCallback(async (userId: string) => {
-    const seq = ++detailSeq.current;
-    setExpandedId(userId);
-    setDetailLoading(true);
-    setDetail(null);
-    try {
-      const [d, visibility] = await Promise.all([getUserDetail(userId), listModelVisibility()]);
-      if (seq !== detailSeq.current) return;
-      setDetail(d);
-      setAvailableModels(visibility.models);
-    } catch {
-      if (seq === detailSeq.current) setExpandedId(null);
-    } finally {
-      if (seq === detailSeq.current) setDetailLoading(false);
-    }
-  }, []);
+  const openDetail = useCallback(
+    async (userId: string) => {
+      const seq = ++detailSeq.current;
+      setExpandedId(userId);
+      setDetailLoading(true);
+      setDetail(null);
+      try {
+        const [d, visibility] = await Promise.all([getUserDetail(userId), listModelVisibility()]);
+        if (seq !== detailSeq.current) return;
+        setDetail(d);
+        setAvailableModels(visibility.models);
+      } catch (error) {
+        if (seq !== detailSeq.current) return;
+        setExpandedId(null);
+        // Said for a click and for a link alike: a link that opens nothing
+        // would otherwise look broken. Either request can be the one that
+        // failed (the user's details or the model list), so the reason says which.
+        toast.error(`Could not open this user: ${getErrorMessage(error)}`);
+      } finally {
+        if (seq === detailSeq.current) setDetailLoading(false);
+      }
+    },
+    [toast],
+  );
 
   const collapse = () => {
     detailSeq.current += 1;

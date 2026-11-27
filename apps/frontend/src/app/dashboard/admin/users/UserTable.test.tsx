@@ -1465,6 +1465,38 @@ describe('UserTable opening the account a link names', () => {
     await act(async () => failLinked(new Error('Not found')));
 
     expect(screen.getByRole('textbox', { name: 'Admin note' })).toBeInTheDocument();
+    // Its failure no longer concerns anything on screen.
+    expect(toast.error).not.toHaveBeenCalledWith(
+      expect.stringContaining('Could not open this user'),
+    );
+  });
+
+  it('says when the account a link names cannot be loaded', async () => {
+    vi.mocked(getUserDetail).mockRejectedValue(new Error('Request failed (500)'));
+    renderTable(baseUser, { openUserId: 'user-1' });
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not open this user: Request failed (500)'),
+    );
+    expect(screen.getByText('user@example.com').closest('tr')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
+  it('says when a clicked account cannot be loaded', async () => {
+    vi.mocked(getUserDetail).mockRejectedValue(new Error('Request failed (500)'));
+    renderTable(baseUser);
+
+    fireEvent.click(screen.getByText('user@example.com'));
+
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith('Could not open this user: Request failed (500)'),
+    );
+    expect(screen.getByText('user@example.com').closest('tr')).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
   });
 
   it('waits for a write in flight before opening the account a link names', async () => {
