@@ -685,7 +685,11 @@ export function useConfigurationEditor({
       setAlertChannelDraft(null);
       setAlertTestResult(null);
     }
-    const keys = group.entries.map((entry) => entry.key);
+    // Every setting of the category, the ones another choice hides included:
+    // an SMTP edit made before switching to Cloudflare is discarded too.
+    const keys = (config?.entries ?? group.entries)
+      .filter((entry) => entry.category === group.id)
+      .map((entry) => entry.key);
     setDrafts((prev) => withoutKeys(prev, keys));
     setEntryErrors((prev) => withoutKeys(prev, keys));
     setPendingResets((prev) => withoutKeys(prev, keys));

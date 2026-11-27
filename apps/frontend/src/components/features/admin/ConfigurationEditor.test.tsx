@@ -1708,6 +1708,20 @@ describe('the email transport', () => {
     expect(email.getByText('1 unsaved change')).toBeInTheDocument();
   });
 
+  it('discards the edits of every transport, shown or not', async () => {
+    await renderTab(transports('smtp'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
+    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+    fireEvent.click(email.getByRole('button', { name: /^Discard changes/ }));
+
+    // Back on the saved transport, with nothing left of the hidden SMTP edit.
+    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    expect(email.queryByText(/unsaved change/)).toBeNull();
+  });
+
   it('names a default only when there is one to go back to', async () => {
     await renderTab(
       makeConfig({
