@@ -104,7 +104,7 @@ stored as its model), `auto_enabled`, `auto_window_hours` and
 `auto_min_active_hours`.
 
 `GET /admin/users` accepts `tag=<name>` to list only the users a tag applies
-to, and each user carries `tags`. `GET /admin/users/{id}` returns the account's
+to, and each user carries `tags`. `GET /admin/users/{id}/detail` returns the account's
 `tag_memberships` (dismissed ones included) and `tag_limits`, the combined
 limits of its applied tags.
 

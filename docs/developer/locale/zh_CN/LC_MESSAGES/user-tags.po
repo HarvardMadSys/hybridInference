@@ -1,0 +1,392 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-27 05:04+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/user-tags.md:1
+msgid "User tags and the `unattended` tag"
+msgstr "用户标签与 `unattended` 标签"
+
+#: ../developer/user-tags.md:3
+msgid ""
+"A **user tag** names a group of accounts and holds them to limits of its "
+"own: a daily and a monthly cost quota, a model allowlist and a cap on "
+"concurrent requests. An administrator adds accounts to a tag by hand. A "
+"tag can also have an **automatic rule**, which adds every account that "
+"sent requests in at least *K* of the last *N* hours."
+msgstr ""
+"**用户标签**为一组账号命名，并给它们加上标签自己的限制：每日和每月费用配额、模型白名单，以及并发请求上限。管理员可以手动把账号加入标签。标签还可以带一条**自动规则**：在最近"
+" *N* 小时中至少有 *K* 个小时发送过请求的账号，都会被自动加入。"
+
+#: ../developer/user-tags.md:9
+msgid ""
+"The gateway ships one tag with a rule: **`unattended`**. A person doesn't"
+" send requests every hour of a twelve-hour stretch; a script, a cron job "
+"or an agent left running does. The tag starts with no limits, so it only "
+"labels accounts until an administrator gives it some."
+msgstr ""
+"网关自带一个带规则的标签：**`unattended`**。真人不会在连续十二个小时里每小时都发送请求，而脚本、cron 任务或无人值守运行的 "
+"agent 会。这个标签初始没有任何限制，所以在管理员为它设置限制之前，它只做标记。"
+
+#: ../developer/user-tags.md:14
+msgid ""
+"Tags are managed in the admin console under **Users → User tags**, or "
+"through the admin API below."
+msgstr "标签在管理控制台的 **Users → User tags** 中管理，也可以通过下面的管理 API 管理。"
+
+#: ../developer/user-tags.md:17
+msgid "What a tag's limits mean"
+msgstr "标签限制的含义"
+
+#: ../developer/user-tags.md:19
+msgid ""
+"Each limit on a tag is a **ceiling**. A member is held to the strictest "
+"of its own limit and the limits of every tag it carries:"
+msgstr "标签上的每项限制都是一个**上限**。成员受自身限制与其所有标签限制中最严格的那一项约束："
+
+#: ../developer/user-tags.md
+msgid "Limit"
+msgstr "限制"
+
+#: ../developer/user-tags.md
+msgid "Combines as"
+msgstr "合并方式"
+
+#: ../developer/user-tags.md
+msgid "Daily cost quota"
+msgstr "每日费用配额"
+
+#: ../developer/user-tags.md
+msgid ""
+"The lowest of the account's own and each tag's. An account with no daily "
+"quota of its own counts as the 1000 USD default."
+msgstr "取账号自身配额与各标签配额中的最小值。账号自身没有每日配额时，按默认的 1000 USD 计。"
+
+#: ../developer/user-tags.md
+msgid "Monthly cost quota"
+msgstr "每月费用配额"
+
+#: ../developer/user-tags.md
+msgid "The lowest of the account's own (none means no limit) and each tag's."
+msgstr "取账号自身配额（没有即不限）与各标签配额中的最小值。"
+
+#: ../developer/user-tags.md
+msgid "Concurrent requests"
+msgstr "并发请求"
+
+#: ../developer/user-tags.md
+msgid ""
+"The lowest of the account's cap (its own override, else its role's) and "
+"each tag's. The tag cap also limits an unlimited role, and applies to the"
+" concurrency-exempt and token-counting budgets too."
+msgstr ""
+"取账号上限（有单独覆盖值时用它，否则用其角色的上限）与各标签上限中的最小值。标签上限对不限并发的角色同样生效，也适用于免并发限制模型和 token"
+" 计数各自的预算。"
+
+#: ../developer/user-tags.md
+msgid "Models"
+msgstr "模型"
+
+#: ../developer/user-tags.md
+msgid ""
+"The member may use only models on **every** tag's allowlist, on top of "
+"the role, disabled-model, key and project checks. A tag without an "
+"allowlist doesn't restrict models. Allowlists that share no model allow "
+"none."
+msgstr ""
+"成员只能使用出现在**每一个**标签白名单中的模型，此外仍要通过角色、禁用模型、key "
+"和项目的检查。没有白名单的标签不限制模型。几个白名单没有共同的模型时，任何模型都不允许。"
+
+#: ../developer/user-tags.md:29
+msgid ""
+"So a tag can only narrow what an account may do. An automatic tag can't "
+"loosen a limit an administrator set on the account, and two tags never "
+"conflict over which one wins. To give a group *more* than its accounts "
+"have, raise the accounts' own limits."
+msgstr "因此，标签只会收窄账号能做的事。自动标签无法放宽管理员给账号设置的限制，两个标签之间也不会出现谁优先的冲突。要给一组账号*更多*额度，请提高这些账号自身的限制。"
+
+#: ../developer/user-tags.md:34
+msgid ""
+"The limits apply on every way in: an API key, an inference grant from the"
+" cloud agent, a request made on a user's behalf (`X-On-Behalf-Of`) and "
+"the console playground. Batch work is held to a tag's quotas and "
+"allowlist; its concurrency is the batch scheduler's own per-role limit, "
+"which ignores per-account caps too. The model listings (`/v1/models`) and"
+" the console's model pickers leave out models a tag doesn't allow. `GET "
+"/v1/key` and the usage dashboard report the concurrency cap the tags "
+"impose."
+msgstr ""
+"这些限制对所有入口都生效：API key、云端 agent 的推理 grant、代表用户发起的请求（`X-On-Behalf-Of`）以及控制台的"
+" "
+"Playground。批量任务受标签的配额和白名单约束；它的并发由批量调度器按角色设定的上限决定，这个上限同样不看账号单独设置的上限。模型列表（`/v1/models`）和控制台的模型选择器会去掉标签不允许的模型。`GET"
+" /v1/key` 和用量面板会报告标签施加的并发上限。"
+
+#: ../developer/user-tags.md:42
+msgid ""
+"A change to a tag's limits applies to its members on their next request "
+"in the process that made it, and in other gateway processes within 30 "
+"seconds (their cached auth lookups expire)."
+msgstr "修改标签的限制后，在做出修改的进程中，成员的下一个请求就会按新限制处理；其他网关进程会在 30 秒内跟上（它们缓存的认证查询到期）。"
+
+#: ../developer/user-tags.md:46
+msgid ""
+"Amounts are in the ledger currency ([Accounting](accounting.md)). A write"
+" that sets an amount names the currency it was read in, and is refused "
+"(409) if the ledger's currency has changed since."
+msgstr "金额以账本币种计（[记账](accounting.md)）。设置金额的写入要注明读取时的币种；如果账本币种在此之后变了，写入会被拒绝（409）。"
+
+#: ../developer/user-tags.md:50
+msgid "The automatic rule"
+msgstr "自动规则"
+
+#: ../developer/user-tags.md:52
+msgid ""
+"A tag's rule has a window of *N* hours (1–168) and a threshold of *K* "
+"active hours (1–*N*). Every ten minutes, a scheduled job counts, for each"
+" account, the distinct hours among the last *N* in which it sent at least"
+" one request. It counts rolling hours back from now, not clock hours. The"
+" job gives the tag to every active account with at least *K* such hours."
+msgstr ""
+"标签的规则有一个 *N* 小时的窗口（1–168）和一个 *K* 个活跃小时的阈值（1–*N*）。一个定时任务每十分钟为每个账号统计：在最近 "
+"*N* 小时中，有多少个不同的小时里它至少发送过一个请求。统计按从现在往前滚动的小时计，而不是按整点。任务把标签给所有至少有 *K* "
+"个这样小时的活跃账号。"
+
+#: ../developer/user-tags.md:58
+msgid ""
+"A request is a row of `api_logs` attributed to the account. Rows written "
+"by a batch job are left out: the gateway sends batch requests at its own "
+"pace, whoever is watching."
+msgstr "一个请求就是 `api_logs` 中归属于该账号的一行。批量任务写入的行不计入：批量请求由网关按自己的节奏发送，与有没有人值守无关。"
+
+#: ../developer/user-tags.md:61
+msgid ""
+"`unattended` defaults to *every one of the last 12 hours* (12 of 12). Use"
+" *Preview matches* in the editor to see who a different rule would match "
+"before saving it. For example, *20 of 24* catches fewer heavy human "
+"users, and *1 of 6* tags anyone active in the last six hours."
+msgstr ""
+"`unattended` 默认要求*最近 12 小时中的每一个小时*（12 中取 12）。保存前可以在编辑器中用 *Preview "
+"matches* 查看另一条规则会匹配哪些账号。例如，*24 中取 20* 会少误伤一些重度使用的真人，*6 中取 1* "
+"会给最近六小时内活跃过的所有账号打上标签。"
+
+#: ../developer/user-tags.md:65
+msgid ""
+"One run happens at a time across all replicas: the job holds a PostgreSQL"
+" advisory lock, and a replica that can't take it skips its turn. **Run "
+"rule now** in the console runs a tag's rule immediately."
+msgstr ""
+"所有副本中同一时间只有一次运行：任务持有一个 PostgreSQL advisory lock，拿不到锁的副本跳过这一轮。控制台中的 **Run "
+"rule now** 会立即运行一个标签的规则。"
+
+#: ../developer/user-tags.md:69
+msgid "An automatic tag stays until an administrator removes it"
+msgstr "自动标签会一直保留，直到管理员移除"
+
+#: ../developer/user-tags.md:71
+msgid ""
+"The rule only adds members. If it also removed them, a quota or allowlist"
+" on the tag would undo itself: requests refused by the tag's own limits "
+"aren't logged, so an account the tag stopped would soon stop matching, "
+"lose the tag and its limits, and start again."
+msgstr "规则只添加成员。如果它也移除成员，标签上的配额或白名单就会自我失效：被标签自身限制拒绝的请求不会写入日志，所以被标签拦下的账号很快就不再匹配规则，从而失去标签和它的限制，然后又重新开始。"
+
+#: ../developer/user-tags.md:76
+msgid ""
+"When you remove a tag that has a rule, the membership is kept as "
+"**dismissed**. A dismissed membership applies no limits. The rule gives "
+"the tag back only if the account's requests *since the dismissal* match "
+"it again, so a false positive stays off unless the behaviour starts "
+"again. Removing the dismissed marker as well (the × on a struck-through "
+"tag) forgets the dismissal. Adding the tag by hand turns any membership "
+"into a manual one."
+msgstr ""
+"移除一个带规则的标签时，这条成员关系会保留为 "
+"**dismissed**（已撤销）。已撤销的成员关系不施加任何限制。只有账号在*撤销之后*的请求再次匹配规则时，规则才会把标签加回来，所以误判的账号不会被重新打上标签，除非这种行为再次出现。再移除这个撤销标记（带删除线标签上的"
+" ×）会忘掉这次撤销。手动添加标签会把任何成员关系变成手动的。"
+
+#: ../developer/user-tags.md:83
+msgid "Admin API"
+msgstr "管理 API"
+
+#: ../developer/user-tags.md:85
+msgid ""
+"All endpoints require admin authentication (a console session or "
+"`ADMIN_TOKEN`). Every write is recorded in the audit log under a "
+"`user_tag.*` action."
+msgstr "所有端点都需要管理员认证（控制台会话或 `ADMIN_TOKEN`）。每次写入都会以 `user_tag.*` 操作记入审计日志。"
+
+#: ../developer/user-tags.md
+msgid "Method and path"
+msgstr "方法与路径"
+
+#: ../developer/user-tags.md
+msgid "What it does"
+msgstr "作用"
+
+#: ../developer/user-tags.md
+msgid "`GET /admin/user-tags`"
+msgstr "`GET /admin/user-tags`"
+
+#: ../developer/user-tags.md
+msgid "Every tag with its limits, rule and member counts, built-in tags first."
+msgstr "所有标签及其限制、规则和成员数，内置标签排在前面。"
+
+#: ../developer/user-tags.md
+msgid "`POST /admin/user-tags`"
+msgstr "`POST /admin/user-tags`"
+
+#: ../developer/user-tags.md
+msgid ""
+"Create a tag: `name` (lowercase letters, digits, `-`, `_`; at most 32), "
+"`description`, the limits and the rule."
+msgstr "创建标签：`name`（小写字母、数字、`-`、`_`；最多 32 个字符）、`description`、各项限制和规则。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`PATCH /admin/user-tags/{name}`"
+msgstr "`PATCH /admin/user-tags/{name}`"
+
+#: ../developer/user-tags.md
+msgid "Change only the fields sent. `null` clears a limit."
+msgstr "只修改请求中给出的字段。`null` 清除一项限制。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`DELETE /admin/user-tags/{name}`"
+msgstr "`DELETE /admin/user-tags/{name}`"
+
+#: ../developer/user-tags.md
+msgid ""
+"Delete a tag and its memberships. The built-in tag can't be deleted "
+"(409); turn its rule off instead."
+msgstr "删除标签及其所有成员关系。内置标签不能删除（409），可以改为关闭它的规则。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`GET /admin/user-tags/{name}/members`"
+msgstr "`GET /admin/user-tags/{name}/members`"
+
+#: ../developer/user-tags.md
+msgid ""
+"The tag's memberships, applied ones first; `source` (repeatable) filters "
+"by `manual`, `auto` or `dismissed`."
+msgstr "标签的成员关系，生效中的排在前面；`source`（可重复）按 `manual`、`auto` 或 `dismissed` 筛选。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`POST /admin/user-tags/{name}/members`"
+msgstr "`POST /admin/user-tags/{name}/members`"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid ""
+"Add accounts by hand: `{\"user_ids\": [...]}`. Unknown ids are reported, "
+"not refused."
+msgstr "手动添加账号：`{\"user_ids\": [...]}`。未知的 id 会在结果中列出，不会导致请求被拒绝。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`DELETE /admin/user-tags/{name}/members/{user_id}`"
+msgstr "`DELETE /admin/user-tags/{name}/members/{user_id}`"
+
+#: ../developer/user-tags.md
+msgid ""
+"Remove the tag from an account; under a rule, the membership is kept as "
+"dismissed."
+msgstr "从账号移除标签；标签带规则时，这条成员关系保留为已撤销。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`GET /admin/user-tags/{name}/preview`"
+msgstr "`GET /admin/user-tags/{name}/preview`"
+
+#: ../developer/user-tags.md
+msgid ""
+"The accounts a rule matches now, read only. Optional `window_hours` / "
+"`min_active_hours` try bounds that aren't saved yet."
+msgstr "规则当前匹配的账号，只读。可选的 `window_hours` / `min_active_hours` 用来试用尚未保存的参数。"
+
+#: ../developer/user-tags.md
+#, python-brace-format
+msgid "`POST /admin/user-tags/{name}/detect`"
+msgstr "`POST /admin/user-tags/{name}/detect`"
+
+#: ../developer/user-tags.md
+msgid "Run a tag's rule now (409 when the rule is off)."
+msgstr "立即运行标签的规则（规则关闭时返回 409）。"
+
+#: ../developer/user-tags.md:101
+msgid ""
+"The tag fields are `quota_daily_cost`, `quota_monthly_cost` (with "
+"`currency`), `max_concurrent_requests`, `allowed_models` (canonical model"
+" ids; an alias is stored as its model), `auto_enabled`, "
+"`auto_window_hours` and `auto_min_active_hours`."
+msgstr ""
+"标签的字段有 `quota_daily_cost`、`quota_monthly_cost`（与 `currency` "
+"一起提交）、`max_concurrent_requests`、`allowed_models`（规范模型 "
+"id；别名会存为它所指向的模型）、`auto_enabled`、`auto_window_hours` 和 "
+"`auto_min_active_hours`。"
+
+#: ../developer/user-tags.md:106
+#, python-brace-format
+msgid ""
+"`GET /admin/users` accepts `tag=<name>` to list only the users a tag "
+"applies to, and each user carries `tags`. `GET /admin/users/{id}/detail` "
+"returns the account's `tag_memberships` (dismissed ones included) and "
+"`tag_limits`, the combined limits of its applied tags."
+msgstr ""
+"`GET /admin/users` 接受 `tag=<name>`，只列出该标签作用的用户，每个用户都带有 `tags`。`GET "
+"/admin/users/{id}/detail` 返回账号的 `tag_memberships`（含已撤销的）和 "
+"`tag_limits`，即其生效标签合并后的限制。"
+
+#: ../developer/user-tags.md:111
+msgid "Storage"
+msgstr "存储"
+
+#: ../developer/user-tags.md:113
+msgid "Migration `0023_user_tags` adds two tables and seeds `unattended`:"
+msgstr "迁移 `0023_user_tags` 新增两张表，并预置 `unattended`："
+
+#: ../developer/user-tags.md:115
+msgid ""
+"`user_tags`: one row per tag with its limits (`NULL` sets none) and rule;"
+" `system` marks a built-in tag."
+msgstr "`user_tags`：每个标签一行，包含它的限制（`NULL` 表示不设）和规则；`system` 标记内置标签。"
+
+#: ../developer/user-tags.md:117
+msgid ""
+"`user_tag_members`: `(user_id, tag)` with `source` (`manual`, `auto` or "
+"`dismissed`), `assigned_at` and `assigned_by` (the administrator's user "
+"id; `NULL` for the rule). A membership is deleted with its account or its"
+" tag."
+msgstr ""
+"`user_tag_members`：`(user_id, tag)`，以及 `source`（`manual`、`auto` 或 "
+"`dismissed`）、`assigned_at` 和 `assigned_by`（管理员的用户 id；由规则添加时为 "
+"`NULL`）。账号或标签被删除时，相应的成员关系随之删除。"
+
+#: ../developer/user-tags.md:121
+msgid ""
+"The auth lookups join an account's applied tags in the same query and "
+"fold their limits into the row "
+"([`serving.user_tags`](https://github.com/HarvardMadSys/hybridInference/blob/dev/apps/backend/serving/user_tags.py))."
+" For an account without tags this costs one primary-key probe."
+msgstr ""
+"认证查询在同一条 SQL "
+"中关联账号的生效标签，并把它们的限制合并进结果行（[`serving.user_tags`](https://github.com/HarvardMadSys/hybridInference/blob/dev/apps/backend/serving/user_tags.py)）。对没有标签的账号，代价是一次主键探查。"
