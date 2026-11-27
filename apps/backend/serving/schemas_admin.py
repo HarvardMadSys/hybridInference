@@ -84,7 +84,9 @@ class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported
     password, used only through the API key this creation issues.
     """
 
-    name: str = Field(..., min_length=1, max_length=255, description="Display name, e.g. 'Nightly eval bot'")
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Display name, e.g. 'Nightly eval bot'"
+    )
     login_name: str | None = Field(
         None,
         min_length=1,
@@ -94,8 +96,12 @@ class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported
     role: Literal["free", "pro", "internal"] = Field(
         "free", description="Account role; service accounts never hold the admin role"
     )
-    quota_daily_cost_usd: Decimal = Field(Decimal("1000.00"), ge=0, description="Daily cost quota in USD")
-    quota_monthly_cost_usd: Decimal | None = Field(None, ge=0, description="Monthly cost quota in USD (optional)")
+    quota_daily_cost_usd: Decimal = Field(
+        Decimal("1000.00"), ge=0, description="Daily cost quota in USD"
+    )
+    quota_monthly_cost_usd: Decimal | None = Field(
+        None, ge=0, description="Monthly cost quota in USD (optional)"
+    )
     expires_at: datetime | None = Field(None, description="API key expiration timestamp (optional)")
     notes: str | None = Field(None, description="Admin notes stored on the issued key")
     password: str | None = Field(

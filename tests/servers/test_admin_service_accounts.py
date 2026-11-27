@@ -45,9 +45,7 @@ async def client(mock_op_store, monkeypatch):
     app.state.services = services  # type: ignore[attr-defined]
     app.include_router(admin_router.router)
     mock_log_action = AsyncMock()
-    monkeypatch.setattr(
-        "serving.servers.routers.admin.users.log_admin_action", mock_log_action
-    )
+    monkeypatch.setattr("serving.servers.routers.admin.users.log_admin_action", mock_log_action)
     monkeypatch.setenv("ADMIN_TOKEN", "test-admin")
     monkeypatch.setenv("API_KEY_SECRET", "unit-test-secret")
 

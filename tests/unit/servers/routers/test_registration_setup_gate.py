@@ -61,6 +61,11 @@ ACCOUNT_CREATORS: dict[str, str | None] = {
     # and so does everything before it: a sign-in cannot be started at all, which
     # is what POST /auth/sso/discover shows below.
     "serving.auth.sso_accounts._resolve": None,
+    # Admin-only account creation: POST /admin/service-accounts behind
+    # verify_admin_access plus administrator reauthentication. Not a public
+    # registration route, so it cannot be driven by a stranger while setup
+    # is pending (tests/servers/test_admin_service_accounts.py).
+    "serving.servers.routers.admin.users.create_service_account": None,
 }
 
 # A request each public registration route would otherwise accept. The phone

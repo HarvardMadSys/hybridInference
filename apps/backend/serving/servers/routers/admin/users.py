@@ -547,9 +547,7 @@ async def admin_get_user_cost_history(
     )
 
 
-@router.post(
-    "/service-accounts", response_model=CreateServiceAccountResponse, status_code=201
-)
+@router.post("/service-accounts", response_model=CreateServiceAccountResponse, status_code=201)
 async def create_service_account(
     request: Request,
     payload: CreateServiceAccountRequest,

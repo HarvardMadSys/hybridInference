@@ -26,8 +26,7 @@ compatibility = "expand"
 
 
 STATEMENTS: tuple[str, ...] = (
-    "ALTER TABLE users "
-    "ADD COLUMN IF NOT EXISTS is_service_account BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_service_account BOOLEAN NOT NULL DEFAULT FALSE",
 )
 
 
