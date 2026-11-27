@@ -1249,13 +1249,23 @@ async def test_a_webhook_arrives_signed_after_the_results_are_readable(gateway):
         # The receiver has each request before the gateway has its response, and
         # the event is recorded delivered only after that: a read made as soon as
         # both requests arrived can still find one pending.
+        events: list[dict[str, Any]] = []
+
         async def recorded_delivered():
+            nonlocal events
             events = (await client.get("/v1/batch_webhook/events", headers=KEY)).json()["data"]
             delivered = {e["batch_id"] for e in events if e["status"] == "delivered"}
             recorded = {(e["batch_id"], e["type"], e["status"]) for e in events}
             return recorded if delivered >= {batch_id, legacy_id} else None
 
-        recorded = await _until(recorded_delivered, what="both events to be recorded delivered")
+        try:
+            recorded = await _until(recorded_delivered, what="both events to be recorded delivered")
+        except AssertionError as exc:
+            # A failed attempt's retry (webhooks.RETRY_DELAYS_SECONDS) can come after
+            # this wait has ended: the last read says which event was left, and why.
+            fields = ("batch_id", "type", "status", "attempts", "last_error")
+            read = [{f: e[f] for f in fields} for e in events]
+            raise AssertionError(f"{exc}; last events read: {read}") from None
         assert recorded == {
             (batch_id, "batch.completed", "delivered"),
             (legacy_id, "message_batch.ended", "delivered"),
