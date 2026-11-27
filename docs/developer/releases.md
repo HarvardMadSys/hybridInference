@@ -22,11 +22,13 @@ change notes.
 | A full commit SHA | The exact source revision; include local modifications separately |
 | An image digest, `image@sha256:…` | The exact container artifact, which may differ from the host checkout |
 
-CI publishes backend and console candidates with `dev-<full-sha>` tags and
-short-SHA aliases. A candidate tag identifies development output; it does not
-mean a date release exists for that commit. The `0.1.0` values in
-`pyproject.toml` and `apps/frontend/package.json` are package metadata and do
-not identify a particular deployed build.
+Container images are published only for releases. When `main` moves, CI's
+run on `main` builds the backend and console images and, once it is green,
+publishes them with `sha-<full-sha>` tags and short-SHA aliases. Commits on
+`dev` that are not released get no published image; build one from source.
+Images published before this change carry `dev-<full-sha>` tags instead. The
+`0.1.0` values in `pyproject.toml` and `apps/frontend/package.json` are package
+metadata and do not identify a particular deployed build.
 
 Report problems against the latest published release when possible. Fixes
 normally land on `dev` and reach a later release. There is no documented LTS

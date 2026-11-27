@@ -5,8 +5,9 @@ name: CI
 # that still named one queued for a day and was cancelled, so from 2026-11-20
 # no dev push run finished and no candidate was published. A push to
 # murphy/dev/* or a dispatch on any ref runs that ref's code, unreviewed, but
-# on a fresh machine with a read-only token; only a green dev push reaches the
-# publish jobs, the one place a packages: write token is issued.
+# on a fresh machine with a read-only token; only a green run on main (a
+# release push, or a dispatch on main) reaches the publish jobs, the one place
+# a packages: write token is issued.
 on:
   workflow_dispatch:
   schedule:
@@ -14,12 +15,12 @@ on:
     - cron: '23 18 * * *'
   push:
     branches: [main, dev, "murphy/dev/*"]
-    # No paths-ignore on pushes (2026-08-19): every dev SHA must publish a
-    # backend candidate for the distribution repo's bump bot, and a
-    # path-filtered push creates no workflow run at all — a job-level
-    # condition can never rescue that. Accepted cost: docs-only merges run
-    # full CI and ride the normal staging deploy. The per-job path
-    # classification below still keeps those runs cheap.
+    # No paths-ignore on pushes (2026-08-19): every release (a move of main)
+    # must publish its images, and a distribution pins only commits with a
+    # green dev or main run. A path-filtered push creates no workflow run at
+    # all — a job-level condition can never rescue that. Accepted cost:
+    # docs-only merges run full CI. The per-job path classification below
+    # still keeps those runs cheap.
   pull_request:
     branches: [main, dev]
 
@@ -32,7 +33,13 @@ permissions:
 concurrency:
   # Keep daily/manual backstops from cancelling a deployment-triggering push.
   group: ci-v2-${{ github.event_name }}-${{ github.ref }}
-  cancel-in-progress: true
+  # main moves only for a release, and its run publishes that release's
+  # images: a later move must queue behind it, not cancel it, or the earlier
+  # release is left without images (a dispatch on main publishes only main's
+  # current tip). GitHub keeps one pending run per group, so a third move
+  # while one runs and one waits still replaces the waiting one; release.yml
+  # queues the same way. Elsewhere a newer push supersedes the older run.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
   PYTHON_VERSION: "3.12"
@@ -983,7 +990,7 @@ jobs:
       needs.changes.outputs.tutorial_e2e == 'true')
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
-    # packages: read pulls the previous backend candidate for the restore drill.
+    # packages: read pulls the previous release's backend for the restore drill.
     permissions:
       contents: read
       packages: read
@@ -1223,7 +1230,7 @@ jobs:
         id: demo-previous-smoke
         # A failed deploy restores the image that ran before it, on the schema
         # this image has just migrated, and without running that image's
-        # migrations. The previous dev candidate must start there and keep
+        # migrations. The previous release's image must start there and keep
         # serving the accounts, keys and requests the smoke above created.
         # `make demo-previous` starts it through `make rollback`'s own code:
         # the pinned-artifact overlay, the base file's pass-through of the
@@ -1242,24 +1249,30 @@ jobs:
           docker_cfg="$(mktemp -d)"
           trap 'rm -rf "${docker_cfg}"' EXIT
           printf '%s' "${GHCR_TOKEN}" | DOCKER_CONFIG="${docker_cfg}" docker login ghcr.io -u "${{ github.actor }}" --password-stdin
-          # The newest published candidate at or before the previous commit. A
-          # dev push cancels the build of the one before it, so that commit
-          # may have none; its first-parent ancestors are what dev ran before
-          # (the checkout has the full history).
+          # Images are published only for releases, so the image a deployment
+          # would restore is the newest release at or before the previous
+          # commit (the checkout has the full history and its tags). Release
+          # tags are lightweight, so their date is the commit's, not the
+          # release's: order by the YYYYMMDD[.N] name instead. Releases
+          # cut before that change carry only the older dev-<sha> tag. A main
+          # move can cancel the publish of the one before it, so try a few.
           image=""
-          for sha in $(git rev-list --first-parent --max-count=20 "${PREVIOUS_SHA}"); do
-            candidate="ghcr.io/harvardmadsys/hybridinference-backend:dev-${sha}"
-            if DOCKER_CONFIG="${docker_cfg}" docker manifest inspect "${candidate}" >/dev/null 2>&1; then
-              image="${candidate}"
-              break
-            fi
+          for tag in $(git tag --merged "${PREVIOUS_SHA}" --sort=-v:refname \
+                         | grep -E '^[0-9]{8}(\.[0-9]+)?$' | head -5); do
+            sha="$(git rev-list -n 1 "refs/tags/${tag}")"
+            for prefix in sha dev; do
+              candidate="ghcr.io/harvardmadsys/hybridinference-backend:${prefix}-${sha}"
+              if DOCKER_CONFIG="${docker_cfg}" docker manifest inspect "${candidate}" >/dev/null 2>&1; then
+                image="${candidate}"
+                break 2
+              fi
+            done
           done
           if [ -z "${image}" ]; then
-            echo "::warning title=Restore drill skipped::no candidate published for ${PREVIOUS_SHA} or its 19 first-parent ancestors"
+            echo "::warning title=Restore drill skipped::no image published for the five newest releases at or before ${PREVIOUS_SHA}"
             exit 0
           fi
-          [ "${image}" = "ghcr.io/harvardmadsys/hybridinference-backend:dev-${PREVIOUS_SHA}" ] \
-            || echo "::notice title=Restore drill::${PREVIOUS_SHA} has no candidate; restoring ${image}"
+          echo "::notice title=Restore drill::restoring release ${tag} (${image})"
           DOCKER_CONFIG="${docker_cfg}" docker pull --quiet "${image}"
           port="$(docker container inspect --format '{{(index (index .NetworkSettings.Ports "3001/tcp") 0).HostPort}}' "${EXAMPLE_FRONTEND_CONTAINER_NAME}")"
           PREVIOUS_BACKEND_IMAGE="${image}" \
@@ -1529,19 +1542,23 @@ jobs:
             --classification-json "${CLASSIFICATION_JSON}" \
             --job-results-json "${JOB_RESULTS_JSON}"
 
-  # ---- Backend candidate publishing --------------------------------------
-  # Every green dev push publishes its backend candidate image so the
-  # distribution repository's bump bot always finds a digest for dev HEAD
-  # (W4 of the repo-split plan). Deliberately unconditional on path
-  # classification: a docs-only push still gets a candidate — the bump bot
-  # pins exact SHAs and would otherwise wait forever on one.
+  # ---- Backend image publishing -------------------------------------------
+  # Images are built and published only for releases. A maintainer releases
+  # by moving main up to a commit on dev (release.yml tags it), and the green
+  # CI run of that main push publishes the backend and console images as
+  # sha-<full-sha>. A dispatch of this workflow on main re-publishes main's
+  # commit when that run was cancelled or failed for an unrelated reason.
+  # Dev pushes, pull requests and other branches build images only to test
+  # them (docker-build, tutorial-e2e) and push nothing. Deliberately
+  # unconditional on path classification: a docs-only release still gets
+  # images, since a distribution pins exact SHAs.
   #
   # Multi-arch is built as two NATIVE builds, on ubuntu-24.04-arm and
   # ubuntu-latest, stitched into one manifest list, never QEMU emulation: the amd64 half under qemu-user on the arm64
   # runner segfaulted `uv sync` instantly (dev@2e4edfa4, exit 139 —
   # qemu-user cannot run uv's static binary). Each half pushes by digest
   # with no tag; the stitch job below is the only thing that creates the
-  # dev-<sha> tags, so a tag's existence still means "complete candidate".
+  # sha-<sha> tags, so a tag's existence still means "complete candidate".
   #
   # Gate shape (all publish jobs): !cancelled() suppresses the implicit
   # success() GitHub prepends to any job `if` lacking a status function.
@@ -1574,7 +1591,7 @@ jobs:
     # Query errors deliberately report "no candidate" (fail-open): the cost
     # is an idempotent rebuild + re-tag of identical content, never a wrong
     # publish.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1592,20 +1609,20 @@ jobs:
         run: |
           set -euo pipefail
           if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-backend/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+                    --jq ".[] | select(.metadata.container.tags[]? == \"sha-${GITHUB_SHA}\") | .name" | head -1)"; then
             echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
             digest=""
           fi
           if [ -n "${digest}" ]; then
-            echo "candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
+            echo "candidate sha-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
           else
-            echo "no candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
+            echo "no candidate for sha-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   publish-backend-arm64:
     name: Publish backend candidate (arm64)
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
@@ -1660,7 +1677,7 @@ jobs:
           file: deploy/docker/Dockerfile.backend
           platforms: linux/arm64
           # Push by digest, no tags: the per-arch halves are anonymous until
-          # the stitch job assembles them under the dev-<sha> tags.
+          # the stitch job assembles them under the sha-<sha> tags.
           outputs: type=image,name=ghcr.io/harvardmadsys/hybridinference-backend,name-canonical=true,push-by-digest=true,push=true
           # The digest deploy and the bump gate both read the revision label
           # back and compare it against their SHA truth; a candidate without
@@ -1678,7 +1695,7 @@ jobs:
   publish-backend-amd64:
     name: Publish backend candidate (amd64)
     # Native twin of the arm64 half, on a hosted x86_64 runner.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -1744,13 +1761,13 @@ jobs:
   publish-backend:
     name: Publish backend candidate
     # The stitch: assemble both native halves into one manifest list under
-    # the dev-<sha> tags. Keeps the historical job name — this is the job
+    # the sha-<sha> tags. Keeps the historical job name — this is the job
     # whose success means "a complete candidate exists for this SHA", which
-    # is what the bump bot's CI gate and humans both read. Requires BOTH
+    # is what the distribution's bump script and humans both read. Requires BOTH
     # arch results explicitly: a half-published candidate must never get a
     # tag (the tag is the completeness signal). The skip verdict comes from
     # the precheck's single query, the same one the arch jobs obeyed.
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-backend-arm64.result == 'success' && needs.publish-backend-amd64.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' && needs.publish-backend-arm64.result == 'success' && needs.publish-backend-amd64.result == 'success' }}
     needs: [ci-gate, publish-backend-precheck, publish-backend-arm64, publish-backend-amd64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -1790,7 +1807,7 @@ jobs:
           img="ghcr.io/harvardmadsys/hybridinference-backend"
           short="${GITHUB_SHA:0:8}"
           if [ -n "${EXISTING}" ]; then
-            echo "candidate dev-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
+            echo "candidate sha-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
             echo "digest=${EXISTING}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -1798,17 +1815,17 @@ jobs:
             echo "::error title=Missing arch digest::arm64='${ARM_DIGEST}' amd64='${AMD_DIGEST}' — precheck said build, but an arch job produced no digest"
             exit 1
           fi
-          # Full-SHA tag is what the bump bot resolves (an 8-char prefix is
+          # Full-SHA tag is what the bump script resolves (an 8-char prefix is
           # not a SHA claim); the short tag stays for humans. imagetools
           # flattens the per-arch indexes (image + provenance manifests)
           # into one list; the revision-label walk is index-aware and
           # already proven against attestation children.
           docker buildx imagetools create \
-            -t "${img}:dev-${GITHUB_SHA}" \
-            -t "${img}:dev-${short}" \
+            -t "${img}:sha-${GITHUB_SHA}" \
+            -t "${img}:sha-${short}" \
             "${img}@${ARM_DIGEST}" \
             "${img}@${AMD_DIGEST}"
-          index="$(docker buildx imagetools inspect "${img}:dev-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          index="$(docker buildx imagetools inspect "${img}:sha-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
           echo "digest=${index}" >> "$GITHUB_OUTPUT"
 
       - name: Candidate summary
@@ -1823,7 +1840,7 @@ jobs:
             if [ -n "${EXISTING}" ]; then
               echo "- already published: \`ghcr.io/harvardmadsys/hybridinference-backend@${EXISTING}\`"
             else
-              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-backend@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
+              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-backend@${INDEX}\` (tag \`sha-${GITHUB_SHA:0:8}\`)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -1835,11 +1852,11 @@ jobs:
   # W7 makes the console an upstream artifact too. These jobs deliberately
   # pass no distribution branding or private route target: deployments inject
   # public identity through /site-config and server-only proxy targets at
-  # runtime. As with the backend, every green dev SHA gets a native arm64 and
+  # runtime. As with the backend, every released SHA gets a native arm64 and
   # amd64 child stitched into one immutable index for distribution lock files.
   publish-console-precheck:
     name: Publish console candidate (precheck)
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate]
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -1857,20 +1874,20 @@ jobs:
         run: |
           set -euo pipefail
           if ! digest="$(gh api "/orgs/${GITHUB_REPOSITORY_OWNER}/packages/container/hybridinference-console/versions?per_page=100" \
-                    --jq ".[] | select(.metadata.container.tags[]? == \"dev-${GITHUB_SHA}\") | .name" | head -1)"; then
+                    --jq ".[] | select(.metadata.container.tags[]? == \"sha-${GITHUB_SHA}\") | .name" | head -1)"; then
             echo "::warning title=Package lookup failed::Treating the lookup failure as no candidate; publication will rebuild"
             digest=""
           fi
           if [ -n "${digest}" ]; then
-            echo "console candidate dev-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
+            echo "console candidate sha-${GITHUB_SHA} already published (${digest}); downstream jobs will skip"
           else
-            echo "no console candidate for dev-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
+            echo "no console candidate for sha-${GITHUB_SHA} (or the lookup errored); downstream jobs will build"
           fi
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
 
   publish-console-arm64:
     name: Publish console candidate (arm64)
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-console-precheck]
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 45
@@ -1956,7 +1973,7 @@ jobs:
 
   publish-console-amd64:
     name: Publish console candidate (amd64)
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' }}
     needs: [ci-gate, publish-console-precheck]
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -2040,7 +2057,7 @@ jobs:
 
   publish-console:
     name: Publish console candidate
-    if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.ci-gate.result == 'success' && needs.publish-console-arm64.result == 'success' && needs.publish-console-amd64.result == 'success' }}
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main' && needs.ci-gate.result == 'success' && needs.publish-console-arm64.result == 'success' && needs.publish-console-amd64.result == 'success' }}
     needs: [ci-gate, publish-console-precheck, publish-console-arm64, publish-console-amd64]
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -2080,7 +2097,7 @@ jobs:
           img="ghcr.io/harvardmadsys/hybridinference-console"
           short="${GITHUB_SHA:0:8}"
           if [ -n "${EXISTING}" ]; then
-            echo "console candidate dev-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
+            echo "console candidate sha-${GITHUB_SHA} already published (${EXISTING}); nothing to stitch"
             echo "digest=${EXISTING}" >> "$GITHUB_OUTPUT"
             exit 0
           fi
@@ -2089,11 +2106,11 @@ jobs:
             exit 1
           fi
           docker buildx imagetools create \
-            -t "${img}:dev-${GITHUB_SHA}" \
-            -t "${img}:dev-${short}" \
+            -t "${img}:sha-${GITHUB_SHA}" \
+            -t "${img}:sha-${short}" \
             "${img}@${ARM_DIGEST}" \
             "${img}@${AMD_DIGEST}"
-          index="$(docker buildx imagetools inspect "${img}:dev-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
+          index="$(docker buildx imagetools inspect "${img}:sha-${GITHUB_SHA}" --format '{{ json .Manifest.Digest }}' | tr -d '"')"
           echo "digest=${index}" >> "$GITHUB_OUTPUT"
 
       - name: Candidate summary
@@ -2108,7 +2125,7 @@ jobs:
             if [ -n "${EXISTING}" ]; then
               echo "- already published: \`ghcr.io/harvardmadsys/hybridinference-console@${EXISTING}\`"
             else
-              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-console@${INDEX}\` (tag \`dev-${GITHUB_SHA:0:8}\`)"
+              echo "- pushed multi-arch (arm64+amd64): \`ghcr.io/harvardmadsys/hybridinference-console@${INDEX}\` (tag \`sha-${GITHUB_SHA:0:8}\`)"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 

@@ -1,14 +1,14 @@
 name: Build Candidate Images
 
 # Manual diagnostic image slicer. Canonical deployable backend and neutral-
-# console candidates are published automatically by ci.yml as multi-arch
-# manifests under the dev-<full-sha> tag; distribution bump chains consume
-# only those candidates.
+# console images are published only for releases, by ci.yml's run on main, as
+# multi-arch manifests under the sha-<full-sha> tag; distribution bump chains
+# consume only those images.
 #
 # This dispatch-only tool intentionally builds one operator-selected platform
 # under a separate manual-<full-sha>-<arch> tag. It diagnoses Dockerfile/build
-# problems without minting a deployable candidate or repointing either
-# canonical dev tag.
+# problems without minting a deployable image or repointing either
+# canonical sha tag.
 #
 # Backend only: this dispatch workflow remains a narrow diagnostic slicer. The
 # console's canonical neutral candidate is automatic because it must carry no
@@ -128,7 +128,7 @@ jobs:
             echo "- diagnostic image: \`${{ steps.names.outputs.backend }}:manual-${GITHUB_SHA}-${{ steps.names.outputs.arch }}@${BACKEND_DIGEST}\`"
             echo ""
             echo "Diagnostic only: upstream.lock never consumes manual-* tags."
-            echo "For deployment, use the automatic dev CI multi-arch candidate and the consuming distribution repository's upstream bump flow."
+            echo "For deployment, use the multi-arch image CI publishes for a release and the consuming distribution repository's upstream bump flow."
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove the registry login
