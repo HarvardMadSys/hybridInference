@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import '@testing-library/jest-dom/vitest';
-import { cleanup, render, screen } from '@testing-library/react';
+import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import UsersTab from './index';
@@ -13,16 +13,13 @@ import {
   type UserDetail,
 } from '@/lib/api/admin';
 
-/** The Users tab's address, as a test sets it. */
-const address = vi.hoisted(() => ({ search: new URLSearchParams() }));
-vi.mock('next/navigation', () => {
-  const router = { replace: vi.fn() };
-  return {
-    useSearchParams: () => address.search,
-    useRouter: () => router,
-    usePathname: () => '/dashboard/admin/users',
-  };
-});
+/** The Users tab's address, as a test sets it, and the router that rewrites it. */
+const address = vi.hoisted(() => ({ search: new URLSearchParams(), router: { replace: vi.fn() } }));
+vi.mock('next/navigation', () => ({
+  useSearchParams: () => address.search,
+  useRouter: () => address.router,
+  usePathname: () => '/dashboard/admin/users',
+}));
 vi.mock('@/lib/api/admin', () => ({
   listUsers: vi.fn(),
   getBulkUsageTotals: vi.fn(),
@@ -121,6 +118,13 @@ it('lists the account a request links to and opens its details', async () => {
   expect(listUsers).toHaveBeenCalledWith(expect.objectContaining({ search: 'fixture-user' }));
   expect(getUserDetail).toHaveBeenCalledTimes(1);
   expect(getUserDetail).toHaveBeenCalledWith('fixture-user');
+  // The link has done its work: the address keeps the search and loses `open`.
+  await waitFor(() =>
+    expect(address.router.replace).toHaveBeenCalledWith('/dashboard/admin/users?q=fixture-user', {
+      scroll: false,
+    }),
+  );
+  expect(address.router.replace).toHaveBeenCalledTimes(1);
 });
 
 it('opens no account on an ordinary visit', async () => {
@@ -129,4 +133,5 @@ it('opens no account on an ordinary visit', async () => {
 
   expect(await screen.findByText('Fixture user')).toBeInTheDocument();
   expect(getUserDetail).not.toHaveBeenCalled();
+  expect(address.router.replace).not.toHaveBeenCalled();
 });

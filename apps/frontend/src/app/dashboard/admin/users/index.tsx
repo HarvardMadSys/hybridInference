@@ -59,8 +59,9 @@ export default function UsersTab() {
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
   );
-  // An account a link asked to open. Not a filter: changing the filters
-  // rewrites the address without it.
+  // An account a link asked to open. Not a filter: it leaves the address once
+  // the account is open (below), and a filter change rewrites the address
+  // without it.
   const openUserId = searchParams.get(OPEN_USER_PARAM);
   const [density, setDensity] = useState<Density>('comfortable');
 
@@ -90,6 +91,15 @@ export default function UsersTab() {
     },
     [pathname, router, currency],
   );
+
+  // The link has done its work once the account is open: the same address
+  // without `open`, so a reload or a copy of it opens nothing.
+  const dropOpenUser = useCallback(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    params.delete(OPEN_USER_PARAM);
+    const qs = params.toString();
+    router.replace(qs ? `${pathname}?${qs}` : pathname, { scroll: false });
+  }, [searchParams, pathname, router]);
 
   // Persisted density
   useEffect(() => {
@@ -378,6 +388,7 @@ export default function UsersTab() {
               filterState={filterState}
               onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
               openUserId={openUserId}
+              onOpenedFromLink={dropOpenUser}
               {...handlers}
             />
             <div className="border-t border-gray-200 px-3">

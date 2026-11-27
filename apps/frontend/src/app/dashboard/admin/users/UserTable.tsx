@@ -49,6 +49,8 @@ interface UserTableProps {
    * details open once the list shows it.
    */
   openUserId?: string | null;
+  /** Called once the account `openUserId` names has been opened. */
+  onOpenedFromLink?: () => void;
   // Write handlers. Each throws on failure: a confirmation the table opens
   // stays open with the error, and a direct write shows it where it was made.
   onApprove: (userId: string) => Promise<void>;
@@ -134,6 +136,7 @@ export function UserTable(props: UserTableProps) {
     filterState,
     onSortChange,
     openUserId = null,
+    onOpenedFromLink,
   } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
@@ -242,27 +245,40 @@ export function UserTable(props: UserTableProps) {
     </th>
   );
 
+  // Bumped by every open and close. A response is shown only if nothing was
+  // opened or closed after the open that asked for it: a slow one must not
+  // land under the row open now, nor close it.
+  const detailSeq = useRef(0);
+
   const openDetail = useCallback(async (userId: string) => {
+    const seq = ++detailSeq.current;
     setExpandedId(userId);
     setDetailLoading(true);
     setDetail(null);
     try {
       const [d, visibility] = await Promise.all([getUserDetail(userId), listModelVisibility()]);
+      if (seq !== detailSeq.current) return;
       setDetail(d);
       setAvailableModels(visibility.models);
     } catch {
-      setExpandedId(null);
+      if (seq === detailSeq.current) setExpandedId(null);
     } finally {
-      setDetailLoading(false);
+      if (seq === detailSeq.current) setDetailLoading(false);
     }
   }, []);
+
+  const collapse = () => {
+    detailSeq.current += 1;
+    setExpandedId(null);
+    setDetail(null);
+    setDetailLoading(false);
+  };
 
   const toggleDetail = async (userId: string) => {
     // A write in flight belongs to the open row: it stays open until the write ends.
     if (confirmation.busy) return;
     if (expandedId === userId) {
-      setExpandedId(null);
-      setDetail(null);
+      collapse();
       return;
     }
     await openDetail(userId);
@@ -270,18 +286,15 @@ export function UserTable(props: UserTableProps) {
 
   // The account a link named opens as soon as the list shows it, and only
   // once: a refetch must not reopen the row after the admin has closed it.
+  // Like a click, it waits for a write in flight to end.
   const openedFromLink = useRef<string | null>(null);
   useEffect(() => {
     if (!openUserId || openedFromLink.current === openUserId) return;
-    if (!users.some((u) => u.id === openUserId)) return;
+    if (confirmation.busy || !users.some((u) => u.id === openUserId)) return;
     openedFromLink.current = openUserId;
     void openDetail(openUserId);
-  }, [openUserId, users, openDetail]);
-
-  const collapse = () => {
-    setExpandedId(null);
-    setDetail(null);
-  };
+    onOpenedFromLink?.();
+  }, [openUserId, users, openDetail, confirmation.busy, onOpenedFromLink]);
 
   // A confirmation can stay open while the list refetches (filters, paging).
   // Refuse to act on a row the admin can no longer see; nothing is written.
