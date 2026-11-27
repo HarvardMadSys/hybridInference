@@ -113,13 +113,15 @@ class TestCreateUser:
         sql, *params = pg_conn.execute.await_args_list[0].args
         assert "login_name" in sql
         assert params[1] is None  # email
-        assert params[-1] == "admin"  # login_name, lowercased
+        assert params[-2] == "admin"  # login_name, lowercased
+        assert params[-1] is False  # not a service account
 
     async def test_signup_account_is_unchanged(self, store, pg_conn):
         await store.create_user(user_id="u1", email="Bob@Example.com", password_hash="h")
         params = pg_conn.execute.await_args_list[0].args[1:]
         assert params[1] == "bob@example.com"
-        assert params[-1] is None
+        assert params[-2] is None
+        assert params[-1] is False  # not a service account
 
 
 class TestGetOrCreateSetupCode:

@@ -306,6 +306,7 @@ _USER_COLUMNS = (
     "signup_reason",
     "admin_note",
     "suspension_message",
+    "is_service_account",
 )
 _USER_SELECT = ", ".join(
     f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
@@ -967,6 +968,7 @@ class PostgresOperationalStore(
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Insert a new user row and its Default project."""
         from serving.storage.project_backfill import ensure_default_project
@@ -974,8 +976,8 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
-                "email_verified, status, signup_reason, login_name) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                "email_verified, status, signup_reason, login_name, is_service_account) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 user_id,
                 email.lower() if email is not None else None,
                 password_hash,
@@ -984,6 +986,7 @@ class PostgresOperationalStore(
                 status,
                 signup_reason,
                 login_name.lower() if login_name is not None else None,
+                is_service_account,
             )
             await ensure_default_project(conn, user_id=user_id)
 
@@ -1735,7 +1738,7 @@ class PostgresOperationalStore(
                 f"filtered_users AS ("
                 f"  SELECT {identity}, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
-                f"  u.signup_reason, u.admin_note, "
+                f"  u.signup_reason, u.admin_note, u.is_service_account, "
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "

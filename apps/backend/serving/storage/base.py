@@ -335,12 +335,15 @@ class OperationalStore(ABC):
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Insert a new user row.
 
         ``signup_reason`` captures the free-text use case the user submitted at
         registration; surfaced in the admin user list to aid manual approval.
         ``email`` may be None only for an account that has a ``login_name``.
+        ``is_service_account`` marks an admin-created, API-key-only account
+        (no email, unknowable password); browser sign-in refuses those.
         """
 
     @abstractmethod

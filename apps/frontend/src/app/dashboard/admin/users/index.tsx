@@ -22,6 +22,7 @@ import { UserTagsPanel } from './UserTagsPanel';
 import { SavedViews } from './SavedViews';
 import { FilterBar } from './FilterBar';
 import { UserTable } from './UserTable';
+import { ServiceAccountCreate } from './ServiceAccountCreate';
 import { Pagination, PAGE_SIZE_OPTIONS } from './Pagination';
 import { useUsers, USERS_LIST_QUERY_KEY } from './hooks/useUsers';
 import { useBulkUsageTotals, USAGE_TOTALS_QUERY_KEY } from './hooks/useUserUsageTotals';
@@ -57,6 +58,7 @@ export default function UsersTab() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
+  const [showServiceAccountCreate, setShowServiceAccountCreate] = useState(false);
   const [filterState, setFilterState] = useState<FilterState>(() =>
     filterStateFromUrl(searchParams, currency),
   );
@@ -364,11 +366,29 @@ export default function UsersTab() {
         onShowMembers={(tag) => applyFilterState({ ...filterState, tag, view: null })}
       />
 
+      {showServiceAccountCreate && (
+        <ServiceAccountCreate
+          onClose={() => setShowServiceAccountCreate(false)}
+          onCreated={() => {
+            void queryClient.invalidateQueries({ queryKey: USERS_LIST_QUERY_KEY });
+          }}
+        />
+      )}
+
       {/* Keep toolbar popovers visible even when the table has few or no rows.
           UserTable owns the horizontal scrolling; only its content is clipped. */}
       <div className="rounded-lg border border-gray-200 bg-white">
         <div className="space-y-3 rounded-t-lg border-b border-gray-200 bg-gray-50/50 p-3">
-          <SavedViews current={filterState} onApply={applyFilterState} />
+          <div className="flex items-center justify-between gap-2">
+            <SavedViews current={filterState} onApply={applyFilterState} />
+            <button
+              type="button"
+              onClick={() => setShowServiceAccountCreate(true)}
+              className="shrink-0 rounded-md bg-gray-900 px-3 py-1.5 text-[13px] font-medium text-white hover:bg-gray-700"
+            >
+              New service account
+            </button>
+          </div>
           <FilterBar
             state={filterState}
             onChange={applyFilterState}

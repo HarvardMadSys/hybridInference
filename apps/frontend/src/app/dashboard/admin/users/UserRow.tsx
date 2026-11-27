@@ -171,6 +171,11 @@ export function UserRow({
                   <NoteIcon className="h-3.5 w-3.5" />
                 </span>
               )}
+              {user.is_service_account && (
+                <span className="shrink-0 rounded bg-violet-100 px-1.5 py-px text-[10px] font-semibold uppercase tracking-wide text-violet-700">
+                  Service
+                </span>
+              )}
             </div>
             {!compact && user.user_name && (
               <div className="truncate text-[12px] text-gray-500" title={user.user_name}>
