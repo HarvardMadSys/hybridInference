@@ -15,7 +15,11 @@ vi.mock('next/navigation', () => {
     usePathname: () => '/dashboard/admin/users',
   };
 });
-vi.mock('@/lib/api/admin', () => ({ listUsers: vi.fn(), getBulkUsageTotals: vi.fn() }));
+vi.mock('@/lib/api/admin', () => ({
+  listUsers: vi.fn(),
+  getBulkUsageTotals: vi.fn(),
+  listAdminOrganizations: vi.fn(async () => []),
+}));
 vi.mock('./SummaryCards', () => ({ SummaryCards: () => null }));
 vi.mock('./SavedViews', () => ({ SavedViews: () => null }));
 vi.mock('./FilterBar', () => ({ FilterBar: () => null }));

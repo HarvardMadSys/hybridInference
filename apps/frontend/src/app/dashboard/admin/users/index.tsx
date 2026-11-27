@@ -30,6 +30,7 @@ import { useBulkAskQuestionFractions } from './hooks/useUserAskQuestionFractions
 import { useBulkAutomationScores } from './hooks/useUserAutomationScores';
 import { compareByScore } from './lib/automation';
 import { filterStateFromUrl, filterStateToUrl } from './lib/filterTypes';
+import { useOrganizations } from './hooks/useOrganizations';
 import { getViewById } from './lib/views';
 import { parseHiddenColumns, type ColumnId } from './lib/columns';
 import type { Density, FilterState, UserRow } from './types';
@@ -123,6 +124,7 @@ export default function UsersTab() {
   // Data
   const queryClient = useQueryClient();
   const usersQuery = useUsers(filterState, pageSize, page * pageSize);
+  const organizations = useOrganizations();
 
   // Refresh after a mutation. Each visited page/filter is its own cache entry,
   // and a mutation can shift totals/ordering across all of them, so invalidate
@@ -330,6 +332,7 @@ export default function UsersTab() {
             onDensityChange={setDensity}
             hiddenColumns={hiddenColumns}
             onHiddenColumnsChange={setHiddenColumns}
+            organizations={organizations}
           />
         </div>
 
@@ -373,6 +376,10 @@ export default function UsersTab() {
               hiddenColumns={hiddenColumns}
               filterState={filterState}
               onSortChange={(sortBy) => applyFilterState({ ...filterState, sortBy })}
+              // Also for a row of an organization that the list above did not name.
+              showOrganization={
+                organizations.length > 0 || users.some((user) => user.organization != null)
+              }
               {...handlers}
             />
             <div className="border-t border-gray-200 px-3">

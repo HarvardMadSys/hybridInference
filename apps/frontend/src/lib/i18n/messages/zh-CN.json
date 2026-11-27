@@ -927,6 +927,10 @@
     "source": "An account already exists for this email. Sign in the way you usually do to connect your {name} account.",
     "text": "这个邮箱已有账号。请用原来的方式登录一次，完成和 {name} 账号的关联。"
   },
+  "auth.sso.link_sso_only": {
+    "source": "After you connect it, this account signs in through single sign-on only. Its password is removed.",
+    "text": "关联后，这个账号只能通过 SSO 登录，现有密码会被删除。"
+  },
   "auth.sso.link_title": {
     "source": "Connect your {name} account?",
     "text": "关联 {name} 账号？"
@@ -934,6 +938,10 @@
   "auth.sso.linked_toast": {
     "source": "Single sign-on connected.",
     "text": "SSO 账号已关联。"
+  },
+  "auth.sso.must_sign_in": {
+    "source": "Accounts of {name} must sign in through single sign-on.",
+    "text": "{name} 的账号需要通过 SSO 登录。"
   },
   "auth.sso.not_available": {
     "source": "Your organization has not set up single sign-on here. Use another sign-in method.",
@@ -2511,6 +2519,30 @@
     "source": " (opens in a new tab)",
     "text": "（在新标签页打开）"
   },
+  "console.audit.changed": {
+    "source": "Changed ",
+    "text": "改了 "
+  },
+  "console.audit.changed_to": {
+    "source": " changed to ",
+    "text": " 改为 "
+  },
+  "console.audit.more": {
+    "source": "+{count} more",
+    "text": "还有 {count} 项"
+  },
+  "console.audit.no_details": {
+    "source": "No details",
+    "text": "没有详情"
+  },
+  "console.audit.raw_json": {
+    "source": "Raw JSON",
+    "text": "原始 JSON"
+  },
+  "console.filter.any": {
+    "source": "any",
+    "text": "不限"
+  },
   "console.nav.admin": {
     "source": "Admin Console",
     "text": "管理后台"
@@ -2518,6 +2550,10 @@
   "console.nav.admin_group": {
     "source": "Admin",
     "text": "管理"
+  },
+  "console.nav.organization_group": {
+    "source": "Organization",
+    "text": "机构"
   },
   "console.nav.batches": {
     "source": "Batches",
@@ -2550,6 +2586,74 @@
   "console.nav.settings": {
     "source": "Settings",
     "text": "设置"
+  },
+  "console.projects.archived": {
+    "source": "Archived projects",
+    "text": "已归档的项目"
+  },
+  "console.projects.default": {
+    "source": "Default",
+    "text": "默认"
+  },
+  "console.projects.loading": {
+    "source": "Loading…",
+    "text": "加载中…"
+  },
+  "console.projects.no_keys": {
+    "source": "No keys.",
+    "text": "没有 API key。"
+  },
+  "console.projects.title": {
+    "source": "Projects and keys",
+    "text": "项目和 API key"
+  },
+  "console.projects.unnamed_key": {
+    "source": "Unnamed key",
+    "text": "未命名的 key"
+  },
+  "console.tokens.cached": {
+    "source": "Cached",
+    "text": "缓存"
+  },
+  "console.tokens.cost": {
+    "source": "Cost",
+    "text": "费用"
+  },
+  "console.tokens.input": {
+    "source": "Input",
+    "text": "输入"
+  },
+  "console.tokens.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "console.tokens.output": {
+    "source": "Output",
+    "text": "输出"
+  },
+  "console.tokens.reasoning": {
+    "source": "Reasoning",
+    "text": "推理"
+  },
+  "console.tokens.requests": {
+    "source": "Requests",
+    "text": "请求数"
+  },
+  "console.volume.average": {
+    "source": "avg",
+    "text": "平均"
+  },
+  "console.volume.failed": {
+    "source": "err",
+    "text": "失败"
+  },
+  "console.volume.ok": {
+    "source": "ok",
+    "text": "成功"
+  },
+  "console.volume.requests": {
+    "source": "requests",
+    "text": "次请求"
   },
   "dashboard.account.email": {
     "source": "Email:",
@@ -2755,9 +2859,17 @@
     "source": "This is the only way to sign in to this account. Set a password before disconnecting it.",
     "text": "这是当前账号唯一的登录方式。请先设置密码，再解除关联。"
   },
+  "settings.sso.only_method": {
+    "source": "This account belongs to an organization. It signs in through single sign-on only.",
+    "text": "这个账号属于一个机构，只能通过单点登录来登录。"
+  },
   "settings.sso.needs_password": {
     "source": "Set a password before changing single sign-on.",
     "text": "请先设置密码，再修改 SSO 关联。"
+  },
+  "settings.sso.organization_identity": {
+    "source": "This single sign-on belongs to your organization and cannot be disconnected.",
+    "text": "这个单点登录属于你的机构，不能解除关联。"
   },
   "settings.sso.title": {
     "source": "Single sign-on",
@@ -3632,6 +3744,1102 @@
   "meta.team.title": {
     "source": "Team",
     "text": "团队"
+  },
+  "organization.audit.access": {
+    "source": "Access",
+    "text": "访问"
+  },
+  "organization.audit.actor": {
+    "source": "Actor",
+    "text": "操作人"
+  },
+  "organization.audit.actor.member": {
+    "source": "Member",
+    "text": "成员"
+  },
+  "organization.audit.actor.platform": {
+    "source": "Platform administrator",
+    "text": "平台管理员"
+  },
+  "organization.audit.actor.system": {
+    "source": "System",
+    "text": "系统"
+  },
+  "organization.audit.all": {
+    "source": "All events",
+    "text": "全部事件"
+  },
+  "organization.audit.all_fields": {
+    "source": "Every field",
+    "text": "全部字段"
+  },
+  "organization.audit.details": {
+    "source": "Details",
+    "text": "详情"
+  },
+  "organization.audit.details.attach": {
+    "source": "{provider}; {count} accounts became members",
+    "text": "{provider}；{count} 个账号成为成员"
+  },
+  "organization.audit.details.attach_one": {
+    "source": "{provider}; {count} account became a member",
+    "text": "{provider}；{count} 个账号成为成员"
+  },
+  "organization.audit.details.change": {
+    "source": "{old} to {new}",
+    "text": "{old} → {new}"
+  },
+  "organization.audit.details.join": {
+    "source": "Signed in through {provider}",
+    "text": "通过 {provider} 登录"
+  },
+  "organization.audit.details.key_in_project": {
+    "source": "{key}, in project {project}",
+    "text": "{key}，在项目 {project} 里"
+  },
+  "organization.audit.details.models_both": {
+    "source": "Disabled: {off}; enabled again: {on}",
+    "text": "禁用：{off}；重新启用：{on}"
+  },
+  "organization.audit.details.models_off": {
+    "source": "Disabled: {models}",
+    "text": "禁用：{models}"
+  },
+  "organization.audit.details.models_on": {
+    "source": "Enabled again: {models}",
+    "text": "重新启用：{models}"
+  },
+  "organization.audit.details.remove": {
+    "source": "Account suspended; sessions ended, API keys revoked",
+    "text": "账号已停用；会话已结束，API key 已吊销"
+  },
+  "organization.audit.details.restore": {
+    "source": "Account active again",
+    "text": "账号已恢复使用"
+  },
+  "organization.audit.details.role": {
+    "source": "Role: {old} to {new}",
+    "text": "角色：{old} → {new}"
+  },
+  "organization.audit.empty": {
+    "source": "Nothing has been recorded yet.",
+    "text": "还没有任何记录。"
+  },
+  "organization.audit.event": {
+    "source": "Event",
+    "text": "事件"
+  },
+  "organization.audit.event.admin_add": {
+    "source": "Organization administrator added",
+    "text": "新增机构管理员"
+  },
+  "organization.audit.event.admin_remove": {
+    "source": "Organization administrator removed",
+    "text": "撤销机构管理员"
+  },
+  "organization.audit.event.attach": {
+    "source": "SSO connection attached",
+    "text": "挂接 SSO 连接"
+  },
+  "organization.audit.event.create": {
+    "source": "Organization created",
+    "text": "创建机构"
+  },
+  "organization.audit.event.default_limit": {
+    "source": "Default monthly limit changed",
+    "text": "修改默认月额度"
+  },
+  "organization.audit.event.detach": {
+    "source": "SSO connection detached",
+    "text": "摘除 SSO 连接"
+  },
+  "organization.audit.event.limit": {
+    "source": "Organization monthly limit changed",
+    "text": "修改机构月额度"
+  },
+  "organization.audit.event.member_join": {
+    "source": "Member joined",
+    "text": "成员加入"
+  },
+  "organization.audit.event.member_key": {
+    "source": "API key revoked",
+    "text": "吊销了 API key"
+  },
+  "organization.audit.event.member_limit": {
+    "source": "Member monthly limit changed",
+    "text": "修改成员月额度"
+  },
+  "organization.audit.event.member_models": {
+    "source": "Member models changed",
+    "text": "改了成员的模型"
+  },
+  "organization.audit.event.member_remove": {
+    "source": "Member removed",
+    "text": "移除成员"
+  },
+  "organization.audit.event.member_restore": {
+    "source": "Member restored",
+    "text": "恢复成员"
+  },
+  "organization.audit.event.update": {
+    "source": "Organization renamed",
+    "text": "机构改名"
+  },
+  "organization.audit.hide_fields": {
+    "source": "Hide every field of {event}, {time}",
+    "text": "收起 {event}（{time}）的全部字段"
+  },
+  "organization.audit.limits": {
+    "source": "Limits",
+    "text": "额度变动"
+  },
+  "organization.audit.member_clear": {
+    "source": "Show every member",
+    "text": "显示所有成员"
+  },
+  "organization.audit.member_filter": {
+    "source": "Only the events of {member}",
+    "text": "只看 {member} 的事件"
+  },
+  "organization.audit.membership": {
+    "source": "Membership",
+    "text": "成员变动"
+  },
+  "organization.audit.no_match": {
+    "source": "No event matches these filters.",
+    "text": "没有符合筛选条件的事件。"
+  },
+  "organization.audit.only_member": {
+    "source": "Show only the events of {member}",
+    "text": "只看 {member} 的事件"
+  },
+  "organization.audit.organization": {
+    "source": "Organization",
+    "text": "机构变动"
+  },
+  "organization.audit.search": {
+    "source": "Search the log",
+    "text": "搜索日志"
+  },
+  "organization.audit.show_fields": {
+    "source": "Show every field of {event}, {time}",
+    "text": "展开 {event}（{time}）的全部字段"
+  },
+  "organization.audit.target": {
+    "source": "Target",
+    "text": "对象"
+  },
+  "organization.figure.chart": {
+    "source": "Chart",
+    "text": "图表"
+  },
+  "organization.figure.empty": {
+    "source": "Nothing in this period.",
+    "text": "这段时间没有数据。"
+  },
+  "organization.figure.table": {
+    "source": "Table",
+    "text": "表格"
+  },
+  "organization.figure.view_of": {
+    "source": "View of {title}",
+    "text": "{title}的显示方式"
+  },
+  "organization.guard.back": {
+    "source": "Back to Dashboard",
+    "text": "返回控制台"
+  },
+  "organization.guard.body": {
+    "source": "You don't have permission to view this page.",
+    "text": "你没有权限查看这个页面。"
+  },
+  "organization.guard.title": {
+    "source": "Organization administrator access required",
+    "text": "需要机构管理员权限"
+  },
+  "organization.limit.default_tag": {
+    "source": "default",
+    "text": "默认"
+  },
+  "organization.limit.none": {
+    "source": "No limit",
+    "text": "不限"
+  },
+  "organization.limit.platform_tag": {
+    "source": "platform",
+    "text": "平台"
+  },
+  "organization.limit.percent_of": {
+    "source": "{percent}% of {limit}",
+    "text": "{percent}% / {limit}"
+  },
+  "organization.limit_dialog.above": {
+    "source": "A member cannot have a limit above the limit of the organization, {amount}.",
+    "text": "成员的月额度不能超过机构的月额度 {amount}。"
+  },
+  "organization.limit_dialog.body": {
+    "source": "What {member} may spend in a calendar month (UTC). Requests over the limit are refused until the next month.",
+    "text": "{member} 在一个自然月（UTC）内最多可以花费的金额。超出后的请求会被拒绝，到下个月恢复。"
+  },
+  "organization.limit_dialog.cleared": {
+    "source": "Monthly limit cleared.",
+    "text": "月额度已清除。"
+  },
+  "organization.limit_dialog.hint_default": {
+    "source": "Leave empty to use the default of the organization, {amount}.",
+    "text": "留空则使用机构的默认月额度 {amount}。"
+  },
+  "organization.limit_dialog.hint_none": {
+    "source": "Leave empty for no limit of its own.",
+    "text": "留空则不单独设月额度。"
+  },
+  "organization.limit_dialog.invalid": {
+    "source": "Enter an amount in {currency}, such as 5 or 12.50, or leave it empty.",
+    "text": "请输入 {currency} 金额，例如 5 或 12.50，或者留空。"
+  },
+  "organization.limit_dialog.label": {
+    "source": "Monthly limit ({currency})",
+    "text": "月额度（{currency}）"
+  },
+  "organization.limit_dialog.no_organization": {
+    "source": "The organization could not be read, so the limit cannot be saved.",
+    "text": "读取机构信息失败，暂时无法保存月额度。"
+  },
+  "organization.limit_dialog.platform": {
+    "source": "The platform administrator set a limit of {amount} for this account. The lower of the two limits applies.",
+    "text": "平台管理员给这个账号设了 {amount} 的月额度。两个额度里较低的那个生效。"
+  },
+  "organization.limit_dialog.saved": {
+    "source": "Monthly limit saved.",
+    "text": "月额度已保存。"
+  },
+  "organization.limit_dialog.title": {
+    "source": "Set monthly limit",
+    "text": "设置月额度"
+  },
+  "organization.member.admin_note": {
+    "source": "The platform administrator sets the limit and the models of an organization administrator, revokes its API keys and removes it.",
+    "text": "机构管理员的月额度、模型、API key 的吊销和移除都由平台管理员处理。"
+  },
+  "organization.member.close": {
+    "source": "Close",
+    "text": "关闭"
+  },
+  "organization.member.email_unverified": {
+    "source": "Not verified",
+    "text": "未验证"
+  },
+  "organization.member.email_verified": {
+    "source": "Verified",
+    "text": "已验证"
+  },
+  "organization.member.fact_email": {
+    "source": "Email",
+    "text": "邮箱"
+  },
+  "organization.member.fact_joined": {
+    "source": "Joined",
+    "text": "加入时间"
+  },
+  "organization.member.fact_key": {
+    "source": "API key",
+    "text": "API key"
+  },
+  "organization.member.fact_last_sign_in": {
+    "source": "Last sign-in",
+    "text": "上次登录"
+  },
+  "organization.member.fact_two_factor": {
+    "source": "Two-factor",
+    "text": "两步验证"
+  },
+  "organization.member.key_active": {
+    "source": "Active",
+    "text": "可用"
+  },
+  "organization.member.key_last_used": {
+    "source": "last used {when}",
+    "text": "上次使用 {when}"
+  },
+  "organization.member.key_never_used": {
+    "source": "never used",
+    "text": "从未使用"
+  },
+  "organization.member.key_none": {
+    "source": "None",
+    "text": "没有"
+  },
+  "organization.member.key_revoked": {
+    "source": "revoked",
+    "text": "已吊销"
+  },
+  "organization.member.last_30_days": {
+    "source": "Last 30 days",
+    "text": "最近 30 天"
+  },
+  "organization.member.last_7_days": {
+    "source": "Last 7 days",
+    "text": "最近 7 天"
+  },
+  "organization.member.limit_default": {
+    "source": "Default limit of the organization",
+    "text": "机构的默认月额度"
+  },
+  "organization.member.limit_none": {
+    "source": "No monthly limit",
+    "text": "没有月额度"
+  },
+  "organization.member.limit_platform": {
+    "source": "Platform administrator's limit",
+    "text": "平台管理员设的月额度"
+  },
+  "organization.member.limit_own": {
+    "source": "Monthly limit of this member",
+    "text": "这位成员自己的月额度"
+  },
+  "organization.member.models_off": {
+    "source": "Disabled models",
+    "text": "禁用模型"
+  },
+  "organization.member.models_off_none": {
+    "source": "No model is disabled for this member.",
+    "text": "没有为这个成员禁用任何模型。"
+  },
+  "organization.member.no_requests": {
+    "source": "No requests in this period.",
+    "text": "这段时间没有请求。"
+  },
+  "organization.member.protected_note": {
+    "source": "The platform administrator sets the limit and the models of this account, revokes its API keys and removes it.",
+    "text": "这个账号的月额度、模型、API key 的吊销和移除都由平台管理员处理。"
+  },
+  "organization.member.recent": {
+    "source": "Recent requests",
+    "text": "最近的请求"
+  },
+  "organization.member.remove": {
+    "source": "Remove from organization",
+    "text": "移出机构"
+  },
+  "organization.member.restore": {
+    "source": "Restore member",
+    "text": "恢复成员"
+  },
+  "organization.member.revoke_key": {
+    "source": "Revoke",
+    "text": "吊销"
+  },
+  "organization.member.revoke_key_named": {
+    "source": "Revoke {key}",
+    "text": "吊销 {key}"
+  },
+  "organization.member.set_limit": {
+    "source": "Set monthly limit",
+    "text": "设置月额度"
+  },
+  "organization.member.set_models": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "organization.member.spent_this_month": {
+    "source": "{amount} this month",
+    "text": "本月 {amount}"
+  },
+  "organization.member.suspended_note": {
+    "source": "The platform administrator suspended this account, and only the platform administrator can make it active again.",
+    "text": "这个账号是平台管理员停用的，只有平台管理员可以恢复。"
+  },
+  "organization.member.this_month": {
+    "source": "This month",
+    "text": "本月"
+  },
+  "organization.member.two_factor_off": {
+    "source": "Off",
+    "text": "未开启"
+  },
+  "organization.member.two_factor_on": {
+    "source": "On",
+    "text": "已开启"
+  },
+  "organization.members.admin_badge": {
+    "source": "Admin",
+    "text": "管理员"
+  },
+  "organization.members.alltime": {
+    "source": "All-time",
+    "text": "累计"
+  },
+  "organization.members.card_clear": {
+    "source": "Shown in the list · Clear",
+    "text": "列表中正在显示 · 取消"
+  },
+  "organization.members.card_empty": {
+    "source": "No members right now",
+    "text": "现在没有成员"
+  },
+  "organization.members.card_near": {
+    "source": "Near or over the limit",
+    "text": "接近或超过月额度"
+  },
+  "organization.members.card_near_count": {
+    "source": "{count} members",
+    "text": "{count} 人"
+  },
+  "organization.members.card_near_one": {
+    "source": "1 member",
+    "text": "1 人"
+  },
+  "organization.members.card_show": {
+    "source": "Show in the list",
+    "text": "在列表中查看"
+  },
+  "organization.members.card_today": {
+    "source": "Top spenders today",
+    "text": "今日花费最高"
+  },
+  "organization.members.card_today_count": {
+    "source": "{count} members spent today",
+    "text": "今日 {count} 人有花费"
+  },
+  "organization.members.card_today_one": {
+    "source": "1 member spent today",
+    "text": "今日 1 人有花费"
+  },
+  "organization.members.cards_failed": {
+    "source": "The members near their limit and the top spenders of today could not be read: {reason}",
+    "text": "读不到接近月额度的成员和今日花费最高的成员：{reason}"
+  },
+  "organization.members.clear_filters": {
+    "source": "Clear filters",
+    "text": "清除筛选"
+  },
+  "organization.members.empty": {
+    "source": "The organization has no members yet.",
+    "text": "机构还没有成员。"
+  },
+  "organization.members.last_request": {
+    "source": "Last request",
+    "text": "最近请求"
+  },
+  "organization.members.limit_any": {
+    "source": "Any limit use",
+    "text": "不限额度使用情况"
+  },
+  "organization.members.limit_filter": {
+    "source": "Limit use",
+    "text": "额度使用情况"
+  },
+  "organization.members.limit_near": {
+    "source": "Near the limit (≥80%)",
+    "text": "接近月额度（≥80%）"
+  },
+  "organization.members.limit_over": {
+    "source": "Over the limit",
+    "text": "超过月额度"
+  },
+  "organization.members.member": {
+    "source": "Member",
+    "text": "成员"
+  },
+  "organization.members.min_month": {
+    "source": "Month ≥ {symbol}",
+    "text": "本月 ≥ {symbol}"
+  },
+  "organization.members.min_today": {
+    "source": "Today ≥ {symbol}",
+    "text": "今日 ≥ {symbol}"
+  },
+  "organization.members.monthly_limit": {
+    "source": "Monthly limit",
+    "text": "月额度"
+  },
+  "organization.members.no_match": {
+    "source": "No member matches these filters.",
+    "text": "没有符合筛选条件的成员。"
+  },
+  "organization.members.search": {
+    "source": "Search by name or email",
+    "text": "按姓名或邮箱搜索"
+  },
+  "organization.members.status": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "organization.members.status_all": {
+    "source": "All statuses",
+    "text": "全部状态"
+  },
+  "organization.members.status_filter": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "organization.members.today": {
+    "source": "Today",
+    "text": "今日"
+  },
+  "organization.members.week": {
+    "source": "7 days",
+    "text": "7 天"
+  },
+  "organization.members.you_badge": {
+    "source": "You",
+    "text": "你"
+  },
+  "organization.models_dialog.body": {
+    "source": "The models that {member} can use. A model that is not checked is refused for this member.",
+    "text": "{member} 可以使用的模型。没有勾选的模型，这个成员的请求会被拒绝。"
+  },
+  "organization.models_dialog.none": {
+    "source": "The platform offers this member no model.",
+    "text": "平台没有对这个成员开放任何模型。"
+  },
+  "organization.models_dialog.platform_off": {
+    "source": "disabled by the platform administrator",
+    "text": "平台管理员已禁用"
+  },
+  "organization.models_dialog.saved": {
+    "source": "Models saved.",
+    "text": "模型已保存。"
+  },
+  "organization.models_dialog.title": {
+    "source": "Models",
+    "text": "模型"
+  },
+  "organization.overview.active_members": {
+    "source": "Members with requests",
+    "text": "有请求的成员"
+  },
+  "organization.overview.active_per_day": {
+    "source": "Members with requests per day",
+    "text": "每天有请求的成员数"
+  },
+  "organization.overview.active_per_hour": {
+    "source": "Members with requests per hour",
+    "text": "每小时有请求的成员数"
+  },
+  "organization.overview.by_day": {
+    "source": "By day",
+    "text": "按天"
+  },
+  "organization.overview.by_hour": {
+    "source": "By hour",
+    "text": "按小时"
+  },
+  "organization.overview.by_model": {
+    "source": "Spend by model",
+    "text": "各模型花费"
+  },
+  "organization.overview.day": {
+    "source": "Day (UTC)",
+    "text": "日期（UTC）"
+  },
+  "organization.overview.granularity": {
+    "source": "Points of the series",
+    "text": "序列的粒度"
+  },
+  "organization.overview.hour": {
+    "source": "Hour (UTC)",
+    "text": "小时（UTC）"
+  },
+  "organization.overview.limit": {
+    "source": "Organization limit, this month",
+    "text": "机构月额度（本月）"
+  },
+  "organization.overview.members": {
+    "source": "Members",
+    "text": "成员数"
+  },
+  "organization.overview.no_limit": {
+    "source": "The organization has no monthly limit.",
+    "text": "机构没有设月额度。"
+  },
+  "organization.overview.requests": {
+    "source": "Requests",
+    "text": "请求数"
+  },
+  "organization.overview.spend": {
+    "source": "Spend",
+    "text": "花费"
+  },
+  "organization.overview.spend_per_day": {
+    "source": "Spend per day ({currency})",
+    "text": "每天花费（{currency}）"
+  },
+  "organization.overview.spend_per_hour": {
+    "source": "Spend per hour ({currency})",
+    "text": "每小时花费（{currency}）"
+  },
+  "organization.overview.tokens": {
+    "source": "Tokens",
+    "text": "Token"
+  },
+  "organization.overview.tokens_by_model": {
+    "source": "Tokens by model",
+    "text": "各模型的 token"
+  },
+  "organization.overview.top_members": {
+    "source": "Top members",
+    "text": "花费最高的成员"
+  },
+  "organization.overview.view_by_member": {
+    "source": "View by member",
+    "text": "按成员查看"
+  },
+  "organization.overview.view_by_model": {
+    "source": "View by model",
+    "text": "按模型查看"
+  },
+  "organization.pager.next": {
+    "source": "Next",
+    "text": "下一页"
+  },
+  "organization.pager.previous": {
+    "source": "Previous",
+    "text": "上一页"
+  },
+  "organization.pager.showing": {
+    "source": "Showing {first}–{last} of {total}",
+    "text": "第 {first}–{last} 条，共 {total} 条"
+  },
+  "organization.period.all": {
+    "source": "All",
+    "text": "全部"
+  },
+  "organization.period.label": {
+    "source": "Period",
+    "text": "时间范围"
+  },
+  "organization.period.last_days": {
+    "source": "Last {days} days",
+    "text": "最近 {days} 天"
+  },
+  "organization.period.today": {
+    "source": "Today (UTC)",
+    "text": "今天（UTC）"
+  },
+  "organization.period.vs_previous_day": {
+    "source": "vs the day before",
+    "text": "对比前一天"
+  },
+  "organization.period.vs_previous_days": {
+    "source": "vs previous {days} days",
+    "text": "对比前 {days} 天"
+  },
+  "organization.remove_dialog.after": {
+    "source": "The usage history stays. You can restore the member later.",
+    "text": "用量记录会保留。之后可以恢复这位成员。"
+  },
+  "organization.remove_dialog.confirm": {
+    "source": "Remove member",
+    "text": "移除成员"
+  },
+  "organization.remove_dialog.done": {
+    "source": "Member removed.",
+    "text": "成员已移除。"
+  },
+  "organization.remove_dialog.intro": {
+    "source": "The account of {member} is suspended:",
+    "text": "{member} 的账号会被停用："
+  },
+  "organization.remove_dialog.keys": {
+    "source": "its API keys are revoked;",
+    "text": "API key 全部吊销；"
+  },
+  "organization.remove_dialog.sessions": {
+    "source": "its open sessions end;",
+    "text": "已登录的会话全部结束；"
+  },
+  "organization.remove_dialog.sign_in": {
+    "source": "it can no longer sign in, through single sign-on either.",
+    "text": "无法再登录，通过 SSO 也不行。"
+  },
+  "organization.remove_dialog.title": {
+    "source": "Remove from organization",
+    "text": "移出机构"
+  },
+  "organization.request.ok": {
+    "source": "OK",
+    "text": "成功"
+  },
+  "organization.request.rate_limited": {
+    "source": "{code} Rate limited",
+    "text": "{code} 限流"
+  },
+  "organization.request.refused": {
+    "source": "{code} Refused",
+    "text": "{code} 被拒绝"
+  },
+  "organization.request.upstream_error": {
+    "source": "{code} Upstream error",
+    "text": "{code} 上游错误"
+  },
+  "organization.requests.cost": {
+    "source": "Cost",
+    "text": "费用"
+  },
+  "organization.requests.input_tokens": {
+    "source": "Input tokens",
+    "text": "输入 Token"
+  },
+  "organization.requests.key": {
+    "source": "API key",
+    "text": "API key"
+  },
+  "organization.requests.member": {
+    "source": "Member",
+    "text": "成员"
+  },
+  "organization.requests.model": {
+    "source": "Model",
+    "text": "模型"
+  },
+  "organization.requests.output_tokens": {
+    "source": "Output tokens",
+    "text": "输出 Token"
+  },
+  "organization.requests.project": {
+    "source": "Project",
+    "text": "项目"
+  },
+  "organization.requests.status": {
+    "source": "Status",
+    "text": "状态"
+  },
+  "organization.requests.time": {
+    "source": "Time",
+    "text": "时间"
+  },
+  "organization.restore_dialog.body": {
+    "source": "The account of {member} becomes active again, and the member can sign in.",
+    "text": "{member} 的账号会恢复使用，可以重新登录。"
+  },
+  "organization.restore_dialog.confirm": {
+    "source": "Restore member",
+    "text": "恢复成员"
+  },
+  "organization.restore_dialog.done": {
+    "source": "Member restored.",
+    "text": "成员已恢复。"
+  },
+  "organization.restore_dialog.keys": {
+    "source": "The revoked API keys stay revoked. The member makes new ones.",
+    "text": "已吊销的 API key 不会恢复，成员需要重新创建。"
+  },
+  "organization.restore_dialog.title": {
+    "source": "Restore member",
+    "text": "恢复成员"
+  },
+  "organization.retry": {
+    "source": "Retry",
+    "text": "重试"
+  },
+  "organization.revoke_dialog.after": {
+    "source": "A revoked key stays revoked. The member can make a new one.",
+    "text": "吊销的 key 不能恢复。成员可以自己新建一个。"
+  },
+  "organization.revoke_dialog.body": {
+    "source": "The API key \"{key}\" of {member} stops working at once. Requests with it are refused.",
+    "text": "{member} 的 API key“{key}”立刻失效，用它发的请求会被拒绝。"
+  },
+  "organization.revoke_dialog.confirm": {
+    "source": "Revoke key",
+    "text": "吊销 key"
+  },
+  "organization.revoke_dialog.done": {
+    "source": "API key revoked.",
+    "text": "API key 已吊销。"
+  },
+  "organization.revoke_dialog.title": {
+    "source": "Revoke API key",
+    "text": "吊销 API key"
+  },
+  "organization.role.admin": {
+    "source": "Administrator",
+    "text": "管理员"
+  },
+  "organization.role.member": {
+    "source": "Member",
+    "text": "成员"
+  },
+  "organization.save": {
+    "source": "Save",
+    "text": "保存"
+  },
+  "organization.settings.administrators": {
+    "source": "Organization administrators",
+    "text": "机构管理员"
+  },
+  "organization.settings.administrators_description": {
+    "source": "The platform administrator gives this role and takes it back.",
+    "text": "这个角色由平台管理员授予和收回。"
+  },
+  "organization.settings.created": {
+    "source": "Created",
+    "text": "创建时间"
+  },
+  "organization.settings.default_above": {
+    "source": "The default cannot be above the limit of the organization, {amount}.",
+    "text": "默认月额度不能超过机构的月额度 {amount}。"
+  },
+  "organization.settings.default_cleared": {
+    "source": "Default monthly limit cleared.",
+    "text": "默认月额度已清除。"
+  },
+  "organization.settings.default_hint": {
+    "source": "Applies at once to each member that has no monthly limit of its own, but not to administrators. Leave empty for no default.",
+    "text": "立即对所有没有单独设月额度的成员生效，管理员除外。留空则不设默认值。"
+  },
+  "organization.settings.default_label": {
+    "source": "Default monthly limit for a member ({currency})",
+    "text": "成员的默认月额度（{currency}）"
+  },
+  "organization.settings.default_saved": {
+    "source": "Default monthly limit saved.",
+    "text": "默认月额度已保存。"
+  },
+  "organization.settings.id": {
+    "source": "ID",
+    "text": "ID"
+  },
+  "organization.settings.last_sign_in": {
+    "source": "Last sign-in {when}",
+    "text": "上次登录：{when}"
+  },
+  "organization.settings.limit": {
+    "source": "Monthly limit of the organization",
+    "text": "机构的月额度"
+  },
+  "organization.settings.limits": {
+    "source": "Limits",
+    "text": "额度"
+  },
+  "organization.settings.name": {
+    "source": "Name",
+    "text": "名称"
+  },
+  "organization.settings.organization": {
+    "source": "Organization",
+    "text": "机构"
+  },
+  "organization.settings.spent": {
+    "source": "{amount} spent this month (UTC). Set by the platform administrator.",
+    "text": "本月（UTC）已花费 {amount}。由平台管理员设置。"
+  },
+  "organization.settings.sso": {
+    "source": "Single sign-on",
+    "text": "SSO 登录"
+  },
+  "organization.settings.sso_create": {
+    "source": "Creates an account that works at once.",
+    "text": "自动创建账号，立即可用。"
+  },
+  "organization.settings.sso_create_approval": {
+    "source": "Creates an account that waits for the approval of the platform administrator.",
+    "text": "自动创建账号，需要平台管理员审批后才能使用。"
+  },
+  "organization.settings.sso_description": {
+    "source": "An account becomes a member when it has an email in these domains and signs in through the connection. The platform administrator sets the connections up.",
+    "text": "邮箱属于下列域名、并且通过这个连接登录的账号会成为成员。连接由平台管理员配置。"
+  },
+  "organization.settings.sso_disabled": {
+    "source": "Disabled",
+    "text": "已停用"
+  },
+  "organization.settings.sso_domains": {
+    "source": "Email domains",
+    "text": "邮箱域名"
+  },
+  "organization.settings.sso_empty": {
+    "source": "No SSO connection is attached, so no new account becomes a member.",
+    "text": "还没有挂接 SSO 连接，所以不会有新账号成为成员。"
+  },
+  "organization.settings.sso_enabled": {
+    "source": "Enabled",
+    "text": "已启用"
+  },
+  "organization.settings.sso_first": {
+    "source": "First sign-in",
+    "text": "首次登录"
+  },
+  "organization.settings.sso_gone": {
+    "source": "The deployment has no provider {id} any more, so nobody signs in through this connection. Ask the platform administrator to attach its new id.",
+    "text": "平台上已经没有 {id} 这个身份提供方，所以没有人能通过这个连接登录。请联系平台管理员挂接它的新 id。"
+  },
+  "organization.settings.sso_id": {
+    "source": "Connection",
+    "text": "连接"
+  },
+  "organization.settings.sso_no_create": {
+    "source": "Does not create an account. The platform administrator creates the accounts.",
+    "text": "不会自动创建账号，账号由平台管理员创建。"
+  },
+  "organization.settings.sso_unavailable": {
+    "source": "Not available",
+    "text": "不可用"
+  },
+  "organization.shell.dashboard": {
+    "source": "Dashboard",
+    "text": "控制台"
+  },
+  "organization.status.active": {
+    "source": "Active",
+    "text": "正常"
+  },
+  "organization.status.deleted": {
+    "source": "Deleted",
+    "text": "已删除"
+  },
+  "organization.status.pending": {
+    "source": "Pending approval",
+    "text": "等待审批"
+  },
+  "organization.status.rejected": {
+    "source": "Rejected",
+    "text": "已拒绝"
+  },
+  "organization.status.removed": {
+    "source": "Removed",
+    "text": "已移除"
+  },
+  "organization.status.suspended": {
+    "source": "Suspended",
+    "text": "已停用"
+  },
+  "organization.tabs.audit": {
+    "source": "Audit log",
+    "text": "审计日志"
+  },
+  "organization.tabs.label": {
+    "source": "Organization sections",
+    "text": "机构控制台的页面"
+  },
+  "organization.tabs.members": {
+    "source": "Members",
+    "text": "成员"
+  },
+  "organization.tabs.overview": {
+    "source": "Overview",
+    "text": "概览"
+  },
+  "organization.tabs.settings": {
+    "source": "Settings",
+    "text": "设置"
+  },
+  "organization.tabs.usage": {
+    "source": "Usage",
+    "text": "用量"
+  },
+  "organization.time.days_ago": {
+    "source": "{n} d ago",
+    "text": "{n} 天前"
+  },
+  "organization.time.hours_ago": {
+    "source": "{n} h ago",
+    "text": "{n} 小时前"
+  },
+  "organization.time.just_now": {
+    "source": "Just now",
+    "text": "刚刚"
+  },
+  "organization.time.minutes_ago": {
+    "source": "{n} min ago",
+    "text": "{n} 分钟前"
+  },
+  "organization.time.never": {
+    "source": "Never",
+    "text": "从未"
+  },
+  "organization.usage.all_models": {
+    "source": "All models",
+    "text": "全部模型"
+  },
+  "organization.usage.by_member": {
+    "source": "By member",
+    "text": "按成员"
+  },
+  "organization.usage.by_model": {
+    "source": "By model",
+    "text": "按模型"
+  },
+  "organization.usage.empty": {
+    "source": "No requests in this period.",
+    "text": "这段时间没有请求。"
+  },
+  "organization.usage.errors": {
+    "source": "Errors",
+    "text": "错误"
+  },
+  "organization.usage.newer": {
+    "source": "Newer",
+    "text": "较新"
+  },
+  "organization.usage.no_match": {
+    "source": "No request matches these filters.",
+    "text": "没有符合筛选条件的请求。"
+  },
+  "organization.usage.older": {
+    "source": "Older",
+    "text": "较早"
+  },
+  "organization.usage.requests": {
+    "source": "Requests",
+    "text": "请求"
+  },
+  "organization.usage.search": {
+    "source": "Search by member",
+    "text": "按成员搜索"
+  },
+  "organization.usage.share": {
+    "source": "Share of spend",
+    "text": "花费占比"
+  },
+  "organization.usage.status_all": {
+    "source": "All statuses",
+    "text": "全部状态"
+  },
+  "organization.usage.views": {
+    "source": "Usage views",
+    "text": "用量视图"
+  },
+  "organization.usage.volume": {
+    "source": "Request volume",
+    "text": "请求量"
+  },
+  "organization.usage.volume_day": {
+    "source": "Last 24 hours",
+    "text": "最近 24 小时"
+  },
+  "organization.usage.volume_failed": {
+    "source": "{count} failed",
+    "text": "失败 {count}"
+  },
+  "organization.usage.volume_hour": {
+    "source": "Last hour",
+    "text": "最近 1 小时"
+  },
+  "organization.usage.volume_latency": {
+    "source": "{latency} avg",
+    "text": "平均 {latency}"
+  },
+  "organization.usage.volume_month": {
+    "source": "Last 30 days",
+    "text": "最近 30 天"
+  },
+  "organization.usage.volume_ok": {
+    "source": "{count} ok",
+    "text": "成功 {count}"
+  },
+  "organization.usage.volume_request": {
+    "source": "request",
+    "text": "次请求"
+  },
+  "organization.usage.volume_requests": {
+    "source": "requests",
+    "text": "次请求"
+  },
+  "organization.usage.volume_week": {
+    "source": "Last 7 days",
+    "text": "最近 7 天"
   },
   "settings.danger.description": {
     "source": "Irreversible actions that permanently affect your account.",
@@ -4660,6 +5868,10 @@
   "two_factor.settings.required": {
     "source": "Administrator access is off for this account until it has an authenticator app.",
     "text": "此账户添加验证器应用之前，无法使用管理员权限。"
+  },
+  "two_factor.settings.sso_only": {
+    "source": "This account signs in through single sign-on and has no password, so it cannot add an authenticator here. Its identity provider asks for a second factor.",
+    "text": "此账户只通过单点登录来登录，没有密码，所以不能在这里添加验证器应用。它的身份提供方会要求第二重验证。"
   },
   "two_factor.settings.title": {
     "source": "Two-Factor Authentication",

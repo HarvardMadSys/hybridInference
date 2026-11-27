@@ -133,6 +133,15 @@ describe('deletionProof', () => {
       ),
     ).toBe('unavailable');
   });
+
+  it('sends a member of an organization to its identity provider, not to its phone', () => {
+    // The gateway names the provider for an account that signs in through
+    // single sign-on only, also when it has a verified phone.
+    const member = { ...phoneUser(), sso_reauth_provider: { id: 'example-univ', name: 'Example' } };
+
+    expect(deletionProof(member as never, true)).toBe('sso');
+    expect(deletionProof(member as never, false)).toBe('sso');
+  });
 });
 
 describe('confirmationMatches', () => {

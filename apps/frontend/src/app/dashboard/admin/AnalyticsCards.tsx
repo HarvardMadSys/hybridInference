@@ -17,6 +17,7 @@ import {
 } from 'recharts';
 import { AdminAnalyticsResponse, AnalyticsPeriod } from '@/lib/api/admin';
 import { userAccountLabel } from '@/lib/utils/userLabel';
+import { CHART_TOOLTIP_STYLE } from '@/components/features/console-shared/chartTheme';
 import { Select } from '@/components/ui/Select';
 
 const CHART_COLORS = [
@@ -60,13 +61,6 @@ function fmtBucketTime(iso: string): string {
   });
 }
 
-const TOOLTIP_STYLE = {
-  fontSize: 12,
-  borderRadius: 8,
-  border: '1px solid #e5e7eb',
-  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-} as const;
-
 function CardTitle({
   children,
   className = '',
@@ -106,7 +100,7 @@ function ActiveUsersCard({
               separator=""
               formatter={(value) => [`${fmtCount(value as number)} requests`, '']}
               labelFormatter={(label) => fmtBucketTime(label as string)}
-              contentStyle={TOOLTIP_STYLE}
+              contentStyle={CHART_TOOLTIP_STYLE}
             />
             <Bar dataKey="v" fill="#60a5fa" radius={[2, 2, 0, 0]} isAnimationActive={false} />
           </BarChart>
@@ -191,7 +185,7 @@ function DonutCard({
                 </Pie>
                 <Tooltip
                   formatter={(value, name) => [`${fmtCount(value as number)} requests`, name]}
-                  contentStyle={TOOLTIP_STYLE}
+                  contentStyle={CHART_TOOLTIP_STYLE}
                 />
               </PieChart>
             </ResponsiveContainer>
@@ -258,7 +252,7 @@ function TopUsersCard({ entries }: { entries: AdminAnalyticsResponse['top_users'
                   `${fmtCount(v as number)} requests · ${item?.payload?.pct ?? 0}%`,
                   item?.payload?.fullEmail ?? 'User',
                 ]}
-                contentStyle={TOOLTIP_STYLE}
+                contentStyle={CHART_TOOLTIP_STYLE}
               />
               <Bar dataKey="requests" radius={[0, 3, 3, 0]} isAnimationActive={false}>
                 {entries.map((_, i) => (

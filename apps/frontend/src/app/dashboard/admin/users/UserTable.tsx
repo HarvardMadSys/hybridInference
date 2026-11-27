@@ -35,6 +35,11 @@ interface UserTableProps {
   hiddenColumns?: ColumnId[];
   filterState: FilterState;
   onSortChange: (sortBy: FilterState['sortBy']) => void;
+  /**
+   * The table has an Organization column: the deployment has organizations.
+   * Without it the table is the one of a deployment that has none.
+   */
+  showOrganization?: boolean;
   // Write handlers. Each throws on failure: a confirmation the table opens
   // stays open with the error, and a direct write shows it where it was made.
   onApprove: (userId: string) => Promise<void>;
@@ -119,6 +124,7 @@ export function UserTable(props: UserTableProps) {
     hiddenColumns = [],
     filterState,
     onSortChange,
+    showOrganization = false,
   } = props;
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<UserDetail | null>(null);
@@ -181,7 +187,8 @@ export function UserTable(props: UserTableProps) {
   const groupStarts = new Set<ColumnId>(visibleGroups.map((g) => g.ids[0]));
   // A left rule where a column group begins.
   const edge = (id: ColumnId) => (groupStarts.has(id) ? 'border-l border-gray-100' : '');
-  const colSpan = 2 + visible.size;
+  const fixedColumns = showOrganization ? 3 : 2;
+  const colSpan = fixedColumns + visible.size;
 
   const scoreIndicator =
     scoreState === 'loaded'
@@ -569,7 +576,10 @@ export function UserTable(props: UserTableProps) {
           <thead>
             {/* Column groups make the wide metric block scannable. */}
             <tr className="border-b border-gray-100 bg-gray-50/70 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-              <th colSpan={2} className="sticky left-0 z-10 bg-gray-50 px-3 pt-2 text-left" />
+              <th
+                colSpan={fixedColumns}
+                className="sticky left-0 z-10 bg-gray-50 px-3 pt-2 text-left"
+              />
               {visibleGroups.map((g) => (
                 <th
                   key={g.label}
@@ -606,6 +616,9 @@ export function UserTable(props: UserTableProps) {
                 )}
               </th>
               <th className="px-2.5 py-2 text-left align-bottom">Status</th>
+              {showOrganization && (
+                <th className="px-2.5 py-2 text-left align-bottom">Organization</th>
+              )}
               {visible.has('today') &&
                 sortHeader({ col: 'cost_today', label: 'Today', className: edge('today') })}
               {visible.has('trend') && (
@@ -722,6 +735,7 @@ export function UserTable(props: UserTableProps) {
                   <UserRow
                     user={u}
                     history={costHistories[u.id]}
+                    showOrganization={showOrganization}
                     turns={turnAverages[u.id]}
                     askQuestion={askQuestionFractions[u.id]}
                     automation={automationScores[u.id]}

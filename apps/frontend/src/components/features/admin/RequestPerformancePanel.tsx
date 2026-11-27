@@ -11,15 +11,10 @@ import {
   getRecentRequestsPerformanceTrend,
 } from '@/lib/api/admin';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { formatLatency } from '@/components/features/console-shared/format';
 import { EndpointTrendCharts } from './EndpointTrendCharts';
 
 type MetricKind = 'ms' | 'tps';
-
-function formatLatency(ms?: number | null): string {
-  if (ms == null) return '—';
-  if (ms >= 1000) return `${(ms / 1000).toFixed(1)}s`;
-  return `${Math.round(ms)}ms`;
-}
 
 function formatThroughput(tps?: number | null): string {
   if (tps == null) return '—';

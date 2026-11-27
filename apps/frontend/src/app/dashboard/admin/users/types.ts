@@ -2,6 +2,7 @@
 // UserRow mirrors backend UserListItem (decimals decoded as numbers/strings
 // — keep numeric strings for safety and parse where needed).
 
+import type { OrganizationRef } from '@/lib/api/organization';
 import type { Currency } from '@/lib/utils/money';
 
 export type UserStatus = 'pending_approval' | 'active' | 'suspended' | 'rejected' | 'deleted';
@@ -37,6 +38,8 @@ export interface UserRow {
   usage_alltime_usd: string;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
+  /** The organization the account is a member of and its role there; absent from an older gateway. */
+  organization?: OrganizationRef | null;
 }
 
 export interface CostHistoryPoint {
@@ -99,6 +102,8 @@ export interface FilterState {
   provider: string | null;
   activeWithinHours: number | null;
   anomaly: boolean | null;
+  /** The id of an organization, or `none` for the accounts that have none. */
+  organization?: string | null;
   view: string | null; // built-in or saved-view id
 }
 

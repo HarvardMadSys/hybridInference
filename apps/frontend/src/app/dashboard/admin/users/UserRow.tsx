@@ -2,7 +2,9 @@
 
 import { CHECKBOX } from '@/components/features/admin/adminStyles';
 import { useMoney } from '@/lib/hooks/useMoney';
-import { Sparkline } from './Sparkline';
+import { SpendCells } from '@/components/features/console-shared/SpendCells';
+import { StatusPill } from '@/components/features/console-shared/StatusPill';
+import { moneyAmount } from '@/lib/utils/money';
 import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
 import { ROLE_STYLE, STATUS_STYLE } from './ui';
@@ -42,6 +44,8 @@ interface UserRowProps {
   selectable?: boolean;
   selected?: boolean;
   onSelectedChange?: (selected: boolean) => void;
+  /** The table has an Organization column. */
+  showOrganization?: boolean;
 }
 
 // Token counts run large (millions–billions for heavy users); render them
@@ -90,6 +94,7 @@ export function UserRow({
   selectable = false,
   selected = false,
   onSelectedChange,
+  showOrganization = false,
 }: UserRowProps) {
   const money = useMoney();
   const status = STATUS_STYLE[user.status] ?? STATUS_STYLE.active;
@@ -183,12 +188,7 @@ export function UserRow({
         <div
           className={`${compact ? 'inline-flex' : 'flex xl:inline-flex'} items-center gap-1.5 align-middle`}
         >
-          <span
-            className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-medium ring-1 ring-inset ${status.pill}`}
-          >
-            <span className={`h-1.5 w-1.5 rounded-full ${status.dot}`} aria-hidden="true" />
-            {status.label}
-          </span>
+          <StatusPill tone={status} />
           {anomalous && (
             <span
               className="inline-flex items-center rounded-full bg-red-100 px-1.5 py-0.5 text-[11px] font-medium text-red-700"
@@ -235,28 +235,42 @@ export function UserRow({
           </div>
         )}
       </td>
-      {visible.has('today') && (
-        <td className={`${NUM} ${numTone(today)} ${cellBucket} ${edge('today')}`}>
-          {money.value(user, 'usage_today', { maximumFractionDigits: 2 })}
+      {showOrganization && (
+        <td className="max-w-[12rem] px-2.5 py-1.5 text-[13px]">
+          {user.organization ? (
+            <>
+              <div className="truncate text-gray-700" title={user.organization.name}>
+                {user.organization.name}
+              </div>
+              {user.organization.role === 'admin' && (
+                <div className="text-[11px] text-gray-500">Administrator</div>
+              )}
+            </>
+          ) : (
+            <Dash />
+          )}
         </td>
       )}
-      {visible.has('trend') && (
-        <td className={`px-2 ${edge('trend')}`}>
-          <Sparkline points={history ?? []} />
-        </td>
-      )}
-      {visible.has('month') && (
-        <td className={`${NUM} ${numTone(month)} ${edge('month')}`}>
-          {money.value(user, 'usage_month', { maximumFractionDigits: 2 })}
-        </td>
-      )}
-      {visible.has('alltime') && (
-        <td
-          className={`${NUM} ${alltime > 0 ? 'text-gray-600' : 'text-gray-300'} ${edge('alltime')}`}
-        >
-          {money.value(user, 'usage_alltime', { maximumFractionDigits: 2 })}
-        </td>
-      )}
+      <SpendCells
+        today={{
+          amount: today,
+          text: money.value(user, 'usage_today', { maximumFractionDigits: 2 }),
+        }}
+        trend={(history ?? []).map((point) => moneyAmount(point, 'cost'))}
+        trendLabel="7-day cost trend"
+        month={{
+          amount: month,
+          text: money.value(user, 'usage_month', { maximumFractionDigits: 2 }),
+        }}
+        alltime={{
+          amount: alltime,
+          text: money.value(user, 'usage_alltime', { maximumFractionDigits: 2 }),
+        }}
+        shows={(column) => visible.has(column)}
+        cellClass={(column) =>
+          column === 'today' ? `${cellBucket} ${edge('today')}` : edge(column)
+        }
+      />
       {visible.has('requests') && (
         <td
           className={`${NUM} ${numTone(user.usage_alltime_requests ?? 0)} ${edge('requests')}`}

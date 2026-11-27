@@ -7,10 +7,10 @@ import { usePathname } from 'next/navigation';
  *
  * The user console (`/dashboard` and its pages) is an application shell: a bar
  * across the top of the window, the navigation down its left edge and the page
- * beside it. The admin area has the same bar, so moving between the two does
- * not move the name or the account menu, and lays its wide tables out below
- * it. Every other page (sign-in, stats, legal text) is centred at the reading
- * width under a header of that width.
+ * beside it. The admin area and the organization console have the same bar, so
+ * moving between them does not move the name or the account menu, and lay
+ * their wide tables out below it. Every other page (sign-in, stats, legal
+ * text) is centred at the reading width under a header of that width.
  */
 const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
 const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';
@@ -30,8 +30,11 @@ export function isChatWorkspaceRoute(pathname: string): boolean {
   return pathname === '/dashboard/playground' || pathname === '/dashboard/playground/';
 }
 
+/** The areas that bring their own tabs and use the whole width below the bar. */
+const WIDE_AREAS = ['/dashboard/admin', '/dashboard/organization'] as const;
+
 export function isWideConsoleRoute(pathname: string): boolean {
-  return pathname === '/dashboard/admin' || pathname.startsWith('/dashboard/admin/');
+  return WIDE_AREAS.some((area) => pathname === area || pathname.startsWith(`${area}/`));
 }
 
 /** The pages that show the user console's navigation (the `(console)` group). */

@@ -859,6 +859,18 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
             expanding a row fast. The same figures also appear per-row in the
             table above (from the bulk endpoints), so nothing is lost by default. */}
         <ActivityStats userId={u.id} initial={detail} />
+        {detail.organization && (
+          <div className="flex flex-wrap items-center gap-1.5 border-t border-gray-100 px-4 py-2.5 text-[12px] text-gray-700">
+            <span className="mr-1 text-[11px] font-medium text-gray-500">Organization</span>
+            <span className="font-medium text-gray-900">{detail.organization.name}</span>
+            <span className="text-gray-300" aria-hidden="true">
+              ·
+            </span>
+            <span>
+              {detail.organization.role === 'admin' ? 'Organization administrator' : 'Member'}
+            </span>
+          </div>
+        )}
         {detail.models_used.length > 0 && (
           <div className="flex flex-wrap items-center gap-1.5 border-t border-gray-100 px-4 py-2.5">
             <span className="mr-1 text-[11px] font-medium text-gray-500">Models used</span>

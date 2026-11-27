@@ -15,6 +15,12 @@ import {
   YAxis,
 } from 'recharts';
 import { AdminGrowthResponse, GrowthRange, GrowthTrend, getGrowthAnalytics } from '@/lib/api/admin';
+import {
+  CHART_AXIS_LINE,
+  CHART_AXIS_TICK,
+  CHART_GRID_STROKE,
+  CHART_TOOLTIP_STYLE,
+} from '@/components/features/console-shared/chartTheme';
 import { getErrorMessage } from '@/lib/utils/errors';
 
 const RANGES: GrowthRange[] = [30, 60, 90];
@@ -49,13 +55,6 @@ function fmtDay(iso: string): string {
   if (Number.isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
-
-const TOOLTIP_STYLE = {
-  fontSize: 12,
-  borderRadius: 8,
-  border: '1px solid #e5e7eb',
-  boxShadow: '0 1px 3px rgba(0,0,0,0.08)',
-} as const;
 
 interface SeriesPoint {
   day: string;
@@ -170,18 +169,18 @@ function GrowthChart({
       <div className="mt-3 h-[190px]">
         <ResponsiveContainer width="100%" height="100%">
           <ComposedChart data={series} margin={{ top: 4, right: 4, left: 0, bottom: 0 }}>
-            <CartesianGrid stroke="#f3f4f6" vertical={false} />
+            <CartesianGrid stroke={CHART_GRID_STROKE} vertical={false} />
             <XAxis
               dataKey="day"
               tickFormatter={fmtDay}
-              tick={{ fontSize: 11, fill: '#9ca3af' }}
+              tick={CHART_AXIS_TICK}
               tickLine={false}
-              axisLine={{ stroke: '#e5e7eb' }}
+              axisLine={CHART_AXIS_LINE}
               minTickGap={28}
             />
             <YAxis
               yAxisId="daily"
-              tick={{ fontSize: 11, fill: '#9ca3af' }}
+              tick={CHART_AXIS_TICK}
               tickLine={false}
               axisLine={false}
               width={44}
@@ -209,7 +208,7 @@ function GrowthChart({
                 if (value == null) return ['—', name as string];
                 return [fmtCount(value as number), name as string];
               }}
-              contentStyle={TOOLTIP_STYLE}
+              contentStyle={CHART_TOOLTIP_STYLE}
             />
             <Bar
               yAxisId="daily"

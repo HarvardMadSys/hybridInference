@@ -11,6 +11,7 @@ import {
   getPerformanceMetrics,
 } from '@/lib/api/admin';
 import { ComputedAt } from '@/components/features/admin/ComputedAt';
+import { ModelTokenTable } from '@/components/features/console-shared/ModelTokenTable';
 import { useRefreshedAdminView } from '@/components/features/admin/useRefreshedAdminView';
 import { useMoney } from '@/lib/hooks/useMoney';
 import { getErrorMessage } from '@/lib/utils/errors';
@@ -177,35 +178,11 @@ function Kpi({ label, value }: { label: string; value: string }) {
 function ProviderTable({ provider, rows }: { provider: string; rows: ProviderTokenUsageRow[] }) {
   const money = useMoney();
   return (
-    <div className="rounded-xl border overflow-hidden">
-      <div className="bg-gray-50 px-4 py-2 text-[13px] font-semibold text-gray-900">{provider}</div>
-      <table className="w-full text-[12px]">
-        <thead className="text-gray-500">
-          <tr className="border-t">
-            <th className="text-left px-4 py-2">Model</th>
-            <th className="text-right px-3 py-2">Input</th>
-            <th className="text-right px-3 py-2">Output</th>
-            <th className="text-right px-3 py-2">Cached</th>
-            <th className="text-right px-3 py-2">Reasoning</th>
-            <th className="text-right px-3 py-2">Requests</th>
-            <th className="text-right px-4 py-2">Cost</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={r.model_id} className="border-t">
-              <td className="px-4 py-2 text-gray-900">{r.model_id}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.input_tokens)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.output_tokens)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.cached_tokens)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.reasoning_tokens)}</td>
-              <td className="px-3 py-2 text-right tabular-nums">{fmtCount(r.request_count)}</td>
-              <td className="px-4 py-2 text-right tabular-nums">{money.tokenCost(r)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+    <ModelTokenTable
+      title={provider}
+      rows={rows.map((r) => ({ ...r, cost: money.tokenCost(r) }))}
+      formatCount={fmtCount}
+    />
   );
 }
 

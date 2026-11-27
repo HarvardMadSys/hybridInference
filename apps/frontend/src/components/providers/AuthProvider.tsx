@@ -37,6 +37,7 @@ import {
   type AccountChangeReason,
 } from '@/lib/api/client';
 import { announceAccounts, listenForAccounts } from '@/lib/auth/accountSync';
+import type { OrganizationRef } from '@/lib/api/organization';
 import type { SsoProviderRef } from '@/lib/api/sso';
 import { getMe } from '@/lib/api/user';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
@@ -72,6 +73,14 @@ export interface AuthUser {
    * set only when it has no password and no verified phone to confirm with.
    */
   sso_reauth_provider?: SsoProviderRef | null;
+  /**
+   * The organization this account is a member of, and its role there. The
+   * organization console is offered to its administrators (`role: 'admin'`);
+   * the gateway decides who may read it.
+   */
+  organization?: OrganizationRef | null;
+  /** The account signs in through single sign-on only, and has no password to set. */
+  sso_only?: boolean;
 }
 
 export interface AuthState {
@@ -100,7 +109,8 @@ interface AuthContextValue {
   loginPhone: (phone: string, code: string) => Promise<void>;
   /** Sign the current account out of this browser; its other accounts stay. */
   logout: () => Promise<void>;
-  refreshUser: () => Promise<void>;
+  /** Reads the profile again. Resolves to whether it was read: `false` leaves the profile as it was. */
+  refreshUser: () => Promise<boolean>;
   /** The accounts signed in on this browser, for the account chooser and menu. */
   accounts: AccountSummary[];
   /** How many accounts one browser may hold. */
@@ -201,7 +211,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const me = await getMe();
       // An earlier profile request must not reactivate an account that left
       // while it was in flight (including an other-tab account-change notice).
-      if (revision !== accountRevision.current) return;
+      if (revision !== accountRevision.current) return false;
       activateAccountToasts(me.id);
       setState({
         isAuthenticated: true,
@@ -219,17 +229,21 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           is_admin: me.is_admin,
           locale: me.locale ?? null,
           sso_reauth_provider: me.sso_reauth_provider ?? null,
+          organization: me.organization ?? null,
+          sso_only: me.sso_only ?? false,
         },
       });
+      return true;
     } catch (error) {
-      if (revision !== accountRevision.current) return;
+      if (revision !== accountRevision.current) return false;
       // A failure that says nothing about the session -- the gateway down or
       // busy, a 429 -- keeps the account this tab shows, while its token still
       // names that account (a switch has already installed the next one's).
       const shown = userIdRef.current;
-      if (shown && shown === tokenAccount() && !isSessionGone(error)) return;
+      if (shown && shown === tokenAccount() && !isSessionGone(error)) return false;
       invalidateAccountToasts();
       setState({ isAuthenticated: false, loading: false, user: null });
+      return false;
     }
   }, [activateAccountToasts, invalidateAccountToasts]);
 

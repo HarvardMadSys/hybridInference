@@ -37,6 +37,8 @@ import {
   updateModelVisibility,
   listBatchModelLimits,
   updateBatchModelLimit,
+  listAdminOrganizations,
+  listUsers,
 } from '../admin';
 import type { RuntimeModelCapabilities } from '../admin';
 import { setAccessToken } from '../client';
@@ -74,6 +76,40 @@ beforeEach(() => {
 afterEach(() => {
   setAccessToken(null);
   vi.unstubAllGlobals();
+});
+
+describe('the organization of an account, in the Users tab', () => {
+  const ok = (body: unknown) =>
+    new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+  it('asks for the members of one organization, or for the accounts that have none', async () => {
+    // A new answer for each call: the body of one can be read once.
+    fetchMock.mockImplementation(async () => ok({ total: 0, users: [] }));
+
+    await listUsers({ organizationId: 'o-1' });
+    await listUsers({ organizationId: 'none' });
+    await listUsers({});
+
+    const query = (call: number) =>
+      new URL(String(fetchMock.mock.calls[call][0]), 'http://console.test').searchParams;
+    expect(query(0).get('organization_id')).toBe('o-1');
+    expect(query(1).get('organization_id')).toBe('none');
+    expect(query(2).has('organization_id')).toBe(false);
+  });
+
+  it('reads the organizations of the deployment for the filter', async () => {
+    fetchMock.mockResolvedValueOnce(
+      ok({ organizations: [{ id: 'o-1', name: 'Example University', member_count: 3 }] }),
+    );
+
+    const organizations = await listAdminOrganizations();
+
+    expect(String(fetchMock.mock.calls[0][0])).toContain('/admin/organizations');
+    expect(organizations).toEqual([{ id: 'o-1', name: 'Example University', member_count: 3 }]);
+  });
 });
 
 describe('role quota client', () => {

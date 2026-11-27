@@ -72,3 +72,16 @@ export function ssoStartFailure(t: Translate, status: number | undefined): strin
   if (status === 429) return ssoErrorMessage(t, 'rate_limited');
   return null;
 }
+
+/**
+ * What linking does to an account that becomes a member of an organization
+ * with it, said before the account is linked: on the step that asks, and in
+ * the form that starts a link. It names the way in, single sign-on, and not
+ * the organization: a member signs in through any identity that is linked.
+ */
+export function ssoOnlyAfterLink(t: Translate): string {
+  return t(
+    'auth.sso.link_sso_only',
+    'After you connect it, this account signs in through single sign-on only. Its password is removed.',
+  );
+}

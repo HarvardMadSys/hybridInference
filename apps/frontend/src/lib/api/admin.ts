@@ -7,6 +7,7 @@ import type {
   UsersSummary,
 } from '@/app/dashboard/admin/users/types';
 import type { ApiKeyListItem, Project } from './user';
+import type { OrganizationRef } from './organization';
 
 const API_BASE = config.apiBase;
 
@@ -16,6 +17,8 @@ const API_BASE = config.apiBase;
 
 export interface AdminUser {
   currency?: 'USD' | 'CNY';
+  /** The organization the account is a member of, and its role there; absent from an older gateway. */
+  organization?: OrganizationRef | null;
   id: string;
   /** `null` for an account that signs in with a login name instead. */
   email: string | null;
@@ -91,6 +94,8 @@ interface ListUsersOptions {
   provider?: string;
   activeWithinHours?: number;
   anomaly?: boolean;
+  /** The members of one organization, or `none` for the accounts that have none. */
+  organizationId?: string;
   includeUsageTotals?: boolean;
 }
 
@@ -110,6 +115,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
     params.set('active_within_hours', String(opts.activeWithinHours));
   }
   if (opts.anomaly !== undefined) params.set('anomaly', String(opts.anomaly));
+  if (opts.organizationId) params.set('organization_id', opts.organizationId);
   if (opts.includeUsageTotals !== undefined) {
     params.set('include_usage_totals', String(opts.includeUsageTotals));
   }
@@ -226,8 +232,23 @@ export interface UserSsoIdentity {
   last_login_at: string | null;
 }
 
+/** An organization as the Users tab names it in its filter. */
+export interface AdminOrganization {
+  id: string;
+  name: string;
+}
+
+/** The organizations of the deployment; none on a deployment that has no organization. */
+export async function listAdminOrganizations(): Promise<AdminOrganization[]> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/organizations');
+  const body = await jsonOrThrow<{ organizations: AdminOrganization[] }>(resp);
+  return body.organizations;
+}
+
 export interface UserDetail {
   currency?: 'USD' | 'CNY';
+  /** The organization the account is a member of, and its role there. */
+  organization?: OrganizationRef | null;
   id: string;
   email: string | null;
   login_name?: string | null;

@@ -132,6 +132,14 @@ export interface PendingSsoLink {
   provider_id: string;
   provider_name: string;
   email: string;
+  /**
+   * The provider is the connection of an organization: linking makes the
+   * account a member, which signs in through single sign-on only and loses
+   * its password. The gateway answers for the provider alone, because this is
+   * read before the owner signs in; a platform administrator keeps its
+   * password. Absent from an older gateway.
+   */
+  sso_only_after_link?: boolean;
 }
 
 /**
@@ -198,11 +206,21 @@ export interface SsoIdentity {
   available: boolean;
 }
 
-/** The identities that can sign in to the signed-in account. */
-export async function listSsoIdentities(): Promise<SsoIdentity[]> {
+/** What the signed-in account has of single sign-on. */
+export interface SsoIdentities {
+  identities: SsoIdentity[];
+  /**
+   * The connection of an organization that this account could link, when
+   * linking would leave it with single sign-on only: its password is then
+   * removed. `null` for every other account, and absent from an older gateway.
+   */
+  sso_only_provider?: SsoProviderRef | null;
+}
+
+/** The identities that can sign in to the signed-in account, and what linking one would do. */
+export async function readSsoIdentities(): Promise<SsoIdentities> {
   const resp = await fetchWithAuth(API_BASE, '/auth/sso/identities');
-  const result = await jsonOrThrow<{ identities: SsoIdentity[] }>(resp);
-  return result.identities;
+  return jsonOrThrow<SsoIdentities>(resp);
 }
 
 /**

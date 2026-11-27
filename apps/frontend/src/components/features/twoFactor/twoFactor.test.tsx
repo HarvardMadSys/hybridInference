@@ -37,7 +37,7 @@ vi.mock('@/lib/api/client', async (importOriginal) => ({
   },
 }));
 
-let user: { id: string; is_admin: boolean; has_password?: boolean } | null;
+let user: { id: string; is_admin: boolean; has_password?: boolean; sso_only?: boolean } | null;
 const auth = () => ({ state: { loading: false, isAuthenticated: user !== null, user } });
 vi.mock('@/components/providers/AuthProvider', () => ({ useAuth: () => auth() }));
 vi.mock('@/components/providers', () => ({ useAuth: () => auth() }));
@@ -348,6 +348,22 @@ describe('the settings section', () => {
     mount(<Section />);
     expect(await screen.findByText(/Set a password first/)).toBeInTheDocument();
     expect(screen.queryByLabelText('Your password')).not.toBeInTheDocument();
+  });
+
+  it('does not send a member of an organization to set a password, which it cannot', async () => {
+    // As the gateway answers it: such an account has no password to confirm
+    // with, and its identity provider asks for the second factor.
+    user = { id: 'admin-1', is_admin: true, has_password: false, sso_only: true };
+    mount(<Section />);
+
+    expect(
+      await screen.findByText(
+        'This account signs in through single sign-on and has no password, so it cannot add an authenticator here. Its identity provider asks for a second factor.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Set a password first/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Your password')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Add authenticator app' })).not.toBeInTheDocument();
   });
 });
 

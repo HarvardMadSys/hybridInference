@@ -19,7 +19,12 @@ const api = vi.hoisted(() => ({
 }));
 // The requests single sign-on makes; what reads a code or a refusal stays real.
 const sso = vi.hoisted(() => ({
+  // Not a request of the page: where a test sets the identities of the
+  // account. `readSsoIdentities`, which the section calls, passes them on
+  // with what linking one would do.
   listSsoIdentities: vi.fn(),
+  readSsoIdentities: vi.fn(),
+  onlyProvider: null as { id: string; name: string } | null,
   startSsoReauth: vi.fn(),
   linkSsoIdentity: vi.fn(),
   unlinkSsoIdentity: vi.fn(),
@@ -64,6 +69,11 @@ beforeEach(() => {
   api.sendPhoneCode.mockReset().mockResolvedValue({ message: 'sent', retry_after: 60 });
   api.updatePassword.mockReset().mockResolvedValue({ message: 'Password changed successfully.' });
   sso.listSsoIdentities.mockReset().mockResolvedValue([]);
+  sso.onlyProvider = null;
+  sso.readSsoIdentities.mockReset().mockImplementation(async () => ({
+    identities: await sso.listSsoIdentities(),
+    sso_only_provider: sso.onlyProvider,
+  }));
   sso.startSsoReauth
     .mockReset()
     .mockResolvedValue('https://idp.example.edu/authorize?prompt=login');
@@ -142,6 +152,55 @@ describe('account phone binding', () => {
     expect(screen.getByRole('heading', { name: 'Change Nickname' })).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Bind mobile number' })).not.toBeInTheDocument();
+  });
+});
+
+describe('a member of an organization, who signs in through single sign-on only', () => {
+  it('is offered no password, to change or to set', () => {
+    user = { ...user, has_password: false, sso_only: true };
+    renderSettings(true, true);
+
+    expect(screen.queryByRole('heading', { name: 'Set Password' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
+    // The rest of the page is as for every account.
+    expect(screen.getByRole('heading', { name: 'Change Nickname' })).toBeInTheDocument();
+  });
+
+  it('is offered none even while an older password is still on the account', () => {
+    user = { ...user, has_password: true, sso_only: true };
+    renderSettings(false);
+
+    expect(screen.queryByRole('heading', { name: 'Change Password' })).not.toBeInTheDocument();
+  });
+
+  it('confirms at its identity provider, and is asked for no password and no phone code', () => {
+    // As the gateway now answers for such an account: no password, whatever
+    // the account holds, and the provider to confirm with. It has a phone too.
+    user = {
+      ...user,
+      email: 'carol@example.edu',
+      has_password: false,
+      sso_only: true,
+      phone: '+8613812345678',
+      phone_verified: true,
+      sso_reauth_provider: { id: 'example-univ', name: 'Example University' },
+    };
+    renderSettings(true, true);
+
+    const email = screen.getByRole('heading', { name: 'Email Address' }).closest('section')!;
+    expect(
+      within(email).getByRole('button', { name: 'Confirm with Example University' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByLabelText(/^Current password/)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText(/verification code/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Send code/i })).not.toBeInTheDocument();
+  });
+
+  it('keeps the password section for an account that is not one', () => {
+    user = { ...user, has_password: true, sso_only: false };
+    renderSettings(false);
+
+    expect(screen.getByRole('heading', { name: 'Change Password' })).toBeInTheDocument();
   });
 });
 
@@ -624,8 +683,14 @@ describe('the single sign-on section', () => {
 
   it('explains that the only way to sign in cannot be disconnected', async () => {
     sso.listSsoIdentities.mockResolvedValue([identity()]);
+    // The gateway's own sentence: the status is all else it sends, and a
+    // second refusal has the same status.
     sso.unlinkSsoIdentity.mockRejectedValue(
-      new APIError('USER_ALREADY_EXISTS', 'Only sign-in method.', 409),
+      new APIError(
+        'USER_ALREADY_EXISTS',
+        'This is the only way to sign in to this account. Set a password before disconnecting it.',
+        409,
+      ),
     );
     renderSettings(false, true);
     fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
@@ -639,6 +704,48 @@ describe('the single sign-on section', () => {
       'This is the only way to sign in to this account. Set a password before disconnecting it.',
     );
     expect(screen.getByText('Example University')).toBeInTheDocument();
+  });
+
+  it('says that the single sign-on of the organization of a member cannot be disconnected', async () => {
+    sso.listSsoIdentities.mockResolvedValue([identity()]);
+    sso.unlinkSsoIdentity.mockRejectedValue(
+      new APIError(
+        'USER_ALREADY_EXISTS',
+        'This single sign-on belongs to your organization and cannot be disconnected.',
+        409,
+      ),
+    );
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
+    const row = screen.getByText('Example University').closest('li')!;
+    fireEvent.change(within(row).getByLabelText(/^Current password/), {
+      target: { value: 'Secret-1' },
+    });
+    fireEvent.click(within(row).getByRole('button', { name: 'Disconnect' }));
+
+    const alert = await within(row).findByRole('alert');
+    expect(alert).toHaveTextContent(
+      'This single sign-on belongs to your organization and cannot be disconnected.',
+    );
+    // Not the other refusal with the same status: this account has a password.
+    expect(alert).not.toHaveTextContent('only way to sign in');
+    expect(alert).not.toHaveTextContent('Set a password');
+  });
+
+  it('shows the sentence of the gateway for a conflict it does not know, never a guess', async () => {
+    sso.listSsoIdentities.mockResolvedValue([identity()]);
+    sso.unlinkSsoIdentity.mockRejectedValue(
+      new APIError('USER_ALREADY_EXISTS', 'A rule of a later release.', 409),
+    );
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disconnect Example University' }));
+    const row = screen.getByText('Example University').closest('li')!;
+    fireEvent.change(within(row).getByLabelText(/^Current password/), {
+      target: { value: 'Secret-1' },
+    });
+    fireEvent.click(within(row).getByRole('button', { name: 'Disconnect' }));
+
+    expect(await within(row).findByRole('alert')).toHaveTextContent('A rule of a later release.');
   });
 
   it('shows the gateway’s reason for any other refusal', async () => {
@@ -684,6 +791,64 @@ describe('the single sign-on section', () => {
       returnTo: '/dashboard/settings',
       password: 'Secret-1',
     });
+  });
+
+  it('says before the action that the account then signs in through single sign-on only', async () => {
+    // A password account with a school address: linking makes it a member.
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an SSO account' }));
+    const section = ssoSection();
+
+    // A warning of its own, which the reader meets before the fields: not a line
+    // of small print between the last field and the button.
+    const sentence = within(section).getByRole('note');
+    expect(sentence).toHaveTextContent(
+      'After you connect it, this account signs in through single sign-on only. Its password is removed.',
+    );
+    const email = within(section).getByLabelText('Work or school email');
+    const action = within(section).getByRole('button', { name: 'Continue' });
+    for (const later of [email, action]) {
+      expect(
+        sentence.compareDocumentPosition(later) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    }
+    // The form is the one it always is.
+    expect(within(section).getByLabelText('Work or school email')).toBeInTheDocument();
+    expect(within(section).getByLabelText(/^Current password/)).toBeInTheDocument();
+  });
+
+  it('says nothing of the password to an account that keeps it', async () => {
+    renderSettings(false, true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Connect an SSO account' }));
+
+    expect(within(ssoSection()).getByLabelText('Work or school email')).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
+  });
+
+  it('offers no link while it does not know what a link takes away', async () => {
+    // The read of the identities failed: the page cannot say whether the
+    // account would lose its password, so it does not offer the link.
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    sso.readSsoIdentities.mockRejectedValue(new Error('gateway busy'));
+    renderSettings(false, true);
+
+    await waitFor(() => expect(sso.readSsoIdentities).toHaveBeenCalled());
+    expect(await screen.findByRole('heading', { name: 'Single sign-on' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: 'Connect an SSO account' }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Work or school email')).not.toBeInTheDocument();
+  });
+
+  it('says nothing of it before the form is open', async () => {
+    sso.onlyProvider = { id: 'example-univ', name: 'Example University' };
+    renderSettings(false, true);
+
+    expect(
+      await screen.findByRole('button', { name: 'Connect an SSO account' }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Its password is removed/)).not.toBeInTheDocument();
   });
 
   it('says so when no provider answers for the email', async () => {
@@ -819,6 +984,19 @@ describe('the single sign-on section', () => {
       expect(sso.unlinkSsoIdentity).not.toHaveBeenCalled();
     });
 
+    it('does not tell a member of an organization to set a password, which it cannot', async () => {
+      user = { ...user, sso_only: true };
+      sso.listSsoIdentities.mockResolvedValue([identity()]);
+      renderSettings(false, true);
+
+      expect(
+        await screen.findByText(
+          'This account belongs to an organization. It signs in through single sign-on only.',
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/Set a password before disconnecting it/)).not.toBeInTheDocument();
+    });
+
     it('does not offer to disconnect the only way in, and sends nobody to the provider for it', async () => {
       // No password, no phone, one identity: the gateway would refuse it.
       sso.listSsoIdentities.mockResolvedValue([identity()]);
@@ -880,7 +1058,8 @@ describe('the single sign-on section', () => {
       renderSettings(false, true);
       const section = ssoSection();
 
-      expect(within(section).getByLabelText('Work or school email')).toHaveValue(
+      // The form is open again once the identities of the account are read.
+      expect(await within(section).findByLabelText('Work or school email')).toHaveValue(
         'carol@other.example',
       );
       expect(
@@ -914,7 +1093,7 @@ describe('the single sign-on section', () => {
       renderSettings(false, true);
       const section = ssoSection();
 
-      fireEvent.click(within(section).getByRole('button', { name: 'Continue' }));
+      fireEvent.click(await within(section).findByRole('button', { name: 'Continue' }));
 
       expect(await within(section).findByRole('alert')).toHaveTextContent(
         'Your organization has not set up single sign-on here. Use another sign-in method.',

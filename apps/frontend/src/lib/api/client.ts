@@ -677,5 +677,20 @@ export async function jsonOrThrow<T>(resp: Response): Promise<T> {
     }
   }
 
+  // A refused password sign-in for an address that an organization's single
+  // sign-on answers for says where to sign in. It depends on the domain of the
+  // address only, so it says nothing of an account.
+  const ssoSignIn = ssoSignInOf(errorData);
+  if (ssoSignIn) errorDetails = { ...errorDetails, sso_sign_in: ssoSignIn };
+
   throw new APIError(errorCode, errorMessage, resp.status, errorDetails);
+}
+
+/** The `sso_sign_in` of an error body: the name of the provider to sign in through. */
+function ssoSignInOf(body: unknown): { provider_name: string } | null {
+  if (!body || typeof body !== 'object') return null;
+  const field = (body as Record<string, unknown>).sso_sign_in;
+  if (!field || typeof field !== 'object') return null;
+  const name = (field as Record<string, unknown>).provider_name;
+  return typeof name === 'string' && name ? { provider_name: name } : null;
 }

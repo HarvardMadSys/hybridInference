@@ -16,6 +16,52 @@ describe('jsonOrThrow', () => {
     await expect(jsonOrThrow<{ hello: string }>(resp)).resolves.toEqual({ hello: 'world' });
   });
 
+  it('carries where to sign in instead, when a refused password sign-in names it', async () => {
+    const refusal = (body: unknown) =>
+      jsonOrThrow(
+        new Response(JSON.stringify(body), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        }),
+      ).catch((error: unknown) => error);
+
+    await expect(
+      refusal({
+        detail: 'Invalid email or password',
+        sso_sign_in: { provider_name: 'Example University' },
+      }),
+    ).resolves.toMatchObject({
+      code: 'INVALID_CREDENTIALS',
+      statusCode: 401,
+      details: { sso_sign_in: { provider_name: 'Example University' } },
+    });
+    // The gateway as it is deployed puts its errors in an `error` envelope; the
+    // field is beside it.
+    await expect(
+      refusal({
+        error: { type: 'unknown', message: 'Invalid email or password', code: 401 },
+        sso_sign_in: { provider_name: 'Example University' },
+      }),
+    ).resolves.toMatchObject({
+      code: 'INVALID_CREDENTIALS',
+      statusCode: 401,
+      details: { sso_sign_in: { provider_name: 'Example University' } },
+    });
+    // A wrong password of any other address has nothing of it.
+    const plain = (await refusal({ detail: 'Invalid email or password' })) as {
+      code: string;
+      details?: Record<string, unknown>;
+    };
+    expect(plain.code).toBe('INVALID_CREDENTIALS');
+    expect(plain.details?.sso_sign_in).toBeUndefined();
+    // Nor has a field that does not name a provider.
+    const empty = (await refusal({
+      detail: 'Invalid email or password',
+      sso_sign_in: { provider_name: '' },
+    })) as { details?: Record<string, unknown> };
+    expect(empty.details?.sso_sign_in).toBeUndefined();
+  });
+
   it('classifies a non-JSON 504 (edge timeout HTML page) as TIMEOUT_ERROR, not NETWORK_ERROR', async () => {
     const resp = new Response('<html>gateway timeout</html>', {
       status: 504,

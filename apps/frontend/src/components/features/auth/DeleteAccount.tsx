@@ -18,9 +18,11 @@ type DeletionProof = 'password' | 'phone' | 'sso' | 'admin' | 'unavailable';
 export function deletionProof(user: AuthUser, phoneAuth: boolean): DeletionProof {
   if (user.role === 'admin' || user.is_admin) return 'admin';
   if (user.has_password !== false) return 'password';
-  if (user.phone && user.phone_verified && phoneAuth) return 'phone';
-  // Neither: it signs in through an identity provider, and confirms there.
+  // The gateway names a provider only for an account that confirms there: one
+  // with no password and no phone, and a member of an organization, which
+  // signs in through single sign-on only and is never asked for a phone code.
   if (user.sso_reauth_provider) return 'sso';
+  if (user.phone && user.phone_verified && phoneAuth) return 'phone';
   return 'unavailable';
 }
 

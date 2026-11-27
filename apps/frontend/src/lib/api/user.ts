@@ -2,6 +2,7 @@ import { fetchWithAuth, jsonOrThrow } from './client';
 import { config } from '@/config/env';
 import type { AccountLocaleChoice } from '@/lib/i18n/choice';
 import { sortModelsById } from '@/lib/utils/modelOrder';
+import type { OrganizationRef } from './organization';
 import type { SsoProviderRef } from './sso';
 
 const API_BASE = config.apiBase;
@@ -28,6 +29,17 @@ interface User {
    * identity at an enabled provider: it confirms sensitive actions there.
    */
   sso_reauth_provider?: SsoProviderRef | null;
+  /**
+   * The organization the account is a member of, with its role there; absent
+   * or `null` for an account in none, and from a gateway older than organizations.
+   */
+  organization?: OrganizationRef | null;
+  /**
+   * The account signs in through single sign-on only: a member of an
+   * organization that is not a platform administrator. It has no password and
+   * the gateway refuses to set one. Absent from an older gateway.
+   */
+  sso_only?: boolean;
 }
 
 interface ApiKeyResponse {
