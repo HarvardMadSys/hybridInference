@@ -4,10 +4,9 @@ This wrapper is transitional compatibility structure for the explicit
 ``hybrid_composition`` path. The accepted
 [composable-routing design](../../../docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
 uses ``TreeBackend(router=RouteWiseRouter(...))`` for a scoped pool and does
-not require a RouteWise-specific CloudBackend subclass. The
-[implementation plan](../../../docs/agents/plans/2026-09-13-hybrid-routing-implementation.zh.md)
-keeps existing public imports during staged wiring; do not treat this wrapper
-as RouteWise's architectural home.
+not require a RouteWise-specific CloudBackend subclass. The wrapper keeps
+existing public imports during staged wiring; do not treat it as RouteWise's
+architectural home.
 
 Selection, fallback, quota and concurrency accounting, hedging and streaming all
 execute inside the wrapped RouteWiseRouter. This wrapper contributes two things

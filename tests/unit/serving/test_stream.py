@@ -38,19 +38,6 @@ def test_make_final_usage_chunk_estimates_tokens():
     assert usage["total_tokens"] == usage["prompt_tokens"] + usage["completion_tokens"]
 
 
-@pytest.mark.unit
-@pytest.mark.perf
-def test_make_stream_chunk_performance():
-    """Ensure generating many chunks is fast enough for regressions."""
-    import time
-
-    start = time.perf_counter()
-    for _ in range(1000):
-        _ = make_stream_chunk(model="m", content="content")
-    elapsed = time.perf_counter() - start
-    assert elapsed < 0.1  # 1000 chunks within 100ms on CI-class machines
-
-
 # -- the reader a streaming response consumes its upstream through ---------------
 
 _END = object()

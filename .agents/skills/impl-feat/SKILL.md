@@ -14,7 +14,8 @@ workflow.
 - Inspect the working tree and existing worktrees. Reuse a suitable task worktree;
   otherwise fetch the upstream `dev` and create a feature branch in a worktree
   following `AGENTS.md`. Do not pull `dev` into an unrelated current branch.
-- Read neighboring code and the newest applicable specs, plans and reviews.
+- Read neighboring code and any design record that `AGENTS.md` or the subsystem
+  guide names for the area.
   Explain the intended behavior, affected components and verification approach.
   Proceed within the user's authorized scope; clarify only unresolved decisions
   that materially change the result.

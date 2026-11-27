@@ -255,12 +255,6 @@ def is_env_key_disabled(provider: str, key_hash: str) -> bool:
         return key_hash in _disabled_env_key_hashes.get(provider, set())
 
 
-def env_key_min_role(provider: str, key_hash: str) -> str:
-    """Return the tier an env key is reserved for (``"free"`` when unreserved)."""
-    with _lock:
-        return _env_key_min_roles.get(provider, {}).get(key_hash, DEFAULT_MIN_ROLE)
-
-
 def _resolve_min_role_locked(provider: str, raw_key: str) -> str:
     """Return the tier the pool must enforce for *raw_key*.
 
@@ -531,33 +525,74 @@ def aliased_key_providers() -> frozenset[str]:
     return frozenset(_KEY_PROVIDER_ALIASES)
 
 
-def configured_env_keys_for_provider(provider: str) -> list[str]:
-    """Return provider keys configured through base + numbered settings.
+def provider_env_key_setting_names(provider: str) -> list[str]:
+    """Return the base setting and numbered extras that pool keys for *provider*.
 
-    "Env" keys are the ones configured as settings rather than added on the Keys
-    tab: each resolves through ``config_value``, the database-backed setting
-    first and the environment variable second.
-
-    The base setting, then every numbered one from ``1`` to
-    :data:`_MAX_NUMBERED_ENV_KEYS` — the names the Settings tab accepts as
-    pooled with the base. A blank one is skipped rather than ending the scan,
-    so a key cleared from the middle does not drop the ones after it, and a
-    value already listed is not listed twice.
+    The base name, then ``1`` through :data:`_MAX_NUMBERED_ENV_KEYS`. Empty when
+    *provider* has no environment key settings. Callers decide which resolver
+    reads each name, so a boot snapshot and a value saved since boot cannot drift
+    onto different name lists.
     """
     spec = _PROVIDER_ENV_KEY_VARS.get(provider)
     if spec is None:
         return []
-
     base_var, numbered_prefix = spec
-    names = [base_var] + [
+    return [base_var] + [
         f"{numbered_prefix}{index}" for index in range(1, _MAX_NUMBERED_ENV_KEYS + 1)
     ]
+
+
+def configured_env_keys_for_provider(provider: str) -> list[str]:
+    """Return provider keys configured through base + numbered settings.
+
+    "Env" keys are the ones configured as settings rather than added on the Keys
+    tab: each resolves through ``config_value``, the value this process booted
+    with. A restart-required edit is not visible here until that restart.
+
+    A blank setting is skipped rather than ending the scan, so a key cleared
+    from the middle does not drop the ones after it, and a value already listed
+    is not listed twice.
+    """
     keys: list[str] = []
-    for name in names:
+    for name in provider_env_key_setting_names(provider):
         value = config_value(name, "") or ""
         if value.strip() and value not in keys:
             keys.append(value)
     return keys
+
+
+def configured_env_key_hashes(provider: str) -> set[str]:
+    """Return hashes of *provider*'s keys as configuration has them now.
+
+    Unlike :func:`configured_env_keys_for_provider`, this reads
+    ``configured_value``: a setting an administrator just cleared is absent,
+    and one they just saved is present, before the restart that changes what
+    the process booted with.
+    """
+    # Imported here: ``app_config`` builds its registry from this module.
+    from serving.config.app_config import configured_value
+
+    hashes: set[str] = set()
+    for name in provider_env_key_setting_names(provider):
+        value = configured_value(name, "") or ""
+        if value.strip():
+            hashes.add(env_key_hash(value))
+    return hashes
+
+
+def provider_settings_holding_key(provider: str, key_hash: str) -> list[str]:
+    """Return setting names whose latest configured value hashes to *key_hash*.
+
+    Names only. The values stay with the caller, which is what blanks them.
+    """
+    from serving.config.app_config import configured_value
+
+    names: list[str] = []
+    for name in provider_env_key_setting_names(provider):
+        value = configured_value(name, "") or ""
+        if value.strip() and env_key_hash(value) == key_hash:
+            names.append(name)
+    return names
 
 
 def disable_env_key_for_provider(provider: str, key: str, key_hash: str) -> int:

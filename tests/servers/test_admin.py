@@ -3,52 +3,15 @@ from __future__ import annotations
 import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import pytest
 from fastapi import FastAPI, status
 from httpx import ASGITransport, AsyncClient
 
 from routing.routers import FixedRouter
-from serving.adapters.base import BaseAdapter, ModelConfig
 from serving.servers.deps import AppServices, verify_admin_access
-from serving.servers.routers import admin, models
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
-
-class _Adapter(BaseAdapter):
-    async def chat_completion(self, messages: list[dict[str, Any]], **params) -> dict[str, Any]:
-        return self.format_response(content="ok", model=self.config.id)
-
-    async def stream_chat_completion(
-        self, messages: list[dict[str, Any]], **params
-    ):  # pragma: no cover
-        yield self.format_stream_chunk(model=self.config.id, content="ok")
-
-
-def _cfg(model_id: str) -> ModelConfig:
-    return ModelConfig(id=model_id, name=model_id, provider="test", base_url="http://test")
-
-
-@pytest.fixture
-async def admin_app(mock_db_logger) -> FastAPI:
-    router = FixedRouter()
-    router.register_route("canonical-model", [(_Adapter(_cfg("canonical-model")), 1.0)])
-    app = FastAPI(title="Admin App")
-    app.state.services = AppServices(router=router, db_logger=mock_db_logger)  # type: ignore[attr-defined]
-    app.dependency_overrides[verify_admin_access] = lambda: "admin-1"
-    app.include_router(models.router)
-    app.include_router(admin.router)
-    return app
-
-
-@pytest.fixture
-async def admin_client(admin_app: FastAPI) -> AsyncGenerator[AsyncClient, None]:
-    transport = ASGITransport(app=admin_app)
-    async with AsyncClient(transport=transport, base_url="http://test") as client:
-        yield client
+from serving.servers.routers import admin
 
 
 @pytest.mark.asyncio

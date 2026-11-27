@@ -216,17 +216,6 @@ connection. Before trusting any of them, see
 [Behind the console](trusted-proxies-and-client-ips.md#behind-the-console).
 When the caller hangs up, the gateway's request is cancelled at once.
 
-### Legacy `beforeFiles` compatibility
-
-`next.config.js` still emits the same three rules as `beforeFiles` rewrites when
-both agent URLs are supplied **while building** the image, as some older
-distribution pipelines do. This repository's Compose does not pass them, and
-its images use the runtime handler above. Because `beforeFiles` wins over a
-filesystem route, an image built with those values keeps its baked-in targets
-and cannot be retargeted by changing only the container environment. Such an
-image also keeps `middlewareClientMaxBodySize` at 32 MiB, because those
-rewrites carry the agent's request bodies.
-
 ### `afterFiles` — the gateway
 
 Every destination below is `${BACKEND_INTERNAL_URL}` plus the same path. These

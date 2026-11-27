@@ -3026,6 +3026,28 @@ class EnableProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported
     pools_updated: int
 
 
+class RemoveProviderEnvKeyRequest(BaseModel):  # type: ignore[no-any-unimported]
+    """Request body for removing an env-sourced provider API key.
+
+    Same addressing as disable: the key has no row id of its own.
+    """
+
+    provider: str = Field(..., min_length=1, max_length=64)
+    env_key_id: str = Field(..., min_length=1, max_length=128)
+
+
+class RemoveProviderEnvKeyResponse(BaseModel):  # type: ignore[no-any-unimported]
+    """Response for ``POST /admin/provider-keys/remove-env``."""
+
+    id: str
+    provider: str
+    pools_updated: int
+    cleared_settings: list[str] = Field(
+        default_factory=list,
+        description=("Setting names whose saved value was cleared. Never includes secret values."),
+    )
+
+
 class SetProviderApiKeyStatusResponse(BaseModel):  # type: ignore[no-any-unimported]
     """Response for enabling/disabling a DB-sourced provider API key."""
 

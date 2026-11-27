@@ -1,14 +1,12 @@
 """Database-backed public site configuration and explicit legacy import helpers.
 
 Runtime consumers use get_active_distribution_config, which reads validated JSON
-settings and never loads a manifest file. The file loader and path resolver are
-retained only for explicit previous-release tooling, not application startup.
+settings and never loads a manifest file. The file loader is retained only for
+the explicit legacy import (``python -m serving.config.manage import-legacy``).
 """
 
 from __future__ import annotations
 
-import hashlib
-from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
@@ -23,24 +21,6 @@ from serving.utils.logging import get_logger
 logger = get_logger(__name__)
 
 ConfigKind = Literal["models", "routing", "alerts", "mcp"]
-
-# The bottom of the precedence, and what a checkout with no distribution and no
-# environment gets. It used to name config/*.yaml, where these files lived until
-# they moved into the overlay — after which the fallback named nothing and a
-# clone served an empty catalogue. Pointing it at the reference registries makes
-# the neutral case work *without* an environment variable, which matters: a
-# variable would win over the manifest and make a deployment's manifest
-# decorative. Alerts keeps a path nobody ships on purpose — there is no example
-# to name, and the loader's answer to a missing alerts file is the built-in
-# thresholds, which is the right neutral behaviour.
-_LEGACY_DEFAULTS: dict[str, str] = {
-    "models": "config/examples/models.openrouter.yaml",
-    "routing": "config/examples/routing.minimal.yaml",
-    "alerts": "config/alerts.yaml",
-    # Accepted for compatibility and read by nothing: the MCP loader left with
-    # the cloud agent (configuration.md, "Settings that currently have no effect").
-    "mcp": "config/mcp.yaml",
-}
 
 
 class _ManifestModel(BaseModel):
@@ -187,29 +167,6 @@ def load_distribution_config(path: Path) -> DistributionConfig:
     return resolved_config
 
 
-def _refuse_or_fall_back(configured: str, exc: Exception, *, unexpected: bool = False) -> None:
-    """Log a manifest load failure, and refuse to continue when it is the truth.
-
-    #952 made failing open a property of this module, and it was the right one
-    while the manifest was dark-only: a file that will not load costs a
-    comparison and nothing else, because the environment still supplies every
-    effective path. Active mode changes that arithmetic. There the manifest
-    *is* where the paths come from, so falling back to legacy resolution means
-    quietly serving a different registry than the deployment named — which is
-    what a lost ``distributions/`` mount would produce, and what nobody would
-    notice. A deployment that asked for the manifest should stop instead.
-    """
-    kind = "Unexpected error loading" if unexpected else "Distribution manifest failed to load:"
-    if _effective_mode() == "active":
-        logger.critical(f"{kind} {configured!r} — refusing to start in active mode")
-        raise DistributionConfigError(
-            f"distribution manifest {configured!r} is the configured source of "
-            f"deployment identity and config paths (DISTRIBUTION_CONFIG_MODE=active) "
-            f"and did not load: {exc}"
-        ) from exc
-    logger.exception(f"{kind} {configured!r}; using legacy config resolution")
-
-
 @lru_cache(maxsize=1)
 def get_distribution_config() -> DistributionConfig | None:
     """Return validated database site configuration; never inspect a manifest file."""
@@ -264,14 +221,6 @@ def _forget_report() -> None:
     _invalid_reported = False
 
 
-@dataclass(frozen=True)
-class ResolvedConfigPath:
-    """A config file location plus which layer of the precedence chose it."""
-
-    path: Path
-    source: str  # "env" | "distribution" | "default"
-
-
 _VALID_MODES = {"active", "dark"}
 
 # Resolver decisions are logged once per unique situation, not per call: the
@@ -289,7 +238,7 @@ def _log_once(key: tuple[str, ...], message: str, *, level: str = "info") -> Non
 def _effective_mode() -> str:
     """Normalize the configured mode; unknown values degrade to ``dark``.
 
-    This fallback applies to config-path resolution, where it prevents an
+    This fallback applies to the legacy import, where it prevents an
     accidental activation. Feature policies and public identity use
     ``get_active_distribution_config`` to reject unknown modes instead of
     silently discarding a restriction.
@@ -333,60 +282,6 @@ def _env_override(kind: ConfigKind) -> str:
         # sets it to the default value still wins over the manifest.
         return ""
     return value
-
-
-def resolve_config_path(kind: ConfigKind) -> ResolvedConfigPath:
-    """Apply the env > distribution > legacy-default precedence for one file.
-
-    The manifest, when configured, is always loaded and validated — even when
-    an env override wins — so dark mode compares against what is actually
-    effective and a broken manifest surfaces at startup rather than at
-    cutover.
-    """
-    env_value = _env_override(kind)
-    if env_value:
-        effective = ResolvedConfigPath(path=Path(env_value), source="env")
-    else:
-        effective = ResolvedConfigPath(path=Path(_LEGACY_DEFAULTS[kind]), source="default")
-
-    dist = get_distribution_config()
-    manifest_value: str = getattr(dist.paths, kind) if dist else ""
-    if not manifest_value:
-        return effective
-
-    manifest = ResolvedConfigPath(path=Path(manifest_value), source="distribution")
-    if _effective_mode() == "dark":
-        _log_dark_comparison(kind, effective=effective, manifest=manifest)
-        return effective
-    if env_value:
-        _log_once(
-            ("env-shadow", kind, env_value, manifest_value),
-            f"{kind} config: explicit env override {effective.path} wins over "
-            f"manifest value {manifest.path}",
-        )
-        return effective
-    return manifest
-
-
-def _file_digest(path: Path) -> str:
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest()[:12]
-    except (OSError, ValueError):
-        return "missing"
-
-
-def _log_dark_comparison(
-    kind: ConfigKind, *, effective: ResolvedConfigPath, manifest: ResolvedConfigPath
-) -> None:
-    effective_digest = _file_digest(effective.path)
-    manifest_digest = _file_digest(manifest.path)
-    verdict = "identical" if effective_digest == manifest_digest != "missing" else "DIFFERENT"
-    _log_once(
-        ("dark", kind, str(effective.path), str(manifest.path), effective_digest, manifest_digest),
-        f"[distribution dark mode] {kind} config stays {effective.path} "
-        f"(source={effective.source}, sha256={effective_digest}); manifest would "
-        f"use {manifest.path} (sha256={manifest_digest}) — {verdict}",
-    )
 
 
 # Settings changes invalidate the parsed public configuration in this process,

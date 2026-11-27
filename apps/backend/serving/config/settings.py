@@ -221,8 +221,7 @@ class Settings(BaseSettings):
     # on this path is the larger cost of the two. Set false to spend nothing.
     auth_failure_identify_caller: bool = True
 
-    # Cloudflare Turnstile (signup captcha)
-    turnstile_site_key: str = ""
+    # Cloudflare Turnstile (signup captcha). The console has its own site key.
     turnstile_secret_key: str = ""
 
     # Email (optional). Provider names are validated against the built-in

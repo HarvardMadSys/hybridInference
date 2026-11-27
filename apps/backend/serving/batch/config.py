@@ -22,8 +22,7 @@ this version runs is available -- inline and file batches, the Chat,
 Embeddings, Messages and Responses targets, and webhooks -- to the
 roles ``BATCH_MIN_ROLE`` admits. ``BATCH_EXPANSION_ENABLED``, which once held
 the newer kinds back, is retired (``RETIRED_SETTINGS`` in the registry): a
-value left in the environment or the database controls nothing here. See
-``docs/agents/specs/2026-10-27-batch-default-availability-amendment.zh.md``.
+value left in the environment or the database controls nothing here.
 """
 
 from __future__ import annotations

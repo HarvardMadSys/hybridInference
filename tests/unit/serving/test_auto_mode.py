@@ -12,6 +12,7 @@ import logging
 from types import SimpleNamespace
 
 import pytest
+import yaml
 
 from routing.model_selection import (
     Candidate,
@@ -27,9 +28,9 @@ from serving.auto_mode import (
     anthropic_features,
     apply_to_anthropic_body,
     apply_to_chat_request,
+    auto_mode_from_document,
     candidate_info,
     hide_served_model,
-    load_auto_mode,
     openai_features,
     served_model_names,
     session_key,
@@ -357,40 +358,31 @@ def _routes(*names: str) -> dict:
     return {name: SimpleNamespace(adapters=[(adapter, 1.0)]) for name in names}
 
 
-def test_a_section_loads_and_an_unregistered_candidate_is_only_a_warning(tmp_path, caplog):
-    path = tmp_path / "models.yaml"
-    path.write_text(_SECTION)
-
+def test_a_section_loads_and_an_unregistered_candidate_is_only_a_warning(caplog):
     with caplog.at_level(logging.WARNING):
-        auto_mode = load_auto_mode(path, _routes("known"))
+        auto_mode = auto_mode_from_document(yaml.safe_load(_SECTION), _routes("known"))
 
     assert auto_mode is not None
     assert auto_mode.config.resolve("auto").name == "balance"
     assert "missing: model is not registered" in caplog.text
 
 
-def test_a_file_without_a_section_has_no_auto_mode(tmp_path):
-    path = tmp_path / "models.yaml"
-    path.write_text("models: []\n")
-
-    assert load_auto_mode(path, _routes("known")) is None
+def test_a_catalog_without_a_section_has_no_auto_mode():
+    assert auto_mode_from_document({"models": []}, _routes("known")) is None
 
 
-def test_an_invalid_section_turns_auto_off_and_says_why(tmp_path, caplog):
-    path = tmp_path / "models.yaml"
-    path.write_text("auto:\n  default_profile: cheap\n  profiles: {}\n")
+def test_an_invalid_section_turns_auto_off_and_says_why(caplog):
+    document = {"auto": {"default_profile": "cheap", "profiles": {}}}
 
     with caplog.at_level(logging.ERROR):
-        assert load_auto_mode(path, _routes("known")) is None
+        assert auto_mode_from_document(document, _routes("known")) is None
     assert "Auto mode is off: auto.profiles" in caplog.text
 
 
-def test_a_tier_named_like_a_registered_model_turns_auto_off(tmp_path, caplog):
-    path = tmp_path / "models.yaml"
-    path.write_text(_SECTION)
-
+def test_a_tier_named_like_a_registered_model_turns_auto_off(caplog):
     with caplog.at_level(logging.ERROR):
-        assert load_auto_mode(path, _routes("known", "auto-balance")) is None
+        document = yaml.safe_load(_SECTION)
+        assert auto_mode_from_document(document, _routes("known", "auto-balance")) is None
     assert "'auto-balance' is a registered model name" in caplog.text
 
 

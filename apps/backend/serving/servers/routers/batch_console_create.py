@@ -29,8 +29,6 @@ explicit overrides, and a submission bound to what was confirmed.
   idempotency record expired (a day after the batch ended) for as long as the
   batch is stored; ``GET /user/batch-submissions/{key}`` reads that without
   creating anything.
-
-Design: ``docs/agents/specs/2026-10-28-batch-ui-create-design.zh.md``.
 """
 
 from __future__ import annotations

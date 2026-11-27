@@ -7,7 +7,6 @@ import importlib
 import pytest
 
 from migrations.compat import read_state
-from serving.config.route_catalog import import_missing
 from tests.fixtures import migrations as mig
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
@@ -60,18 +59,3 @@ async def test_its_statements_can_run_again(scratch):
     async with mig.connected(scratch) as conn:
         for statement in revision.STATEMENTS:
             await conn.execute(statement)
-
-
-async def test_import_missing_inserts_once_and_keeps_the_row(scratch):
-    await mig.upgrade(scratch, REVISION)
-    seed = {"models": "models: []\n", "routing": "   \n"}
-    async with mig.connected(scratch) as conn:
-        stored = await import_missing(conn, seed)
-        assert stored == {"models": "models: []\n"}
-        again = await import_missing(conn, {"models": "models:\n  - id: other\n"})
-        assert again["models"] == "models: []\n"
-        row = await conn.fetchrow(
-            "SELECT source, updated_by FROM route_catalog WHERE kind = $1", "models"
-        )
-    assert row["source"] == "yaml_import"
-    assert row["updated_by"] == "init"

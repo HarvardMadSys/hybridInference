@@ -1962,32 +1962,6 @@ class PostgresOperationalStore(
                 user_id,
             )
 
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Return ``{status_value: count}`` for all statuses."""
-        async with self._pool.acquire() as conn:
-            rows = await conn.fetch("SELECT status, COUNT(*) as cnt FROM users GROUP BY status")
-        return {r["status"]: r["cnt"] for r in rows}
-
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Return ``{"total": N, "dau": N, "mau": N}``."""
-        async with self._pool.acquire() as conn:
-            total_row = await conn.fetchrow(
-                "SELECT COUNT(*) as count FROM users WHERE status = 'active'"
-            )
-            dau_row = await conn.fetchrow(
-                "SELECT COUNT(DISTINCT id) as count FROM users "
-                "WHERE status = 'active' AND last_login_at >= NOW() - INTERVAL '24 hours'"
-            )
-            mau_row = await conn.fetchrow(
-                "SELECT COUNT(DISTINCT id) as count FROM users "
-                "WHERE status = 'active' AND last_login_at >= NOW() - INTERVAL '30 days'"
-            )
-        return {
-            "total": total_row["count"] if total_row else 0,
-            "dau": dau_row["count"] if dau_row else 0,
-            "mau": mau_row["count"] if mau_row else 0,
-        }
-
     # -- api keys ------------------------------------------------------------
 
     async def get_auth_context_by_key_hash(self, key_hash: str) -> Row | None:
@@ -5802,21 +5776,28 @@ class PostgresOperationalStore(
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
-        """Persist a tombstone for an env-sourced provider key."""
+        """Persist a tombstone for an env-sourced provider key.
+
+        The conflict update writes ``removed`` from this call, so a later
+        disable clears a key that had been removed.
+        """
         async with self._pool.acquire() as conn:
             await conn.execute(
                 "INSERT INTO disabled_provider_env_keys "
-                "(provider, key_hash, key_prefix, disabled_by) "
-                "VALUES ($1, $2, $3, $4) "
+                "(provider, key_hash, key_prefix, disabled_by, removed) "
+                "VALUES ($1, $2, $3, $4, $5) "
                 "ON CONFLICT (provider, key_hash) DO UPDATE SET "
                 "key_prefix = EXCLUDED.key_prefix, "
                 "disabled_by = EXCLUDED.disabled_by, "
-                "disabled_at = NOW()",
+                "disabled_at = NOW(), "
+                "removed = EXCLUDED.removed",
                 provider,
                 key_hash,
                 key_prefix,
                 disabled_by,
+                removed,
             )
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
@@ -5824,6 +5805,15 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn:
             rows = await conn.fetch(
                 "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1",
+                provider,
+            )
+        return {r["key_hash"] for r in rows}
+
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Return env-key hashes an administrator removed for *provider*."""
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(
+                "SELECT key_hash FROM disabled_provider_env_keys WHERE provider = $1 AND removed",
                 provider,
             )
         return {r["key_hash"] for r in rows}

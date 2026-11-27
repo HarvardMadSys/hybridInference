@@ -136,15 +136,6 @@ describe('resolveRuntimeSiteConfig', () => {
     },
   );
 
-  it('keeps single sign-on off for the legacy document', () => {
-    const {
-      schema_version: _schemaVersion,
-      branding: _branding,
-      ...legacyDocument
-    } = runtimeDocument;
-    expect(resolveRuntimeSiteConfig(legacyDocument).sso).toEqual({ enabled: false });
-  });
-
   it('only enables phone authentication when the server advertises it', () => {
     expect(resolveRuntimeSiteConfig(runtimeDocument).features.phoneAuth).toBe(false);
     expect(
@@ -245,54 +236,6 @@ describe('resolveRuntimeSiteConfig', () => {
     expect(resolved.branding).toBe(buildTimeSiteConfig.branding);
     expect(resolved.distribution).toEqual({ id: 'neutral', release: '' });
     expect(resolved.features).toEqual(buildTimeSiteConfig.features);
-  });
-
-  it('preserves legacy identity and disabled features during a rolling upgrade', () => {
-    const {
-      schema_version: _schemaVersion,
-      branding: _branding,
-      ...legacyDocument
-    } = runtimeDocument;
-
-    const resolved = resolveRuntimeSiteConfig(legacyDocument);
-
-    expect(resolved.branding).toMatchObject({
-      appName: 'Example Inference',
-      exampleApiBase: 'https://inference.example.test',
-      siteHost: 'inference.example.test',
-      contactEmail: 'support@example.test',
-    });
-    expect(resolved.distribution).toEqual({ id: 'example', release: '2026.07' });
-    expect(resolved.features).toEqual({
-      publicSignup: false,
-      phoneAuth: false,
-      rag: false,
-      agents: false,
-      publicStats: false,
-    });
-  });
-
-  it('keeps legacy feature gates when its optional identity URL is malformed', () => {
-    const {
-      schema_version: _schemaVersion,
-      branding: _branding,
-      ...legacyDocument
-    } = runtimeDocument;
-    const resolved = resolveRuntimeSiteConfig({
-      ...legacyDocument,
-      site: { ...legacyDocument.site, public_base_url: 'javascript:alert(1)' },
-    });
-
-    expect(resolved.branding.exampleApiBase).toBe(buildTimeSiteConfig.branding.exampleApiBase);
-    expect(resolved.branding.siteHost).toBe(buildTimeSiteConfig.branding.siteHost);
-    expect(resolved.branding.appName).toBe('Example Inference');
-    expect(resolved.features).toEqual({
-      publicSignup: false,
-      phoneAuth: false,
-      rag: false,
-      agents: false,
-      publicStats: false,
-    });
   });
 
   it('rejects unsafe or malformed branding without silently replacing operator settings', () => {
@@ -471,21 +414,6 @@ describe('unknown configuration keys', () => {
   });
 });
 
-describe('unsupported runtime layout settings', () => {
-  // Public-page layouts and design assets belong to build-time modules.
-  // These keys are not part of the runtime branding schema.
-  it('refuses unsupported presentation and hero-image settings', () => {
-    for (const branding of [
-      { ...runtimeBranding, presentation: { preset: 'custom', model_families: [] } },
-      { ...runtimeBranding, assets: { ...runtimeBranding.assets, hero_image_url: '/a.png' } },
-    ]) {
-      expect(() => resolveRuntimeSiteConfig({ ...runtimeDocument, branding })).toThrow(
-        SiteConfigLoadError,
-      );
-    }
-  });
-});
-
 describe('first-run setup and configuration health', () => {
   it('reads both states from the top level of a v1 document', () => {
     const resolved = resolveRuntimeSiteConfig({
@@ -515,15 +443,6 @@ describe('first-run setup and configuration health', () => {
       resolveRuntimeSiteConfig({ ...runtimeDocument, setup: null, configuration: null }),
     ).toMatchObject({ setup: { required: false }, configuration: { incomplete: false } });
 
-    const {
-      schema_version: _schemaVersion,
-      branding: _branding,
-      ...legacyDocument
-    } = runtimeDocument;
-    expect(resolveRuntimeSiteConfig(legacyDocument)).toMatchObject({
-      setup: { required: false },
-      configuration: { incomplete: false },
-    });
     expect(buildTimeSiteConfig.setup).toEqual({ required: false });
     expect(buildTimeSiteConfig.configuration).toEqual({ incomplete: false });
   });

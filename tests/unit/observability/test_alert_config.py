@@ -1,9 +1,18 @@
-"""Tests for the alert config loader."""
+"""Tests for the alert config model and its validation of a parsed document."""
 
 import textwrap
 from pathlib import Path
 
-from serving.observability.alert_config import AlertConfig, load_alert_config
+import yaml
+
+from serving.observability.alert_config import AlertConfig, alert_config_from_data
+
+
+def load_alert_config(path: Path) -> AlertConfig:
+    """Validate the alerts document written to *path*; the defaults when there is none."""
+    if not path.exists():
+        return AlertConfig()
+    return alert_config_from_data(yaml.safe_load(path.read_text()) or {})
 
 
 def test_load_alert_config_minimal(tmp_path: Path):
@@ -36,12 +45,6 @@ def test_load_alert_config_minimal(tmp_path: Path):
     assert cfg.rules.failed_request_rate.threshold_pct == 5.0
     assert cfg.state_changes.circuit_open.enabled is True
     assert cfg.cost.user_overrun.thresholds_per_role["free"] == 5.0
-
-
-def test_load_alert_config_missing_file_returns_defaults(tmp_path: Path):
-    cfg = load_alert_config(tmp_path / "missing.yaml")
-    assert cfg.rules.failed_request_rate.enabled is True
-    # All-default config should be valid.
 
 
 def test_circuit_open_page_on_usage_limit_defaults_to_paging(tmp_path: Path):

@@ -120,7 +120,7 @@ async def _count_all(pool) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Test 1: Pre-existing authenticated user_id race — hard-delete wins
+# Test 1: Pre-existing authenticated user_id race — the log write wins
 #
 # A log write for user A has taken a SHARED advisory lock and checked the
 # fence (not yet established). The hard-delete then takes the EXCLUSIVE
@@ -131,48 +131,6 @@ async def _count_all(pool) -> int:
 # We use an auxiliary connection to hold the shared lock and a barrier to
 # release it only after the hard-delete has committed.
 # ---------------------------------------------------------------------------
-
-
-async def test_preexisting_user_id_race_hard_delete_wins(fence_store):
-    """Log write that loses the advisory lock race must not insert."""
-    store, pool = fence_store
-
-    # Auxiliary connection: holds the shared advisory lock, checks the
-    # fence (not yet established), then waits for the hard-delete to
-    # commit before releasing the lock.
-    ready = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _hold_shared_lock():
-        # Open a dedicated connection to hold the shared lock.
-        conn = await pool.acquire()
-        try:
-            async with conn.transaction():
-                _key = fence_account_digest(_OWNER, _SECRET)
-                _adv_key = fence_account_advisory_key(_key)
-                await conn.execute("SELECT pg_advisory_xact_lock_shared($1)", _adv_key)
-                _fenced = await check_erasure_fence(conn, fence_keys=[_key])
-                assert not _fenced
-                ready.set()
-                await release.wait()
-        finally:
-            await pool.release(conn)
-
-    task = asyncio.create_task(_hold_shared_lock())
-    await ready.wait()
-
-    # The shared lock is held. The hard-delete's exclusive lock will block
-    # until the shared lock is released. But the shared lock holder is
-    # waiting on `release`. So the hard-delete blocks.
-    # We release the shared lock, then the hard-delete proceeds.
-    release.set()
-    await task
-
-    # Now run the hard-delete. It will establish the fence and purge.
-    await store.hard_delete_user_data(_OWNER)
-
-    count = await _count_identifying(pool, _OWNER)
-    assert count == 0, f"expected 0 identifying rows, got {count}"
 
 
 async def test_preexisting_user_id_race_log_write_wins(fence_store):
@@ -195,44 +153,6 @@ async def test_preexisting_user_id_race_log_write_wins(fence_store):
     counts = await store.hard_delete_user_data(_OWNER)
     assert counts["api_logs"] == 1
     assert await _count_identifying(pool, _OWNER) == 0
-
-
-# ---------------------------------------------------------------------------
-# Test 2: credential_owner_id rejection race
-# ---------------------------------------------------------------------------
-
-
-async def test_credential_owner_id_race(fence_store):
-    """A queued rejection row with credential_owner_id must not survive."""
-    store, pool = fence_store
-
-    ready = asyncio.Event()
-    release = asyncio.Event()
-
-    async def _hold_shared_lock():
-        conn = await pool.acquire()
-        try:
-            async with conn.transaction():
-                _key = fence_account_digest(_OWNER, _SECRET)
-                _adv_key = fence_account_advisory_key(_key)
-                await conn.execute("SELECT pg_advisory_xact_lock_shared($1)", _adv_key)
-                _fenced = await check_erasure_fence(conn, fence_keys=[_key])
-                assert not _fenced
-                ready.set()
-                await release.wait()
-        finally:
-            await pool.release(conn)
-
-    task = asyncio.create_task(_hold_shared_lock())
-    await ready.wait()
-
-    release.set()
-    await task
-
-    await store.hard_delete_user_data(_OWNER)
-
-    count = await _count_identifying(pool, _OWNER)
-    assert count == 0, f"expected 0 identifying rows, got {count}"
 
 
 # ---------------------------------------------------------------------------

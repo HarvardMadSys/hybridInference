@@ -20,7 +20,7 @@ The schema is prepared here too (:func:`prepare_schema`), by the same code in CI
 and locally: ``python -m tests.fixtures.postgres prepare --workers N``. That is
 the schema migrations, exactly as a deploy applies them.
 
-See ``docs/agents/specs/2026-10-18-test-database-contract-design.zh.md``.
+See ``docs/developer/contributing.md`` (Tests).
 """
 
 from __future__ import annotations

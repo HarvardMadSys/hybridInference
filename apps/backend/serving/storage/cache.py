@@ -741,14 +741,6 @@ class CachedOperationalStore(OperationalStore):
             actor=actor,
         )
 
-    async def get_user_counts_by_status(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_user_counts_by_status()
-
-    async def get_active_user_counts(self) -> dict[str, int]:
-        """Delegate to wrapped store."""
-        return await self._store.get_active_user_counts()
-
     async def list_user_activity_providers(self, *, days: int = 30) -> list[str]:
         """Delegate to wrapped store."""
         return await self._store.list_user_activity_providers(days=days)
@@ -2233,6 +2225,7 @@ class CachedOperationalStore(OperationalStore):
         key_hash: str,
         key_prefix: str,
         disabled_by: str | None,
+        removed: bool = False,
     ) -> None:
         """Delegate to wrapped store."""
         await self._store.disable_provider_env_key(
@@ -2240,11 +2233,16 @@ class CachedOperationalStore(OperationalStore):
             key_hash=key_hash,
             key_prefix=key_prefix,
             disabled_by=disabled_by,
+            removed=removed,
         )
 
     async def list_disabled_provider_env_key_hashes(self, provider: str) -> set[str]:
         """Delegate to wrapped store."""
         return await self._store.list_disabled_provider_env_key_hashes(provider)
+
+    async def list_removed_provider_env_key_hashes(self, provider: str) -> set[str]:
+        """Delegate to wrapped store."""
+        return await self._store.list_removed_provider_env_key_hashes(provider)
 
     async def list_disabled_provider_env_keys(self, provider: str) -> list[tuple[str, str]]:
         """Delegate to wrapped store."""

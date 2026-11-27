@@ -4,7 +4,6 @@ End-to-end characterization of the /v1/chat/completions envelope, the SSE
 stream framing, the error envelope, and the /v1/models item shape — through
 the real routers with a stub adapter (no network). These pin today's public
 API behavior so the distribution split
-(docs/agents/specs/2026-07-16-hybridinference-neutral-upstream-multi-distribution-design.zh.md)
 can refactor config/branding with a regression net underneath.
 """
 

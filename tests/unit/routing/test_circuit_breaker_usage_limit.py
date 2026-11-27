@@ -18,8 +18,6 @@ from routing.endpoint_health import (
     _CircuitState,
 )
 from serving.observability import state_alert_policy
-from serving.observability.alert_config import CircuitOpenStateChange
-from serving.observability.state_alert_policy import set_usage_limit_paging
 
 
 def _set_usage_limit_paging(monkeypatch, enabled: bool) -> None:
@@ -469,32 +467,6 @@ async def test_usage_limit_paging_off_still_pages_other_outages(monkeypatch):
         assert cb.state == _CircuitState.OPEN
         await _drain_alert_tasks()
         assert _pages_sent(mock_alert) == 1
-
-
-def test_set_usage_limit_paging_toggles_the_policy(monkeypatch):
-    # Startup wiring reads alerts.yaml and calls the setter; nothing else mutates
-    # the flag, so a bad value must not leave paging in an undefined state.
-    _set_usage_limit_paging(monkeypatch, True)
-    set_usage_limit_paging(False)
-    assert state_alert_policy.circuit_open_policy().page_on_usage_limit is False
-    set_usage_limit_paging(True)
-    assert state_alert_policy.circuit_open_policy().page_on_usage_limit is True
-
-
-def test_set_usage_limit_paging_leaves_the_other_knobs_alone(monkeypatch):
-    # The setter exists for one field. Rebuilding the whole policy from its
-    # default would silently undo a deployment's cooldown and enabled settings.
-    monkeypatch.setattr(
-        state_alert_policy,
-        "_CIRCUIT_OPEN",
-        CircuitOpenStateChange(enabled=False, cooldown_sec=120),
-        raising=True,
-    )
-    set_usage_limit_paging(False)
-    policy = state_alert_policy.circuit_open_policy()
-    assert policy.page_on_usage_limit is False
-    assert policy.enabled is False
-    assert policy.cooldown_sec == 120
 
 
 async def test_usage_limit_paging_off_survives_pooled_key_recovery(monkeypatch):

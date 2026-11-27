@@ -5,8 +5,6 @@ import { SsoReauthConfirm } from '@/components/features/auth/SsoReauth';
 import { useTwoFactor } from '@/components/providers/TwoFactorProvider';
 import { useAdminSsoReauth } from './adminSsoReauth';
 
-export { ADMIN_REAUTH_PURPOSE, useAdminSsoReauth } from './adminSsoReauth';
-
 /**
  * How the signed-in administrator confirms a guarded change, in the order the
  * gateway asks: a code from an authenticator app when the account has one (the

@@ -29,13 +29,6 @@ ALLOWED = (
     "atlas/",
 )
 
-# Downloadable JSONL templates contain only synthetic prompts and placeholder
-# model IDs. Allow these exact files rather than opening the whole samples tree.
-ALLOWED_FILES = {
-    "samples/batch-chat-sample.jsonl",
-    "samples/batch-embeddings-sample.jsonl",
-}
-
 
 def test_public_tree_ships_only_neutral_assets() -> None:
     out = subprocess.run(
@@ -46,12 +39,7 @@ def test_public_tree_ships_only_neutral_assets() -> None:
     ).stdout
     tracked = [n.decode() for n in out.split(b"\0") if n]
     assert tracked, f"{PUBLIC} lists nothing tracked — did the tree move?"
-    offenders = [
-        path
-        for path in tracked
-        if not path.removeprefix(PUBLIC).startswith(ALLOWED)
-        and path.removeprefix(PUBLIC) not in ALLOWED_FILES
-    ]
+    offenders = [path for path in tracked if not path.removeprefix(PUBLIC).startswith(ALLOWED)]
     assert not offenders, (
         "these are served verbatim to every deployment; a neutral upstream "
         f"ships no distribution content here: {offenders}"

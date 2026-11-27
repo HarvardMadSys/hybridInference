@@ -30,10 +30,10 @@ def test_each_exception_requires_explicit_and(rule_index, group_index):
         check.read_exceptions(config)
 
 
-def test_archive_wide_allowlist_is_rejected_even_with_and():
+def test_directory_wide_allowlist_is_rejected_even_with_and():
     config = copy.deepcopy(BASE)
     group = copy.deepcopy(config["allowlists"][0])
-    group["paths"] = [r"^docs/agents/(plans|specs)/archive/.*\.md$"]
+    group["paths"] = [r"^docs/agents/(plans|specs)/.*\.md$"]
     config["allowlists"].append(group)
     with pytest.raises(ValueError, match="literal"):
         check.read_exceptions(config)
@@ -54,7 +54,7 @@ def test_exception_cannot_hide_an_entire_line_or_commit(field, value):
         check.read_exceptions(config)
 
 
-def test_probes_cover_every_exception_file_and_both_archives():
+def test_probes_cover_every_exception_file_and_the_design_records():
     fixtures = check.read_exceptions(BASE)
     cases, expected = check.regression_cases(fixtures)
     for name in fixtures:
@@ -68,7 +68,7 @@ def test_probes_cover_every_exception_file_and_both_archives():
         ):
             assert expected[(name, rule)] == 1
     for directory in ("plans", "specs"):
-        assert any(name.startswith(f"docs/agents/{directory}/archive/") for name in cases)
+        assert f"docs/agents/{directory}/new-{directory[:-1]}.md" in cases
     assert "DB_PASSWORD=\nDB_ENABLED=true" in cases[".env.example"]
     # These values were incorrectly shared between files before the review.
     assert expected[("tests/servers/test_admin_provider_quotas.py", "generic-api-key")] == 2
