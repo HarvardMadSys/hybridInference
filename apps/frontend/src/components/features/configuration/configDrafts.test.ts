@@ -15,6 +15,7 @@ import {
   isLocked,
   looksSecret,
   matchesQuery,
+  matchingChoice,
   settleDraft,
   withoutMootDrafts,
 } from './configDrafts';
@@ -353,6 +354,25 @@ describe('settings that apply to one choice', () => {
       'SMTP_HOST',
       'SMTP_FROM_EMAIL',
     ]);
+  });
+
+  it('matches a choice as the backend does, ignoring case unless told otherwise', () => {
+    const level = entry({ key: 'LOG_LEVEL', choices: ['DEBUG', 'INFO'], case_sensitive: false });
+    expect(matchingChoice(level, 'info')).toBe('INFO');
+    expect(matchingChoice(level, 'verbose')).toBeUndefined();
+    const algorithm = entry({ key: 'JWT_ALGORITHM', choices: ['HS256'], case_sensitive: true });
+    expect(matchingChoice(algorithm, 'hs256')).toBeUndefined();
+    expect(matchingChoice(algorithm, 'HS256')).toBe('HS256');
+
+    // A deciding setting with no value holds its default.
+    const unset = { ...provider, value: null, default: 'smtp' };
+    expect(appliesNow(host, [unset, host, account], {})).toBe(true);
+    expect(appliesNow(account, [unset, host, account], {})).toBe(false);
+
+    // A deciding setting stored in another case still decides.
+    const mode = entry({ key: 'MODE', value: 'FAST', choices: ['fast', 'safe'] });
+    const tuned = entry({ key: 'FAST_ONLY', applies_when: { key: 'MODE', values: ['fast'] } });
+    expect(appliesNow(tuned, [mode, tuned], {})).toBe(true);
   });
 
   it('drops the edits a saved choice made moot, and no others', () => {

@@ -127,6 +127,7 @@ async def test_get_lists_every_entry_without_secret_values(config_client, monkey
         "locked",
         "setup",
         "choices",
+        "case_sensitive",
         "applies_when",
         "one_time",
         "origin",

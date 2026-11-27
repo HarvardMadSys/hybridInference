@@ -142,8 +142,21 @@ export function withoutKeys<T>(
 }
 
 /**
+ * The choice `value` is, compared as the backend compares it: exactly for a
+ * case-sensitive setting, otherwise ignoring case (`info` is `INFO`).
+ * `undefined` when it is none of them.
+ */
+export function matchingChoice(entry: ConfigEntry, value: string): string | undefined {
+  const choices = entry.choices ?? [];
+  if (entry.case_sensitive) return choices.find((choice) => choice === value);
+  const folded = value.toLowerCase();
+  return choices.find((choice) => choice.toLowerCase() === folded);
+}
+
+/**
  * Whether the entry applies with the values the editor shows now, unsaved
  * edits included: its `applies_when` setting holds one of the listed values.
+ * A deciding setting with no value holds its default, as the backend reads it.
  * An entry without a condition always applies, as does one whose deciding
  * setting is not among `entries` (nothing on the page can change it).
  */
@@ -156,7 +169,9 @@ export function appliesNow(
   if (!condition) return true;
   const decider = entries.find((candidate) => candidate.key === condition.key);
   if (!decider) return true;
-  return condition.values.includes(String(currentInput(decider, drafts[decider.key])));
+  const current =
+    String(currentInput(decider, drafts[decider.key])) || String(decider.default ?? '');
+  return condition.values.includes(matchingChoice(decider, current) ?? current);
 }
 
 /**

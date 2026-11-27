@@ -12,6 +12,7 @@ import {
   draftError,
   hasStoredValue,
   isLocked,
+  matchingChoice,
   settleDraft,
   type ConfigDraft,
 } from './configDrafts';
@@ -203,16 +204,20 @@ export function ConfigEntryField({
     );
   } else if (entry.type !== 'bool' && (entry.choices?.length ?? 0) > 1) {
     // A choice, such as the email transport: its accepted values, and nothing to
-    // mistype. A value outside them -- one the backend refused, in force from
-    // the environment -- still shows, but cannot be chosen again.
+    // mistype. The value is matched as the backend matches it, ignoring case
+    // unless the setting is case-sensitive: a stored `info` is LOG_LEVEL's INFO.
+    // A value that is none of them still shows, but cannot be chosen again.
     const value = String(currentInput(entry, draft));
     const choices = entry.choices ?? [];
+    const shown = matchingChoice(entry, value) ?? value;
     const options: SelectOption[] = choices.map((choice) => ({ value: choice, label: choice }));
-    if (value && !choices.includes(value)) options.push({ value, label: value, disabled: true });
+    if (shown && !choices.includes(shown)) {
+      options.push({ value: shown, label: shown, disabled: true });
+    }
     control = (
       <Select
         id={controlId}
-        value={value}
+        value={shown}
         onValueChange={(next) => setValue(next)}
         options={options}
         disabled={disabled}

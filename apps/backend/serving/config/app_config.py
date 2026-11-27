@@ -2212,6 +2212,7 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
                 "choices": list(entry.choices),
+                "case_sensitive": entry.case_sensitive,
                 "applies_when": (
                     {"key": entry.applies_when.key, "values": list(entry.applies_when.values)}
                     if entry.applies_when is not None

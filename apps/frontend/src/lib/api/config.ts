@@ -77,6 +77,11 @@ export interface ConfigEntry {
    */
   choices?: string[];
   /**
+   * Whether `choices` are compared exactly. Otherwise case is ignored and the
+   * value is kept as stored, so `LOG_LEVEL=info` is the choice `INFO`.
+   */
+  case_sensitive?: boolean;
+  /**
    * Set when the setting does something only while another one holds certain
    * values: the SMTP settings while `EMAIL_PROVIDER` is `smtp`. The console
    * hides it while another value is selected. An older backend omits it.

@@ -64,6 +64,11 @@ class ConfigEntryItem(BaseModel):
         default_factory=list,
         description="The accepted values, when the setting is a choice; empty otherwise",
     )
+    case_sensitive: bool = Field(
+        False,
+        description="Choices are compared exactly; otherwise ignoring case, and a value is "
+        "kept as stored (LOG_LEVEL=info is INFO)",
+    )
     applies_when: ConfigAppliesWhen | None = Field(
         None,
         description="Set when the setting does something only while another setting holds "

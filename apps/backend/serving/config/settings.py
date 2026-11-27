@@ -450,7 +450,11 @@ class Settings(BaseSettings):
     @field_validator("cloudflare_account_id")
     @classmethod
     def _check_cloudflare_account_id(cls, value: str) -> str:
-        """Refuse anything but an account id: it is a segment of every Cloudflare API path."""
+        """Refuse anything but an account id: it is a segment of every Cloudflare API path.
+
+        Surrounding whitespace, as a pasted id often has, is dropped.
+        """
+        value = value.strip()
         if value and not re.fullmatch(r"[0-9a-fA-F]{32}", value):
             raise ValueError("must be the 32 hexadecimal digits Cloudflare shows as the Account ID")
         return value

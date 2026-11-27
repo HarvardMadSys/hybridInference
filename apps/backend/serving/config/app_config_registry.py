@@ -243,7 +243,8 @@ def _auth_secret_required(context: RequirementContext) -> bool:
 
 
 def _smtp_required(context: RequirementContext) -> bool:
-    # Without mail, a new account can never verify its address.
+    # Without mail, a new account can never verify its address. No value means
+    # the default, smtp, as the console also reads it when showing _WITH_SMTP.
     return (
         context.value("EMAIL_PROVIDER") in ("", "smtp")
         and context.email_verification_needed

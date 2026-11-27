@@ -846,6 +846,9 @@ async def test_the_console_learns_each_choice_and_which_transport_a_setting_serv
 
     entries = {entry["key"]: entry for entry in app_config.describe()["entries"]}
     assert entries["EMAIL_PROVIDER"]["choices"] == ["smtp", "cloudflare"]
+    assert entries["EMAIL_PROVIDER"]["case_sensitive"] is True
+    # Compared ignoring case: the console must find `info` among these.
+    assert entries["LOG_LEVEL"]["case_sensitive"] is False
     assert entries["SMTP_HOST"]["choices"] == []
     with_smtp = {"key": "EMAIL_PROVIDER", "values": ["smtp"]}
     with_cloudflare = {"key": "EMAIL_PROVIDER", "values": ["cloudflare"]}
@@ -863,6 +866,19 @@ def test_where_cloudflare_mail_goes_needs_the_administrators_password(config_env
     assert app_config.security_relevant("EMAIL_PROVIDER")
     assert app_config.security_relevant("CLOUDFLARE_ACCOUNT_ID")
     assert app_config.security_relevant("CLOUDFLARE_EMAIL_API_TOKEN")
+
+
+@pytest.mark.asyncio
+async def test_a_pasted_cloudflare_account_id_applies_without_its_whitespace(
+    config_env,
+) -> None:
+    await _boot(FakeAppConfigStore())
+
+    await app_config.update(
+        {"CLOUDFLARE_ACCOUNT_ID": f"  {CLOUDFLARE_ACCOUNT_ID}\n"}, updated_by="admin"
+    )
+
+    assert get_settings().cloudflare_account_id == CLOUDFLARE_ACCOUNT_ID
 
 
 @pytest.mark.asyncio

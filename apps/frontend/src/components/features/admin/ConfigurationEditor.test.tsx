@@ -1722,6 +1722,43 @@ describe('the email transport', () => {
     expect(email.queryByText(/unsaved change/)).toBeNull();
   });
 
+  it('shows a value stored in another case as the choice the backend reads it as', async () => {
+    await renderTab(
+      makeConfig({
+        entries: [
+          entry({
+            key: 'LOG_LEVEL',
+            category: 'email',
+            value: 'info',
+            default: 'INFO',
+            choices: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+            case_sensitive: false,
+          }),
+        ],
+        missing: [],
+        pending_restart: [],
+      }),
+    );
+    const email = within(section('Email (SMTP)'));
+    const level = email.getByRole('combobox', { name: 'LOG_LEVEL' });
+    expect(level).toHaveTextContent('INFO');
+
+    fireEvent.click(level);
+    // The five choices, and no refused-looking extra for the stored `info`.
+    expect(screen.getAllByRole('option').map((option) => option.textContent)).toEqual([
+      'DEBUG',
+      'INFO',
+      'WARNING',
+      'ERROR',
+      'CRITICAL',
+    ]);
+    fireEvent.click(screen.getByRole('option', { name: 'WARNING' }));
+    fireEvent.click(email.getByRole('button', { name: /^Save changes/ }));
+    await waitFor(() =>
+      expect(patchConfig).toHaveBeenCalledWith({ values: { LOG_LEVEL: 'WARNING' } }),
+    );
+  });
+
   it('names a default only when there is one to go back to', async () => {
     await renderTab(
       makeConfig({
