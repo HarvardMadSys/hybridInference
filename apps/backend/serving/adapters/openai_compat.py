@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from contextlib import aclosing
 from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -27,6 +28,7 @@ from serving.utils.tokens import estimate_prompt_tokens_bounded, estimate_text_t
 
 from .base import BaseAdapter, UsageInfo
 from .dispatch_watch import report_first_token, report_queued
+from .engine_admission import admission_headers
 from .key_pool import KeyPool, KeyPoolExhausted, KeyPoolRoleRestricted, ReleaseOutcome
 from .processors import get_processor
 from .profiles import (
@@ -46,6 +48,7 @@ from .profiles import (
 from .reasoning_effort import EFFORT_PARAM, EffortContract, effort_contract, translate_effort
 from .remote_media import inline_remote_media
 from .upstream_limiter import (
+    EngineDeclined,
     UpstreamQueueWaitExpired,
     UpstreamSaturated,
     UpstreamSlot,
@@ -62,6 +65,42 @@ logger = get_logger(__name__)
 _INCOMPLETE_STREAM_ERROR = (
     "Upstream stream ended without a terminal finish_reason or [DONE] sentinel"
 )
+
+
+def _stream_payload(chunk: Any) -> dict[str, Any] | None:
+    """Return the JSON object one chunk of this adapter's stream carries, or None."""
+    line = chunk.decode("utf-8", "replace") if isinstance(chunk, bytes) else chunk
+    if not isinstance(line, str) or not line.startswith("data:"):
+        return None
+    data = line[5:].strip()
+    if not data or data == "[DONE]":
+        return None
+    try:
+        payload = json.loads(data)
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _merge_tool_call(calls: dict[int, dict[str, Any]], delta: Any) -> None:
+    """Add one streamed piece of a tool call to the calls gathered so far, by index."""
+    if not isinstance(delta, dict):
+        return
+    index = delta.get("index")
+    index = index if isinstance(index, int) and not isinstance(index, bool) else 0
+    call = calls.setdefault(
+        index, {"id": None, "type": "function", "function": {"name": "", "arguments": ""}}
+    )
+    if delta.get("id"):
+        call["id"] = delta["id"]
+    if delta.get("type"):
+        call["type"] = delta["type"]
+    function = delta.get("function")
+    if isinstance(function, dict):
+        if isinstance(function.get("name"), str):
+            call["function"]["name"] += function["name"]
+        if isinstance(function.get("arguments"), str):
+            call["function"]["arguments"] += function["arguments"]
 
 
 class UpstreamStreamError(aiohttp.ClientError):
@@ -892,7 +931,44 @@ class OpenAICompatAdapter(BaseAdapter):
         if isinstance(extra_headers, dict):
             headers.update(extra_headers)
 
+        # What the admission process answering at this route is told about the
+        # request: last, so a configured header cannot stand in for it.
+        if self.config.admission == "nimbus":
+            headers.update(admission_headers())
+
         return headers
+
+    def _engine_declined(self, exc: BaseException) -> EngineDeclined | None:
+        """Return the decline ``exc`` carries from this route's admission process, or None.
+
+        Only a route that declares such a process (``ModelConfig.admission``) is
+        read this way, and only its 409 whose body has a ``nimbus`` object. Any
+        other answer, and the same answer from a route that declares nothing,
+        stays the upstream error it is.
+        """
+        if self.config.admission != "nimbus":
+            return None
+        if not isinstance(exc, aiohttp.ClientResponseError) or exc.status != 409:
+            return None
+        try:
+            answer = json.loads(getattr(exc, "error_body", "") or "")
+        except ValueError:
+            return None
+        told = answer.get("nimbus") if isinstance(answer, dict) else None
+        if not isinstance(told, dict):
+            return None
+        decision = told.get("decision")
+        left = told.get("ttft_left_ms")
+        engine_request_id = told.get("request_id")
+        return EngineDeclined(
+            decision if isinstance(decision, str) and decision else "declined",
+            ttft_left_ms=(
+                float(left)
+                if isinstance(left, (int, float)) and not isinstance(left, bool)
+                else None
+            ),
+            engine_request_id=engine_request_id if isinstance(engine_request_id, str) else None,
+        )
 
     def _left_engine_queue(self, exc: UpstreamSaturated) -> bool:
         """Return whether a wait ended at its deadline in this self-hosted engine's queue.
@@ -1482,6 +1558,12 @@ class OpenAICompatAdapter(BaseAdapter):
         Returns:
             OpenAI-compatible response dict
         """
+        # An admission process serves streams only, and its queue reads a closed
+        # connection as a cancellation: the request goes as a stream, and the
+        # reply is put together here.
+        if self.config.admission == "nimbus":
+            return await self._chat_completion_from_stream(messages, params)
+
         # Before anything else this request would fetch or send, and once: the
         # route's map as it is now, whatever an admin edit does meanwhile.
         effort = self._resolve_effort(params)
@@ -1524,7 +1606,13 @@ class OpenAICompatAdapter(BaseAdapter):
         if _log_payload:
             logger.debug(f"[OpenAICompat] Payload: {payload}")
 
-        response = await self._post_with_pool(url, payload)
+        try:
+            response = await self._post_with_pool(url, payload)
+        except aiohttp.ClientResponseError as exc:
+            declined = self._engine_declined(exc)
+            if declined is None:
+                raise
+            raise declined from exc
 
         # Process output format (e.g. remove XML tags)
         processor = get_processor(self._processor_model_id, override=self._processor_override)
@@ -1683,14 +1771,22 @@ class OpenAICompatAdapter(BaseAdapter):
         active_lease = None
         active_slot: UpstreamSlot | None = None
 
-        async for it, lease, first, slot in self._open_stream_with_pool(
-            url, payload, timeout=stream_timeout
-        ):
-            stream_iter = it
-            active_lease = lease
-            active_slot = slot
-            primed = first
-            break  # helper yields exactly once
+        try:
+            async for it, lease, first, slot in self._open_stream_with_pool(
+                url, payload, timeout=stream_timeout
+            ):
+                stream_iter = it
+                active_lease = lease
+                active_slot = slot
+                primed = first
+                break  # helper yields exactly once
+        except aiohttp.ClientResponseError as exc:
+            # The route answered before any output, with its admission
+            # process's decline: nothing was sent to the engine.
+            declined = self._engine_declined(exc)
+            if declined is None:
+                raise
+            raise declined from exc
 
         idle_timeout = get_stream_idle_timeout_seconds(self._usage_profile)
         stream_endpoint_id = getattr(self.config, "endpoint_id", None) or self.config.provider
@@ -1952,6 +2048,56 @@ class OpenAICompatAdapter(BaseAdapter):
         return await self._post_with_pool(
             url, payload, max_body_bytes=embeddings_response_limit(input_data)
         )
+
+    async def _chat_completion_from_stream(
+        self, messages: list[dict[str, Any]], params: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Serve a non-streaming request from a route that only streams.
+
+        The request is sent as this adapter's own stream, so everything that
+        path does still happens -- the key and the outbound slot, the output
+        processor, the usage the stream ends with, a decline raised before any
+        output -- and the chunks are put together into the reply a
+        non-streaming call returns: the text, the reasoning, the tool calls by
+        index, the finish reason, and the usage.
+        """
+        text: list[str] = []
+        reasoning: list[str] = []
+        calls: dict[int, dict[str, Any]] = {}
+        finish_reason = "stop"
+        usage: dict[str, Any] | None = None
+        stream = self.stream_chat_completion(messages, **{**params, "stream": True})
+        async with aclosing(stream) as chunks:
+            async for chunk in chunks:
+                payload = _stream_payload(chunk)
+                if payload is None:
+                    continue
+                if isinstance(payload.get("usage"), dict) and payload["usage"]:
+                    usage = payload["usage"]
+                for choice in payload.get("choices") or ():
+                    if not isinstance(choice, dict):
+                        continue
+                    delta = choice.get("delta") or {}
+                    if isinstance(delta.get("content"), str):
+                        text.append(delta["content"])
+                    thought = delta.get("reasoning_content") or delta.get("reasoning")
+                    if isinstance(thought, str):
+                        reasoning.append(thought)
+                    for call in delta.get("tool_calls") or ():
+                        _merge_tool_call(calls, call)
+                    if choice.get("finish_reason"):
+                        finish_reason = choice["finish_reason"]
+        tool_calls = [calls[index] for index in sorted(calls)]
+        response = self.format_response(
+            content="".join(text) if text or not tool_calls else None,
+            model=self.config.id,
+            tool_calls=tool_calls or None,
+            reasoning_content="".join(reasoning) if reasoning else None,
+            finish_reason=finish_reason,
+        )
+        if usage is not None:
+            response["usage"] = usage
+        return response
 
     def _parse_completion_response(self, response: dict[str, Any]) -> dict[str, Any]:
         """Parse response into OpenAI-compatible format."""

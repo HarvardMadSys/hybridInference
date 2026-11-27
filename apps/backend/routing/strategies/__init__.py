@@ -203,6 +203,7 @@ def build_router(
 from routing.strategies import (
     fixed,  # noqa: F401
     greedy,  # noqa: F401
+    nimbus,  # noqa: F401
 )
 
 try:

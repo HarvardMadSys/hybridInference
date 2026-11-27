@@ -29,6 +29,26 @@ DOCUMENT_KEYS = {
 KEY_KINDS = {key: kind for kind, key in DOCUMENT_KEYS.items()}
 _REFERENCE = re.compile(r"^\$\{[A-Za-z_][A-Za-z0-9_]*\}$")
 _CREDENTIAL = re.compile(r"(^|_)(api_keys?|token|password|secret|authorization|headers)(_|$)", re.I)
+# Per-token latency/price rates (e.g. ``per_token_ms``, ``per_input_token_ms``
+# in greedy/nimbus router parameters) name an LLM token unit, not a bearer token.
+_TOKEN_UNIT_METRIC = re.compile(
+    r"(^|_)per_(?:[a-z0-9]+_)*token_(ms|s|sec|seconds|usd|cny)$", re.IGNORECASE
+)
+
+
+def _is_credential_key(key: object) -> bool:
+    """Return whether a document key names a credential rather than an LLM token metric."""
+    normalized = str(key).replace("-", "_")
+    matches = list(_CREDENTIAL.finditer(normalized))
+    if not matches:
+        return False
+    metric = _TOKEN_UNIT_METRIC.search(normalized)
+    return any(
+        match.group(2).lower() != "token" or metric is None or match.start(2) < metric.start()
+        for match in matches
+    )
+
+
 _TITLES = {
     "models": "model catalog",
     "routing": "routing policy",
@@ -137,7 +157,7 @@ def _credentials(
             _credentials(
                 item,
                 path=f"{path}/{key}",
-                credential=credential or bool(_CREDENTIAL.search(str(key).replace("-", "_"))),
+                credential=credential or _is_credential_key(key),
                 references=references,
             )
     elif isinstance(value, list):
@@ -256,7 +276,7 @@ def separate_secrets(
                 key: visit(
                     val,
                     f"{path}/{key}",
-                    credential or bool(_CREDENTIAL.search(key.replace("-", "_"))),
+                    credential or _is_credential_key(key),
                 )
                 for key, val in item.items()
             }
@@ -282,8 +302,7 @@ def resolve_credentials(value: Any, resolver: Callable[[str], str]) -> Any:
     def visit(item: Any, credential: bool = False) -> Any:
         if isinstance(item, dict):
             return {
-                key: visit(val, credential or bool(_CREDENTIAL.search(key.replace("-", "_"))))
-                for key, val in item.items()
+                key: visit(val, credential or _is_credential_key(key)) for key, val in item.items()
             }
         if isinstance(item, list):
             return [visit(val, credential) for val in item]

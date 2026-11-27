@@ -68,6 +68,21 @@ UPSTREAM_PRIORITY = "upstream_priority"
 # entry in REQUEST_SCOPED_KEYS.
 UPSTREAM_QUEUE_DEADLINE = "upstream_queue_deadline"
 
+# When this gateway received the request, as a ``time.monotonic()`` time. Seeded
+# by ``RequestIdMiddleware``, the outermost one, so it counts everything the
+# gateway does before a dispatch. An adapter whose route is answered by an
+# admission process tells it how long the request has been held from this
+# (``serving.adapters.engine_admission``). Absent for a request no HTTP scope
+# started, a batch item say, which is then told nothing.
+REQUEST_RECEIVED = "request_received"
+
+# What a router tells the admission process beside a self-hosted engine about one
+# request (``serving.adapters.engine_admission.AdmissionTerms``): the cloud's
+# first-token time, the caller's session, and this gateway's id for the request.
+# Pushed around the dispatch by the router that sends to such a route, and read by
+# the adapter as it sends, only on a route that declares the process.
+UPSTREAM_ADMISSION = "upstream_admission"
+
 # req_ctx key set when a request for an auto model is served by a model chosen
 # for it (serving/auto_mode.py). Its value is ``(auto_model, names)``: the auto
 # model the caller asked for, and every name of the model serving it. The caller
@@ -143,6 +158,9 @@ REQUEST_SCOPED_KEYS = (
     "auth_key_hash",
     "affinity_key",
     USER_ROLE,
+    # Seeded for every HTTP request; cleared so a scope that seeds nothing, a batch
+    # item on the same task, cannot report the previous request's arrival as its own.
+    REQUEST_RECEIVED,
     PROJECT_ID,
     SPEND_RESERVATION,
     PRICING_TIME,

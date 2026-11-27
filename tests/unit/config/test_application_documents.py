@@ -192,6 +192,96 @@ def test_token_limits_are_numbers_rather_than_credentials():
     validate("MODEL_CATALOG", json.dumps(document))
 
 
+async def test_per_token_rate_router_params_are_not_treated_as_credentials(
+    configuration, monkeypatch
+):
+    """Greedy/Nimbus latency lines carry ``per_token_ms`` and ``per_input_token_ms``."""
+    value = {
+        "models": [
+            {
+                "id": "nimbus-model",
+                "provider": "sglang",
+                "router": "nimbus",
+                "router_params": {
+                    "cloud_ttft": {"fixed_ms": 784.3, "per_input_token_ms": 0.036542}
+                },
+                "route": [
+                    {
+                        "kind": "sglang",
+                        "base_url": "http://127.0.0.1:8001/v1",
+                        "deployment_type": "self_hosted",
+                        "admission": "nimbus",
+                    },
+                    {
+                        "kind": "openai_compat",
+                        "base_url": "https://provider.example/v1",
+                        "deployment_type": "provider_api",
+                    },
+                ],
+            },
+            {
+                "id": "greedy-cutoff-model",
+                "provider": "sglang",
+                "router": "greedy",
+                "router_params": {
+                    "engine_queue_limit": 1,
+                    "cutoff": {
+                        "ttft_budget": {"fixed_ms": 816.6, "per_token_ms": 0.086145},
+                        "cloud_ttft": {"fixed_ms": 784.3, "per_input_token_ms": 0.036542},
+                        "margin_ms": 30.0,
+                    },
+                },
+                "route": [
+                    {
+                        "kind": "sglang",
+                        "base_url": "http://127.0.0.1:30000/v1",
+                        "deployment_type": "self_hosted",
+                    },
+                    {
+                        "kind": "openai_compat",
+                        "base_url": "https://provider.example/v1",
+                        "deployment_type": "provider_api",
+                    },
+                ],
+            },
+        ]
+    }
+    document, secrets = separate_secrets(value, "models")
+    assert document == value and not secrets
+    serialized = json.dumps(document)
+    validate("MODEL_CATALOG", serialized)
+
+    monkeypatch.setenv("MODEL_CATALOG", serialized)
+    await load()
+    app_config.require_valid_environment()
+    assert get("models") == document
+
+    monkeypatch.delenv("MODEL_CATALOG")
+    store = await load()
+    await app_config.update({"MODEL_CATALOG": serialized}, updated_by="admin")
+    assert get("models", configured=True) == document
+    await app_config.load(store, bootstrap=False)
+    assert get("models") == document
+
+
+@pytest.mark.parametrize(
+    "field_name",
+    ["api_token", "secret_per_token_ms", "auth_token_per_token_ms"],
+)
+def test_credential_keys_sharing_rate_suffix_are_still_refused(field_name):
+    document = {
+        "models": [
+            {
+                "id": "one",
+                "route": [{"kind": "vllm", "base_url": "http://127.0.0.1:30000/v1"}],
+                "extra_body": {field_name: "inline-secret"},
+            }
+        ]
+    }
+    with pytest.raises(DocumentError, match=r"must reference a separate secret setting"):
+        validate("MODEL_CATALOG", json.dumps(document))
+
+
 async def test_alert_documents_keep_setting_reference_expansion(configuration):
     from serving.observability.alert_config import alert_config_from_data
 

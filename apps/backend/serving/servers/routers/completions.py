@@ -20,7 +20,7 @@ from routing.protocols import RoutingRequestOptions
 from routing.routers import AllCircuitsOpenError, ProviderPinError, TargetUnavailableError
 from routing.telemetry import is_uncharged_failure
 from serving.adapters.dispatch_watch import DispatchRecord
-from serving.adapters.upstream_limiter import get_upstream_limiter
+from serving.adapters.upstream_limiter import EngineDeclined, get_upstream_limiter
 from serving.auto_mode import (
     AutoModelUnavailable,
     apply_to_chat_request,
@@ -213,10 +213,25 @@ def _queues_at_an_engine(route: Any) -> bool:
     )
 
 
+def _answered_by_admission(route: Any) -> bool:
+    """Return whether a route of the model is answered by an engine's admission process.
+
+    The process serves streams only, and it is a closed connection that tells
+    it a waiting request's client has gone (``ModelConfig.admission``). Sent
+    upstream as a stream and buffered, a non-streaming request reaches it as
+    every other request does, and its client is kept alive while it waits.
+    """
+    return any(
+        getattr(adapter.config, "admission", None) is not None
+        for adapter, _weight in getattr(route, "adapters", None) or ()
+    )
+
+
 def _buffers_for_an_engine_queue(options: ChatOptions, params: dict[str, Any], route: Any) -> bool:
     """Return whether a non-streaming request goes upstream as a buffered stream.
 
-    For a model a registered engine queue serves (``_queues_at_an_engine``),
+    For a model a registered engine queue serves (``_queues_at_an_engine``) or
+    an engine's admission process answers for (``_answered_by_admission``),
     on the routes that may buffer (``ChatOptions.buffers_for_engine_queues``).
     Not for a request whose ``response_format`` asks for JSON: only the
     non-streaming path checks the reply against it and asks again
@@ -226,7 +241,7 @@ def _buffers_for_an_engine_queue(options: ChatOptions, params: dict[str, Any], r
     return (
         options.buffers_for_engine_queues
         and requested_format(params) is None
-        and _queues_at_an_engine(route)
+        and (_queues_at_an_engine(route) or _answered_by_admission(route))
     )
 
 
@@ -1807,7 +1822,11 @@ async def execute_chat(
             detail=scrub_error_for_user(exc, request_id, 400),
         ) from exc
 
-    except (AllCircuitsOpenError, TargetUnavailableError) as exc:
+    except (AllCircuitsOpenError, TargetUnavailableError, EngineDeclined) as exc:
+        # An engine's admission process declined a request nothing else could
+        # take -- one pinned to its route, say, which no router carries to the
+        # cloud. The decline has no status of its own, and is no internal fault.
+        #
         # Full provider outage: every circuit breaker for this model is open.
         # Surface this as 503 Service Unavailable so clients can distinguish
         # "we're temporarily overloaded / all upstreams down" from a generic
