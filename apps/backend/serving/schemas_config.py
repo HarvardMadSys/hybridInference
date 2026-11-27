@@ -19,6 +19,13 @@ class ConfigCategory(BaseModel):
     description: str
 
 
+class ConfigAppliesWhen(BaseModel):
+    """The setting applies only while another setting holds one of some values."""
+
+    key: str = Field(..., description="The setting whose value decides")
+    values: list[str] = Field(..., description="The values under which this setting applies")
+
+
 class ConfigEntryItem(BaseModel):
     """One setting as the admin console shows it. Secrets carry no value."""
 
@@ -53,6 +60,21 @@ class ConfigEntryItem(BaseModel):
         "no value can be stored now",
     )
     setup: bool = Field(..., description="Shown on the first-run configuration step")
+    choices: list[str] = Field(
+        default_factory=list,
+        description="The accepted values, when the setting is a choice; empty otherwise",
+    )
+    case_sensitive: bool = Field(
+        False,
+        description="Choices are compared exactly; otherwise ignoring case, and a value is "
+        "kept as stored (LOG_LEVEL=info is INFO)",
+    )
+    applies_when: ConfigAppliesWhen | None = Field(
+        None,
+        description="Set when the setting does something only while another setting holds "
+        "one of some values, such as the SMTP settings while EMAIL_PROVIDER is smtp; the "
+        "console hides it while another value is selected",
+    )
     one_time: bool = Field(
         ...,
         description="Usually set once, when the gateway is deployed: the console lists it "

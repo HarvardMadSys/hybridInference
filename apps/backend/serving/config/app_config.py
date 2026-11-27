@@ -2211,6 +2211,13 @@ def describe(*, offered_only: bool = False) -> dict[str, Any]:
                 # Immutable and already settled: no value can be stored now.
                 "locked": _immutable_reason(entry, state.rows) is not None,
                 "setup": entry.setup,
+                "choices": list(entry.choices),
+                "case_sensitive": entry.case_sensitive,
+                "applies_when": (
+                    {"key": entry.applies_when.key, "values": list(entry.applies_when.values)}
+                    if entry.applies_when is not None
+                    else None
+                ),
                 "one_time": registry.is_one_time(entry),
                 "origin": entry.origin,
                 "custom": entry.origin == "custom",
@@ -2262,6 +2269,7 @@ SECURITY_SETTING_KEYS: frozenset[str] = frozenset(
         "SMTP_HOST",
         "SMTP_PORT",
         "SMTP_USER",
+        "CLOUDFLARE_ACCOUNT_ID",
         "SMTP_FROM_EMAIL",
         "SIGNUP_NOTIFY_EMAILS",
         "SITE_SUPPORT_EMAIL",
