@@ -1824,8 +1824,6 @@ MAX_NUMBERED_KEY = 20
 
 #: A name inside a ``${VAR}`` or ``${VAR:-default}`` reference.
 _REFERENCE_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-[^}]*)?\}")
-#: A whole-value ``${VAR}``, the only form the model registry expands.
-_WHOLE_REFERENCE_RE = re.compile(r"^\$\{([A-Za-z_][A-Za-z0-9_]*)\}$")
 #: Words that mark a name as a credential's (:func:`is_secret_name`), matched
 #: anywhere in the upper-cased name. The console's add-variable form mirrors
 #: this list; keep the two in step.
@@ -2034,11 +2032,6 @@ class DiscoveredReference:
     key: str
     category: str
     used_by: set[str]
-    #: A non-optional model route fails without it.
-    required: bool = False
-    #: ``api_keys`` lists the variable belongs to; such a list fails only when
-    #: every member is empty, so its members are required together.
-    key_groups: list[tuple[str, ...]] | None = None
     #: Referenced from a field that carries a credential (``api_key``,
     #: ``api_keys``, any field whose name looks like a credential's), so it is
     #: secret whatever its own name.
@@ -2082,13 +2075,6 @@ def _credential_references(value: Any) -> set[str]:
     return names
 
 
-def _whole_reference(value: Any) -> str | None:
-    if not isinstance(value, str):
-        return None
-    match = _WHOLE_REFERENCE_RE.fullmatch(value.strip())
-    return match.group(1) if match else None
-
-
 def _load_yaml(path: Path | None) -> Any:
     if path is None or not path.is_file():
         return None
@@ -2128,13 +2114,17 @@ def _note(
 
 
 def _discover_models(data: Any, found: dict[str, DiscoveredReference]) -> None:
-    """Record the model registry's references and which of them routes need.
+    """Record the model registry's references and the models that use them.
 
-    A route needs exactly what makes the registry skip its model when empty — a
-    whole-value ``${VAR}`` in ``base_url``, ``api_key`` or ``embeddings_path``
-    (the model's own ``base_url``/``api_key`` when the route has none), and at
-    least one member of ``api_keys``. Routes marked ``optional: true`` are skipped
-    rather than failing their model, so they need nothing.
+    None of them is required. A provider key or URL may be left unset on
+    purpose -- a provider the deployment has no account with, a key not entered
+    yet -- and the registry already handles that when it loads: a route marked
+    ``optional: true`` is skipped on its own, any other route drops its model,
+    and both are logged. Counting the variable as a missing setting too would
+    mark the whole deployment incomplete for every provider it does not use,
+    and the only way out, ``optional: true``, changes routing rather than
+    reporting: a model then runs on its remaining routes, which can hand a
+    canary or a fallback all of the model's traffic.
     """
     models = data.get("models") if isinstance(data, dict) else None
     if not isinstance(models, list):
@@ -2145,31 +2135,6 @@ def _discover_models(data: Any, found: dict[str, DiscoveredReference]) -> None:
         model_id = str(model.get("id") or "")
         for key in _references(model):
             _note(found, key, "providers", [model_id])
-        routes = model.get("route") or [
-            {"base_url": model.get("base_url"), "api_key": model.get("api_key")}
-        ]
-        if not isinstance(routes, list):
-            continue
-        for route in routes:
-            if not isinstance(route, dict) or route.get("optional"):
-                continue
-            needed = [
-                _whole_reference(route.get("base_url") or model.get("base_url")),
-                _whole_reference(route.get("embeddings_path")),
-            ]
-            api_keys = route.get("api_keys")
-            if isinstance(api_keys, list):
-                group = tuple(key for key in (_whole_reference(item) for item in api_keys) if key)
-                # A literal key in the list keeps the route alive on its own.
-                if group and len(group) == len(api_keys):
-                    for key in group:
-                        reference = _note(found, key, "providers", [model_id])
-                        reference.key_groups = [*(reference.key_groups or []), group]
-            else:
-                needed.append(_whole_reference(route.get("api_key") or model.get("api_key")))
-            for key in needed:
-                if key:
-                    _note(found, key, "providers", [model_id]).required = True
 
 
 def _discover_routing(data: Any, found: dict[str, DiscoveredReference]) -> None:
@@ -2260,34 +2225,6 @@ def discover_references(
     return found
 
 
-def _group_required(groups: list[tuple[str, ...]]) -> Callable[[RequirementContext], bool]:
-    def required(context: RequirementContext) -> bool:
-        return any(not any(context.value(key).strip() for key in group) for group in groups)
-
-    return required
-
-
-def _merge_requirements(first: Requirement, second: Requirement) -> Requirement:
-    if first is True or second is True:
-        return True
-    if first is False:
-        return second
-    if second is False:
-        return first
-
-    def either(context: RequirementContext) -> bool:
-        return bool(first(context) or second(context))  # type: ignore[operator]
-
-    return either
-
-
-def _discovered_requirement(reference: DiscoveredReference) -> Requirement:
-    requirement: Requirement = reference.required
-    if reference.key_groups:
-        requirement = _merge_requirements(requirement, _group_required(reference.key_groups))
-    return requirement
-
-
 def build_entries(
     discovered: Mapping[str, DiscoveredReference],
     stored: Mapping[str, bool],
@@ -2315,28 +2252,26 @@ def build_entries(
     for key, reference in discovered.items():
         if is_environment_only(key) or is_runtime_setting_name(key) or is_retired(key):
             continue
-        requirement = _discovered_requirement(reference)
+        # A reference adds no requirement; see _discover_models.
         used_by = tuple(sorted(reference.used_by))
         existing = entries.get(key)
         if existing is not None:
             entries[key] = replace(
                 existing,
                 secret=existing.secret or reference.credential,
-                required=_merge_requirements(existing.required, requirement),
                 restart_required=True,
                 used_by=used_by,
             )
             continue
         numbered = numbered_key_entry(key)
         if numbered is not None:
-            entries[key] = replace(numbered, required=requirement, used_by=used_by)
+            entries[key] = replace(numbered, used_by=used_by)
             continue
         entries[key] = ConfigEntry(
             key,
             reference.category,
             _discovered_description(reference),
             secret=reference.credential or is_secret_name(key),
-            required=requirement,
             restart_required=True,
             origin="discovered",
             used_by=used_by,

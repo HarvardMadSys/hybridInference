@@ -758,13 +758,18 @@ def test_smtp_health_uses_the_deployments_mail_transport(
     assert ("SMTP_PASSWORD" in missing) is not email_enabled
 
 
-def test_a_variable_a_route_needs_is_missing_until_set(config_env, monkeypatch) -> None:
+def test_a_variable_the_model_registry_references_is_never_missing(config_env) -> None:
+    """Provider keys and URLs may be left unset.
+
+    The registry skips the route (``optional: true``) or drops its model when
+    one is unset; the deployment is not reported incomplete for it.
+    """
     _write_models(
         config_env,
         """
         models:
           - id: chat
-            base_url: https://api.example/v1
+            base_url: ${CHAT_UPSTREAM_URL}
             api_key: ${CHAT_UPSTREAM_KEY}
           - id: canary
             route:
@@ -775,12 +780,9 @@ def test_a_variable_a_route_needs_is_missing_until_set(config_env, monkeypatch) 
         """,
     )
     app_config.use_environment(database_enabled=False)
-    health = app_config.get_config_health()
-    assert "CHAT_UPSTREAM_KEY" in health.missing
-    assert "CANARY_KEY" not in health.missing
-
-    monkeypatch.setenv("CHAT_UPSTREAM_KEY", "now-set")
-    assert "CHAT_UPSTREAM_KEY" not in app_config.refresh_health().missing
+    missing = app_config.get_config_health().missing
+    for key in ("CHAT_UPSTREAM_URL", "CHAT_UPSTREAM_KEY", "CANARY_KEY"):
+        assert key not in missing
 
 
 # --- describe ----------------------------------------------------------------
@@ -886,14 +888,10 @@ async def test_the_console_lists_delivery_settings_once_an_extension_offers_a_ch
 async def test_the_console_lists_a_setting_it_does_not_offer_while_it_needs_attention(
     config_env, extension_registry
 ) -> None:
-    _write_models(
-        config_env,
-        """
-        models:
-          - id: chat
-            base_url: https://api.example/v1
-            api_key: ${SMS_DEFAULT_COUNTRY_CODE}
-        """,
+    # Required and unset, in a category this gateway does not offer (it loads
+    # no SMS provider).
+    extension_registry.register_config_entries(
+        [extension_registry.ConfigEntry("SMS_SENDER_ID", "phone", "Sender.", required=True)]
     )
     store = FakeAppConfigStore(
         [row("EMAIL_PROVIDER", "unloaded_email"), row("SMS_OTP_MAX_ATTEMPTS", "99")]
@@ -903,7 +901,7 @@ async def test_the_console_lists_a_setting_it_does_not_offer_while_it_needs_atte
     entries = {entry["key"]: entry for entry in app_config.describe(offered_only=True)["entries"]}
     assert entries["EMAIL_PROVIDER"]["invalid"] == "must be one of smtp"
     assert entries["SMS_OTP_MAX_ATTEMPTS"]["invalid"] == "must be at most 10"
-    assert entries["SMS_DEFAULT_COUNTRY_CODE"]["missing"] is True
+    assert entries["SMS_SENDER_ID"]["missing"] is True
     assert "SMS_AUTH_ENABLED" not in entries
 
 
