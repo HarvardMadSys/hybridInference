@@ -7,6 +7,7 @@ import { isAnomalous } from './lib/anomaly';
 import { bandStyle } from './lib/automation';
 import { ROLE_STYLE, STATUS_STYLE } from './ui';
 import { NoteIcon } from './UserDetailPanel';
+import { TagChip } from './TagChip';
 import type {
   UserAskQuestionFraction,
   UserAutomationScore,
@@ -197,6 +198,9 @@ export function UserRow({
               ⚠
             </span>
           )}
+          {(user.tags ?? []).map((tag) => (
+            <TagChip key={tag} name={tag} />
+          ))}
         </div>
         {/* Labelled buttons beside the pill on wide screens, under it when the
             column is narrow; compact rows keep one line with icon buttons. */}

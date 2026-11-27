@@ -80,6 +80,7 @@ from serving.servers.routers.models import _build_model_list_async
 from serving.servers.routers.reauth import confirm_account_owner
 from serving.storage.base import USER_PREFERENCES_MAX_BYTES
 from serving.storage.utils import coerce_json_object
+from serving.user_tags import tag_concurrency_cap, within_tag_cap
 from serving.utils import password as password_utils
 from serving.utils.email import is_email_enabled, send_password_changed_email
 from serving.utils.logging import get_logger
@@ -1177,9 +1178,9 @@ async def get_usage(
         raise HTTPException(status_code=500, detail="Database not available")
 
     # Resolve per-user concurrency cap (applies regardless of API-key state).
-    # A per-user override wins over the role's cap, as in
-    # ``UserConcurrencyLimiter.try_acquire``, so the dashboard shows the cap
-    # the limiter enforces.
+    # A per-user override wins over the role's cap, and a user tag's cap holds
+    # either, as in ``UserConcurrencyLimiter.try_acquire``, so the dashboard
+    # shows the cap the limiter enforces.
     max_concurrency = current_user.get("max_concurrent_requests")
     if max_concurrency is None:
         try:
@@ -1191,6 +1192,7 @@ async def get_usage(
             rt,
             is_admin=bool(current_user.get("is_admin", False)),
         )
+    max_concurrency = within_tag_cap(int(max_concurrency), tag_concurrency_cap(current_user))
 
     # Get user's quota
     key_row = await op_store.get_active_key_by_account(current_user["user_id"])

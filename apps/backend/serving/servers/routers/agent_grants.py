@@ -42,6 +42,7 @@ from serving.servers.routers.internal_auth import (
     require_dispatch_token,
     require_store as _require_store,
 )
+from serving.user_tags import TAG_ALLOWED_MODELS_KEY
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -156,6 +157,12 @@ async def mint_grant(
             # key and passes, so a model the owner disabled resolves here
             # as visible — and a grant gets minted for it.
             "disabled_models": get_disabled_models_from_preferences(user.get("preferences")),
+            # Likewise a user tag's model allowlist (serving.user_tags).
+            **(
+                {TAG_ALLOWED_MODELS_KEY: user[TAG_ALLOWED_MODELS_KEY]}
+                if user.get(TAG_ALLOWED_MODELS_KEY) is not None
+                else {}
+            ),
         },
     )
     effective_models = grants.clamp_models(body.allowed_models, visible=visible)

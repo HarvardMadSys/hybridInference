@@ -24,6 +24,7 @@ import { UserAutomationPanel } from './UserAutomationPanel';
 import { UserProjects } from './UserProjects';
 import { UserRecentRequests } from './UserRecentRequests';
 import { UserUsageInsights } from './UserUsageInsights';
+import { UserTagsSection } from './UserTagsSection';
 import {
   BUTTON_DANGER,
   BUTTON_PRIMARY,
@@ -704,6 +705,8 @@ interface UserDetailPanelProps {
   onResume: (user: AdminUser) => void;
   onRequestDelete: (user: AdminUser) => void;
   onRequestHardDelete: (user: AdminUser) => void;
+  /** Re-read this user after its user tags changed. */
+  onTagsChanged?: () => Promise<void>;
 }
 
 /**
@@ -787,6 +790,7 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
     onResume,
     onRequestDelete,
     onRequestHardDelete,
+    onTagsChanged,
   } = props;
   const busy = confirmation.busy;
 
@@ -852,6 +856,14 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
                 ? `${money.value(detail, 'quota_daily')}/d`
                 : '—'
             }
+            sub={
+              // The account's own quota; its user tags may hold it lower.
+              detail.tag_limits?.quota_daily_cost != null
+                ? `tags: ≤ ${money.format(Number(detail.tag_limits.quota_daily_cost), {
+                    maximumFractionDigits: 2,
+                  })}/d`
+                : undefined
+            }
           />
         </div>
         {/* All-time activity stats (avg turns, ask-question share) require
@@ -883,6 +895,17 @@ export function UserDetailPanel(props: UserDetailPanelProps) {
               availableModels={availableModels}
               confirmation={confirmation}
               onSave={onUpdate}
+            />
+          )}
+
+          {/* User tags: a gateway older than the feature reports none. */}
+          {detail.tag_memberships !== undefined && u.status !== 'deleted' && (
+            <UserTagsSection
+              userId={u.id}
+              memberships={detail.tag_memberships}
+              limits={detail.tag_limits}
+              confirmation={confirmation}
+              onChanged={onTagsChanged ?? (async () => undefined)}
             />
           )}
 

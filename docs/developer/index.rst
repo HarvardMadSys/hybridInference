@@ -149,6 +149,7 @@ explains how to configure and extend an overlay.
    accounting
    trusted-proxies-and-client-ips
    automation-score
+   user-tags
 
 .. toctree::
    :maxdepth: 2

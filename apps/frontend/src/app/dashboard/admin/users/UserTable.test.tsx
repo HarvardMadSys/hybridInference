@@ -122,6 +122,7 @@ function tableProps(
       provider: null,
       activeWithinHours: null,
       anomaly: null,
+      tag: null,
       view: null,
     },
     onSortChange: vi.fn(),

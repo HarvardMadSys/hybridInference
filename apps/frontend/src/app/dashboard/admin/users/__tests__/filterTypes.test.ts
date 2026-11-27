@@ -12,6 +12,7 @@ describe('filterStateFromUrl / filterStateToUrl', () => {
       quotaState: 'near' as const,
       provider: 'anthropic',
       anomaly: true,
+      tag: 'unattended',
       view: null,
     };
     const url = filterStateToUrl(state);

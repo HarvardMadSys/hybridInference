@@ -37,6 +37,8 @@ export interface UserRow {
   usage_alltime_usd: string;
   usage_alltime_requests: number | null;
   usage_alltime_tokens: number | null;
+  /** The user tags that apply to the account; absent from an older gateway. */
+  tags?: string[];
 }
 
 export interface CostHistoryPoint {
@@ -99,6 +101,8 @@ export interface FilterState {
   provider: string | null;
   activeWithinHours: number | null;
   anomaly: boolean | null;
+  /** Only the users this user tag applies to. */
+  tag: string | null;
   view: string | null; // built-in or saved-view id
 }
 

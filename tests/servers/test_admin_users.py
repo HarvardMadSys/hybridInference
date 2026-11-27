@@ -51,6 +51,8 @@ def mock_stores():
     op_store.get_active_key_by_account = AsyncMock(return_value=None)
     op_store.list_user_identities = AsyncMock(return_value=[])
     op_store.get_two_factor = AsyncMock(return_value=None)
+    op_store.get_tags_for_users = AsyncMock(return_value={})
+    op_store.get_user_tag_memberships = AsyncMock(return_value=[])
 
     log_store = MagicMock()
     log_store.get_batch_usage = AsyncMock(return_value={})

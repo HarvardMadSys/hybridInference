@@ -1108,6 +1108,13 @@ async def initialize() -> AppServices:
                             register_responses_retention_job(sched, db_logger.pool)
                             # The rows of ended console sessions, hourly.
                             session_retention.register_retention_job(sched, db_logger.pool)
+                            # The user tags' automatic rules (``unattended``),
+                            # every ten minutes.
+                            from serving.admin.user_tag_detector import (
+                                register_detector_job,
+                            )
+
+                            register_detector_job(sched, db_logger.pool)
 
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor

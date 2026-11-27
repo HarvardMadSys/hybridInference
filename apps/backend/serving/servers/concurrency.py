@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from serving.adapters.anthropic_aliases import resolve_anthropic_alias
 from serving.observability import detached_tasks
 from serving.observability.rejection_log import extract_prompt_from_body, log_rejection
+from serving.user_tags import tag_concurrency_cap, within_tag_cap
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
@@ -125,17 +126,20 @@ async def effective_user_concurrency(
 ) -> int:
     """Return the cap ``UserConcurrencyLimiter`` enforces for this account.
 
-    An explicit per-account override wins over the role cap. ``0`` means
-    unlimited.
+    An explicit per-account override wins over the role cap, and a cap one of
+    the account's user tags sets holds either (:func:`serving.user_tags.within_tag_cap`).
+    ``0`` means unlimited.
     """
     override = user.get("max_concurrent_requests")
     if override is not None:
-        return int(override)
-    return await get_user_concurrency_for_role(
-        user.get("role") or "free",
-        runtime_settings,
-        is_admin=bool(user.get("is_admin", False)),
-    )
+        capacity = int(override)
+    else:
+        capacity = await get_user_concurrency_for_role(
+            user.get("role") or "free",
+            runtime_settings,
+            is_admin=bool(user.get("is_admin", False)),
+        )
+    return within_tag_cap(capacity, tag_concurrency_cap(user))
 
 
 @dataclass
@@ -202,6 +206,7 @@ class UserConcurrencyLimiter:
         role: str,
         is_admin: bool,
         max_concurrent_requests: int | None = None,
+        tag_cap: int | None = None,
     ) -> tuple[bool, int, str]:
         """Non-blocking acquire.
 
@@ -210,12 +215,17 @@ class UserConcurrencyLimiter:
         *role_label* is the slot's sticky label.
 
         *max_concurrent_requests* overrides the role-based default when set.
+        *tag_cap*, a cap one of the user's tags sets, holds whichever applies:
+        it lowers a larger capacity and makes an unlimited one finite.
         """
         limits = await self._read_limits()
-        target_capacity = (
-            max_concurrent_requests
-            if max_concurrent_requests is not None
-            else self._limit_for(role, is_admin, limits)
+        target_capacity = within_tag_cap(
+            (
+                max_concurrent_requests
+                if max_concurrent_requests is not None
+                else self._limit_for(role, is_admin, limits)
+            ),
+            tag_cap,
         )
         target_label = self._role_label(role, is_admin, limits)
 
@@ -573,8 +583,9 @@ async def _slot_for_canonical(
     so a single user cannot open unbounded concurrent requests against an
     exempt model. An explicit per-user override is honored, but never above
     the cap ("64 at most"); without an override the cap itself applies. A
-    failing exemption check falls back to the normal budget: it must never
-    break the gate.
+    user tag's cap holds both budgets alike; the limiter applies it
+    (:meth:`UserConcurrencyLimiter.try_acquire`). A failing exemption check
+    falls back to the normal budget: it must never break the gate.
     """
     user_id = user["user_id"]
     max_concurrent = user.get("max_concurrent_requests")
@@ -707,7 +718,7 @@ async def enforce_user_concurrency(
             user, model, canonical, concurrency_resolver
         )
         granted, limit, role_label = await limiter.try_acquire(
-            slot_key, role, is_admin, max_concurrent
+            slot_key, role, is_admin, max_concurrent, tag_cap=tag_concurrency_cap(user)
         )
     finally:
         if intake_key is not None:
@@ -808,17 +819,21 @@ async def enforce_count_tokens_concurrency(
     A budget of its own (:data:`COUNT_TOKENS_USER_CONCURRENCY_LIMIT` per user),
     separate from the inference slots, taken before the body is read: the
     budget does not depend on the model, so nothing needs parsing first. A
-    per-user override below the cap is honoured, as for exempt models.
+    per-user override below the cap is honoured, as for exempt models, and so
+    is a user tag's cap.
     """
     if limiter is None:
         yield
         return
     user_id = user["user_id"]
     override = user.get("max_concurrent_requests")
-    cap = (
-        COUNT_TOKENS_USER_CONCURRENCY_LIMIT
-        if override is None
-        else min(override, COUNT_TOKENS_USER_CONCURRENCY_LIMIT)
+    cap = within_tag_cap(
+        (
+            COUNT_TOKENS_USER_CONCURRENCY_LIMIT
+            if override is None
+            else min(override, COUNT_TOKENS_USER_CONCURRENCY_LIMIT)
+        ),
+        tag_concurrency_cap(user),
     )
     slot_key = _count_tokens_slot_key(user_id)
     granted, limit, role_label = await limiter.try_acquire(

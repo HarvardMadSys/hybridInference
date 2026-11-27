@@ -35,6 +35,8 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         provider: state.provider ?? undefined,
         activeWithinHours: state.activeWithinHours ?? undefined,
         anomaly: state.anomaly ?? undefined,
+        // A saved view stored before tags existed has no `tag`.
+        tag: state.tag ?? undefined,
       }),
     staleTime: THIRTY_S,
   });

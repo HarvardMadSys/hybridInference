@@ -17,6 +17,7 @@ vi.mock('next/navigation', () => {
 });
 vi.mock('@/lib/api/admin', () => ({ listUsers: vi.fn(), getBulkUsageTotals: vi.fn() }));
 vi.mock('./SummaryCards', () => ({ SummaryCards: () => null }));
+vi.mock('./UserTagsPanel', () => ({ UserTagsPanel: () => null }));
 vi.mock('./SavedViews', () => ({ SavedViews: () => null }));
 vi.mock('./FilterBar', () => ({ FilterBar: () => null }));
 vi.mock('./hooks/useUserCostHistory', () => ({ useBulkCostHistory: () => ({ data: {} }) }));

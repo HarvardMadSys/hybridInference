@@ -559,8 +559,11 @@ class OperationalStore(ABC):
         active_within_hours: int | None = None,
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
+        tag: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
+
+        *tag* keeps only the users that tag applies to.
 
         *sort_by* values that reference cost (``cost_today``, ``cost_month``,
         ``cost_alltime``) or usage (``requests``, ``tokens``) require joining
@@ -1039,6 +1042,94 @@ class OperationalStore(ABC):
         Whichever browser holds it can no longer refresh it. Returns whether a
         session was still live to revoke.
         """
+
+    # -- user tags -------------------------------------------------------------
+    #
+    # Named groups of accounts (``user_tags``) and which account carries which
+    # (``user_tag_members``). See ``serving.user_tags`` for what a tag's limits
+    # mean and ``serving.storage.user_tags`` for the rows.
+
+    @abstractmethod
+    async def list_user_tags(self) -> list[Row]:
+        """Every tag with its limits, rule and member counts, built-in first.
+
+        Each row: ``name, description, quota_daily_cost, quota_monthly_cost,
+        accounting_currency, max_concurrent_requests, allowed_models,
+        auto_enabled, auto_window_hours, auto_min_active_hours, system,
+        created_at, updated_at, manual_members, auto_members,
+        dismissed_members``.
+        """
+
+    @abstractmethod
+    async def get_user_tag(self, name: str) -> Row | None:
+        """One tag, shaped as :meth:`list_user_tags` rows are, or None."""
+
+    @abstractmethod
+    async def create_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Create a tag with *fields* set; None when one of that name exists."""
+
+    @abstractmethod
+    async def update_user_tag(self, name: str, fields: dict[str, Any]) -> Row | None:
+        """Set *fields* on a tag and return it; None when there is none."""
+
+    @abstractmethod
+    async def delete_user_tag(self, name: str) -> bool:
+        """Delete a tag that is not built in, and its memberships."""
+
+    @abstractmethod
+    async def list_user_tag_members(
+        self,
+        name: str,
+        *,
+        sources: Sequence[str] | None = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> tuple[int, list[Row]]:
+        """``(total, rows)`` of a tag's memberships, applied ones first.
+
+        Each row: ``user_id, source, assigned_at, assigned_by, email,
+        login_name, phone, user_name, status``.
+        """
+
+    @abstractmethod
+    async def add_user_tag_members(
+        self, name: str, user_ids: Sequence[str], *, assigned_by: str | None
+    ) -> tuple[list[str], list[str]]:
+        """Make accounts manual members of a tag; return ``(changed, unknown)`` ids."""
+
+    @abstractmethod
+    async def remove_user_tag_member(
+        self, name: str, user_id: str, *, removed_by: str | None
+    ) -> str | None:
+        """Take a tag away from an account; return the membership's source, or None.
+
+        Under a tag with an automatic rule the membership is kept as
+        ``dismissed``, so the rule counts only the account's later requests.
+        """
+
+    @abstractmethod
+    async def get_user_tag_memberships(self, user_id: str) -> list[Row]:
+        """An account's memberships, dismissed ones included, with each tag's limits."""
+
+    @abstractmethod
+    async def get_tags_for_users(self, user_ids: Sequence[str]) -> dict[str, list[str]]:
+        """The tags that apply to each of *user_ids*; accounts with none are absent."""
+
+    @abstractmethod
+    async def preview_user_tag_members(
+        self, name: str, *, window_hours: int, min_active_hours: int, limit: int = 200
+    ) -> list[Row]:
+        """The active accounts an automatic rule of these bounds matches now.
+
+        Each row: ``user_id, active_hours, member_source`` and the account's
+        ``email, login_name, phone, user_name, status``. Changes nothing.
+        """
+
+    @abstractmethod
+    async def detect_user_tag_members(
+        self, name: str, *, window_hours: int, min_active_hours: int
+    ) -> list[str]:
+        """Apply an automatic rule now; return the ids of the accounts that gained the tag."""
 
     # -- second factor ---------------------------------------------------------
     #

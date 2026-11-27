@@ -71,8 +71,11 @@ class _ObservedLimiter(UserConcurrencyLimiter):
         role: str,
         is_admin: bool,
         max_concurrent_requests: int | None = None,
+        tag_cap: int | None = None,
     ) -> tuple[bool, int, str]:
-        result = await super().try_acquire(user_id, role, is_admin, max_concurrent_requests)
+        result = await super().try_acquire(
+            user_id, role, is_admin, max_concurrent_requests, tag_cap=tag_cap
+        )
         self.acquired.set()
         return result
 
