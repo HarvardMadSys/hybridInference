@@ -323,6 +323,36 @@ def _smtp_failure(error: Exception, stage: str, where: str, sender: str) -> str:
     return f"The message could not be sent through SMTP {during} ({type(error).__name__})."
 
 
+def render_test_email(transport: str) -> tuple[str, str, str]:
+    """Return the subject, HTML and text of the admin console's test email.
+
+    Fixed apart from the site's name and the transport: a test can prove the
+    settings send, and cannot carry anything else.
+    """
+    site_name = get_site_identity().name
+    label = TRANSPORT_LABELS.get(transport, transport)
+    subject = f"Test email from {site_name}"
+    lines = (
+        f"This is a test message from {site_name}, sent from the admin console's email settings.",
+        f"It was sent through {label}. Sign-up verification, password reset and "
+        "notification emails go out the same way.",
+        "No action is needed.",
+    )
+    paragraphs = "".join(f"<p>{html_lib.escape(line)}</p>" for line in lines)
+    html_body = f"""
+    <html>
+    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+        <div style="max-width: 600px; margin: 0 auto; padding: 20px;">
+            <h2 style="color: #111827;">Email delivery works</h2>
+            {paragraphs}
+        </div>
+    </body>
+    </html>
+    """
+    text_body = "Email delivery works\n\n" + "\n\n".join(lines) + "\n"
+    return subject, html_body, text_body
+
+
 def send_verification_email(to_email: str, verification_token: str, base_url: str) -> bool:
     """Send email verification link to user.
 

@@ -1,10 +1,10 @@
 """Admin router package.
 
 Aggregates domain-focused sub-routers (alerts, analytics,
-api_keys, auth_blocks, batch, broadcast, config, export, login_events, metrics, model_concurrency,
-model_queue, model_visibility, offload_routes, openinfra, providers, settings, signup_domains,
-site_updates, stats, system, upstream_concurrency, usage_insights, user_tags, users) into a single
-``router`` exported at this level. Callers use
+api_keys, auth_blocks, batch, broadcast, config, email_test, export, login_events, metrics,
+model_concurrency, model_queue, model_visibility, offload_routes, openinfra, providers, settings,
+signup_domains, site_updates, stats, system, upstream_concurrency, usage_insights, user_tags,
+users) into a single ``router`` exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
 
@@ -20,6 +20,7 @@ from serving.servers.routers.admin import (
     broadcast,
     config,
     config_backup,
+    email_test,
     export,
     login_events,
     metrics,
@@ -63,6 +64,7 @@ router.include_router(batch.router)
 router.include_router(broadcast.router)
 router.include_router(config.router)
 router.include_router(config_backup.router)
+router.include_router(email_test.router)
 router.include_router(export.router)
 router.include_router(login_events.router)
 router.include_router(metrics.router)

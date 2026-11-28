@@ -7,6 +7,7 @@ from typing import Any, ClassVar, Literal
 
 from pydantic import (
     BaseModel,
+    EmailStr,
     Field,
     SecretStr,
     StrictBool,
@@ -1622,6 +1623,25 @@ class TestAlertResponse(BaseModel):
     channel: Literal["slack", "wecom"]
     sent: Literal[True] = True
     test_id: str
+
+
+class TestEmailRequest(BaseModel):
+    """Send a fixed test message through the saved email settings."""
+
+    to: EmailStr | None = Field(
+        None,
+        description="Where to send the test. Omit it to send the test to your own account's address.",
+    )
+
+
+class TestEmailResponse(BaseModel):
+    """The selected transport accepted the test message."""
+
+    sent: Literal[True] = True
+    #: The address the test went to.
+    to: str
+    #: The transport that carried it: ``smtp``, ``cloudflare`` or an extension's name.
+    provider: str
 
 
 class SnoozeAlertsRequest(BaseModel):

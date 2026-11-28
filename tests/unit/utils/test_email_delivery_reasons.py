@@ -11,6 +11,7 @@ from __future__ import annotations
 import smtplib
 import socket
 import ssl
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -152,3 +153,17 @@ def test_each_smtp_failure_is_explained_by_what_failed(error, stage, expected):
     # The server's own words never reach the reason.
     for words in ("no", "gone", "odd", "Name or service not known", "wrong version number"):
         assert f"({words})" not in reason and f"b'{words}'" not in reason
+
+
+def test_the_test_email_names_the_transport_and_escapes_the_site_name(monkeypatch):
+    site = SimpleNamespace(name="A&B <Gateway>")
+    monkeypatch.setattr(email, "get_site_identity", lambda: site)
+
+    subject, html_body, text_body = email.render_test_email("cloudflare")
+
+    assert subject == "Test email from A&B <Gateway>"
+    assert "A&amp;B &lt;Gateway&gt;" in html_body
+    assert "<Gateway>" not in html_body
+    assert "through Cloudflare Email Sending" in text_body
+    # An extension's transport is named as configured.
+    assert "through tencent_ses" in email.render_test_email("tencent_ses")[2]
