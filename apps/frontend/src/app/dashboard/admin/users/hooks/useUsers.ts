@@ -39,6 +39,7 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         tag: state.tag ?? undefined,
         // A saved view stored before tiers existed has no `role`.
         role: state.role ?? undefined,
+        serviceAccount: state.serviceAccount ?? undefined,
       }),
     staleTime: THIRTY_S,
   });

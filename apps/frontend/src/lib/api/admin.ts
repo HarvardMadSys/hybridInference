@@ -79,6 +79,8 @@ interface ListUsersResponse {
   status_counts: StatusCounts;
   /** Absent from a gateway that predates the tier filter. */
   role_counts?: UserRoleCounts;
+  /** Service accounts, unfiltered; absent from an older gateway. */
+  service_account_count?: number;
 }
 
 interface ApproveRejectResponse {
@@ -107,6 +109,8 @@ interface ListUsersOptions {
   tag?: string;
   /** Only accounts in this tier. */
   role?: 'free' | 'pro' | 'internal' | 'admin';
+  /** Only service accounts. */
+  serviceAccount?: boolean;
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -130,6 +134,9 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
   }
   if (opts.tag) params.set('tag', opts.tag);
   if (opts.role) params.set('role', opts.role);
+  if (opts.serviceAccount !== undefined) {
+    params.set('service_account', String(opts.serviceAccount));
+  }
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }

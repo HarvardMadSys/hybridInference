@@ -98,6 +98,7 @@ export default function UsersTab() {
         ...DEFAULT_FILTER_STATE,
         ...next,
         role: next.role ?? null,
+        serviceAccount: next.serviceAccount ?? null,
       };
       setFilterState(normalized);
       setPage(0);
@@ -404,6 +405,7 @@ export default function UsersTab() {
             hiddenColumns={hiddenColumns}
             onHiddenColumnsChange={setHiddenColumns}
             roleCounts={usersQuery.data?.role_counts}
+            serviceAccountCount={usersQuery.data?.service_account_count}
           />
         </div>
 

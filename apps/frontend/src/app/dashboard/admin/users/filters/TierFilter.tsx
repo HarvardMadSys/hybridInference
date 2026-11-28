@@ -4,21 +4,32 @@ import type { UserRoleCounts } from '@/lib/api/admin';
 
 import type { UserRole } from '../types';
 
-const TIERS: ReadonlyArray<{ role: UserRole; label: string }> = [
+/**
+ * Service accounts are not a tier (each holds one), but they are listed as one
+ * chip among the tiers, next to Pro.
+ */
+export const SERVICE_ACCOUNT_TIER = 'service_account';
+
+export type TierValue = UserRole | typeof SERVICE_ACCOUNT_TIER;
+
+const TIERS: ReadonlyArray<{ role: TierValue; label: string }> = [
   { role: 'free', label: 'Free' },
   { role: 'pro', label: 'Pro' },
+  { role: SERVICE_ACCOUNT_TIER, label: 'Service' },
   { role: 'internal', label: 'Internal' },
   { role: 'admin', label: 'Admin' },
 ];
 
 interface TierFilterProps {
-  value: UserRole | null;
+  value: TierValue | null;
   /** Unfiltered account counts. Absent while the list is still loading. */
   counts?: UserRoleCounts;
-  onChange: (role: UserRole | null) => void;
+  /** Unfiltered service-account count. Absent while loading or from an older gateway. */
+  serviceAccountCount?: number;
+  onChange: (tier: TierValue | null) => void;
 }
 
-export function TierFilter({ value, counts, onChange }: TierFilterProps) {
+export function TierFilter({ value, counts, serviceAccountCount, onChange }: TierFilterProps) {
   return (
     <div role="group" aria-label="Account tiers" className="flex flex-wrap items-center gap-1.5">
       <span className="mr-1 text-[12px] font-medium text-gray-500">Tier</span>
@@ -27,7 +38,7 @@ export function TierFilter({ value, counts, onChange }: TierFilterProps) {
         <TierButton
           key={role}
           label={label}
-          count={counts?.[role]}
+          count={role === SERVICE_ACCOUNT_TIER ? serviceAccountCount : counts?.[role]}
           pressed={value === role}
           onClick={() => onChange(value === role ? null : role)}
         />

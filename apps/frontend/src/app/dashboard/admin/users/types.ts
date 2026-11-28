@@ -97,6 +97,8 @@ export interface FilterState {
   status: UserStatus | null;
   /** Account tier. Null lists every tier. */
   role: UserRole | null;
+  /** True lists only service accounts. Null lists every account. */
+  serviceAccount?: true | null;
   search: string;
   sortBy: SortBy;
   minCostToday: number | null;

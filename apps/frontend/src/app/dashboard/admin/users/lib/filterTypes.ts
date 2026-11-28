@@ -4,6 +4,7 @@ import type { FilterState, QuotaStateFilter, SortBy, UserRole, UserStatus } from
 export const DEFAULT_FILTER_STATE: FilterState = {
   status: null,
   role: null,
+  serviceAccount: null,
   search: '',
   sortBy: 'created',
   minCostToday: null,
@@ -58,6 +59,7 @@ export function filterStateFromUrl(
   return {
     status: VALID_STATUS.includes(status as UserStatus) ? (status as UserStatus) : null,
     role: VALID_ROLE.includes(role as UserRole) ? (role as UserRole) : null,
+    serviceAccount: params.get('service_account') === 'true' ? true : null,
     search: params.get('q') ?? '',
     sortBy: VALID_SORT.includes(sortBy as SortBy) ? (sortBy as SortBy) : 'created',
     minCostToday: matchesCurrency ? parseNumber(params.get('min_cost_today')) : null,
@@ -78,6 +80,7 @@ export function filterStateToUrl(state: FilterState, currency: Currency = 'USD')
   if (state.minCostToday !== null || state.minCostMonth !== null) out.set('currency', currency);
   if (state.status) out.set('status', state.status);
   if (state.role) out.set('role', state.role);
+  if (state.serviceAccount) out.set('service_account', 'true');
   if (state.search) out.set('q', state.search);
   if (state.sortBy !== 'created') out.set('sort_by', state.sortBy);
   if (state.minCostToday !== null) out.set('min_cost_today', String(state.minCostToday));

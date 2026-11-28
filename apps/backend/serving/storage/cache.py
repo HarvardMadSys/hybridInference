@@ -810,6 +810,7 @@ class CachedOperationalStore(OperationalStore):
         include_usage_totals: bool = True,
         tag: str | None = None,
         role: str | None = None,
+        service_account: bool | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Delegate to wrapped store."""
         return await self._store.list_users(
@@ -827,6 +828,7 @@ class CachedOperationalStore(OperationalStore):
             include_usage_totals=include_usage_totals,
             tag=tag,
             role=role,
+            service_account=service_account,
         )
 
     async def update_key_last_used(self, key_id: int) -> None:

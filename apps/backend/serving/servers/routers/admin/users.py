@@ -138,6 +138,7 @@ async def list_users(
     include_usage_totals: bool = True,
     tag: str | None = Query(None, max_length=32),
     role: Literal["free", "pro", "internal", "admin"] | None = None,
+    service_account: bool | None = None,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -172,6 +173,8 @@ async def list_users(
     - tag: keep only users a user tag applies to (``unattended``, say).
     - role: keep only accounts in that tier (``free``, ``pro``, ``internal``,
       ``admin``). ``role_counts`` still counts every tier, unfiltered.
+    - service_account: ``true`` keeps only service accounts, ``false`` only
+      the rest. ``service_account_count`` counts them, unfiltered.
 
     Each user carries ``tags``, the user tags that apply to it.
 
@@ -202,6 +205,7 @@ async def list_users(
         include_usage_totals=include_usage_totals,
         tag=tag,
         role=role,
+        service_account=service_account,
     )
 
     status_counts = StatusCounts(
@@ -216,10 +220,15 @@ async def list_users(
     role_counts = RoleCounts.model_validate(
         {name: int(roles.get(name) or 0) for name in RoleCounts.model_fields}
     )
+    service_account_count = int(sc.get("service_accounts") or 0)
 
     if not rows:
         return ListUsersResponse(
-            total=total, users=[], status_counts=status_counts, role_counts=role_counts
+            total=total,
+            users=[],
+            status_counts=status_counts,
+            role_counts=role_counts,
+            service_account_count=service_account_count,
         )
 
     tags_by_user = await op_store.get_tags_for_users([row["id"] for row in rows])
@@ -258,7 +267,11 @@ async def list_users(
         )
 
     return ListUsersResponse(
-        total=total, users=users, status_counts=status_counts, role_counts=role_counts
+        total=total,
+        users=users,
+        status_counts=status_counts,
+        role_counts=role_counts,
+        service_account_count=service_account_count,
     )
 
 
