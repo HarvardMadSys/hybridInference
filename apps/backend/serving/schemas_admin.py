@@ -2948,6 +2948,10 @@ class DeleteProviderDefinitionResponse(BaseModel):  # type: ignore[no-any-unimpo
 
     provider: str
     deleted_keys: int
+    # Catalog entries a built-in provider's deletion removed; always zero for
+    # a custom provider, whose deletion touches no catalog.
+    removed_routes: int = 0
+    removed_models: int = 0
 
 
 class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]
