@@ -274,6 +274,10 @@ def _engine_rows(engine: EngineIngest) -> list[tuple[ServerIngest, str, dict[str
             said it is idle.
     """
     if engine.server.state == "idle":
+        # Its server id's row: an idle engine is one model's, as the reporter's
+        # on-demand targets are. Rows split per model come only from raw
+        # Prometheus text naming several models, which no idle engine sends; a
+        # server reported that way would gain a bare row while idle.
         return [
             (
                 engine.server,

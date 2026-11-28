@@ -1206,12 +1206,13 @@ def on_demand_idle(target: dict[str, Any]) -> bool:
     """Whether an engine that did not answer was stopped on purpose, by the proxy that starts it.
 
     ``on_demand_url`` is that proxy's model listing (OpenAI's ``GET
-    /v1/models``, which FreeInference's idle proxies answer without a key, each
-    model with a ``status``), and ``on_demand_model``, else ``model_name``, the
-    engine's id in it. The engine is idle while the listing has it and does not
-    call it ``loaded``. A proxy that does not answer, or that calls the model
-    loaded, says nothing of the kind, so the engine goes unreported and reads
-    as offline, as an engine with no proxy does.
+    /v1/models``, which FreeInference's idle proxies answer without a key), and
+    ``on_demand_model``, else ``model_name``, the engine's id in it. The engine
+    is idle only while its entry says ``"idle": true``, which those proxies set
+    only for a model stopped because nobody has asked for it. ``"status":
+    "not_loaded"`` is not enough: they say that of a model starting, failing to
+    start or dead too. Any other answer, or none, leaves the engine unreported,
+    so it reads as offline, as an engine with no proxy does.
     """
     url = target.get("on_demand_url")
     model = target.get("on_demand_model") or target.get("model_name")
@@ -1224,8 +1225,18 @@ def on_demand_idle(target: dict[str, Any]) -> bool:
     models = listing.get("data") if isinstance(listing, dict) else None
     for entry in models if isinstance(models, list) else ():
         if isinstance(entry, dict) and entry.get("id") == model:
-            return entry.get("status") != "loaded"
+            return entry.get("idle") is True
     return False
+
+
+def connection_refused(exc: BaseException) -> bool:
+    """Whether nothing listens where *exc* tried to connect, as for a stopped engine's port.
+
+    A port that accepts and then hangs, or answers an error, has something on
+    it, so its engine is not stopped, whatever its proxy says.
+    """
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, ConnectionRefusedError)
 
 
 _no_metrics_noted: set[str] = set()
@@ -1685,7 +1696,7 @@ def scrape(args: argparse.Namespace, targets: list[dict[str, str]]) -> dict[str,
             sglang[target["id"] or target["url"]] = {"target": target, **parsed}
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
             name = target.get("id") or target.get("url")
-            if on_demand_idle(target):
+            if connection_refused(exc) and on_demand_idle(target):
                 sglang[target["id"] or target["url"]] = {"target": target, "idle": True}
                 return
             log_error(f"sglang {name}", f"sglang scrape {name}: {exc}")

@@ -129,10 +129,12 @@ What each source needs:
 - **On-demand engines**, which a proxy stops after a spell without requests and
   starts again on the next one, read as offline while stopped unless their
   entry names the proxy in `on_demand_url` and `on_demand_model`. They then
-  show as idle, with no figures, while the proxy lists the model as anything
-  but `loaded`. FreeInference's idle proxies answer `GET /v1/models` on their
-  own port without a key. An engine that stops answering while its proxy calls
-  it loaded, or whose proxy does not answer either, still reads as offline.
+  show as idle, with no figures, while their port refuses connections and the
+  proxy lists the model with `"idle": true`, which FreeInference's idle proxies
+  say only of a model they stopped for want of requests or have not started
+  yet. Those proxies answer `GET /v1/models` on their own port without a key. A
+  model that failed to start, died or still holds its port reads as offline,
+  as does one whose proxy does not answer.
 
 The reporter gives each engine figure the same meaning on SGLang and vLLM.
 Token rates come from counters that move as each step runs: vLLM's own, and
