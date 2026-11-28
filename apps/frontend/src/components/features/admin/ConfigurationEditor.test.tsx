@@ -81,6 +81,8 @@ import {
 } from '@/lib/api/config';
 import toast from 'react-hot-toast';
 
+import type { ConfigSectionSplit } from '@/components/features/configuration/configDrafts';
+
 import {
   AddVariableControl,
   ConfigCategorySection,
@@ -107,6 +109,33 @@ function Editor({ initialMissingOnly }: { initialMissingOnly?: boolean }) {
       ))}
       <ConfigurationBackupSection editor={editor} />
       {editor.backupConfirmation.dialog}
+    </>
+  );
+}
+
+/** Some settings of a category as a section of their own, the way Admin → Settings lists its tuning. */
+function advancedSplit(category: string, keys: string[]): ConfigSectionSplit {
+  return {
+    id: `${category}:advanced`,
+    category,
+    keys: new Set(keys),
+    label: (categoryLabel) => `${categoryLabel} (advanced)`,
+  };
+}
+
+// Constants, as the editor takes them.
+const NETWORK_SPLIT = [advancedSplit('network', ['CORS_ALLOWED_ORIGINS'])];
+const ALERTS_SPLIT = [advancedSplit('alerts', ['FAILED_REQUEST_ALERT_THRESHOLD'])];
+
+/** The editor's sections, with some settings split from their category. */
+function SplitEditor({ sections }: { sections: readonly ConfigSectionSplit[] }) {
+  const editor = useConfigurationEditor({ sections });
+  return (
+    <>
+      {editor.config ? <ConfigurationFilters editor={editor} /> : null}
+      {editor.groups.map((group) => (
+        <ConfigCategorySection key={group.id} editor={editor} categoryId={group.id} />
+      ))}
     </>
   );
 }
@@ -990,6 +1019,126 @@ describe('editing in place', () => {
     expect(await email.findByText('SMTP_PASSWORD: •••• is not accepted')).toBeVisible();
     expect(email.getByText('•••• is not accepted')).toBeVisible();
     expect(document.body.textContent).not.toContain('typed-new-secret');
+  });
+});
+
+describe('a section split from its category', () => {
+  const v = (revision: number) => ({ epoch: 'e1', revision });
+
+  /** Render, and wait for the section split off, named `split`. */
+  async function renderSplit(
+    config: ConfigResponse,
+    sections = NETWORK_SPLIT,
+    split = 'Network (advanced)',
+  ) {
+    vi.mocked(getConfig).mockResolvedValue(config);
+    render(<SplitEditor sections={sections} />);
+    await screen.findByRole('region', { name: split });
+  }
+
+  it('saves apart from the rest of its category, on the version its own change was made on', async () => {
+    await renderSplit(makeConfig({ source_version: v(1) }));
+    const network = within(section('Network'));
+    const advanced = within(section('Network (advanced)'));
+    expect(network.queryByLabelText('CORS_ALLOWED_ORIGINS')).toBeNull();
+    expect(advanced.queryByRole('switch', { name: 'TRUST_PROXY_HEADERS' })).toBeNull();
+
+    fireEvent.change(advanced.getByLabelText('CORS_ALLOWED_ORIGINS'), {
+      target: { value: 'https://b.test' },
+    });
+    fireEvent.click(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }));
+    expect(network.getByText('1 unsaved change')).toBeVisible();
+    expect(advanced.getByText('1 unsaved change')).toBeVisible();
+
+    // The rest of the category is saved alone, as revision 2; revision 3 is
+    // someone else's, which this page has not shown.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      makeConfig({ source_version: v(3), saved_version: v(2) }),
+    );
+    save('Network');
+    await waitFor(() => expect(saveButton('Network')).toBeNull());
+    expect(vi.mocked(patchConfig).mock.calls[0]).toEqual([
+      { values: { TRUST_PROXY_HEADERS: true } },
+      { expectedVersion: v(1) },
+    ]);
+    expect(advanced.getByLabelText('CORS_ALLOWED_ORIGINS')).toHaveValue('https://b.test');
+    expect(advanced.getByText('1 unsaved change')).toBeVisible();
+
+    // The split's change continues from what this page committed, not from the newer revision.
+    vi.mocked(patchConfig).mockResolvedValueOnce(
+      makeConfig({ source_version: v(4), saved_version: v(4) }),
+    );
+    save('Network (advanced)');
+    await waitFor(() => expect(patchConfig).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(patchConfig).mock.calls[1]).toEqual([
+      { values: { CORS_ALLOWED_ORIGINS: 'https://b.test' } },
+      { expectedVersion: v(2) },
+    ]);
+  });
+
+  it('discards only its own changes', async () => {
+    await renderSplit(makeConfig());
+    const network = within(section('Network'));
+    const advanced = within(section('Network (advanced)'));
+    fireEvent.change(advanced.getByLabelText('CORS_ALLOWED_ORIGINS'), {
+      target: { value: 'https://b.test' },
+    });
+    fireEvent.click(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' }));
+
+    fireEvent.click(
+      advanced.getByRole('button', { name: 'Discard changes to Network (advanced)' }),
+    );
+
+    expect(advanced.getByLabelText('CORS_ALLOWED_ORIGINS')).toHaveValue('https://a.test');
+    expect(saveButton('Network (advanced)')).toBeNull();
+    expect(network.getByRole('switch', { name: 'TRUST_PROXY_HEADERS' })).toBeChecked();
+    expect(network.getByText('1 unsaved change')).toBeVisible();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it("is found by its category's name, not by its own title", async () => {
+    await renderSplit(makeConfig());
+
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'network' } });
+    expect(section('Network')).toBeInTheDocument();
+    expect(section('Network (advanced)')).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'advanced' } });
+    expect(screen.queryByRole('region', { name: 'Network (advanced)' })).toBeNull();
+  });
+
+  it("shows a live group's status once, with the first section that holds its keys", async () => {
+    const base = alertConfig();
+    await renderSplit(
+      {
+        ...base,
+        entries: [
+          ...base.entries.map((item) =>
+            item.category === 'alerts' && item.secret ? { ...item, group: 'alerts.runtime' } : item,
+          ),
+          entry({
+            key: 'FAILED_REQUEST_ALERT_THRESHOLD',
+            category: 'alerts',
+            type: 'int',
+            value: 200,
+            group: 'alerts.runtime',
+          }),
+        ],
+      },
+      ALERTS_SPLIT,
+      'Alerts (advanced)',
+    );
+
+    const statuses = screen.getAllByRole('region', { name: 'Applied configuration' });
+    expect(statuses).toHaveLength(1);
+    expect(section('Alerts')).toContainElement(statuses[0]);
+    // The channel stays with the rest of the category; the threshold is the split's.
+    expect(
+      within(section('Alerts')).getByRole('combobox', { name: 'Notification channel' }),
+    ).toBeInTheDocument();
+    expect(
+      within(section('Alerts (advanced)')).getByLabelText('FAILED_REQUEST_ALERT_THRESHOLD'),
+    ).toHaveValue(200);
   });
 });
 

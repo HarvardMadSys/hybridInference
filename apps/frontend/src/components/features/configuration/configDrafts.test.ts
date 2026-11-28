@@ -7,6 +7,7 @@ import {
   appliesNow,
   buildPatch,
   canMarkSecret,
+  categoryOf,
   draftError,
   errorForKey,
   groupEntries,
@@ -16,8 +17,11 @@ import {
   looksSecret,
   matchesQuery,
   matchingChoice,
+  sectionOf,
   settleDraft,
+  splitGroups,
   withoutMootDrafts,
+  type ConfigSectionSplit,
 } from './configDrafts';
 
 function entry(overrides: Partial<ConfigEntry>): ConfigEntry {
@@ -268,6 +272,86 @@ describe('grouping and search', () => {
       ['Security', ['JWT_SECRET_KEY']],
       ['Future', ['MYSTERY']],
     ]);
+  });
+
+  describe('a section split from its category', () => {
+    const tuning: ConfigSectionSplit = {
+      id: 'routing:advanced',
+      category: 'routing',
+      keys: new Set(['REQUEST_TIMEOUT_SECONDS', 'CIRCUIT_FAILURE_THRESHOLD', 'GONE_FROM_BACKEND']),
+      label: (categoryLabel) => `${categoryLabel} (advanced)`,
+    };
+    const groups = groupEntries(
+      [
+        { id: 'providers', label: 'Providers', description: 'Keys.' },
+        { id: 'routing', label: 'Routing', description: 'Route selection.' },
+      ],
+      [
+        entry({ key: 'ZAI_API_KEY', category: 'providers' }),
+        entry({ key: 'ENABLE_ROUTEWISE', category: 'routing' }),
+        entry({ key: 'REQUEST_TIMEOUT_SECONDS', category: 'routing' }),
+        // Added by a later backend, and named by no split.
+        entry({ key: 'ROUTING_NEW_SWITCH', category: 'routing' }),
+        entry({ key: 'CIRCUIT_FAILURE_THRESHOLD', category: 'routing' }),
+      ],
+    );
+
+    it('takes its settings into a group of their own, right after the rest of the category', () => {
+      const split = splitGroups(groups, [tuning]);
+
+      expect(
+        split.map((group) => [group.id, group.label, group.entries.map((e) => e.key)]),
+      ).toEqual([
+        ['providers', 'Providers', ['ZAI_API_KEY']],
+        ['routing', 'Routing', ['ENABLE_ROUTEWISE', 'ROUTING_NEW_SWITCH']],
+        [
+          'routing:advanced',
+          'Routing (advanced)',
+          ['REQUEST_TIMEOUT_SECONDS', 'CIRCUIT_FAILURE_THRESHOLD'],
+        ],
+      ]);
+      expect(split[2].description).toBe('Route selection.');
+      expect(split.map(categoryOf)).toEqual(['providers', 'routing', 'routing']);
+      // The category's own group is not marked as split.
+      expect(split[1].category).toBeUndefined();
+      expect(split[2].category).toEqual({ id: 'routing', label: 'Routing' });
+    });
+
+    it('says which group a setting is edited in', () => {
+      expect(sectionOf({ key: 'REQUEST_TIMEOUT_SECONDS', category: 'routing' }, [tuning])).toBe(
+        'routing:advanced',
+      );
+      // A setting the split does not name stays with its category, a new one included.
+      expect(sectionOf({ key: 'ROUTING_NEW_SWITCH', category: 'routing' }, [tuning])).toBe(
+        'routing',
+      );
+      // A key the split names, but in another category, is not taken.
+      expect(sectionOf({ key: 'REQUEST_TIMEOUT_SECONDS', category: 'batch' }, [tuning])).toBe(
+        'batch',
+      );
+      expect(sectionOf({ key: 'ZAI_API_KEY', category: 'providers' }, [])).toBe('providers');
+    });
+
+    it('drops a group left with nothing, and changes nothing without a split', () => {
+      const allTuning: ConfigSectionSplit = {
+        ...tuning,
+        keys: new Set(['ENABLE_ROUTEWISE', 'REQUEST_TIMEOUT_SECONDS', 'ROUTING_NEW_SWITCH']),
+      };
+      const onlyTuning = splitGroups(
+        groups
+          .filter((group) => group.id === 'routing')
+          .map((group) => ({
+            ...group,
+            entries: group.entries.filter((e) => e.key !== 'CIRCUIT_FAILURE_THRESHOLD'),
+          })),
+        [allTuning],
+      );
+      expect(onlyTuning.map((group) => group.id)).toEqual(['routing:advanced']);
+
+      const none = splitGroups(groups, [{ ...tuning, keys: new Set(['NOT_THERE']) }]);
+      expect(none.map((group) => group.id)).toEqual(['providers', 'routing']);
+      expect(splitGroups(groups, [])).toEqual(groups);
+    });
   });
 
   it('matches the name, description, category and models', () => {

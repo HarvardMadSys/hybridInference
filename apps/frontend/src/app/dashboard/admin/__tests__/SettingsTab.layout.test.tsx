@@ -58,9 +58,12 @@ function webhook(key: string): ConfigEntry {
 }
 
 /**
- * One setting or more in each category a sub-tab names, and one in a category
- * none names. Some are usually set once, in a category with others or alone.
- * The model catalog's category is Routing → Models', which this page leaves out.
+ * One setting or more in each category a tab names, and one in a category
+ * none names. Where a category is split, it has a setting at the top and one
+ * under Advanced (`ADVANCED_SETTINGS`), and some are usually set once. The
+ * keys the layout does not name (`SESSION_HOURS`, `FUTURE_KNOB`) stay at the
+ * top. The model catalog's category is Routing → Models', which this page
+ * leaves out.
  */
 const CONFIG: ConfigResponse = {
   categories: [
@@ -98,8 +101,10 @@ const CONFIG: ConfigResponse = {
     entry({ key: 'SITE_NAME', category: 'general', value: 'Gateway', one_time: true }),
     entry({ key: 'LOG_LEVEL', category: 'general', value: 'INFO' }),
     entry({ key: 'COOKIE_DOMAIN', category: 'security', one_time: true }),
+    entry({ key: 'LOGIN_RATE_LIMIT_PER_15MIN', category: 'security', type: 'int', value: 20 }),
     entry({ key: 'SESSION_HOURS', category: 'security', type: 'int', value: 12 }),
     entry({ key: 'SIGNUP_NOTIFY_EMAILS', category: 'signup', value: 'ops@example.test' }),
+    entry({ key: 'SIGNUP_RATE_LIMIT_PER_HOUR', category: 'signup', type: 'int', value: 10 }),
     entry({
       key: 'SMTP_HOST',
       category: 'email',
@@ -128,19 +133,41 @@ const CONFIG: ConfigResponse = {
       source: 'default',
       used_by: ['glm-4.6'],
     }),
-    entry({ key: 'ROUTE_TIMEOUT', category: 'routing', type: 'int', value: 30 }),
+    entry({
+      key: 'CHUTES_BASE_URL',
+      category: 'providers',
+      value: 'https://llm.chutes.ai/v1',
+      one_time: true,
+    }),
+    entry({ key: 'ENABLE_ROUTEWISE', category: 'routing', type: 'bool', value: false }),
+    entry({ key: 'REQUEST_TIMEOUT_SECONDS', category: 'routing', type: 'float', value: 120 }),
     entry({ key: 'BATCH_RETENTION_DAYS', category: 'batch', type: 'int', value: 7 }),
+    entry({ key: 'BATCH_MAX_REQUESTS', category: 'batch', type: 'int', value: 50000 }),
     entry({ key: 'ALERTS_ENABLED', category: 'alerts', type: 'bool', value: true }),
     webhook('SLACK_ALERTS_WEBHOOK_URL'),
     webhook('WECOM_ALERTS_WEBHOOK_URL'),
     webhook('SLACK_WEBHOOK_URL'),
     entry({ key: 'DEPLOYMENT_ENV', category: 'alerts', value: 'staging', one_time: true }),
+    entry({
+      key: 'FAILED_REQUEST_ALERT_THRESHOLD',
+      category: 'alerts',
+      type: 'int',
+      value: 200,
+    }),
     entry({ key: 'FUTURE_KNOB', category: 'future', value: 'x' }),
   ],
   missing: ['SMTP_HOST', 'ZAI_API_KEY'],
   pending_restart: [],
   restart_supported: true,
 };
+
+/** CONFIG, with `key` changed as `overrides` say. */
+function configWith(key: string, overrides: Partial<ConfigEntry>): ConfigResponse {
+  return {
+    ...CONFIG,
+    entries: CONFIG.entries.map((item) => (item.key === key ? { ...item, ...overrides } : item)),
+  };
+}
 
 function runtime(key: string, value: boolean | number): RuntimeSettingItem {
   return {
@@ -205,6 +232,7 @@ import { getConfig, patchConfig } from '@/lib/api/config';
 import {
   listModelConcurrency,
   listModelVisibility,
+  listProviderRoutes,
   listRuntimeSettings,
   updateRuntimeSetting,
 } from '@/lib/api/admin';
@@ -227,7 +255,7 @@ function expectTabs(names: string[]) {
 /** The sections of the sub-tab on screen, top to bottom. */
 function sectionsShown() {
   return within(screen.getByRole('tabpanel'))
-    .getAllByRole('region')
+    .queryAllByRole('region')
     .map((region) => region.getAttribute('aria-labelledby'))
     .map((id) => document.getElementById(id!)?.textContent);
 }
@@ -239,6 +267,18 @@ function rowsOf(category: string) {
       .getByRole('region', { name: category })
       .querySelectorAll<HTMLElement>('[data-config-key], h3'),
   ).map((row) => row.dataset.configKey ?? row.textContent);
+}
+
+/** The Advanced toggle of the tab on screen. */
+function advancedToggle() {
+  return screen.getByRole('button', { name: 'Advanced settings' });
+}
+
+/** Open the Advanced of the tab on screen. */
+function openAdvanced() {
+  const toggle = advancedToggle();
+  if (toggle.getAttribute('aria-expanded') !== 'true') fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
 }
 
 /** Render, and wait for the runtime settings, which arrive after the configuration. */
@@ -266,6 +306,13 @@ describe('Settings section links', () => {
       delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
     }
   });
+
+  /** The link was followed: the page scrolled once, to `target`. */
+  async function expectScrolledTo(target: () => HTMLElement) {
+    await waitFor(() => expect(scrollIntoView).toHaveBeenCalled());
+    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
+    expect(scrollIntoView.mock.contexts[0]).toBe(target());
+  }
 
   it.each(['configuration', 'runtime settings'] as const)(
     'waits for both reads when %s arrives first, then scrolls only once',
@@ -302,6 +349,7 @@ describe('Settings section links', () => {
         (first === 'configuration' ? finishRuntime : finishConfig)();
       });
 
+      // Analytics is under the Advanced of Operations: the link opened both.
       const section = screen.getByRole('region', { name: 'Analytics' });
       expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
       expect(scrollIntoView.mock.contexts[0]).toBe(section);
@@ -330,28 +378,70 @@ describe('Settings section links', () => {
     expect(scrollIntoView).not.toHaveBeenCalled();
   });
 
-  it('opens the tab that holds a linked section, then scrolls to it', async () => {
+  it('opens the tab that holds a linked section, and its Advanced, then scrolls to it', async () => {
     window.history.replaceState(null, '', '/dashboard/admin/settings#settings-analytics');
     await renderLoaded();
+
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Analytics' }));
     expect(screen.getByRole('tab', { name: 'Operations' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
-    const section = screen.getByRole('region', { name: 'Analytics' });
-    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
-    expect(scrollIntoView.mock.contexts[0]).toBe(section);
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('keeps the hash when the linked section is on the default tab', async () => {
     window.history.replaceState(null, '', '/dashboard/admin/settings#settings-quotas');
     await renderLoaded(undefined, { initialTab: 'operations' });
+
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Daily Quotas' }));
     expect(screen.getByRole('tab', { name: 'Access & Limits' })).toHaveAttribute(
       'aria-selected',
       'true',
     );
-    const section = screen.getByRole('region', { name: 'Daily Quotas' });
-    expect(scrollIntoView).toHaveBeenCalledExactlyOnceWith({ block: 'start' });
-    expect(scrollIntoView.mock.contexts[0]).toBe(section);
+    // A section at the top opens nothing more.
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it.each([
+    // A setting by its key, the configuration's and a runtime one's.
+    [
+      'REQUEST_TIMEOUT_SECONDS',
+      'Providers & Routing',
+      '[data-config-key="REQUEST_TIMEOUT_SECONDS"]',
+    ],
+    ['log_full_payload', 'Operations', '[data-runtime-key="log_full_payload"]'],
+    // A whole category's section, by its anchor.
+    ['config-application', 'Site & Setup', '#config-application'],
+  ])('opens Advanced for a link to %s under it, and scrolls there', async (hash, tab, selector) => {
+    window.history.replaceState(null, '', `/dashboard/admin/settings#${hash}`);
+    await renderLoaded();
+
+    await expectScrolledTo(() => document.querySelector<HTMLElement>(selector)!);
+    expect(screen.getByRole('tab', { name: new RegExp(`^${tab}`) })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(document.querySelector(selector)).toBeVisible();
+  });
+
+  it('follows a link to a section under Advanced once the page is open', async () => {
+    window.history.replaceState(null, '', '/dashboard/admin/settings');
+    await renderLoaded();
+    expect(scrollIntoView).not.toHaveBeenCalled();
+
+    act(() => {
+      window.history.replaceState(null, '', '/dashboard/admin/settings#settings-logging');
+      window.dispatchEvent(new HashChangeEvent('hashchange'));
+    });
+
+    await expectScrolledTo(() => screen.getByRole('region', { name: 'Request Logging' }));
+    expect(screen.getByRole('tab', { name: 'Operations' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
   });
 });
 
@@ -375,51 +465,7 @@ describe('Admin → Settings sub-tabs', () => {
     expect(screen.getByText('2 required settings missing')).toBeVisible();
     expect(screen.getByText('No unsaved changes')).toBeVisible();
 
-    const expected: Record<string, (string | undefined)[]> = {
-      // The switches changed most often sit with the sign-up configuration of
-      // the same topic: one tab answers who may use the gateway, and how much.
-      'Access & Limits': [
-        'Access Controls',
-        'Per-User Concurrency',
-        'Daily Quotas',
-        'Signup Policy',
-        'Sign-up',
-        'Security',
-      ],
-      'Providers & Routing': ['Providers', 'Routing', 'Request Handling'],
-      Operations: [
-        'Alert Notifications',
-        'Alert Types',
-        'Alerts',
-        'Batch inference',
-        'Batch Concurrency',
-        'Request Logging',
-        'Analytics',
-        'Other Runtime Settings',
-      ],
-      // A category no tab names still has a place; the catalog's is not one.
-      // Backup & restore closes the tab instead of taking one of its own.
-      'Site & Setup': [
-        'General',
-        'Email',
-        'Network',
-        'Application',
-        'Usage Insights',
-        'Future things',
-        'Backup & Restore',
-      ],
-    };
-    for (const [tab, sections] of Object.entries(expected)) {
-      await openSettingsTab(new RegExp(`^${tab.replace(/[&]/g, '\\$&')}`));
-      expect(sectionsShown(), tab).toEqual(sections);
-    }
-
-    // RouteWise sits on Providers & Routing; with no RouteWise model it shows its empty state.
-    await openSettingsTab(/^Providers & Routing/);
-    expect(await screen.findByText('No RouteWise models available.')).toBeVisible();
-
     // Each runtime setting is in its topic's group.
-    await openSettingsTab(/^Access & Limits/);
     expect(
       within(screen.getByRole('region', { name: 'Daily Quotas' })).getByRole('button', {
         name: 'Apply to existing users',
@@ -430,6 +476,185 @@ describe('Admin → Settings sub-tabs', () => {
         'user_concurrency_free value',
       ),
     ).toBeInTheDocument();
+  });
+
+  it.each([
+    [
+      // The switches changed most often sit with the sign-up configuration of
+      // the same topic: one tab answers who may use the gateway, and how much.
+      'Access & Limits',
+      [
+        'Access Controls',
+        'Per-User Concurrency',
+        'Daily Quotas',
+        'Signup Policy',
+        'Sign-up',
+        'Security',
+      ],
+      ['Sign-up (advanced)', 'Security (advanced)'],
+    ],
+    [
+      'Providers & Routing',
+      ['Providers', 'Routing', 'Request Handling'],
+      // RouteWise, with no RouteWise model, shows its empty state: no section of its own.
+      ['Providers (advanced)', 'Routing (advanced)'],
+    ],
+    [
+      'Operations',
+      [
+        'Alert Notifications',
+        'Alert Types',
+        'Alerts',
+        'Batch inference',
+        'Batch Concurrency',
+        'Other Runtime Settings',
+      ],
+      ['Alerts (advanced)', 'Batch inference (advanced)', 'Request Logging', 'Analytics'],
+    ],
+    [
+      // A category no tab names still has a place, at the top; the catalog's
+      // is not one. Backup & restore closes the everyday part of the tab.
+      'Site & Setup',
+      ['General', 'Email', 'Future things', 'Backup & Restore'],
+      ['General (advanced)', 'Network', 'Application', 'Usage Insights'],
+    ],
+  ])(
+    'opens %s on what is commonly changed, and keeps the rest under Advanced, collapsed',
+    async (tab, top, advanced) => {
+      await renderLoaded(new RegExp(`^${tab}`));
+
+      expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+      expect(sectionsShown()).toEqual(top);
+      openAdvanced();
+      expect(sectionsShown()).toEqual([...top, ...advanced]);
+    },
+  );
+
+  it('keeps Advanced collapsed until it is opened, says what it holds, and loads RouteWise only then', async () => {
+    await renderLoaded('Providers & Routing, 1 missing');
+
+    const toggle = advancedToggle();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByText(/^The defaults offered for new routes/)).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Routing (advanced)' })).not.toBeInTheDocument();
+    // Concealed, not removed: the browser's find in page still looks in it.
+    const timeout = document.querySelector('[data-config-key="REQUEST_TIMEOUT_SECONDS"]');
+    expect(timeout).not.toBeVisible();
+    expect(timeout?.closest('[hidden]')).toHaveAttribute('hidden', 'until-found');
+    // RouteWise reads nothing while its section is not on screen.
+    expect(listProviderRoutes).not.toHaveBeenCalled();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    expect(
+      within(screen.getByRole('region', { name: 'Routing (advanced)' })).getByLabelText(
+        'REQUEST_TIMEOUT_SECONDS',
+      ),
+    ).toHaveValue(120);
+    expect(await screen.findByText('No RouteWise models available.')).toBeVisible();
+    expect(listProviderRoutes).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByRole('region', { name: 'Routing (advanced)' })).not.toBeInTheDocument();
+    expect(screen.getByText('No RouteWise models available.')).not.toBeVisible();
+
+    // Each tab has its own Advanced, collapsed until it is opened.
+    await openSettingsTab('Operations');
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  it('keeps a section with an unsaved change on screen under a collapsed Advanced, with its change', async () => {
+    await renderLoaded('Providers & Routing, 1 missing');
+    openAdvanced();
+    fireEvent.change(screen.getByLabelText('REQUEST_TIMEOUT_SECONDS'), {
+      target: { value: '90' },
+    });
+
+    fireEvent.click(advancedToggle());
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+    const routing = screen.getByRole('region', { name: 'Routing (advanced)' });
+    expect(within(routing).getByLabelText('REQUEST_TIMEOUT_SECONDS')).toHaveValue(90);
+    expect(within(routing).getByText('1 unsaved change')).toBeVisible();
+    expect(screen.getByText(/stays on screen\.$/)).toBeVisible();
+    // The sections with nothing to do are concealed again.
+    expect(screen.queryByRole('region', { name: 'Providers (advanced)' })).not.toBeInTheDocument();
+    expect(
+      screen.getByRole('tab', { name: 'Providers & Routing, unsaved changes, 1 missing' }),
+    ).toBeInTheDocument();
+
+    // Another tab and back: the change is still there, and so is its section.
+    await openSettingsTab('Operations');
+    await openSettingsTab(/^Providers & Routing/);
+    expect(screen.getByLabelText('REQUEST_TIMEOUT_SECONDS')).toHaveValue(90);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to Routing (advanced)' }));
+    expect(screen.queryByRole('region', { name: 'Routing (advanced)' })).not.toBeInTheDocument();
+    expect(screen.queryByText(/stays on screen\.$/)).not.toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps a runtime group with an unsaved change on screen under a collapsed Advanced', async () => {
+    await renderLoaded('Operations');
+    openAdvanced();
+    fireEvent.click(screen.getByRole('switch', { name: 'Toggle log full payload' }));
+    fireEvent.click(advancedToggle());
+    expect(screen.getByRole('switch', { name: 'Toggle log full payload' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('region', { name: 'Request Logging' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Analytics' })).not.toBeInTheDocument();
+    expect(patchConfig).not.toHaveBeenCalled();
+    expect(updateRuntimeSetting).not.toHaveBeenCalled();
+  });
+
+  it('keeps a section under Advanced on screen while a required value is missing', async () => {
+    vi.mocked(getConfig).mockResolvedValueOnce({
+      ...configWith('COOKIE_DOMAIN', {
+        required: true,
+        missing: true,
+        is_set: false,
+        value: null,
+        source: 'default',
+      }),
+      missing: ['SMTP_HOST', 'ZAI_API_KEY', 'COOKIE_DOMAIN'],
+    });
+    await renderLoaded();
+
+    expect(screen.getByRole('tab', { name: 'Access & Limits, 1 missing' })).toBeInTheDocument();
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+    expect(rowsOf('Security (advanced)')).toEqual([
+      'LOGIN_RATE_LIMIT_PER_15MIN',
+      'Usually set once',
+      'COOKIE_DOMAIN',
+    ]);
+    expect(screen.queryByRole('region', { name: 'Sign-up (advanced)' })).not.toBeInTheDocument();
+  });
+
+  it('keeps a section under Advanced on screen while a stored value is refused', async () => {
+    vi.mocked(getConfig).mockResolvedValueOnce(
+      configWith('BATCH_MAX_REQUESTS', { invalid: 'must be at least 1' }),
+    );
+    await renderLoaded('Operations');
+
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.getByRole('region', { name: 'Batch inference (advanced)' })).toBeVisible();
+    expect(screen.queryByRole('region', { name: 'Alerts (advanced)' })).not.toBeInTheDocument();
+  });
+
+  it('opens Advanced when the browser finds a match in it', async () => {
+    await renderLoaded('Operations');
+    const concealed = document.getElementById('settings-analytics')!.closest('[hidden]')!;
+    expect(concealed).toHaveAttribute('hidden', 'until-found');
+
+    act(() => {
+      concealed.dispatchEvent(new Event('beforematch'));
+    });
+
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByRole('region', { name: 'Analytics' })).toBeVisible();
+    expect(concealed).not.toHaveAttribute('hidden');
   });
 
   it('leaves the model configuration to Routing → Models: not listed, searched or read', async () => {
@@ -444,8 +669,10 @@ describe('Admin → Settings sub-tabs', () => {
     expect(listModelVisibility).not.toHaveBeenCalled();
     expect(listModelConcurrency).not.toHaveBeenCalled();
 
-    // Site & Setup keeps the other documents; Providers & Routing says where the catalog went.
+    // Site & Setup keeps the other documents, under Advanced; Providers &
+    // Routing says where the catalog went.
     await openSettingsTab(/^Site & Setup/);
+    openAdvanced();
     expect(rowsOf('Application')).toEqual(['SITE_BRANDING']);
     await openSettingsTab(/^Providers & Routing/);
     expect(screen.getByText(/The model catalog itself is under Routing → Models\.$/)).toBeVisible();
@@ -461,53 +688,82 @@ describe('Admin → Settings sub-tabs', () => {
     ['analytics_users_and_requests_enabled', 'Users and Requests', true],
     ['analytics_performance_metrics_enabled', 'Performance Metrics', true],
     ['analytics_growth_rate_enabled', 'Growth Rate', false],
-  ] as const)('saves the independent %s switch from Operations', async (key, label, initial) => {
-    await renderLoaded();
-    await openSettingsTab('Operations');
-    const analytics = within(screen.getByRole('region', { name: 'Analytics' }));
-    const toggle = analytics.getByRole('switch', { name: `Toggle ${label}` });
-    expect(analytics.getByText(label)).toBeVisible();
-    expect(analytics.getAllByRole('switch')).toHaveLength(4);
-    expect(toggle).toHaveAttribute('aria-checked', String(initial));
+  ] as const)(
+    'saves the independent %s switch from the Advanced of Operations',
+    async (key, label, initial) => {
+      await renderLoaded();
+      await openSettingsTab('Operations');
+      openAdvanced();
+      const analytics = within(screen.getByRole('region', { name: 'Analytics' }));
+      const toggle = analytics.getByRole('switch', { name: `Toggle ${label}` });
+      expect(analytics.getByText(label)).toBeVisible();
+      expect(analytics.getAllByRole('switch')).toHaveLength(4);
+      expect(toggle).toHaveAttribute('aria-checked', String(initial));
 
-    vi.mocked(updateRuntimeSetting).mockImplementation(async (settingKey, value) => ({
-      ...runtime(settingKey, value as boolean),
-      default_value: initial,
-    }));
-    for (const [index, enabled] of [!initial, initial].entries()) {
-      fireEvent.click(toggle);
-      expect(updateRuntimeSetting).toHaveBeenCalledTimes(index);
-      fireEvent.click(analytics.getByRole('button', { name: 'Save changes to Analytics' }));
-      await waitFor(() => expect(updateRuntimeSetting).toHaveBeenLastCalledWith(key, enabled));
-      await waitFor(() =>
-        expect(
-          analytics.queryByRole('button', { name: 'Save changes to Analytics' }),
-        ).not.toBeInTheDocument(),
-      );
-      expect(toggle).toHaveAttribute('aria-checked', String(enabled));
-    }
-  });
+      vi.mocked(updateRuntimeSetting).mockImplementation(async (settingKey, value) => ({
+        ...runtime(settingKey, value as boolean),
+        default_value: initial,
+      }));
+      for (const [index, enabled] of [!initial, initial].entries()) {
+        fireEvent.click(toggle);
+        expect(updateRuntimeSetting).toHaveBeenCalledTimes(index);
+        fireEvent.click(analytics.getByRole('button', { name: 'Save changes to Analytics' }));
+        await waitFor(() => expect(updateRuntimeSetting).toHaveBeenLastCalledWith(key, enabled));
+        await waitFor(() =>
+          expect(
+            analytics.queryByRole('button', { name: 'Save changes to Analytics' }),
+          ).not.toBeInTheDocument(),
+        );
+        expect(toggle).toHaveAttribute('aria-checked', String(enabled));
+      }
+    },
+  );
 
-  it('lists the settings usually set once after the others of their category', async () => {
-    await renderLoaded('Site & Setup, 1 missing');
-    expect(screen.getByText(/^Usually set once, when the gateway is deployed/)).toBeVisible();
-    expect(rowsOf('General')).toEqual(['LOG_LEVEL', 'Usually set once', 'SITE_NAME']);
-    // A category of nothing else needs no heading for them.
-    expect(rowsOf('Network')).toEqual(['TRUST_PROXY_HEADERS']);
-    expect(rowsOf('Email')).toEqual(['SMTP_HOST']);
+  it.each([
+    [
+      'Site & Setup',
+      // A section of nothing else needs no heading for them.
+      { General: ['SITE_NAME'], Email: ['SMTP_HOST'] },
+      { 'General (advanced)': ['LOG_LEVEL'], Network: ['TRUST_PROXY_HEADERS'] },
+    ],
+    [
+      'Access & Limits',
+      { Security: ['SESSION_HOURS'], 'Sign-up': ['SIGNUP_NOTIFY_EMAILS'] },
+      {
+        'Security (advanced)': ['LOGIN_RATE_LIMIT_PER_15MIN', 'Usually set once', 'COOKIE_DOMAIN'],
+      },
+    ],
+    [
+      'Operations',
+      // The alert channel goes with its webhooks, which are set once, at the top.
+      { Alerts: ['ALERTS_ENABLED', 'Usually set once'] },
+      {
+        'Alerts (advanced)': [
+          'FAILED_REQUEST_ALERT_THRESHOLD',
+          'Usually set once',
+          'DEPLOYMENT_ENV',
+        ],
+      },
+    ],
+  ])(
+    'lists the settings usually set once after the others of their section, on %s',
+    async (tab, top, advanced) => {
+      await renderLoaded(new RegExp(`^${tab}`));
+      for (const [section, rows] of Object.entries(top)) {
+        expect(rowsOf(section), section).toEqual(rows);
+      }
+      openAdvanced();
+      for (const [section, rows] of Object.entries(advanced)) {
+        expect(rowsOf(section), section).toEqual(rows);
+      }
+    },
+  );
 
-    await openSettingsTab(/^Access/);
-    expect(rowsOf('Security')).toEqual(['SESSION_HOURS', 'Usually set once', 'COOKIE_DOMAIN']);
-    expect(rowsOf('Sign-up')).toEqual(['SIGNUP_NOTIFY_EMAILS']);
-
-    // The alert channel goes with its webhooks, which are set once.
-    await openSettingsTab('Operations');
-    expect(rowsOf('Alerts')).toEqual(['ALERTS_ENABLED', 'Usually set once', 'DEPLOYMENT_ENV']);
+  it('puts the alert channel under the heading of what is set once', async () => {
+    await renderLoaded('Operations');
     const alerts = screen.getByRole('region', { name: 'Alerts' });
     const heading = within(alerts).getByRole('heading', { name: 'Usually set once' });
-    const channel = within(alerts).getByText('Notification channel');
-    expect(heading.compareDocumentPosition(channel)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
-    expect(channel.compareDocumentPosition(within(alerts).getByLabelText('DEPLOYMENT_ENV'))).toBe(
+    expect(heading.compareDocumentPosition(within(alerts).getByText('Notification channel'))).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING,
     );
   });
@@ -520,17 +776,22 @@ describe('Admin → Settings sub-tabs', () => {
         return rest;
       }),
     });
-    await renderLoaded('Site & Setup, 1 missing');
+    await renderLoaded('Operations');
 
-    expect(rowsOf('General')).toEqual(['SITE_NAME', 'LOG_LEVEL']);
-    await openSettingsTab('Operations');
-    expect(rowsOf('Alerts')).toEqual(['ALERTS_ENABLED', 'DEPLOYMENT_ENV']);
     const alerts = screen.getByRole('region', { name: 'Alerts' });
     expect(
       within(alerts)
         .getByText('Notification channel')
         .compareDocumentPosition(within(alerts).getByLabelText('ALERTS_ENABLED')),
     ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    openAdvanced();
+    expect(rowsOf('Alerts (advanced)')).toEqual([
+      'DEPLOYMENT_ENV',
+      'FAILED_REQUEST_ALERT_THRESHOLD',
+    ]);
+    await openSettingsTab(/^Access/);
+    openAdvanced();
+    expect(rowsOf('Security (advanced)')).toEqual(['COOKIE_DOMAIN', 'LOGIN_RATE_LIMIT_PER_15MIN']);
   });
 
   it('opens the sub-tab a link names, and puts the one chosen in the address', async () => {
@@ -545,8 +806,6 @@ describe('Admin → Settings sub-tabs', () => {
       'Alerts',
       'Batch inference',
       'Batch Concurrency',
-      'Request Logging',
-      'Analytics',
       'Other Runtime Settings',
     ]);
 
@@ -657,11 +916,41 @@ describe('Admin → Settings sub-tabs', () => {
       target: { value: 'concurrency' },
     });
     expect(screen.getByText(/1 setting matches, from every tab/)).toBeInTheDocument();
+    const concurrency = screen.getByRole('region', { name: 'Per-User Concurrency' });
+    expect(within(concurrency).getByLabelText('user_concurrency_free value')).toBeInTheDocument();
+    expect(concurrency).toHaveTextContent('Access & Limits');
+  });
+
+  it('finds settings under Advanced with a search, says where they live, and keeps a change made there', async () => {
+    await renderLoaded();
+
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'timeout' } });
+    expect(screen.getByText(/1 setting matches, from every tab/)).toBeInTheDocument();
+    // No toggle while a filter lists every tab: what matches under Advanced is listed with the rest.
+    expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
+    const routing = screen.getByRole('region', { name: 'Routing (advanced)' });
+    expect(routing).toHaveTextContent('Providers & Routing · Advanced');
+    expect(screen.queryByRole('region', { name: 'Routing' })).not.toBeInTheDocument();
+    fireEvent.change(within(routing).getByLabelText('REQUEST_TIMEOUT_SECONDS'), {
+      target: { value: '90' },
+    });
+
+    // A runtime setting under Advanced is found, and tagged, the same way.
+    fireEvent.change(screen.getByLabelText('Search settings'), { target: { value: 'payload' } });
+    const logging = screen.getByRole('region', { name: 'Request Logging' });
+    expect(logging).toHaveTextContent('Operations · Advanced');
+    expect(within(logging).getByRole('switch', { name: 'Toggle log full payload' })).toBeVisible();
+
+    // Cleared, the change waits under the collapsed Advanced, on screen.
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
+    await openSettingsTab(/^Providers & Routing/);
+    expect(advancedToggle()).toHaveAttribute('aria-expanded', 'false');
     expect(
-      within(screen.getByRole('region', { name: 'Per-User Concurrency' })).getByLabelText(
-        'user_concurrency_free value',
+      within(screen.getByRole('region', { name: 'Routing (advanced)' })).getByLabelText(
+        'REQUEST_TIMEOUT_SECONDS',
       ),
-    ).toBeInTheDocument();
+    ).toHaveValue(90);
+    expect(screen.queryByRole('region', { name: 'Providers (advanced)' })).not.toBeInTheDocument();
   });
 
   it('opens on what is missing, from every sub-tab, when linked that way', async () => {
@@ -697,7 +986,15 @@ describe('Admin → Settings sub-tabs', () => {
       'Daily Quotas',
       'Signup Policy',
     ]);
+    // Its Advanced holds only configuration: there is nothing to open.
+    expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Search settings')).not.toBeInTheDocument();
     await waitFor(() => expect(listRuntimeSettings).toHaveBeenCalledTimes(1));
+
+    // Site & Setup keeps its backup at the top, and Usage Insights under its Advanced.
+    await openSettingsTab('Site & Setup');
+    expect(sectionsShown()).toEqual(['Backup & Restore']);
+    openAdvanced();
+    expect(sectionsShown()).toEqual(['Backup & Restore', 'Usage Insights']);
   });
 });

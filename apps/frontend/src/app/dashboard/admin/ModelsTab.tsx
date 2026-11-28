@@ -23,8 +23,8 @@ const LINK = 'font-medium text-gray-700 underline hover:text-gray-900';
  * Admin → Routing → Models: the model catalog, and the runtime overrides
  * that apply on top of it without changing it -- the role each model requires,
  * and which models the per-user concurrency limit leaves out. A model's routes
- * and weights are on Routing → Routes; the other application documents on
- * Settings → Site & Setup.
+ * and weights are on Routing → Routes; the other application documents under
+ * the Advanced of Settings → Site & Setup.
  *
  * Each section saves on its own. The catalog is edited as on Settings: a save
  * asks for the administrator's password, and the notice above it offers the
@@ -69,8 +69,12 @@ export function ModelsTab() {
       {catalogOnSettings ? (
         <AdminNotice tone="warning">
           This backend lists the model catalog with the other application documents: edit it on{' '}
-          <Link href={`${ADMIN_SETTINGS_PATH}?tab=setup`} prefetch={false} className={LINK}>
-            Settings → Site & Setup
+          <Link
+            href={`${ADMIN_SETTINGS_PATH}?tab=setup#config-application`}
+            prefetch={false}
+            className={LINK}
+          >
+            Settings → Site & Setup → Advanced
           </Link>
           .
         </AdminNotice>

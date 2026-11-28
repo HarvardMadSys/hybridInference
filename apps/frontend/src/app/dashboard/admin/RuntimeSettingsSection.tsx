@@ -145,6 +145,7 @@ export function RuntimeSettingsSection({
   id,
   title,
   description,
+  tag,
   settings,
   loading,
   onSaved,
@@ -158,6 +159,8 @@ export function RuntimeSettingsSection({
   id: string;
   title: string;
   description: string;
+  /** Shown beside the title: where the section lives, while a filter lists every tab's. */
+  tag?: React.ReactNode;
   settings: RuntimeSettingItem[];
   /** While searching: only these keys' rows are shown; the rest stay mounted, drafts intact. */
   visibleKeys?: ReadonlySet<string>;
@@ -330,7 +333,18 @@ export function RuntimeSettingsSection({
   if (!loading && settings.length === 0) return null;
 
   return (
-    <AdminSection id={id} title={title} description={description}>
+    <AdminSection
+      id={id}
+      title={title}
+      description={description}
+      badge={
+        tag ? (
+          <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[11px] font-medium text-gray-600">
+            {tag}
+          </span>
+        ) : undefined
+      }
+    >
       {loading ? (
         <AdminLoading size="sm" />
       ) : (
@@ -349,6 +363,8 @@ export function RuntimeSettingsSection({
             return (
               <li
                 key={setting.key}
+                // A link to `#<key>` lands on the setting.
+                data-runtime-key={setting.key}
                 className={`${visibleKeys && !visibleKeys.has(setting.key) ? 'hidden' : 'flex'} flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6`}
               >
                 <div className="min-w-0 flex-1">

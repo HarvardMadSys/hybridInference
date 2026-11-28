@@ -2571,8 +2571,8 @@ msgstr "`.ops.env`，从 `.ops.env.example` 复制"
 msgid "Application documents"
 msgstr "应用文档"
 
-msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
-msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Site & Setup → Advanced settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Site & Setup → Advanced settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
 #: ../developer/configuration.md
 msgid "Admin shows each document as fields, one per value, named by its path, such as `models[0].route[0].base_url`. Each field is a plain string. A number or `true`/`false` keeps its type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch the document to **JSON**. A save from the fields stores the whole document as indented JSON."
@@ -2793,5 +2793,5 @@ msgid "A provider's Base URL may name any host, private and loopback ones includ
 msgstr "供应商的 Base URL 可以指向任何主机，包括私网和回环地址，以便接入自建推理引擎（vLLM、SGLang、Ollama）。云实例元数据地址无论以何种写法出现都会被拒绝：嵌入在 IPv6 中的 IPv4（IPv4 兼容、NAT64、6to4 等）按其实际到达的 IPv4 地址判断。探测失败时，只有当上游以 OpenAI 错误格式应答，才会显示上游的错误信息；其他响应体、重定向目标和连接细节均不显示。"
 
 #: ../developer/configuration.md
-msgid "A deployment whose gateway must not reach its own network can set `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses. This is checked when the URL is validated and again for every connection the probe opens. Routes saved earlier keep serving: the switch governs what Admin accepts and probes, not existing inference traffic. Restrict the gateway's egress at the network layer as well."
-msgstr "如果部署要求网关不能访问自身所在网络，可以设置 `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（Settings → Network）。此后在 Admin 中保存或探测的 Base URL，以及模型队列状态地址，都必须解析到公网地址。校验 URL 时检查一次，探测建立的每个连接再检查一次。之前保存的路由继续服务：该开关只约束 Admin 接受和探测的地址，不影响已有的推理流量。同时也请在网络层限制网关的出站流量。"
+msgid "A deployment whose gateway must not reach its own network can set `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Site & Setup → Advanced settings → Network). Base URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses. This is checked when the URL is validated and again for every connection the probe opens. Routes saved earlier keep serving: the switch governs what Admin accepts and probes, not existing inference traffic. Restrict the gateway's egress at the network layer as well."
+msgstr "如果部署要求网关不能访问自身所在网络，可以设置 `ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0`（Settings → Site & Setup → Advanced settings → Network）。此后在 Admin 中保存或探测的 Base URL，以及模型队列状态地址，都必须解析到公网地址。校验 URL 时检查一次，探测建立的每个连接再检查一次。之前保存的路由继续服务：该开关只约束 Admin 接受和探测的地址，不影响已有的推理流量。同时也请在网络层限制网关的出站流量。"

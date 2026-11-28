@@ -16,7 +16,7 @@ are not supported yet.
    `<FRONTEND_URL>/auth/sso/<id>/callback`, where `<id>` is the short name you
    will give the provider below. Note the client id and the client secret.
 2. **Describe the provider** in the `SSO_PROVIDERS` setting, under
-   **Admin → Settings → Application**:
+   **Admin → Settings → Site & Setup → Advanced settings → Application**:
 
    ```json
    {
@@ -34,8 +34,9 @@ are not supported yet.
 
    `client_secret` names a secret setting. It never holds the secret itself.
 3. **Store the client secret.** Saving the provider adds the setting it names,
-   here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under **Admin → Settings → Access**,
-   in the **Security** section. Enter the secret there.
+   here `SSO_EXAMPLE_UNIV_CLIENT_SECRET`, under
+   **Admin → Settings → Access & Limits**, in the **Security** section. Enter
+   the secret there.
 4. **Restart the gateway.** The secret setting is marked **Restart required**:
    the gateway reads it when it starts.
 5. **Check `FRONTEND_URL`.** It must be the address users open the console at.

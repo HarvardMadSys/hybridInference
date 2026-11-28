@@ -22,8 +22,9 @@ configuration paths.
 ### Application documents
 
 **Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime
-role and concurrency overrides beside it; **Admin → Settings → Application**
-edits the other documents. All of them are validated JSON and use the same conditional
+role and concurrency overrides beside it;
+**Admin → Settings → Site & Setup → Advanced settings → Application** edits the
+other documents. All of them are validated JSON and use the same conditional
 saves, audit, security confirmation and backup controls as other settings. No
 JSON file is a runtime fallback either.
 
@@ -228,8 +229,9 @@ only when the upstream answered in the OpenAI error format. Other response
 bodies, redirect targets and connection details are not shown.
 
 A deployment whose gateway must not reach its own network can set
-`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs
-saved or probed in Admin, and the model queue status address, must then
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Site & Setup → Advanced
+settings → Network). Base URLs saved or probed in Admin, and the model queue
+status address, must then
 resolve to public addresses. This is checked when the URL is validated and
 again for every connection the probe opens. Routes saved earlier keep serving:
 the switch governs what Admin accepts and probes, not existing inference

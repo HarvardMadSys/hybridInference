@@ -312,11 +312,12 @@ msgstr ""
 
 #: ../developer/hpc-model-host.md:224
 msgid ""
-"`MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers) is the address as"
-" the gateway's backend reaches it, for example "
-"`http://host.docker.internal:8010/status`."
+"`MODEL_QUEUE_STATUS_URL` (Admin → Settings → Providers & Routing → "
+"Advanced settings) is the address as the gateway's backend reaches it, "
+"for example `http://host.docker.internal:8010/status`."
 msgstr ""
-"`MODEL_QUEUE_STATUS_URL`（Admin → Settings → Providers）是网关后端访问该状态的地址，例如 "
+"`MODEL_QUEUE_STATUS_URL`（Admin → Settings → Providers & Routing → "
+"Advanced settings）是网关后端访问该状态的地址，例如 "
 "`http://host.docker.internal:8010/status`。"
 
 #: ../developer/hpc-model-host.md:227
