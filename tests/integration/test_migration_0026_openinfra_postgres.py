@@ -1,4 +1,4 @@
-"""``0025_openinfra``: the OpenInfra metrics tables."""
+"""``0026_openinfra``: the OpenInfra metrics tables."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from tests.fixtures import migrations as mig
 
 pytestmark = [pytest.mark.integration, pytest.mark.dbtest]
 
-REVISION = "0025_openinfra"
+REVISION = "0026_openinfra"
 
 TABLES = {
     "openinfra_nodes",
@@ -34,7 +34,7 @@ async def scratch():
 
 
 async def test_the_tables_arrive_empty(scratch):
-    await mig.upgrade(scratch, "0024_removed_provider_env_keys")
+    await mig.upgrade(scratch, "0025_service_accounts")
     async with mig.connected(scratch) as conn:
         before = await conn.fetchval(
             "SELECT COUNT(*) FROM pg_tables WHERE tablename LIKE 'openinfra%'"

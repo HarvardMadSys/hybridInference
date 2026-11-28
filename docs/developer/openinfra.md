@@ -38,7 +38,7 @@ browser ──/openinfra──▶ console page ──GET /public-openinfra, /pub
 
 ## Turning it on
 
-1. **Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Setup,
+1. **Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Site & Setup,
    Integrations) to a long random string, for example the output of
    `openssl rand -hex 32`. While it is empty, `POST /internal/openinfra/ingest`
    answers `404` and nothing is collected.
@@ -188,7 +188,7 @@ JSON attachment, published or not.
 
 ## Storage
 
-The snapshots are kept in the `openinfra_*` tables (revision `0025_openinfra`):
+The snapshots are kept in the `openinfra_*` tables (revision `0026_openinfra`):
 
 - **Live rows**, one per host, GPU and engine, overwritten by every snapshot.
   A snapshot marks a GPU degraded at 85 °C or with ECC errors, and an engine

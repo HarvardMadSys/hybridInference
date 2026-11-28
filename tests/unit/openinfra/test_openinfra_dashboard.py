@@ -86,7 +86,7 @@ def test_settings(monkeypatch):
 
 
 def test_the_field_lists_match_the_tables_the_migration_created():
-    migration = importlib.import_module("migrations.versions.0025_openinfra")
+    migration = importlib.import_module("migrations.versions.0026_openinfra")
     assert fields.CPU_FIELDS == migration._CPU
     assert fields.ENGINE_METRICS == migration._ENGINE
     assert fields.GPU_SAMPLE_FIELDS == migration._GPU_SAMPLE

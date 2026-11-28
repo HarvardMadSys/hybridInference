@@ -37,6 +37,8 @@ export function useUsers(state: FilterState, limit = 100, offset = 0) {
         anomaly: state.anomaly ?? undefined,
         // A saved view stored before tags existed has no `tag`.
         tag: state.tag ?? undefined,
+        // A saved view stored before tiers existed has no `role`.
+        role: state.role ?? undefined,
       }),
     staleTime: THIRTY_S,
   });

@@ -1,7 +1,7 @@
 """The metric names the ingest body, the tables and the documents share.
 
 Each tuple is in column order. The tables were created with these names by
-revision ``0025_openinfra``, which keeps its own copy, as history must.
+revision ``0026_openinfra``, which keeps its own copy, as history must.
 """
 
 from __future__ import annotations

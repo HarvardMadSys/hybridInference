@@ -1,7 +1,7 @@
 """OpenInfra's SQL: what a snapshot writes, what the routes read, and the rollups.
 
 Every time is milliseconds since the Unix epoch. The schema is revision
-``0025_openinfra``'s; its docstring describes the tables.
+``0026_openinfra``'s; its docstring describes the tables.
 
 **Samples.** Each host, GPU and engine keeps at most one sample per 6-second
 bucket (:data:`SAMPLE_MS`): the bucket is part of the primary key and a second

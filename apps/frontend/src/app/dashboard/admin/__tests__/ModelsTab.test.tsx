@@ -377,9 +377,9 @@ describe('Admin → Providers → Models', () => {
     await renderModels();
 
     expect(await screen.findByText(/This backend lists the model catalog/)).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Settings → Application' })).toHaveAttribute(
+    expect(screen.getByRole('link', { name: 'Settings → Site & Setup' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?tab=application',
+      '/dashboard/admin/settings?tab=setup',
     );
     expect(screen.queryByRole('region', { name: 'Model catalog' })).not.toBeInTheDocument();
   });

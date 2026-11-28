@@ -69,7 +69,7 @@ describe('ConfigurationBanner', () => {
     // The missing settings, on every sub-tab, then the site documents.
     expect(screen.getByRole('link', { name: 'Open Settings' })).toHaveAttribute(
       'href',
-      '/dashboard/admin/settings?tab=application&missing=1',
+      '/dashboard/admin/settings?tab=setup&missing=1',
     );
     // A deployment with no model at all.
     expect(screen.getByRole('link', { name: 'Open Models' })).toHaveAttribute(

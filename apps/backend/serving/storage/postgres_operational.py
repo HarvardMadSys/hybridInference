@@ -22,6 +22,7 @@ from serving.exceptions import (
     AmbiguousAPIKeyError,
     APIKeyLimitReachedError,
     HardDeleteStateChanged,
+    LoginNameTakenError,
     PreferencesTooLargeError,
     ProjectNotFoundError,
     SelfDeleteRefused,
@@ -306,6 +307,7 @@ _USER_COLUMNS = (
     "signup_reason",
     "admin_note",
     "suspension_message",
+    "is_service_account",
 )
 _USER_SELECT = ", ".join(
     f"{_USER_ROW_PREFERENCES} AS preferences" if column == "preferences" else column
@@ -767,6 +769,135 @@ async def reconcile_key_quota_copies(conn: asyncpg.Connection) -> int:
     return _parse_command_tag_count(tag)
 
 
+#: The unique index on ``lower(users.login_name)``, created by the migrations.
+_LOGIN_NAME_INDEX = "idx_users_login_name"
+
+
+async def _insert_key(
+    conn: asyncpg.Connection,
+    *,
+    key_hash: str,
+    key_prefix: str,
+    user_id: str,
+    user_name: str | None,
+    quota_daily_cost_usd: Decimal | float,
+    quota_monthly_cost_usd: Decimal | float | None,
+    quota_daily_cost_amount: Decimal | float | None,
+    quota_monthly_cost_amount: Decimal | float | None,
+    expires_at: datetime | None,
+    notes: str | None,
+    api_key_encrypted: str | None,
+    metadata: str | dict[str, Any] | None,
+    account_id: str | None,
+    inherit_account_quota: bool,
+    name: str | None,
+    max_active_keys: int | None,
+    project_id: str | None,
+) -> Row:
+    """Insert a key inside the caller's transaction; the body of :meth:`create_key`.
+
+    Takes the account lock, so the caller holds it until its transaction ends.
+    """
+    # Default account_id to user_id so self-service AND admin-created keys
+    # are visible/manageable in the dashboard (list/info/lookup all key off
+    # account_id). Callers that omit account_id (e.g. admin key creation)
+    # would otherwise persist NULL and hide the key from the user. This
+    # stops the ongoing NULL-producing path at its single source (#630).
+    effective_account_id = account_id if account_id is not None else user_id
+    policy = get_accounting_policy()
+    if quota_daily_cost_amount is None:
+        quota_daily_cost_amount = policy.from_usd(quota_daily_cost_usd)
+    if quota_monthly_cost_amount is None and quota_monthly_cost_usd is not None:
+        quota_monthly_cost_amount = policy.from_usd(quota_monthly_cost_usd)
+
+    # asyncpg has no jsonb codec registered on this pool, so jsonb
+    # parameters must be JSON strings; admin routes pass dicts through.
+    if isinstance(metadata, dict):
+        metadata = json.dumps(metadata)
+
+    await _lock_account_keys(conn, user_id)
+    if max_active_keys is not None:
+        active = await conn.fetchval(
+            "SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
+            user_id,
+        )
+        if active >= max_active_keys:
+            raise APIKeyLimitReachedError(max_active_keys)
+    daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
+    daily_amount, monthly_amount = quota_daily_cost_amount, quota_monthly_cost_amount
+    if inherit_account_quota:
+        current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
+        if current is not None:
+            # A daily quota nothing has set, on an account with no key
+            # to carry one, stays the default the caller gave.
+            if current["quota_daily_cost_usd"] is not None or current["has_key"]:
+                daily = current["quota_daily_cost_usd"]
+            monthly = current["quota_monthly_cost_usd"]
+            # The account's native quota travels with its USD
+            # equivalent; a row predating the native column has none.
+            daily_amount = quota.native_limit(
+                current, "quota_daily_cost_amount", "quota_daily_cost_usd"
+            )
+            monthly_amount = quota.native_limit(
+                current, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
+            )
+    from serving.storage.project_backfill import (
+        default_project_id,
+        ensure_default_project,
+        legacy_org_id,
+    )
+
+    target_project = project_id or default_project_id(user_id)
+    project_query = "SELECT 1 FROM projects WHERE id = $1 AND user_id = $2 AND status = 'active'"
+    found = await conn.fetchval(project_query, target_project, user_id)
+    if found is None and project_id is None:
+        await ensure_default_project(conn, user_id=user_id)
+        found = await conn.fetchval(project_query, target_project, user_id)
+    if found is None:
+        raise ProjectNotFoundError("Project not found")
+    row = await conn.fetchrow(
+        f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}, {_KEY_INSERT_NATIVE_COLUMNS}) "
+        f"VALUES ({_KEY_INSERT_VALUES}, {_KEY_INSERT_NATIVE_VALUES}) "
+        "RETURNING id, created_at",
+        key_hash,
+        key_prefix,
+        user_id,
+        user_name,
+        daily,
+        monthly,
+        expires_at,
+        notes,
+        metadata,
+        effective_account_id,
+        api_key_encrypted,
+        name,
+        target_project,
+        # Read by the previous release only; see ``legacy_org_id``.
+        legacy_org_id(user_id),
+        daily_amount,
+        monthly_amount,
+        policy.currency,
+    )
+    await _sync_account_quota(
+        conn,
+        user_id,
+        daily=daily,
+        monthly=monthly,
+        except_id=row["id"],
+        daily_amount=daily_amount,
+        monthly_amount=monthly_amount,
+    )
+    await _set_account_quota(
+        conn,
+        user_id,
+        quota_daily_cost_usd=daily,
+        quota_monthly_cost_usd=monthly,
+        quota_daily_cost_amount=daily_amount,
+        quota_monthly_cost_amount=monthly_amount,
+    )
+    return dict(row)
+
+
 def _coerce_user_row(row: Any) -> Row | None:
     """Convert an asyncpg Row to a dict, decoding the JSONB preferences field.
 
@@ -967,6 +1098,7 @@ class PostgresOperationalStore(
         status: str = "active",
         signup_reason: str | None = None,
         login_name: str | None = None,
+        is_service_account: bool = False,
     ) -> None:
         """Insert a new user row and its Default project."""
         from serving.storage.project_backfill import ensure_default_project
@@ -974,8 +1106,8 @@ class PostgresOperationalStore(
         async with self._pool.acquire() as conn, conn.transaction():
             await conn.execute(
                 "INSERT INTO users (id, email, password_hash, user_name, "
-                "email_verified, status, signup_reason, login_name) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
+                "email_verified, status, signup_reason, login_name, is_service_account) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)",
                 user_id,
                 email.lower() if email is not None else None,
                 password_hash,
@@ -984,6 +1116,7 @@ class PostgresOperationalStore(
                 status,
                 signup_reason,
                 login_name.lower() if login_name is not None else None,
+                is_service_account,
             )
             await ensure_default_project(conn, user_id=user_id)
 
@@ -1096,6 +1229,77 @@ class PostgresOperationalStore(
                 success=True,
             )
         return True
+
+    async def create_service_account(
+        self,
+        *,
+        user_id: str,
+        login_name: str,
+        password_hash: str,
+        user_name: str,
+        role: str,
+        key_hash: str,
+        key_prefix: str,
+        quota_daily_cost_usd: Decimal | float = 1000.0,
+        quota_monthly_cost_usd: Decimal | float | None = None,
+        quota_daily_cost_amount: Decimal | float | None = None,
+        quota_monthly_cost_amount: Decimal | float | None = None,
+        expires_at: datetime | None = None,
+        notes: str | None = None,
+    ) -> Row:
+        """Create a service account with its role, Default project and first key, atomically.
+
+        One transaction: a failure part way leaves nothing behind, so a retry
+        with the same login name is not refused by a keyless half-account.
+        The unique index on ``lower(login_name)`` decides between two
+        concurrent creates of one name.
+
+        Raises:
+            LoginNameTakenError: Another account holds *login_name*.
+        """
+        import asyncpg
+
+        from serving.storage.project_backfill import ensure_default_project
+
+        if role not in VALID_ROLES:
+            raise ValueError(f"Invalid role: {role}")
+        try:
+            async with self._pool.acquire() as conn, conn.transaction():
+                await conn.execute(
+                    "INSERT INTO users (id, email, password_hash, user_name, role, status, "
+                    "login_name, is_service_account) "
+                    "VALUES ($1, NULL, $2, $3, $4, 'active', $5, TRUE)",
+                    user_id,
+                    password_hash,
+                    user_name,
+                    role,
+                    login_name.lower(),
+                )
+                await ensure_default_project(conn, user_id=user_id)
+                return await _insert_key(
+                    conn,
+                    key_hash=key_hash,
+                    key_prefix=key_prefix,
+                    user_id=user_id,
+                    user_name=user_name,
+                    quota_daily_cost_usd=quota_daily_cost_usd,
+                    quota_monthly_cost_usd=quota_monthly_cost_usd,
+                    quota_daily_cost_amount=quota_daily_cost_amount,
+                    quota_monthly_cost_amount=quota_monthly_cost_amount,
+                    expires_at=expires_at,
+                    notes=notes,
+                    api_key_encrypted=None,
+                    metadata=None,
+                    account_id=None,
+                    inherit_account_quota=False,
+                    name=None,
+                    max_active_keys=None,
+                    project_id=None,
+                )
+        except asyncpg.UniqueViolationError as exc:
+            if exc.constraint_name == _LOGIN_NAME_INDEX:
+                raise LoginNameTakenError(login_name.lower()) from exc
+            raise
 
     async def update_user_fields(self, user_id: str, **fields: Any) -> None:
         """Update one or more columns on the users table for *user_id*."""
@@ -1480,6 +1684,7 @@ class PostgresOperationalStore(
         anomaly: bool | None = None,
         include_usage_totals: bool = True,
         tag: str | None = None,
+        role: str | None = None,
     ) -> tuple[int, list[Row], Row]:
         """Return ``(total_count, user_rows, status_counts_row)``.
 
@@ -1509,6 +1714,7 @@ class PostgresOperationalStore(
           window.
         - ``tag``: keep only users the tag applies to (a manual or automatic
           member; not a dismissed one).
+        - ``role``: keep only accounts in that tier (``users.role``).
         - ``anomaly``: when ``True``, keep only *active* users whose today's
           spend is anomalously high vs. their prior 7-day average (today >=
           $1, history >= 3 days, today >= 5x avg). Uses ``user_daily_cost``
@@ -1518,7 +1724,9 @@ class PostgresOperationalStore(
         ``status_counts`` is intentionally computed from the unfiltered users
         table (no filters applied) — it serves as a global navigation aid
         showing how many users exist per status across the whole dataset,
-        independent of the table view's filters.
+        independent of the table view's filters. ``status_counts["roles"]``
+        is the same kind of aid for tiers (``free``, ``pro``, ``internal``,
+        ``admin``).
         """
         # ──────────────────────────────────────────────────────────────────
         # Shared SQL fragments used by both the count query and the row
@@ -1541,6 +1749,9 @@ class PostgresOperationalStore(
         if status:
             where_clauses.append(f"u.status = ${len(filter_params) + 1}")
             filter_params.append(status)
+        if role:
+            where_clauses.append(f"u.role = ${len(filter_params) + 1}")
+            filter_params.append(role)
         if search:
             # Search matches email, login name, phone and display name as
             # substrings, plus a user.id prefix and an active key_prefix
@@ -1714,11 +1925,23 @@ class PostgresOperationalStore(
             )
             total = count_row["total"] if count_row else 0
 
-            # Status counts (unfiltered — global navigation aid).
+            # Status and tier counts, unfiltered, in one pass. The list filters
+            # do not apply: both are navigation counts for the whole table.
+            # Each row is one (status, role) pair, so both totals sum. Rows from
+            # unit doubles may carry only status; a missing key is skipped.
             count_rows = await conn.fetch(
-                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
+                "SELECT status, role, COUNT(*) AS cnt FROM users GROUP BY status, role"
             )
-            sc = {r["status"]: r["cnt"] for r in count_rows}
+            sc: dict[str, int] = {}
+            by_role: dict[str, int] = {}
+            for row in count_rows:
+                count = row["cnt"]
+                status_name = row.get("status")
+                if status_name:
+                    sc[status_name] = sc.get(status_name, 0) + count
+                tier = row.get("role")
+                if tier:
+                    by_role[tier] = by_role.get(tier, 0) + count
             status_counts: Row = {
                 "all": sum(sc.values()),
                 "pending_approval": sc.get("pending_approval", 0),
@@ -1726,6 +1949,7 @@ class PostgresOperationalStore(
                 "suspended": sc.get("suspended", 0),
                 "rejected": sc.get("rejected", 0),
                 "deleted": sc.get("deleted", 0),
+                "roles": {tier: by_role.get(tier, 0) for tier in VALID_ROLES},
             }
 
             # Main query — always uses CTE form (filtered_users) so we can
@@ -1735,7 +1959,7 @@ class PostgresOperationalStore(
                 f"filtered_users AS ("
                 f"  SELECT {identity}, u.role, u.status, "
                 f"  u.email_verified, u.approval_note, u.reviewed_at, u.reviewed_by, "
-                f"  u.signup_reason, u.admin_note, "
+                f"  u.signup_reason, u.admin_note, u.is_service_account, "
                 f"  u.created_at, u.last_login_at, "
                 f"  k.key_prefix, k.status AS key_status "
                 f"  FROM users u "
@@ -2181,107 +2405,27 @@ class PostgresOperationalStore(
         Raises:
             APIKeyLimitReachedError: The account already holds ``max_active_keys``.
         """
-        # Default account_id to user_id so self-service AND admin-created keys
-        # are visible/manageable in the dashboard (list/info/lookup all key off
-        # account_id). Callers that omit account_id (e.g. admin key creation)
-        # would otherwise persist NULL and hide the key from the user. This
-        # stops the ongoing NULL-producing path at its single source (#630).
-        effective_account_id = account_id if account_id is not None else user_id
-        policy = get_accounting_policy()
-        if quota_daily_cost_amount is None:
-            quota_daily_cost_amount = policy.from_usd(quota_daily_cost_usd)
-        if quota_monthly_cost_amount is None and quota_monthly_cost_usd is not None:
-            quota_monthly_cost_amount = policy.from_usd(quota_monthly_cost_usd)
-
-        # asyncpg has no jsonb codec registered on this pool, so jsonb
-        # parameters must be JSON strings; admin routes pass dicts through.
-        if isinstance(metadata, dict):
-            metadata = json.dumps(metadata)
-
         async with self._pool.acquire() as conn, conn.transaction():
-            await _lock_account_keys(conn, user_id)
-            if max_active_keys is not None:
-                active = await conn.fetchval(
-                    "SELECT COUNT(*) FROM api_keys WHERE user_id = $1 AND status = 'active'",
-                    user_id,
-                )
-                if active >= max_active_keys:
-                    raise APIKeyLimitReachedError(max_active_keys)
-            daily, monthly = quota_daily_cost_usd, quota_monthly_cost_usd
-            daily_amount, monthly_amount = quota_daily_cost_amount, quota_monthly_cost_amount
-            if inherit_account_quota:
-                current = await conn.fetchrow(ACCOUNT_QUOTA_SOURCE_SQL, user_id)
-                if current is not None:
-                    # A daily quota nothing has set, on an account with no key
-                    # to carry one, stays the default the caller gave.
-                    if current["quota_daily_cost_usd"] is not None or current["has_key"]:
-                        daily = current["quota_daily_cost_usd"]
-                    monthly = current["quota_monthly_cost_usd"]
-                    # The account's native quota travels with its USD
-                    # equivalent; a row predating the native column has none.
-                    daily_amount = quota.native_limit(
-                        current, "quota_daily_cost_amount", "quota_daily_cost_usd"
-                    )
-                    monthly_amount = quota.native_limit(
-                        current, "quota_monthly_cost_amount", "quota_monthly_cost_usd"
-                    )
-            from serving.storage.project_backfill import (
-                default_project_id,
-                ensure_default_project,
-                legacy_org_id,
-            )
-
-            target_project = project_id or default_project_id(user_id)
-            project_query = (
-                "SELECT 1 FROM projects WHERE id = $1 AND user_id = $2 AND status = 'active'"
-            )
-            found = await conn.fetchval(project_query, target_project, user_id)
-            if found is None and project_id is None:
-                await ensure_default_project(conn, user_id=user_id)
-                found = await conn.fetchval(project_query, target_project, user_id)
-            if found is None:
-                raise ProjectNotFoundError("Project not found")
-            row = await conn.fetchrow(
-                f"INSERT INTO api_keys ({_KEY_INSERT_COLUMNS}, {_KEY_INSERT_NATIVE_COLUMNS}) "
-                f"VALUES ({_KEY_INSERT_VALUES}, {_KEY_INSERT_NATIVE_VALUES}) "
-                "RETURNING id, created_at",
-                key_hash,
-                key_prefix,
-                user_id,
-                user_name,
-                daily,
-                monthly,
-                expires_at,
-                notes,
-                metadata,
-                effective_account_id,
-                api_key_encrypted,
-                name,
-                target_project,
-                # Read by the previous release only; see ``legacy_org_id``.
-                legacy_org_id(user_id),
-                daily_amount,
-                monthly_amount,
-                policy.currency,
-            )
-            await _sync_account_quota(
+            return await _insert_key(
                 conn,
-                user_id,
-                daily=daily,
-                monthly=monthly,
-                except_id=row["id"],
-                daily_amount=daily_amount,
-                monthly_amount=monthly_amount,
+                key_hash=key_hash,
+                key_prefix=key_prefix,
+                user_id=user_id,
+                user_name=user_name,
+                quota_daily_cost_usd=quota_daily_cost_usd,
+                quota_monthly_cost_usd=quota_monthly_cost_usd,
+                quota_daily_cost_amount=quota_daily_cost_amount,
+                quota_monthly_cost_amount=quota_monthly_cost_amount,
+                expires_at=expires_at,
+                notes=notes,
+                api_key_encrypted=api_key_encrypted,
+                metadata=metadata,
+                account_id=account_id,
+                inherit_account_quota=inherit_account_quota,
+                name=name,
+                max_active_keys=max_active_keys,
+                project_id=project_id,
             )
-            await _set_account_quota(
-                conn,
-                user_id,
-                quota_daily_cost_usd=daily,
-                quota_monthly_cost_usd=monthly,
-                quota_daily_cost_amount=daily_amount,
-                quota_monthly_cost_amount=monthly_amount,
-            )
-        return dict(row)
 
     async def count_active_keys(self, user_id: str) -> int:
         """Return how many active keys *user_id* holds."""

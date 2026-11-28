@@ -284,6 +284,46 @@ async def test_the_rule_counts_distinct_recent_hours_and_respects_a_dismissal(st
     assert every_hour in await store.detect_user_tag_members("tagtest-auto")
 
 
+async def test_the_rule_never_matches_a_service_account(store):
+    """A bot is unattended by design: the rule leaves it out, a hand still tags it."""
+    await store.create_user_tag(
+        "tagtest-auto",
+        {"auto_enabled": True, "auto_window_hours": 12, "auto_min_active_hours": 12},
+    )
+    person = await _user(store, "person")
+    bot = f"{PREFIX}bot"
+    await store.create_user(
+        user_id=bot,
+        email=None,
+        password_hash="x",
+        login_name="tagtest-bot",
+        is_service_account=True,
+    )
+    hours = [i + 0.1 for i in range(12)]
+    await _requests(store, person, hours)
+    await _requests(store, bot, hours)
+
+    preview = await store.preview_user_tag_members(
+        "tagtest-auto", window_hours=12, min_active_hours=12, limit=1000
+    )
+    previewed = {row["user_id"] for row in preview}
+    assert person in previewed
+    assert bot not in previewed
+
+    added = await store.detect_user_tag_members("tagtest-auto")
+    assert person in added
+    assert bot not in added
+    assert await store.get_user_tag_memberships(bot) == []
+
+    # An administrator can still put the tag on it by hand, and the rule keeps it.
+    changed, unknown = await store.add_user_tag_members(
+        "tagtest-auto", [bot], assigned_by="admin-1"
+    )
+    assert changed == [bot] and unknown == []
+    await store.detect_user_tag_members("tagtest-auto")
+    assert (await store.get_user_tag_memberships(bot))[0]["source"] == "manual"
+
+
 async def test_the_scheduled_run_applies_every_rule_that_is_on(store):
     await store.create_user_tag(
         "tagtest-auto",

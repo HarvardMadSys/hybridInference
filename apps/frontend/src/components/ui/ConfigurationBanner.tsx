@@ -64,10 +64,10 @@ function MissingConfigurationNotice({ onModels }: { onModels: boolean }): JSX.El
           <p className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
             <span className="font-semibold">Ask admin to configure</span>
             {/* Filtered to the required settings that have no value, on every
-                sub-tab; clearing the filter lands on Application, where a site
+                tab; clearing the filter lands on Site & Setup, where a site
                 document that does not validate is corrected. */}
             <Link
-              href={`${ADMIN_SETTINGS_PATH}?tab=application&missing=1`}
+              href={`${ADMIN_SETTINGS_PATH}?tab=setup&missing=1`}
               prefetch={false}
               className="font-medium underline underline-offset-2"
             >

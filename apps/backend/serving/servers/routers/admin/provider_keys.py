@@ -598,6 +598,97 @@ async def _resolve_removable_env_key(
     raise HTTPException(404, "Env provider key not found")
 
 
+@dataclass(frozen=True)
+class _StrandedRoutes:
+    """Catalog models a removal would leave with a required route and no key of its own."""
+
+    #: Their routes fall back to this provider's other keys at boot, so they
+    #: serve only if it has one.
+    on_provider_keys: list[str]
+    #: ``(model id, the provider the route draws keys from)`` for routes whose
+    #: key provider does not own the cleared setting: the registry has no other
+    #: keys to give them, so the model is skipped at restart whatever the
+    #: provider being edited holds.
+    on_other_provider: list[tuple[str, str]]
+
+    def __bool__(self) -> bool:
+        return bool(self.on_provider_keys or self.on_other_provider)
+
+
+def _catalog_models_left_keyless(cleared: set[str]) -> _StrandedRoutes:
+    """Find the catalog routes that have no key of their own once *cleared* is blank.
+
+    Read from the catalog the next restart registers, judged the way the
+    registry judges it. A route that still names a configured setting keeps its
+    own key. One that names only cleared or blank settings falls back to the
+    other keys of the provider whose pool it draws on
+    (:func:`registry.route_key_provider`), and only if that provider owns one
+    of the cleared settings; otherwise it is stranded outright.
+
+    Fails closed: a catalog that cannot be read or judged raises 503 rather
+    than letting a removal through unchecked.
+    """
+    from serving.adapters import dynamic_keys as keys
+    from serving.config.documents import get as get_document
+    from serving.servers.registry import _template_var, route_key_provider
+
+    def keeps_a_key(ref: object) -> bool:
+        var = _template_var(ref)
+        if var is None:
+            return isinstance(ref, str) and bool(ref.strip())
+        return var not in cleared and bool((app_config.configured_value(var) or "").strip())
+
+    on_provider_keys: list[str] = []
+    on_other_provider: list[tuple[str, str]] = []
+    try:
+        catalog = get_document("models", configured=True)
+        models = catalog.get("models") if isinstance(catalog, dict) else None
+        for model in models if isinstance(models, list) else []:
+            if not isinstance(model, dict):
+                continue
+            for route in model.get("route") or [{}]:
+                if not isinstance(route, dict) or route.get("optional"):
+                    continue
+                refs = route.get("api_keys")
+                if not isinstance(refs, list):
+                    refs = [route.get("api_key") or model.get("api_key")]
+                named = {var for ref in refs if (var := _template_var(ref)) in cleared}
+                if not named or any(keeps_a_key(ref) for ref in refs):
+                    continue
+                model_id = str(model.get("id"))
+                key_provider = route_key_provider(model, route)
+                if named & set(keys.provider_env_key_setting_names(key_provider)):
+                    on_provider_keys.append(model_id)
+                else:
+                    on_other_provider.append((model_id, key_provider))
+                break
+    except Exception as exc:
+        logger.warning(
+            "Could not check the model catalog before removing a provider key", exc_info=True
+        )
+        raise HTTPException(
+            503, "Could not read the model catalog to check which models use this key"
+        ) from exc
+    return _StrandedRoutes(on_provider_keys, on_other_provider)
+
+
+async def _provider_keeps_another_key(op_store, provider: str, key_hash: str) -> bool:
+    """Whether *provider* has a key other than *key_hash* to serve a keyless route.
+
+    Another configured key setting that is not tombstoned, or an active Keys-tab
+    key: what a catalog route whose own key setting was cleared serves on after
+    a restart.
+    """
+    try:
+        if await op_store.list_provider_keys_full(provider):
+            return True
+        disabled = set(await op_store.list_disabled_provider_env_key_hashes(provider))
+    except Exception as exc:
+        raise HTTPException(503, f"Failed to load provider keys for {provider}: {exc}") from exc
+    others = dynamic_keys.configured_env_key_hashes(provider) - disabled - {key_hash}
+    return bool(others)
+
+
 @router.post("/provider-keys/remove-env", response_model=RemoveProviderEnvKeyResponse)
 async def remove_provider_env_key(
     payload: RemoveProviderEnvKeyRequest,
@@ -612,6 +703,14 @@ async def remove_provider_env_key(
     an empty row beats the environment — and tombstones the hash as removed, so
     the key leaves the list and every worker's pools. Nothing is tombstoned when
     clearing the setting is refused.
+
+    A catalog route that names a cleared setting keeps serving on the
+    provider's other keys after a restart (the registry treats an
+    administrator-cleared key setting as removed, not missing). Removal is
+    refused with 409 when such a route would have nothing to serve on: the
+    provider has no other key, or the route draws keys from a provider that
+    does not own the setting (the registry skips both kinds at restart).
+    Disable the key instead, or add another first.
     """
     if not op_store:
         raise HTTPException(500, "Database not configured")
@@ -625,6 +724,29 @@ async def remove_provider_env_key(
 
     cleared = dynamic_keys.provider_settings_holding_key(payload.provider, key_hash)
     if cleared:
+        stranded = _catalog_models_left_keyless(set(cleared))
+        if stranded.on_other_provider:
+            models = ", ".join(
+                f"{model_id} (its route uses {key_provider} keys)"
+                for model_id, key_provider in stranded.on_other_provider
+            )
+            raise HTTPException(
+                409,
+                f"The model catalog names {', '.join(cleared)} for {models}. Those "
+                f"routes cannot fall back to other {payload.provider} keys, so the "
+                "models would stop at the next restart. Disable this key instead, "
+                "or change those routes first.",
+            )
+        if stranded.on_provider_keys and not await _provider_keeps_another_key(
+            op_store, payload.provider, key_hash
+        ):
+            raise HTTPException(
+                409,
+                f"The model catalog names {', '.join(cleared)} for "
+                f"{', '.join(stranded.on_provider_keys)}, and {payload.provider} has no "
+                "other key to serve them after a restart. Disable this key instead, "
+                "or add another key first.",
+            )
         try:
             await app_config.update(dict.fromkeys(cleared, ""), updated_by=admin_id)
         except app_config.ConfigUpdateError as exc:

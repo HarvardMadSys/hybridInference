@@ -65,11 +65,20 @@ interface StatusCounts {
   deleted: number;
 }
 
+export interface UserRoleCounts {
+  free: number;
+  pro: number;
+  internal: number;
+  admin: number;
+}
+
 interface ListUsersResponse {
   currency?: 'USD' | 'CNY';
   total: number;
   users: AdminUser[];
   status_counts: StatusCounts;
+  /** Absent from a gateway that predates the tier filter. */
+  role_counts?: UserRoleCounts;
 }
 
 interface ApproveRejectResponse {
@@ -96,6 +105,8 @@ interface ListUsersOptions {
   includeUsageTotals?: boolean;
   /** Only the users a user tag applies to. */
   tag?: string;
+  /** Only accounts in this tier. */
+  role?: 'free' | 'pro' | 'internal' | 'admin';
 }
 
 export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersResponse> {
@@ -118,6 +129,7 @@ export async function listUsers(opts: ListUsersOptions = {}): Promise<ListUsersR
     params.set('include_usage_totals', String(opts.includeUsageTotals));
   }
   if (opts.tag) params.set('tag', opts.tag);
+  if (opts.role) params.set('role', opts.role);
   const resp = await fetchWithAuth(API_BASE, `/admin/users?${params.toString()}`);
   return jsonOrThrow<ListUsersResponse>(resp);
 }
@@ -167,6 +179,36 @@ export async function getUserFilterProviders(): Promise<ListUserFilterProvidersR
 export async function getUsersSummary(): Promise<UsersSummary> {
   const resp = await fetchWithAuth(API_BASE, '/admin/users/summary');
   return jsonOrThrow<UsersSummary>(resp);
+}
+
+/** A service account created by an administrator: key-only, no sign-in. */
+export interface CreateServiceAccountData {
+  name: string;
+  login_name?: string;
+  role?: 'free' | 'pro' | 'internal';
+  password?: string;
+}
+
+export interface CreateServiceAccountResponse {
+  user_id: string;
+  login_name: string;
+  name: string;
+  role: string;
+  /** Plaintext API key, returned only by this creation call. */
+  api_key: string;
+  key_prefix: string;
+  warning: string;
+}
+
+export async function createServiceAccount(
+  data: CreateServiceAccountData,
+): Promise<CreateServiceAccountResponse> {
+  const resp = await fetchWithAuth(API_BASE, '/admin/service-accounts', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  });
+  return jsonOrThrow<CreateServiceAccountResponse>(resp);
 }
 
 export async function approveUser(userId: string, note?: string): Promise<ApproveRejectResponse> {
@@ -3491,6 +3533,8 @@ export interface UpdateProviderDefinitionPayload {
 interface DeleteProviderDefinitionResponse {
   provider: string;
   deleted_keys: number;
+  removed_routes?: number;
+  removed_models?: number;
 }
 
 export async function listProviderDefinitions(): Promise<ListProviderDefinitionsResponse> {

@@ -69,8 +69,16 @@ import {
   type DeclaredChoice,
 } from './RouteCapabilityFields';
 import type { OffloadQueueInfo } from './OffloadRoutePanel';
-import { RoutewiseSettingsPanel } from './RoutewiseSettingsPanel';
 import { RoutewiseDecisionsPanel } from './RoutewiseDecisionsPanel';
+import {
+  OPENROUTER_PROVIDER_AUTO,
+  openRouterProviderLabel,
+  providerLabel,
+  routeOpenRouterProvider,
+  routePrimaryProvider,
+  routePrimaryUpstreamProvider,
+  routeTargetLabel,
+} from './routeTargetLabel';
 import { Select } from '@/components/ui/Select';
 
 type RouteForm = {
@@ -135,7 +143,6 @@ const emptyCreateForm: CreateRouteForm = {
   ...emptyCapabilityDraft,
 };
 
-const OPENROUTER_PROVIDER_AUTO = '';
 const OPENROUTER_PROVIDER_CUSTOM = '__custom__';
 const OPENROUTER_ROUTING_AUTO = 'auto';
 const OPENROUTER_ROUTING_SORT_PREFIX = 'sort:';
@@ -440,13 +447,6 @@ function optionSupportsRouteType(option: ProviderRouteOption, routeType: Provide
   return option.route_types ? option.route_types.includes(routeType) : true;
 }
 
-function routePrimaryProvider(route: ProviderRoute) {
-  if (route.provider === route.upstream_provider && route.key_provider === 'openrouter') {
-    return 'openrouter';
-  }
-  return route.provider;
-}
-
 // Mirrors the gateway's endpoint comparison closely enough to tell whether an
 // edit still points at the route's current endpoint.
 function canonicalEndpointUrl(value: string) {
@@ -459,13 +459,6 @@ function canonicalEndpointUrl(value: string) {
   } catch {
     return trimmed.replace(/\/+$/, '');
   }
-}
-
-function routePrimaryUpstreamProvider(route: ProviderRoute) {
-  if (route.upstream_provider !== 'openrouter' && route.key_provider === 'openrouter') {
-    return 'openrouter';
-  }
-  return route.upstream_provider;
 }
 
 // A route edit's capability change: set new values, or return to the defaults.
@@ -512,45 +505,6 @@ const ROUTE_EDIT_FIELD_LABELS: Record<string, string> = {
 
 function shownRouteValue(value: unknown): string {
   return value === null || value === undefined || value === '' ? '(default)' : String(value);
-}
-
-function routeOpenRouterProvider(route: ProviderRoute) {
-  if (route.openrouter_provider) return route.openrouter_provider;
-  if (route.upstream_provider !== 'openrouter' && route.key_provider === 'openrouter') {
-    return route.upstream_provider;
-  }
-  return OPENROUTER_PROVIDER_AUTO;
-}
-
-function providerLabel(providerOptions: ProviderRouteOption[], provider: string) {
-  return optionFor(providerOptions, provider)?.label ?? provider;
-}
-
-function openRouterProviderLabel(options: OpenRouterProviderOption[], provider: string) {
-  return options.find((option) => option.provider === provider)?.label ?? provider;
-}
-
-function routeTargetLabel(
-  route: ProviderRoute,
-  providerOptions: ProviderRouteOption[],
-  openRouterOptions: OpenRouterProviderOption[],
-) {
-  const targetProvider = routePrimaryProvider(route);
-  const targetUpstreamProvider = routePrimaryUpstreamProvider(route);
-  const targetOpenRouterProvider = routeOpenRouterProvider(route);
-  if (targetUpstreamProvider === 'openrouter') {
-    if (targetOpenRouterProvider) {
-      return `OpenRouter · ${openRouterProviderLabel(openRouterOptions, targetOpenRouterProvider)}`;
-    }
-    return 'OpenRouter';
-  }
-  if (targetProvider !== targetUpstreamProvider) {
-    return `${providerLabel(providerOptions, targetProvider)} → ${providerLabel(
-      providerOptions,
-      targetUpstreamProvider,
-    )}`;
-  }
-  return providerLabel(providerOptions, targetProvider);
 }
 
 function ensureOpenRouterProviderOption(options: OpenRouterProviderOption[], provider: string) {
@@ -705,14 +659,10 @@ function createProviderOptionsFor(
   );
 }
 
-interface ProviderRoutesTabProps {
-  showRoutewiseSettings?: boolean;
-}
-
 // Why a control that would drop an unsaved draft is unavailable for now.
 const HELD_FOR_DRAFTS = 'Save or discard the unsaved changes first';
 
-export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRoutesTabProps = {}) {
+export function ProviderRoutesTab() {
   const router = useRouter();
   const money = useMoney();
   const toast = useAccountToast();
@@ -1965,19 +1915,15 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
   const weightsChanged = weightChanges.length > 0;
   const strategyChanged = draftStrategy !== null && draftStrategy !== strategy;
   const inlineChanged = weightsChanged || strategyChanged || limitsChanged;
-  // The offload and RouteWise panels keep drafts for the selected model too, and
-  // drop them when it changes; they report whether a draft is unsaved, a
+  // The offload panel keeps drafts for the selected model too, and drops
+  // them when it changes; it reports whether a draft is unsaved, a
   // confirmation open or a write running.
-  const [panelEditing, setPanelEditing] = useState({ offload: false, routewise: false });
+  const [panelEditing, setPanelEditing] = useState({ offload: false });
   const onOffloadEditingChange = useCallback(
     (active: boolean) => setPanelEditing((prev) => ({ ...prev, offload: active })),
     [],
   );
-  const onRoutewiseEditingChange = useCallback(
-    (active: boolean) => setPanelEditing((prev) => ({ ...prev, routewise: active })),
-    [],
-  );
-  const panelOpen = panelEditing.offload || panelEditing.routewise;
+  const panelOpen = panelEditing.offload;
   // Switching model, directly or by creating one, would drop any unsaved draft.
   // The route and create dialogs are modal, but their drafts belong
   // to this model too, as do an open confirmation and a write still running.
@@ -1989,9 +1935,8 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
     createFormOpen ||
     confirmation.open ||
     confirmation.busy;
-  // So would switching the routing policy: it unmounts the panel of the current
-  // policy (Queue offload for fixed, RouteWise parameters for routewise) and
-  // swaps the table's weights for limits or back.
+  // So would switching the routing policy: it unmounts the offload panel of
+  // the current policy and swaps the table's weights for limits or back.
   const policyHeld = weightsChanged || limitsChanged || panelOpen;
 
   // Reset config and Delete discard what the route had, so they ask first. Each
@@ -2326,7 +2271,7 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
             searchable
             searchPlaceholder="Search models…"
             emptyText="No models match"
-            // Unsaved weight, policy, limit, capability, offload or RouteWise drafts
+            // Unsaved weight, policy, limit, capability or offload drafts
             // belong to this model; save or discard them before switching.
             disabled={modelLocked}
             title={modelLocked ? HELD_FOR_DRAFTS : undefined}
@@ -2419,21 +2364,6 @@ export function ProviderRoutesTab({ showRoutewiseSettings = false }: ProviderRou
           }
           onChange={onOffloadChange}
           onEditingChange={onOffloadEditingChange}
-        />
-      )}
-
-      {showRoutewiseSettings && isRoutewise && (
-        <RoutewiseSettingsPanel
-          modelId={selectedModel}
-          endpoints={selectedRoutes.map((route) => ({
-            endpointId: route.endpoint_id,
-            label: `${route.route_type} · ${routeTargetLabel(
-              route,
-              providerSelectBaseOptions,
-              openRouterSelectOptions,
-            )}`,
-          }))}
-          onEditingChange={onRoutewiseEditingChange}
         />
       )}
 

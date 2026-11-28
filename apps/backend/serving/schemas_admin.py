@@ -28,7 +28,7 @@ from serving.accounting_api import (
 from serving.adapters.reasoning_effort import stored_effort_map, validate_effort_map
 from serving.config.settings import ROUTE_TYPE_ORDER
 from serving.schemas import CONTENT_BLOCK_MODALITY
-from serving.schemas_auth import SsoIdentity
+from serving.schemas_auth import SsoIdentity, normalize_login_name
 from serving.user_tags import (
     MAX_WINDOW_HOURS as USER_TAG_MAX_WINDOW_HOURS,
     TAG_NAME_PATTERN as USER_TAG_NAME_PATTERN,
@@ -75,6 +75,63 @@ class CreateAPIKeyRequest(MoneyInput):  # type: ignore[no-any-unimported]
 
     quota_daily_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
     quota_monthly_cost: Decimal | None = Field(default=None, ge=0, exclude=True)
+
+
+class CreateServiceAccountRequest(MoneyInput):  # type: ignore[no-any-unimported]
+    """Request payload for creating a service account (admin only).
+
+    A service account is a user row with no email and an unknowable
+    password, used only through the API key this creation issues.
+    """
+
+    name: str = Field(
+        ..., min_length=1, max_length=255, description="Display name, e.g. 'Nightly eval bot'"
+    )
+    login_name: str | None = Field(
+        None,
+        max_length=64,
+        description="Unique login name (3-32 letters, digits, '.', '_' or '-', starting "
+        "with a letter or digit; stored lowercased); derived from the name when omitted",
+    )
+    role: Literal["free", "pro", "internal"] = Field(
+        "free", description="Account role; service accounts never hold the admin role"
+    )
+    quota_daily_cost_usd: Decimal = Field(
+        Decimal("1000.00"), ge=0, description="Daily cost quota in USD"
+    )
+    quota_monthly_cost_usd: Decimal | None = Field(
+        None, ge=0, description="Monthly cost quota in USD (optional)"
+    )
+    expires_at: datetime | None = Field(None, description="API key expiration timestamp (optional)")
+    notes: str | None = Field(None, description="Admin notes stored on the issued key")
+    password: str | None = Field(
+        None,
+        description="The signed-in administrator's password: creating an account "
+        "with a live credential always needs it (403 for the admin token)",
+    )
+
+    @field_validator("login_name")
+    @classmethod
+    def _check_login_name(cls, value: str | None) -> str | None:
+        """The same rule as every other login name; blank means "derive it"."""
+        if value is None or not value.strip():
+            return None
+        return normalize_login_name(value)
+
+
+class CreateServiceAccountResponse(MoneyResponse):  # type: ignore[no-any-unimported]
+    """Response payload for successful service-account creation."""
+
+    user_id: str
+    login_name: str
+    name: str
+    role: str
+    api_key: str = Field(..., description="Plaintext API key (shown only once)")
+    key_prefix: str = Field(..., description="First 12 characters for identification")
+    warning: str = Field(
+        default="⚠️ Save this API key now. It cannot be retrieved later.",
+        description="Security warning",
+    )
 
 
 class CreateAPIKeyResponse(MoneyResponse):  # type: ignore[no-any-unimported]
@@ -221,6 +278,8 @@ class UserListItem(MoneyResponse):
     reviewed_by: str | None = None
     # Free-text use case submitted at signup; helps admins review pending users.
     signup_reason: str | None = None
+    # Admin-created API-key-only account (no email, no browser sign-in).
+    is_service_account: bool = False
     # Free-text admin-only annotation about the user (any status).
     admin_note: str | None = None
     created_at: datetime
@@ -254,12 +313,22 @@ class StatusCounts(BaseModel):
     deleted: int = 0
 
 
+class RoleCounts(BaseModel):
+    """How many accounts are in each tier (always unfiltered)."""
+
+    free: int = 0
+    pro: int = 0
+    internal: int = 0
+    admin: int = 0
+
+
 class ListUsersResponse(BaseModel):
     """Response payload for listing users."""
 
     total: int
     users: list[UserListItem]
     status_counts: StatusCounts = Field(default_factory=StatusCounts)
+    role_counts: RoleCounts = Field(default_factory=RoleCounts)
 
 
 # ========================================
@@ -2897,6 +2966,10 @@ class DeleteProviderDefinitionResponse(BaseModel):  # type: ignore[no-any-unimpo
 
     provider: str
     deleted_keys: int
+    # Catalog entries a built-in provider's deletion removed; always zero for
+    # a custom provider, whose deletion touches no catalog.
+    removed_routes: int = 0
+    removed_models: int = 0
 
 
 class ProviderApiKeyItem(BaseModel):  # type: ignore[no-any-unimported]

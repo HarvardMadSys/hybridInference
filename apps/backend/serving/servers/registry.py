@@ -32,7 +32,7 @@ from serving.adapters.reasoning_effort import (
     MAX_MAP_ENTRIES,
     validate_effort_map,
 )
-from serving.config.app_config import config_value
+from serving.config.app_config import cleared_by_admin, config_value
 from serving.config.app_config_registry import static_entry
 from serving.config.provider_labels import DISPLAY_NAME_METADATA_KEY
 from serving.config.reasoning_effort_presets import find_reasoning_effort_preset
@@ -40,7 +40,7 @@ from serving.model_access import default_required_role_for_model
 from serving.servers.embedding_fallback import FallbackEmbeddingAdapter
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Collection
     from pathlib import Path
 
     from routing.routers import FixedRouter
@@ -838,6 +838,55 @@ def _register_embedding_model(
         )
 
 
+def route_key_provider(model: dict[str, Any], route: dict[str, Any]) -> str:
+    """Return the provider whose key pool a catalog *route* of *model* draws on.
+
+    The same derivation registration applies (the route's kind, the model's
+    ``provider: openai`` on an ``openai_compat`` route, a relabelled route's
+    canonical provider, an explicit ``route_metadata.key_provider``), for
+    callers that judge a catalog without registering it. Raises ``ValueError``
+    where registration would refuse the route's label.
+    """
+    kind = route.get("kind") or model.get("provider")
+    provider_for_cfg, _ = parse_openrouter_kind(kind)
+    if kind == "openai_compat" and model.get("provider") == "openai":
+        canonical_provider = "openai"
+    else:
+        canonical_provider = provider_for_cfg
+    provider_label, _ = parse_route_provider_label(route, canonical_provider, str(model.get("id")))
+    route_metadata = dict(model.get("route_metadata") or {})
+    if isinstance(route.get("route_metadata"), dict):
+        route_metadata.update(route["route_metadata"])
+    if provider_label != canonical_provider:
+        route_metadata.setdefault("key_provider", canonical_provider)
+    return _dynamic_key_provider_name(
+        kind, {"provider": provider_label, "route_metadata": route_metadata}
+    )
+
+
+def _keys_after_cleared_settings(key_provider: str, cleared: list[str]) -> list[str] | None:
+    """Return the keys a route falls back to once its key setting was cleared.
+
+    A route that names ``${DEEPSEEK_API_KEY}`` when an administrator removed that
+    key (which stores an empty row) keeps serving on the provider's other keys,
+    as it did before the restart: the base and numbered settings still
+    configured, and whatever the Keys tab adds at boot
+    (``dynamic_keys.apply_db_keys_at_boot`` injects those into a route that
+    holds no key of its own). Tombstoned env keys are stripped at that point
+    too. Empty when only Keys-tab keys remain.
+
+    ``None`` when none of *cleared* is one of *key_provider*'s pooled key
+    settings: those are the only settings whose "other keys" are known, so any
+    other cleared reference stays a missing credential.
+    """
+    from serving.adapters import dynamic_keys
+
+    pooled = set(dynamic_keys.provider_env_key_setting_names(key_provider))
+    if not pooled.intersection(cleared):
+        return None
+    return dynamic_keys.configured_env_keys_for_provider(key_provider)
+
+
 def _register_key_adapters(providers: set[str], registrations: list[tuple[str, object]]) -> None:
     """Hand one model's adapters to runtime key-pool management."""
     from serving.adapters import dynamic_keys
@@ -947,6 +996,7 @@ def register_from_models_document(
     continue_on_missing_env: bool = False,
     report: ModelLoadReport | None = None,
     origin: str = "Admin model catalog",
+    shared_db_key_providers: Collection[str] | None = None,
 ) -> tuple[int, list[ModelRegistrationInfo]]:
     """Register a database model document through the existing adapter boundary.
 
@@ -956,6 +1006,14 @@ def register_from_models_document(
     register leaves them as they were instead of serving the models listed
     before it. A model whose setting is unset is skipped instead, when
     *continue_on_missing_env* allows.
+
+    *shared_db_key_providers* names the providers that hold active Keys-tab
+    keys ``dynamic_keys.apply_db_keys_at_boot`` will inject into catalog routes
+    (bootstrap reads it before registering). A route whose cleared key setting
+    left it no key of its own is skipped when its provider is not among them,
+    since nothing would ever give it a key: a dead endpoint that fails upstream
+    and trips the breaker. ``None`` means unknown, and such a route is kept for
+    the boot injection to fill.
 
     Raises:
         RegistryConfigError: An entry cannot be registered; the message names
@@ -1054,6 +1112,9 @@ def register_from_models_document(
             ]
 
             adapters_with_weights = []
+            # Routes skipped because a cleared key setting left them nothing to
+            # serve on: when every route goes that way the model is skipped.
+            keyless_cleared: list[str] = []
             dynamic_key_registrations: list[tuple[str, object]] = []
             dynamic_key_providers: set[str] = set()
             # check_models_document has refused every malformed declaration
@@ -1132,6 +1193,12 @@ def register_from_models_document(
 
                 api_key: str | None = None
                 api_keys: list[str] | None = None
+                # ``${VAR}`` key references an administrator cleared: a stored
+                # empty row, which is what removing an env key on the Keys tab
+                # writes. The key is gone on purpose, not missing, so the route
+                # falls back to the provider's other keys below instead of
+                # taking the whole model down with it.
+                cleared_refs: list[str] = []
                 if raw_api_keys is not None:
                     expanded = [expand_env(k) for k in raw_api_keys]
                     kept: list[str] = []
@@ -1143,8 +1210,11 @@ def register_from_models_document(
                                 top_cfg.get("id"),
                                 raw,
                             )
-                            if isinstance(raw, str) and raw.startswith("${") and raw.endswith("}"):
-                                unset_env_vars.add(raw[2:-1])
+                            if (var := _template_var(raw)) is not None:
+                                if cleared_by_admin(var):
+                                    cleared_refs.append(var)
+                                else:
+                                    unset_env_vars.add(var)
                             continue
                         if not isinstance(val, str):
                             raise ValueError(
@@ -1161,7 +1231,7 @@ def register_from_models_document(
                             )
                             continue
                         kept.append(normalized)
-                    if not kept:
+                    if not kept and not cleared_refs:
                         if route_optional:
                             logger.warning(
                                 "Skipping optional route (kind=%s) for model %s: "
@@ -1174,7 +1244,7 @@ def register_from_models_document(
                             f"api_keys for {top_cfg.get('id')!r} resolved to "
                             f"empty list after env expansion"
                         )
-                    api_keys = kept
+                    api_keys = kept or None
                 else:
                     api_key = expand_env(raw_api_key)
                     if (
@@ -1182,20 +1252,25 @@ def register_from_models_document(
                         and raw_api_key.startswith("${")
                         and (api_key is None or not api_key.strip())
                     ):
-                        if route_optional:
-                            logger.warning(
-                                "Skipping optional route (kind=%s) for model %s: "
-                                "api_key resolved to empty/None after env expansion",
-                                kind,
-                                top_cfg.get("id"),
+                        var = _template_var(raw_api_key)
+                        api_key = None
+                        if var is not None and cleared_by_admin(var):
+                            cleared_refs.append(var)
+                        else:
+                            if route_optional:
+                                logger.warning(
+                                    "Skipping optional route (kind=%s) for model %s: "
+                                    "api_key resolved to empty/None after env expansion",
+                                    kind,
+                                    top_cfg.get("id"),
+                                )
+                                continue
+                            if var is not None:
+                                unset_env_vars.add(var)
+                            raise MissingEnvBackedKeyError(
+                                f"api_key for {top_cfg.get('id')!r} resolved to "
+                                f"empty/None after env expansion"
                             )
-                            continue
-                        if (var := _template_var(raw_api_key)) is not None:
-                            unset_env_vars.add(var)
-                        raise MissingEnvBackedKeyError(
-                            f"api_key for {top_cfg.get('id')!r} resolved to "
-                            f"empty/None after env expansion"
-                        )
 
                 # Adapter config inherits from top-level model config
                 adapter_cfg = dict(top_cfg)
@@ -1371,6 +1446,59 @@ def register_from_models_document(
                 if route_metadata:
                     adapter_cfg["route_metadata"] = route_metadata
 
+                if cleared_refs and not api_key and not api_keys:
+                    fallback_keys = _keys_after_cleared_settings(
+                        _dynamic_key_provider_name(kind, adapter_cfg), cleared_refs
+                    )
+                    if fallback_keys is None:
+                        # Not one of this provider's pooled key settings: there
+                        # are no "other keys" to fall back to, so a cleared
+                        # setting is as missing as an unset one.
+                        if route_optional:
+                            logger.warning(
+                                "Skipping optional route (kind=%s) for model %s: "
+                                "its key setting was cleared",
+                                kind,
+                                top_cfg.get("id"),
+                            )
+                            continue
+                        unset_env_vars.update(cleared_refs)
+                        raise MissingEnvBackedKeyError(
+                            f"key setting for {top_cfg.get('id')!r} was cleared "
+                            f"({', '.join(cleared_refs)})"
+                        )
+                    key_provider = _dynamic_key_provider_name(kind, adapter_cfg)
+                    if (
+                        not fallback_keys
+                        and shared_db_key_providers is not None
+                        and key_provider not in shared_db_key_providers
+                    ):
+                        logger.warning(
+                            "Skipping route %d (kind=%s) of model %s: %s was cleared by "
+                            "an administrator and provider %s has no other key, neither "
+                            "a key setting nor a Keys-tab key. Add a key (Keys tab) or "
+                            "set the setting again, then restart.",
+                            route_index,
+                            kind,
+                            top_cfg.get("id"),
+                            ", ".join(cleared_refs),
+                            key_provider,
+                        )
+                        keyless_cleared.extend(
+                            ref for ref in cleared_refs if ref not in keyless_cleared
+                        )
+                        continue
+                    adapter_cfg["api_keys"] = fallback_keys or None
+                    logger.warning(
+                        "Model %s, route %d: %s was cleared by an administrator; the "
+                        "route uses the provider's other keys (%d configured key "
+                        "setting(s), plus any added on the Keys tab)",
+                        top_cfg.get("id"),
+                        route_index,
+                        ", ".join(cleared_refs),
+                        len(fallback_keys),
+                    )
+
                 from serving.config.documents import resolve_credentials
 
                 def credential_value(name: str) -> str:
@@ -1415,6 +1543,14 @@ def register_from_models_document(
                 )
                 if pool_capable:
                     dynamic_key_registrations.append((provider_key, adapter))
+
+            if keyless_cleared and not adapters_with_weights:
+                unset_env_vars.update(keyless_cleared)
+                raise MissingEnvBackedKeyError(
+                    f"every route of {top_cfg.get('id')!r} lost its key: "
+                    f"{', '.join(keyless_cleared)} was cleared and the provider has "
+                    "no other key"
+                )
 
             # Determine model type: "embedding" models bypass FixedRouter
             model_type = top_cfg.get("type") or top_cfg.get("model_type") or "chat"

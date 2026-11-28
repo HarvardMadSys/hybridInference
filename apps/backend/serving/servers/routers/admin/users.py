@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re
+import secrets
 from decimal import Decimal
 from typing import Literal
 
@@ -16,7 +18,7 @@ from serving.auth import sso_accounts
 from serving.auth.two_factor import admin_two_factor_required, has_authenticator
 from serving.config.provider_labels import resolve_display_names
 from serving.config.settings import ROLE_RANK, get_settings
-from serving.exceptions import HardDeleteStateChanged
+from serving.exceptions import HardDeleteStateChanged, LoginNameTakenError
 from serving.model_access import (
     DISABLED_MODELS_PREFERENCE_KEY,
     get_disabled_models_from_preferences,
@@ -36,6 +38,8 @@ from serving.schemas_admin import (
     BulkUserCostHistoryResponse,
     BulkUserTurnAveragesResponse,
     BulkUserUsageTotalsResponse,
+    CreateServiceAccountRequest,
+    CreateServiceAccountResponse,
     DeleteUserRequest,
     DeleteUserResponse,
     HardDeleteUserRequest,
@@ -50,6 +54,7 @@ from serving.schemas_admin import (
     ResetUserTwoFactorResponse,
     ResumeUserRequest,
     ResumeUserResponse,
+    RoleCounts,
     StatusCounts,
     SummaryCard,
     SummaryUserItem,
@@ -67,7 +72,8 @@ from serving.schemas_admin import (
     UsersSummaryResponse,
     UserTurnAverages,
 )
-from serving.servers.auth import log_admin_action
+from serving.schemas_auth import normalize_login_name
+from serving.servers.auth import generate_api_key, hash_api_key, log_admin_action
 from serving.servers.deps import (
     AppServices,
     get_admin_audit_actor,
@@ -85,6 +91,8 @@ from serving.servers.routers.admin.providers import _enumerate_routable_provider
 from serving.servers.routers.admin.reauthentication import confirm_administrator
 from serving.servers.routers.admin.user_tags import tag_memberships_payload
 from serving.storage import sso as sso_store
+from serving.utils import password as password_utils
+from serving.utils.jwt import generate_ulid
 
 router = APIRouter(prefix="/admin")
 logger = logging.getLogger(__name__)
@@ -129,6 +137,7 @@ async def list_users(
     anomaly: bool | None = None,
     include_usage_totals: bool = True,
     tag: str | None = Query(None, max_length=32),
+    role: Literal["free", "pro", "internal", "admin"] | None = None,
     admin_id: str = Depends(verify_admin_access),
     op_store=Depends(get_operational_store),
 ) -> ListUsersResponse:
@@ -161,6 +170,8 @@ async def list_users(
       anomalously high vs. their prior 7-day average (today >= $1, history
       >= 3 days, today >= 5x avg).
     - tag: keep only users a user tag applies to (``unattended``, say).
+    - role: keep only accounts in that tier (``free``, ``pro``, ``internal``,
+      ``admin``). ``role_counts`` still counts every tier, unfiltered.
 
     Each user carries ``tags``, the user tags that apply to it.
 
@@ -190,6 +201,7 @@ async def list_users(
         anomaly=anomaly,
         include_usage_totals=include_usage_totals,
         tag=tag,
+        role=role,
     )
 
     status_counts = StatusCounts(
@@ -200,9 +212,15 @@ async def list_users(
         rejected=sc.get("rejected", 0),
         deleted=sc.get("deleted", 0),
     )
+    roles = sc.get("roles") or {}
+    role_counts = RoleCounts.model_validate(
+        {name: int(roles.get(name) or 0) for name in RoleCounts.model_fields}
+    )
 
     if not rows:
-        return ListUsersResponse(total=total, users=[], status_counts=status_counts)
+        return ListUsersResponse(
+            total=total, users=[], status_counts=status_counts, role_counts=role_counts
+        )
 
     tags_by_user = await op_store.get_tags_for_users([row["id"] for row in rows])
     users = []
@@ -222,6 +240,7 @@ async def list_users(
                 reviewed_at=row.get("reviewed_at"),
                 reviewed_by=row.get("reviewed_by"),
                 signup_reason=row.get("signup_reason"),
+                is_service_account=bool(row.get("is_service_account", False)),
                 admin_note=row.get("admin_note"),
                 created_at=row["created_at"],
                 last_login_at=row.get("last_login_at"),
@@ -238,7 +257,9 @@ async def list_users(
             )
         )
 
-    return ListUsersResponse(total=total, users=users, status_counts=status_counts)
+    return ListUsersResponse(
+        total=total, users=users, status_counts=status_counts, role_counts=role_counts
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -536,6 +557,122 @@ async def admin_get_user_cost_history(
             )
             for p in raw
         ],
+    )
+
+
+#: What a login name derived from a one- or two-character display name is
+#: padded with to reach the three-character minimum ("CI" becomes "ci-svc").
+_DERIVED_LOGIN_NAME_SUFFIX = "-svc"
+#: The longest login name :func:`normalize_login_name` accepts.
+_LOGIN_NAME_MAX_LENGTH = 32
+
+
+def derive_service_login_name(name: str) -> str | None:
+    """A valid login name made from display name *name*, or None when it has nothing to use.
+
+    Runs of anything but ASCII letters and digits become one ``-``; the result
+    is cut to the 32-character maximum and, below the 3-character minimum,
+    padded with :data:`_DERIVED_LOGIN_NAME_SUFFIX`. None for a name with no
+    ASCII letter or digit at all (the caller asks for a login name then).
+    """
+    slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+    slug = slug[:_LOGIN_NAME_MAX_LENGTH].rstrip("-")
+    if not slug:
+        return None
+    if len(slug) < 3:
+        slug += _DERIVED_LOGIN_NAME_SUFFIX
+    return normalize_login_name(slug)
+
+
+@router.post("/service-accounts", response_model=CreateServiceAccountResponse, status_code=201)
+async def create_service_account(
+    request: Request,
+    payload: CreateServiceAccountRequest,
+    actor: AuditActor = Depends(get_admin_audit_actor),
+    op_store=Depends(get_operational_store),
+) -> CreateServiceAccountResponse:
+    """Create a service account and issue its first API key.
+
+    A service account is a user row with no email and an unknowable random
+    password, flagged ``is_service_account``: browser sign-in refuses it and
+    it acts only through its API keys. Minting a lasting credential for a
+    new account needs the signed-in administrator to confirm it
+    (:func:`confirm_administrator`: a ``password``, an authenticator code or a
+    fresh single sign-on; 400 when missing or wrong, 403 for the admin token,
+    as for key creation).
+
+    ``login_name`` is checked like every login name (422); without one it is
+    derived from ``name``. 409 when another account holds it, including one
+    created concurrently. The account and its key are written together or
+    not at all.
+
+    Returns the plaintext API key ONLY ONCE. Save it immediately.
+
+    Requires: Admin authentication (JWT)
+    """
+    if not op_store:
+        raise HTTPException(500, "Database not configured")
+
+    # Settled before the administrator is asked to confirm, so a bad or taken
+    # name does not spend a password attempt or a single sign-on confirmation.
+    # The schema has already checked a given login name (normalize_login_name).
+    login_name = payload.login_name or derive_service_login_name(payload.name)
+    if login_name is None:
+        raise HTTPException(
+            422,
+            f"The name '{payload.name.strip()}' has no letters or digits to make a login name "
+            "from; enter a login name (3-32 letters, digits, '.', '_' or '-').",
+        )
+    if await op_store.get_user_by_login_name(login_name):
+        raise HTTPException(409, f"Login name '{login_name}' is already in use")
+
+    await confirm_administrator(
+        request,
+        op_store,
+        payload.password,
+        action=f"Creating service account {payload.name}",
+    )
+
+    user_id = generate_ulid()
+    # Nobody knows this password: it exists only so the row satisfies the
+    # same shape as a person's, and sign-in refuses service accounts anyway.
+    password_hash = await password_utils.hash_password_async(secrets.token_urlsafe(32))
+    plaintext_key = generate_api_key()
+    # The account, its role, its Default project and its key in one
+    # transaction: a failure leaves nothing to block a retry, and of two
+    # concurrent creates of one name the unique index lets one through.
+    try:
+        await op_store.create_service_account(
+            user_id=user_id,
+            login_name=login_name,
+            password_hash=password_hash,
+            user_name=payload.name.strip(),
+            role=payload.role,
+            key_hash=hash_api_key(plaintext_key),
+            key_prefix=plaintext_key[:12],
+            quota_daily_cost_usd=payload.quota_daily_cost_usd,
+            quota_monthly_cost_usd=payload.quota_monthly_cost_usd,
+            expires_at=payload.expires_at,
+            notes=payload.notes,
+            **native_quota_updates(payload),
+        )
+    except LoginNameTakenError as exc:
+        raise HTTPException(409, f"Login name '{login_name}' is already in use") from exc
+
+    await log_admin_action(
+        op_store,
+        action="create_service_account",
+        details={"login_name": login_name, "role": payload.role, "key_prefix": plaintext_key[:12]},
+        actor=actor,
+        target=AuditTarget.user(user_id),
+    )
+    return CreateServiceAccountResponse(
+        user_id=user_id,
+        login_name=login_name,
+        name=payload.name.strip(),
+        role=payload.role,
+        api_key=plaintext_key,
+        key_prefix=plaintext_key[:12],
     )
 
 

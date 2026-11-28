@@ -26,8 +26,8 @@ deleted.
 
 Expand only: new tables that earlier code never reads.
 
-Revision ID: 0025_openinfra
-Revises: 0024_removed_provider_env_keys
+Revision ID: 0026_openinfra
+Revises: 0025_service_accounts
 Create Date: 2026-11-27
 """
 
@@ -35,8 +35,8 @@ from __future__ import annotations
 
 from alembic import op
 
-revision = "0025_openinfra"
-down_revision = "0024_removed_provider_env_keys"
+revision = "0026_openinfra"
+down_revision = "0025_service_accounts"
 branch_labels = None
 depends_on = None
 compatibility = "expand"

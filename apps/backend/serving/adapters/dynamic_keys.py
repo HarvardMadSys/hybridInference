@@ -891,6 +891,23 @@ async def _list_route_bound_db_key_ids(operational_store: OperationalStore) -> s
     return key_ids
 
 
+async def providers_with_shared_db_keys(operational_store: OperationalStore) -> frozenset[str]:
+    """Return the providers whose active Keys-tab keys boot injects into catalog routes.
+
+    The keys :func:`apply_db_keys_at_boot` seeds into every adapter not bound to
+    a route key: active rows that no provider route config or candidate pins.
+    Read before the catalog registers, so a route left without a key of its
+    own can be judged before anything is built from it. Store errors propagate.
+    """
+    bound = await _list_route_bound_db_key_ids(operational_store)
+    rows = await operational_store.list_provider_keys(None)
+    return frozenset(
+        normalize_key_provider(row.provider)
+        for row in rows
+        if row.status == "active" and row.id not in bound
+    )
+
+
 async def load_min_role_declarations(operational_store: OperationalStore) -> None:
     """Load every known provider's tier declarations and reconcile the live pools.
 

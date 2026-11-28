@@ -267,6 +267,21 @@ def boot_value(key: str, default: str | None = None) -> str | None:
     return value if value is not None else fallback
 
 
+def cleared_by_admin(key: str) -> bool:
+    """Whether *key* resolves blank because a stored row empties it.
+
+    An administrator cleared the setting (on the Settings tab, or by removing a
+    provider key), as opposed to never setting it: an empty environment value
+    is never imported into a row (:func:`_import_environment`), so a blank that
+    comes from the environment, or from nothing at all, does not count. Judged
+    on the rows :func:`config_value` serves.
+    """
+    if key in _STATE.managed:
+        return False
+    row = _STATE.effective.get(key)
+    return row is not None and not row.value.strip()
+
+
 def _document_entry(key: str) -> ConfigEntry | None:
     """Return *key*'s entry when it is an application document, else ``None``.
 

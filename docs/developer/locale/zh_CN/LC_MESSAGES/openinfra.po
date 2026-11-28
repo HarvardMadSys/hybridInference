@@ -461,12 +461,6 @@ msgstr ""
 msgid "Storage"
 msgstr "存储"
 
-#: ../developer/openinfra.md:191
-msgid ""
-"The snapshots are kept in the `openinfra_*` tables (revision "
-"`0025_openinfra`):"
-msgstr "快照保存在 `openinfra_*` 表中（修订版本 `0025_openinfra`）："
-
 #: ../developer/openinfra.md:193
 msgid ""
 "**Live rows**, one per host, GPU and engine, overwritten by every "
@@ -599,12 +593,17 @@ msgstr ""
 
 #: ../developer/openinfra.md:41
 msgid ""
-"**Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Setup, "
-"Integrations) to a long random string, for example the output of `openssl"
-" rand -hex 32`. While it is empty, `POST /internal/openinfra/ingest` "
-"answers `404` and nothing is collected."
+"**Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Site & "
+"Setup, Integrations) to a long random string, for example the output of "
+"`openssl rand -hex 32`. While it is empty, `POST "
+"/internal/openinfra/ingest` answers `404` and nothing is collected."
 msgstr ""
-"**采集**。把 "
-"`OPENINFRA_INGEST_TOKEN`（Admin、Settings、Setup、Integrations）设为一个较长的随机字符串，例如"
-" `openssl rand -hex 32` 的输出。它为空时，`POST /internal/openinfra/ingest` 返回 "
-"`404`，不采集任何数据。"
+"**采集**。把 `OPENINFRA_INGEST_TOKEN`（Admin、Settings、Site & "
+"Setup、Integrations）设为一个较长的随机字符串，例如 `openssl rand -hex 32` 的输出。它为空时，`POST "
+"/internal/openinfra/ingest` 返回 `404`，不采集任何数据。"
+
+#: ../developer/openinfra.md:191
+msgid ""
+"The snapshots are kept in the `openinfra_*` tables (revision "
+"`0026_openinfra`):"
+msgstr "快照保存在 `openinfra_*` 表中（修订版本 `0026_openinfra`）："

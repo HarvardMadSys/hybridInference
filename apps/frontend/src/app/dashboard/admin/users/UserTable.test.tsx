@@ -123,6 +123,7 @@ function tableProps(
       activeWithinHours: null,
       anomaly: null,
       tag: null,
+      role: null,
       view: null,
     },
     onSortChange: vi.fn(),
