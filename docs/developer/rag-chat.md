@@ -1,19 +1,10 @@
 # Docs RAG Assistant
 
-The docs assistant is a retrieval-augmented-generation (RAG) chat feature: it
-answers users' questions about a deployment from that deployment's own **public
-user docs**. Both retrieval and generation go through the gateway itself.
-
-It is an early feature with known gaps; see [Limitations](#limitations). To
-run it, a deployment needs its documentation as Markdown, an index built from
-it, and an API key the assistant can call the gateway with. A checkout with no
-distribution has none of these, so the assistant answers `503` until you
-supply them.
+The docs assistant answers users' questions from the deployment's public user docs, using retrieval-augmented generation (RAG). It needs the docs as Markdown, an index built from them, and an API key to call the gateway with. Until all three exist it answers `503`; a checkout without a distribution has none of them. It is an early feature with known [limitations](#limitations).
 
 ## How it works
 
-`/v1/rag/chat` is a thin orchestrator: it retrieves in-process, then calls the
-gateway's **own** public API **as a user** for the model work.
+`/v1/rag/chat` retrieves in-process and calls the gateway's own public API, as a user, for the model work:
 
 ```text
    POST /v1/rag/chat  (JWT-gated)
@@ -24,169 +15,79 @@ gateway's **own** public API **as a user** for the model work.
      → SSE: sources event, then the proxied OpenAI chunks, then [DONE]
 ```
 
-Both inner calls present `RAG_API_KEY`, the assistant's own API key, so they go
-through the normal `/v1/embeddings` and `/v1/chat/completions` handlers: they
-are logged in `api_logs` and counted toward cost, quota and concurrency like any
-other request. They also carry `X-On-Behalf-Of: <user id>`, so that usage is
-charged to the signed-in user who asked rather than to the shared key, and
-counts against that user's own daily and monthly quotas (for an account with no
-API key, the daily quota its first key would get). The gateway honours the
-header only on requests made with `RAG_API_KEY`, and ignores it on every other
-key.
+Both calls present `RAG_API_KEY`, so they go through the normal `/v1/embeddings` and `/v1/chat/completions` handlers and are logged and counted toward cost, quota and concurrency like any request. Calling the router in-process would skip those checks. The calls also carry `X-On-Behalf-Of: <user id>`, so the signed-in user is charged and their daily and monthly quotas apply (an account without an API key gets the daily quota its first key would). The gateway honors that header only on requests made with `RAG_API_KEY`. Log rows carry `metadata.user_agent = "doc_assistant"`. An upstream `429` is passed through and may mean the user's daily quota is spent.
 
-- **Corpus:** the active distribution overlay's documentation source
-  (`<overlay>/content/docs/docs/source/*.md`) — the same markdown that builds
-  that deployment's public doc site. A checkout with no overlay has no corpus;
-  set `RAG_CORPUS_DIR` to your own documentation.
-- **Vector store:** a plain JSON file scanned with pure-Python cosine
-  similarity; a docs corpus is small enough not to need anything more. Like the
-  corpus, the index belongs to the distribution, not to this repository: its
-  default path is `<overlay>/content/rag/docs_index.json`, inside whichever
-  distribution the gateway runs. `RAG_INDEX_PATH` and `RAG_CORPUS_DIR` override
-  these two paths.
-- **Why call the gateway as a user (over HTTP) instead of the in-process
-  router?** So RAG requests are observable and metered. Calling the router or
-  an adapter directly would skip the per-request logging, cost, quota and
-  concurrency checks that live in the `/v1/*` handlers.
+The corpus is the active distribution overlay's `<overlay>/content/docs/docs/source/*.md`, the Markdown that builds its public doc site. The index is a JSON file searched with pure-Python cosine similarity, by default `<overlay>/content/rag/docs_index.json`. `RAG_CORPUS_DIR` and `RAG_INDEX_PATH` override these paths; without an overlay you must set them.
 
 ## Setting it up
 
-Set `RAG_API_KEY` to a valid user API key, and point `RAG_API_BASE_URL` at the
-gateway's own address; both are settings under **Integrations** on the admin
-console's Settings tab. The default, `http://localhost:8080/v1`, matches
-the port the Compose backend listens on; a deployment that binds the backend
-somewhere else must set it, or every RAG request fails at the self-call.
+1. Set `RAG_API_KEY` to a user API key, and `RAG_API_BASE_URL` to the gateway's own address. The default, `http://localhost:8080/v1`, is the Compose backend's port; if your backend listens elsewhere, every RAG request fails until you set it. Both are on the admin console's **Settings** tab, under **Setup** → **Integrations**.
+2. Build the index with a real embedding model, through a gateway:
 
-### Rebuilding the index
+   ```bash
+   RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
+   ```
 
-Build the index with the default `gateway` embedder, which calls a real
-embedding model through a gateway:
+   `RAG_GATEWAY_BASE_URL` chooses the gateway; it defaults to `http://localhost:8080/v1`, your own, because embedding is billable work. The key must be a user API key on that gateway. If the `DB_*` settings in `.env` reach the gateway's database, stored settings win over the command line; if not, the tool warns and uses the environment (with `DB_ENABLED=false` it doesn't try).
+3. Make the JSON file readable at `RAG_INDEX_PATH`. Compose mounts the overlay into the backend, so replacing the file under the overlay's `content/rag/` is enough; each process reloads the index when the file's modification time changes.
+4. Check `GET /v1/rag/status`.
 
-```bash
-RAG_CORPUS_DIR=path/to/docs RAG_GATEWAY_API_KEY=hyi-xxx make rag-ingest
-```
+Queries are embedded with the embedder recorded in the index. If the query vector's dimension doesn't match the index, the endpoint fails with `502`, so rebuild the index whenever you change embedders. For development and CI without a gateway, `RAG_EMBEDDER=hash make rag-ingest` builds an offline index with weak retrieval.
 
-When the `DB_*` settings in `.env` reach the gateway's database, the indexer
-reads the stored settings first, so a value stored on the Settings tab
-wins over one set on the command line. When they do not, it warns and uses the
-environment alone; with `DB_ENABLED=false` it does not try.
-
-To find out whether the committed index is still current without rebuilding
-it, run the check:
+To check whether the committed index still matches the corpus, without embedding anything or calling a gateway:
 
 ```bash
 PYTHONPATH=apps/backend uv run python -m serving.rag.ingest --check
 ```
 
-It exits `0` when the index matches the corpus, `1` when it has drifted and
-`2` when it could not tell. It reads the same settings a rebuild does, stored
-ones included, but it never embeds anything and never calls the gateway.
-
-`RAG_CORPUS_DIR` is only needed when your corpus is not the active overlay's
-`content/docs/docs/source`; without an overlay, ingest fails with a message
-telling you to set it.
-
-`RAG_GATEWAY_BASE_URL` defaults to `http://localhost:8080/v1` — embedding is
-billable work, so a clone draws on its own gateway rather than on whoever wrote
-the default. Point it at the gateway you want to embed through; the key must be
-a valid user API key on *that* gateway. Chunks are embedded with the same
-`RAG_EMBED_MODEL` the serving endpoint uses at query time, so query and
-document vectors share one space.
-
-For an offline run with no gateway/key (weak retrieval — dev/CI only):
-
-```bash
-RAG_EMBEDDER=hash make rag-ingest
-```
-
-> The serving endpoint embeds the query with whichever embedder built the index
-> (recorded in the index metadata) and **fails loud** (HTTP 502) if the query
-> vector's dimension doesn't match the index. Always rebuild after switching
-> embedders.
-
-### Deploying the index
-
-The index is a deployment artifact, not part of the image build: build it with
-`make rag-ingest` and make the resulting JSON file readable at
-`RAG_INDEX_PATH`. In the Compose deployment the overlay directory is mounted
-into the backend, so an index written into the overlay's `content/rag/` is
-picked up without an image rebuild, and replacing the file is enough.
-`/v1/rag/status` reports `index_loaded`, the embedder mode, and chunk count for
-a post-deploy check. If the embedding backend is unavailable at query time,
-`/v1/rag/chat` returns a graceful `503` rather than a 500.
+It exits `0` when the index is current, `1` when it has drifted and `2` when it cannot tell.
 
 ## Endpoints
 
-Both live under the gateway and authenticate with the dashboard JWT
-(`get_current_user`), so the Next.js chat page calls them with the session token
-it already holds.
+Both authenticate with the dashboard JWT (`get_current_user`), so the Next.js chat page calls them with the session token it already holds.
 
-- `GET /v1/rag/status` — whether the index is built, chunk count, models.
-- `POST /v1/rag/chat` — body `{ messages, top_k?, stream? }`. The generation
-  model is fixed server-side (`RAG_CHAT_MODEL`); it is **not** client-selectable,
-  so the endpoint can't be used to reach role-gated models.
-  - Streaming (default): SSE — first a `{"type":"sources", ...}` event, then
-    OpenAI-format completion chunks, then `[DONE]`.
-  - Non-streaming: `{ answer, sources, model }`.
-
-A request log row from the assistant has `metadata.user_agent = "doc_assistant"`.
-An upstream `429` is passed through to the caller, and may mean the user's own
-daily quota is used up.
-
-```bash
-curl -sN https://your-gateway.example/v1/rag/chat \
-  -H "Authorization: Bearer <jwt>" -H 'Content-Type: application/json' \
-  -d '{"messages":[{"role":"user","content":"How do I get an API key?"}]}'
-```
+- `GET /v1/rag/status` returns `index_loaded`, `num_chunks`, `embed_model`, `embedder_mode` and `chat_model`.
+- `POST /v1/rag/chat` takes `{ messages, top_k?, stream? }` (`top_k` 1–20). The model is `RAG_CHAT_MODEL`, fixed on the server, so the endpoint cannot reach role-gated models. Streaming (the default) sends a `{"type":"sources", ...}` event, the OpenAI-format chunks, then `[DONE]`; non-streaming returns `{ answer, sources, model }`. If the embedding or generation backend is unavailable, it answers `503`.
 
 ## Turning it off
 
-With an active distribution manifest, `features.rag: false` turns both
-endpoints off for everyone, admins included: they answer `403` before reading
-the index or calling a model. `true`, `null` or leaving the field out keeps the
-assistant on. A broken manifest configuration makes both endpoints answer
-`503`; see [Activating a manifest](distribution-customization.md#activating-a-manifest).
-The general model APIs are not affected either way.
+`features.rag: false` in the `SITE_CONFIGURATION` setting turns both endpoints off for everyone, admins included: they answer `403` before reading the index or calling a model. `true`, `null` or no value keeps them on. An invalid site configuration makes both answer `503`; see [Distribution customization](distribution-customization.md#activating-a-manifest). The other model APIs are not affected.
 
 ## Configuration
 
-Only `RAG_API_KEY` is required. The path defaults point inside the active distribution.
-Each of these is a [setting](configuration.md#settings-stored-in-the-database),
-under **Integrations** on the Settings tab.
+Only `RAG_API_KEY` is required. Each of these is a [stored setting](configuration.md#settings-stored-in-the-database) under **Integrations**.
 
 | Setting | Default | Purpose |
 |---|---|---|
-| `RAG_API_KEY` | _(unset)_ | User API key the handler calls the gateway with (**required** at serving time) |
-| `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the handler calls (self-call for logging/quota) |
-| `RAG_INDEX_PATH` | the overlay's `content/rag/docs_index.json`, if one is present | Vector index location |
-| `RAG_CORPUS_DIR` | the overlay's `content/docs/docs/source`, if one is present | Markdown corpus |
-| `RAG_EMBEDDER` | `gateway` | `gateway` (a real embedding model, via `RAG_EMBED_MODEL`) or `hash` (offline) |
-| `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway used by **ingest** (gateway mode) |
-| `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (gateway mode) |
-| `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer-generation model. Set it to a model your gateway serves: the default names a model this repository does not ship. |
-| `RAG_GATEWAY_API_KEY` | falls back to `LOCAL_API_KEY` | User API key **ingest** presents to `RAG_GATEWAY_BASE_URL`; must be valid on *that* gateway |
+| `RAG_API_KEY` | _(unset)_ | User API key the assistant calls the gateway with |
+| `RAG_API_BASE_URL` | `http://localhost:8080/v1` | Gateway the assistant calls |
+| `RAG_INDEX_PATH` | the overlay's `content/rag/docs_index.json` | Vector index |
+| `RAG_CORPUS_DIR` | the overlay's `content/docs/docs/source` | Markdown corpus |
+| `RAG_EMBEDDER` | `gateway` | `gateway` (a real model, `RAG_EMBED_MODEL`) or `hash` (offline) |
+| `RAG_GATEWAY_BASE_URL` | `http://localhost:8080/v1` | Gateway the ingest tool embeds through |
+| `RAG_GATEWAY_API_KEY` | falls back to `LOCAL_API_KEY` | User API key the ingest tool presents to `RAG_GATEWAY_BASE_URL` |
+| `RAG_EMBED_MODEL` | `bge-m3` | Embedding model id (`gateway` mode) |
+| `RAG_CHAT_MODEL` | `qwen3.6-35b` | Answer model. Set it to a model your gateway serves; this repository ships no such model. |
 | `RAG_TOP_K` | `4` | Chunks retrieved per query |
 | `RAG_MAX_TOKENS` | `1024` | Answer token budget |
 | `RAG_TEMPERATURE` | `0.3` | Generation temperature |
+| `RAG_CHUNK_MAX_CHARS` | `1200` | Largest chunk the ingest tool cuts, in characters |
+| `RAG_CHUNK_OVERLAP_CHARS` | `150` | Characters shared by neighboring chunks |
 
 ## Limitations
 
-- The index is refreshed manually (`make rag-ingest`), not on a schedule — it
-  can lag the docs until regenerated.
-- The `HashEmbedder` fallback exists only so the pipeline runs without the
-  gateway (dev/CI); its retrieval quality is weak.
-- No answer caching, no reranking, and history is truncated to the last few
-  turns. The store is loaded into memory per process (cached, mtime-invalidated).
+- The index is rebuilt by hand (`make rag-ingest`), so it can lag behind the docs.
+- There is no answer caching or reranking, and only the last six messages of history are sent with a question.
 
 ## Code map
 
 | Path | Role |
 |---|---|
-| `apps/backend/serving/rag/chunker.py` | Heading-aware markdown chunking |
-| `apps/backend/serving/rag/embedder.py` | `GatewayHTTPEmbedder` + offline `HashEmbedder` |
-| `apps/backend/serving/rag/store.py` | JSON vector store + cosine search |
-| `apps/backend/serving/rag/pipeline.py` | Prompt assembly + sources payload |
+| `apps/backend/serving/rag/chunker.py` | Heading-aware Markdown chunking |
+| `apps/backend/serving/rag/embedder.py` | `GatewayHTTPEmbedder` and the offline `HashEmbedder` |
+| `apps/backend/serving/rag/store.py` | JSON vector store and cosine search |
+| `apps/backend/serving/rag/pipeline.py` | Prompt assembly and sources payload |
 | `apps/backend/serving/rag/ingest.py` | `python -m serving.rag.ingest` CLI |
-| `apps/backend/serving/servers/routers/rag.py` | `/v1/rag/status` + `/v1/rag/chat` |
+| `apps/backend/serving/servers/routers/rag.py` | `/v1/rag/status` and `/v1/rag/chat` |
 | `apps/frontend/src/app/chat/page.tsx` | Chat UI (`/chat`, behind `ProtectedRoute`) |
 | `apps/frontend/src/lib/api/chat.ts` | Streaming SSE client |

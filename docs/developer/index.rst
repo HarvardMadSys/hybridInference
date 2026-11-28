@@ -2,46 +2,47 @@ HybridInference
 ===============
 
 HybridInference is an open-source LLM inference gateway. It puts one
-OpenAI-compatible HTTP API in front of a mix of inference servers you run
-yourself — vLLM, SGLang, Ollama, or anything else that speaks the OpenAI API —
-and hosted provider APIs, then decides per request which of them answers.
+OpenAI-compatible HTTP API in front of inference servers you run yourself
+(vLLM, SGLang, Ollama or any other OpenAI-compatible server) and hosted
+provider APIs, and picks for each request which of them answers.
 
-The idea the whole system is built around is that the *model id* a client asks
-for is decoupled from the *endpoint* that serves it. One published id can be
-backed by several routes at once, so traffic across them can be weighted,
-failed over when an endpoint degrades, priced, and logged — without the client
-changing a line.
+A client asks for a *model id*, and the gateway decides which *endpoint* serves
+it. One id can have several routes, so the gateway can split traffic by weight,
+fail over when an endpoint degrades, and price and log every request while the
+client keeps sending the same id.
 
-This is the documentation for the gateway software itself: running it,
-understanding it, extending it, and contributing to it. The source is at
-`github.com/HarvardMadSys/hybridInference
-<https://github.com/HarvardMadSys/hybridInference>`_, under the MIT license;
-bugs and questions go to its `issue tracker
-<https://github.com/HarvardMadSys/hybridInference/issues>`_.
+This site documents the gateway software, not any one deployment of it. Which
+models a gateway serves, and how to get an account on it, are up to its
+operator.
 
 What is in the box
 ------------------
 
-- **An OpenAI-compatible surface** — ``POST /v1/chat/completions``,
-  ``POST /v1/embeddings``, ``POST /v1/responses`` and ``GET /v1/models``, plus
-  an Anthropic Messages surface at ``/v1/messages`` and
-  ``/anthropic/v1/messages`` for clients that speak that protocol instead.
-- **A routing engine** — a per-model choice of router, weighted selection among
-  an id's routes, automatic fallback to the next route, and a per-endpoint
-  circuit breaker that pulls a failing endpoint out of rotation.
-- **Provider adapters** — a generic OpenAI-compatible adapter, which also
-  serves your own local servers, alongside dedicated adapters for OpenRouter,
-  Anthropic's direct API, Claude via Google Vertex, and Gemini.
-- **A web and admin console** — a Next.js app for sign-up and login, API keys,
-  usage and recent requests, a chat playground, and an admin area covering
-  users, model visibility, provider keys, route weights and analytics.
-- **Operational storage** — Postgres for accounts, API keys and a request log,
-  with the schema created on startup rather than by a migration tool.
+- **OpenAI-compatible API**: ``/v1/chat/completions``, ``/v1/embeddings``,
+  ``/v1/responses``, ``/v1/models`` and the Batch API (``/v1/files``,
+  ``/v1/batches``), plus Anthropic's Messages API at ``/v1/messages`` and
+  ``/anthropic/v1/messages``.
+- **Routing**: a router per model, weighted selection, fallback to the next
+  route and a circuit breaker per endpoint.
+- **Adapters**: a generic OpenAI-compatible adapter, which also serves local
+  servers, and dedicated adapters for OpenRouter, Anthropic, Claude on Google
+  Vertex and Gemini.
+- **Console**: a Next.js app for sign-up, API keys, usage, request history and
+  a chat playground, with an admin area for users, providers, models, routing
+  and settings.
+- **Postgres**: accounts, API keys, the request log and the gateway's
+  configuration. The schema comes only from the migrations in
+  ``apps/backend/migrations/``; the service issues no DDL.
 
-The backend is Python (3.11–3.13) under ``apps/backend/``, split into
-``serving/`` (HTTP surface, auth, adapters, storage, observability) and
-``routing/`` (route table, strategies, endpoint health, fallback). The console
-is Next.js under ``apps/frontend/``. The repository is MIT-licensed.
+The backend is Python 3.11–3.13 under ``apps/backend/``: ``serving/`` holds the
+HTTP API, authentication, adapters, storage and observability, and ``routing/``
+the route table, strategies, endpoint health and fallback. The console is
+Next.js under ``apps/frontend/``.
+
+A deployment keeps its identity, branding and model catalog in its own
+database, and its code and assets in a *distribution overlay* under
+``distributions/``. A fresh clone is therefore nobody's gateway but your own;
+see :doc:`distribution-customization`.
 
 Where to start
 --------------
@@ -64,8 +65,8 @@ Where to start
      - :doc:`adding-models`
    * - Support a provider whose API the gateway cannot speak yet
      - :doc:`provider-adapters`
-   * - Add a provider, a key or a model from the admin console, without
-       editing YAML or restarting
+   * - Add a provider, a key or a model from the admin console, without a
+       restart
      - :doc:`configuration`, under *Runtime configuration from the admin
        console*
    * - Change how an endpoint gets chosen, or write your own strategy
@@ -79,23 +80,23 @@ Where to start
    * - Look up a term such as *route*, *endpoint* or *distribution*
      - :doc:`glossary`
 
-Scope of this site
-------------------
+About the project
+-----------------
 
-These pages document the software, not any one installation of it. Which
-models a given gateway serves, and how to get an account on it, are the
-operator's to publish separately.
+HybridInference is developed by the `Harvard MadSys Lab
+<https://juncheng.seas.harvard.edu/>`_ at the Harvard John A. Paulson School of
+Engineering and Applied Sciences and published under the `MIT license
+<https://github.com/HarvardMadSys/hybridInference/blob/main/LICENSE>`_. Its
+RouteWise router is the subject of the lab's EuroSys '27 paper and ships
+separately as the MIT-licensed `llm-routewise
+<https://github.com/HarvardMadSys/RouteWise>`_ library; this gateway is its
+production reference integration.
 
-That separation is built into the repository: a deployment keeps its identity,
-its configuration-file locations and its feature switches in a *distribution
-overlay* under ``distributions/`` rather than in the code, which is why a fresh
-clone comes up as nobody's gateway but your own. :doc:`distribution-customization`
-explains how to configure and extend an overlay.
-
-.. Distribution-facing customization lives in three pages:
-   distribution-customization (capability matrix, manifest, branding,
-   upgrades), site-ui-modules (the public UI contract) and backend-extensions.
-   Extend them when adding a customization capability.
+The source is at `github.com/HarvardMadSys/hybridInference
+<https://github.com/HarvardMadSys/hybridInference>`_, and its `contributors page
+<https://github.com/HarvardMadSys/hybridInference/graphs/contributors>`_ lists
+everyone who has landed a change. Report bugs and ask questions on the `issue
+tracker <https://github.com/HarvardMadSys/hybridInference/issues>`_.
 
 .. toctree::
    :maxdepth: 2
@@ -111,7 +112,6 @@ explains how to configure and extend an overlay.
 
    architecture
    routing
-   routing-internals
    public-path-table
    glossary
 
@@ -122,8 +122,6 @@ explains how to configure and extend an overlay.
    adding-models
    add-local-model
    provider-adapters
-   openrouter
-   hpc-model-host
    claude-code-setup
    batches
    rag-chat
@@ -157,10 +155,3 @@ explains how to configure and extend an overlay.
 
    contributing
    translations
-   console-translations
-
-.. toctree::
-   :maxdepth: 2
-   :caption: Project
-
-   about

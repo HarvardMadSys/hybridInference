@@ -1,23 +1,23 @@
 # OpenInfra
 
-OpenInfra publishes the live state of the GPU hosts and inference engines a
-deployment runs itself, on a public console page, `/openinfra`. It shows each
-GPU's utilization, memory, power, temperature and interconnect; each host's CPU
-and memory; and each SGLang or vLLM engine's queue, KV cache, prefix-cache hits,
-token throughput and latencies, sampled every second. History runs from
-fifteen minutes to seven days. The page also shows requests and tokens served in
-the last hour and day, and the shape and latency of recent requests, without
-prompts, completions, addresses or request ids.
+OpenInfra is a public console page, `/openinfra`, with live metrics from the GPU
+hosts and inference engines a deployment runs itself: GPU utilization, memory,
+power, temperature and interconnect; host CPU and memory; and each SGLang or
+vLLM engine's queue, KV cache, prefix-cache hits, throughput and latencies.
+Metrics are sampled every second, with history from 15 minutes to 7 days.
+The page also shows the requests and tokens served in the last hour and day,
+and the token counts and latencies of recent requests, but never prompts,
+completions, addresses or request ids.
 
-It is off unless a deployment turns it on, in two separate steps: collecting
-and publishing.
+OpenInfra is off by default. Collecting and publishing are turned on
+separately, so a deployment can collect before it publishes.
 
 ## How the data gets there
 
-A small reporter runs on each GPU host, apart from the gateway. It reads the
-GPUs, the host and the engines locally, and every second posts one JSON
-snapshot to the gateway over HTTPS. The gateway stores the snapshots in its own
-PostgreSQL database, and the page reads them back.
+A small reporter runs on each GPU host. Every second it reads the GPUs, the host
+and the engines locally, and posts one JSON snapshot to the gateway over HTTPS.
+The gateway stores the snapshots in its PostgreSQL database, and the page reads
+them back.
 
 ```text
 GPU host: reporter ──POST /internal/openinfra/ingest──▶ edge ──▶ console ──▶ gateway ──▶ PostgreSQL
@@ -26,62 +26,55 @@ GPU host: reporter ──POST /internal/openinfra/ingest──▶ edge ──▶
 browser ──/openinfra──▶ console page ──GET /public-openinfra, /public-openinfra/history──▶ gateway
 ```
 
-- **Only outbound HTTPS from the GPU hosts.** The gateway never connects to a
-  host, so nothing on it needs to be reachable.
-- **Any address that reaches the gateway works.** It can be the public site,
-  or the backend's address on a private network. The gateway serves the ingest
-  route itself; the console only relays it (see
-  [The Public Path Table](public-path-table.md)).
-- **Any gateway replica can take a snapshot.** Replicas share the database,
-  and each scheduled job (rollups and retention, archives) runs on one replica
-  at a time.
-- **The routing engine does not read these metrics.** They feed the page only.
+The GPU hosts need only outbound HTTPS: the gateway never connects to them. A
+reporter can post to any address that reaches the gateway, the public site or
+the backend's address on a private network, since the console only relays the
+ingest route (see [The Public Path Table](public-path-table.md)). The routing
+engine does not read these metrics.
 
 ## Turning it on
 
-1. **Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Site & Setup,
-   Advanced settings, Integrations) to a long random string, for example the
-   output of `openssl rand -hex 32`. While it is empty,
+1. **Collect.** Set `OPENINFRA_INGEST_TOKEN` to a long random string, such as
+   the output of `openssl rand -hex 32`. While it is empty,
    `POST /internal/openinfra/ingest` answers `404` and nothing is collected.
-2. **Publishing.** Add `"openinfra": true` to `features` in the
-   `SITE_CONFIGURATION` document. The console then serves `/openinfra` and links
-   it from the header and footer, and `GET /public-openinfra` and its history
-   answer. Without the flag both answer `404`, even while reporters post, so a
-   deployment can collect before it publishes.
-3. **Optional settings**, all Integrations settings and all applied within
-   seconds:
-   - `OPENINFRA_ENGINE_ORDER`: engine names, comma-separated, in the order the
-     page shows their tabs. Engines not listed follow, the one that served the
-     most tokens in the last day first.
-   - `OPENINFRA_RETIRED_ENGINES`: engine ids, comma-separated, left out of the
-     page, the served totals, the history and exports. What they reported stays
-     stored, so removing an id brings it back. Retire an engine by its id
-     rather than relying on one engine replacing another: one endpoint may serve
-     several models, and the same localhost endpoint repeats across hosts.
-   - `OPENINFRA_RETENTION_DAYS`: how many days the per-second samples and
-     request events stay in the database once their week is archived; 7 by
-     default. `OPENINFRA_DELETE_UNARCHIVED` deletes them past it even without
-     an archive. See
-     [Retention and weekly archives](#retention-and-weekly-archives).
+2. **Install a reporter** on each GPU host, as described in
+   [Running a reporter on a GPU host](#running-a-reporter-on-a-gpu-host).
+3. **Publish.** Add `"openinfra": true` to `features` in the
+   `SITE_CONFIGURATION` document (see
+   [Application documents](configuration.md#application-documents)). The
+   header and footer then link to `/openinfra`, and the page's data endpoints
+   answer. Without the flag they answer `404` and the page says "OpenInfra is
+   not published for this site".
+
+The OpenInfra settings are in **Admin → Settings → Site & Setup → Advanced
+settings**, Integrations section, and apply within seconds:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `OPENINFRA_INGEST_TOKEN` | empty (not collecting) | The bearer token reporters present |
+| `OPENINFRA_ENGINE_ORDER` | empty | Engine names, comma-separated, in tab order. Unlisted engines follow, the one that served the most tokens in the last day first |
+| `OPENINFRA_RETIRED_ENGINES` | empty | Engine ids, comma-separated, to leave out of the page, the served totals, the history and exports. Their data stays stored; remove the id to bring it back |
+| `OPENINFRA_RETENTION_DAYS` | `7` | Days the per-second samples and request events stay in the database; `0` keeps everything. See [Retention and weekly archives](#retention-and-weekly-archives) |
+| `OPENINFRA_DELETE_UNARCHIVED` | off | Delete rows past the retention even without an archive directory |
+
+An engine that stops reporting stays on the page as offline until you retire
+its id.
 
 ### Pointing another deployment at this page
 
-A fleet should report to one gateway. A second deployment of the same fleet,
-such as a staging site, can link to that gateway's page instead of collecting
-its own copy: set `OPENINFRA_PUBLIC_URL` in the second deployment's console
-(frontend container) environment to the page's public HTTPS address, for
-example `https://gateway.example.org/openinfra`. The header and footer then link
-there, opening it in a new tab, and that deployment's `/openinfra` redirects
-there. Its own `features.openinfra` flag and ingest token are not needed and
-can stay unset; its `/public-openinfra` endpoints keep answering `404`. The
-value is read when the console starts, and recreating the console applies a
-change. A URL that is not HTTPS, or that carries credentials, is ignored with a
-warning.
+A fleet reports to one gateway. Another deployment of the same fleet, such as a
+staging site, can link to that gateway's page instead of collecting its own
+copy: set `OPENINFRA_PUBLIC_URL` in its console (frontend container)
+environment to the page's HTTPS address, such as
+`https://gateway.example.org/openinfra`, and recreate the console. Its header
+and footer then link there in a new tab, and its `/openinfra` redirects there.
+It needs neither the `features.openinfra` flag nor an ingest token. A URL that
+is not HTTPS, or that contains credentials, is ignored with a warning.
 
 ## Running a reporter on a GPU host
 
-The reporter is `ops/openinfra/reporter.py`. It uses only the Python standard
-library, so the host's system Python runs it, and it needs `nvidia-smi`. Copy
+The reporter, `ops/openinfra/reporter.py`, uses only the Python standard
+library, so the host's system Python runs it. It needs `nvidia-smi`. Copy
 `ops/openinfra/` to the host and write a node configuration, starting from
 `ops/openinfra/node.example.json`:
 
@@ -89,10 +82,10 @@ library, so the host's system Python runs it, and it needs `nvidia-smi`. Copy
 |---|---|
 | `node_id` | The host's id. GPU ids are `<node_id>:<index>`, so each host needs its own |
 | `hostname`, `region`, `cluster` | Shown on the page |
-| `flush_interval` | Seconds between snapshots; 1 by default. The gateway keeps one sample a second, so a shorter interval adds nothing |
-| `log_interval` | Seconds between the flushes the reporter logs; 60 by default, 0 logs every one |
-| `sglang` | The engines on the host, SGLang and vLLM alike. An empty list says the host has none |
-| `sglang[].url` | Where to scrape the engine: SGLang's `/v1/loads` (preferred) or `/metrics`, vLLM's `/metrics` |
+| `flush_interval` | Seconds between snapshots; 1 by default. The gateway keeps at most one sample a second |
+| `log_interval` | Seconds between log lines for flushes and for a repeating failure; 60 by default, 0 logs every flush |
+| `sglang` | The host's engines, SGLang and vLLM alike. `[]` means none; without the key the reporter scrapes a local SGLang on port 30000 |
+| `sglang[].url` | Where to scrape the engine: SGLang's `/v1/loads` (preferred) or `/metrics`, or vLLM's `/metrics` |
 | `sglang[].id` | The engine's id, unique across the fleet |
 | `sglang[].name` | Its tab on the page |
 | `sglang[].engine` | `sglang` or `vllm` |
@@ -106,49 +99,38 @@ OPENINFRA_URL=https://gateway.example.org OPENINFRA_TOKEN=... \
   python3 reporter.py --config node.json --once
 ```
 
-`ops/openinfra/openinfra-reporter.service` runs it under systemd, reading
-`OPENINFRA_URL`, `OPENINFRA_TOKEN` and `OPENINFRA_NODE_CONFIG` from
-`/etc/openinfra/reporter.env` (template: `ops/openinfra/reporter.env.example`).
-The unit's header lists the install commands. Keep the env file readable by root
-and the reporter's group only: it holds the token.
+`ops/openinfra/openinfra-reporter.service` runs the reporter under systemd, and
+its header lists the install commands. The unit reads `OPENINFRA_URL`,
+`OPENINFRA_TOKEN` and `OPENINFRA_NODE_CONFIG` from `/etc/openinfra/reporter.env`
+(template: `ops/openinfra/reporter.env.example`). Keep that file readable only
+by root and the reporter's group, because it holds the token.
 
-Engine details:
+What each source needs:
 
-- **SGLang.** Start it with `--enable-metrics`. The reporter reads `/v1/loads`
-  and the sibling `/metrics` for the request and token counters that give
-  requests per minute, time to first token and time per output token on every
-  flush. Without them, those come from the engine's container logs, read once a
-  minute and held in between, which needs `docker` (the docker group, or
-  `sudo -n docker`). An engine whose `/v1/loads` needs its API key, which the
-  reporter does not send, is scraped through `/metrics`.
-- **vLLM.** It has no `/v1/loads`: scrape `/metrics` and set
+- **SGLang.** Start it with `--enable-metrics`. Without it, requests per
+  minute, time to first token and time per output token come only from the
+  container logs, once a minute. If an engine's `/v1/loads` requires its API
+  key, point `url` at `/metrics`: the reporter sends no key.
+- **vLLM.** It has no `/v1/loads`: point `url` at `/metrics` and set
   `"engine": "vllm"`.
-- **DCGM (optional).** Tensor-core, DRAM, NVLink and PCIe charts need NVIDIA's
-  dcgm-exporter. Install it with the field list and override in
-  `ops/openinfra/dcgm/`; the reporter reads `http://127.0.0.1:9400/metrics`
-  when it answers, and reports everything else without it. A host without
-  DCGM gets its PCIe throughput from an `nvidia-smi dmon` the reporter keeps
-  running beside it.
+- **Recent requests** come from the engine's container logs, read once a
+  minute. This needs `docker` (the docker group, or `sudo -n docker`); without
+  it, everything else is still reported.
+- **DCGM (optional).** Tensor-core, DRAM and NVLink charts need NVIDIA's
+  dcgm-exporter, installed with the field list and override in
+  `ops/openinfra/dcgm/`. The reporter reads `http://127.0.0.1:9400/metrics`
+  when it answers. PCIe throughput comes from DCGM too, or from
+  `nvidia-smi dmon` without it.
 
-The reporter posts once per flush, all engines and GPUs together. It takes each
-snapshot in the middle of its second of wall-clock time and sends the time it
-took it, so network delay cannot put two snapshots in the same second; a
-snapshot that takes longer than the interval skips the next one rather than
-queueing it. When the gateway cannot be reached it sends the next snapshot on
-schedule; the snapshots in between are not kept. A failure that repeats is
-logged once per `log_interval`, with a count of the ones held back. A
-User-Agent some edges let through is sent; `OPENINFRA_USER_AGENT` overrides it.
-
-Command-line flags can stand in for a configuration file: `--dashboard` (the
-gateway address), `--token`, `--node-id`, `--hostname`, `--region`,
-`--cluster`, `--flush-interval`, `--log-interval` and a repeated
-`--sglang-url`.
+The reporter sends a `curl` User-Agent, because some edges refuse Python's
+default; `OPENINFRA_USER_AGENT` overrides it. Command-line flags can replace
+the configuration file: `--dashboard` (the gateway address), `--token`,
+`--node-id` and the others that `--help` lists.
 
 ## The ingest API
 
-`POST /internal/openinfra/ingest` takes one host's snapshot, with
-`Authorization: Bearer <token>` (or `x-ingest-token: <token>`) carrying
-`OPENINFRA_INGEST_TOKEN`:
+`POST /internal/openinfra/ingest` takes one host's snapshot. The token goes in
+`Authorization: Bearer <token>` or `x-ingest-token: <token>`:
 
 ```json
 {
@@ -175,145 +157,104 @@ gateway address), `--token`, `--node-id`, `--hostname`, `--region`,
 }
 ```
 
-- `ts` is when the reporter took the snapshot, in milliseconds by its own
-  clock. While that is within a minute of the gateway's clock the snapshot's
-  samples are stored at it, and otherwise at the gateway's time. It may be left
-  out. Whether a host is online is always the gateway's clock alone.
-- `sglang` holds every engine on the host, vLLM included (`engine` says which),
-  and may also be a single object. An engine sends parsed `metrics`, its raw
-  `prometheus` text, or both; text that exposes several models gives each model
-  its own engine row, `<id>:<model>`, and lists the server's request events
-  under each.
-- Parsing is lenient, so reporters of any age keep working: a number may arrive
-  as a numeric string, unknown fields are ignored, and a value of the wrong type
-  is dropped. A body of the wrong shape is refused whole.
-- A body carries at most 64 GPUs and 16 engines, keeps 20 request events per
-  engine, and is limited to 2 MiB. A request event more than 15 minutes older,
-  or more than a minute newer, than the snapshot is dropped, both by the
-  reporter's clock, and counted in the answer's `requests_dropped`. While the
-  reporter's clock is off, its request events move with its samples onto the
-  gateway's time.
+- `ts`, optional, is the snapshot time in milliseconds by the reporter's clock.
+  The gateway stores the snapshot at that time while it is within a minute of
+  its own clock, and at its own time otherwise.
+- `sglang` lists every engine on the host, vLLM included (`engine` says which).
+  An engine sends parsed `metrics`, raw `prometheus` text, or both. Prometheus
+  text that exposes several models gives each model its own engine,
+  `<id>:<model>`.
+- Unknown fields and values of the wrong type are ignored, so older reporters
+  keep working. A body of the wrong shape is refused whole.
+- A body may carry up to 64 GPUs and 16 engines, and up to 2 MiB. Only the
+  first 20 request events per engine are kept. A request event more than 15
+  minutes older or more than a minute newer than the snapshot is dropped and
+  counted in `requests_dropped`.
 
 | Answer | When |
 |---|---|
-| `200 {"ok": true, "gpus": N, "sglang": M}` | Committed, with `"requests_dropped": K` when request events were dropped |
+| `200 {"ok": true, "gpus": N, "sglang": M}` | Stored, with `"requests_dropped": K` when request events were dropped |
 | `400` | The body is not JSON, or not a snapshot; the message says why |
-| `401` | The token is missing or wrong. Checked before the body is read |
-| `404` | No token is configured: this deployment does not collect |
+| `401` | The token is missing or wrong. It is checked before the body is read |
+| `404` | No token is configured, so this deployment does not collect |
 | `408`, `413` | The body was too slow or too large |
-| `503` | No database, or the write failed; the next snapshot comes as usual |
+| `503` | No database, or the write failed. The reporter sends its next snapshot as usual |
 
 ## What the page reads
 
-Both reads are unauthenticated, serve only what the page shows, and answer
-`404` unless the deployment publishes OpenInfra.
+Both reads need no authentication, return only what the page shows, and answer
+`404` unless the deployment publishes OpenInfra. However many people ask, the
+gateway computes the dashboard at most once every 5 seconds and a history
+window at most once per point spacing (up to 30 seconds), and sends a matching
+`Cache-Control`.
 
 - `GET /public-openinfra`: the fleet's state (`healthy`, `busy`, `degraded` or
-  `offline`), fleet-wide figures, every host, GPU and engine (under `sglang`,
-  in tab order), the requests and tokens served in the last hour and day, and
-  each engine's 40 most recent requests.
+  `offline`), fleet-wide figures, every host, GPU and engine (engines under
+  `sglang`, in tab order), the requests and tokens served in the last hour and
+  day, and each engine's 40 most recent requests.
 - `GET /public-openinfra/history?hours=2&node=`: time series for every host, or
-  one, over the last `hours`, rounded up to one of 0.25, 0.5, 1, 2, 3, 6, 12,
-  24, 48, 72 and 168. A `node` that has never reported answers `404`. Each point
-  is the mean of the per-second samples in it, and `grain_ms` says how far
-  apart the points are:
+  for one, over the last `hours`, rounded up to one of 0.25, 0.5, 1, 2, 3, 6,
+  12, 24, 48, 72 or 168. Each point is the mean of the per-second samples in
+  it; `grain_ms` gives the spacing, from 5 seconds over 15 minutes to an hour
+  over 2 days or more. A `node` that has never reported answers `404`.
 
-  | Window | Points |
-  |---|---|
-  | 15 minutes | 5 seconds apart |
-  | 30 minutes | 10 seconds apart |
-  | 1 hour | 20 seconds apart |
-  | 2 and 3 hours | a minute apart |
-  | 6 to 24 hours | 20 minutes apart |
-  | 2 to 7 days | an hour apart |
-
-  The page offers 15 minutes, 2 hours, 24 hours and 7 days, and refreshes every
-  5 seconds over 15 minutes and every 30 seconds otherwise.
-
-Each answer is computed at most once every 5 seconds (the dashboard) or, for a
-history window, once per spacing of its points up to 30 seconds, however many
-people ask, and carries a matching `Cache-Control`.
-
-An administrator can download the data: `GET /admin/openinfra/export?days=30`
-(1 to 30 days) returns the identities, the served totals and the history as a
-JSON attachment, published or not.
+Administrators can download the data with the **Export** button on the page, or
+with `GET /admin/openinfra/export?days=30` (1 to 30 days): one JSON file with
+the identities, the served totals and the history. The API answers whether or
+not the page is published.
 
 ## Storage
 
-The snapshots are kept in the `openinfra_*` tables (revisions `0026_openinfra`
-and `0027_openinfra_archives`):
+The snapshots go to the `openinfra_*` tables:
 
-- **Live rows**, one per host, GPU and engine, overwritten by every snapshot.
-  A snapshot marks a GPU degraded at 85 °C or with ECC errors, and an engine
-  with more than 2000 queued requests or its GPUs at 95 %. Anything silent for
-  90 seconds reads as offline.
-- **Samples**, at most one per host, GPU and engine each second: the first
-  snapshot in each second is kept. The served totals add up each sample's rates
-  over that spacing. Samples from a release that kept one every 6 seconds stay,
-  each moved to its own second.
-- **Rollups** for 20-minute and hourly buckets, refreshed by the gateway's
-  scheduler one minute past every fifth minute, on one replica at a time. A
-  rollup keeps the means of its bucket's samples and the sums the served totals
-  need.
-- **Request events**, as the reporter reads them from the engine logs, each
-  stored once however often it is sent.
+- **Live rows**, one per host, GPU and engine, overwritten by each snapshot. A
+  GPU is degraded at 85 °C or with ECC errors. An engine is degraded with more
+  than 2000 queued requests, or when the utilization of one of its GPUs reaches
+  95 %. Anything silent for 90 seconds shows as offline.
+- **Samples**, at most one per host, GPU and engine each second. The first
+  snapshot in each second is kept.
+- **Rollups**: the means of the samples in 20-minute and hourly buckets,
+  refreshed one minute past every fifth minute.
+- **Request events** from the engine logs, each stored once.
 
-A sample row takes roughly 200 bytes for a GPU and 400 for an engine, index
-included, and each one gets 86,400 a day: a host with eight GPUs and two engines
-adds about 200 MB a day, 1.5 GB in the week the database keeps. Rollups add a
-few megabytes a year per host and are kept.
+A sample row takes about 200 bytes for a GPU and 400 for an engine, index
+included, so a host with eight GPUs and two engines adds about 200 MB a day, or
+1.5 GB over the default 7-day retention. Rollups add a few megabytes a year per
+host and are kept.
 
 ## Retention and weekly archives
 
-Samples and request events older than `OPENINFRA_RETENTION_DAYS` (7 by
-default) are deleted by the maintenance job that refreshes the rollups, a few
-minutes' worth at a time; 0 keeps everything. Live rows and rollups are kept,
-so the 24-hour and 7-day views reach back past the retention.
+The job that refreshes the rollups also deletes samples and request events
+older than `OPENINFRA_RETENTION_DAYS`, but only once their week is archived.
+Live rows and rollups are kept, so the 24-hour and 7-day views reach back past
+the retention.
 
-Before they go, each week is archived to `OPENINFRA_ARCHIVE_DIR`, a directory
-on the gateway's own filesystem and so an environment setting, not one under
-Admin. A job of its own, seven minutes past every hour, writes each week once it
-has ended (Monday 00:00 UTC) and an hour has passed, to a directory named for
-its Monday:
+The archives go to `OPENINFRA_ARCHIVE_DIR`, an environment variable rather than
+an Admin setting because it is a path on the gateway's own filesystem. Docker
+Compose sets it to `/app/var/data/openinfra-archive`, which is
+`var/data/openinfra-archive` in the deployment's checkout. Set it to an empty
+value in the overlay to turn archiving off; then nothing is deleted unless
+`OPENINFRA_DELETE_UNARCHIVED` is on. With more than one replica, point it at
+storage they all share, or run one gateway: the job runs on whichever replica
+holds its lock.
 
-```text
-<OPENINFRA_ARCHIVE_DIR>/2026-11-16/
-  manifest.json                    the week, and each file's rows and bytes
-  openinfra_gpu_samples.csv.gz     one gzip-compressed CSV per table, with a header row
-  openinfra_engine_samples.csv.gz
-  openinfra_cpu_samples.csv.gz
-  openinfra_request_events.csv.gz
-  openinfra_gpu_rollups.csv.gz     the week's 20-minute and hourly rollups
-  ...
-  openinfra_gpus.csv.gz            the hosts, GPUs and engines when it was written
-```
+At seven minutes past every hour, the archive job writes each week that ended
+(Monday 00:00 UTC) more than an hour ago to a directory named for its Monday,
+such as `<OPENINFRA_ARCHIVE_DIR>/2026-11-16/`. The directory holds one
+gzip-compressed CSV per table, with a header row, and a `manifest.json` that
+lists each file's rows and bytes. It appears only when complete, because it is
+written under a hidden name first, and is then recorded in `openinfra_archives`.
+A week of a host with eight GPUs and two engines compresses to about 200 MB;
+move old weeks elsewhere as you would any backup.
 
-- **Nothing is deleted before it is archived.** While `OPENINFRA_ARCHIVE_DIR`
-  is set, only weeks already archived are deleted, so a week stays in the
-  database until it is on disk, however long the directory cannot be written.
-  Without it nothing is deleted, unless `OPENINFRA_DELETE_UNARCHIVED` (an
-  Integrations setting, off by default) is on: then rows past the retention are
-  deleted unarchived.
-- **A week's directory is whole or absent.** It is written to a hidden
-  directory beside it and renamed into place once complete, then recorded in
-  `openinfra_archives` with the host that wrote it. A week with nothing in it
-  is skipped. Each table is read a host, GPU or engine at a time, in short
-  transactions, so a long archive holds back neither vacuum nor the rollups.
-- **Docker Compose** sets it to `/app/var/data/openinfra-archive`, which is
-  `var/data/openinfra-archive` in the deployment's checkout, outside the
-  container. Set it to an empty value in the overlay to turn archiving off. A
-  week of a host with eight GPUs and two engines compresses to roughly 200 MB;
-  move old weeks elsewhere as you would any backup.
-- **More than one replica**: the job runs on whichever replica holds its lock,
-  so point the setting at storage every replica shares, or run one gateway.
+`python -m serving.openinfra.archive` lists the weeks archived so far. With
+`--run`, it refreshes the rollups, archives and deletes once, as the jobs do.
+Run it where the gateway runs, with its `DB_*` settings and
+`OPENINFRA_ARCHIVE_DIR`.
 
-`python -m serving.openinfra.archive` lists the weeks archived so far; with
-`--run` it refreshes the rollups, archives and deletes once, as the jobs do. Run
-it where the gateway runs, with its `DB_*` settings and `OPENINFRA_ARCHIVE_DIR`.
-
-The files are plain CSV: times are milliseconds since the Unix epoch, and a
-sample's `bucket` is its `ts` divided by 1000. To look at a week again, read
-the files directly, or load one into a table of the same shape:
+The files are plain CSV. Times are milliseconds since the Unix epoch, and a
+sample's `bucket` is its `ts` divided by 1000. Read the files directly, or load
+one into a table of the same shape:
 
 ```bash
 gunzip -c openinfra_gpu_samples.csv.gz | psql -c "\copy openinfra_gpu_samples FROM STDIN CSV HEADER"
@@ -321,17 +262,17 @@ gunzip -c openinfra_gpu_samples.csv.gz | psql -c "\copy openinfra_gpu_samples FR
 
 ## Moving from the Cloudflare Worker
 
-OpenInfra was a Cloudflare Worker with its own D1 database before it moved
-into the gateway. The snapshot format is the same; only the address changes.
+These steps move OpenInfra from a Cloudflare Worker with a D1 database into the
+gateway. The snapshot format is the same; only the address changes.
 
 1. Deploy a gateway release that has OpenInfra and set
-   `OPENINFRA_INGEST_TOKEN`. Reusing the Worker's `INGEST_TOKEN` means the hosts
-   need only the new address.
+   `OPENINFRA_INGEST_TOKEN`. If you reuse the Worker's `INGEST_TOKEN`, the
+   hosts need only the new address.
 2. On each host, replace the reporter with `ops/openinfra/reporter.py` (it posts
    to `/internal/openinfra/ingest`, not `/api/ingest`) and point
-   `OPENINFRA_URL` at the gateway. Check that snapshots arrive with
-   `GET /admin/openinfra/export?days=1` before publishing.
-3. Export the D1 database and import it, from an environment with the gateway's
+   `OPENINFRA_URL` at the gateway. Before publishing, check that snapshots
+   arrive with `GET /admin/openinfra/export?days=1`.
+3. Export the D1 database and import it from an environment with the gateway's
    `DB_*` settings, such as the backend container:
 
    ```bash
@@ -340,27 +281,20 @@ into the gateway. The snapshot format is the same; only the address changes.
    python -m serving.openinfra.import_d1 openinfra.sql
    ```
 
-   What the gateway already holds wins: a host, GPU or engine row or a rollup
-   bucket it has is kept, and samples and request events are imported only
-   from before each host's, GPU's or engine's first one in the gateway, and
-   never into a week already archived; it holds the archive job's lock while it
-   runs. The import can therefore run after the switch, and again. Imported
-   samples older than the retention are archived and deleted by the jobs' next
-   runs.
+   The import never overwrites what the gateway already holds and never writes
+   into an archived week, so you can run it after the switch, and again.
 4. List the engines the Worker had retired in `OPENINFRA_RETIRED_ENGINES`.
-5. Turn on `features.openinfra`, send the old dashboard's address to
+5. Turn on `features.openinfra`, redirect the old dashboard's address to
    `/openinfra`, and retire the Worker.
 
 ## Limitations
 
-- A reporter keeps nothing while the gateway is unreachable.
-- The ingest endpoint has no rate limit of its own; the token is the gate, so
-  make it long and random.
-- The served totals are estimates: they add up each sample's rates rather than
-  count requests, and the last day is summed from 20-minute rollups, each
-  bucket's mean rate over the part of it inside the day. A bucket in which a
-  reporter started or stopped counts as if it had reported throughout.
-- The page's finest points are 5-second means. The per-second samples are in
-  the database for the retention and in the weekly archives.
-- A request event that reaches the gateway more than 15 minutes after it
-  happened is dropped.
+- A reporter keeps nothing while the gateway is unreachable: the snapshots from
+  that time are lost.
+- The ingest endpoint has no rate limit of its own. The token is the only gate,
+  so make it long and random.
+- The served totals are estimates. They add up sampled rates rather than count
+  requests, and the last day is summed from 20-minute rollups. A bucket in
+  which a reporter started or stopped counts as if it had reported throughout.
+- The page's finest points are 5-second means. The per-second samples stay in
+  the database for the retention period, and in the weekly archives.
