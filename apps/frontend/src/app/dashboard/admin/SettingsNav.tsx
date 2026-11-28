@@ -1,6 +1,6 @@
 'use client';
 
-import { Fragment, useEffect, useRef, type ReactNode } from 'react';
+import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react';
 
 import { revealHorizontally } from '@/components/ui/revealHorizontally';
 
@@ -23,12 +23,34 @@ export interface SettingsNavTab<K extends string> {
   status?: string;
 }
 
+/** The width from which the tabs are a column (Tailwind's `lg`). */
+const COLUMN_QUERY = '(min-width: 1024px)';
+
+/** Whether the tabs are a column now: a row until the browser says otherwise. */
+function useColumn(): boolean {
+  const [column, setColumn] = useState(false);
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return undefined;
+    const query = window.matchMedia(COLUMN_QUERY);
+    const update = () => setColumn(query.matches);
+    update();
+    query.addEventListener('change', update);
+    return () => query.removeEventListener('change', update);
+  }, []);
+  return column;
+}
+
 /**
  * The tabs of Admin → Settings, as one ARIA tablist. On a wide screen it is a
  * column beside the tab on screen, under the headings of its groups; on a
  * narrow one, a row that scrolls sideways and keeps the chosen tab in view,
  * with the headings left out. The headings are hidden from assistive
  * technology, whose tablist holds only tabs: each tab's name says what it holds.
+ *
+ * The keyboard moves as in any tablist: Tab reaches the chosen tab only, the
+ * arrow keys (either pair, whichever way the list runs), Home and End move
+ * between tabs, and Enter or Space opens the one with focus. Moving does not
+ * open a tab: each opened one changes the address.
  */
 export function SettingsNav<K extends string>({
   label,
@@ -42,6 +64,25 @@ export function SettingsNav<K extends string>({
   onSelect: (key: K) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
+  const column = useColumn();
+
+  const moveFocus = (event: KeyboardEvent<HTMLDivElement>) => {
+    const buttons = Array.from(ref.current?.querySelectorAll<HTMLElement>('[role="tab"]') ?? []);
+    const index = buttons.findIndex((button) => button === event.target);
+    if (index < 0) return;
+    const last = buttons.length - 1;
+    const next = {
+      ArrowDown: index === last ? 0 : index + 1,
+      ArrowRight: index === last ? 0 : index + 1,
+      ArrowUp: index === 0 ? last : index - 1,
+      ArrowLeft: index === 0 ? last : index - 1,
+      Home: 0,
+      End: last,
+    }[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    buttons[next].focus();
+  };
 
   // Only the row scrolls sideways: as a column the list is as wide as it is.
   useEffect(() => {
@@ -58,6 +99,8 @@ export function SettingsNav<K extends string>({
       ref={ref}
       role="tablist"
       aria-label={label}
+      aria-orientation={column ? 'vertical' : 'horizontal'}
+      onKeyDown={moveFocus}
       className="-mx-1 flex gap-1 overflow-x-auto px-1 py-1 [scrollbar-width:thin] lg:mx-0 lg:flex-col lg:gap-0.5 lg:overflow-visible lg:p-0"
     >
       {tabs.map((tab, index) => {
@@ -80,6 +123,8 @@ export function SettingsNav<K extends string>({
               aria-selected={isActive}
               aria-controls={tab.panelId}
               aria-label={tab.status ? `${tab.label}${tab.status}` : undefined}
+              // One stop in the page's tab order: the chosen tab.
+              tabIndex={isActive ? 0 : -1}
               onClick={() => onSelect(tab.key)}
               className={`flex shrink-0 items-center justify-between gap-2 whitespace-nowrap rounded-md px-3 py-1.5 text-left text-[13px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-gray-400 ${
                 isActive

@@ -458,14 +458,6 @@ export function SettingsTab({
     });
   };
 
-  if (!editor.settled) {
-    return (
-      <div className="mt-6">
-        <AdminLoading />
-      </div>
-    );
-  }
-
   const { filtering } = editor;
 
   // While searching, the runtime settings that match join the configuration
@@ -504,25 +496,50 @@ export function SettingsTab({
 
   // A tab with nothing to show on this gateway is not listed: Other until a
   // later backend brings something for it, a configuration tab while an older
-  // backend has no configuration to read.
-  const tabs = SETTINGS_TABS.filter((tab) => blocksOf(tab).some(hasContent));
+  // backend has no configuration to read. The tab the address names stays
+  // listed while the runtime settings it may hold are on their way.
+  const tabs = SETTINGS_TABS.filter(
+    (tab) => blocksOf(tab).some(hasContent) || (runtimeLoading && tab.key === activeTab),
+  );
   const currentTab = tabs.some((tab) => tab.key === activeTab) ? activeTab : tabs[0].key;
 
-  const selectTab = (key: SettingsTabKey) => {
+  // Once both reads have answered, a tab the address names that this gateway
+  // does not list opens the Overview, and the address says so.
+  const unlisted =
+    editor.settled && !runtimeLoading && !filtering && !tabs.some((tab) => tab.key === activeTab);
+  useEffect(() => {
+    if (!unlisted) return;
+    setActiveTab(DEFAULT_SETTINGS_TAB);
+    router.replace(`${pathname}${window.location.hash}`, { scroll: false });
+  }, [unlisted, pathname, router]);
+
+  if (!editor.settled) {
+    return (
+      <div className="mt-6">
+        <AdminLoading />
+      </div>
+    );
+  }
+
+  /** Show a tab, and say so in the address: with `hash`, at the section it names. */
+  const selectTab = (key: SettingsTabKey, hash?: string) => {
     setActiveTab(key);
-    router.replace(key === DEFAULT_SETTINGS_TAB ? pathname : `${pathname}?tab=${key}`, {
-      scroll: false,
-    });
+    const address = key === DEFAULT_SETTINGS_TAB ? pathname : `${pathname}?tab=${key}`;
+    router.replace(hash ? `${address}#${hash}` : address, { scroll: false });
     // A tab chosen far down a long one opens at its top, not partway down it.
     const content = contentRef.current;
-    if (content && content.getBoundingClientRect().top < 0) {
+    if (!hash && content && content.getBoundingClientRect().top < 0) {
       content.scrollIntoView?.({ block: 'start' });
     }
   };
 
-  /** Open a tab, and the section `hash` names on it, as a link to it would. */
+  /**
+   * Open a tab, and the section `hash` names on it, as a link to it would: the
+   * address keeps the hash, and the page's link handling opens the section's
+   * Advanced, if it is under one, and scrolls to it.
+   */
   const openTab = (key: SettingsTabKey, hash?: string) => {
-    selectTab(key);
+    selectTab(key, hash);
     if (!hash) return;
     requestedAnchor.current = hash;
     anchorHandled.current = false;
@@ -902,7 +919,7 @@ export function SettingsTab({
                   group: tab.group ? GROUP_LABELS.get(tab.group) : undefined,
                   tabId: tabId(tab.key),
                   panelId: panelId(tab.key),
-                  meta: <TabMeta {...counts} />,
+                  meta: counts.dirty || counts.missing ? <TabMeta {...counts} /> : undefined,
                   status: tabStatus(counts),
                 };
               })}

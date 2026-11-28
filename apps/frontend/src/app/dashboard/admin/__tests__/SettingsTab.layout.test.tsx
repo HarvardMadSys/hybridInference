@@ -483,9 +483,11 @@ describe('Settings section links', () => {
 
     await expectScrolledTo(() => screen.getByRole('region', { name: 'Alerts' }));
     expectSelected('Alerts');
-    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings?tab=alerts', {
-      scroll: false,
-    });
+    // The address says where, as the link's would: a reload or a share lands there too.
+    expect(replaceMock).toHaveBeenLastCalledWith(
+      '/dashboard/admin/settings?tab=alerts#config-alerts',
+      { scroll: false },
+    );
   });
 });
 
@@ -573,6 +575,100 @@ describe('Admin → Settings sub-tabs', () => {
 
     expect(sectionsShown()).toEqual(sections);
     expect(screen.queryByRole('button', { name: 'Advanced settings' })).not.toBeInTheDocument();
+  });
+
+  it('opens the Overview, and says so in the address, for a tab this gateway does not list', async () => {
+    // Nothing for Other: no category no tab names, and no runtime setting no group takes.
+    vi.mocked(getConfig).mockResolvedValueOnce({
+      ...CONFIG,
+      entries: CONFIG.entries.filter((item) => item.category !== 'future'),
+    });
+    let finishRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRuntime = resolve;
+      }),
+    );
+    await renderSettings(undefined, { initialTab: 'other' });
+
+    // Its runtime settings may be on their way: the tab it names waits, listed.
+    await screen.findByRole('tab', { name: 'Other' });
+    expectSelected('Other');
+    expect(replaceMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      finishRuntime({ settings: [runtime('log_full_payload', false)] });
+    });
+    expect(screen.queryByRole('tab', { name: 'Other' })).not.toBeInTheDocument();
+    expectSelected('Overview');
+    expect(replaceMock).toHaveBeenLastCalledWith('/dashboard/admin/settings', { scroll: false });
+  });
+
+  it('keeps the tab the address names once its runtime settings arrive', async () => {
+    let finishRuntime!: (value: { settings: RuntimeSettingItem[] }) => void;
+    vi.mocked(getConfig).mockResolvedValueOnce({
+      ...CONFIG,
+      entries: CONFIG.entries.filter((item) => item.category !== 'future'),
+    });
+    vi.mocked(listRuntimeSettings).mockReturnValueOnce(
+      new Promise((resolve) => {
+        finishRuntime = resolve;
+      }),
+    );
+    await renderSettings(undefined, { initialTab: 'other' });
+    await screen.findByRole('tab', { name: 'Other' });
+
+    await act(async () => {
+      finishRuntime({ settings: [runtime('mystery_knob', 5)] });
+    });
+    expectSelected('Other');
+    expect(screen.getByLabelText('mystery_knob value')).toBeVisible();
+    expect(replaceMock).not.toHaveBeenCalled();
+  });
+
+  it('moves between tabs with the keyboard, and opens one on Enter or a click', async () => {
+    await renderLoaded();
+    const tablist = screen.getByRole('tablist', { name: 'Settings sections' });
+    const tabs = within(tablist).getAllByRole('tab');
+    // One stop in the tab order: the chosen tab.
+    expect(tabs.map((tab) => tab.tabIndex)).toEqual(tabs.map((_, index) => (index === 0 ? 0 : -1)));
+
+    tabs[0].focus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowDown' });
+    expect(tabs[1]).toHaveFocus();
+    fireEvent.keyDown(tabs[1], { key: 'ArrowRight' });
+    expect(tabs[2]).toHaveFocus();
+    fireEvent.keyDown(tabs[2], { key: 'End' });
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+    // Past either end, around to the other.
+    fireEvent.keyDown(tabs[tabs.length - 1], { key: 'ArrowDown' });
+    expect(tabs[0]).toHaveFocus();
+    fireEvent.keyDown(tabs[0], { key: 'ArrowUp' });
+    expect(tabs[tabs.length - 1]).toHaveFocus();
+    fireEvent.keyDown(tabs[tabs.length - 1], { key: 'Home' });
+    expect(tabs[0]).toHaveFocus();
+
+    // Moving opens nothing; the tab with focus opens as a button does.
+    fireEvent.keyDown(tabs[0], { key: 'ArrowLeft' });
+    expectSelected('Overview');
+    expect(replaceMock).not.toHaveBeenCalled();
+    fireEvent.click(tabs[tabs.length - 1]);
+    expectSelected('Other');
+    expect(tabs[tabs.length - 1].tabIndex).toBe(0);
+    expect(tabs[0].tabIndex).toBe(-1);
+  });
+
+  it('shows a note beside a tab only while it has something to note', async () => {
+    await renderLoaded('Routing');
+    const routing = screen.getByRole('tab', { name: 'Routing' });
+    expect(routing.querySelector('[aria-hidden="true"]')).toBeNull();
+
+    openAdvanced();
+    fireEvent.change(screen.getByLabelText('Request timeout (seconds)'), {
+      target: { value: '90' },
+    });
+    const changed = screen.getByRole('tab', { name: 'Routing, unsaved changes' });
+    expect(changed.querySelector('[aria-hidden="true"]')).not.toBeNull();
   });
 
   it('heads each tab with its name and what it holds', async () => {
