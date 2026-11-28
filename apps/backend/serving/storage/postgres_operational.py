@@ -3599,6 +3599,48 @@ class PostgresOperationalStore(
             )
         return dict(row) if row else None
 
+    # -- API key authorization codes -----------------------------------------
+
+    async def create_api_key_authorization_code(
+        self,
+        *,
+        code_hash: str,
+        user_id: str,
+        callback_url: str,
+        code_challenge: str,
+        expires_at: datetime,
+    ) -> None:
+        """Insert a one-time code a user approved for an application."""
+        async with self._pool.acquire() as conn:
+            await conn.execute(
+                "INSERT INTO api_key_authorization_codes "
+                "(code_hash, user_id, callback_url, code_challenge, expires_at) "
+                "VALUES ($1, $2, $3, $4, $5)",
+                code_hash,
+                user_id,
+                callback_url,
+                code_challenge,
+                expires_at,
+            )
+            # Codes live minutes and are written once per approval, so the
+            # sweep rides on issuance, as for identity codes, rather than on a
+            # scheduled job.
+            await conn.execute(
+                "DELETE FROM api_key_authorization_codes "
+                "WHERE expires_at < NOW() - INTERVAL '1 hour'"
+            )
+
+    async def consume_api_key_authorization_code(self, code_hash: str) -> Row | None:
+        """Atomically claim an unused, unexpired API key authorization code."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                "UPDATE api_key_authorization_codes SET consumed_at = NOW() "
+                "WHERE code_hash = $1 AND consumed_at IS NULL AND expires_at > NOW() "
+                "RETURNING user_id, callback_url, code_challenge",
+                code_hash,
+            )
+        return dict(row) if row else None
+
     # -- inference grants ----------------------------------------------------
 
     async def get_quota_context_for_user(self, user_id: str) -> list[Row]:

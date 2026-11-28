@@ -106,7 +106,7 @@ middlewares. From the outside in:
 10. `RequestBodyLimitMiddleware`: `413` for a body over `REQUEST_MAX_BODY_MB`
     (default 32 MiB), checked against `Content-Length` and again as bytes
     arrive. Batch uploads use `BATCH_MAX_BODY_MB` instead. Control routes get
-    256 KiB (`/auth/`, `/user/`, `/internal/`, `/v1/identity/`,
+    256 KiB (`/auth/`, `/user/`, `/internal/`, `/v1/identity/`, `/v1/auth/`,
     `/v1/batch_webhook`) or 1 MiB (`/admin/`), because FastAPI decodes a body
     before authentication runs. The few routes that need a large body read it
     only after authentication.

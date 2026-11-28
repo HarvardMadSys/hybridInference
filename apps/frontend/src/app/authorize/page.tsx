@@ -18,7 +18,8 @@ import { switchAccount as accountToken } from '@/lib/api/auth';
 import { createAuthorizationCode } from '@/lib/api/identity';
 import { getErrorMessage } from '@/lib/utils/errors';
 import { navigateTo } from '@/lib/utils/navigation';
-import { userAccountLabel, userDisplayName } from '@/lib/utils/userLabel';
+import { userAccountLabel } from '@/lib/utils/userLabel';
+import { AuthorizeAccountPicker } from '@/components/auth/AuthorizeAccountPicker';
 import { Button } from '@/components/ui/Button';
 import { Card } from '@/components/ui/Card';
 import { useT } from '@/components/providers/useT';
@@ -208,45 +209,17 @@ function AuthorizeContent() {
 
         <div className="mt-8 space-y-5">
           {choosing && (
-            <fieldset>
-              <legend className="sr-only">{t('auth.authorize.account_legend', 'Account')}</legend>
-              <ul className="divide-y divide-gray-100 overflow-hidden rounded-lg border border-gray-200">
-                {accounts.map((account) => {
-                  const noAgent = account.signed_in && account.agent_access === false;
-                  return (
-                    <li key={account.id} className="flex items-center gap-3 px-4 py-3">
-                      <input
-                        id={`account-${account.id}`}
-                        type="radio"
-                        name="account"
-                        value={account.id}
-                        checked={chosen === account.id}
-                        disabled={!account.signed_in || noAgent}
-                        onChange={() => setPicked(account.id)}
-                      />
-                      <label htmlFor={`account-${account.id}`} className="min-w-0 flex-1">
-                        <span className="block truncate text-sm font-medium text-gray-900">
-                          {userDisplayName(account)}
-                        </span>
-                        <span className="block truncate text-xs text-gray-500">
-                          {userAccountLabel(account)}
-                          {noAgent &&
-                            ` · ${t('auth.authorize.no_agent_access', 'No access to this application')}`}
-                        </span>
-                      </label>
-                      {!account.signed_in && (
-                        <a
-                          className="shrink-0 text-sm font-medium text-blue-600 hover:text-blue-700"
-                          href={addAccount(account.email || account.login_name)}
-                        >
-                          {t('auth.authorize.sign_in_again', 'Sign in again')}
-                        </a>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            </fieldset>
+            <AuthorizeAccountPicker
+              accounts={accounts}
+              chosen={chosen}
+              onPick={setPicked}
+              signInAgainHref={(account) => addAccount(account.email || account.login_name)}
+              unavailableNote={(account) =>
+                account.agent_access === false
+                  ? t('auth.authorize.no_agent_access', 'No access to this application')
+                  : null
+              }
+            />
           )}
 
           {error && (

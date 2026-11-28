@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-27 05:51-0400\n"
+"POT-Creation-Date: 2026-11-28 14:27+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,7 +18,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
 #: ../developer/glossary.md:1
 msgid "Glossary"
@@ -261,14 +261,28 @@ msgid ""
 msgstr "让身份提供方中的某个身份登录到某个账号的记录。一个账号可以关联多个身份提供方。"
 
 #: ../developer/glossary.md:97
+msgid "API key authorization"
+msgstr ""
+"API key 授权（API key authorization）"
+
+#: ../developer/glossary.md:98
+msgid ""
+"A user approving an application in the console, after which the "
+"application receives an API key on the user's own account. [API Key "
+"Authorization](api-key-authorization.md) explains how to allow an "
+"application."
+msgstr ""
+"用户在控制台中批准某个应用，随后该应用得到用户自己账号上的一个 API key。[API key 授权](api-key-authorization.md)说明如何允许一个应用。"
+
+#: ../developer/glossary.md:102
 msgid "Deployments"
 msgstr "部署"
 
-#: ../developer/glossary.md:99
+#: ../developer/glossary.md:104
 msgid "Distribution"
 msgstr "发行版（distribution）"
 
-#: ../developer/glossary.md:100
+#: ../developer/glossary.md:105
 msgid ""
 "One deployment's code, assets and Compose settings, kept in "
 "`distributions/<name>/`. Its application settings (identity, branding, "
@@ -278,21 +292,21 @@ msgstr ""
 "一个部署的代码、资源和 Compose 设置，放在 `distributions/<name>/` "
 "中。它的应用设置（站点信息、品牌、模型目录）保存在数据库里。`distributions/example/` 是教程。"
 
-#: ../developer/glossary.md:104
+#: ../developer/glossary.md:109
 msgid "Overlay"
 msgstr "overlay"
 
-#: ../developer/glossary.md:105
+#: ../developer/glossary.md:110
 msgid ""
 "The `distributions/<name>/` directory itself, mounted over the neutral "
 "image instead of built into it."
 msgstr "`distributions/<name>/` 目录本身，它挂载在中立镜像之上，而不是构建进镜像。"
 
-#: ../developer/glossary.md:108
+#: ../developer/glossary.md:113
 msgid "Manifest"
 msgstr "manifest"
 
-#: ../developer/glossary.md:109
+#: ../developer/glossary.md:114
 msgid ""
 "The retired configuration file `distributions/<name>/distribution.yaml`. "
 "Its settings now live in Admin's `SITE_CONFIGURATION` document and "
@@ -303,11 +317,11 @@ msgstr ""
 "`SITE_CONFIGURATION` 文档中，启动时不再读取它；`python -m serving.config.manage "
 "import-legacy` 可以把旧文件导入一次。"
 
-#: ../developer/glossary.md:114
+#: ../developer/glossary.md:119
 msgid "Dry run and active"
 msgstr "试运行与生效（dry run / active）"
 
-#: ../developer/glossary.md:115
+#: ../developer/glossary.md:120
 msgid ""
 "The modes of the retired `DISTRIBUTION_CONFIG_MODE` setting: `active` "
 "applied a manifest, and the dry run (`dark`) only compared it."
@@ -315,21 +329,21 @@ msgstr ""
 "已停用的 `DISTRIBUTION_CONFIG_MODE` 设置的两种模式：`active` 会应用 "
 "manifest，试运行（`dark`）只做比较。"
 
-#: ../developer/glossary.md:118
+#: ../developer/glossary.md:123
 msgid "Operational store"
 msgstr "运行数据存储（operational store）"
 
-#: ../developer/glossary.md:119
+#: ../developer/glossary.md:124
 msgid ""
 "The Postgres tables that hold accounts, API keys and everything changed "
 "in the admin console."
 msgstr "保存账号、API key 以及在管理控制台中所做的一切修改的 Postgres 表。"
 
-#: ../developer/glossary.md:122
+#: ../developer/glossary.md:127
 msgid "Setting"
 msgstr "设置项（setting）"
 
-#: ../developer/glossary.md:123
+#: ../developer/glossary.md:128
 #, python-brace-format
 msgid ""
 "A value the gateway reads by name, such as `SMTP_PASSWORD` or a `${VAR}` "
@@ -342,11 +356,11 @@ msgstr ""
 " Settings 标签页上编辑；环境变量只提供初始值。见[存储在数据库中的设置项](configuration.md#settings-"
 "stored-in-the-database)。"
 
-#: ../developer/glossary.md:129
+#: ../developer/glossary.md:134
 msgid "Live group"
 msgstr "实时配置组"
 
-#: ../developer/glossary.md:130
+#: ../developer/glossary.md:135
 msgid ""
 "Settings the gateway applies together without a restart once an operator "
 "activates the group: every backend process validates the set, switches to"
@@ -358,11 +372,11 @@ msgstr ""
 "`alerts.runtime` 这一组。见[无需重启即可生效的设置项](configuration.md#settings-that-"
 "apply-without-a-restart)。"
 
-#: ../developer/glossary.md:135
+#: ../developer/glossary.md:140
 msgid "First-run setup"
 msgstr "首次运行设置（first-run setup）"
 
-#: ../developer/glossary.md:136
+#: ../developer/glossary.md:141
 msgid ""
 "How a new deployment gets its first administrator: the backend logs a "
 "one-time setup code, and whoever enters it on the console's `/setup` page"
@@ -372,21 +386,21 @@ msgstr ""
 "新部署获得第一位管理员的方式：后端在日志里输出一次性设置码，在控制台 `/setup` "
 "页面输入该设置码的人即可创建账号。见[首次运行设置](installation.md#first-run-setup)。"
 
-#: ../developer/glossary.md:140
+#: ../developer/glossary.md:145
 msgid "Runtime model"
 msgstr "运行时模型（runtime model）"
 
-#: ../developer/glossary.md:141
+#: ../developer/glossary.md:146
 msgid ""
 "A model created in the admin console instead of the model registry. It "
 "exists only in the operational store."
 msgstr "在管理控制台中创建、而不是在模型注册表中定义的模型。它只存在于运行数据存储中。"
 
-#: ../developer/glossary.md:144
+#: ../developer/glossary.md:149
 msgid "Console"
 msgstr "控制台（console）"
 
-#: ../developer/glossary.md:145
+#: ../developer/glossary.md:150
 msgid ""
 "The Next.js web app: sign-up and sign-in, the user dashboard, the "
 "playground and the admin console. It also forwards API paths to the "
@@ -395,21 +409,21 @@ msgstr ""
 "Next.js 网页应用：注册和登录、用户仪表盘、对话调试页（playground）和管理控制台。它还会把 API 路径转发给网关，见[公开路径表"
 "](public-path-table.md)。"
 
-#: ../developer/glossary.md:149
+#: ../developer/glossary.md:154
 msgid "Site UI module"
 msgstr "Site UI 模块（Site UI module）"
 
-#: ../developer/glossary.md:150
+#: ../developer/glossary.md:155
 msgid ""
 "A distribution's own React components for the public pages, compiled into"
 " its console image. See [Site UI Modules](site-ui-modules.md)."
 msgstr "发行版为公开页面编写的 React 组件，编译进它自己的控制台镜像。见 [Site UI 模块](site-ui-modules.md)。"
 
-#: ../developer/glossary.md:153
+#: ../developer/glossary.md:158
 msgid "Backend extension"
 msgstr "后端扩展（后端 extension）"
 
-#: ../developer/glossary.md:154
+#: ../developer/glossary.md:159
 msgid ""
 "A trusted Python module loaded at startup to add an adapter kind, a Cloud"
 " Agent access rule or a quota source. See [Backend Extensions](backend-"

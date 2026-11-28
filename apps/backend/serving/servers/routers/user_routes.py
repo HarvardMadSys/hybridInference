@@ -3,6 +3,7 @@
 import json
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import TYPE_CHECKING, Any
@@ -536,6 +537,79 @@ async def update_locale_preference(
     return kept
 
 
+@dataclass(frozen=True)
+class IssuedKey:
+    """An API key just created on an account. ``api_key`` is the only full copy returned."""
+
+    api_key: str
+    key_prefix: str
+    #: The project the key belongs to.
+    project: dict[str, Any]
+    created_at: datetime
+
+
+async def issue_account_key(
+    op_store: Any,
+    *,
+    user_id: str,
+    role: str,
+    name: str | None,
+    project_id: str | None = None,
+    notes: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> IssuedKey:
+    """Create an ordinary API key on an account, the way ``POST /user/api-keys`` does.
+
+    The key goes to *project_id*, or to the account's Default project. It takes
+    the account's quota (the role default seeds only an account's first key),
+    counts against :data:`MAX_ACTIVE_API_KEYS_PER_ACCOUNT`, and is kept
+    encrypted so its owner can reveal it later. API key authorization creates
+    its keys here too, so a key an application receives is the same kind of key
+    as one its owner made by hand. Callers check who may create a key.
+
+    Raises:
+        ProjectNotFoundError: The project is not an active one of the account's.
+        APIKeyLimitReachedError: The account already holds the most active keys it may.
+    """
+    if project_id:
+        project = await op_store.get_project(user_id, project_id)
+    else:
+        project = await op_store.get_default_project(user_id)
+    if not project:
+        raise ProjectNotFoundError("Project not found")
+
+    api_key = generate_api_key()
+    key_hash = hash_api_key(api_key)
+    key_prefix = api_key[:12]
+    try:
+        rt = get_runtime_settings_instance()
+    except RuntimeError:
+        rt = None
+    default_quota = await get_default_daily_quota_for_role(role, rt)
+
+    row = await op_store.create_key(
+        key_hash=key_hash,
+        key_prefix=key_prefix,
+        user_id=user_id,
+        account_id=user_id,
+        quota_daily_cost_usd=default_quota,
+        api_key_encrypted=encrypt_api_key(api_key),
+        inherit_account_quota=True,
+        name=name,
+        max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
+        project_id=project["id"],
+        notes=notes,
+        metadata=json.dumps(metadata) if metadata is not None else None,
+    )
+    created_at = row.get("created_at") if isinstance(row, dict) else None
+    return IssuedKey(
+        api_key=api_key,
+        key_prefix=key_prefix,
+        project=project,
+        created_at=created_at or datetime.now(UTC),
+    )
+
+
 @router.post("/api-keys", response_model=APIKeyResponse, status_code=201)
 async def create_api_key(
     request: Request,
@@ -571,37 +645,13 @@ async def create_api_key(
         raise HTTPException(status_code=403, detail="Email is not verified.")
 
     name = _clean_key_name(payload.name if payload else None)
-    project_id = payload.project_id if payload else None
-    if project_id:
-        project = await op_store.get_project(current_user["user_id"], project_id)
-    else:
-        project = await op_store.get_default_project(current_user["user_id"])
-    if not project:
-        raise HTTPException(status_code=404, detail="Project not found")
-    project_id = project["id"]
-
-    # Generate new API key
-    api_key = generate_api_key()
-    key_hash = hash_api_key(api_key)
-    key_prefix = api_key[:12]
     try:
-        rt = get_runtime_settings_instance()
-    except RuntimeError:
-        rt = None
-    default_quota = await get_default_daily_quota_for_role(current_user["role"], rt)
-
-    try:
-        row = await op_store.create_key(
-            key_hash=key_hash,
-            key_prefix=key_prefix,
+        issued = await issue_account_key(
+            op_store,
             user_id=current_user["user_id"],
-            account_id=current_user["user_id"],
-            quota_daily_cost_usd=default_quota,
-            api_key_encrypted=encrypt_api_key(api_key),
-            inherit_account_quota=True,
+            role=current_user["role"],
             name=name,
-            max_active_keys=MAX_ACTIVE_API_KEYS_PER_ACCOUNT,
-            project_id=project_id,
+            project_id=payload.project_id if payload else None,
         )
     except ProjectNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Project not found") from exc
@@ -621,22 +671,21 @@ async def create_api_key(
         action="create_key",
         details={
             "actor": "user",
-            "key_prefix": key_prefix,
+            "key_prefix": issued.key_prefix,
             "name": name,
         },
         actor=user_audit_actor(request, current_user),
         target=AuditTarget.user(current_user["user_id"]),
     )
 
-    created_at = row.get("created_at") if isinstance(row, dict) else None
     return APIKeyResponse(
-        api_key=api_key,
-        key_prefix=key_prefix,
+        api_key=issued.api_key,
+        key_prefix=issued.key_prefix,
         name=name,
-        project_id=project_id,
-        project_name=project["name"],
+        project_id=issued.project["id"],
+        project_name=issued.project["name"],
         warning="Save this API key now. It will not be shown again.",
-        created_at=created_at or datetime.now(UTC),
+        created_at=issued.created_at,
     )
 
 

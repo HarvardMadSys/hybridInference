@@ -1,0 +1,344 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-28 04:26+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/api-key-authorization.md:1
+msgid "API Key Authorization"
+msgstr "API key 授权"
+
+#: ../developer/api-key-authorization.md:3
+msgid ""
+"This page is for an operator who wants to let an application, such as an "
+"agent or a chat client, create an API key on a user's own account, and "
+"for the developer of that application. After reading it you can turn the "
+"feature on for an application and implement the three steps the "
+"application takes."
+msgstr ""
+"本页面向两类读者：希望让某个应用（例如智能体或聊天客户端）在用户自己的账号上创建 API key "
+"的运营方，以及这个应用的开发者。读完后，你可以为某个应用开启这项功能，并实现应用要做的三个步骤。"
+
+#: ../developer/api-key-authorization.md:8
+msgid ""
+"The user approves the application in the console, signing in or creating "
+"an account on the way, and the application receives an ordinary API key "
+"on that user's account. The key spends the account's quota, and the user "
+"can revoke it like any other key. The flow is OAuth 2.0 with PKCE, with "
+"the parameters and the response of OpenRouter's PKCE key flow and `S256` "
+"as the only challenge method."
+msgstr ""
+"用户在控制台中批准这个应用，途中可以登录或注册账号，应用随后得到该用户账号上的一个普通 API key。这个 key "
+"消耗该账号的配额，用户可以像吊销其他 key 一样吊销它。整个流程是带 PKCE 的 OAuth 2.0，参数和响应与 OpenRouter 的 "
+"PKCE key 流程相同，challenge 方法只支持 `S256`。"
+
+#: ../developer/api-key-authorization.md:14
+msgid "Turn it on for an application"
+msgstr "为应用开启"
+
+#: ../developer/api-key-authorization.md:16
+msgid ""
+"Ask the application for its callback URL: the address on its server that "
+"the user's browser returns to, such as "
+"`https://app.example.org/connections/callback`."
+msgstr ""
+"向应用索取它的回调 URL：用户浏览器回到的、该应用服务器上的地址，例如 "
+"`https://app.example.org/connections/callback`。"
+
+#: ../developer/api-key-authorization.md:19
+msgid ""
+"Add it to the `API_KEY_AUTHORIZATION_CALLBACKS` setting, under **Admin → "
+"Settings → Integrations**. The setting is a comma-separated list of "
+"callback URLs, one or more for each application."
+msgstr ""
+"把它加入 **Admin → Settings → Integrations** 中的 "
+"`API_KEY_AUTHORIZATION_CALLBACKS` 设置项。这个设置项是以逗号分隔的回调 URL 列表，每个应用一个或多个。"
+
+#: ../developer/api-key-authorization.md:23
+msgid ""
+"Changes apply without a restart. Saving the setting asks the "
+"administrator to confirm, as other security settings do. An empty list "
+"turns the feature off: the consent page and every endpoint refuse."
+msgstr "修改无需重启即可生效。保存这个设置项时会要求管理员确认，和其他安全设置项一样。列表为空即关闭这项功能：授权确认页面和所有端点都会拒绝请求。"
+
+#: ../developer/api-key-authorization.md:27
+msgid ""
+"A callback is matched on its scheme, host, port and path, which must "
+"equal an entry exactly. Its query string belongs to the application and "
+"is not compared. Each entry must:"
+msgstr "回调按协议、主机、端口和路径匹配，必须与某一项完全相同。它的查询字符串属于应用自己，不参与比较。每一项都必须："
+
+#: ../developer/api-key-authorization.md:31
+msgid "use `https`, or `http` for `localhost` and `127.0.0.1` only;"
+msgstr "使用 `https`；只有 `localhost` 和 `127.0.0.1` 可以用 `http`；"
+
+#: ../developer/api-key-authorization.md:32
+msgid "have no query string, fragment or user information;"
+msgstr "不带查询字符串、片段或用户信息；"
+
+#: ../developer/api-key-authorization.md:33
+msgid "name its host with letters, digits, hyphens and dots."
+msgstr "主机名只由字母、数字、连字符和点组成。"
+
+#: ../developer/api-key-authorization.md:35
+msgid "What the user sees"
+msgstr "用户看到什么"
+
+#: ../developer/api-key-authorization.md:37
+msgid ""
+"The application sends the browser to the console's consent page, "
+"`<FRONTEND_URL>/authorize/key`. The page names the application by its "
+"callback's host, never by a name the application supplies, and says that "
+"the application will hold an API key on the user's account. The user "
+"chooses **Allow** or **Cancel**."
+msgstr ""
+"应用把浏览器引到控制台的授权确认页面 "
+"`<FRONTEND_URL>/authorize/key`。页面用回调的主机名称呼这个应用，从不使用应用自己提供的名字，并说明应用将持有用户账号上的一个"
+" API key。用户选择 **Allow** 或 **Cancel**。"
+
+#: ../developer/api-key-authorization.md:43
+msgid ""
+"A user who is not signed in goes through the sign-in page and comes back."
+" A new user can create an account on the way."
+msgstr "未登录的用户会先经过登录页面再回来。新用户可以在途中注册账号。"
+
+#: ../developer/api-key-authorization.md:45
+msgid ""
+"The account must be active and its email address verified. A user whose "
+"address is not verified is asked to verify it on the page."
+msgstr "账号必须处于启用状态，且邮箱地址已验证。邮箱尚未验证的用户会在这个页面上被要求先完成验证。"
+
+#: ../developer/api-key-authorization.md:47
+msgid "With several accounts signed in on the browser, the user picks one."
+msgstr "浏览器上登录了多个账号时，由用户选择其中一个。"
+
+#: ../developer/api-key-authorization.md:49
+msgid ""
+"The key is created in the account's Default project, named after the "
+"callback's host, with a note that API key authorization created it. It is"
+" listed on the user's API keys page, where it can be revoked."
+msgstr ""
+"这个 key 创建在账号的 Default 项目中，以回调的主机名命名，并附有一条说明，表明它由 API key 授权创建。它会列在用户的 API"
+" keys 页面上，可以在那里吊销。"
+
+#: ../developer/api-key-authorization.md:53
+msgid "Implement the application"
+msgstr "实现应用"
+
+#: ../developer/api-key-authorization.md:55
+msgid "Send the user to the consent page"
+msgstr "把用户引到授权确认页面"
+
+#: ../developer/api-key-authorization.md:57
+msgid ""
+"Make a random code verifier and keep it in the user's session: 43 to 128 "
+"characters of letters, digits, `-`, `.`, `_` and `~`. The code challenge "
+"is the SHA-256 of the verifier, base64url-encoded without padding, which "
+"is 43 characters long. Then send the browser to:"
+msgstr ""
+"生成一个随机的 code verifier 并保存在用户的会话中：长 43 到 128 个字符，由字母、数字、`-`、`.`、`_` 和 `~` "
+"组成。code challenge 是 verifier 的 SHA-256，经 base64url 编码且不带填充，长 43 "
+"个字符。然后把浏览器引到："
+
+#: ../developer/api-key-authorization.md:66
+msgid ""
+"URL-encode the callback. Put your own state, such as a CSRF token, in the"
+" callback's query string: it comes back unchanged. The callback must not "
+"carry a `code` or `error` parameter of its own."
+msgstr ""
+"对回调做 URL 编码。把你自己的状态（例如 CSRF token）放在回调的查询字符串里：它会原样带回。回调本身不能带 `code` 或 "
+"`error` 参数。"
+
+#: ../developer/api-key-authorization.md:70
+msgid "Receive the answer"
+msgstr "接收结果"
+
+#: ../developer/api-key-authorization.md:72
+msgid ""
+"The browser returns to the callback with one parameter appended to its "
+"query string:"
+msgstr "浏览器回到回调地址，查询字符串末尾追加了一个参数："
+
+#: ../developer/api-key-authorization.md:75
+msgid "`code=<code>` when the user allowed the request;"
+msgstr "用户允许时为 `code=<code>`；"
+
+#: ../developer/api-key-authorization.md:76
+msgid "`error=access_denied` when the user cancelled."
+msgstr "用户取消时为 `error=access_denied`。"
+
+#: ../developer/api-key-authorization.md:78
+msgid "The code can be exchanged once, within three minutes."
+msgstr "code 只能兑换一次，且须在三分钟内兑换。"
+
+#: ../developer/api-key-authorization.md:80
+msgid "Exchange the code for the key"
+msgstr "用 code 兑换 key"
+
+#: ../developer/api-key-authorization.md:82
+msgid "From the application's server:"
+msgstr "从应用的服务器发出："
+
+#: ../developer/api-key-authorization.md:91
+#, python-brace-format
+msgid ""
+"A `200` answers `{\"key\": \"<API key>\", \"user_id\": \"<account "
+"id>\"}`. The key is returned this once, so store it. The request carries "
+"no credential of the application's: the verifier proves it started the "
+"flow. It works on the gateway directly and through the console's `/v1` "
+"path."
+msgstr ""
+"成功时返回 `200` 和 `{\"key\": \"<API key>\", \"user_id\": \"<account "
+"id>\"}`。key 只返回这一次，请保存好。这个请求不带应用的任何凭据：verifier 证明流程是它发起的。直接请求网关或经由控制台的 "
+"`/v1` 路径都可以。"
+
+#: ../developer/api-key-authorization.md:96
+#, python-brace-format
+msgid ""
+"Errors are JSON in OAuth's shape, `{\"error\": \"...\", "
+"\"error_description\": \"...\"}`:"
+msgstr ""
+"错误以 OAuth 格式的 JSON 返回，即 `{\"error\": \"...\", \"error_description\": "
+"\"...\"}`："
+
+#: ../developer/api-key-authorization.md
+msgid "Status"
+msgstr "状态码"
+
+#: ../developer/api-key-authorization.md
+msgid "`error`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../developer/api-key-authorization.md
+msgid "400"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "`invalid_request`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid ""
+"The body is malformed: no code, a verifier of the wrong length or "
+"characters, or a method other than `S256`"
+msgstr "请求体格式不对：没有 code，verifier 的长度或字符不对，或者方法不是 `S256`"
+
+#: ../developer/api-key-authorization.md
+msgid "`invalid_grant`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid ""
+"The code is unknown, expired or already used, the verifier does not "
+"match, or the callback was taken off the list. Start again from the "
+"consent page"
+msgstr "code 不存在、已过期或已使用，verifier 不匹配，或者回调已从列表中移除。请从授权确认页面重新开始"
+
+#: ../developer/api-key-authorization.md
+msgid "403"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "`access_denied`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid ""
+"The account may no longer create keys, for example because it was "
+"suspended"
+msgstr "该账号已不能再创建 key，例如已被停用"
+
+#: ../developer/api-key-authorization.md
+msgid "404"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "`not_configured`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "This gateway does not offer API key authorization"
+msgstr "这个网关没有提供 API key 授权"
+
+#: ../developer/api-key-authorization.md
+msgid "409"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "`key_limit_reached`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "The account already holds the most active API keys it may"
+msgstr "该账号持有的有效 API key 已达上限"
+
+#: ../developer/api-key-authorization.md
+msgid "429"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid "`rate_limited`"
+msgstr ""
+
+#: ../developer/api-key-authorization.md
+msgid ""
+"Too many failed exchanges came from this address. Wait as long as `Retry-"
+"After` says"
+msgstr "来自这个地址的失败兑换次数太多。请按 `Retry-After` 指示的时间等待"
+
+#: ../developer/api-key-authorization.md:107
+msgid "Each code gets one exchange attempt, whatever its outcome."
+msgstr "每个 code 只有一次兑换机会，无论结果如何。"
+
+#: ../developer/api-key-authorization.md:109
+msgid "Security"
+msgstr "安全性"
+
+#: ../developer/api-key-authorization.md:111
+msgid ""
+"A code is random, stored only as a hash, valid for three minutes and "
+"spent by its first exchange attempt."
+msgstr "code 是随机生成的，只以哈希形式存储，有效期三分钟，第一次兑换尝试后即作废。"
+
+#: ../developer/api-key-authorization.md:113
+msgid ""
+"PKCE binds a code to the application that started the flow. A code read "
+"from a log or a browser history cannot be exchanged without the verifier."
+msgstr "PKCE 把 code 绑定到发起流程的应用。从日志或浏览器历史中读到的 code，没有 verifier 就无法兑换。"
+
+#: ../developer/api-key-authorization.md:115
+msgid ""
+"Only a listed callback receives a code or a cancellation. The consent "
+"page checks the request with the gateway before it shows anything, and "
+"sends the browser only to an address the gateway built."
+msgstr "只有列表中的回调才会收到 code 或取消结果。授权确认页面在显示任何内容之前先请网关检查请求，并且只把浏览器引到网关构造的地址。"
+
+#: ../developer/api-key-authorization.md:118
+msgid ""
+"The key belongs to the user's own account and spends its quota. Revoking "
+"it on the API keys page cuts the application off."
+msgstr "这个 key 属于用户自己的账号，消耗该账号的配额。在 API keys 页面吊销它即可切断应用的访问。"
+
+#: ../developer/api-key-authorization.md:120
+msgid "Failed exchanges are limited for each client address."
+msgstr "失败的兑换按客户端地址限流。"
+
