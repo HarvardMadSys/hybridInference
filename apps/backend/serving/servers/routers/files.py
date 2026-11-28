@@ -16,6 +16,11 @@ the daily cost quota. Deleting a file hides it at once; an input still being
 validated keeps its bytes until validation ends, and a deleted output file is
 never re-created.
 
+An administrator may read and delete any owner's file by id. Each such access
+to another owner's file is audited against that owner, and an upload's content
+-- the owner's prompts -- is readable only where administrators may read
+prompts (``db_store_full_content``), as on the admin console.
+
 This is not a general Files API: a ``batch`` file cannot be referenced from a
 chat, Messages or Responses request.
 """
@@ -23,6 +28,7 @@ chat, Messages or Responses request.
 from __future__ import annotations
 
 import hashlib
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import TYPE_CHECKING, Any
 from urllib.parse import quote
@@ -30,12 +36,22 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from serving.audit import AuditActor, AuditTarget
 from serving.batch.admission import declared_length_exceeds
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import DownloadInterrupted, stream_lines, stream_upload
 from serving.batch.multipart import MultipartError, boundary_of, limited, read_multipart
-from serving.servers.auth import reads_every_owner, verify_batch_management_identity
-from serving.servers.deps import get_batch_file_store, get_batch_store
+from serving.servers.auth import (
+    log_admin_action,
+    reads_every_owner,
+    verify_batch_management_identity,
+)
+from serving.servers.deps import (
+    get_batch_file_store,
+    get_batch_store,
+    get_log_store,
+    get_operational_store,
+)
 from serving.servers.streaming_state import STREAMING_RESPONSE_SCOPE_STATE_KEY
 from serving.storage.batch_file_store import (
     CHUNK_BYTES,
@@ -43,6 +59,7 @@ from serving.storage.batch_file_store import (
     BatchFileQuotaExceeded,
 )
 from serving.utils.logging import get_logger
+from serving.utils.request_ip import get_client_ip
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -89,6 +106,111 @@ def _lookup_scope(user_ctx: dict[str, Any]) -> str | None:
     an auth-disabled gateway holds the admin role too (:func:`reads_every_owner`).
     """
     return None if reads_every_owner(user_ctx) else _owner(user_ctx)
+
+
+def require_prompts_readable(log_store: Any) -> None:
+    """Refuse an administrator stored prompts unless the request log keeps prompts.
+
+    ``db_store_full_content`` already decides whether administrators can read
+    request content: where a deployment keeps it off, the requests a batch
+    stores stay unreadable to them too, although the batch needs them to run.
+
+    Raises:
+        HTTPException: 403 when it is off.
+    """
+    if not getattr(log_store, "store_full_prompts", False):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "This gateway does not keep prompts for administrators to read "
+                "(db_store_full_content is off)."
+            ),
+        )
+
+
+async def audit_other_owner(
+    request: Request,
+    op_store: Any,
+    user_ctx: dict[str, Any],
+    owner: str,
+    *,
+    action: str,
+    details: dict[str, Any],
+    success: bool = True,
+) -> None:
+    """Audit an administrator's access to another owner's batch or file, against that owner.
+
+    Only the administrator scope (:func:`_lookup_scope`) reaches another
+    owner's work, so a caller's own batches and files are never audited. A
+    read is audited before anything is returned: one whose row cannot be
+    written is not answered. A change is audited before it is made
+    (:func:`audited_change`). The key it came through is in the details.
+
+    Raises:
+        HTTPException: 500 without an operational store, which writes the
+            row. ``log_admin_action`` would skip it in silence, and the access
+            would go unaudited. (An administrator authenticates through that
+            store, so no deployment reaches this today; the guarantee does
+            not rest on that.)
+    """
+    caller = _owner(user_ctx)
+    if owner == caller:
+        return
+    if op_store is None:
+        raise HTTPException(status_code=500, detail="Database not configured")
+    await log_admin_action(
+        op_store,
+        action=action,
+        actor=AuditActor.admin(caller, get_client_ip(request)),
+        target=AuditTarget.user(owner),
+        details={**details, "api_key_id": user_ctx.get("api_key_id")},
+        success=success,
+    )
+
+
+@asynccontextmanager
+async def audited_change(
+    request: Request,
+    op_store: Any,
+    user_ctx: dict[str, Any],
+    owner: str,
+    *,
+    action: str,
+    details: dict[str, Any],
+) -> AsyncIterator[None]:
+    """Audit an administrator's change to another owner's batch or file before it is made.
+
+    A cancel or a delete cannot be taken back, so its row is written first,
+    as a read's is: one whose row cannot be written is not made (500), and
+    no change to another owner's work goes unrecorded. Written afterwards, a
+    failed write would leave the change made, the administrator told it
+    failed, and nothing on record. A change the block then refuses -- an
+    ``HTTPException``, such as the 409 of a batch still running or the 404 of
+    one deleted meanwhile -- adds a second row, ``success`` false with the
+    status code, so the log does not claim a change that was not made. A
+    caller's own work is neither audited nor held up.
+    """
+    await audit_other_owner(request, op_store, user_ctx, owner, action=action, details=details)
+    try:
+        yield
+    except HTTPException as exc:
+        try:
+            await audit_other_owner(
+                request,
+                op_store,
+                user_ctx,
+                owner,
+                action=action,
+                details={**details, "error": f"not made (HTTP {exc.status_code})"},
+                success=False,
+            )
+        except Exception:
+            # The refusal still stands; the first row records the attempt.
+            logger.exception(
+                "batch_admin_refusal_audit_failed",
+                extra={"event": "batch_admin_refusal_audit_failed", "action": action},
+            )
+        raise
 
 
 def _epoch(value: Any) -> int | None:
@@ -365,13 +487,23 @@ async def list_files(
 @router.get("/v1/files/{file_id}", response_model=None)
 async def retrieve_file(
     file_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     file_store=Depends(get_batch_file_store),
+    op_store=Depends(get_operational_store),
 ) -> JSONResponse:
     """Return a file object."""
     row = await file_store.get_file(file_id, user_id=_lookup_scope(user_ctx))
     if row is None or row.get("status") != "ready":
         raise _not_found(file_id)
+    await audit_other_owner(
+        request,
+        op_store,
+        user_ctx,
+        row["user_id"],
+        action="batch.files.read",
+        details={"file_id": file_id},
+    )
     return JSONResponse(file_object(row))
 
 
@@ -382,11 +514,25 @@ async def file_content(
     user_ctx: dict = Depends(verify_batch_management_identity),
     store=Depends(get_batch_store),
     file_store=Depends(get_batch_file_store),
+    op_store=Depends(get_operational_store),
+    log_store=Depends(get_log_store),
 ) -> StreamingResponse:
     """Download a file's bytes: an upload as stored, an output rendered from its batch."""
     row = await file_store.get_file(file_id, user_id=_lookup_scope(user_ctx))
     if row is None or row.get("status") != "ready":
         raise _not_found(file_id)
+    if row.get("kind") == "upload" and row["user_id"] != _owner(user_ctx):
+        # Another owner's upload is their requests, prompts and all; its
+        # results and errors are readable either way.
+        require_prompts_readable(log_store)
+    await audit_other_owner(
+        request,
+        op_store,
+        user_ctx,
+        row["user_id"],
+        action="batch.files.download",
+        details={"file_id": file_id, "kind": row.get("kind")},
+    )
     headers = {
         "content-length": str(int(row.get("bytes") or 0)),
         "content-disposition": content_disposition(row.get("filename") or file_id),
@@ -425,10 +571,32 @@ async def _guarded(stream: Any) -> Any:
 @router.delete("/v1/files/{file_id}", response_model=None)
 async def delete_file(
     file_id: str,
+    request: Request,
     user_ctx: dict = Depends(verify_batch_management_identity),
     file_store=Depends(get_batch_file_store),
+    op_store=Depends(get_operational_store),
 ) -> JSONResponse:
-    """Delete a file. An output file is gone for good; its batch keeps naming it."""
-    if not await file_store.delete_file(file_id, user_id=_lookup_scope(user_ctx)):
-        raise _not_found(file_id)
+    """Delete a file. An output file is gone for good; its batch keeps naming it.
+
+    Another owner's file is audited before it is deleted (:func:`audited_change`).
+    """
+    scope = _lookup_scope(user_ctx)
+    owner, kind = _owner(user_ctx), None
+    if scope is None:
+        # An administrator: whose file it is, read with the delete's own filter
+        # (an expired file is deleted too), so the row names its owner.
+        found = await file_store.get_file(file_id, include_deleted=True)
+        if found is None or found.get("deleted_at") is not None or found.get("status") != "ready":
+            raise _not_found(file_id)
+        owner, kind = found["user_id"], found.get("kind")
+    async with audited_change(
+        request,
+        op_store,
+        user_ctx,
+        owner,
+        action="batch.files.delete",
+        details={"file_id": file_id, "kind": kind},
+    ):
+        if not await file_store.delete_file(file_id, user_id=scope):
+            raise _not_found(file_id)
     return JSONResponse({"id": file_id, "object": "file", "deleted": True})

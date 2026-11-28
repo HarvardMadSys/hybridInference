@@ -295,6 +295,8 @@ A finished batch is deleted automatically after the retention period, seven days
 
 You can read, download, cancel, delete and list your batches with any of your API keys, even when your role no longer allows creating them or your daily quota is spent. Another user's batch reads as not found; administrators may read, cancel and delete any batch.
 
+Each time an administrator's key reads, cancels or deletes another user's batch or file through `/v1`, the audit log records it against that user, before anything is returned or changed: `batch.jobs.read`, `batch.jobs.cancel` and `batch.jobs.delete` for the batch, `batch.results.read` for each page of results that returns any and `batch.results.download` for `output.jsonl`, and `batch.files.read`, `batch.files.download` and `batch.files.delete` for a file. A read whose audit row cannot be written is not answered, and a cancel or delete is not made. A batch's cancel and delete rows name the status it was in, so a cancel of a batch that had already finished shows as such. A cancel or delete refused after its row was written (`409` while a request is still running, `404` when the batch or file has just gone) adds a second row with `success` false. Another user's uploaded input file holds their prompts, so its content downloads only where the request log keeps prompts (`db_store_full_content`) and answers `403` elsewhere, as **Prompts** on the admin console does; their results and output files download either way.
+
 ## Batches from a file
 
 Upload a JSONL file with one request per line, then create a batch from it:
