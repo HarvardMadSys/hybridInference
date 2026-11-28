@@ -40,6 +40,7 @@ import contextlib
 import hashlib
 import json
 import time
+from collections import Counter
 from typing import TYPE_CHECKING, Any
 
 from serving.batch.renderers import (
@@ -70,10 +71,79 @@ READ_LEASE_SECONDS = 120
 _RENEW_EVERY = 30.0
 #: The longest one download may hold its lease.
 MAX_DOWNLOAD_SECONDS = 2 * 3600
+#: Downloads rendered from a batch's rows (result files, exports, stored
+#: requests) one process serves at once, in all and per owner. Each renders on
+#: the event loop and holds a page of up to :data:`PAGE_BYTES` while its client
+#: reads, however slowly. The counts are this process's own: a deployment of
+#: several processes serves as many in each.
+MAX_DOWNLOADS = 8
+MAX_DOWNLOADS_PER_OWNER = 2
+#: The ``Retry-After`` of a download refused for want of a free slot.
+DOWNLOAD_RETRY_AFTER_SECONDS = 5
+#: A download holding a slot whose client reads nothing of it for this long is
+#: ended, which gives the slot back: a client that stops reading would
+#: otherwise keep it until the stream cap (``STREAM_REQUEST_TIMEOUT_SECONDS``).
+DOWNLOAD_SEND_TIMEOUT_SECONDS = 60.0
+
+#: This process's rendered downloads, by owner (see :func:`hold_download`).
+_downloads: Counter[str] = Counter()
 
 
 class DownloadInterrupted(RuntimeError):
     """The rows a download was reading were removed under it (a permanent user deletion)."""
+
+
+def hold_download(body: AsyncIterator[bytes], owner: str) -> AsyncIterator[bytes] | None:
+    """*body* holding one of this process's download slots, or None when none is free.
+
+    The slot is given back when the body ends, fails or is closed, whichever
+    comes first, so the response must close its body (``ClosingStreamingResponse``):
+    a body never read holds its slot until then, or, should its response be
+    dropped without being run, until the body is collected.
+    """
+    if sum(_downloads.values()) >= MAX_DOWNLOADS or _downloads[owner] >= MAX_DOWNLOADS_PER_OWNER:
+        return None
+    _downloads[owner] += 1
+    return _HeldDownload(body, owner)
+
+
+class _HeldDownload:
+    """A download body that gives its slot back once, when it is over."""
+
+    def __init__(self, body: AsyncIterator[bytes], owner: str) -> None:
+        self._body = body
+        self._owner: str | None = owner
+
+    def __aiter__(self) -> _HeldDownload:
+        return self
+
+    async def __anext__(self) -> bytes:
+        try:
+            return await self._body.__anext__()
+        except BaseException:
+            self._release()
+            raise
+
+    async def aclose(self) -> None:
+        try:
+            aclose = getattr(self._body, "aclose", None)
+            if aclose is not None:
+                await aclose()
+        finally:
+            self._release()
+
+    def _release(self) -> None:
+        owner, self._owner = self._owner, None
+        if owner is None:
+            return
+        _downloads[owner] -= 1
+        if _downloads[owner] <= 0:
+            del _downloads[owner]
+
+    def __del__(self) -> None:
+        # A response built but never run neither reads nor closes its body:
+        # its slot then comes back when the body is collected, instead of never.
+        self._release()
 
 
 def _statuses(kind: str) -> frozenset[str]:
@@ -120,6 +190,7 @@ async def seal_file_batch(
             after = item["id"]
             kind = "output" if item.get("status") in OUTPUT_STATUSES else "error"
             line = result_line(load_response(item), RENDERER_VERSION)
+            item.pop("response", None)  # rendered; not kept until the page ends
             digests[kind].update(line)
             sizes[kind] += len(line)
             lines[kind] += 1
@@ -257,6 +328,7 @@ async def stream_lines(
                 if item.get("status") not in statuses:
                     continue
                 line = result_line(load_response(item), version)
+                item.pop("response", None)  # rendered; not kept until the page ends
                 chunk += line
                 await pacer.step(int(item.get("bytes") or 0) + len(line))
                 if len(chunk) < _SEND_BYTES and index + 1 < len(items):
@@ -369,8 +441,10 @@ async def stream_requests(
                 raise DownloadInterrupted(batch_id)
             if not page:
                 break
-            lines = []
-            for item in page:
+            # Sent every _SEND_BYTES, as stream_lines does, rather than the
+            # page's lines kept until its end and then joined and encoded.
+            chunk = bytearray()
+            for index, item in enumerate(page):
                 after = item["id"]
                 line = (
                     json.dumps(
@@ -378,17 +452,19 @@ async def stream_requests(
                             "custom_id": item["custom_id"],
                             "method": "POST",
                             "url": url,
-                            "body": load_request(item)["request"],
+                            "body": load_request(item).pop("request"),
                         },
                         ensure_ascii=False,
                         separators=(",", ":"),
                     )
                     + "\n"
-                )
-                lines.append(line)
+                ).encode("utf-8")
+                chunk += line
                 await pacer.step(int(item.get("bytes") or 0) + len(line))
-            if lines:
-                yield "".join(lines).encode("utf-8")
+                if len(chunk) < _SEND_BYTES and index + 1 < len(page):
+                    continue
+                yield bytes(chunk)
+                chunk = bytearray()
         if keeper.lost or not await store.batch_intact(batch_id):
             raise DownloadInterrupted(batch_id)
     finally:

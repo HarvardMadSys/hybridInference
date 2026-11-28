@@ -14,6 +14,11 @@ them.
 
 :class:`ClosingStreamingResponse` closes the body as the response ends, however
 it ends, inside the request: its accounting is done before the request is.
+
+Given a ``send_timeout``, it also ends a response whose client reads nothing of
+it for that long. Such a client suspends the body at a ``yield`` with whatever
+it holds until the stream cap; a download holding one of the process's few
+slots (:mod:`serving.batch.delivery`) would keep it from everyone else.
 """
 
 from __future__ import annotations
@@ -27,7 +32,7 @@ from starlette.responses import StreamingResponse
 from serving.utils.logging import get_logger
 
 if TYPE_CHECKING:
-    from starlette.types import Receive, Scope, Send
+    from starlette.types import Message, Receive, Scope, Send
 
 logger = get_logger(__name__)
 
@@ -48,15 +53,70 @@ def abandoned_closes() -> int:
     return _ABANDONED_CLOSES
 
 
+#: Under a send timeout, a body is passed on in parts of at most this size, so
+#: that the timeout measures a client reading nothing, not a slow one reading a
+#: large chunk: each part waits only for the client to take about this much.
+SEND_PART_BYTES = 64 * 1024
+
+
+class SendTimedOut(Exception):
+    """The client read nothing of the response within its send timeout."""
+
+
 class ClosingStreamingResponse(StreamingResponse):
-    """A :class:`StreamingResponse` that closes its body iterator when it ends."""
+    """A :class:`StreamingResponse` that closes its body iterator when it ends.
+
+    With *send_timeout*, a send that the client leaves waiting that many
+    seconds ends the response, as a client that went away would.
+    """
+
+    def __init__(self, *args: Any, send_timeout: float | None = None, **kwargs: Any) -> None:
+        """Take the :class:`StreamingResponse` arguments, and an optional send timeout."""
+        super().__init__(*args, **kwargs)
+        self.send_timeout = send_timeout
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """Send the response, then close the body, whether it finished or not."""
         try:
+            if self.send_timeout is not None:
+                send = _timed_send(send, self.send_timeout)
             await super().__call__(scope, receive, send)
+        except SendTimedOut:
+            logger.warning(
+                "A client read nothing of a streaming response for %.0fs; ended it",
+                self.send_timeout,
+                extra={"event": "stream_send_timeout"},
+            )
         finally:
             await close_body(self.body_iterator)
+
+
+def _timed_send(send: Send, timeout: float) -> Send:
+    """*send*, raising :class:`SendTimedOut` when one part waits longer than *timeout*."""
+
+    async def timed(message: Message) -> None:
+        body = message.get("body", b"") if message["type"] == "http.response.body" else b""
+        if len(body) <= SEND_PART_BYTES:
+            await _send_in_time(send, message, timeout)
+            return
+        more = message.get("more_body", False)
+        for start in range(0, len(body), SEND_PART_BYTES):
+            end = start + SEND_PART_BYTES
+            part = {
+                "type": "http.response.body",
+                "body": body[start:end],
+                "more_body": more or end < len(body),
+            }
+            await _send_in_time(send, part, timeout)
+
+    return timed
+
+
+async def _send_in_time(send: Send, message: Message, timeout: float) -> None:
+    with anyio.move_on_after(timeout) as scope:
+        await send(message)
+    if scope.cancelled_caught:
+        raise SendTimedOut
 
 
 async def close_body(body: Any, *, quiet: bool = False) -> bool:

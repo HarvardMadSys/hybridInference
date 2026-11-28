@@ -313,6 +313,8 @@ Each line is `{"custom_id", "method": "POST", "url", "body"}`, with `url` equal 
 
 Download the files with `GET /v1/files/{id}/content`. A result file is the same bytes on every download, and its size and SHA-256 (the `ETag`) are fixed when the batch ends. A download is a stream, so it may run as long as `STREAM_REQUEST_TIMEOUT_SECONDS` allows (an hour by default), not just the 120 seconds an ordinary request gets. `GET /v1/files` lists your files, `GET /v1/files/{id}` returns one and `DELETE /v1/files/{id}` deletes one for good; a deleted output file is not written again, though the batch still names it, and deleting an input file does not affect batches created from it.
 
+A download rendered from a batch's results or stored requests (a result file, `GET /v1/batches/{id}/output.jsonl`, the console's downloads) holds one of a gateway process's download slots while it runs: each process serves at most 8 at once, 2 per user. Another is refused with `429` and a `Retry-After`; try again once one of yours has finished. A download whose client reads nothing of it for 60 seconds is ended, which frees its slot. An uploaded input file takes no slot.
+
 With the OpenAI Python SDK:
 
 ```python

@@ -859,4 +859,5 @@ async def export_batch_results(
         request,
         stream_lines(store=store, batch_id=batch_id, kind="all"),
         headers={"content-disposition": content_disposition(f"{batch_id}.jsonl")},
+        owner=_owner(user_ctx),
     )

@@ -408,6 +408,7 @@ async def _requests_download(
             "content-disposition": content_disposition(name),
             "cache-control": "no-store",
         },
+        owner=owner,
     )
 
 
@@ -499,6 +500,7 @@ async def download_my_results(
         request,
         stream_lines(store=store, batch_id=batch_id, kind=kind),
         headers={"content-disposition": content_disposition(f"{batch_id}_{kind}.jsonl")},
+        owner=current_user["user_id"],
     )
 
 
