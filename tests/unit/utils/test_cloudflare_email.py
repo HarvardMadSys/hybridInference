@@ -249,3 +249,116 @@ def test_smtp_credentials_do_not_enable_cloudflare_mail(configured, smtp, monkey
     monkeypatch.setattr(settings, "cloudflare_account_id", "")
 
     assert not email.is_email_enabled()
+
+
+# --- what a failed send tells the administrator ---------------------------------
+
+
+def test_a_delivered_message_has_no_reason(configured, post):
+    assert cloudflare_email.deliver(_message()) == delivery.EmailDelivery(True)
+
+
+@pytest.mark.parametrize(
+    "status,code,advice",
+    [
+        (401, 10101, "did not accept the API token"),
+        (403, 10102, "Email Sending: Edit"),
+        (403, 10105, "not entitled"),
+        (403, 10208, "verified destination addresses"),
+        (404, 10000, "Check the account ID"),
+        (429, 10004, "rate-limiting"),
+        (400, 10202, "onboarded under Email Service > Email Sending"),
+    ],
+)
+def test_a_documented_refusal_says_what_to_fix(configured, post, status, code, advice):
+    post.return_value = _answer(
+        status, success=False, errors=[{"code": code, "message": "x.y"}], result=None
+    )
+
+    sent = cloudflare_email.deliver(_message())
+
+    assert sent.sent is False
+    assert advice in sent.reason
+    assert f"HTTP {status}" in sent.reason
+    assert str(code) in sent.reason
+
+
+@pytest.mark.parametrize(
+    "status,advice",
+    [
+        (401, "did not accept the API token"),
+        (403, "Email Sending: Edit"),
+        (418, "Check the sender address"),
+        (503, "Try again in a few minutes"),
+    ],
+)
+def test_an_undocumented_refusal_is_explained_by_its_status(configured, post, status, advice):
+    post.return_value = _answer(status, success=False, errors=[{"code": 19999}], result=None)
+
+    sent = cloudflare_email.deliver(_message())
+
+    assert advice in sent.reason
+    assert "19999" in sent.reason
+
+
+def test_cloudflares_generic_authentication_error_is_read_as_a_refused_token(configured, post):
+    # What api.cloudflare.com answered a token it did not accept: its generic
+    # "Authentication error", 10000, with 401 -- the send endpoint's table has
+    # 10000 only as a 404, "not found".
+    post.return_value = _answer(
+        401,
+        success=False,
+        errors=[{"code": 10000, "message": "Authentication error"}],
+        result=None,
+    )
+
+    sent = cloudflare_email.deliver(_message())
+
+    assert "did not accept the API token" in sent.reason
+    assert "account ID" not in sent.reason.split("(")[0]
+    assert "HTTP 401" in sent.reason
+
+
+def test_a_refusal_never_repeats_the_token_even_as_a_bare_identifier(configured, post, caplog):
+    # TOKEN looks like an identifier, so only the withholding keeps it out.
+    post.return_value = _answer(
+        401, success=False, errors=[{"code": 10101, "message": TOKEN}], result=None
+    )
+
+    with caplog.at_level(logging.ERROR):
+        sent = cloudflare_email.deliver(_message())
+
+    assert TOKEN not in sent.reason
+    assert TOKEN not in caplog.text
+    assert "10101" in sent.reason
+
+
+def test_an_unreachable_api_is_reported_with_the_host_to_allow(configured, post):
+    post.side_effect = httpx.ConnectTimeout("timed out")
+
+    sent = cloudflare_email.deliver(_message())
+
+    assert sent.sent is False
+    assert "ConnectTimeout" in sent.reason
+    assert "api.cloudflare.com" in sent.reason
+
+
+def test_a_bounced_recipient_is_reported(configured, post):
+    post.return_value = _answer(
+        success=True,
+        errors=[],
+        messages=[],
+        result={"delivered": [], "queued": [], "permanent_bounces": ["user@example.org"]},
+    )
+
+    assert "bounced permanently" in cloudflare_email.deliver(_message()).reason
+
+
+def test_deliver_email_reports_cloudflares_reason(configured, post, smtp):
+    post.return_value = _answer(403, success=False, errors=[{"code": 10102}], result=None)
+
+    sent = email.deliver_email("user@example.org", "subject", "<p>body</p>", "body")
+
+    assert sent.sent is False
+    assert "Email Sending: Edit" in sent.reason
+    smtp.assert_not_called()

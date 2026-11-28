@@ -27,7 +27,7 @@ from serving.servers.deps import (
     get_db_logger,
     verify_admin_access,
 )
-from serving.utils.email import render_broadcast_template, send_email
+from serving.utils.email import deliver_email, render_broadcast_template
 from serving.utils.email_scheduler import cancel_broadcast_job, schedule_broadcast
 
 if TYPE_CHECKING:
@@ -153,17 +153,20 @@ async def test_broadcast_email(
             detail="Your account has no email address, so there is nowhere to send a test email.",
         )
 
-    # smtplib is sync; offload to a thread so we don't block the event loop
-    # while waiting on the SMTP server.
-    ok = await _asyncio.to_thread(
-        send_email,
+    # Delivery is sync; offload to a thread so we don't block the event loop
+    # while waiting on the mail server or API.
+    delivery = await _asyncio.to_thread(
+        deliver_email,
         admin_email,
         f"[TEST] {rendered['subject']}",
         rendered["body_html"],
         rendered["body_text"],
     )
-    if not ok:
-        raise HTTPException(status_code=502, detail="Failed to send test email (SMTP error)")
+    if not delivery.sent:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Test email not sent. {delivery.reason or 'The backend log says why.'}",
+        )
     return {"message": f"Test email sent to {admin_email}"}
 
 

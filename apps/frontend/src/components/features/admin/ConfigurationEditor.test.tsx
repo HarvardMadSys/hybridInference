@@ -22,6 +22,7 @@ vi.mock('@/lib/api/config', () => ({
   previewConfigRestore: vi.fn(),
   restoreConfigBackup: vi.fn(),
   testAlertNotification: vi.fn(),
+  testEmailDelivery: vi.fn(),
   restartBackend: vi.fn(),
   waitForBackendRestart: vi.fn(),
   getLiveConfigStatus: vi.fn(),
@@ -74,6 +75,7 @@ import {
   resetConfigKey,
   restoreConfigBackup,
   testAlertNotification,
+  testEmailDelivery,
   restartBackend,
   waitForBackendRestart,
 } from '@/lib/api/config';
@@ -1679,14 +1681,14 @@ describe('the email transport', () => {
   it("shows only the chosen transport's settings, and saves only those", async () => {
     await renderTab(transports('smtp'));
     const email = within(section('Email (SMTP)'));
-    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
-    expect(email.queryByLabelText('CLOUDFLARE_ACCOUNT_ID')).toBeNull();
+    expect(email.getByRole('radio', { name: /^SMTP server/ })).toBeChecked();
+    expect(email.getByLabelText('SMTP host')).toHaveValue('mx.test');
+    expect(email.queryByLabelText('Account ID')).toBeNull();
 
-    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
-    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
-    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
-    expect(email.queryByLabelText('SMTP_HOST')).toBeNull();
-    fireEvent.change(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID'), {
+    fireEvent.change(email.getByLabelText('SMTP host'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(email.getByRole('radio', { name: /^Cloudflare Email Sending/ }));
+    expect(email.queryByLabelText('SMTP host')).toBeNull();
+    fireEvent.change(email.getByLabelText('Account ID'), {
       target: { value: ACCOUNT },
     });
     // The hidden SMTP edit is neither counted nor sent.
@@ -1699,12 +1701,11 @@ describe('the email transport', () => {
         values: { EMAIL_PROVIDER: 'cloudflare', CLOUDFLARE_ACCOUNT_ID: ACCOUNT },
       }),
     );
-    await waitFor(() => expect(email.getByLabelText('CLOUDFLARE_ACCOUNT_ID')).toHaveValue(ACCOUNT));
+    await waitFor(() => expect(email.getByLabelText('Account ID')).toHaveValue(ACCOUNT));
 
     // The saved switch made that SMTP edit moot: back on SMTP, the saved host shows.
-    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
-    fireEvent.click(screen.getByRole('option', { name: 'smtp' }));
-    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    fireEvent.click(email.getByRole('radio', { name: /^SMTP server/ }));
+    expect(email.getByLabelText('SMTP host')).toHaveValue('mx.test');
     expect(email.getByText('1 unsaved change')).toBeInTheDocument();
   });
 
@@ -1712,14 +1713,167 @@ describe('the email transport', () => {
     await renderTab(transports('smtp'));
     const email = within(section('Email (SMTP)'));
 
-    fireEvent.change(email.getByLabelText('SMTP_HOST'), { target: { value: 'smtp.new.test' } });
-    fireEvent.click(email.getByRole('combobox', { name: 'EMAIL_PROVIDER' }));
-    fireEvent.click(screen.getByRole('option', { name: 'cloudflare' }));
+    fireEvent.change(email.getByLabelText('SMTP host'), { target: { value: 'smtp.new.test' } });
+    fireEvent.click(email.getByRole('radio', { name: /^Cloudflare Email Sending/ }));
     fireEvent.click(email.getByRole('button', { name: /^Discard changes/ }));
 
     // Back on the saved transport, with nothing left of the hidden SMTP edit.
-    expect(email.getByLabelText('SMTP_HOST')).toHaveValue('mx.test');
+    expect(email.getByRole('radio', { name: /^SMTP server/ })).toBeChecked();
+    expect(email.getByLabelText('SMTP host')).toHaveValue('mx.test');
     expect(email.queryByText(/unsaved change/)).toBeNull();
+  });
+
+  /** SMTP chosen, with nothing but the host saved, while sign-up needs email verification. */
+  function unfinishedSmtp(): ConfigResponse {
+    const smtp = { key: 'EMAIL_PROVIDER', values: ['smtp'] };
+    const cloudflare = { key: 'EMAIL_PROVIDER', values: ['cloudflare'] };
+    return makeConfig({
+      entries: [
+        entry({
+          key: 'EMAIL_PROVIDER',
+          category: 'email',
+          value: 'smtp',
+          source: 'default',
+          default: 'smtp',
+          choices: ['smtp', 'cloudflare'],
+        }),
+        entry({ key: 'SMTP_HOST', category: 'email', value: 'mx.test', applies_when: smtp }),
+        entry({
+          key: 'SMTP_USER',
+          category: 'email',
+          value: '',
+          is_set: false,
+          required: true,
+          missing: true,
+          applies_when: smtp,
+        }),
+        entry({
+          key: 'SMTP_PASSWORD',
+          category: 'email',
+          secret: true,
+          value: null,
+          is_set: false,
+          required: true,
+          missing: true,
+          applies_when: smtp,
+        }),
+        entry({
+          key: 'CLOUDFLARE_ACCOUNT_ID',
+          category: 'email',
+          value: null,
+          is_set: false,
+          source: 'default',
+          applies_when: cloudflare,
+        }),
+        entry({
+          key: 'SMTP_FROM_EMAIL',
+          category: 'email',
+          value: 'noreply@localhost',
+          source: 'default',
+          default: 'noreply@localhost',
+        }),
+        entry({ key: 'LOG_LEVEL', category: 'general', value: 'INFO' }),
+      ],
+      missing: ['SMTP_USER', 'SMTP_PASSWORD'],
+      pending_restart: [],
+    });
+  }
+
+  it('says what email still needs, why, and how to do without it', async () => {
+    await renderTab(unfinishedSmtp());
+    const email = within(section('Email (SMTP)'));
+
+    expect(
+      email.getByText('Email is not set up yet: SMTP server still needs Username and Password.'),
+    ).toBeInTheDocument();
+    expect(email.getByText(/turn off Require email verification/)).toBeInTheDocument();
+    // The built-in sender is refused by most servers; Cloudflare's wording names onboarding.
+    expect(email.getByRole('note')).toHaveTextContent('Most mail servers refuse mail from');
+    fireEvent.click(email.getByRole('radio', { name: /^Cloudflare Email Sending/ }));
+    expect(email.getByRole('note')).toHaveTextContent(
+      'Cloudflare will not send from noreply@localhost',
+    );
+  });
+
+  it('shows the service choice beside the missing settings under Missing only', async () => {
+    await renderTab(unfinishedSmtp(), { initialMissingOnly: true });
+    const email = within(section('Email (SMTP)'));
+
+    // Not missing itself, but the way out of what is: choosing another service.
+    expect(email.getByRole('radio', { name: /^Cloudflare Email Sending/ })).toBeInTheDocument();
+    expect(email.getByLabelText('Username')).toBeInTheDocument();
+    expect(screen.queryByRole('region', { name: 'General' })).toBeNull();
+  });
+
+  it('finds the card by the names it shows', async () => {
+    await renderTab(unfinishedSmtp());
+
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: 'sender address' } });
+
+    expect(within(section('Email (SMTP)')).getByLabelText('Sender address')).toBeInTheDocument();
+  });
+
+  it('sends a test through the saved settings, to the address typed or the admin', async () => {
+    vi.mocked(testEmailDelivery).mockResolvedValue({
+      sent: true,
+      to: 'admin@example.test',
+      provider: 'cloudflare',
+    });
+    await renderTab(transports('cloudflare'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.click(email.getByRole('button', { name: 'Send test email' }));
+    await waitFor(() =>
+      expect(
+        email.getByText(/Test email sent to admin@example\.test through Cloudflare Email Sending/),
+      ).toBeInTheDocument(),
+    );
+    expect(testEmailDelivery).toHaveBeenLastCalledWith({});
+
+    fireEvent.change(email.getByLabelText('Send to'), { target: { value: 'ops@example.test' } });
+    fireEvent.click(email.getByRole('button', { name: 'Send test email' }));
+    await waitFor(() =>
+      expect(testEmailDelivery).toHaveBeenLastCalledWith({ to: 'ops@example.test' }),
+    );
+  });
+
+  it("shows the backend's reason when the test is not sent", async () => {
+    vi.mocked(testEmailDelivery).mockRejectedValue(
+      new APIError('HTTP_502', 'Cloudflare did not accept the API token.', 502),
+    );
+    await renderTab(transports('cloudflare'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.click(email.getByRole('button', { name: 'Send test email' }));
+
+    expect(await email.findByRole('alert')).toHaveTextContent(
+      'Cloudflare did not accept the API token.',
+    );
+  });
+
+  it('holds the test while the settings it would use are unsaved', async () => {
+    await renderTab(transports('cloudflare'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.change(email.getByLabelText('Sender address'), {
+      target: { value: 'hello@example.test' },
+    });
+
+    expect(email.getByRole('button', { name: 'Send test email' })).toBeDisabled();
+    expect(
+      email.getByText('Save your changes first: the test uses the saved settings.'),
+    ).toBeInTheDocument();
+    expect(testEmailDelivery).not.toHaveBeenCalled();
+  });
+
+  it('refuses an address that is not one before asking the backend', async () => {
+    await renderTab(transports('cloudflare'));
+    const email = within(section('Email (SMTP)'));
+
+    fireEvent.change(email.getByLabelText('Send to'), { target: { value: 'not-an-address' } });
+
+    expect(email.getByRole('button', { name: 'Send test email' })).toBeDisabled();
+    expect(email.getByLabelText('Send to')).toHaveAttribute('aria-invalid', 'true');
   });
 
   it('shows a value stored in another case as the choice the backend reads it as', async () => {

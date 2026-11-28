@@ -111,6 +111,8 @@ def test_render_broadcast_template_markdown_takes_precedence_over_html():
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from serving.utils.delivery import EmailDelivery
+
 
 class _AcquireCtx:
     def __init__(self, conn):
@@ -154,7 +156,9 @@ async def test_execute_broadcast_sends_and_updates_recipients():
     pool = _make_pool(conn)
     email_scheduler._db_pool = pool
 
-    with patch("serving.utils.email_scheduler.send_email", return_value=True) as mock_send:
+    with patch(
+        "serving.utils.email_scheduler.deliver_email", return_value=EmailDelivery(True)
+    ) as mock_send:
         await email_scheduler.execute_broadcast("bc1")
 
     assert mock_send.call_count == 2
@@ -174,7 +178,9 @@ async def test_execute_broadcast_skips_when_not_scheduled():
     pool = _make_pool(conn)
     email_scheduler._db_pool = pool
 
-    with patch("serving.utils.email_scheduler.send_email", return_value=True) as mock_send:
+    with patch(
+        "serving.utils.email_scheduler.deliver_email", return_value=EmailDelivery(True)
+    ) as mock_send:
         await email_scheduler.execute_broadcast("bc-already-claimed")
 
     assert mock_send.call_count == 0
@@ -198,9 +204,9 @@ async def test_execute_broadcast_partial_failure():
     email_scheduler._db_pool = pool
 
     def _send(to_email, *a, **kw):
-        return to_email != "fail@example.com"
+        return EmailDelivery(to_email != "fail@example.com", "refused")
 
-    with patch("serving.utils.email_scheduler.send_email", side_effect=_send):
+    with patch("serving.utils.email_scheduler.deliver_email", side_effect=_send):
         await email_scheduler.execute_broadcast("bc2")
 
     calls = [str(c) for c in conn.execute.call_args_list]
@@ -219,16 +225,21 @@ async def test_execute_broadcast_all_fail_marks_failed():
     pool = _make_pool(conn)
     email_scheduler._db_pool = pool
 
-    with patch("serving.utils.email_scheduler.send_email", return_value=False):
+    with patch(
+        "serving.utils.email_scheduler.deliver_email",
+        return_value=EmailDelivery(False, "SMTP needs SMTP_HOST."),
+    ):
         await email_scheduler.execute_broadcast("bc3")
 
     calls = " ".join(str(c) for c in conn.execute.call_args_list)
     assert "failed" in calls
+    # What went wrong is stored for the recipient, whichever transport refused.
+    assert "SMTP needs SMTP_HOST." in calls
 
 
 @pytest.mark.asyncio
 async def test_execute_broadcast_persists_exception_message():
-    """When send_email raises, the exception class+message is stored in the
+    """When deliver_email raises, the exception class+message is stored in the
     recipient row, not a generic placeholder."""
     from serving.utils import email_scheduler
 
@@ -242,7 +253,7 @@ async def test_execute_broadcast_persists_exception_message():
     def _raises(*a, **kw):
         raise RuntimeError("smtp boom")
 
-    with patch("serving.utils.email_scheduler.send_email", side_effect=_raises):
+    with patch("serving.utils.email_scheduler.deliver_email", side_effect=_raises):
         await email_scheduler.execute_broadcast("bc-exc")
 
     failed_call = next(c for c in conn.execute.call_args_list if "status = 'failed'" in str(c))
@@ -320,7 +331,7 @@ def test_recipient_where_with_spend_filter():
 
 @pytest.mark.asyncio
 async def test_execute_broadcast_offloads_smtp_to_thread():
-    """SMTP send_email is dispatched via asyncio.to_thread so it doesn't block the loop."""
+    """deliver_email is dispatched via asyncio.to_thread so it doesn't block the loop."""
     import asyncio
 
     from serving.utils import email_scheduler
@@ -334,7 +345,7 @@ async def test_execute_broadcast_offloads_smtp_to_thread():
 
     real_to_thread = asyncio.to_thread
     with (
-        patch("serving.utils.email_scheduler.send_email", return_value=True),
+        patch("serving.utils.email_scheduler.deliver_email", return_value=EmailDelivery(True)),
         patch(
             "serving.utils.email_scheduler.asyncio.to_thread",
             side_effect=real_to_thread,
@@ -342,4 +353,4 @@ async def test_execute_broadcast_offloads_smtp_to_thread():
     ):
         await email_scheduler.execute_broadcast("bc4")
 
-    assert mock_to_thread.called, "send_email must be wrapped in asyncio.to_thread"
+    assert mock_to_thread.called, "deliver_email must be wrapped in asyncio.to_thread"
