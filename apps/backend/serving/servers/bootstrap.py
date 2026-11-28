@@ -1109,6 +1109,13 @@ async def initialize() -> AppServices:
 
                             register_detector_job(sched, db_logger.pool)
 
+                            # The OpenInfra rollups, every five minutes.
+                            from serving.openinfra.maintenance import (
+                                register_refresh_job,
+                            )
+
+                            register_refresh_job(sched, db_logger.pool)
+
                             # Failed-request alerter: one job, paused while
                             # neither SLACK_WEBHOOK_URL nor
                             # WECOM_ALERTS_WEBHOOK_URL is set.

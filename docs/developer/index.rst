@@ -145,6 +145,7 @@ explains how to configure and extend an overlay.
    releases
    database
    alert-history
+   openinfra
    accounting
    trusted-proxies-and-client-ips
    automation-score

@@ -132,7 +132,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "integrations",
         "Integrations",
-        "Cloud agent identity, the documentation assistant and Qdrant.",
+        "Cloud agent identity, the documentation assistant, Qdrant and the OpenInfra reporters.",
         one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
@@ -1637,6 +1637,28 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "Shared secret the cloud agent's control plane presents to mint inference grants "
         "and read the internal API. Empty turns the internal API off.",
         secret=True,
+    ),
+    ConfigEntry(
+        "OPENINFRA_INGEST_TOKEN",
+        "integrations",
+        "Bearer token the OpenInfra reporters on GPU hosts present to POST "
+        "/internal/openinfra/ingest. Empty turns ingestion off. Publishing what they collect "
+        "at /openinfra is the site configuration's features.openinfra.",
+        secret=True,
+    ),
+    ConfigEntry(
+        "OPENINFRA_ENGINE_ORDER",
+        "integrations",
+        "Engine names, comma-separated, in the order the /openinfra page shows their tabs. "
+        "Engines not listed follow, alphabetically.",
+        type="list",
+    ),
+    ConfigEntry(
+        "OPENINFRA_RETIRED_ENGINES",
+        "integrations",
+        "Engine ids, comma-separated, left out of the /openinfra page, its served totals, "
+        "history and exports. What they reported stays stored.",
+        type="list",
     ),
     ConfigEntry(
         "RAG_API_KEY",

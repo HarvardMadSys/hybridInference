@@ -1,0 +1,610 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-28 01:29+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/openinfra.md:1
+msgid "OpenInfra"
+msgstr "OpenInfra"
+
+#: ../developer/openinfra.md:3
+msgid ""
+"OpenInfra publishes the live state of the GPU hosts and inference engines"
+" a deployment runs itself, on a public console page, `/openinfra`. It "
+"shows each GPU's utilization, memory, power, temperature and "
+"interconnect; each host's CPU and memory; and each SGLang or vLLM "
+"engine's queue, KV cache, prefix-cache hits, token throughput and "
+"latencies. History runs from two hours to seven days. The page also shows"
+" requests and tokens served in the last hour and day, and the shape and "
+"latency of recent requests, without prompts, completions, addresses or "
+"request ids."
+msgstr ""
+"OpenInfra 在一个公开的控制台页面 `/openinfra` 上，发布部署自己运行的 GPU 主机和推理引擎的实时状态：每块 GPU "
+"的利用率、显存、功耗、温度和互连；每台主机的 CPU 和内存；以及每个 SGLang 或 vLLM 引擎的队列、KV "
+"缓存、前缀缓存命中、token 吞吐量和延迟。历史数据覆盖两小时到七天。页面还会显示最近一小时和一天内处理的请求与 "
+"token，以及最近请求的形态和延迟，但不包含提示词、补全内容、地址或请求 id。"
+
+#: ../developer/openinfra.md:12
+msgid ""
+"It is off unless a deployment turns it on, in two separate steps: "
+"collecting and publishing."
+msgstr "除非部署主动开启，它默认关闭，开启分两个独立的步骤：采集和发布。"
+
+#: ../developer/openinfra.md:15
+msgid "How the data gets there"
+msgstr "数据如何到达"
+
+#: ../developer/openinfra.md:17
+msgid ""
+"A small reporter runs on each GPU host, apart from the gateway. It reads "
+"the GPUs, the host and the engines locally, and every few seconds posts "
+"one JSON snapshot to the gateway over HTTPS. The gateway stores the "
+"snapshots in its own PostgreSQL database, and the page reads them back."
+msgstr ""
+"每台 GPU 主机上运行一个小型 reporter，与网关分开。它在本机读取 GPU、主机和引擎的数据，每隔几秒通过 HTTPS 向网关发送一份 "
+"JSON 快照。网关把快照存入它自己的 PostgreSQL 数据库，页面再从中读取。"
+
+#: ../developer/openinfra.md:29
+msgid ""
+"**Only outbound HTTPS from the GPU hosts.** The gateway never connects to"
+" a host, so nothing on it needs to be reachable."
+msgstr "**GPU 主机只需要出站 HTTPS**。网关从不主动连接主机，所以主机上的任何东西都不需要可被访问。"
+
+#: ../developer/openinfra.md:31
+msgid ""
+"**Any address that reaches the gateway works.** It can be the public "
+"site, or the backend's address on a private network. The gateway serves "
+"the ingest route itself; the console only relays it (see [The Public Path"
+" Table](public-path-table.md))."
+msgstr ""
+"**任何能到达网关的地址都可以**。可以是公开站点，也可以是后端在私有网络上的地址。采集路由由网关自己提供；控制台只是转发它（参见 [公开路径表"
+"](public-path-table.md)）。"
+
+#: ../developer/openinfra.md:35
+msgid ""
+"**Any gateway replica can take a snapshot.** Replicas share the database,"
+" and the rollup job runs on one replica at a time."
+msgstr "**任何一个网关副本都能接收快照**。副本共享同一个数据库，汇总任务一次只在一个副本上运行。"
+
+#: ../developer/openinfra.md:37
+msgid ""
+"**The routing engine does not read these metrics.** They feed the page "
+"only."
+msgstr "**路由引擎不读取这些指标**。它们只供页面使用。"
+
+#: ../developer/openinfra.md:39
+msgid "Turning it on"
+msgstr "开启"
+
+#: ../developer/openinfra.md:45
+msgid ""
+"**Publishing.** Add `\"openinfra\": true` to `features` in the "
+"`SITE_CONFIGURATION` document. The console then serves `/openinfra` and "
+"links it from the header and footer, and `GET /public-openinfra` and its "
+"history answer. Without the flag both answer `404`, even while reporters "
+"post, so a deployment can collect before it publishes."
+msgstr ""
+"**发布**。在 `SITE_CONFIGURATION` 文档的 `features` 中加入 `\"openinfra\": "
+"true`。之后控制台会提供 `/openinfra`，并在页眉和页脚中链接到它，`GET /public-openinfra` "
+"及其历史接口也会开始应答。没有这个开关时，即使 reporter 正在上报，两者都返回 `404`，因此部署可以先采集、后发布。"
+
+#: ../developer/openinfra.md:50
+msgid ""
+"**Optional settings**, both Integrations settings and both applied within"
+" seconds:"
+msgstr "**可选设置**，都属于 Integrations 设置，都会在几秒内生效："
+
+#: ../developer/openinfra.md:52
+msgid ""
+"`OPENINFRA_ENGINE_ORDER`: engine names, comma-separated, in the order the"
+" page shows their tabs. Engines not listed follow, alphabetically."
+msgstr "`OPENINFRA_ENGINE_ORDER`：引擎名称，以逗号分隔，即页面显示其标签页的顺序。未列出的引擎按字母顺序排在后面。"
+
+#: ../developer/openinfra.md:54
+msgid ""
+"`OPENINFRA_RETIRED_ENGINES`: engine ids, comma-separated, left out of the"
+" page, the served totals, the history and exports. What they reported "
+"stays stored, so removing an id brings it back. Retire an engine by its "
+"id rather than relying on one engine replacing another: one endpoint may "
+"serve several models, and the same localhost endpoint repeats across "
+"hosts."
+msgstr ""
+"`OPENINFRA_RETIRED_ENGINES`：引擎 "
+"id，以逗号分隔，这些引擎不出现在页面、服务总量、历史和导出中。它们上报过的数据仍然保存，所以删掉某个 id 就会让它重新出现。请按 id "
+"停用引擎，而不要指望某个引擎会取代另一个：一个端点可能服务多个模型，而相同的 localhost 端点会在不同主机上重复出现。"
+
+#: ../developer/openinfra.md:60
+msgid "Running a reporter on a GPU host"
+msgstr "在 GPU 主机上运行 reporter"
+
+#: ../developer/openinfra.md:62
+msgid ""
+"The reporter is `ops/openinfra/reporter.py`. It uses only the Python "
+"standard library, so the host's system Python runs it, and it needs "
+"`nvidia-smi`. Copy `ops/openinfra/` to the host and write a node "
+"configuration, starting from `ops/openinfra/node.example.json`:"
+msgstr ""
+"reporter 是 `ops/openinfra/reporter.py`。它只使用 Python 标准库，因此主机自带的系统 Python "
+"就能运行它，另外它需要 `nvidia-smi`。把 `ops/openinfra/` 复制到主机上，并从 "
+"`ops/openinfra/node.example.json` 开始编写节点配置："
+
+#: ../developer/openinfra.md
+msgid "Field"
+msgstr "字段"
+
+#: ../developer/openinfra.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../developer/openinfra.md
+msgid "`node_id`"
+msgstr "`node_id`"
+
+#: ../developer/openinfra.md
+msgid "The host's id. GPU ids are `<node_id>:<index>`, so each host needs its own"
+msgstr "主机的 id。GPU 的 id 是 `<node_id>:<index>`，所以每台主机都需要自己的 id"
+
+#: ../developer/openinfra.md
+msgid "`hostname`, `region`, `cluster`"
+msgstr "`hostname`, `region`, `cluster`"
+
+#: ../developer/openinfra.md
+msgid "Shown on the page"
+msgstr "显示在页面上"
+
+#: ../developer/openinfra.md
+msgid "`flush_interval`"
+msgstr "`flush_interval`"
+
+#: ../developer/openinfra.md
+msgid "Seconds between snapshots; 5 by default"
+msgstr "两次快照之间的秒数；默认为 5"
+
+#: ../developer/openinfra.md
+msgid "`sglang`"
+msgstr "`sglang`"
+
+#: ../developer/openinfra.md
+msgid ""
+"The engines on the host, SGLang and vLLM alike. An empty list says the "
+"host has none"
+msgstr "主机上的引擎，SGLang 和 vLLM 都在这里。空列表表示主机上没有引擎"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].url`"
+msgstr "`sglang[].url`"
+
+#: ../developer/openinfra.md
+msgid ""
+"Where to scrape the engine: SGLang's `/v1/loads` (preferred) or "
+"`/metrics`, vLLM's `/metrics`"
+msgstr "从哪里抓取该引擎：SGLang 的 `/v1/loads`（推荐）或 `/metrics`，vLLM 的 `/metrics`"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].id`"
+msgstr "`sglang[].id`"
+
+#: ../developer/openinfra.md
+msgid "The engine's id, unique across the fleet"
+msgstr "引擎的 id，在整个集群中唯一"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].name`"
+msgstr "`sglang[].name`"
+
+#: ../developer/openinfra.md
+msgid "Its tab on the page"
+msgstr "它在页面上的标签页"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].engine`"
+msgstr "`sglang[].engine`"
+
+#: ../developer/openinfra.md
+msgid "`sglang` or `vllm`"
+msgstr "`sglang` 或 `vllm`"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].endpoint`"
+msgstr "`sglang[].endpoint`"
+
+#: ../developer/openinfra.md
+msgid "The address shown for it"
+msgstr "为它显示的地址"
+
+#: ../developer/openinfra.md
+msgid "`sglang[].gpu_indexes`"
+msgstr "`sglang[].gpu_indexes`"
+
+#: ../developer/openinfra.md
+msgid "The GPUs it runs on; its tab shows only those"
+msgstr "它运行所在的 GPU；它的标签页只显示这些 GPU"
+
+#: ../developer/openinfra.md:80
+msgid "Try one snapshot before installing the service:"
+msgstr "安装服务之前，先试发一次快照："
+
+#: ../developer/openinfra.md:87
+msgid ""
+"`ops/openinfra/openinfra-reporter.service` runs it under systemd, reading"
+" `OPENINFRA_URL`, `OPENINFRA_TOKEN` and `OPENINFRA_NODE_CONFIG` from "
+"`/etc/openinfra/reporter.env` (template: "
+"`ops/openinfra/reporter.env.example`). The unit's header lists the "
+"install commands. Keep the env file readable by root and the reporter's "
+"group only: it holds the token."
+msgstr ""
+"`ops/openinfra/openinfra-reporter.service` 让它在 systemd 下运行，从 "
+"`/etc/openinfra/reporter.env`（模板：`ops/openinfra/reporter.env.example`）读取 "
+"`OPENINFRA_URL`、`OPENINFRA_TOKEN` 和 `OPENINFRA_NODE_CONFIG`。该 unit "
+"文件的开头列出了安装命令。环境文件只允许 root 和 reporter 所在的组读取：它保存着令牌。"
+
+#: ../developer/openinfra.md:93
+msgid "Engine details:"
+msgstr "引擎细节："
+
+#: ../developer/openinfra.md:95
+msgid ""
+"**SGLang.** Start it with `--enable-metrics`. The reporter reads "
+"`/v1/loads` and the sibling `/metrics` for the request and token counters"
+" that give requests per minute, time to first token and time per output "
+"token on every flush. Without them, those come from the engine's "
+"container logs, read once a minute and held in between, which needs "
+"`docker` (the docker group, or `sudo -n docker`). An engine whose "
+"`/v1/loads` needs its API key, which the reporter does not send, is "
+"scraped through `/metrics`."
+msgstr ""
+"**SGLang**。启动时加上 `--enable-metrics`。reporter 读取 `/v1/loads` 以及同级的 "
+"`/metrics`，从中得到请求和 token 计数器，每次上报都能据此算出每分钟请求数、首 token 时间和每个输出 token "
+"的时间。没有这些计数器时，这些值来自引擎的容器日志，每分钟读取一次，期间保持不变，这需要 `docker`（docker 组，或 `sudo -n"
+" docker`）。如果某个引擎的 `/v1/loads` 需要它的 API 密钥（reporter 不会发送），就通过 `/metrics` "
+"抓取。"
+
+#: ../developer/openinfra.md:102
+msgid ""
+"**vLLM.** It has no `/v1/loads`: scrape `/metrics` and set `\"engine\": "
+"\"vllm\"`."
+msgstr "**vLLM**。它没有 `/v1/loads`：抓取 `/metrics`，并设置 `\"engine\": \"vllm\"`。"
+
+#: ../developer/openinfra.md:104
+msgid ""
+"**DCGM (optional).** Tensor-core, DRAM, NVLink and PCIe charts need "
+"NVIDIA's dcgm-exporter. Install it with the field list and override in "
+"`ops/openinfra/dcgm/`; the reporter reads `http://127.0.0.1:9400/metrics`"
+" when it answers, and reports everything else without it."
+msgstr ""
+"**DCGM（可选）**。Tensor Core、DRAM、NVLink 和 PCIe 图表需要 NVIDIA 的 dcgm-exporter。用"
+" `ops/openinfra/dcgm/` 中的字段列表和覆盖配置安装它；它可用时 reporter 会读取 "
+"`http://127.0.0.1:9400/metrics`，没有它时其余数据照常上报。"
+
+#: ../developer/openinfra.md:109
+msgid ""
+"The reporter posts once per flush, all engines and GPUs together. When "
+"the gateway cannot be reached it logs the failure and sends the next "
+"snapshot on schedule; the snapshots in between are not kept. A User-Agent"
+" some edges let through is sent; `OPENINFRA_USER_AGENT` overrides it."
+msgstr ""
+"reporter 每次上报发送一个请求，所有引擎和 GPU "
+"一起发送。无法连接网关时，它会记录失败，并按计划发送下一份快照；中间的快照不会保留。它发送一个某些边缘层会放行的 User-"
+"Agent；`OPENINFRA_USER_AGENT` 可以覆盖它。"
+
+#: ../developer/openinfra.md:114
+msgid ""
+"Command-line flags can stand in for a configuration file: `--dashboard` "
+"(the gateway address), `--token`, `--node-id`, `--hostname`, `--region`, "
+"`--cluster`, `--flush-interval` and a repeated `--sglang-url`."
+msgstr ""
+"命令行参数可以代替配置文件：`--dashboard`（网关地址）、`--token`、`--node-"
+"id`、`--hostname`、`--region`、`--cluster`、`--flush-interval`，以及可重复使用的 "
+"`--sglang-url`。"
+
+#: ../developer/openinfra.md:118
+msgid "The ingest API"
+msgstr "采集 API"
+
+#: ../developer/openinfra.md:120
+msgid ""
+"`POST /internal/openinfra/ingest` takes one host's snapshot, with "
+"`Authorization: Bearer <token>` (or `x-ingest-token: <token>`) carrying "
+"`OPENINFRA_INGEST_TOKEN`:"
+msgstr ""
+"`POST /internal/openinfra/ingest` 接收一台主机的快照，用 `Authorization: Bearer "
+"<token>`（或 `x-ingest-token: <token>`）携带 `OPENINFRA_INGEST_TOKEN`："
+
+#: ../developer/openinfra.md:148
+msgid ""
+"`sglang` holds every engine on the host, vLLM included (`engine` says "
+"which), and may also be a single object. An engine sends parsed "
+"`metrics`, its raw `prometheus` text, or both; text that exposes several "
+"models gives each model its own engine row, `<id>:<model>`."
+msgstr ""
+"`sglang` 包含主机上的每个引擎，包括 vLLM（`engine` 说明是哪一种），也可以是单个对象。引擎可以发送解析后的 "
+"`metrics`、原始的 `prometheus` 文本，或两者都发送；暴露了多个模型的文本会为每个模型生成单独的引擎行，即 "
+"`<id>:<model>`。"
+
+#: ../developer/openinfra.md:152
+msgid ""
+"Parsing is lenient, so reporters of any age keep working: a number may "
+"arrive as a numeric string, unknown fields are ignored, and a value of "
+"the wrong type is dropped. A body of the wrong shape is refused whole."
+msgstr ""
+"解析是宽松的，因此任何版本的 reporter "
+"都能继续工作：数字可以以数字字符串的形式到达，未知字段会被忽略，类型不对的值会被丢弃。形状不对的请求体会被整体拒绝。"
+
+#: ../developer/openinfra.md:155
+msgid ""
+"A body carries at most 64 GPUs and 16 engines, keeps 20 request events "
+"per engine, and is limited to 2 MiB."
+msgstr "一个请求体最多包含 64 块 GPU 和 16 个引擎，每个引擎保留 20 条请求事件，大小限制为 2 MiB。"
+
+#: ../developer/openinfra.md
+msgid "Answer"
+msgstr "应答"
+
+#: ../developer/openinfra.md
+msgid "When"
+msgstr "何时"
+
+#: ../developer/openinfra.md
+#, python-brace-format
+msgid "`200 {\"ok\": true, \"gpus\": N, \"sglang\": M}`"
+msgstr "`200 {\"ok\": true, \"gpus\": N, \"sglang\": M}`"
+
+#: ../developer/openinfra.md
+msgid "Committed"
+msgstr "已提交"
+
+#: ../developer/openinfra.md
+msgid "`400`"
+msgstr "`400`"
+
+#: ../developer/openinfra.md
+msgid "The body is not JSON, or not a snapshot; the message says why"
+msgstr "请求体不是 JSON，或者不是快照；消息会说明原因"
+
+#: ../developer/openinfra.md
+msgid "`401`"
+msgstr "`401`"
+
+#: ../developer/openinfra.md
+msgid "The token is missing or wrong. Checked before the body is read"
+msgstr "令牌缺失或错误。在读取请求体之前检查"
+
+#: ../developer/openinfra.md
+msgid "`404`"
+msgstr "`404`"
+
+#: ../developer/openinfra.md
+msgid "No token is configured: this deployment does not collect"
+msgstr "没有配置令牌：此部署不采集"
+
+#: ../developer/openinfra.md
+msgid "`408`, `413`"
+msgstr "`408`, `413`"
+
+#: ../developer/openinfra.md
+msgid "The body was too slow or too large"
+msgstr "请求体太慢或太大"
+
+#: ../developer/openinfra.md
+msgid "`503`"
+msgstr "`503`"
+
+#: ../developer/openinfra.md
+msgid "No database, or the write failed; the next snapshot comes as usual"
+msgstr "没有数据库，或写入失败；下一份快照照常到来"
+
+#: ../developer/openinfra.md:167
+msgid "What the page reads"
+msgstr "页面读取什么"
+
+#: ../developer/openinfra.md:169
+msgid ""
+"Both reads are unauthenticated, serve only what the page shows, and "
+"answer `404` unless the deployment publishes OpenInfra."
+msgstr "两个读取接口都不需要认证，只提供页面显示的内容，并且除非部署发布了 OpenInfra，否则返回 `404`。"
+
+#: ../developer/openinfra.md:172
+msgid ""
+"`GET /public-openinfra`: the fleet's state (`healthy`, `busy`, `degraded`"
+" or `offline`), fleet-wide figures, every host, GPU and engine (under "
+"`sglang`, in tab order), the requests and tokens served in the last hour "
+"and day, and each engine's 40 most recent requests."
+msgstr ""
+"`GET /public-openinfra`：集群状态（`healthy`、`busy`、`degraded` 或 "
+"`offline`）、集群总体数据、每台主机、每块 GPU 和每个引擎（在 `sglang` 下，按标签页顺序）、最近一小时和一天处理的请求与 "
+"token，以及每个引擎最近的 40 个请求。"
+
+#: ../developer/openinfra.md:176
+msgid ""
+"`GET /public-openinfra/history?hours=2&node=`: time series for every "
+"host, or one, over the last `hours` (0.25 to 168, rounded to a quarter "
+"hour). Points are a minute apart up to two hours, 20 minutes apart up to "
+"a day, and an hour apart beyond; `grain_ms` says which."
+msgstr ""
+"`GET /public-openinfra/history?hours=2&node=`：所有主机或某一台主机在最近 `hours` "
+"小时内的时间序列（0.25 到 168，取整到一刻钟）。两小时以内的数据点间隔一分钟，一天以内间隔 20 "
+"分钟，更长则间隔一小时；`grain_ms` 说明是哪一种。"
+
+#: ../developer/openinfra.md:181
+msgid ""
+"Each answer is computed at most once every 10 seconds (the dashboard) or "
+"30 seconds (each history window), however many people ask, and carries a "
+"matching `Cache-Control`."
+msgstr "每个应答最多每 10 秒（仪表板）或 30 秒（每个历史窗口）计算一次，无论有多少人请求，并带有相应的 `Cache-Control`。"
+
+#: ../developer/openinfra.md:185
+msgid ""
+"An administrator can download the data: `GET "
+"/admin/openinfra/export?days=30` (1 to 30 days) returns the identities, "
+"the served totals and the history as a JSON attachment, published or not."
+msgstr ""
+"管理员可以下载这些数据：`GET /admin/openinfra/export?days=30`（1 到 30 天）以 JSON "
+"附件的形式返回各项标识、服务总量和历史，无论是否已发布。"
+
+#: ../developer/openinfra.md:189
+msgid "Storage"
+msgstr "存储"
+
+#: ../developer/openinfra.md:191
+msgid ""
+"The snapshots are kept in the `openinfra_*` tables (revision "
+"`0025_openinfra`):"
+msgstr "快照保存在 `openinfra_*` 表中（修订版本 `0025_openinfra`）："
+
+#: ../developer/openinfra.md:193
+msgid ""
+"**Live rows**, one per host, GPU and engine, overwritten by every "
+"snapshot. A snapshot marks a GPU degraded at 85 °C or with ECC errors, "
+"and an engine with more than 2000 queued requests or its GPUs at 95 %. "
+"Anything silent for 90 seconds reads as offline."
+msgstr ""
+"**实时行**，每台主机、每块 GPU、每个引擎一行，每份快照都会覆盖它们。快照会把达到 85 °C 或出现 ECC 错误的 GPU "
+"标为降级，也会把排队请求超过 2000 个、或其 GPU 达到 95% 的引擎标为降级。静默 90 秒的任何对象都显示为离线。"
+
+#: ../developer/openinfra.md:197
+msgid ""
+"**Samples**, at most one per host, GPU and engine every 6 seconds: the "
+"first snapshot in each 6-second bucket is kept. At the default 5-second "
+"flush every bucket gets one. The served totals add up each sample's rates"
+" over that spacing."
+msgstr ""
+"**样本**，每台主机、每块 GPU、每个引擎每 6 秒最多一个：保留每个 6 秒时间桶中的第一份快照。在默认 5 "
+"秒的上报间隔下，每个时间桶都会有一个样本。服务总量按这个间隔累加每个样本的速率。"
+
+#: ../developer/openinfra.md:201
+msgid ""
+"**Rollups** for 20-minute and hourly buckets, refreshed by the gateway's "
+"scheduler one minute past every fifth minute, on one replica at a time. A"
+" rollup keeps its bucket's last sample and the sums the served totals "
+"need."
+msgstr ""
+"**汇总**，按 20 "
+"分钟和每小时的时间桶，由网关的调度器在每个第五分钟过后一分钟刷新，每次只在一个副本上运行。汇总保留其时间桶的最后一个样本，以及服务总量需要的累加值。"
+
+#: ../developer/openinfra.md:204
+msgid "**Request events**, as the reporter reads them from the engine logs."
+msgstr "**请求事件**，即 reporter 从引擎日志中读到的内容。"
+
+#: ../developer/openinfra.md:206
+msgid ""
+"Nothing is deleted. A sample row takes roughly 200 bytes for a GPU and "
+"400 for an engine, index included, and each one gets 14,400 a day: a host"
+" with eight GPUs and two engines adds about 40 MB a day, some 15 GB a "
+"year. Watch the database's size."
+msgstr ""
+"不会删除任何数据。一个样本行大约占 200 字节（GPU）或 400 字节（引擎），包含索引，而每个对象每天产生 14,400 行：一台有八块 "
+"GPU 和两个引擎的主机每天大约增加 40 MB，一年约 15 GB。请留意数据库的大小。"
+
+#: ../developer/openinfra.md:211
+msgid "Moving from the Cloudflare Worker"
+msgstr "从 Cloudflare Worker 迁移"
+
+#: ../developer/openinfra.md:213
+msgid ""
+"OpenInfra was a Cloudflare Worker with its own D1 database before it "
+"moved into the gateway. The snapshot format is the same; only the address"
+" changes."
+msgstr "在迁入网关之前，OpenInfra 是一个使用自己 D1 数据库的 Cloudflare Worker。快照格式不变；只有地址改变。"
+
+#: ../developer/openinfra.md:216
+msgid ""
+"Deploy a gateway release that has OpenInfra and set "
+"`OPENINFRA_INGEST_TOKEN`. Reusing the Worker's `INGEST_TOKEN` means the "
+"hosts need only the new address."
+msgstr ""
+"部署包含 OpenInfra 的网关版本，并设置 `OPENINFRA_INGEST_TOKEN`。沿用 Worker 的 "
+"`INGEST_TOKEN`，主机就只需要换成新地址。"
+
+#: ../developer/openinfra.md:219
+msgid ""
+"On each host, replace the reporter with `ops/openinfra/reporter.py` (it "
+"posts to `/internal/openinfra/ingest`, not `/api/ingest`) and point "
+"`OPENINFRA_URL` at the gateway. Check that snapshots arrive with `GET "
+"/admin/openinfra/export?days=1` before publishing."
+msgstr ""
+"在每台主机上，把 reporter 换成 `ops/openinfra/reporter.py`（它发送到 "
+"`/internal/openinfra/ingest`，而不是 `/api/ingest`），并把 `OPENINFRA_URL` "
+"指向网关。发布之前，用 `GET /admin/openinfra/export?days=1` 确认快照已经到达。"
+
+#: ../developer/openinfra.md:223
+msgid ""
+"Export the D1 database and import it, from an environment with the "
+"gateway's `DB_*` settings, such as the backend container:"
+msgstr "在带有网关 `DB_*` 设置的环境中（例如后端容器）导出 D1 数据库并导入："
+
+#: ../developer/openinfra.md:232
+msgid ""
+"What the gateway already holds wins: a host, GPU or engine row, a sample "
+"or rollup bucket it has is kept, and request events are imported only "
+"from before each engine's first one in the gateway. The import can "
+"therefore run after the switch, and again."
+msgstr ""
+"网关中已有的数据优先：它已有的主机、GPU "
+"或引擎行，以及样本或汇总时间桶都会保留，请求事件只导入每个引擎在网关中第一条之前的部分。因此导入可以在切换之后运行，也可以再次运行。"
+
+#: ../developer/openinfra.md:236
+msgid "List the engines the Worker had retired in `OPENINFRA_RETIRED_ENGINES`."
+msgstr "把 Worker 中已停用的引擎列入 `OPENINFRA_RETIRED_ENGINES`。"
+
+#: ../developer/openinfra.md:237
+msgid ""
+"Turn on `features.openinfra`, send the old dashboard's address to "
+"`/openinfra`, and retire the Worker."
+msgstr "开启 `features.openinfra`，把旧仪表板的地址指向 `/openinfra`，然后停用 Worker。"
+
+#: ../developer/openinfra.md:240
+msgid "Limitations"
+msgstr "限制"
+
+#: ../developer/openinfra.md:242
+msgid "A reporter keeps nothing while the gateway is unreachable."
+msgstr "网关无法访问期间，reporter 不保留任何数据。"
+
+#: ../developer/openinfra.md:243
+msgid ""
+"The ingest endpoint has no rate limit of its own; the token is the gate, "
+"so make it long and random."
+msgstr "采集端点没有自己的速率限制；令牌就是门槛，所以请使用较长的随机令牌。"
+
+#: ../developer/openinfra.md:248
+msgid "Nothing is deleted, so the tables grow until someone prunes them."
+msgstr "不会删除任何数据，所以这些表会一直增长，直到有人清理。"
+
+#: ../developer/openinfra.md:245
+msgid ""
+"The served totals are estimates: they add up each sample's rates rather "
+"than count requests, and the last day is summed from 20-minute rollups, "
+"each bucket's mean rate over the part of it inside the day. A bucket in "
+"which a reporter started or stopped counts as if it had reported "
+"throughout."
+msgstr ""
+"服务总量是估计值：它们累加每个样本的速率，而不是统计请求数；最近一天由 20 "
+"分钟汇总求和，每个时间桶的平均速率只按其落在这一天内的部分计算。reporter 在某个时间桶中途开始或停止时，这个时间桶仍按全程都有上报来计算。"
+
+#: ../developer/openinfra.md:41
+msgid ""
+"**Collecting.** Set `OPENINFRA_INGEST_TOKEN` (Admin, Settings, Setup, "
+"Integrations) to a long random string, for example the output of `openssl"
+" rand -hex 32`. While it is empty, `POST /internal/openinfra/ingest` "
+"answers `404` and nothing is collected."
+msgstr ""
+"**采集**。把 "
+"`OPENINFRA_INGEST_TOKEN`（Admin、Settings、Setup、Integrations）设为一个较长的随机字符串，例如"
+" `openssl rand -hex 32` 的输出。它为空时，`POST /internal/openinfra/ingest` 返回 "
+"`404`，不采集任何数据。"

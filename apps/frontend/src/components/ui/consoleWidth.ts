@@ -10,7 +10,8 @@ import { usePathname } from 'next/navigation';
  * beside it. The admin area has the same bar, so moving between the two does
  * not move the name or the account menu, and lays its wide tables out below
  * it. Every other page (sign-in, stats, legal text) is centred at the reading
- * width under a header of that width.
+ * width under a header of that width, except OpenInfra, whose dozens of charts
+ * take the admin area's width.
  */
 const CONSOLE_WIDTH_DEFAULT = 'max-w-5xl';
 const CONSOLE_WIDTH_WIDE = 'max-w-[1440px]';
@@ -34,6 +35,11 @@ export function isWideConsoleRoute(pathname: string): boolean {
   return pathname === '/dashboard/admin' || pathname.startsWith('/dashboard/admin/');
 }
 
+/** A public page laid out at the admin area's width: the OpenInfra charts. */
+export function isWidePublicRoute(pathname: string): boolean {
+  return pathname === '/openinfra' || pathname === '/openinfra/';
+}
+
 /** The pages that show the user console's navigation (the `(console)` group). */
 export function isUserConsoleRoute(pathname: string): boolean {
   return isDashboardRoute(pathname) && !isWideConsoleRoute(pathname);
@@ -45,7 +51,7 @@ export function isUserConsoleRoute(pathname: string): boolean {
  */
 export function consoleWidthFor(pathname: string): string {
   if (isUserConsoleRoute(pathname)) return 'max-w-none';
-  if (isWideConsoleRoute(pathname)) return CONSOLE_WIDTH_WIDE;
+  if (isWideConsoleRoute(pathname) || isWidePublicRoute(pathname)) return CONSOLE_WIDTH_WIDE;
   return CONSOLE_WIDTH_DEFAULT;
 }
 

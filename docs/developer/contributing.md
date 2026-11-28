@@ -124,7 +124,8 @@ deploy/
 docs/
   developer/      this guide (MyST Markdown, built with Sphinx)
   agents/         design specs and plans
-ops/              maintenance and CI helper scripts (admin, ci, db)
+ops/              maintenance and CI helper scripts (admin, ci, db), and the
+                  OpenInfra reporter that GPU hosts run (openinfra)
 tests/            see the test tiers below
 ```
 

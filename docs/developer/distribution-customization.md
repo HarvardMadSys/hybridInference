@@ -119,6 +119,10 @@ Run it with the backend's environment, `DB_*` and `BACKEND_EXTENSIONS` included
 catalog, and without one its snapshot has no per-model section.
 Router selection still belongs to each model and its router parameters.
 
+`features.openinfra: true` publishes the GPU fleet and engine metrics that
+OpenInfra reporters collect, at `/openinfra`; collecting is the separate
+`OPENINFRA_INGEST_TOKEN` setting (see [OpenInfra](openinfra.md)).
+
 ### When changes take effect
 
 Site configuration and branding follow settings refresh. Catalog, routing policy

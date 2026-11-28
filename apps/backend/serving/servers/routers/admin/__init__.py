@@ -2,9 +2,9 @@
 
 Aggregates domain-focused sub-routers (alerts, analytics,
 api_keys, auth_blocks, batch, broadcast, config, export, login_events, metrics, model_concurrency,
-model_queue, model_visibility, offload_routes, providers, settings, signup_domains, site_updates,
-stats, system, upstream_concurrency, usage_insights, user_tags, users) into a single ``router``
-exported at this level. Callers use
+model_queue, model_visibility, offload_routes, openinfra, providers, settings, signup_domains,
+site_updates, stats, system, upstream_concurrency, usage_insights, user_tags, users) into a single
+``router`` exported at this level. Callers use
 ``from serving.servers.routers import admin`` unchanged.
 """
 
@@ -27,6 +27,7 @@ from serving.servers.routers.admin import (
     model_queue,
     model_visibility,
     offload_routes,
+    openinfra,
     provider_definitions,
     provider_keys,
     provider_routes,
@@ -69,6 +70,7 @@ router.include_router(model_concurrency.router)
 router.include_router(model_queue.router)
 router.include_router(model_visibility.router)
 router.include_router(offload_routes.router)
+router.include_router(openinfra.router)
 router.include_router(provider_definitions.router)
 router.include_router(provider_keys.router)
 router.include_router(provider_routes.router)

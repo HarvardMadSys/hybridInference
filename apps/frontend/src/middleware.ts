@@ -72,6 +72,6 @@ export const config = {
   // the gateway's segments are listed again in next.config.js `redirects()`.
   // src/middleware.test.ts checks the compiled matcher.
   matcher: [
-    '/((?!(?:_next/static|_next/image|favicon\\.ico|v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|site-assets|pgadmin|agents)(?:/|$)).*)',
+    '/((?!(?:_next/static|_next/image|favicon\\.ico|v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|public-openinfra|site-assets|pgadmin|agents)(?:/|$)).*)',
   ],
 };

@@ -110,7 +110,7 @@ const nextConfig = {
     return [
       {
         source:
-          '/:prefix(v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|site-assets)/:path*/',
+          '/:prefix(v1|anthropic|internal|auth|user|admin|health|site-config|site-updates|public-stats|public-openinfra|site-assets)/:path*/',
         destination: '/:prefix/:path*',
         permanent: true,
       },
@@ -173,6 +173,13 @@ const nextConfig = {
         { source: '/site-config', destination: `${BACKEND_INTERNAL_URL}/site-config` },
         // Daily aggregate usage snapshot rendered by the public /stats page.
         { source: '/public-stats', destination: `${BACKEND_INTERNAL_URL}/public-stats` },
+        // Live GPU, host and engine metrics rendered by the public /openinfra
+        // page: the current snapshot, and its history for the chosen range.
+        { source: '/public-openinfra', destination: `${BACKEND_INTERNAL_URL}/public-openinfra` },
+        {
+          source: '/public-openinfra/history',
+          destination: `${BACKEND_INTERNAL_URL}/public-openinfra/history`,
+        },
       ],
     };
   },

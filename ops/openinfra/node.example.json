@@ -1,0 +1,25 @@
+{
+  "node_id": "node-a",
+  "hostname": "node-a",
+  "region": "lab",
+  "cluster": "main",
+  "flush_interval": 5,
+  "sglang": [
+    {
+      "url": "http://127.0.0.1:30000/metrics",
+      "id": "node-a-chat",
+      "name": "chat-model",
+      "engine": "sglang",
+      "endpoint": "http://node-a:30000",
+      "gpu_indexes": [0, 1]
+    },
+    {
+      "url": "http://127.0.0.1:8000/metrics",
+      "id": "node-a-embed",
+      "name": "embed-model",
+      "engine": "vllm",
+      "endpoint": "http://node-a:8000",
+      "gpu_indexes": [2]
+    }
+  ]
+}

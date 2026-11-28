@@ -88,6 +88,17 @@ export function SiteFooter(): JSX.Element {
     });
   }
 
+  if (features.openinfra) {
+    entries.push({
+      key: 'openinfra',
+      node: (
+        <Link href="/openinfra" prefetch={false} className="hover:text-crimson">
+          {t('chrome.footer.openinfra', 'OpenInfra')}
+        </Link>
+      ),
+    });
+  }
+
   if (branding.team.length > 0) {
     entries.push({
       key: 'team',

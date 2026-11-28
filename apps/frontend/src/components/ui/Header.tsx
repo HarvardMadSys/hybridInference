@@ -76,6 +76,15 @@ export function Header() {
       prefetch: false,
     });
   }
+  if (features.openinfra) {
+    links.push({
+      key: 'openinfra',
+      href: '/openinfra',
+      label: t('chrome.header.openinfra', 'OpenInfra'),
+      external: false,
+      prefetch: false,
+    });
+  }
   if (branding.docsUrl) {
     links.push({
       key: 'docs',

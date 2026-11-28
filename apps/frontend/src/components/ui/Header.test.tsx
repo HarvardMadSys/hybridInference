@@ -167,6 +167,27 @@ describe('Header', () => {
     expect(labels).toEqual(['Stats', 'Example Project']);
   });
 
+  it('hides the OpenInfra link unless the deployment publishes it', () => {
+    render(<Header />);
+
+    expect(screen.queryByRole('link', { name: 'OpenInfra' })).not.toBeInTheDocument();
+  });
+
+  it('shows guests a same-tab OpenInfra link after stats, before the nav links', () => {
+    featuresOverride = { rag: true, publicStats: true, openinfra: true };
+
+    render(<Header />);
+
+    const link = screen.getByRole('link', { name: 'OpenInfra' });
+    expect(link).toHaveAttribute('href', '/openinfra');
+    expect(link).not.toHaveAttribute('target');
+    const labels = screen
+      .getAllByRole('link')
+      .map((node) => node.textContent?.trim())
+      .filter((label) => ['Stats', 'OpenInfra', 'Example Project'].includes(label ?? ''));
+    expect(labels).toEqual(['Stats', 'OpenInfra', 'Example Project']);
+  });
+
   it('renders no extra header links when the distribution lists none', () => {
     brandingOverride = { ...configuredBranding, navLinks: [] };
 

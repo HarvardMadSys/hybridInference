@@ -70,6 +70,7 @@ describe('which requests reach the middleware', () => {
       '/dashboard/admin/users',
       '/authorize',
       '/stats/',
+      '/openinfra',
       '/verify-email',
     ]) {
       expect(reaches(path), path).toBe(true);
@@ -92,6 +93,9 @@ describe('which requests reach the middleware', () => {
       '/site-config',
       '/site-updates',
       '/public-stats',
+      '/public-openinfra',
+      '/public-openinfra/history',
+      '/internal/openinfra/ingest',
       '/site-assets/logo.svg',
       '/pgadmin',
       '/pgadmin/browser/',
