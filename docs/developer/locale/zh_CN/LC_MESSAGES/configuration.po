@@ -2547,8 +2547,8 @@ msgstr "管理位置"
 msgid "Application settings and documents"
 msgstr "应用设置和文档"
 
-msgid "`app_config`, edited in Admin Settings, the model catalog in Admin Providers → Models"
-msgstr "`app_config`，在 Admin Settings 中编辑；模型目录在 Admin Providers → Models 中编辑"
+msgid "`app_config`, edited in Admin Settings, the model catalog in Admin Routing → Models"
+msgstr "`app_config`，在 Admin Settings 中编辑；模型目录在 Admin Routing → Models 中编辑"
 
 msgid "Providers, credentials, live routes and overrides"
 msgstr "供应商、凭据、实时路由和覆盖项"
@@ -2571,8 +2571,8 @@ msgstr "`.ops.env`，从 `.ops.env.example` 复制"
 msgid "Application documents"
 msgstr "应用文档"
 
-msgid "**Admin → Providers → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
-msgstr "**Admin → Providers → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
+msgid "**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime role and concurrency overrides beside it; **Admin → Settings → Application** edits the other documents. All of them are validated JSON and use the same conditional saves, audit, security confirmation and backup controls as other settings. No JSON file is a runtime fallback either."
+msgstr "**Admin → Routing → Models** 编辑 `MODEL_CATALOG`，旁边是每个模型的运行时角色和并发覆盖项；**Admin → Settings → Application** 编辑其他文档。这些文档都是经过验证的 JSON，与其他设置使用相同的条件保存、审计、安全确认和备份机制。JSON 文件也不会成为运行时回退来源。"
 
 #: ../developer/configuration.md
 msgid "Admin shows each document as fields, one per value, named by its path, such as `models[0].route[0].base_url`. Each field is a plain string. A number or `true`/`false` keeps its type, and a list of strings is one comma-separated field. To add or remove a key or a list item, switch the document to **JSON**. A save from the fields stores the whole document as indented JSON."
@@ -2653,8 +2653,8 @@ msgstr "运行时不再使用路由文件。需要部署级策略时，在 Admin
 msgid "The retired model/routing/alert path variables and distribution active/dark modes no longer select configuration. Use the application documents instead. The standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values do not configure it."
 msgstr "已停用的模型、路由、告警路径变量和分发 active/dark 模式不再选择配置。请使用应用文档。独立云代理管理自己的设置；网关中废弃的 `AGENT_*` 值不会配置该代理。"
 
-msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. **Admin → Providers → Models** shows **Applied in each backend process** beside the model catalog, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
-msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。**Admin → Providers → Models** 在模型目录旁显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
+msgid "Provider/key changes and ordinary route edits are persisted in the operational store. Backend processes observe committed changes and converge on their scoped model transitions, normally within ten seconds. **Admin → Routing → Models** shows **Applied in each backend process** beside the model catalog, including failed, stale or unsupported processes. A stale process is never counted as successfully updated. Compare the registered process count with your deployment inventory."
+msgstr "供应商、密钥及普通路由修改持久化到运行时存储。后端进程观察已提交修改，并通过各模型的切换机制收敛，通常不超过十秒。**Admin → Routing → Models** 在模型目录旁显示 **Applied in each backend process**，包括失败、过期或不支持的进程。过期进程绝不会计为成功更新。请将注册进程数与部署清单比较。"
 
 msgid "Catalog changes marked **Restart required** still need a controlled backend restart. A save is not evidence that every process has applied the change."
 msgstr "标记为 **Restart required** 的目录修改仍需要受控重启后端。保存成功不能证明所有进程都已应用修改。"

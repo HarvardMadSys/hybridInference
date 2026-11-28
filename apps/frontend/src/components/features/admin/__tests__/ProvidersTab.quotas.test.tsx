@@ -3,16 +3,10 @@ import '@testing-library/jest-dom/vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import {
-  ProviderAvailabilitySection,
-  ProviderKeysSection,
-  ProviderOverviewSection,
-  ProviderQuotasSection,
-} from '../ProvidersTab';
-import { ProviderSelectionProvider } from '../providerSelection';
+import type { ProviderRouting } from '@/app/dashboard/admin/ProviderOverviewTab';
 
-const pushMock = vi.hoisted(() => vi.fn());
-vi.mock('next/navigation', () => ({ useRouter: () => ({ push: pushMock }) }));
+import { ProviderKeysSection, ProviderQuotasSection, ProvidersOverviewPage } from '../ProvidersTab';
+import { ProviderSelectionProvider, type ProviderKeysRequest } from '../providerSelection';
 
 vi.mock('@/lib/api/admin', () => ({
   getProviderQuotas: vi.fn(),
@@ -29,23 +23,60 @@ vi.mock('@/app/dashboard/admin/ProviderKeysTab', () => ({
   ProviderKeysTab: ({
     initialProvider,
     keepUnlistedProvider,
+    request,
+    refreshKey,
     onProviderChange,
+    onKeysChange,
   }: {
     initialProvider: string;
     keepUnlistedProvider: boolean;
+    request?: ProviderKeysRequest;
+    refreshKey?: number;
     onProviderChange: (provider: string) => void;
+    onKeysChange?: () => void;
   }) => (
-    <button
-      data-asked-for={String(keepUnlistedProvider)}
-      onClick={() => onProviderChange('openrouter')}
-    >
-      Keys for {initialProvider}
-    </button>
+    <>
+      <button
+        data-asked-for={String(keepUnlistedProvider)}
+        data-request={request ? `${request.provider} #${request.serial}` : ''}
+        data-refresh={String(refreshKey ?? 0)}
+        onClick={() => onProviderChange('openrouter')}
+      >
+        Keys for {initialProvider}
+      </button>
+      <button onClick={() => onKeysChange?.()}>Add a key</button>
+    </>
   ),
 }));
+// The registry stands in with its "Manage keys" for zai, and a switch for each
+// provider in the routing table as its Routing column has.
 vi.mock('@/app/dashboard/admin/ProviderOverviewTab', () => ({
-  ProviderOverviewTab: ({ onManageKeys }: { onManageKeys: (provider: string) => void }) => (
-    <button onClick={() => onManageKeys('zai')}>Manage keys for zai</button>
+  ProviderOverviewTab: ({
+    onManageKeys,
+    routing,
+    refreshKey,
+    onRegistryChange,
+  }: {
+    onManageKeys: (provider: string) => void;
+    routing?: ProviderRouting;
+    refreshKey?: number;
+    onRegistryChange?: () => void;
+  }) => (
+    <div data-testid="registry" data-refresh={String(refreshKey ?? 0)}>
+      <button onClick={() => onManageKeys('zai')}>Manage keys for zai</button>
+      <button onClick={() => onRegistryChange?.()}>Add a provider</button>
+      {routing?.providers?.map((p) => (
+        <button
+          key={p.provider}
+          type="button"
+          role="switch"
+          aria-checked={!p.disabled}
+          aria-label={`${p.disabled ? 'Enable' : 'Disable'} ${p.provider}`}
+          disabled={routing.busy}
+          onClick={() => routing.onToggle(p)}
+        />
+      ))}
+    </div>
   ),
 }));
 vi.mock('@/app/dashboard/admin/UpstreamConcurrencyPanel', () => ({
@@ -128,8 +159,9 @@ async function clickSwitch(name: string) {
   });
 }
 
-describe('Providers → Quotas', () => {
+describe('Providers → Overview: quotas', () => {
   beforeEach(() => {
+    vi.mocked(getRoutableProviders).mockResolvedValue({ providers: [] });
     vi.mocked(getProviderQuotas).mockResolvedValue({
       generated_at: '2026-08-04T00:00:00Z',
       providers: [ACTIVE_KEY, DISABLED_KEY, COOKIE_ONLY],
@@ -155,46 +187,79 @@ describe('Providers → Quotas', () => {
     vi.restoreAllMocks();
   });
 
-  it('opens Keys on the provider "Manage keys" asks for, and keeps the one chosen there', () => {
+  it('moves Keys, on the same page, to the provider "Manage keys" asks for', async () => {
+    const scrolled: Element[] = [];
+    Element.prototype.scrollIntoView = vi.fn(function (this: Element) {
+      scrolled.push(this);
+    });
+    render(
+      <ProviderSelectionProvider>
+        <ProvidersOverviewPage />
+      </ProviderSelectionProvider>,
+    );
+    const keys = screen.getByRole('button', { name: 'Keys for' });
+    expect(keys).toHaveAttribute('data-request', '');
+
+    fireEvent.click(screen.getByRole('button', { name: 'Manage keys for zai' }));
+    expect(keys).toHaveAttribute('data-request', 'zai #1');
+    // Down to the keys, rather than away to a page of their own.
+    expect(scrolled).toEqual([document.getElementById('keys')]);
+    expect(screen.getByRole('region', { name: 'Keys' })).toContainElement(keys);
+
+    // The same provider asked for again is a new request.
+    fireEvent.click(screen.getByRole('button', { name: 'Manage keys for zai' }));
+    expect(keys).toHaveAttribute('data-request', 'zai #2');
+    await screen.findByText('ZAI #1');
+  });
+
+  it('opens Keys again on the provider it showed last, after another Providers page', async () => {
     // The Providers layout keeps the selection while its pages come and go.
     const { rerender } = render(
       <ProviderSelectionProvider>
-        <ProviderOverviewSection />
+        <ProvidersOverviewPage />
       </ProviderSelectionProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: 'Manage keys for zai' }));
-    expect(pushMock).toHaveBeenCalledWith('/dashboard/admin/providers/keys');
+    // The stand-in for the keys view chooses openrouter when clicked.
+    fireEvent.click(screen.getByRole('button', { name: 'Keys for' }));
+    await screen.findByText('ZAI #1');
 
     rerender(
       <ProviderSelectionProvider>
-        <ProviderKeysSection />
-      </ProviderSelectionProvider>,
-    );
-    // Asked for: Keys keeps it even when it has no keys to manage.
-    const asked = screen.getByRole('button', { name: 'Keys for zai' });
-    expect(asked).toHaveAttribute('data-asked-for', 'true');
-    // The stand-in for the keys view chooses openrouter when clicked. What it
-    // reports is kept for next time; Keys has already opened.
-    fireEvent.click(asked);
-    expect(screen.getByRole('button', { name: 'Keys for zai' })).toHaveAttribute(
-      'data-asked-for',
-      'true',
-    );
-    rerender(
-      <ProviderSelectionProvider>
-        <ProviderOverviewSection />
+        <p>Performance</p>
       </ProviderSelectionProvider>,
     );
     rerender(
       <ProviderSelectionProvider>
-        <ProviderKeysSection />
+        <ProvidersOverviewPage />
       </ProviderSelectionProvider>,
     );
-    // Only shown last: Keys gives it up once it is no longer listed.
-    expect(screen.getByRole('button', { name: 'Keys for openrouter' })).toHaveAttribute(
-      'data-asked-for',
-      'false',
+    // Only shown last: Keys gives it up once it is no longer listed, and no
+    // request is pending.
+    const keys = screen.getByRole('button', { name: 'Keys for openrouter' });
+    expect(keys).toHaveAttribute('data-asked-for', 'false');
+    expect(keys).toHaveAttribute('data-request', '');
+    await screen.findByText('ZAI #1');
+  });
+
+  it('reads again, in each section, what another section changed', async () => {
+    render(
+      <ProviderSelectionProvider>
+        <ProvidersOverviewPage />
+      </ProviderSelectionProvider>,
     );
+    await screen.findByText('ZAI #1');
+    expect(getRoutableProviders).toHaveBeenCalledTimes(1);
+
+    // A key added below: the registry's counts are read again.
+    fireEvent.click(screen.getByRole('button', { name: 'Add a key' }));
+    expect(screen.getByTestId('registry')).toHaveAttribute('data-refresh', '1');
+    expect(screen.getByRole('button', { name: 'Keys for' })).toHaveAttribute('data-refresh', '0');
+
+    // A provider added above: Keys lists providers again, and so does routing.
+    fireEvent.click(screen.getByRole('button', { name: 'Add a provider' }));
+    expect(screen.getByRole('button', { name: 'Keys for' })).toHaveAttribute('data-refresh', '1');
+    await waitFor(() => expect(getRoutableProviders).toHaveBeenCalledTimes(2));
   });
 
   it('passes Keys no provider when nothing has chosen one', () => {
@@ -526,7 +591,7 @@ describe('Providers → Quotas', () => {
   });
 });
 
-describe('Providers → Availability', () => {
+describe('Providers → Overview: routing switches', () => {
   beforeEach(() => {
     vi.mocked(getRoutableProviders).mockResolvedValue({
       providers: [
@@ -546,6 +611,10 @@ describe('Providers → Availability', () => {
         },
       ],
     });
+    vi.mocked(getProviderQuotas).mockResolvedValue({
+      generated_at: '2026-08-04T00:00:00Z',
+      providers: [ACTIVE_KEY],
+    });
     vi.mocked(setProviderDisabled).mockResolvedValue({
       provider: 'zai',
       disabled: true,
@@ -558,13 +627,14 @@ describe('Providers → Availability', () => {
     vi.clearAllMocks();
   });
 
-  async function openAvailability() {
-    render(<ProviderAvailabilitySection />);
+  async function openOverview() {
+    render(<ProvidersOverviewPage />);
     await screen.findByRole('switch', { name: 'Disable zai' });
+    await screen.findByText('ZAI #1');
   }
 
   it('disables a provider on the click, with no confirmation', async () => {
-    await openAvailability();
+    await openOverview();
 
     await clickSwitch('Disable zai');
     expect(screen.queryByRole('dialog')).toBeNull();
@@ -581,7 +651,7 @@ describe('Providers → Availability', () => {
           finish = resolve;
         }),
     );
-    await openAvailability();
+    await openOverview();
 
     await clickSwitch('Disable zai');
     expect(screen.getByRole('switch', { name: 'Disable zai' })).toBeDisabled();
@@ -598,7 +668,7 @@ describe('Providers → Availability', () => {
     vi.mocked(setProviderDisabled)
       .mockRejectedValueOnce(new Error('not allowed'))
       .mockResolvedValueOnce({ provider: 'openrouter', disabled: false, affected_model_count: 1 });
-    await openAvailability();
+    await openOverview();
 
     await clickSwitch('Enable openrouter');
     await waitFor(() => expect(toast.error).toHaveBeenCalledWith('not allowed'));
@@ -610,6 +680,28 @@ describe('Providers → Availability', () => {
     expect(vi.mocked(setProviderDisabled).mock.calls).toEqual([
       ['openrouter', false],
       ['openrouter', false],
+    ]);
+  });
+
+  it('shows a provider switched in the registry as switched on its quota cards, and back', async () => {
+    vi.mocked(setProviderDisabled)
+      .mockResolvedValueOnce({ provider: 'zai', disabled: true, affected_model_count: 3 })
+      .mockResolvedValueOnce({ provider: 'zai', disabled: false, affected_model_count: 3 });
+    await openOverview();
+    expect(screen.getByRole('switch', { name: 'Disable ZAI #1' })).toBeChecked();
+
+    // Off in the registry: off on the card for the same provider.
+    await clickSwitch('Disable zai');
+    expect(await screen.findByRole('switch', { name: 'Enable ZAI #1' })).not.toBeChecked();
+    expect(screen.getByText('Disabled')).toBeInTheDocument();
+
+    // Back on from the card: on in the registry.
+    await clickSwitch('Enable ZAI #1');
+    expect(await screen.findByRole('switch', { name: 'Disable zai' })).toBeChecked();
+    expect(screen.getByRole('switch', { name: 'Disable ZAI #1' })).toBeChecked();
+    expect(vi.mocked(setProviderDisabled).mock.calls).toEqual([
+      ['zai', true],
+      ['zai', false],
     ]);
   });
 });

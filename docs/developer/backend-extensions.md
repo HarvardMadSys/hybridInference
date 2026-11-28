@@ -71,8 +71,8 @@ and a gateway with the internal API turned off answers 404.
 
 ## Quota reporting
 
-The admin console's **Providers → Quotas** tab and RouteWise's quota-aware
-routing both read usage from quota sources. The gateway ships with none: a
+The Quotas section of the admin console's **Providers** tab and RouteWise's
+quota-aware routing both read usage from quota sources. The gateway ships with none: a
 backend extension registers one per provider, reading the provider's usage API
 or your own metering service. Nothing requires a particular supplier, website
 login or cookie.
@@ -174,11 +174,11 @@ local process with Ctrl+C when finished.
 
 To see the card in the authenticated Web/Admin Console, configure this same
 extension and registry on a local full-stack demo backend, then open
-**Providers → Quotas**. Use a quota endpoint reachable from that backend:
-inside Compose, `127.0.0.1` denotes the backend container, not the host. The
-[Quickstart](router-tutorial.md) covers the full-stack demo and its
-authentication. With no returned results the Quotas tab stays visible and
-links back here; the Overview, Keys, Availability and Performance tabs work
+**Providers** and scroll to **Quotas**, below the keys. Use a quota endpoint
+reachable from that backend: inside Compose, `127.0.0.1` denotes the backend
+container, not the host. The [Quickstart](router-tutorial.md) covers the
+full-stack demo and its authentication. With no returned results the Quotas
+section stays visible and links back here; the rest of the Providers tab works
 without any quota source.
 
 For your own integration, copy the extension and replace its local HTTP query

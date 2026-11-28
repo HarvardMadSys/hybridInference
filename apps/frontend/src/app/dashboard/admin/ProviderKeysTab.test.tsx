@@ -164,6 +164,133 @@ describe('ProviderKeysTab tier reservation', () => {
     expect(screen.getByRole('form', { name: 'Add a new key' })).toBeInTheDocument();
   });
 
+  it('moves to the provider "Manage keys" asks for after it opened, once per request', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const onProviderChange = vi.fn();
+    const { rerender } = render(<ProviderKeysTab onProviderChange={onProviderChange} />);
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('openrouter'));
+
+    rerender(
+      <ProviderKeysTab
+        onProviderChange={onProviderChange}
+        request={{ provider: 'zai', serial: 1 }}
+      />,
+    );
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+    expect(onProviderChange).toHaveBeenLastCalledWith('zai');
+    await openAddForm();
+    expect(screen.getByLabelText('Provider')).toHaveAttribute('data-value', 'zai');
+
+    // Chosen in the selector since: the same request does not pull it back.
+    chooseValue(screen.getByLabelText('Selected provider'), 'openrouter');
+    rerender(
+      <ProviderKeysTab
+        onProviderChange={onProviderChange}
+        request={{ provider: 'zai', serial: 1 }}
+      />,
+    );
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'openrouter');
+
+    // The same provider asked for again is a new request.
+    rerender(
+      <ProviderKeysTab
+        onProviderChange={onProviderChange}
+        request={{ provider: 'zai', serial: 2 }}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai'),
+    );
+  });
+
+  it('keeps a provider "Manage keys" asks for that has no keys to manage, and says so', async () => {
+    const { rerender } = render(<ProviderKeysTab />);
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+
+    rerender(<ProviderKeysTab request={{ provider: 'config-only', serial: 1 }} />);
+    expect(
+      await screen.findByText(
+        'Key management is unavailable for config-only. Choose another provider above.',
+      ),
+    ).toBeInTheDocument();
+    expect(listProviderKeys).not.toHaveBeenCalledWith('config-only');
+  });
+
+  it('lists a provider "Manage keys" asks for that the registry added since it opened', async () => {
+    const { rerender } = render(<ProviderKeysTab keepUnlistedProvider={false} />);
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+
+    // Added in the registry above, then asked for.
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['newco', 'zai'] });
+    rerender(
+      <ProviderKeysTab keepUnlistedProvider={false} request={{ provider: 'newco', serial: 1 }} />,
+    );
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('newco'));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'newco');
+    expect(screen.queryByText(/Key management is unavailable/)).not.toBeInTheDocument();
+  });
+
+  it('keeps a provider asked for with no keys to manage when the provider list reloads', async () => {
+    const { rerender } = render(<ProviderKeysTab keepUnlistedProvider={false} />);
+    await waitFor(() => expect(listProviderKeys).toHaveBeenCalledWith('zai'));
+
+    rerender(
+      <ProviderKeysTab
+        keepUnlistedProvider={false}
+        request={{ provider: 'config-only', serial: 1 }}
+      />,
+    );
+    await waitFor(() => expect(listProviderKeyProviders).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByText(
+        'Key management is unavailable for config-only. Choose another provider above.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'config-only');
+  });
+
+  it('tells the registry when a key is added or deleted, for its counts', async () => {
+    vi.mocked(deleteProviderKey).mockResolvedValue({
+      id: 'key-1',
+      provider: 'zai',
+      pools_updated: 1,
+    });
+    const onKeysChange = vi.fn();
+    render(<ProviderKeysTab onKeysChange={onKeysChange} />);
+
+    const form = await openAddForm();
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: NEW_SECRET } });
+    fireEvent.click(within(form).getByRole('button', { name: 'Add key' }));
+    await waitFor(() => expect(onKeysChange).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(await screen.findByRole('button', { name: `Delete key ${dbKey.key_prefix}` }));
+    clickInDialog('Delete');
+    await waitFor(() => expect(onKeysChange).toHaveBeenCalledTimes(2));
+  });
+
+  it('holds a "Manage keys" request while tier changes are unsaved, and says why', async () => {
+    vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
+    const { rerender } = render(<ProviderKeysTab initialProvider="zai" />);
+    await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);
+    chooseValue(screen.getByLabelText(`Reserved tier for key ${dbKey.key_prefix}`), 'internal');
+
+    rerender(
+      <ProviderKeysTab initialProvider="zai" request={{ provider: 'openrouter', serial: 1 }} />,
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(
+        'Save or discard the tier changes before managing openrouter keys.',
+      ),
+    );
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+
+    // Not taken up later, once the changes are discarded.
+    fireEvent.click(screen.getByRole('button', { name: 'Discard changes to zai key tiers' }));
+    expect(screen.getByLabelText('Selected provider')).toHaveAttribute('data-value', 'zai');
+    expect(listProviderKeys).not.toHaveBeenCalledWith('openrouter');
+  });
+
   it('opens on the first provider when none is asked for', async () => {
     vi.mocked(listProviderKeyProviders).mockResolvedValue({ providers: ['openrouter', 'zai'] });
     const onProviderChange = vi.fn();
@@ -594,12 +721,12 @@ describe('ProviderKeysTab tier reservation', () => {
       expect(setProviderKeyMinRole).not.toHaveBeenCalled();
     });
 
-    it('asks before leaving the page, for another Providers section or tab', async () => {
+    it('asks before leaving the page, for another Providers page or tab', async () => {
       const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
-      window.history.replaceState(null, '', '/dashboard/admin/providers/keys');
-      // Another section's link, as the section control above the page renders it.
+      window.history.replaceState(null, '', '/dashboard/admin/providers');
+      // Another page's link, as the section control above the page renders it.
       const models = document.body.appendChild(document.createElement('a'));
-      models.href = '/dashboard/admin/providers/models';
+      models.href = '/dashboard/admin/providers/performance';
       try {
         render(<ProviderKeysTab initialProvider="zai" />);
         await screen.findByLabelText(`Reserved tier for key ${dbKey.key_prefix}`);

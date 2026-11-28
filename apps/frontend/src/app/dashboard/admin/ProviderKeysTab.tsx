@@ -1,11 +1,12 @@
 'use client';
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
+import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAccountToast } from '@/lib/hooks/useAccountToast';
 import { EditBar } from '@/components/features/admin/confirm/EditBar';
 import { useConfirmAction } from '@/components/features/admin/confirm/useConfirmAction';
 import { withoutSecret } from '@/components/features/admin/confirm/withoutSecret';
 import { writeEach } from '@/components/features/admin/confirm/writeEach';
+import type { ProviderKeysRequest } from '@/components/features/admin/providerSelection';
 import {
   ProviderApiKeyItem,
   ProviderKeyMinRole,
@@ -35,7 +36,16 @@ interface Props {
    * and one no longer listed gives way to the first provider.
    */
   keepUnlistedProvider?: boolean;
+  /**
+   * The registry's "Manage keys", on the same page, asked for a provider after
+   * these keys opened. Each new request shows its provider, kept even when it
+   * is not listed, as a choice in the selector would -- unless tier changes are
+   * unsaved or a key change is in flight, which hold the selector too.
+   */
+  request?: ProviderKeysRequest;
   onProviderChange?: (provider: string) => void;
+  /** A key was added or deleted: the registry's key counts change with it. */
+  onKeysChange?: () => void;
 }
 
 const MIN_ROLES: ProviderKeyMinRole[] = ['free', 'pro', 'internal', 'admin'];
@@ -80,7 +90,9 @@ export function ProviderKeysTab({
   refreshKey = 0,
   initialProvider = '',
   keepUnlistedProvider = true,
+  request,
   onProviderChange,
+  onKeysChange,
 }: Props) {
   const toast = useAccountToast();
   const confirmation = useConfirmAction();
@@ -104,6 +116,10 @@ export function ProviderKeysTab({
   const [tierDrafts, setTierDrafts] = useState<Record<string, ProviderKeyMinRole>>({});
   const [tierSaveError, setTierSaveError] = useState<string | null>(null);
 
+  // Whether the provider shown was asked for, so is kept when it is not listed:
+  // as it opened, and again with each request.
+  const askedFor = useRef(keepUnlistedProvider);
+
   const loadProviders = useCallback(async () => {
     try {
       const resp = await listProviderKeyProviders();
@@ -112,14 +128,14 @@ export function ProviderKeysTab({
       setProvidersLoaded(true);
       if (names.length > 0) {
         const pick = (current: string) =>
-          current && (keepUnlistedProvider || names.includes(current)) ? current : names[0];
+          current && (askedFor.current || names.includes(current)) ? current : names[0];
         setSelectedProvider(pick);
         setFormProvider(pick);
       }
     } catch (err) {
       toast.error(`Failed to load providers: ${getErrorMessage(err)}`);
     }
-  }, [keepUnlistedProvider, toast]);
+  }, [toast]);
 
   const loadKeys = useCallback(
     async (provider: string) => {
@@ -200,6 +216,7 @@ export function ProviderKeysTab({
         }
         resetAddForm();
         setAddOpen(false);
+        onKeysChange?.();
         if (provider === selectedProvider) {
           await loadKeys(selectedProvider);
         } else {
@@ -251,6 +268,7 @@ export function ProviderKeysTab({
       run: async () => {
         await deleteProviderKey(id);
         toast.success('Key deleted');
+        onKeysChange?.();
         await loadKeys(provider);
       },
     });
@@ -276,6 +294,7 @@ export function ProviderKeysTab({
         toast.success(
           'Key cleared from configuration. The environment variable does not put it back.',
         );
+        onKeysChange?.();
         await loadKeys(provider);
       },
     });
@@ -332,9 +351,32 @@ export function ProviderKeysTab({
   const changedTiers = sortedKeys.filter((k) => k.id && draftId(k) in tierDrafts);
   // Unsaved tier changes hold the provider selector and adding a key, which
   // would switch the page to another provider's keys. Leaving the page, for
-  // another Providers section or tab, asks first.
+  // another Providers page or tab, asks first.
   const tiersChanged = changedTiers.length > 0;
   useLeaveGuard(changedTiers.length);
+
+  // Each request is followed once, as it is made: one held by unsaved tier
+  // changes is not taken up later, when they are saved.
+  const followed = useRef(0);
+  useEffect(() => {
+    if (!request || request.serial <= followed.current) return;
+    followed.current = request.serial;
+    if (tiersChanged) {
+      toast.error(`Save or discard the tier changes before managing ${request.provider} keys.`);
+      return;
+    }
+    if (confirmation.busy) {
+      toast.error(`Wait for the key change in progress before managing ${request.provider} keys.`);
+      return;
+    }
+    askedFor.current = true;
+    setSelectedProvider(request.provider);
+    setFormProvider(request.provider);
+    setTierDrafts({});
+    setTierSaveError(null);
+    // The registry above may have listed it since these keys opened.
+    void loadProviders();
+  }, [request, tiersChanged, confirmation.busy, loadProviders, toast]);
 
   const changeTierDraft = (key: ProviderApiKeyItem, value: ProviderKeyMinRole) => {
     setTierDrafts((prev) => {

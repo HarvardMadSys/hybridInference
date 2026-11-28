@@ -6,9 +6,9 @@ export const LEAVE_MESSAGE = 'Leave this page? Its unsaved changes will be lost.
  * While a page holds unsaved changes, leaving it asks first. A link to another
  * page of the console -- an admin tab, the side navigation -- is followed only
  * once the administrator confirms, and reloading or closing the window gets the
- * browser's own warning. Admin's tabs, and the Providers sections, are pages
- * of their own, so moving from Providers → Models to Keys or to Settings, or
- * anywhere else, would otherwise drop an edit unsaved.
+ * browser's own warning. Admin's tabs, and the sections of Providers and
+ * Routing, are pages of their own, so moving from Routing → Models to Routes or
+ * to Settings, or anywhere else, would otherwise drop an edit unsaved.
  *
  * A link that leaves the page standing is not asked about: one to this same
  * page (a sub-tab, a filter), one that opens a new tab or downloads, and one

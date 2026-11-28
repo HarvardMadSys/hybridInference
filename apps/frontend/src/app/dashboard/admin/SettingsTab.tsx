@@ -112,7 +112,7 @@ function runtimeMatchesQuery(setting: RuntimeSettingItem, query: string): boolea
 
 /**
  * Admin → Settings: every setting an administrator changes in the console but
- * the model configuration, which is on Admin → Providers → Models. Four task
+ * the model configuration, which is on Admin → Routing → Models. Four task
  * tabs (see `settingsLayout`): Access & Limits, Providers & Routing,
  * Operations, and Site & Setup. Each tab holds its whole topic together —
  * the database-backed configuration, the runtime settings, and the sections
@@ -135,7 +135,7 @@ export function SettingsTab({
   const money = useMoney();
   const router = useRouter();
   const pathname = usePathname();
-  // The model catalog is on Providers → Models: not listed here, nor found by a search.
+  // The model catalog is on Routing → Models: not listed here, nor found by a search.
   const editor = useConfigurationEditor({
     initialMissingOnly,
     excludeCategories: CATEGORIES_ELSEWHERE,

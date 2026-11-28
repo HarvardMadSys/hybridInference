@@ -1,5 +1,8 @@
-import { ProviderKeysSection } from '@/components/features/admin/ProvidersTab';
+import { redirect } from 'next/navigation';
 
+import { PROVIDERS_PATH, PROVIDER_KEYS_ANCHOR } from '@/components/features/admin/providerRoutes';
+
+/** Keys became a section of Providers → Overview. An old link or bookmark lands there. */
 export default function Page() {
-  return <ProviderKeysSection />;
+  redirect(`${PROVIDERS_PATH}#${PROVIDER_KEYS_ANCHOR}`);
 }

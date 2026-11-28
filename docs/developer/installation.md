@@ -96,11 +96,11 @@ and:
    to configure**.
 4. Finish setup, then add a provider/key and create a model in **Admin → Routing**.
    Verify the route before making the model available to users. For advanced
-   metadata and aliases, edit the model catalog in **Admin → Providers → Models**.
+   metadata and aliases, edit the model catalog in **Admin → Routing → Models**.
    Follow **Restart required** markers when saving a catalog or credential.
 
 Everything set here can be changed later on the admin console's
-**Settings** tab, and the model catalog under **Providers → Models**; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
+**Settings** tab, and the model catalog under **Routing → Models**; [Settings stored in the database](configuration.md#settings-stored-in-the-database)
 explains how. [The first admin account](deployment.md#the-first-admin-account)
 covers the other ways to create an administrator and how to reset its
 password.
@@ -256,8 +256,9 @@ numbered `1` to `20` (`MINIMAX_API_KEY2`, say). Every one that has a value
 joins that provider's key pool, whichever numbers are used, and a key entered
 twice counts once.
 
-Keys can also be added from the admin console (**Providers → Keys**) with no
-restart; they join the same pool as the keys the registry names. See
+Keys can also be added from the admin console (the Keys section of
+**Providers**) with no restart; they join the same pool as the keys the
+registry names. See
 [Runtime configuration from the admin console](configuration.md#runtime-configuration-from-the-admin-console).
 
 ### Where the config files live

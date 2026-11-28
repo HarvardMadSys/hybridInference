@@ -46,13 +46,22 @@ describe('AdminTabNav', () => {
   });
 
   it('marks Providers as the tab shown on each of its sections', () => {
-    for (const path of ['/dashboard/admin/providers', '/dashboard/admin/providers/models']) {
+    for (const path of ['/dashboard/admin/providers', '/dashboard/admin/providers/performance']) {
       pathname = path;
       render(<AdminTabNav />);
       expect(screen.getByRole('link', { name: 'Providers' })).toHaveAttribute(
         'aria-current',
         'page',
       );
+      cleanup();
+    }
+  });
+
+  it('marks Routing as the tab shown on its routes and on its models', () => {
+    for (const path of ['/dashboard/admin/routing', '/dashboard/admin/routing/models']) {
+      pathname = path;
+      render(<AdminTabNav />);
+      expect(screen.getByRole('link', { name: 'Routing' })).toHaveAttribute('aria-current', 'page');
       cleanup();
     }
   });
