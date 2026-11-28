@@ -1,74 +1,66 @@
 # AGENTS.md
 
-This is an onboarding guide for any AI coding agent (Claude Code, Cursor, Codex,
-etc.) working in this repository. Read this first.
+Onboarding guide for AI coding agents (Claude Code, Cursor, Codex and others)
+working in this repository. Read it first.
 
 ## 1. About this project
 
 HybridInference is a FastAPI gateway that routes LLM requests across local
 inference servers (vLLM, SGLang, Ollama) and remote OpenAI-compatible providers
-(DeepSeek, Zhipu, OpenRouter, Anthropic, Gemini, etc.).
+(DeepSeek, Zhipu, OpenRouter, Anthropic, Gemini and others). Start with the
+[README](README.md) and the [developer guide](docs/developer/).
 
-- **Repo README:** [README.md](README.md)
-- **Developer guide:** [docs/developer/](docs/developer/)
-
-If you are working on a particular deployment, its hosts, accounts and
-operational notes live in that deployment's overlay — see
-`distributions/<name>/AGENTS.md`. They are deliberately not here: this file
-ships with the source, and a URL or credential written into it is published to
-everyone who clones the repository.
+A deployment's hosts, accounts and operational notes belong in its overlay
+guide, `distributions/<name>/AGENTS.md`. Never add them here: this file ships
+with the source, so any URL or credential in it is published to everyone who
+clones the repository.
 
 ## 2. Repo map
 
-The layout is in [docs/developer/contributing.md](docs/developer/contributing.md),
-under "Repository layout". Two things it does not tell you:
-
-- Deployment overlays live in their own repositories; `distributions/example/`
-  is the only one here.
-- `distributions/example/` is marked `EXAMPLE_OVERLAY`, and that marker is what
-  excludes it from automatic distribution discovery. Select it explicitly
-  with `make up DISTRIBUTION=example` to run the local tutorial.
+[contributing.md](docs/developer/contributing.md#repository-layout) describes
+the layout. Deployment overlays live in their own repositories;
+`distributions/example/` is the only one here, and its `EXAMPLE_OVERLAY` marker
+keeps automatic discovery from selecting it. Run the local tutorial with
+`make up DISTRIBUTION=example`.
 
 ## 3. Getting set up
 
-Prerequisites: Python 3.11–3.13 (3.12 recommended) and [uv](https://github.com/astral-sh/uv).
-
-```bash
-make setup-dev
-```
-
-The Makefile honors a `UV_RUN` override: `make lint UV_RUN="uv run --active"`.
+You need Python 3.11–3.13 (3.12 recommended) and
+[uv](https://github.com/astral-sh/uv). `make setup-dev` creates the environment
+and installs the pre-commit hooks. Python `make` targets run through `uv run`;
+override it with `UV_RUN`, for example `make lint UV_RUN="uv run --active"`.
 
 ## 4. Quality gates
 
-`make format`, `make lint`, `make test`, `make all`. Run `make help` for the
-full target list.
+The gates are `make format`, `make lint`, `make test` and `make all`
+(`make help` lists every target);
+[contributing.md](docs/developer/contributing.md#quality-gates) says what each
+runs and describes the test tiers.
 
-[docs/developer/contributing.md](docs/developer/contributing.md) is the
-canonical reference for the gates and the test tiers.
+Before you open a PR, run `make format` and make sure `make test` passes. If the
+change touches storage, SQL, the schema or a database test, `make test-db-local`
+must pass too. It runs the `dbtest` tier against one shared local PostgreSQL
+container (Docker), in a database of this worktree's own; re-runs reuse it, and
+the full tier takes about 15 seconds.
 
-Pre-commit hooks are installed by `make setup-dev`.
-
-**Before opening a PR:** run `make format` and ensure `make test` passes. If
-the change touches storage, SQL, schema or a database test, `make test-db-local`
-must pass too: it runs the `dbtest` tier, in parallel, against one shared local
-PostgreSQL container (Docker) and a database of this worktree's own. Re-runs
-reuse that database; the full tier takes about 15 seconds. Other agents use the
-same container at the same time: never run `make test-db-local-down`, which
-discards every worktree's databases and breaks their runs. To start your own
-afresh (e.g. after switching to an older branch), use `make test-db-local-reset`.
+Other agents use that container at the same time. **Never run
+`make test-db-local-down`**: it discards every worktree's databases and breaks
+their runs. To start this worktree's databases afresh, for example after
+switching to an older branch, run `make test-db-local-reset`.
 
 ## 5. Workflow
 
-- **Branch off `dev`**, never `main`.
-- **Branch naming:** `<user>/<scope>/<feature-name>` (e.g. `jason/claude/add-x`).
-- **Use a git worktree** rather than working in the main checkout. Worktree should be put in /tmp/claude/worktree/<feature-name>.
-- **PRs target `dev`.**
-- **Verify runtime changes against a running deployment** before claiming live
-  acceptance. A local/example deployment is sufficient when appropriate. For a
-  specific deployment, consult `distributions/<name>/AGENTS.md`; never write its
-  credentials here. Documentation/skill-only changes need content and link checks,
-  not a deployment.
+- Branch off `dev`, never `main`, and target PRs at `dev`. Never commit to
+  `main` or `dev` directly.
+- Name branches `<user>/<scope>/<feature-name>`, for example
+  `jason/claude/add-x`.
+- Always work in a git worktree in `/tmp/claude/worktree/<feature-name>`, never
+  in the main checkout.
+- Verify runtime changes against a running deployment before you claim live
+  acceptance; a local or example deployment is enough when appropriate. For a
+  specific deployment, follow its `distributions/<name>/AGENTS.md`, and never
+  write its credentials here. Documentation and skill changes need content and
+  link checks, not a deployment.
 
 ## 6. Project-specific knowledge
 
@@ -78,113 +70,90 @@ afresh (e.g. after switching to an older branch), use `make test-db-local-reset`
 client → FastAPI gateway (serving/) → routing engine (routing/) → adapter → provider
 ```
 
-For the full diagram (network layer, observability, storage), see
-[docs/developer/architecture.md](docs/developer/architecture.md).
+[architecture.md](docs/developer/architecture.md) has the full picture.
 
 ### 6.2 Key abstractions
 
-- **Adapter** — provider-specific client. Lives in `apps/backend/serving/adapters/`.
-  Dedicated adapters: `openai_compat` (generic OpenAI-compatible APIs — also
-  serves local vLLM/SGLang/Ollama), `claude` (Claude via Google Vertex),
-  `anthropic` (direct api.anthropic.com), `gemini`, `openrouter`. Local
-  inference servers have no dedicated adapter — they route through
-  `openai_compat`.
-- **`provider` vs `endpoint_id`** — `provider` is a string label on `ModelConfig`
-  identifying the API service (used in metrics labels, e.g. `"openai"`,
-  `"anthropic"`). `endpoint_id` is the unique per-endpoint key
-  (format `{model_id}:{location}`, minted by `registry._make_provider_id` —
-  `local-<port>` / `local` for a host in `_LOCAL_HOSTS`, otherwise
-  `<service>-api`, e.g. `glm-4.6:local-12003`, `glm-4.6:zai-api`) used for
-  latency profiling and availability tracking. The suffix is not a reliable
-  ownership signal: a gateway-owned server on a LAN address is stamped
+[Architecture](docs/developer/architecture.md) explains adapters, `provider`
+versus `endpoint_id`, and the two kinds of strategy.
+[Routing Internals](docs/developer/routing-internals.md) explains routers,
+leaves and pools, and the
+[composable hybrid routing design](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
+is their agreed contract, with the opt-in wiring and deferred work. The rules:
+
+- Adapters live in `apps/backend/serving/adapters/`. Local vLLM, SGLang and
+  Ollama servers use `openai_compat`; they need no adapter of their own.
+- Do not infer ownership from an `endpoint_id` (`{model_id}:{location}`, such
+  as `glm-4.6:local-12003` or `glm-4.6:zai-api`, minted by
+  `registry._make_provider_id`). A gateway-owned server on a LAN address gets
   `<octet>-api`, and an admin-supplied `route_id` becomes the `endpoint_id`
-  verbatim. The word "upstream" appears informally in code
-  comments meaning "the remote API" but isn't a formal type.
-- **Router / HybridRouter abstraction** — the agreed design uses one common
-  router contract with independent strategy implementations. Reuse
-  [RouterProtocol](apps/backend/routing/protocols.py) as that contract; do not
-  create a duplicate interface merely to name it `HybridRouter`. `FixedRouter`
-  in [routers.py](apps/backend/routing/routers.py) and `RouteWiseRouter` are
-  peer implementations, both able to select across local and cloud candidates.
-  Future Greedy/Nimbus routers belong at the same level. Each implementation
-  owns its routing, retry and feedback flow; shared helpers need not impose one
-  execution loop on every strategy. A separate `RouteWisePolicy` is not required.
-  **Naming distinction:** the existing concrete
-  [routing.hybrid.HybridRouter](apps/backend/routing/hybrid.py) composes a policy
-  with backends; it is not the common interface in the design. Its `FixedPolicy`
-  / `BackendSelection` can remain internal or compatibility implementation
-  details. Preserve public imports if names change.
-  The current bootstrap uses that concrete composition only for mixed
-  `router: fixed` models with `router_params.hybrid_composition: true`.
-  Other Fixed models retain the shared FixedRouter. The opt-in composition
-  still differs in affinity, rejected primary claim re-selection, and fallback
-  circuit timing; resolve those before enabling it by default.
-  `router: routewise` directly returns RouteWiseRouter. Returning a concrete
-  implementation through the common contract is valid; it does not by itself
-  prove that the target backend execution boundary is wired.
-- **Backend / Leaf** — [backends.py](apps/backend/routing/backends.py) provides
-  callable inference capability in one of two shapes. A `LeafBackend` binds the
-  **adapter itself, for one endpoint**: it runs that adapter and returns what it
-  produced, and it keeps no queue, reservation, health record, failed-attempt
-  sample or `_routing` block of its own -- the router that chose the endpoint
-  keeps every one of those, and a second copy would double-count them. Its call
-  signatures are the adapter's, so a leaf stands in for one adapter wherever an
-  adapter is executed. A `TreeBackend` is the entry to a routing subtree and
-  delegates to a scoped internal router; `LocalBackend` and `CloudBackend` are
-  pools in that sense.
-  The instructions are explicit and distinct
-  ([dispatch.py](apps/backend/routing/dispatch.py)): `ExecuteEndpoint` binds one
-  endpoint through an `EndpointBinding` that carries the resolved adapter, and
-  `DelegatePool` grants selection inside a named pool. A mismatch is refused
-  before any upstream I/O as a composition error -- never recorded as an
-  attempted provider. `FixedRouter` (chat and stream, primary and fallback),
-  `RouteWiseRouter` (its decision and both hedge legs) and RouteWise's active
-  latency probe all execute through the same leaf, so the selection, admission,
-  prefill and feedback accounting stay where they already were.
-  **Preserve Fixed and RouteWise request behavior.** RouteWise keeps its full
-  candidate pool, reservations, re-solving, hedging, learning and lifecycle,
-  using `llm_routewise.core` for algorithm primitives. Do not force it through
-  the concrete composition router, a Fixed domain split, or a cloud-only pool.
-  `RouteWiseCloudBackend` is an optional scoped compatibility wrapper, not the
-  architectural home of RouteWise, and need not be removed for this design.
-  Local/cloud ownership is independent of `on_demand`, `quota` and `concurrency`.
-  A local GPU deployment can be a concurrency candidate when explicitly
-  configured; do not recreate capacity pools per backend or model binding.
-  Keep model `router` / `router_params`, defaults, registry caching, aliases and
-  Admin switching. Verify in-flight requests and feedback retain their original
-  owner across updates; preserving configuration alone is not proof of this.
-  Execution scopes currently come from the composition root
-  ([hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py)).
-  Explicit `local_scope` / `local_ownership` are supported. Bootstrap uses the
-  route's `deployment_type`: `self_hosted` owns a LAN or cluster DNS endpoint,
-  `provider_api` keeps a loopback proxy in the cloud scope, and `auto` retains
-  the hostname default. Outbound admission uses the same classification.
-  This does not change endpoint IDs or RouteWise resource types.
-  See
-  [docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md](docs/agents/specs/2026-09-14-composable-hybrid-routing-design.zh.md)
-  for the current router, leaf and pool contracts, opt-in wiring and deferred work.
-- **Strategy** — two layers. The deployment-wide weight strategy
-  (`FixedRatioStrategy` in
-  [apps/backend/routing/strategies/weight.py](apps/backend/routing/strategies/weight.py))
-  is applied by `RoutingManager` in
-  [apps/backend/routing/manager.py](apps/backend/routing/manager.py) from
-  the `ROUTING_POLICY` database document (`default_router`, formerly
-  `routing_strategy`).
-  Per-model router selection (`fixed` / `routewise`) lives in the
-  [apps/backend/routing/strategies/](apps/backend/routing/strategies/) package
-  and is dispatched by
-  [apps/backend/routing/model_router_registry.py](apps/backend/routing/model_router_registry.py)
-  from each model's `router` field in the `MODEL_CATALOG` database document
-  (see 6.3).
-- **Circuit breaker / EWMA health** — provider health tracking in
-  [apps/backend/routing/](apps/backend/routing/).
+  unchanged.
+- `RouterProtocol` ([protocols.py](apps/backend/routing/protocols.py)) is the
+  one common router contract; do not create a duplicate interface just to name
+  it `HybridRouter`. `FixedRouter` ([routers.py](apps/backend/routing/routers.py))
+  and `RouteWiseRouter` are peer implementations that both select across local
+  and cloud candidates, and future Greedy or Nimbus routers belong beside them.
+  Each owns its routing, retry and feedback flow: do not force one shared
+  execution loop on every strategy, and RouteWise needs no separate
+  `RouteWisePolicy`.
+- [routing.hybrid.HybridRouter](apps/backend/routing/hybrid.py) is a concrete
+  composition of a policy with backends, not the common interface. Bootstrap
+  uses it only for a `router: fixed` model with both local and cloud candidates
+  and `router_params.hybrid_composition: true`; other Fixed models keep the
+  shared `FixedRouter`. Its `FixedPolicy` and `BackendSelection` can stay
+  internal, but keep public imports working if you rename them. It still
+  differs from `FixedRouter` in affinity, re-selection after a rejected primary
+  claim, and fallback circuit timing; resolve those before enabling it by
+  default.
+- Every attempt executes through a `LeafBackend`
+  ([backends.py](apps/backend/routing/backends.py)): Fixed chat and stream,
+  primary and fallback, RouteWise decisions and both hedge legs, and RouteWise's
+  latency probe. A leaf runs one bound adapter with the adapter's call
+  signatures and keeps no queue, reservation, health record, failed-attempt
+  sample or `_routing` block. That state stays with the router that chose the
+  endpoint, and a second copy would double-count it. A `TreeBackend` (pools
+  such as `LocalBackend` and `CloudBackend`) delegates to a scoped router.
+- [dispatch.py](apps/backend/routing/dispatch.py) keeps two instructions
+  distinct: `ExecuteEndpoint` runs one endpoint through an `EndpointBinding`
+  that carries the resolved adapter, and `DelegatePool` grants selection inside
+  a named pool. A mismatch is refused before any upstream I/O as a composition
+  error, never recorded as an attempted provider.
+- Preserve Fixed and RouteWise request behavior. `router: routewise` returns
+  `RouteWiseRouter` directly, which by itself does not prove the target backend
+  execution boundary is wired. RouteWise keeps its full candidate pool,
+  reservations, re-solving, hedging, learning and lifecycle, with
+  `llm_routewise.core` for algorithm primitives. Do not force it through the
+  composition router, a Fixed domain split or a cloud-only pool.
+  `RouteWiseCloudBackend` is an optional scoped compatibility wrapper, not
+  RouteWise's architectural home, and need not be removed.
+- Local/cloud ownership is independent of the `provider_type` values
+  `on_demand`, `quota` and `concurrency`; an explicitly configured local GPU
+  deployment can be a concurrency candidate. Do not recreate capacity pools per
+  backend or model binding. Execution scopes currently come from the
+  composition root, [hybrid_composition.py](apps/backend/serving/servers/hybrid_composition.py):
+  an explicit `local_scope` or `local_ownership`, otherwise each route's
+  `deployment_type` (`self_hosted` makes a LAN or cluster-DNS endpoint local,
+  `provider_api` keeps a loopback proxy in the cloud scope, `auto` keeps the
+  hostname default). Outbound admission uses the same classification; endpoint
+  IDs and RouteWise resource types do not change.
+- Keep model `router` / `router_params`, defaults, registry caching, aliases
+  and Admin switching. Verify that in-flight requests and feedback keep their
+  original owner across updates; preserved configuration alone does not prove
+  it.
+- The deployment-wide weight strategy (`FixedRatioStrategy`, applied by
+  `RoutingManager` in [manager.py](apps/backend/routing/manager.py) from the
+  `ROUTING_POLICY` document when its `default_router` is `fixed`) is separate
+  from per-model router selection (each model's `router` in `MODEL_CATALOG`,
+  dispatched by [model_router_registry.py](apps/backend/routing/model_router_registry.py)).
+  The circuit breaker and EWMA health tracking live in
+  [endpoint_health.py](apps/backend/routing/endpoint_health.py).
 
 ### 6.3 Configuration
 
 Application configuration lives in PostgreSQL and is edited through Admin.
-There are no runtime model, routing, alert, distribution or branding YAML files.
-An unconfigured gateway keeps the console/setup available and shows “Ask admin
-to configure”; it does not select example models or a provider implicitly.
+There are no runtime model, routing, alert, distribution or branding YAML
+files, and an unconfigured gateway shows “Ask admin to configure” instead of
+picking example models or a provider.
 
 | Configuration | Owner |
 |---|---|
@@ -192,99 +161,86 @@ to configure”; it does not select example models or a provider implicitly.
 | Provider keys, live routes, weights and model overrides | Admin Providers/Routing and the operational store |
 | Database connection and infrastructure wiring | `.env` and Docker Compose; persistent lifecycle choices in `.ops.env` |
 
-Documents reference credentials as `${NAME}` in separate secret settings.
-Settings resolve database row → environment seed → registered default. Catalog,
-routing policy and alert-rule changes retain explicit restart requirements;
-ordinary Admin route edits synchronize across processes and report application
-status. Preserve request ownership and feedback across those updates.
-
-The expand migration preserves existing `route_catalog` rows in the shared
-settings store. An explicit `python -m serving.config.manage import-legacy`
-command imports old external YAML; normal startup never calls it. Keep old
-files/rows through the rollback window. See
-[the accepted design](docs/agents/specs/2026-11-08-database-only-configuration.md).
+Documents refer to credentials as `${NAME}`, stored as separate secret
+settings. A setting resolves from its database row, then the environment seed,
+then the registered default. Catalog, routing-policy and alert-rule changes
+need a restart; Admin route edits synchronize across processes, and each
+process reports whether it applied them. Preserve request ownership and
+feedback across those updates. Old YAML is imported only by an explicit
+`python -m serving.config.manage import-legacy`, never at startup; keep the old
+files and `route_catalog` rows through the rollback window. See
+[the accepted design](docs/agents/specs/2026-11-08-database-only-configuration.md)
+and [configuration.md](docs/developer/configuration.md).
 
 ### 6.4 Tests: markers and tiers
 
-| Tier | Path | Marker | In default `make test`? |
-|---|---|---|---|
-| Unit | `tests/unit/` | — | yes |
-| API surface | `tests/api/` | — | yes |
-| Integration (DB / external) | `tests/integration/` | `dbtest` | no |
-| Live external | `tests/external/` | `external` | no |
-
-Opt in to excluded tiers explicitly. For `dbtest`, use `make test-db-local`
-(`ARGS="tests/integration/test_x.py"` to narrow it; the `dbtest` marker is
-always kept). To run anything else against that database,
-`eval "$(ops/dev/test-db-local.sh env)"` first, in the worktree you run it in.
+`make test` skips tests marked `dbtest` (need PostgreSQL; mostly
+`tests/integration/`) and `external` (call live servers; `tests/external/`); opt
+in to those explicitly. For `dbtest`, use `make test-db-local`
+(`ARGS="tests/integration/test_x.py"` narrows it; the `dbtest` marker is always
+kept). To run anything else against that database, first run
+`eval "$(ops/dev/test-db-local.sh env)"` in the same worktree.
 
 ### 6.5 Common gotchas
 
-- Don't commit to `main` or `dev` directly — always branch + PR.
-- ALWAYS use a git worktree for development — never work in the main checkout.
 - SSE streaming lives in `apps/backend/serving/servers/`. Middleware order
-  matters; new middleware that buffers responses will break streaming.
-- Storage layer is Postgres (asyncpg), in `apps/backend/serving/storage/`.
-  Cloudflare D1 support was removed in #460; `DB_BACKEND` and `DB_DUAL_WRITE`
-  are read by no code. There is one SQL dialect — write Postgres.
+  matters; middleware that buffers responses breaks streaming.
+- Storage is PostgreSQL (asyncpg) in `apps/backend/serving/storage/`, with one
+  SQL dialect: write Postgres. `DB_BACKEND` and `DB_DUAL_WRITE` are read by no
+  code.
 - The schema comes only from the migrations in `apps/backend/migrations/`; the
   service issues no DDL, and a test enforces it. A schema change is a new
-  revision that leaves the previous release working, never an edit to the
-  frozen `baseline/` (its digest is pinned). See
-  [docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md](docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md).
-- Alerting has two permanent, independent paths (decision: issue #1103).
-  Backend gateway alerts go through `alert_slack()`
+  revision that keeps the previous release working, never an edit to the frozen
+  `baseline/` (its digest is pinned). See the
+  [versioned schema migrations design](docs/agents/specs/2026-11-02-versioned-schema-migrations-design.zh.md).
+- Alerting has two permanent, independent paths (issue #1103). Backend gateway
+  alerts go through `alert_slack()`
   (`apps/backend/serving/observability/alerts.py`) to one configured Slack or
-  WeCom webhook;
-  status-monitor alerts go through the status monitor and alert control plane
-  workers owned and deployed by the external
-  [freeInference repository](https://github.com/HarvardMadSys/freeInference).
-  Do not wire backend producers to that control plane.
-- Frontend is Next.js in `apps/frontend/` — its quality gates are separate
-  from the Python `make` targets.
+  WeCom webhook. Status-monitor alerts go through the status monitor and alert
+  control plane workers that the external
+  [freeInference repository](https://github.com/HarvardMadSys/freeInference)
+  owns and deploys. Do not wire backend producers to that control plane.
+- The frontend is Next.js in `apps/frontend/`, with its own
+  [quality gates](docs/developer/contributing.md#frontend).
 
-### 6.6 The cloud agent moved out
+### 6.6 The cloud agent
 
 The cloud agent lives in
-[hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent).
-Production cut over on 2026-08-07 and the agent code has since been deleted
-from this repository. **All agent work — features, fixes, deploy — happens in
-that repository now.**
+[cloud-agent](https://github.com/HarvardMadSys/cloud-agent). **Do all agent
+work there: features, fixes and deployment.** This repository keeps only the
+gateway's side of its contracts (backend paths relative to
+`apps/backend/serving/`):
 
-What remains here is the gateway's side of the two service contracts:
-
-- **Identity** — `servers/routers/identity.py` (`/v1/identity/*`).
-- **Inference grants** — `serving/grants.py` + `serving/grant_auth.py`,
+- Identity: `servers/routers/identity.py` (`/v1/identity/*`).
+- Inference grants: `grants.py`, `grant_auth.py`,
   `servers/routers/agent_grants.py` (`/internal/agent-grants*`), the
   `/internal/*` lookups (`servers/routers/internal_lookups.py`,
-  `serving/model_catalog.py`), and `api_logs.agent_job_id` for cost
-  attribution.
-- **`/agents` routing** — the console proxies the path to the standalone web
-  app via the `AGENT_WEB_INTERNAL_URL` / `AGENT_CONTROL_PLANE_INTERNAL_URL`
-  server-only runtime environment (`apps/frontend/src/app/agents/` route
-  handler); without either value the path is a 404. The values never enter the
-  browser bundle.
+  `model_catalog.py`), and `api_logs.agent_job_id` for cost attribution.
+- `/agents`: the console route handler in `apps/frontend/src/app/agents/`
+  proxies it to the standalone web app through the server-only runtime
+  variables `AGENT_WEB_INTERNAL_URL` and `AGENT_CONTROL_PLANE_INTERNAL_URL`,
+  which never enter the browser bundle. Without either, the path is a 404.
 
-The old `agent_*` tables stay in existing databases as read-only history
-(decision DR5); nothing here creates, reads or migrates them. `agent_grants` is
-the exception: it belongs to the inference-grant contract above, so the
-migrations create it and `serving/storage/postgres_operational.py` reads and
-writes it.
+The agent's old tables (`agent_jobs`, `agent_threads` and the rest) may remain
+in existing databases as read-only history; nothing here creates, reads or
+migrates them. `agent_grants` belongs to the grant contract: the migrations
+create it, and `storage/postgres_operational.py` reads and writes it.
+[test_no_agent_tables.py](tests/unit/storage/test_no_agent_tables.py) lists
+every agent table the gateway still creates, and why.
 
 ## 7. Common tasks
 
-Pointer table. Each row links to the canonical doc or skill — this guide does
-not duplicate their content.
+Repository skills live only in `.agents/skills/`; use and edit them there.
+Every skill follows these rules:
 
-Repository skills live only in `.agents/skills/`. Use and edit these canonical
-files directly.
-
-Shared workflow rules apply to every skill: reuse a suitable task worktree or
-create one following section 5, preserve other work, and use the gates in
-section 4. User instructions determine whether to commit, publish comments,
-push or open a PR. Merge and deployment require authorization for those actions;
-neither a skill name nor a green CI result grants it. A request to monitor does
-not imply permission to merge. Do not force-push or bypass branch protection.
+- Reuse a suitable task worktree or create one (section 5), preserve other
+  work, and run the gates in section 4.
+- The user's instructions decide whether you commit, publish comments, push or
+  open a PR.
+- Merging and deploying need authorization for that action. Neither a skill
+  name nor a green CI result grants it, and a request to monitor is not
+  permission to merge.
+- Never force-push or bypass branch protection.
 
 | Task | Where to look |
 |---|---|
@@ -294,42 +250,34 @@ not imply permission to merge. Do not force-push or bypass branch protection.
 | Follow one PR to readiness | [.agents/skills/babysit-pr/SKILL.md](.agents/skills/babysit-pr/SKILL.md) |
 | Add a new model | [docs/developer/adding-models.md](docs/developer/adding-models.md) |
 | Add a local model (vLLM/SGLang/Ollama) | [docs/developer/add-local-model.md](docs/developer/add-local-model.md) |
-| Run / operate the cloud agent | `docs/operations.md` in [hybridInference-cloud-agent](https://github.com/HarvardMadSys/hybridInference-cloud-agent) |
+| Run or operate the cloud agent | `docs/developer/operations.md` in [cloud-agent](https://github.com/HarvardMadSys/cloud-agent) |
 
 ## 8. Local subsystem guidance
 
-Some durable subsystem ownership boundaries may contain their own `AGENTS.md`.
-An agent working inside such a tree must follow the repository-wide guidance
-here and every applicable ancestor guide along the path. A nested guide
-supplements its ancestors; it does not override repository-wide workflow or
-quality rules.
+A subsystem with a lasting ownership boundary may have its own `AGENTS.md`.
+Inside it, follow this guide and every ancestor guide on the path; a nested
+guide adds to its ancestors and never overrides repository-wide workflow or
+quality rules. Add one only where ownership, invariants other code relies on, a
+staged migration, specialized verification or repeated cross-boundary mistakes
+justify a local contract; not every package needs one. A subsystem guide states
+what it owns and does not own, its invariants, cross-boundary edit
+expectations, verification categories and pointers to design records. It does
+not duplicate architecture specs, plans, file maps or call graphs.
 
-Nested guidance is intentionally sparse. Create it only where ownership,
-load-bearing invariants, staged migration, specialized verification, or
-repeated cross-boundary mistakes justify a local contract. It is not required
-for every package or directory. Possible future candidates include serving,
-storage, adapters, and frontend, but this index does not mandate guides there.
-
-Subsystem guides describe ownership, non-ownership, durable invariants,
-cross-boundary edit expectations, verification categories, and pointers to
-dated design or implementation records. They do not duplicate full
-architecture specs, implementation plans, exhaustive file maps, or current
-call graphs.
-
-Design records are kept only while they govern live work:
+Design records are kept only while they govern live work.
 [`docs/agents/specs/`](docs/agents/specs/) holds accepted designs that this
 guide, a subsystem guide or the developer guide points to, and
 [`docs/agents/plans/`](docs/agents/plans/) holds plans still being carried out.
-A record whose work has shipped, been abandoned or been superseded is deleted
-(git history keeps it); verification evidence belongs in the pull request. A
+Delete a record once its work has shipped, been abandoned or been superseded;
+git history keeps it. Verification evidence belongs in the pull request. A
 nested guide replaces none of these records.
 
-Current implementation is not automatically target architecture. When a
-subsystem is under revision, its guide must say so and name the record that
-governs it; consult that record before broad changes. When an accepted
+The current implementation is not automatically the target architecture. A
+guide for a subsystem under revision must say so and name the record that
+governs it; read that record before broad changes. When an accepted
 architecture changes, update or replace its record in the same change. Update a
-subsystem guide only when its ownership, invariants, edit rules, or
-verification contract changes.
+subsystem guide only when its ownership, invariants, edit rules or verification
+contract change.
 
 ### Subsystem guidance index
 

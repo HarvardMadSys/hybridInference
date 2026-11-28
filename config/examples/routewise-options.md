@@ -1,7 +1,11 @@
 # RouteWise option reference
 
-The runnable catalog is `models.routewise.json`. Optional capacity route shapes are
-in `route-capacity-reference.json`. Configure these values in the Admin model catalog.
+Every RouteWise option and its default. Set them in `router_params` of a
+`router: routewise` model in the model catalog (Admin → Providers → Models).
+`models.routewise.json` is a runnable example catalog, and
+`route-capacity-reference.json` shows optional quota and concurrency route
+shapes. The [routing guide](../../docs/developer/routing.md#routewise) explains
+the options; `apps/backend/routing/routewise/config.py` defines them.
 
 | Option | Default |
 |---|---|
@@ -39,7 +43,7 @@ in `route-capacity-reference.json`. Configure these values in the Admin model ca
 | `decision_metadata_candidate_detail` | `False` |
 | `prefix_cache_cost_adjustment_enabled` | `False` |
 
-To start a source gateway after storing the catalog in Admin:
+Once the catalog is stored in Admin, start a gateway from this checkout with:
 
 ```bash
 uv run uvicorn serving.servers.app:app --no-proxy-headers --host 127.0.0.1 --port 8080
