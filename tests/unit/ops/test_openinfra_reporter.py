@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from itertools import pairwise
 
 import pytest
 
@@ -251,6 +252,337 @@ def test_one_second_flushes_count_their_counters(monkeypatch):
     assert sent[-1]["sglang"][0]["metrics"]["req_per_min"] == pytest.approx(61.9, abs=0.1)
     assert sent[-1]["ts"] == 1_700_000_000_500
     assert "ts" not in sent[0]
+
+
+# --- Both engines' figures mean the same ------------------------------------
+#
+# The text follows SGLang 0.5.20 and vLLM 0.34: SGLang's prompt, generation,
+# cached and request counters move when a request finishes, its realtime and
+# prefill_effective counters and vLLM's token counters as each step runs.
+
+_SCHED = 'model_name="m",engine_type="unified",tp_rank="0",pp_rank="0",moe_ep_rank="0"'
+_TOK = 'model_name="m",is_streaming="false"'
+_VLLM = 'model_name="m",engine="0"'
+
+
+def _sglang(**v: float) -> str:
+    """SGLang /metrics text; a value left out leaves its series out."""
+    series = {
+        "gauge": f"sglang:gen_throughput{{{_SCHED}}}",
+        "utilization": f"sglang:utilization{{{_SCHED}}}",
+        "spec_len": f"sglang:spec_accept_length{{{_SCHED}}}",
+        "spec_rate": f"sglang:spec_accept_rate{{{_SCHED}}}",
+        "retract_gauge": f"sglang:num_retracted_reqs{{{_SCHED}}}",
+        "retracts": f"sglang:num_retracted_requests_total{{{_SCHED}}}",
+        "decode": f'sglang:realtime_tokens_total{{{_SCHED},mode="decode"}}',
+        "rt_compute": f'sglang:realtime_tokens_total{{{_SCHED},mode="prefill_compute"}}',
+        "rt_cache": f'sglang:realtime_tokens_total{{{_SCHED},mode="prefill_cache"}}',
+        "input": f'sglang:prefill_effective_tokens_total{{{_SCHED},mode="input"}}',
+        "device_hit": f'sglang:prefill_effective_tokens_total{{{_SCHED},mode="device_hit"}}',
+        "host_hit": f'sglang:prefill_effective_tokens_total{{{_SCHED},mode="host_hit"}}',
+        "storage_hit": f'sglang:prefill_effective_tokens_total{{{_SCHED},mode="storage_hit"}}',
+        "prompt": f"sglang:prompt_tokens_total{{{_TOK}}}",
+        "generated": f"sglang:generation_tokens_total{{{_TOK}}}",
+        "cached": 'sglang:cached_tokens_total{model_name="m",cache_source="device"}',
+        "requests": f"sglang:num_requests_total{{{_TOK}}}",
+        "e2e_sum": f"sglang:e2e_request_latency_seconds_sum{{{_TOK}}}",
+        "e2e_count": f"sglang:e2e_request_latency_seconds_count{{{_TOK}}}",
+    }
+    lines = [f"sglang:num_running_reqs{{{_SCHED}}} 4"]
+    lines += [f"{series[k]} {value}" for k, value in v.items()]
+    return "\n".join(lines)
+
+
+def _vllm(**v: float) -> str:
+    """vLLM /metrics text; a value left out leaves its series out."""
+    series = {
+        "prompt": f"vllm:prompt_tokens_total{{{_VLLM}}}",
+        "generated": f"vllm:generation_tokens_total{{{_VLLM}}}",
+        "cached": f"vllm:prompt_tokens_cached_total{{{_VLLM}}}",
+        "computed": f'vllm:prompt_tokens_by_source_total{{{_VLLM},source="local_compute"}}',
+        "requests": f'vllm:request_success_total{{{_VLLM},finished_reason="stop"}}',
+        "queries": f"vllm:prefix_cache_queries_total{{{_VLLM}}}",
+        "hits": f"vllm:prefix_cache_hits_total{{{_VLLM}}}",
+        "preemptions": f"vllm:num_preemptions_total{{{_VLLM}}}",
+        "drafts": f"vllm:spec_decode_num_drafts_total{{{_VLLM}}}",
+        "draft_tokens": f"vllm:spec_decode_num_draft_tokens_total{{{_VLLM}}}",
+        "accepted": f"vllm:spec_decode_num_accepted_tokens_total{{{_VLLM}}}",
+        "ttft_sum": f"vllm:time_to_first_token_seconds_sum{{{_VLLM}}}",
+        "ttft_count": f"vllm:time_to_first_token_seconds_count{{{_VLLM}}}",
+        "e2e_sum": f"vllm:e2e_request_latency_seconds_sum{{{_VLLM}}}",
+        "e2e_count": f"vllm:e2e_request_latency_seconds_count{{{_VLLM}}}",
+    }
+    lines = [f"vllm:num_requests_running{{{_VLLM}}} 4"]
+    lines += [f"{series[k]} {value}" for k, value in v.items()]
+    return "\n".join(lines)
+
+
+def _windows(texts: list[str]) -> list[dict]:
+    """The metrics of each one-second window between consecutive scrapes of *texts*."""
+    scrapes = [{"target": {}, **reporter.parse_sglang_body(text)} for text in texts]
+    return [
+        reporter.snapshot_sglang(last, prev, 1.0)["metrics"] for prev, last in pairwise(scrapes)
+    ]
+
+
+def test_sglang_decode_is_counted_once_however_requests_finish():
+    """A steady 1000 tokens/s reads as 1000 every second, a request finishing or not.
+
+    SGLang's generation counter takes a request's whole generation when it
+    ends; read beside the gauge, the windows a request ended in counted its
+    tokens a second time.
+    """
+    windows = _windows(
+        [
+            _sglang(gauge=1000, decode=0, generated=0),
+            _sglang(gauge=1000, decode=1000, generated=0),
+            _sglang(gauge=1000, decode=2000, generated=2000),  # a request ends
+            _sglang(gauge=1000, decode=3000, generated=2000),
+        ]
+    )
+    assert [w["gen_throughput"] for w in windows] == [1000.0, 1000.0, 1000.0]
+
+
+def test_sglang_without_a_step_counter_reads_its_gauge_not_finished_requests():
+    windows = _windows(
+        [
+            _sglang(gauge=1000, generated=0),
+            _sglang(gauge=1000, generated=2000),
+            _sglang(gauge=900, generated=2000),
+        ]
+    )
+    assert [w["gen_throughput"] for w in windows] == [1000, 900]
+
+
+def test_sglang_prompt_rates_come_from_its_step_counters():
+    """The window's prefill, not the prompts of the requests that ended in it."""
+    windows = _windows(
+        [
+            _sglang(input=0, device_hit=0, host_hit=0, storage_hit=0, prompt=0, cached=0),
+            # 1200 tokens computed, 600 read from the GPU cache and 200 from the
+            # host's; no request has ended yet.
+            _sglang(input=1200, device_hit=600, host_hit=200, storage_hit=0, prompt=0, cached=0),
+            _sglang(input=1200, device_hit=600, host_hit=200, storage_hit=0, prompt=0, cached=0),
+        ]
+    )
+    busy, idle = windows
+    assert (busy["prefill_tps"], busy["cached_prefill_tps"]) == (1200.0, 800.0)
+    assert busy["cache_hit_rate"] == pytest.approx(0.4)
+    assert (busy["device_cached_tps"], busy["host_cached_tps"]) == (600.0, 200.0)
+    assert (idle["prefill_tps"], idle["cached_prefill_tps"]) == (0.0, 0.0)
+    assert idle["cache_hit_rate"] is None
+
+
+def test_an_sglang_without_effective_counters_reads_its_realtime_ones():
+    windows = _windows(
+        [
+            _sglang(rt_compute=100),  # no cache hit yet: prefill_cache has no series
+            _sglang(rt_compute=400),
+            _sglang(rt_compute=500, rt_cache=300),
+        ]
+    )
+    assert [(w["prefill_tps"], w["cached_prefill_tps"]) for w in windows] == [
+        (300.0, 0.0),
+        (100.0, 300.0),
+    ]
+    assert windows[1]["cache_hit_rate"] == pytest.approx(0.75)
+
+
+def test_vllm_prompt_rates_mean_what_sglangs_do():
+    windows = _windows(
+        [
+            _vllm(prompt=0, computed=0, cached=0, generated=0),
+            _vllm(prompt=2000, computed=1200, cached=800, generated=1000),
+        ]
+    )
+    (window,) = windows
+    assert (window["prefill_tps"], window["cached_prefill_tps"]) == (1200.0, 800.0)
+    assert window["cache_hit_rate"] == pytest.approx(0.4)
+    assert window["gen_throughput"] == 1000.0
+
+
+def test_the_accept_length_counts_the_bonus_token_on_both_engines():
+    """vLLM's counters give accepted drafts per step; SGLang's gauge, the bonus token too."""
+    vllm = _windows(
+        [
+            _vllm(drafts=0, draft_tokens=0, accepted=0, generated=0),
+            _vllm(drafts=100, draft_tokens=300, accepted=210, generated=310),
+        ]
+    )[0]
+    sglang = _windows(
+        [
+            _sglang(decode=0, spec_len=3.1, spec_rate=0.7),
+            _sglang(decode=310, spec_len=3.1, spec_rate=0.7),
+        ]
+    )[0]
+    assert vllm["spec_accept_length"] == pytest.approx(sglang["spec_accept_length"]) == 3.1
+    assert vllm["spec_accept_rate"] == pytest.approx(sglang["spec_accept_rate"]) == 0.7
+
+
+def test_speculation_reads_nothing_when_off_or_idle():
+    # SGLang reports zeros with speculative decoding off, as vLLM reports nothing.
+    off = _windows([_sglang(decode=0, spec_len=0, spec_rate=0), _sglang(decode=50)])[0]
+    assert off.get("spec_accept_length") is None
+    assert off.get("spec_accept_rate") is None
+    # SGLang's gauges keep their last value through idle time.
+    for idle in (
+        _windows([_sglang(decode=10, spec_len=3.1, spec_rate=0.7)] * 2)[0],
+        _windows([_vllm(drafts=5, draft_tokens=15, accepted=9)] * 2)[0],
+    ):
+        assert (idle["spec_accept_length"], idle["spec_accept_rate"]) == (None, None)
+
+
+def test_an_idle_window_is_blank_on_both_engines():
+    """Not the averages since the engine started, which the samples carried before."""
+    sglang = _windows([_sglang(e2e_sum=40.0, e2e_count=10)] * 2)[0]
+    vllm = _windows(
+        [_vllm(prompt=900, cached=300, queries=900, hits=300, ttft_sum=4.0, ttft_count=10)] * 2
+    )[0]
+    assert sglang["e2e_latency_avg_s"] is None
+    assert vllm["ttft_avg_s"] is None
+    assert vllm["cache_hit_rate"] is None
+    busy = _windows([_sglang(e2e_sum=40.0, e2e_count=10), _sglang(e2e_sum=46.0, e2e_count=12)])
+    assert busy[0]["e2e_latency_avg_s"] == pytest.approx(3.0)
+
+
+def test_retractions_count_the_window_on_both_engines():
+    sglang = _windows(
+        [
+            _sglang(retract_gauge=3, retracts=10),
+            _sglang(retract_gauge=3, retracts=12),
+            _sglang(retract_gauge=3, retracts=12),  # the gauge holds while idle
+        ]
+    )
+    vllm = _windows([_vllm(preemptions=10), _vllm(preemptions=12), _vllm(preemptions=12)])
+    assert [w["retracts"] for w in sglang] == [w["retracts"] for w in vllm] == [2, 0]
+
+
+@pytest.mark.parametrize(("ratio", "pct"), [(0.42, 42.0), (1.05, 105.0), (0, None), (-1, None)])
+def test_sglang_utilization_is_a_percentage(ratio, pct):
+    scraped = reporter.parse_sglang_body(_sglang(utilization=ratio))["metrics"]
+    assert scraped.get("sglang_util_pct") == pct
+    loads = reporter.parse_sglang_body(json.dumps({"utilization": ratio}))["metrics"]
+    assert loads.get("sglang_util_pct") == pct
+
+
+def test_vllm_counters_are_summed_over_a_data_parallel_servers_engines():
+    text = (
+        _vllm(prompt=1000, generated=500, cached=400)
+        + "\n"
+        + _vllm(prompt=600, generated=300, cached=200).replace('engine="0"', 'engine="1"')
+    )
+    metrics = reporter.parse_vllm_prom(text)
+    assert (metrics["prompt_tokens_total"], metrics["generation_tokens_total"]) == (1600, 800)
+    assert metrics["cached_tokens_total"] == 600
+
+
+def test_no_rate_is_taken_between_two_different_counters():
+    """A /v1/loads target whose sibling /metrics fails for one scrape keeps its own count."""
+
+    def loads(sampled: float) -> dict:
+        return {"metrics": {"engine": "sglang", "loads_generated_total": sampled}}
+
+    def both(sampled: float, step: float) -> dict:
+        metrics = {**loads(sampled)["metrics"], "step_generated_total": step}
+        return {"metrics": metrics}
+
+    scrapes = [both(900, 50_000), loads(1_800), both(2_700, 52_000)]
+    rates = [
+        reporter.snapshot_sglang(last, prev, 1.0)["metrics"]["gen_throughput"]
+        for prev, last in pairwise(scrapes)
+    ]
+    assert rates == [900.0, 900.0]
+
+
+def test_a_step_counter_only_the_newer_scrape_has_leaves_prefill_to_the_fallbacks():
+    """Not a blank window: after a missed sibling /metrics, or a series' first scrape."""
+
+    def loads(uncached: float) -> dict:
+        return {"metrics": {"engine": "sglang", "uncached_tokens_total": uncached}}
+
+    def both(uncached: float, computed: float, cached: float) -> dict:
+        step = {"step_computed_total": computed, "step_cached_total": cached}
+        return {"metrics": {**loads(uncached)["metrics"], **step}}
+
+    scrapes = [
+        both(100, 10_000, 4_000),
+        loads(400),
+        both(700, 12_000, 5_000),
+        both(900, 12_600, 5_300),
+    ]
+    windows = [
+        reporter.snapshot_sglang(last, prev, 1.0)["metrics"] for prev, last in pairwise(scrapes)
+    ]
+    assert [w["prefill_tps"] for w in windows] == [300.0, 300.0, 600.0]
+    assert windows[2]["cache_hit_rate"] == pytest.approx(300 / 900, abs=1e-4)
+    # The first scrape with SGLang's realtime counter: its prompt counters give the window.
+    first_seen = _windows(
+        [_sglang(prompt=0, cached=0), _sglang(rt_compute=500, prompt=1000, cached=200)]
+    )[0]
+    assert first_seen["prefill_tps"] == 800.0
+
+
+def test_sglang_speculation_on_its_gauge_alone_clears_when_the_gauge_does():
+    """Without a step counter, SGLang's throughput gauge, which falls to 0, says it is idle."""
+    idle = _windows([_sglang(gauge=0, spec_len=3.1, spec_rate=0.7)] * 2)[0]
+    assert (idle["spec_accept_length"], idle["spec_accept_rate"]) == (None, None)
+    busy = _windows([_sglang(gauge=900, spec_len=3.1, spec_rate=0.7)] * 2)[0]
+    assert (busy["spec_accept_length"], busy["spec_accept_rate"]) == (3.1, 0.7)
+
+
+def test_a_log_read_fills_no_metric_the_counters_measured(monkeypatch):
+    """The once-a-minute log read leaves an idle window's measured blanks blank."""
+    log_stats = {
+        "posts": 30.0,
+        "http_errors": 0.0,
+        "tiled": False,
+        "cached_tokens": 500.0,
+        "new_tokens": 1500.0,
+        "prefill_s": 3.0,
+        "prefill_done": 30.0,
+        "decode_tps": 800.0,
+        "chunked_prefill_avg_s": None,
+        "req_prefill_avg_s": 0.1,
+        "req_tpot_avg_s": 0.02,
+        "req_e2e_avg_s": 9.0,
+        "req_ttft_avg_s": 0.2,
+        "req_prompt_avg": 2000,
+        "req_uncached_avg": 1500,
+        "req_gen_avg": 300,
+        "req_spec_len": None,
+        "req_spec_rate": None,
+        "requests": [],
+    }
+    monkeypatch.setattr(reporter, "summarize_engine_logs", lambda *args: log_stats)
+    monkeypatch.setattr(reporter, "_log_holds", {})
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        reporter, "post", lambda url, token, body: sent.append(body) or {"ok": True}
+    )
+    args = argparse.Namespace(
+        node_id="node-a", dashboard="https://gateway.example.org", token="t", skip_gpu=True
+    )
+    node = {"id": "node-a", "hostname": "node-a", "region": None, "cluster": None}
+    chat = {"url": "http://127.0.0.1:30000/metrics", "id": "chat", "name": "chat", "endpoint": ""}
+    idle = _sglang(
+        gauge=0,
+        decode=5000,
+        input=900,
+        device_hit=100,
+        host_hit=0,
+        storage_hit=0,
+        requests=7,
+        e2e_sum=40.0,
+        e2e_count=10,
+    )
+    scrape = {"chat": _scraped(chat, idle)}
+    prev = reporter.flush(args, node, [], scrape, None, {}, 1.0, False)
+    reporter.flush(args, node, [], scrape, None, prev, 1.0, True)
+    metrics = sent[-1]["sglang"][0]["metrics"]
+    assert metrics["e2e_latency_avg_s"] is None
+    assert metrics["cache_hit_rate"] is None
+    assert metrics["gen_throughput"] == 0.0
+    assert (metrics["prefill_tps"], metrics["req_per_min"]) == (0.0, 0.0)
 
 
 @pytest.mark.parametrize(

@@ -125,6 +125,15 @@ What each source needs:
   when it answers. PCIe throughput comes from DCGM too, or from
   `nvidia-smi dmon` without it.
 
+The reporter gives each engine figure the same meaning on SGLang and vLLM.
+Token rates come from counters that move as each step runs: vLLM's own, and
+SGLang's `realtime_tokens_total` and (from 0.5.20)
+`prefill_effective_tokens_total`, because SGLang's per-request counters move
+only when a request ends. Latencies, request shapes, the cache hit rate and
+retractions (vLLM's preemptions) cover each second alone; a second without any
+is blank, not the average since the engine started. The speculative accept
+length counts the bonus token on both.
+
 The reporter sends a `curl` User-Agent, because some edges refuse Python's
 default; `OPENINFRA_USER_AGENT` overrides it. Command-line flags can replace
 the configuration file: `--dashboard` (the gateway address), `--token`,
