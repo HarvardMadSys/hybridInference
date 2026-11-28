@@ -132,7 +132,8 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "integrations",
         "Integrations",
-        "Cloud agent identity, the documentation assistant, Qdrant and OpenInfra collection.",
+        "Cloud agent identity, API key authorization for applications, the documentation "
+        "assistant, Qdrant and OpenInfra collection.",
         one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
@@ -313,6 +314,13 @@ def _document_validator(key: str) -> Callable[[str], None]:
         validate_document(key, text)
 
     return validate
+
+
+def _callbacks_validator(text: str) -> None:
+    """Refuse an API key authorization callback that could never match a request."""
+    from serving.utils.key_authorization import validate_callbacks_setting
+
+    validate_callbacks_setting(text)
 
 
 _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
@@ -1633,6 +1641,17 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "integrations",
         "Comma-separated callback URLs an authorization code may be delivered to, matched exactly.",
         type="list",
+    ),
+    ConfigEntry(
+        "API_KEY_AUTHORIZATION_CALLBACKS",
+        "integrations",
+        "Comma-separated callback URLs of the applications that may ask a signed-in user to "
+        "create an API key on their account, such as https://app.example.org/callback. A "
+        "callback must match one in scheme, host, port and path; its query string is the "
+        "application's own. https only, http for localhost and 127.0.0.1. Empty turns API key "
+        "authorization off.",
+        type="list",
+        validator=_callbacks_validator,
     ),
     ConfigEntry(
         "GATEWAY_GRANT_DISPATCH_TOKEN",

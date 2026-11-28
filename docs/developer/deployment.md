@@ -1,15 +1,9 @@
 # Deployment Guide
 
-Running HybridInference as a long-lived deployment: what starts, how to reach
-it publicly or keep it private, how to create the first administrator, how to
-operate it, and how to reset it without losing (or accidentally keeping)
-data. A staging or scratch instance is the same stack; the sections on keeping
-it private and on the first admin account matter most there.
-
-First-time setup — cloning, the database login in `.env`, the first `make up`
-and the console's setup page — is in
-[Installation](installation.md#running-with-docker). This page assumes the
-stack already comes up.
+This page covers running HybridInference as a long-lived deployment: reaching
+it, operating and releasing it, the first administrator, alerts, and recovery.
+It assumes the stack already starts; first-time setup is in
+[Installation](installation.md#running-with-docker).
 
 ## What the stack is
 
@@ -19,227 +13,146 @@ stack already comes up.
 |---|---|---|
 | `backend` | built from `deploy/docker/Dockerfile.backend` | `${BACKEND_HOST:-127.0.0.1}:${BACKEND_PORT:-8080}` |
 | `frontend` | built from `deploy/docker/Dockerfile.frontend` | `${FRONTEND_HOST:-127.0.0.1}:${FRONTEND_PORT:-3001}` |
-| `postgres` | `postgres:16` | `127.0.0.1:${DB_PORT:-5432}` |
+| `postgres` | `postgres:16.16` | `127.0.0.1:${DB_PORT:-5432}` |
 
-All three published ports default to loopback. A reverse proxy on the same
-host can reach the console at `127.0.0.1:3001`. The containers also join one bridge
-network defined in the same Compose file, on which the backend reaches the
-database as `postgres:5432`. Of the database address settings, only `DB_PORT`
-from `.env` reaches this file, and only as the host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the
-host-side bind address is hard-coded to loopback. `DB_HOST` is pinned to
-`postgres` in the Compose file and is ignored under Compose — it matters only
-for a backend started directly from source.
+All three ports are published on loopback by default. The containers share the
+`hybridinference` network, where the backend reaches the database as
+`postgres:5432`. Under Compose, `DB_PORT` in `.env` sets only the host side of
+the database's port, and `DB_HOST` is ignored (it matters only for a backend
+started from source). The optional `pgadmin` service starts only with the
+`admin` profile; see [pgAdmin](database.md#optional-pgadmin).
 
-One more service exists in the same file but starts only when its profile is
-named: `pgadmin` (profile `admin`).
+### Keeping it private: an SSH tunnel
 
-### pgAdmin over mutual TLS
+A staging or scratch instance can keep the loopback defaults. Forward both
+ports from your workstation:
 
-The optional `/pgadmin/` console proxy checks the caller's administrator session
-before connecting to pgAdmin. By default it uses `http://pgadmin:80`; setting
-`PGADMIN_INTERNAL_URL` overrides that address. For a separately hosted pgAdmin
-behind a gateway that requires client certificates, configure the **frontend
-server's runtime environment** with:
-
-```text
-PGADMIN_INTERNAL_URL=https://pgadmin-gateway.internal:8443
-PGADMIN_MTLS_ENABLED=true
-PGADMIN_MTLS_CA_FILE=/run/pgadmin-tls/ca.crt
-PGADMIN_MTLS_CERT_FILE=/run/pgadmin-tls/client.crt
-PGADMIN_MTLS_KEY_FILE=/run/pgadmin-tls/client.key
+```bash
+ssh -L 3001:127.0.0.1:3001 -L 8080:127.0.0.1:8080 <user>@<your-server>
 ```
 
-The URL hostname must match the gateway server certificate. The CA file verifies
-that server; the client certificate and key authenticate the frontend to the
-gateway. Supply the files through a read-only secret mount accessible to the
-frontend process, and restrict who may read or mount the client private key.
-The console runs as uid 1000, not root, so the files must be readable by that
-user: for example group 1000 with mode `0440`, or a Kubernetes `fsGroup: 1000`
-with `defaultMode: 0440`. A file only root can read makes `/pgadmin/` answer
-502, and the console logs that the credentials are not readable by its user.
-These are file paths inside the frontend container, not certificate contents.
-The upstream gateway must enforce mTLS itself and restrict access to pgAdmin;
-the console's administrator check does not protect a separately exposed backend.
+Then open `http://localhost:3001`. Keep the local end on `localhost` or
+`127.0.0.1`: the refresh cookie is `Secure` by default (`COOKIE_SECURE`), and
+browsers accept a `Secure` cookie only over HTTPS or from a loopback origin.
+Port 8080 is forwarded because the console calls the API at the
+`NEXT_PUBLIC_API_BASE` built into its image, `http://localhost:8080` by
+default; changing it needs a frontend rebuild.
 
-The example Compose file does not forward these variables or mount these files;
-a deployment using Compose must explicitly add the frontend environment and
-secret volumes in an override. Setting only the root `.env` is not sufficient.
-With mTLS enabled, an HTTPS URL and all three files are required; invalid or
-unreadable settings make `/pgadmin/` return 502 without falling back to HTTP.
-Unset `PGADMIN_MTLS_ENABLED` or set it to the literal `false` to retain the
-existing proxy behavior. Values other than `true` or `false` fail closed.
+Check that the stack answers:
 
-The proxy rereads credentials for each new request and supports Kubernetes
-Secret volume projections that place all three files in the same projection
-directory. Ordinary files must not be modified while a request reads them;
-independent file updates cannot provide an atomic three-file snapshot.
-Certificate rotation across the frontend and gateway requires a coordinated
-procedure: their Secret projections do not update at the same time, and the
-gateway may need a reload. Existing in-flight requests can continue using the
-credentials they already acquired.
+```bash
+curl -s http://localhost:8080/health
+curl -s http://localhost:8080/v1/models
+```
 
-`frontend` depends on `backend` with `condition:
-service_started`, not `service_healthy` — deliberately, so that a backend
-reporting unhealthy because its database logging is down does not stop the
-console from starting.
+The default `CORS_ALLOWED_ORIGINS` covers ports 3000, 3001 and 3002 on
+`localhost` and `127.0.0.1`, and HTTPS on port 8443, so a tunnel needs no CORS
+change.
 
 ### Putting it on the public internet
 
 Nothing in the stack terminates TLS, and this repository ships no reverse-proxy
-config to copy: certificates and the proxy in front of the two published ports
-are yours to supply. A proxy running on the host can use `127.0.0.1:3001` for
-the console or `127.0.0.1:8080` for direct gateway access. A proxy container on
-the same Docker network can use `frontend:3001` or `backend:8080`.
+configuration. A proxy on the host uses `127.0.0.1:3001` for the console or
+`127.0.0.1:8080` for direct gateway access; a proxy container on the same
+Docker network uses `frontend:3001` or `backend:8080`.
 
-If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable host
-interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict access to the
-intended proxy and run `make up` to recreate the port mapping. The console
-forwards API routes as well as serving pages, so exposing its port also exposes
-those routes. Set `BACKEND_HOST` separately only if direct gateway access is
-needed.
+For a proxy on another machine, set `FRONTEND_HOST` in `.env` to an interface it
+can reach (`0.0.0.0` for all IPv4 interfaces), restrict access to that proxy,
+and run `make up`. The console also forwards the API, so exposing its port
+exposes the API. Set `BACKEND_HOST` only if you need direct gateway access.
+Releases before the loopback default bound the console to `0.0.0.0`; if you
+relied on that, set `FRONTEND_HOST` before upgrading.
 
-Releases before the loopback default bound the console to `0.0.0.0`. If a
-deployment relied on that, set `FRONTEND_HOST` explicitly before upgrading;
-see [Releases and upgrades](releases.md).
-
-Which public paths the console serves itself and which it forwards to the
-backend is a separate question, and the answer is in `deploy/public-paths.json`
-and the console's own `next.config.js` rather than in any proxy config. See
+Which paths the console serves and which it forwards is set by
+`deploy/public-paths.json` and `next.config.js`, not by the proxy; see
 [The public path table](public-path-table.md).
 
 #### What your proxy still has to do
 
-Three protections are commonly left to the reverse proxy, and nothing inside
-this stack provides them. A deployment that exposes the published ports without
-a proxy — a tunnel daemon connecting to `127.0.0.1:3001`, for instance — has
-none of them, and nothing warns you:
+Nothing inside the stack provides these. Without a proxy (a tunnel daemon
+connecting straight to `127.0.0.1:3001`, say) you have none of them, and nothing
+warns you:
 
 | Protection | What a proxy in front typically does |
 |---|---|
-| Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so console server actions cannot be invoked from outside the console |
-| Request body cap on `/v1/` | Bound completion request bodies (commonly `client_max_body_size 50m`), so oversized ones never cross your network. The gateway refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` bodies to it without holding them |
-| `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy inserted reach the gateway |
+| Next.js Server Action guard | Refuse requests carrying a `Next-Action` header (`if ($http_next_action) { return 403; }`), so nobody outside the console can invoke its server actions |
+| Request body cap on `/v1/` | Bound request bodies (commonly `client_max_body_size 50m`). The gateway itself refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB) |
+| `X-Forwarded-For` rewriting | Overwrite a client-supplied chain, so only hops the proxy added reach the gateway |
 
-The gateway reads forwarded headers only from the proxies you authorize (see
-[Trusted proxies and client IPs](trusted-proxies-and-client-ips.md)), but it
-never rewrites them. Without a proxy that does, the leftmost `X-Forwarded-For`
-entry is whatever the caller sent — which is why `CF-Connecting-IP` is
-preferred when Cloudflare is in front.
+The gateway reads forwarded headers only from proxies you authorize, but never
+rewrites them; see [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
 
 ### Splitting inference traffic at the entry
 
-By default every request reaches the console, which forwards the gateway's
-paths to it. A long stream then passes through two processes that are each
-released and restarted, and a console release or restart interrupts it as
-surely as a gateway one does. An entry that can route by path — an
-Ingress path rule, a tunnel's path routing, a load balancer — may instead send
-the paths the public path manifest marks `entry_split`, `/v1` and
-`/anthropic`, straight to the gateway, and everything else to the console as
-before.
+By default every request goes through the console, so a release or restart of
+the console interrupts long streams just as a gateway release does. An entry
+that routes by path (an Ingress rule, a tunnel's path routing, a load balancer)
+can instead send the paths the public path manifest marks `entry_split`, `/v1`
+and `/anthropic`, straight to the gateway, and everything else to the console.
 
-This is optional and is the deployment's to set up: this repository ships no
-entry configuration, and the example and local stacks keep the built-in
-forwarding. The console's image is the same either way and still forwards
-both prefixes, so removing the entry's two rules is the rollback and needs no
-image change, provided the gateway still trusts the console as before and the
-console's stop grace period has not been shortened. The split does not change
-what a gateway release does to a stream (open requests still get 5 seconds
-after the stop signal), and the console's model playground,
-`/internal/playground`, still goes through the console.
+This is optional, and this repository ships no entry configuration. The console
+image still forwards both prefixes, so removing the entry's two rules rolls the
+split back, provided the gateway still trusts the console and the console's
+stop grace period is unchanged. A gateway release still gives open requests 5
+seconds after the stop signal.
 
-On the split paths the entry has to meet these conditions:
+On the split paths, the entry must meet these conditions:
 
 | # | Condition |
 |---|---|
-| E1 | It sends to the gateway only the manifest's `entry_split` prefixes: a path equal to `/v1` or `/anthropic`, or beginning `/v1/` or `/anthropic/`. It matches after resolving `.` and `..` segments and percent-encoding, so `/v1/%2e%2e/openapi.json` is not under `/v1` |
+| E1 | It sends to the gateway only a path equal to `/v1` or `/anthropic`, or starting with `/v1/` or `/anthropic/`, matched after resolving `.` and `..` segments and percent-encoding (`/v1/%2e%2e/openapi.json` is not under `/v1`) |
 | E2 | It does not buffer responses, and does not read a whole request body before forwarding it |
-| E3 | Its idle timeout is longer than the gateway's `REQUEST_TIMEOUT_SECONDS`, and it sets no limit on a request's total duration shorter than `STREAM_REQUEST_TIMEOUT_SECONDS`. Streams send a keepalive every 15 seconds |
-| E4 | Its request body limit is no lower than the gateway's own, file uploads under `/v1` included |
+| E3 | Its idle timeout is longer than the gateway's `REQUEST_TIMEOUT_SECONDS`, and any limit on a request's total duration is no shorter than `STREAM_REQUEST_TIMEOUT_SECONDS`. Streams send a keepalive every 15 seconds |
+| E4 | Its request body limit is no lower than the gateway's own, including file uploads under `/v1` |
 | E5 | When the client disconnects, it closes the request to the gateway |
 | E6 | It overwrites the forwarding header the client sent (`X-Forwarded-For` or `CF-Connecting-IP`) |
-| E7 | The gateway's port is reachable from the entry and the console only |
-| E8 | It does not resend a `POST` once the request has been sent to the gateway. Retrying on another instance when the connection could not be established is fine |
-| E9 | When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. A release handoff depends on it; see [Handing traffic to a new gateway process](#handing-traffic-to-a-new-gateway-process) |
+| E7 | Only the entry and the console can reach the gateway's port |
+| E8 | It does not resend a `POST` once it has reached the gateway; retrying when the connection could not be established is fine |
+| E9 | Taking an instance out of rotation stops new requests but keeps open connections; see [Handing traffic to a new gateway process](#handing-traffic-to-a-new-gateway-process) |
 
-What clients see on the split paths is the gateway's own answer, the same as
-through the console, with these differences:
-
-- `X-Content-Type-Options: nosniff` comes from the gateway, which adds it to
-  every response. The console's other two headers, `X-Frame-Options` and
-  `Referrer-Policy`, only mean something for a page and are not sent on these
-  paths.
-- A path that ends in a slash, `/v1/models/`, gets the same `308` to the bare
-  path `/v1/models` from the gateway as from the console.
-- When the gateway cannot be reached, the error comes from the entry: a
-  `502`, `503` or `504`, but with the entry's own body rather than the
-  console's OpenAI-shaped JSON. SDKs act on the status; a client that parses
-  error bodies will see different content. An entry that can be given a JSON
-  error body may be configured to send one.
-
-Which way a request went is shown by the gateway's request log, whose
-`peer_ip` names the process that connected to it, read together with the
-entry's own access log. A response header is not proof: anything in between
-can rewrite one.
+Clients see the gateway's own answers, with two differences: the
+`X-Frame-Options` and `Referrer-Policy` page headers are not sent (the gateway
+adds `X-Content-Type-Options: nosniff` itself), and when the gateway is down the
+`502`, `503` or `504` carries the entry's body, not the console's
+OpenAI-shaped JSON. To see which way a request went, compare the gateway's
+request log, whose `peer_ip` names the process that connected, with the entry's
+access log.
 
 #### Client addresses with the entry in front
 
-With the split, two peers forward requests to the gateway on clients' behalf:
-the console, for everything that is not split, and the entry. Requests through
-the entry must resolve to the same client address as before, and must do so
+Requests through the entry must resolve to the same client addresses as before,
 with the console stopped. Do not get there by trusting more: keep
 `TRUST_PROXY_HEADERS` on, add no network that holds other workloads to a trust
-list, and do not treat an `unknown` address as a normal result.
+list, and do not treat an `unknown` address as normal.
 
-**Static trust** (Kubernetes proxy discovery not enabled). Readiness does not
-depend on any proxy, so stopping the console leaves `/health/ready` as it was.
-For the address, add the entry's exact peer address, as the gateway sees it,
-to the setting for the header the entry writes: `TRUSTED_PROXIES` for an entry
-that writes `X-Forwarded-For`, `TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare.
-Keep the console's own entry. Add nothing wider than the entry itself: if the
-gateway cannot tell the entry's connections from other processes' — behind a
-loopback port mapping, every process on the host reaches the gateway from the
-same address — solve that first, rather than trusting the shared address.
-See [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md).
+With static trust, add the entry's exact peer address, as the gateway sees it,
+to `TRUSTED_PROXIES` for an entry that writes `X-Forwarded-For`, or to
+`TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare, and keep the console's own entry.
+If the gateway cannot tell the entry's connections from other processes' (behind
+a loopback port mapping every process on the host shares one address), solve
+that first.
 
-**Kubernetes proxy discovery.** The split does not meet its goal in this mode
-today, so a deployment that uses it stays on the console's forwarding:
-
-- The discovered proxies are one Service's pods. An entry outside that Service
-  is not one of them, so every request it sends resolves to `unknown`.
-- With the frontend stopped the discovered set is empty, `/health/ready`
-  answers `503 proxy_discovery_unavailable`, and the entry takes the gateway
-  out of rotation: stopping the console would interrupt inference, the very
-  coupling the split removes.
-- The pinned identity is the frontend pods' direct controller. A frontend run
-  as a Deployment gets a new ReplicaSet on every release, which requires
-  updating that identity and restarting the gateway.
+Kubernetes proxy discovery does not support the split: an entry outside the
+discovered Service resolves to `unknown`, and with the frontend stopped the
+discovered set is empty and `/health/ready` answers
+`503 proxy_discovery_unavailable`. A deployment that uses discovery keeps the
+console's forwarding.
 
 ### Checking an entry split with the probe
 
-`ops/dev/entry_split_probe.py` checks a deployment's inference path from
-outside, through the address clients use, on either topology. It uses a raw
-HTTP client and never retries, so every failed request counts:
+`ops/dev/entry_split_probe.py` tests the inference path from outside, through
+the address clients use, on either topology. It never retries, so every failed
+request counts. It runs long streams on `/v1/chat/completions`, `/v1/responses`
+and `/anthropic/v1/messages`, checking each frame's timing, the end marker and
+the usage report; short requests on the same paths at a fixed rate; and boundary
+checks from `deploy/public-paths.json` (split prefixes reach the gateway,
+unpublished paths such as `/docs` and `/v1/%2e%2e/openapi.json` do not answer,
+a missing key gets `401`).
 
-- long streams on `/v1/chat/completions`, `/v1/responses` and
-  `/anthropic/v1/messages`, with each frame's arrival time, the end marker
-  (`[DONE]`, `response.completed`, `message_stop`) and the usage report
-  checked;
-- short streaming and non-streaming requests on the same three paths, at a
-  fixed rate, for as long as the long streams run;
-- the boundary, from `deploy/public-paths.json`: each split prefix reaches the
-  gateway and carries `nosniff`, a trailing slash redirects to the same origin,
-  the gateway's unpublished paths (`/docs`, `/openapi.json`, `/health/deep`,
-  escapes such as `/v1/%2e%2e/openapi.json` and `//v1`) do not answer, and a
-  missing or wrong API key gets `401`;
-- `/health`, every few seconds, recorded but never counted.
-
-Give the long streams a synthetic upstream with a known shape: the example's
-fake provider (`distributions/example/fixtures/fake-openai-provider/server.py`)
-started with `--stream-frames 600 --frame-interval-ms 100` streams 600
-numbered frames 100 ms apart, and the probe then checks that every frame
-arrived once, in order, at that interval. An entry that buffers shows up here
-as frames arriving in bursts. Route one model to it for the long streams and,
-optionally, a second to a default instance for the short requests:
+Point the long streams at a synthetic upstream: the example's fake provider
+(`distributions/example/fixtures/fake-openai-provider/server.py`) started with
+`--stream-frames 600 --frame-interval-ms 100` sends 600 numbered frames 100 ms
+apart, and an entry that buffers shows up as frames arriving in bursts:
 
 ```bash
 PROBE_API_KEY=... python ops/dev/entry_split_probe.py \
@@ -247,51 +160,15 @@ PROBE_API_KEY=... python ops/dev/entry_split_probe.py \
   --expect-frames 600 --frame-interval-ms 100 --short-rate 2 --output probe.json
 ```
 
-The key is read from the environment variable `--api-key-env` names and is
-never printed. The report is JSON; the exit status is `0` only when nothing
-failed. Run it before and while you release, restart or stop the console: with
-the split in place, no long stream may break and no short request may fail.
-Run it once on the console's own path while stopping the console as well, to
-see that it does report the broken streams. Run against the gateway's port
-directly, it reports `/docs` and the other unpublished paths as reachable:
-that port is not an entry, which is why E7 keeps it private.
-
-### Keeping it private: an SSH tunnel
-
-A staging or scratch instance, or any gateway you do not want on a network at
-all, can keep the loopback defaults. Reach it from your workstation by
-forwarding both ports:
-
-```bash
-ssh -L 3001:127.0.0.1:3001 -L 8080:127.0.0.1:8080 <user>@<your-server>
-```
-
-Then open `http://localhost:3001`. Keep the local end on `localhost` or
-`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by default
-(`COOKIE_SECURE`), and browsers accept `Secure` cookies only over HTTPS or from
-a loopback origin.
-
-The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked in at
-image build time — `http://localhost:8080` by default — which is why the tunnel
-forwards 8080 as well. Changing it is a frontend rebuild, not a restart.
-
-VS Code-family editors can manage the same forwards from their ports panel.
-
-Check the stack answers:
-
-```bash
-curl -s http://localhost:8080/health
-curl -s http://localhost:8080/v1/models
-```
-
-The default `CORS_ALLOWED_ORIGINS` already covers ports 3000, 3001 and 3002 on
-`localhost` and `127.0.0.1`, plus HTTPS on port 8443, so a tunnelled instance
-needs no CORS entry. Add one only when you serve the console from
-another origin.
+The key comes from the variable `--api-key-env` names (`PROBE_API_KEY` by
+default). The exit status is `0` only when nothing failed. Run it while you
+release, restart or stop the console: with the split in place, nothing may
+fail. Run against the gateway's own port, it reports `/docs` as reachable; that
+is why E7 keeps the port private.
 
 ## Everyday operations
 
-All from the repository root:
+Run these from the repository root:
 
 ```bash
 make up                  # start everything
@@ -306,26 +183,15 @@ make build s=frontend    # rebuild one service
 make migrate             # apply the schema migrations only
 ```
 
-`make up` and `make build` first run the `docker-volumes` target, which creates
-the external volume `hybridinference_postgres_data` when it is missing, and then
-apply the schema migrations with the backend image before they start the
-services. `make restart` starts the existing containers again and migrates
-nothing. On a deployment that `make deploy` pinned to published images, these
-commands start the pinned images, and `make build` refuses until you return to
-source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery).
+`make up` and `make build` create the external volume
+`hybridinference_postgres_data` if it is missing, apply the schema migrations
+with the backend image, and then start the services. `make restart` migrates
+nothing.
 
-To start an optional profile, pass it on the `make` command line — a variable
-set there is exported into the environment of the recipe, and a shell variable
-outranks every `--env-file` in Compose:
-
-```bash
-make up COMPOSE_PROFILES=admin
-```
-
-`COMPOSE_PROFILES` is a comma-separated list, so you can name several profiles
-at once. It can also be set in `.env` (as `.env.example` notes), but the
-command line is the form to reach for when you want certainty about which
-profiles are active.
+Name optional profiles on the command line, which outranks every env file:
+`make up COMPOSE_PROFILES=admin` (a comma-separated list). To keep host-local
+choices (profiles, `CLOUD_AGENT_NETWORK`, `PGADMIN_PUBLISH`) across commands,
+copy `.ops.env.example` to `.ops.env` and uncomment what this host needs.
 
 ### Diagnostics, deployment and recovery
 
@@ -341,65 +207,49 @@ make restore-check BACKUP=/private/path/gateway.dump
 Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the
 distribution's own `smoke.py` when it ships one.
 
-A deploy records the running artifacts, pulls the pinned pair and migrates with
-the new backend image. With `LEGACY_MANIFEST` set it then imports the previous
-release's file-based configuration with that image; see
-[Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database).
-Only then does it switch the services and run the acceptance smoke. Any failure
-after the switch, an interrupted command included, restores the previous images
-and runs the acceptance on them again; the command then exits with the deploy's
-own error and whether the restore passed. A rollback starts the recorded
-previous images without running their migrations.
+`make deploy` records the running artifacts, pulls the pinned images, runs the
+migrations with the new backend image, imports the previous release's file
+configuration when `LEGACY_MANIFEST` is set (see
+[Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database)),
+then switches the services and runs the acceptance smoke. Any failure after the
+switch, including an interruption, restores the previous images and runs the
+acceptance on them. `make rollback` starts the recorded previous images without
+running their migrations.
 
-Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without
-a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the
-shell sets it): `images.env`, the images it is pinned to, and `previous.json`
-and `current.json`. A deploy writes them only once its release is accepted, so
-a failed attempt changes neither the pin nor the release a rollback returns to;
-a rollback pins the images it starts. While `images.env` exists, that
-deployment's `make up`, `make migrate` and other lifecycle commands start the
-pinned images instead of building the checkout, and `make build` refuses. To
-return to source builds, delete that `images.env` and run `make build`. No other
-distribution, the example included, uses the pin.
+The record lives in `.ops/<distribution>/` (`.ops/none/` without a
+distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the
+shell sets it): `images.env` pins the images, and `previous.json` and
+`current.json` name the releases. A deploy writes them only once its release is
+accepted. While `images.env` exists, `make up`, `make migrate` and the other
+lifecycle commands start the pinned images, and `make build` refuses; delete
+`images.env` to return to source builds.
 
-Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs
-to persist optional Compose profiles, cloud-agent networking and the pgAdmin
-host-port choice across commands; the copy alone changes nothing.
-
-Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds
-every stored secret: keep it private and copy it off the host. A restore check
-never touches the deployment's database server. It restores the dump into a
-throwaway PostgreSQL container of the same image, with its own volume and
-internal network, migrates the copy to this release, as a deploy would migrate a
-backup taken before the upgrade, and removes the container, volume and network
-afterwards. For its duration it adds a second database server's CPU and I/O,
-and it needs free disk where Docker keeps volumes, normally the disk of the
-deployment's own database: it refuses to start unless about twice the
-database's size plus 1 GiB is free there.
+`make backup` writes to `.ops/<distribution>/gateway.dump` unless you set
+`BACKUP`. The dump holds every stored secret, so keep it private and copy it off
+the host. `make restore-check` is described under [Backup](database.md#backup).
 
 ### Handing traffic to a new gateway process
 
-A release that runs the new gateway process beside the old one can stop the old
-one without cutting a request short or losing a request-log row or a cost. The
-release asks the old process, while it is still alive, whether anything is
-left, and stops it only once nothing is and every cost and row it recorded is
-confirmed written. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five
-seconds and are then cancelled. A process sealed first has none open.
+A release can start a new gateway process beside the old one and stop the old
+one only when it has nothing left: no request cut short, no request-log row or
+cost lost. The release asks the old process instead of waiting a fixed time.
+Stopping with a signal is unchanged: open requests get five seconds, then are
+cancelled.
 
-The routes are off until the process has `HANDOFF_TOKEN` in its environment, a
-random value of at least 32 characters. Without it they answer 404. They are
-under `/internal/handoff`, which no public path list includes, so neither the
-console nor an entry forwards them. The release calls each process at its own
-address with `Authorization: Bearer <HANDOFF_TOKEN>`. This token is separate
-from the administrator token, which is read-only for changes wherever
-administrators need a second factor.
+The handoff routes exist only when the process has `HANDOFF_TOKEN` in its
+environment, a random value of at least 32 characters; otherwise they answer
+404. They live under `/internal/handoff`, which no public path list includes, so
+neither the console nor an entry forwards them. Call each process at its own
+address with `Authorization: Bearer <HANDOFF_TOKEN>`. This is not the
+administrator token, which is read-only for changes wherever administrators
+need a second factor.
 
 | Call | What it does |
 |---|---|
-| `GET /internal/handoff` | The state (`serving`, `draining` or `sealed`), everything still under way, `blocking` (why a seal would fail now) and `idle` |
+| `GET /internal/handoff` | The state (`serving`, `draining` or `sealed`), the work under way, `blocking` (why a seal would fail now) and `idle` |
 | `POST /internal/handoff/drain` | Begins draining |
-| `POST /internal/handoff/seal` | Seals if nothing is left (200); otherwise answers 409 with `blocking`, and the process keeps draining |
-| `POST /internal/handoff/resume` | Serves normally again, from draining or sealed. This is how a release is abandoned |
+| `POST /internal/handoff/seal` | Seals if nothing is left (200); otherwise answers 409 with `blocking` and keeps draining |
+| `POST /internal/handoff/resume` | Serves normally again, from draining or sealed; this abandons a release |
 
 A release runs in this order:
 
@@ -407,222 +257,143 @@ A release runs in this order:
    serves the acceptance requests.
 2. Take the old process out of the entry's rotation (E9).
 3. Drain the old process.
-4. Call seal until it answers 200. Poll as often as you like: the calls and
-   the platform's probes are counted apart and never hold a drain open.
+4. Call seal until it answers 200. Polling never holds a drain open.
 5. Stop the old process.
 
-If the seal does not succeed within the time your deployment expects, keep the
-old process and record the release as unfinished. The longest a request may run
-is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. Do not stop the
-process: `blocking` says what it is waiting for. To abandon the release instead,
-resume the old process and take the new one away.
+If the seal does not succeed in the time you expect, do not stop the process:
+keep it, record the release as unfinished, and read `blocking`. The longest a
+request may run is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. To
+abandon the release, resume the old process and remove the new one.
 
-Three reasons never clear by waiting: `spend_unconfirmed`, `request_log_lost`
-and `stream_close_abandoned`. A process that reports any of them keeps
-draining for as long as it lives. Keep it, record the release as unfinished
-with what the status reports, and reconcile before stopping it. There is no
-way to force a seal, and clearing the records does not count as reconciling.
+A draining process still serves every request that reaches it. Its
+`/health/ready` answers 503 with `"reason": "draining"` (`/health` stays 200),
+every response carries `Connection: close`, and idle connections are closed
+after five seconds. It claims no new batch items and runs no scheduled jobs;
+the other process does.
 
-While a process drains, it still serves every request that reaches it:
-
-- `/health/ready` answers 503 with `"reason": "draining"`. `/health` stays
-  200.
-- Every response carries `Connection: close`. A client or entry holding a
-  kept-alive connection then opens its next request elsewhere.
-- A connection with no request in progress is closed after five seconds,
-  uvicorn's keep-alive limit, even one that was opened and never used. A
-  connection with a request in progress keeps the normal idle limit
-  (`HTTP_IDLE_TIMEOUT_SECONDS`), as it would without a drain: a stream that
-  keeps sending is never cut, and one where nothing moves for that long is
-  closed. If a request begins on a connection after its five seconds started,
-  the normal limit applies instead, counted from its last byte.
-- It claims no new batch items and starts no validation, sealing, webhook
-  delivery or sweep; the other process does them. Items it runs go on, and it
-  keeps their leases.
-- It runs no scheduled job. The alert checks and rollups run in the other
-  process, and the alerts are not sent twice. A job already running goes on.
-
-A seal succeeds only when none of these is left. Each appears in `blocking`
-under its own name:
+`blocking` lists what is left:
 
 | `blocking` | What is left |
 |---|---|
-| `requests_in_flight` | A request in progress, streams included. A request lasts until its response, its clean-up and its stream's close are over |
-| `connections_open` | An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it |
-| `background_writes` | Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent |
+| `requests_in_flight` | A request in progress, streams included |
+| `connections_open` | An open client connection, other than the release's calls and probes |
+| `background_writes` | Work a request left behind, such as a cost increment or an alert being sent |
 | `request_log_unwritten` | Request-log rows queued or being written |
-| `request_log_lost` | A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears |
-| `stream_close_abandoned` | A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears |
-| `batch_work_running` | A batch item, or a batch validation, sealing, delivery or sweep, still running here. An item lasts until its task ends, so one already handed back still counts while its batch is being failed or its owner paused |
-| `scheduled_jobs_running` | A scheduled job or a broadcast still sending |
-| `spend_unwritten` | A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled |
-| `spend_unconfirmed` | A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives |
+| `request_log_lost` | A request-log row that was dropped or failed to write since the process started. Never clears |
+| `stream_close_abandoned` | A stream whose close took more than ten seconds and was cut short, so its billing or logging may be incomplete. Never clears |
+| `batch_work_running` | A batch item, validation, sealing, delivery or sweep still running here |
+| `scheduled_jobs_running` | A scheduled job, or a broadcast still sending |
+| `spend_unwritten` | A cost not yet added to the counters, or, in the shared spend mode, a reservation not yet settled |
+| `spend_unconfirmed` | A cost that waiting will not confirm: one the counters refused, a write with an unknown outcome, or, in the shared spend mode, a quarantined reservation or refused increment. Never clears |
 
-An empty `blocking` means more than "nothing is running". It also means that
-every cost this process recorded is confirmed in the counters and every
-request-log row it took was written. Each ledger in `spend` says so in
-`confirmed`, with what is not confirmed in `unconfirmed_requests` and
-`unconfirmed_usd` (or `unconfirmed_reservations` and `unconfirmed_increments`
-in the shared spend mode). A request that cost nothing was never recorded, so
-it never blocks. Nothing here changes what is charged.
+The three reasons that never clear keep the process draining for as long as it
+lives. Keep it, record what the status reports, and reconcile before you stop
+it. There is no way to force a seal, and clearing the records is not
+reconciling. An empty `blocking` also means every cost the process recorded is
+confirmed in the counters (each ledger in `spend` reports `confirmed`).
 
-The check and the switch to `sealed` are one step, so no request can start
-between them. From then on a request is refused with 503 and the code
-`instance_sealed` before anything is done for it, so it has no upstream call
-and no cost. It is counted in `requests.refused_after_seal`. A release that
-saw any did not hand over cleanly: the entry was still sending to the old
-process.
+Checking and switching to `sealed` is one step. After it, every request is
+refused with 503 and the code `instance_sealed` before any upstream call, and
+counted in `requests.refused_after_seal`; a release that saw any did not hand
+over cleanly. At shutdown the process logs its state (event
+`handoff_state_at_shutdown`).
 
-At its stop, the process logs the state it was in and the requests still in
-flight (event `handoff_state_at_shutdown`). A sealed process stops at once.
-
-A handoff drains one process. With several worker processes behind one port,
-a call reaches whichever worker accepts it, so drain and seal answer 409 there,
-and under gunicorn, whose workers the process cannot count. Run one uvicorn
-worker per instance.
-
-What a handoff does not cover: while the two processes run side by side, each
-still enforces per-user concurrency, login rate limits and authentication
-blocks on its own. A user can have up to twice their concurrent requests in
-flight until the old process's requests end. Budgets are shared between the
-two processes only in the shared spend mode, and that mode is switched on
-with every process stopped, not during a handoff.
+Run one uvicorn worker per instance: with several workers behind one port, or
+under gunicorn, drain and seal answer 409. While two processes run side by side,
+each enforces per-user concurrency, login rate limits and auth blocks on its
+own, so a user can briefly have twice their concurrent requests. Budgets are
+shared only in the shared spend mode, which is switched on with every process
+stopped.
 
 ### What a change actually requires
 
-Three different answers, and picking the wrong one looks like the change not
-taking effect:
-
 | You changed | Do this |
 |---|---|
-| A setting on the admin **Configuration** tab | Nothing, unless it is marked **Restart required**: then select **Restart backend** on that tab, or run `make restart s=backend` |
-| A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values | `make up` — a container reads its `env_file` when it is *created*, so `docker compose restart` keeps the old environment |
-| Any other value in `.env` | Nothing happens once the database has the setting: change it on the **Configuration** tab instead. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
-| Model catalog, routing policy or alert rules in Admin Settings | Follow the **Restart required** marker; no image rebuild is needed |
-| Site configuration or branding in Admin Settings | Applies when settings refresh; no rebuild or restart |
-| A file in the mounted site-assets directory | No image rebuild; replace the file in the deployment overlay |
-| `AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL` | `make up` — the `/agents` route handler reads them at runtime in the recreated frontend container |
-| A true build-only `NEXT_PUBLIC_*` compatibility value | `make build s=frontend` — see below |
+| A setting in **Admin → Settings** | Nothing, unless it is marked **Restart required**: then select **Restart backend**, or run `make restart s=backend` |
+| A value in `.env` that stays in the environment: the database connection, ports, the configuration selectors a rollback needs, console values | `make up`. A container reads its `env_file` when it is created, so `docker compose restart` keeps the old environment |
+| Any other value in `.env` | Nothing happens once the database has the setting; change it in Admin. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
+| The model catalog, routing policy or alert rules | Follow the **Restart required** marker; no rebuild |
+| Site configuration or branding | Applies when settings refresh; no rebuild or restart |
+| A file in the mounted site-assets directory | Replace the file in the deployment overlay; no rebuild |
+| `AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL` | `make up`; the console reads them at runtime |
+| A build-time `NEXT_PUBLIC_*` value | `make build s=frontend`; it is compiled into the browser bundle |
 | Backend or frontend source | `make build`, or `make build s=<service>` |
 
-The console gets its name and branding from the backend's `/site-config` at
-runtime, and the `/agents` destinations from its own runtime environment, so
-neither needs a new frontend image: restart the backend after editing the
-branding file, and run `make up` after changing the console's environment.
-
-The console will not render its normal pages without a valid `/site-config`
-answer. If the backend is unreachable, slow (over three seconds) or returns
-something invalid, the console shows a configuration error with a retry button
-instead of guessing. Check the frontend logs and whether the backend is up,
-then retry. The example deployment needs no extra settings for this.
-
-The old branding variables remain as build-time options for existing build
-pipelines; Compose still accepts them as build arguments, and standard builds
-do not need them.
-Anything that really is a `NEXT_PUBLIC_*` build value is compiled into the
-browser bundle and needs `make build s=frontend`; see
-[The public path table](public-path-table.md).
+The console reads its name and branding from the backend's `/site-config` at
+runtime. The old `NEXT_PUBLIC_*` branding variables remain only as build
+arguments for existing pipelines.
 
 ## Configuration
 
-### Environment
-
-`.env` at the repository root holds the database connection and the container
-settings; `.env.example` is the annotated list. Compose is invoked with
-`--env-file .env` and the backend service also loads it as `env_file`. The
-variables Compose itself requires are in
-[Installation](installation.md#running-with-docker). Everything else is a
-setting stored in the database and edited on the admin console's
-**Configuration** tab; see
+`.env` holds the database connection and the container settings; every other
+setting lives in the database and is edited in **Admin → Settings**. See
 [Settings stored in the database](configuration.md#settings-stored-in-the-database).
 
 ### Upgrading a deployment that kept its settings in `.env`
 
 Nothing has to change before the upgrade. At its first start the new backend
-copies every setting that has a value in its environment into the database —
-from `.env`, from an overlay's `deploy/*.env`, and from the values the Compose
-file passes through — and logs
-`Imported N setting(s) from the environment into the database`, with the
-exceptions below. The switches
-on the **Settings** tab are copied into their own store the same way. The
-existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the copied values, so
-sessions and API keys keep working, and a database that already has accounts
-never shows the setup page. Provider credentials the deployment leaves unset
-are not reported as missing settings; see
-[Missing settings](configuration.md#missing-settings).
+copies into the database every setting that has a value in its environment
+(from `.env`, an overlay's `deploy/*.env` and the Compose passthroughs) and logs
+`Imported N setting(s) from the environment into the database`. The existing
+`JWT_SECRET_KEY` and `API_KEY_SECRET` are copied too, so sessions and API keys
+keep working, and a database that has accounts never shows the setup page.
 
-From then on the database value wins. Editing such a line in `.env` changes
-nothing — the **Configuration** tab marks it **Environment ignored** — so make
-changes on the tab and delete the lines from `.env` when convenient. Keep a
-copy until a rollback is no longer possible: a release from before the
-settings moved into the database reads them only from the environment.
+From then on the database value wins: editing the line in `.env` changes
+nothing, and Admin marks the setting **Environment ignored**. Delete the lines
+when convenient, but keep a copy of `.env` until a rollback is no longer
+possible, because an earlier release reads its settings only from the
+environment.
 
-Besides a value that is not valid on its own, two kinds of value are not
-copied, and the log names each with a warning:
+The log warns about the values it does not copy:
 
-- A value that breaks a rule with a setting already stored, such as
-  `TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The
-  stored value wins and the environment's counts as unset. Check proxy trust
-  after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` with a
-  default of `0`, so a database that stored that `0` keeps the gateway off
-  forwarded headers whatever `.env` says. Change it on the Settings tab;
-  see [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
-- `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in its
-  place. Leave the variable out: while it is set, the backend refuses to
-  start; see [Database](database.md#secrets-for-deleting-accounts).
+- A value that conflicts with a stored setting, such as `TRUST_X_REAL_IP=1`
+  while the stored `TRUST_PROXY_HEADERS` is off; the stored value wins. Check
+  proxy trust after an upgrade: Compose passes `TRUST_PROXY_HEADERS` with a
+  default of `0`, so a database that stored that `0` ignores a `1` in `.env`.
+  See [Trusted Proxies and Client IPs](trusted-proxies-and-client-ips.md).
+- `ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET`. Remove
+  the variable: while it is set, the backend refuses to start; see
+  [Database](database.md#secrets-for-deleting-accounts).
 
-The `environment:` passthroughs in `deploy/docker/docker-compose.yml` work the
-same way: they carry an overlay's values into the container, where they are
-imported once. Their built-in defaults are imported too, so on a new
-deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, `SITE_NAME` and the sender
-address of outgoing mail start out as those defaults until you change them on
-the tab.
+The Compose passthroughs' built-in defaults are imported as well, so a new
+deployment starts with the default `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`,
+`SITE_NAME` and mail sender until you change them.
 
 ### Application configuration
 
-Models, routing, alert rules, site identity and branding are database settings,
-not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections
-have no effect on this release, which warns at startup while one is set. Keep
-them in the deployment's env files through the rollback window anyway: Compose
-passes them to the backend, where a rolled-back previous release reads its files
-through them and the legacy import learns what that release had in force. See
-[Configuration](configuration.md) for the document controls and the import an
-existing deployment runs during its upgrade.
+Models, routing, alert rules, site identity and branding live in the database.
+This release ignores the retired `*_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH` and
+`DISTRIBUTION_CONFIG_MODE` variables, and warns at startup while one is set.
+Keep them, and the files they name, through the rollback window: a rolled-back
+release reads its files through them, and the legacy import uses them. See
+[Configuration](configuration.md).
 
 ### Local inference servers
 
-The backend container reaches servers on the host through
-`host.docker.internal`, which the Compose file wires with
-`extra_hosts: host.docker.internal:host-gateway`. Write that address explicitly
-in the model registry:
+The backend container reaches servers on the host at `host.docker.internal`
+(mapped with `extra_hosts: host.docker.internal:host-gateway`). Write that
+address in the model's route; the gateway never rewrites provider URLs:
 
-```yaml
-route:
-  - kind: openai_compat
-    base_url: http://host.docker.internal:8001/v1
+```json
+{
+  "route": [
+    {
+      "kind": "openai_compat",
+      "base_url": "http://host.docker.internal:8001/v1"
+    }
+  ]
+}
 ```
 
-For a backend running directly on the host, use `localhost` instead. The gateway
-never rewrites provider URLs. See
+A backend running directly on the host uses `localhost`. See
 [Adding a New Local Model](add-local-model.md).
 
 ## Health checks
 
-Anyone may call `/health` and `/health/ready`, and anyone is answered with the
-status code and `status` alone:
-
-```bash
-curl -s http://localhost:8080/health
-```
-
-```json
-{"status": "healthy"}
-```
-
-The status codes are what probes and monitors read, and they are the same
-for every caller. An administrator's credential, a console token or
-`ADMIN_TOKEN`, also shows the reason, the process's `instance`, the route
-count and how each store is doing:
+Anyone may call `/health` and `/health/ready`, and gets the status code and
+`{"status": ...}`. An administrator's credential (a console token or
+`ADMIN_TOKEN`) also shows the reason, the process's `instance`, the route count
+and each store's state:
 
 ```bash
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/health
@@ -632,6 +403,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/health
 {
   "status": "healthy",
   "routes_configured": 3,
+  "instance": "8c1d4a7e2f6b9035",
   "database_configured": true,
   "database_connected": true,
   "stores": {
@@ -641,394 +413,238 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" http://localhost:8080/health
 }
 ```
 
-- `routes_configured` counts published route entries — one per model id in the
-  active registry, plus one per alias. It is whatever *your* registry defines.
-- `database_configured` distinguishes "this deployment asked for no database"
-  from "the database is down": with `DB_ENABLED=false` it is `false` and the
-  status is still `healthy`; with a database configured but unreachable at
-  startup, `/health` answers **503** with `"reason":
-  "database_unavailable_at_startup"`.
-- `status` becomes `degraded` — still HTTP 200 — when one configured store is
-  down but the other is serving. That shape is deliberate: the container
-  `HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial degradation
-  would tear down backends that are still answering requests.
+| Endpoint | Answers 503 when |
+|---|---|
+| `/health` | Every configured store is down, or the configured database was unreachable at startup (`database_unavailable_at_startup`). One store down gives `"status": "degraded"` with 200, so the container `HEALTHCHECK` does not kill a backend that still serves |
+| `/health/ready` | Any configured store is down, the process is draining, or Kubernetes proxy discovery has no fresh proxy set. Use it for readiness |
+| `/health/deep` | Every configured store is down. It also reports each endpoint's health |
 
-Use `/health/ready` for a strict readiness probe: it applies AND-logic across
-configured stores and returns 503 unless every one of them is up. Like
-`/health`, it tells an anonymous caller `{"status": "ready"}` or
-`{"status": "not_ready"}`, and an administrator also the reason and stores.
-`/health/deep` additionally reports per-endpoint health.
+With `DB_ENABLED=false`, `database_configured` is `false` and the status is
+`healthy`.
 
 ### Marking monitor traffic
 
-A monitor that drives real inference — hitting `/v1/chat/completions` on a
-schedule to measure a backend end to end, rather than just polling `/health` —
-would otherwise land in `api_logs`, skew the dashboards, and feed RouteWise's
-online learning as if it were user demand. Send `X-Probe: synthetic` on those
-requests to keep them out: a marked request is left out of `api_logs` (and its
-rejections out of the rejection log), does not record a routing observation,
-and carries an `X-Provider` response header naming the backend that answered,
-so the monitor can confirm which route it exercised.
+Send `X-Probe: synthetic` on a monitor's inference requests to keep them out of
+`api_logs`, the dashboards and RouteWise's learning. A marked request also
+records no routing observation and gets an `X-Provider` response header naming
+the backend that answered.
 
-The marker is honoured **only from an authenticated internal- or admin-role API
-key** — never a free/pro key, an agent-sandbox grant, or, importantly, an
-anonymous caller on a deployment running with `USER_AUTH_ENABLED=0` (auth-off
-hands every caller the admin role, which is not the same as holding a monitor
-identity). From any other caller the header is ignored and the request is
-logged like ordinary traffic. A deployment that needs probes without auth wants
-an explicit mechanism — a shared secret, a source allowlist — not this header.
-
-The marker is about noise, not access. It cannot keep a monitor's own auth
-failures from tripping the repeated-auth-failure blocklist, because that
-decision is made before the presented key is read — see [A monitor or service
-account is suddenly getting
-429s](#a-monitor-or-service-account-is-suddenly-getting-429s).
-
-The one thing the marker never touches is billing: cost and quota are
-incremented unconditionally on every surface, for trusted and untrusted callers
-alike, so a probe cannot be used to obtain unmetered inference. To keep marked
-traffic in `api_logs` after all — to see a monitor's real latency and spend in
-the requests dashboard — turn on the `log_synthetic_probes` runtime setting;
-the routing-observation and `X-Provider` behaviour is unchanged.
+The marker is honoured only from an authenticated API key with the internal or
+admin role, never from a free or pro key, an agent grant, or an anonymous
+caller on a gateway with `USER_AUTH_ENABLED=0`. It never affects billing, and
+it does not protect a monitor from the auth-failure blocklist (see
+[below](#a-monitor-or-service-account-is-suddenly-getting-429s)). To log marked
+requests anyway, turn on the `log_synthetic_probes` runtime setting.
 
 ## Alerting
 
-The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In
-**Admin → Settings → Alerts**, in the **Alerts** section, choose a
-**Notification channel** and enter its webhook URL. Only the selected channel's
-field is shown; saved URLs remain write-only. Choose **None** to turn off
-notifications.
-
-The in-process engine is off unless you enable `ALERTS_ENABLED`. Its underlying
-configuration keys are:
+The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Alerts**, choose
+a **Notification channel** and enter its webhook URL; saved URLs are
+write-only. Choose **None** to turn notifications
+off.
 
 | Setting | Value |
 |---|---|
-| `ALERTS_ENABLED` | on; applies after a backend restart |
-| `SLACK_ALERTS_WEBHOOK_URL` | optional dedicated Slack webhook |
+| `ALERTS_ENABLED` | Turns the in-process engine on; applies after a backend restart |
+| `SLACK_ALERTS_WEBHOOK_URL` | Dedicated Slack webhook; falls back to `SLACK_WEBHOOK_URL` when empty |
 | `SLACK_WEBHOOK_URL` | Slack fallback; also enables the failed-request detector |
 | `WECOM_ALERTS_WEBHOOK_URL` | WeCom group webhook; also enables the failed-request detector |
 
-If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to `SLACK_WEBHOOK_URL`, so
-one webhook can serve both code paths. The console preserves existing dedicated
-Slack settings and uses the fallback key for a new Slack configuration.
-
-Slack and WeCom are mutually exclusive. Saving a channel switch clears the old
-channel in the same update. Webhook changes apply after a backend restart until
-an operator activates the `alerts.runtime` live group; from then on they apply
-in every backend process within about ten seconds, without a restart. See
+Slack and WeCom are mutually exclusive. Webhook changes apply after a backend
+restart, or within about ten seconds once an operator activates the
+`alerts.runtime` live group; see
 [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart).
-Until a change applies, normal alerts continue using the previous channel.
-**Restart pending**, or the **Applied in each backend process** panel once the
-group is active, shows what is still waiting.
+**Send test notification** sends a marked test without saving anything. A URL
+typed into the test field must be the platform's official HTTPS endpoint
+(`hooks.slack.com`, `hooks.slack-gov.com` or
+`qyapi.weixin.qq.com/cgi-bin/webhook/send`), so an admin session cannot make the
+server call an arbitrary address. A saved HTTPS URL may point elsewhere, such as
+a Slack-compatible Mattermost.
 
-**Send test notification** sends a marked test using the URL currently entered,
-or the latest saved URL when no draft is entered. It works before a restart and
-does not save changes, enable alerting or change incident/cooldown state. The
-success message includes a test ID to check in the receiving group.
-
-A URL typed into the test field must be the selected platform's official HTTPS
-endpoint (`hooks.slack.com` / `hooks.slack-gov.com`, or
-`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so an admin
-session cannot make the server request an arbitrary address. A **saved** URL is
-not held to that host list: normal delivery already posts to it, so a
-Slack-compatible destination (Mattermost, Rocket.Chat, an egress proxy) tests
-normally. It must still be `https`. Discord, Telegram and arbitrary webhook
-formats are not supported by this selector.
-
-Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings.
-Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in
-`apps/backend/serving/observability/`.
-
-Two auth rules are worth knowing apart, because their defaults differ on
-purpose:
-
-- `rules.auth_failure_spike` is **off**. Bad keys are internet background
-  noise, and a count of them names nothing to act on. The `auth_failure` log
-  records are emitted regardless.
-- `rules.auth_ip_blocked` is **on**. This one fires when the blocklist starts
-  *refusing* a source — a discrete decision at a much higher threshold, naming
-  an address. It is on because the source is sometimes the deployment's own;
-  see the troubleshooting entry below.
+Rules and thresholds are the `ALERT_RULES` document, under **Advanced** in
+**Admin → Settings → Alerts** (empty means built-in thresholds; changes
+need a restart). Two auth rules have deliberate defaults:
+`rules.auth_failure_spike` is off, because bad keys are background noise, and
+`rules.auth_ip_blocked` is on, because the source the blocklist refuses is
+sometimes the deployment's own monitor.
 
 ### What an auth alert tells you
 
-An auth-failure card names the sources and, where it can, the accounts behind
-them — the addresses they came from, how many distinct ones, the leading
-characters of the keys presented, why each failed, and the paths being hit. The
-recovery card carries the same picture of the incident that just closed, rather
-than only the rule's name: by the time a spike resolves, the window it breached
-on is empty, so the numbers have to come from a tally kept across the incident.
-
-Two of those lines are worth reading carefully:
-
-- **Known accounts.** Most auth failures are anonymous by construction — nobody
-  was authenticated, which is the failure. A named account means a key this
-  deployment *did* issue was presented and refused, with `credential_state`
-  saying why (`revoked`, `expired`, `user_suspended`). That is the actionable
-  case: a monitor, CI job or service account whose credential went stale.
-  Resolving the owner costs one indexed lookup per failed auth, bounded by the
-  shared rejection-enrichment budget and shed instantly under a flood; set
-  `AUTH_FAILURE_IDENTIFY_CALLER=false` to spend nothing and lose the line. Read
-  a named account as evidence and no named account as *unknown*, never as proof
-  the traffic is external: the lookup is shed during exactly the flood you are
-  investigating, and answers nothing on a timeout, a failed lookup, or with the
-  setting off.
-- **Arrived via peers.** Present only when the reported addresses did not come
-  off the socket. They are then only as trustworthy as the proxy that set them,
-  and a forged `X-Forwarded-For` is exactly how a source spreads its failures
-  across the blocklist's buckets. The line names the sockets they actually
-  arrived on.
-
-Counts marked `(capped)` are floors, not totals: a source rotating addresses
-faster than the tally tracks them stops being counted rather than being allowed
-to grow it without bound. Do not size an incident from a capped number.
+An auth-failure card names the sources, how many distinct addresses, the key
+prefixes presented, why each failed and the paths hit; the recovery card
+summarizes the whole incident. **Known Accounts** names accounts whose issued
+keys were refused, with `credential_state` (`revoked`, `expired`,
+`user_suspended`): usually a stale monitor or CI credential. The lookup is
+skipped under load or with `AUTH_FAILURE_IDENTIFY_CALLER=false`, so no named
+account does not prove the traffic is external. **Arrived Via Peers** appears
+when the addresses came from forwarding headers, and names the sockets they
+arrived on. Counts marked `(capped)` are lower bounds.
 
 ### Silencing alerts from the dashboard
 
-The admin dashboard's Settings tab has two controls, and neither changes your
-alerts file:
-
-- **Slack Alerts** snoozes every alert for up to seven days.
-- **Alert Types** mutes one type of alert, such as `auth_ip_blocked` or
-  `circuit_open`, for an hour, a day, a week, or until it is unmuted. Every
-  other type keeps sending.
-
-A mute is stored in the database, so it survives a restart and reaches every
-gateway process within a few seconds. While a type is muted nothing of it is
-sent, and an incident that opens during the mute also closes without a recovery
-message. An incident that was posted before the mute still gets its recovery,
-and a breach still live when the mute lifts pages at its next evaluation. A mute
-is for an alert you want back later; to retire a rule for good, turn it off in
-your alerts file instead.
-
-A snooze treats recoveries the same way: an incident that opens while alerts are
-snoozed closes without a recovery message, and one that was posted before the
-snooze still gets its recovery.
+**Admin → Settings → Alerts** has two controls, neither of which changes
+`ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 hours
+(the admin API accepts up to seven days). **Alert Types** mutes one type, such
+as `auth_ip_blocked`, for an hour, a day, a week or until unmuted. Mutes are
+stored in the database and reach every process within seconds. An incident that
+opens while muted or snoozed closes without a recovery message; one posted
+before still gets its recovery.
 
 ## The first admin account
 
 A new deployment creates its first administrator on the console's setup page.
-Until then the backend refuses every sign-up, by email or by phone, so nobody
-else can claim the account:
+Until then the backend refuses every sign-up, by email or phone:
 
-1. Read the setup code from the backend's log. The code is kept in the
-   database and stays the same, across restarts and worker processes, until
-   setup is complete; every start logs it again, whatever `LOG_LEVEL` is set
-   to:
+1. Read the setup code from the backend's log. It is stored in the database,
+   stays the same across restarts until setup is complete, and is logged at
+   every start whatever `LOG_LEVEL` is:
 
    ```bash
    docker logs hybridinference-backend 2>&1 | grep 'setup code'
    ```
 
-2. Open the console. While setup is pending, every page sends you to `/setup`.
-3. Enter the code and choose a username and a password. This administrator has
-   no email address and signs in with the username.
+2. Open the console; while setup is pending every page sends you to `/setup`.
+3. Enter the code and choose a username and password. This administrator has
+   no email address and signs in with the username. It can add one later in
+   **Account Settings → Email Address** once mail delivery works.
 
-Once email delivery is configured, this administrator can bind an email in
-**Account Settings → Email Address**. Confirm the current password and follow
-the verification link sent to the new address. The username continues to work
-after binding; the same settings section also lets you change a bound email.
+Anyone who can read the backend log or the database can create this account, so
+keep both private. Wrong codes are limited to ten per client address in 15
+minutes; the right code is never refused. Once an administrator exists, you can
+close signup with the `signup_enabled` runtime setting.
 
-Whoever can read the backend log, or the database that holds the code, can
-create this account, so keep both as private as the host. Wrong codes are
-rate limited per client address, ten in 15 minutes; the right code is never
-refused.
+**Choose a username that is hard to guess.** Sign-in counts attempts before it
+checks the password:
 
-**Choose a username that is hard to guess.** Sign-in counts each attempt
-before it checks the password: five per username from one address in 15
-minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all addresses
-together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only the attempts the
-other limits let through), and twenty per address in an hour
-(`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in to the
-account before, including the one you used for setup, holds a device cookie
-(`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to `/auth`, kept on sign-out,
-valid for 180 days) and gets five attempts per 15 minutes of its own, so other
-people's guesses never lock it out. Together, the account's browsers that hold
-one get `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget
-only requests carrying such a cookie count against, and once it is spent they
-are limited like any other browser. Each password has its own budget: cookies
-from before a password change or reset cannot spend the one your browsers share
-after it. Changing `JWT_SECRET_KEY` invalidates every device cookie until that
-browser's next sign-in.
+| Limit | Default | Setting |
+|---|---|---|
+| Per username from one address | 5 in 15 minutes | `LOGIN_RATE_LIMIT_PER_15MIN` |
+| Per username from all addresses | 50 in 15 minutes | `LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` |
+| Per address | 20 in an hour | `LOGIN_RATE_LIMIT_PER_HOUR_PER_IP` |
 
-Other browsers share the limits with their address, and behind the bundled
-Compose file's console every browser has the same address unless the gateway
-trusts the header your edge sets, which is safe only while the console is
-reachable through that edge alone (see
-[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console));
-`admin` is the first username anyone tries. The pages that mail a link to an
-address anyone types, password reset and resending the verification email,
-are limited too: three of each kind an hour per address, whether or not an
-account has it, and ten an hour per client address when the backend can tell
-clients apart (without that, the per-address limit alone). The counts are held
-in memory, so a backend restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`,
-when set, still reaches the admin API, and the command-line tools work on the
-database directly.
+A browser that has signed in to the account before holds a device cookie
+(`<REFRESH_TOKEN_COOKIE_NAME>_device`, valid 180 days) and gets five attempts of
+its own per 15 minutes, so other people's guesses do not lock it out. Changing
+`JWT_SECRET_KEY` invalidates device cookies. Other browsers share the limits
+with their address, and behind the bundled console every browser has the same
+address unless the gateway trusts your edge's header (see
+[Behind the console](trusted-proxies-and-client-ips.md#behind-the-console)).
+`admin` is the first name anyone tries.
 
-**Without the browser.** `ops/admin/create_admin.py` writes the account
-directly: it creates it with `role='admin'`, `status='active'`,
-`email_verified=TRUE`, or promotes an existing account with the same address.
-Run it from the repository root once the schema migrations have run
-(`make migrate`; `make up` runs them):
+The recovery tools below need no sign-in. `ADMIN_TOKEN`, when set, also still
+reaches the admin API.
+
+### Creating an administrator without the browser
+
+`ops/admin/create_admin.py` creates an account with `role='admin'`,
+`status='active'` and `email_verified=TRUE`, or promotes the existing account
+with that address. Run it from the repository root, in the project environment
+(`source .venv/bin/activate` after `make setup-dev`), once the migrations have
+run:
 
 ```bash
 python ops/admin/create_admin.py --email you@example.com
 ```
 
-Run it inside the project environment (`source .venv/bin/activate` after
-`make setup-dev`) so the `serving` package is importable. It reads `DB_HOST`,
-`DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`, and Postgres
-publishes on `127.0.0.1:5432`, so it works from the host shell. Omit
-`--password` and it prompts, keeping the password out of your shell history.
-Creating any account this way also completes first-run setup: a database that
-has accounts never shows the setup page.
+It reads the `DB_*` settings from `.env` and prompts for the password when you
+omit `--password`. Any account created this way also completes first-run setup.
 
-**A forgotten password.** The setup administrator has no email address, so
-there is no reset link to send. Reset its password where the backend runs:
+### Resetting a forgotten password
+
+The setup administrator has no email, so reset its password where the backend
+runs:
 
 ```bash
 docker exec -it hybridinference-backend python -m serving.auth.reset_password <username>
 ```
 
-It reads only the `DB_*` settings, asks twice for the new password — or, with
-`--generate`, prints a strong one — and revokes the account's sessions, so
-every browser must sign in again. It takes an email address as well, for any
-other account. From a source checkout, run
-`uv run python -m serving.auth.reset_password <username>` in the repository
-root. It also works on a database the schema migrations have not brought up to
-date — while a migration waits for the users table's lock and the previous
-release goes on serving, say — and changes no schema. Such a database may have
-no login names yet, so name the account by its email address there.
+It reads only the `DB_*` settings, asks for the new password twice (or prints a
+strong one with `--generate`), and signs the account out everywhere. It also
+accepts an email address. From a source checkout, run
+`uv run python -m serving.auth.reset_password <username>` at the repository
+root. It works on a database whose migrations are not yet applied; name the
+account by email there.
 
-**A setting that breaks the console.** Settings live in the database, so a
-value that stops sign-in from working cannot be fixed by editing `.env`, nor
-from a console nobody can sign in to. Change it back from the command line:
+### Undoing a setting that breaks sign-in
+
+A setting that stops sign-in cannot be fixed in `.env` or from the console.
+Reset it from the command line:
 
 ```bash
 docker exec -it hybridinference-backend python -m serving.config.manage reset JWT_ALGORITHM
 ```
 
-`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the
-Settings tab, with its validation, and never print a secret's value; see
-[Without the console](configuration.md#without-the-console). The running
-backend picks the change up within about ten seconds, or after a restart for a
-setting marked **Restart required**.
-
-With an administrator in place the instance can run with signup closed: turn
-off `signup_enabled` on the **Settings** tab.
+`list`, `get KEY`, `set KEY VALUE` and `reset KEY` validate like Admin and never
+print secrets; see [Without the console](configuration.md#without-the-console).
+The backend picks the change up within about ten seconds, or after a restart for
+a setting marked **Restart required**.
 
 ### Promoting accounts with `ADMIN_EMAILS`
 
-`ADMIN_EMAILS`, under **Security** on the **Configuration** tab, makes a
-listed address an administrator when that account signs in. It is not needed
-for the first administrator, and it is unsafe without email verification:
+`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & security**)
+makes a listed address an administrator when that account signs in. You do not need it
+for the first administrator.
 
 ```{warning}
-Do not combine open signup (`signup_enabled`), disabled email verification
+Never combine open signup (`signup_enabled`), disabled email verification
 (`signup_require_email_verification` off) and `ADMIN_EMAILS` on an instance
-anyone else can reach. Together they are a privilege-escalation recipe:
-
-- with verification disabled, `POST /auth/signup` marks any address as
-  verified without sending mail to it;
-- on login *and* on every token refresh, the backend promotes any account whose
-  address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no check
-  that the person signing up owns that address.
-
-So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up with that
-address and is an admin on their first login.
+others can reach. Without verification, `POST /auth/signup` marks any address
+verified, and the backend promotes a listed address to `admin` on login and on
+every token refresh. Anyone who guesses an `ADMIN_EMAILS` value becomes an
+administrator.
 ```
 
-Email verification is on by default, and with it on an account cannot log in
-until it has followed a link sent to the address, which restores the
-ownership check that `ADMIN_EMAILS` itself does not perform. This needs working
-mail; without it nobody can complete a signup, and the console reports the
-selected transport's settings as missing: `SMTP_HOST`, `SMTP_USER` and
-`SMTP_PASSWORD` while `EMAIL_PROVIDER` is `smtp`, or `CLOUDFLARE_ACCOUNT_ID`
-and `CLOUDFLARE_EMAIL_API_TOKEN` while it is `cloudflare`. There is no default
-mail service: a deployment sends through its own SMTP server or Cloudflare
-account. See
+Email verification is on by default and needs working mail: set `SMTP_HOST`,
+`SMTP_USER` and `SMTP_PASSWORD` with `EMAIL_PROVIDER=smtp`, or
+`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` with `cloudflare`. There
+is no default mail service; see
 [Email and SMS delivery providers](configuration.md#email-and-sms-delivery-providers).
-
-`ADMIN_EMAILS` also picks the default recipients for signup approval mail. To
-narrow the notification list without changing who holds the admin role, set
-`SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is empty, notifications fall
-back to `ADMIN_EMAILS`.
-
-Both `signup_enabled` and `signup_require_email_verification` are runtime
-settings on the **Settings** tab. A `SIGNUP_ENABLED` or
-`SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that store
-at startup while it has no value of its own, and the stored value wins
-afterwards.
+`ADMIN_EMAILS` is also the default recipient list for signup approval mail;
+`SIGNUP_NOTIFY_EMAILS` overrides it.
 
 ### Requiring two-factor authentication of administrators
 
-An account can add an authenticator app (any that reads a standard TOTP QR
-code: Duo Mobile, Google Authenticator, 1Password) and from then on confirms
-with a six-digit code instead of its password before a change that outlasts its
-session: raising a role, minting a key for another account, exporting secret
-values, changing who may use a model.
+Any account can add an authenticator app (any TOTP app) in
+**Settings → Two-Factor Authentication** and then confirms lasting changes, such
+as raising a role, minting a key for another account or exporting secrets, with
+a six-digit code. It gets ten recovery codes, shown once.
 
-`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes it a condition of
-administrator access. It is off by default, and read from the environment
-only, so a session that holds administrator access cannot switch it off. With
-it on:
+`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes an authenticator a condition of
+administrator access. It is read from the environment only, so an administrator
+session cannot switch it off. With it on:
 
-- a console session reaches the Admin API only after giving a code from the
-  account's authenticator, and is asked again when it turns up in a different
-  kind of client (a browser's session presented by a script, for example);
-- an administrator who has no authenticator yet has no administrator access
-  until they add one;
-- an account is given the `admin` role only once it has an authenticator;
-- `ADMIN_TOKEN` is answered for reads only. Move any automation that writes
-  with the token before turning this on.
+- a console session reaches the Admin API only after giving a code, and again
+  when it appears in a different kind of client;
+- an administrator without an authenticator has no administrator access until
+  they add one, and only an account with one can be given the `admin` role;
+- `ADMIN_TOKEN` is read-only, so move automation that writes with it first.
 
-In the console:
-
-- **Settings → Two-Factor Authentication** adds the authenticator: the
-  account's password, a QR code to scan, the first code, then ten recovery
-  codes that are shown once. Administrators see the section. An account that is
-  about to be made an administrator opens it at
-  `/dashboard/settings#two-factor`.
-- **Admin** asks a session that owes a code before it opens, and a dialog asks
-  again when a change needs a more recent one.
-- **Admin → Users** shows in an account's details whether it has an
-  authenticator (`Two-factor: on`), and removes one for someone who lost the
-  device.
-
-Turn it on after the administrators have enrolled, not before: until an
-administrator account has an authenticator, someone who has its password can
-add their own.
+Enroll the administrators before you turn it on: until an account has an
+authenticator, anyone with its password can add theirs. **Admin → Users** shows
+whether an account has one and removes a lost one.
+`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
+changes.
 
 ```{warning}
-An administrator who loses the device and the recovery codes cannot reach the
-Admin API. Another administrator removes the lost authenticator in
+An administrator who loses both the device and the recovery codes cannot reach
+the Admin API. Another administrator removes the authenticator in
 **Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If there is
-no other administrator, remove it in the database and let the account add a new
-one with its password:
+no other administrator, delete it in the database and add a new one with the
+account's password:
 
     DELETE FROM user_two_factor WHERE user_id = '<the account id>';
 ```
 
-`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming
-those changes before the console asks for a new one.
-
 ## Database
 
-PostgreSQL 16 runs in the `postgres` service with its data in the Docker volume
-`hybridinference_postgres_data`. A psql shell:
-
-```bash
-docker exec -it hybridinference-postgres psql -U "${DB_USER}" -d "${DB_NAME}"
-```
-
-Schema details are in [Database](database.md).
+PostgreSQL runs in the `postgres` service with its data in the volume
+`hybridinference_postgres_data`. The schema, backups, pgAdmin and what the
+database holds are in [Database](database.md).
 
 ### Applying schema migrations
 
-Every deployment method has the same step: run the migrations with the image
-you are about to start, while the old one still serves, and start it only when
-they succeed.
+Run the migrations with the image you are about to start, while the old one
+still serves, and start the new one only when they succeed:
 
 | Deployment | The step |
 |---|---|
@@ -1036,92 +652,26 @@ they succeed.
 | Pinned images (`make deploy`) | `make deploy` runs it before switching over; `make rollback` never runs an older image's migrations |
 | A systemd unit (`deploy/systemd/`) | `.venv/bin/python -m migrations upgrade` in the unit's working directory, with its environment, before `systemctl restart` |
 
-Rules for a deploy script that does this itself:
+Rules for your own deploy script:
 
-- Run the migrations with the same image, by digest, that you then start. The
-  image carries the label `org.hybridinference.schema.migrations=alembic`; an
-  image without it predates versioned migrations, builds its schema at
-  startup, and has no step to run.
-- `run --rm backend` gives the one-off container the backend service's
-  networks, fixed addresses included. If the service pins an address
-  (`ipv4_address`), the running backend holds it and Docker refuses the
-  one-off with `Address already in use`. Give the migrations a service of
-  their own instead: the same image and `DB_*` settings, only the database's
-  network, and a Compose profile so that no `up` starts it.
-- Do not let the one-off start or recreate the database. Pass `--no-deps` and
-  check yourself that the database is up: Compose recreates a dependency whose
-  configuration changed, before a migration that may then fail.
-- If the deploy script itself arrives on stdin (`ssh host bash -s`), run the
-  one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so it
-  reads the rest of the script, and the deploy ends with status 0 having done
-  nothing more.
-- Do not make the migrations a step that every start runs (Compose's
-  `depends_on: condition: service_completed_successfully`, a Kubernetes init
-  container). Every restart would migrate first and wait on table locks before
-  it serves. Where they are wired that way anyway, a restored earlier image
-  finds nothing to apply on the newer schema: the command exits 0, or 1 when
-  that schema no longer supports the earlier code.
-- If the step fails, stop: do not restart the service. Exit status 75 means a
-  lock was not available in time (a backup holding a table, or another
-  migration run); the same command can be run again later.
-- Have the deploy in place, and seen working once on an image without the
-  label, before the first image with it arrives. The backend refuses to start
-  on a database that has not been migrated, so a missed step shows up as a
-  failed start and, where the deploy restores the previous image, an outage
-  while it does.
+- Migrate with the same image, by digest, that you start. Images with versioned
+  migrations carry the label `org.hybridinference.schema.migrations=alembic`.
+- Use a one-off container with `--no-deps`, and check yourself that the
+  database is up; otherwise Compose may recreate the database first. If the
+  backend service pins an `ipv4_address`, give the migrations their own service
+  (same image and `DB_*` settings, the database's network only, a profile so
+  `up` never starts it), or Docker refuses with `Address already in use`.
+- If the script arrives on stdin (`ssh host bash -s`), run the one-off with
+  `</dev/null`; `compose run` reads stdin even with `-T` and swallows the rest
+  of the script.
+- Do not run migrations on every start (a `service_completed_successfully`
+  dependency, an init container): every restart would wait on table locks.
+- If the step fails, stop. Exit status 75 means a lock was not available in
+  time; run it again later.
 
-```{warning}
-The database holds every setting in plaintext: provider keys, the SMTP
-password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` that
-sign sessions and protect API keys. A `pg_dump`, a backup, or a psql or
-pgAdmin session therefore reveals all of them, and lets its holder call your
-providers, decrypt users' stored API keys and sign administrator tokens.
-Protect database backups and database access as you would a `.env` that held
-those credentials.
-```
-
-### pgAdmin (optional)
-
-Set `PGADMIN_PASSWORD` in `.env` first, then:
-
-```bash
-make up COMPOSE_PROFILES=admin
-```
-
-The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated on an
-admin session by `apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which
-denies on every unexpected condition, including a backend it cannot reach.
-pgAdmin publishes no host port, since one would skip that gate;
-`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel.
-
-Behind the console's gate pgAdmin asks for its own login, `PGADMIN_EMAIL` and
-`PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` defaults to `True`, and
-`False` serves pgAdmin with no login at all. There is no fallback password:
-without one pgAdmin will not set up its volume. It keeps the login it first
-started with, so a volume first started without a password, or with server
-mode off, needs the steps in [Authentication](database.md#authentication).
-
-pgAdmin is on a network of its own, `pgadmin`, shared only with the console and
-the database. The backend and any other service on `hybridinference` cannot
-reach it. The first `make up` after this change recreates the `postgres`
-container to attach it to that network, a restart of a few seconds.
-
-The Compose service runs an exact pgAdmin release (`dpage/pgadmin4:9.19`).
-Moving from the earlier `dpage/pgadmin4:8` upgrades pgAdmin's settings
-database in the `pgadmin_data` volume on the first start, which an 8.x image
-cannot read afterwards.
-
-```{note}
-pgAdmin and the agent web app (`/agents`) are served on the console's own
-origin. Any script either app serves runs with the authority of the console
-session open in that browser, because the session's access token and
-`/auth/refresh` are same-origin. The proxies keep each app's cookies under its
-own path and refuse any cookie named like one of the console's, which stops an
-app from replacing or clearing the console's session, but only a separate
-origin removes the shared authority. Serving each app from its own hostname
-behind the same admin gate needs DNS and tunnel routes per deployment and is
-tracked as follow-up work.
-```
+The backend refuses to start on an unmigrated database, so a missed step shows
+up as a failed start. Have the step working before the first image with the
+label arrives.
 
 ## Troubleshooting
 
@@ -1132,53 +682,41 @@ make logs s=backend
 make ps
 ```
 
-- `required variable DB_NAME is missing a value: DB_NAME must be set in .env
-  file` — Compose stopped at interpolation before starting anything. `DB_NAME`,
-  `DB_USER` and `DB_PASSWORD` are declared required with the `${VAR:?message}`
-  form, so the half after the colon is the Compose file's own text and the most
-  greppable part of the line.
-- Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT`.
-- Database connection failed — check `make ps` for the `postgres` health status.
-- `The database records no schema version` or `The database is at revision …,
-  behind this code's …` — the migrations have not been applied for this image.
-  Run `make migrate` (or your deployment's step, see
-  [Applying schema migrations](#applying-schema-migrations)), then start the
-  backend again.
-- `Configuration load failed after 3 attempts`, then
-  `Authentication configuration incomplete` — the backend could not read its
-  settings from the database and fell back to the environment, which holds no
-  secrets. Fix the database connection rather than adding secrets to `.env`.
+| Message | Fix |
+|---|---|
+| `required variable DB_NAME is missing a value: DB_NAME must be set in .env file` | Compose stopped before starting anything. Set `DB_NAME`, `DB_USER` and `DB_PASSWORD` in `.env` |
+| Port already in use | Override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT` in `.env` |
+| Database connection failed | Check the `postgres` health in `make ps` |
+| `The database records no schema version` or `The database is at revision …, behind this code's …` | Run `make migrate` (or [your deployment's step](#applying-schema-migrations)), then start the backend |
+| `Configuration load failed after 3 attempts`, then `Authentication configuration incomplete` | The backend could not read its settings from the database. Fix the connection; do not add secrets to `.env` |
+| The console shows a configuration error with a retry button | The console could not get a valid `/site-config` from the backend within three seconds. Check the frontend logs and the backend, then retry |
+
+### The backend's memory after large requests
+
+At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's own
+starting value, and logs `Allocator: glibc mmap threshold fixed at 128 KiB`.
+Without this, the threshold rises with every large request body or reply the
+backend frees, and the process keeps a burst's memory long after the burst
+ends. `serving/servers/allocator.py` has the details. An operator's own
+`MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` in `GLIBC_TUNABLES`,
+takes precedence. With any other C library the backend changes nothing.
 
 ### A monitor or service account is suddenly getting 429s
 
 `Too many authentication failures from this IP. Temporarily blocked.` is the
-gateway's own abuse defense, not a provider error and not a quota. Once a source
-accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed authentications inside
-`AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by default) it is refused for
-`AUTH_FAILURE_BLOCK_DURATION_SEC` (a day).
+gateway's own abuse defense. A source with `AUTH_FAILURE_BLOCK_THRESHOLD`
+failed authentications within `AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day by
+default) is refused for `AUTH_FAILURE_BLOCK_DURATION_SEC` (a day).
 
-The awkward case is a caller you own — a status monitor, a CI job, a service
-account — whose key was rotated, revoked, or never reached its environment. It
-retries on a schedule, crosses the threshold, and is then refused *ahead of the
-key check*, which has two consequences:
+It usually hits a caller you own whose key was rotated or revoked. The block is
+checked before the key, so fixing the credential does not lift it, and the 429
+hides whether the original 401 or 403 is fixed. To find the caller, turn on the
+`log_rejected_requests` runtime setting: refusals appear in
+**Recent Requests** as `ip_blocked` rows naming the account behind the key, with
+its state (`revoked`, `expired`, `user_suspended`). A row without a user is
+unresolved, not proof of a stranger.
 
-- **Repairing the credential does not lift the block.** The blocklist is
-  consulted before the presented key is read, so a corrected key gets the same
-  429 until the deadline passes.
-- **The 429 hides the original error.** Whatever the caller reports after the
-  block is in place says nothing about whether the underlying 401/403 was fixed.
-
-Which caller is it? Turn on the `log_rejected_requests` admin setting and the
-refusals land in Recent Requests as `ip_blocked` rows. Each row names the
-account behind the key the caller presented — including a key that was revoked
-or expired, which is what a stuck monitor is presenting — and labels it with the
-credential's state (`revoked`, `expired`, `user_suspended`) beside the user. A
-row with no user is unresolved, not proof of a stranger: the key may be one this
-deployment never issued, or the lookup may have been shed, since it runs on a
-strict budget that gives up first under exactly the flood a block is holding
-back.
-
-To recover, first fix the credential, then clear the block:
+Fix the credential, then clear the block:
 
 ```bash
 # Which sources is this worker refusing?
@@ -1193,30 +731,16 @@ curl -s -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://localhost:8080/admin/auth-blocks/clear
 ```
 
-`cleared: false` means there was nothing to lift — it lapsed, or that bucket was
-never blocked. Clearing grants no immunity: a caller still presenting a bad key
-is blocked again on crossing the threshold. For a source that should never be
-blocked at all, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated
-addresses or CIDRs) instead.
-
-The blocklist is per-process, in-memory state. On the single-process default
-both endpoints are exact, and a restart also clears every block. Run multiple
-workers and each holds its own counts, so a listing shows only the worker that
-answered and clearing may take more than one call.
+`cleared: false` means nothing was blocked. To exempt a source permanently, list
+it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated addresses or CIDRs). The
+blocklist lives in each process's memory: a restart clears it, and with several
+workers each keeps its own.
 
 ### Resetting the stack
 
-**Stop and start, keeping data:**
-
-```bash
-make down && make up
-```
-
-**Destroy the database and start clean.** `docker compose down -v` does *not* do
-this. `postgres_data` is declared `external: true` in
-`deploy/docker/docker-compose.yml`, and Compose never removes an external
-volume — `down -v` returns success and leaves it fully intact, so `make up`
-comes back on exactly the same data. Remove it by name:
+`make down && make up` keeps the data. To start with an empty database, remove
+the volume by name. `docker compose down -v` does not remove it, because it is
+declared `external: true`, and `make up` would come back on the same data:
 
 ```bash
 make down
@@ -1224,22 +748,12 @@ docker volume rm hybridinference_postgres_data
 make up   # docker-volumes recreates it empty; Postgres re-initialises
 ```
 
-The backend then starts as on a new deployment: it generates new secrets
-unless `.env` supplies them, imports whatever settings `.env` still holds, and
-prints a setup code for a new administrator.
+The backend then starts as a new deployment: new secrets unless `.env` supplies
+them, the settings `.env` still holds imported, and a new setup code.
 
 ```{warning}
 `docker volume rm` is irreversible and takes every account, API key, request
 log and stored setting with it. Take a `pg_dump` first if any of it matters.
 ```
 
-pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary local
-volume that `make down` leaves in place. To clear pgAdmin's saved state, remove
-it by name as described in [Resetting pgAdmin](database.md#resetting-pgadmin).
-
-### Rebuilding after code changes
-
-```bash
-make build               # all images
-make build s=backend     # one service
-```
+pgAdmin's volume is separate; see [Resetting pgAdmin](database.md#resetting-pgadmin).

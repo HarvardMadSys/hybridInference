@@ -1,138 +1,114 @@
 # Configuration
 
-Configure the gateway in **Admin → Settings**, **Providers** and **Routing**.
-Application configuration is stored in PostgreSQL. The gateway does not load
-model, routing, alert, distribution or branding YAML at runtime. Docker Compose
-and GitHub Actions still use their infrastructure YAML files.
-
-A fresh database has no assumed provider or model. The console remains available
-for first-run setup and shows **Ask admin to configure** when required
-configuration or models are missing. Users never see secret values or private
-configuration paths.
+Configure the gateway in Admin, under **Settings**, **Providers** and
+**Routing**. Application configuration is stored in PostgreSQL; the gateway
+reads no model, routing, alert, distribution or branding YAML at runtime.
 
 ## Where configuration lives
 
-| Configuration | Owner |
+| Configuration | Where to change it |
 |---|---|
-| Application settings and documents | `app_config`, edited in Admin Settings, the model catalog in Admin Routing → Models |
-| Providers, credentials, live routes and overrides | Admin Providers and Routing |
-| Database connection, host ports and container networking | `.env` and Compose |
+| Model catalog (`MODEL_CATALOG`) | **Admin → Routing → Models** |
+| Other application documents and settings (`app_config`) | **Admin → Settings** |
+| Providers, credentials, live routes and overrides | **Admin → Providers** and **Admin → Routing** (operational store) |
+| Database connection, host ports and container networking | `.env` and Compose; `.env.example` lists them |
 | Persistent lifecycle options | `.ops.env`, copied from `.ops.env.example` |
+
+A fresh database has no provider or model. The console stays available for
+first-run setup and shows **Ask admin to configure** until the required
+configuration exists; users never see secret values or private configuration
+paths. A provider key alone installs no example models; the
+local tutorial (`make up DISTRIBUTION=example`) is a separate, opt-in fixture.
 
 ### Application documents
 
-**Admin → Routing → Models** edits `MODEL_CATALOG`, with each model's runtime
-role and concurrency overrides beside it. **Admin → Settings** edits each of the
-other documents under the **Advanced settings** of the tab it configures:
+Six settings hold validated JSON documents, with the same conditional saves,
+audit, security confirmation and backup as every other setting:
+
+| Setting | Holds | Applies |
+|---|---|---|
+| `MODEL_CATALOG` | Model metadata, aliases, router parameters and base routes | After a backend restart |
+| `ROUTING_POLICY` | Optional deployment routing policy | After a backend restart |
+| `ALERT_RULES` | Optional alert thresholds and rule switches | After a backend restart |
+| `SITE_CONFIGURATION` | Public site identity and feature restrictions | On settings refresh |
+| `SITE_BRANDING` | Public branding | On settings refresh |
+| `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | On settings refresh |
+
+**Admin → Routing → Models** edits `MODEL_CATALOG`; **Admin → Settings** edits
+each of the rest under the **Advanced settings** of the tab it configures:
 `ROUTING_POLICY` on **Routing**, `ALERT_RULES` on **Alerts**, `SSO_PROVIDERS` on
 **Sign-in & security**, and `SITE_CONFIGURATION` and `SITE_BRANDING` on
-**General**. All of them are validated JSON and use the same conditional saves,
-audit, security confirmation and backup controls as other settings. No JSON
-file is a runtime fallback either.
+**General**. Admin shows a document as one plain-string field
+per value, named by its path, such as `models[0].route[0].base_url`. Numbers
+and `true`/`false` keep their type, and a list of strings is one
+comma-separated field. To add or remove a key or a list item, switch to
+**JSON**.
 
-Admin shows each document as fields, one per value, named by its path, such as
-`models[0].route[0].base_url`. Each field is a plain string. A number or
-`true`/`false` keeps its type, and a list of strings is one comma-separated
-field. To add or remove a key or a list item, switch the document to **JSON**.
-A save from the fields stores the whole document as indented JSON.
-
-| Setting | Purpose | Application |
-|---|---|---|
-| `MODEL_CATALOG` | Model metadata, aliases, router parameters and base routes | Backend restart |
-| `ROUTING_POLICY` | Optional deployment routing policy | Backend restart |
-| `ALERT_RULES` | Optional alert thresholds and rule switches | Backend restart |
-| `SITE_CONFIGURATION` | Public site identity and feature restrictions | Settings refresh |
-| `SITE_BRANDING` | Validated public branding | Settings refresh |
-| `SSO_PROVIDERS` | Identity providers for [single sign-on](sso.md) | Settings refresh |
-
-Empty routing and alert documents use the built-in policy and thresholds.
-Empty site documents use neutral branding. An empty model catalog supplies no
-models; models created in Admin Routing remain available independently. An
-empty single sign-on document offers no single sign-on.
-
-A stored site document that no longer validates is passed over: the explicit
-`SITE_*` settings and then the neutral defaults apply, public signup and RAG are
-reported off, and the console reports the configuration as incomplete until an
-administrator corrects the document.
+An empty document means the built-in routing policy and alert thresholds,
+neutral branding, no catalog models (models created in Admin Routing still
+work) and no single sign-on. For a site document that stops validating, see
+[Activating a manifest](distribution-customization.md#activating-a-manifest).
 
 ## How a gateway finds its config
 
-Database settings win over environment seeds, then registered defaults. Stored
-empty values are deliberate. Application file paths and distribution active/dark
-modes no longer select runtime configuration.
+A stored row wins over the environment, even when it is empty, and the
+environment wins over the registered default. At first boot, registered
+settings found in the environment seed their missing rows; later environment
+edits do not replace a stored row. Resetting a setting makes it follow the
+environment or default again. The database connection stays in the
+environment, because it is needed before settings can be read. An application
+document from the environment that does not validate is not imported: the log
+names the setting and the reason, and the backend refuses to start unless a
+valid stored value takes its place.
 
 ## Model and routing documents in the database
 
-The upgrade migration copies existing `route_catalog` rows into `MODEL_CATALOG`
-and `ROUTING_POLICY` without overwriting settings an administrator already saved.
-Embedded credentials become separate secret settings. The copy is held to the
-previous release's own registry rules, so what it ran still registers: duplicate
-aliases, a route without `kind`, an embedding model with `max_output_length: 0`
-or a top-level anchor block. A catalog it could not have run either registers
-no catalog model, and Admin and the log name the reason. Legacy rows remain for
-previous-release compatibility, and later edits to those rows have no effect on
-the new release.
+This section is for upgrading from a release that read YAML files.
 
-Catalog and routing changes saved in this release are copied back to those
-rows, as canonical JSON, so a rollback runs the latest catalog the previous
-release can run. A catalog holding a credential reference where the previous
-release would not expand one is not copied, nor are a reset and a removal: the
-rows keep the last copy.
+The upgrade migration copies `route_catalog` rows into `MODEL_CATALOG` and
+`ROUTING_POLICY`, unless an administrator already saved those settings, and
+moves embedded credentials into secret settings (`CATALOG_SECRET_*`). A catalog
+the previous release could run still registers; one it could not registers no
+model, with the reason in Admin and the log. The legacy rows stay for a
+rollback, and catalog changes saved later are copied back to them, so a rollback
+runs the latest catalog it can.
 
 Site identity, branding and alert rules kept in files need one explicit import,
 with the new image, after the migrations and before it serves. Until then the
-new release runs with a neutral site and the built-in alert thresholds, so
-public signup or RAG that the old manifest turned off is on. The standard
-lifecycle commands import in that order when you name the old manifest as the
-backend container sees it: the value of the deployment's
-`DISTRIBUTION_CONFIG_PATH`, or its path in the checkout, such as
-`distributions/<name>/distribution.yaml`.
+new release runs with a neutral site and built-in alert thresholds, so public
+signup or RAG that the old manifest turned off is on. Name the old manifest as
+the backend container sees it (its `DISTRIBUTION_CONFIG_PATH`, or its path in
+the checkout), and the lifecycle commands import at the right point:
 
 ```bash
 make deploy BACKEND_IMAGE=<image@sha256:...> FRONTEND_IMAGE=<image@sha256:...> LEGACY_MANIFEST=distributions/<name>/distribution.yaml
 make build LEGACY_MANIFEST=distributions/<name>/distribution.yaml
 ```
 
-The second form is for a stack built from source. Both run
-`python -m serving.config.manage import-legacy <manifest>` in a one-off container
-of the new backend image, with the deployment's environment. With another
-deployment method, run that command at the same point, where the backend can
-read the old files.
+Use the second form for a stack built from source. Both run
+`python -m serving.config.manage import-legacy <manifest>` in a one-off
+container of the new backend image; with another deployment method, run that
+command at the same point. It imports what the previous release had in force:
 
-The import takes only what the previous release had in force, judged as that
-release judged it:
+- the manifest's identity, features, branding and documents, if that release
+  ran it with `DISTRIBUTION_CONFIG_MODE=active`. A dark manifest is skipped;
+  `--include-dark` (`LEGACY_IMPORT_OPTIONS=--include-dark`) imports it anyway,
+  which applies it for the first time;
+- the alert rules from `ALERTS_CONFIG_PATH` if set, otherwise from the
+  manifest. `--alerts=<file>` names a file explicitly.
 
-- The manifest's site identity, features, branding and documents, when the
-  previous release ran it with `DISTRIBUTION_CONFIG_MODE=active`. A dark
-  manifest was compared but never applied, so the import skips it with a
-  warning. `--include-dark` (`LEGACY_IMPORT_OPTIONS=--include-dark`) imports it
-  anyway, which applies those settings for the first time.
-- The alert rules from `ALERTS_CONFIG_PATH` when the environment names it, as it
-  won over the manifest, and otherwise from the manifest. `--alerts=<file>`
-  names a file explicitly; `LEGACY_IMPORT_OPTIONS` runs the import without a
-  manifest too.
-
-The command validates every document and stores the missing settings in one
-conditional update. Settings already stored remain unchanged, so running it
-again changes nothing. Check Admin Settings; a manual import into a running
-backend needs a restart for catalog and rule changes. Keep the old files and the
-deployment's `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE` and
-`*_CONFIG_PATH` values through the rollback window: the import reads them, and a
-rolled-back release needs them. Normal startup never invokes this importer.
-
-## What a fresh clone does with no configuration at all
-
-It starts an empty, neutral gateway. Finish first-run setup, then add a provider
-and a model in Admin. Supplying a provider key alone does not install example
-models. The explicitly selected local tutorial is a separate, opt-in fixture.
+The import stores only missing settings, in one conditional update, so running
+it again changes nothing; a running backend needs a restart for catalog and
+rule changes. Keep the old files and the `DISTRIBUTION_CONFIG_PATH`,
+`DISTRIBUTION_CONFIG_MODE` and `*_CONFIG_PATH` values through the rollback
+window: the import reads them, and a rolled-back release needs them.
 
 ## The model registry
 
-Use **Admin → Routing → Create model** for ordinary additions. It supports
-pricing, context/output limits, modalities, tool support, router choice and an
-initial verified route. A new runtime model starts restricted to administrators.
-
-Use `MODEL_CATALOG` when aliases or additional catalog metadata are needed:
+Use **Admin → Routing → Create model** for ordinary additions: it sets pricing,
+limits, modalities, tool support, the router and a first verified route. A new
+model starts restricted to administrators. Use `MODEL_CATALOG` for aliases and
+other catalog metadata:
 
 ```json
 {
@@ -150,287 +126,214 @@ Use `MODEL_CATALOG` when aliases or additional catalog metadata are needed:
 ```
 
 Add `TEAM_PROVIDER_KEY` as a secret setting first. Documents refuse embedded
-credentials: use `${NAME}` references so ordinary backups contain the editable
-catalog while withholding secret values. The model registry expands whole-value
-references; routing policy references retain their existing expansion rules.
-See [Adding a model](adding-models.md) for the field reference.
+credentials and take `${NAME}` references, so an ordinary backup holds the
+catalog without the secrets. [Adding a model](adding-models.md) is the field
+reference.
 
 ## The routing file
 
-There is no runtime routing file. Set the optional `ROUTING_POLICY` document in
-Admin when deployment-wide policy is needed. Per-model `router` and
-`router_params` remain in the catalog; runtime strategy changes belong in Admin
-Routing. Fixed and RouteWise retain their existing selection and accounting.
+There is no runtime routing file. Set the optional `ROUTING_POLICY` document for
+a deployment-wide policy. Each model's `router` and `router_params` stay in the
+catalog, and runtime strategy changes belong in Admin Routing.
 
-In the console, **Admin > Settings > Routing > Advanced settings > Routing policy** shows `ROUTING_POLICY` as one card, with each value under a readable name and its key beside it. An empty field leaves the key out, so the default applies: the **Router** (`default_router`) for every model that names none, Fixed by default; the **Local share** (`routing_parameter.local_fraction`) and the **Local deployments** and **Remote deployments** it splits between; and the local deployments' **Health checks** (`health_check`, `timeout`). The card says what the policy does, keeps any key it does not edit, and switches to JSON for a policy it cannot show exactly. Two of these values do less than their names suggest. The local/remote split is applied once, at startup, and only on a gateway without a database; with one, route weights come from Admin Routing and the split has no effect. A health check is logged and shown on `GET /routing`, but never changes where a request goes. Every change applies after a backend restart.
+Admin shows `ROUTING_POLICY` as one card, each value under a readable name with
+its key beside it. An empty field leaves the key out, so its default applies:
+the **Router** (`default_router`, Fixed by default) for models that name none,
+the **Local share** (`routing_parameter.local_fraction`) between the **Local
+deployments** and **Remote deployments**, and the local deployments' **Health
+checks** (`health_check`, `timeout`). The card keeps any key it does not edit,
+and switches to JSON for a policy it cannot show exactly. Every change applies
+after a backend restart.
 
 ## Settings that currently have no effect
 
-The retired model/routing/alert path variables and distribution active/dark modes
-no longer select configuration. Use the application documents instead. The
-standalone cloud agent owns its own settings; obsolete gateway `AGENT_*` values
-do not configure it.
+The backend warns at startup about each of these that is still set:
 
-The backend still receives `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE`,
-`MODELS_CONFIG_PATH`, `ROUTING_CONFIG_PATH` and `ALERTS_CONFIG_PATH` from Compose
-when the deployment sets them, and warns at startup that they do nothing. They
-are kept for the rollback window: a failed deploy or `make rollback` starts the
-previous release, which reads its manifest and files through them. Remove them,
-and the files, once no earlier release will run.
+- `DISTRIBUTION_CONFIG_PATH`, `DISTRIBUTION_CONFIG_MODE`, `MODELS_CONFIG_PATH`,
+  `MODELS_CONFIG`, `ROUTING_CONFIG_PATH`, `ROUTING_CONFIG` and
+  `ALERTS_CONFIG_PATH`. Compose still passes the path and mode variables to the
+  backend, because a failed deploy or `make rollback` starts the previous
+  release, which reads its files through them. Remove them, and the files, once
+  no earlier release will run.
+- `BATCH_EXPANSION_ENABLED`. Every batch kind is available whenever
+  `BATCH_ENABLED` is on.
+
+These do less than their names suggest, without a warning:
+
+- `routing_parameter.local_fraction` in `ROUTING_POLICY`. The local/remote
+  split applies once, at startup, and only on a gateway without a database;
+  with one, route weights come from Admin Routing.
+- `health_check` in `ROUTING_POLICY`. A health check is logged and shown on
+  `GET /routing`, but never changes where a request goes.
+
+- `site.terms_document` and `site.privacy_document` in `SITE_CONFIGURATION`.
+  The legal text comes from the console or a [Site UI module](site-ui-modules.md).
+- `AGENT_*` variables other than those in `.env.example`. The standalone cloud
+  agent owns its settings.
 
 ## Runtime configuration from the admin console
 
-Provider/key changes and ordinary route edits are persisted in the operational
-store. Backend processes observe committed changes and converge on their scoped
-model transitions, normally within ten seconds. **Admin → Routing → Models**
-shows **Applied in each backend process** beside the model catalog, including failed,
-stale or unsupported processes. A stale process is never counted as successfully
-updated. Compare the registered process count with your deployment inventory.
+Provider, key and ordinary route changes are stored in the operational store,
+and every backend process applies them, normally within ten seconds. **Admin →
+Routing → Models** shows **Applied in each backend process**. A stale process
+never counts as updated, so compare the registered processes with your own
+list. Catalog changes marked **Restart required**
+still need a backend restart.
 
-Catalog changes marked **Restart required** still need a controlled backend
-restart. A save is not evidence that every process has applied the change.
-
-A process that cannot apply one model's change keeps serving that model's
-previous routes, lists the model as not applied, and retries it; other models
-and key changes still apply. A route edit keeps the model's RouteWise router,
-and what it has learned, unless the edit changes the strategy.
-
-Disabling a key that routes pin takes it out of service in every process until
-it is enabled again, and Admin refuses a disabled key when a route is created
-or edited. Deleting a pinned key leaves running processes on the route without
-that key, and a restarted process leaves the route out: repoint the routes
-before deleting the key.
+A process that cannot apply one model's change keeps serving that model's old
+routes, lists it as not applied and retries. A route edit keeps the model's
+RouteWise router, and what it has learned, unless the edit changes the
+strategy. A disabled key is out of service in every process, and Admin refuses
+it for a new or edited route. Repoint the routes that pin a key before deleting
+it: a restarted process drops a route whose key is gone.
 
 ### Providers tab
 
-Providers has a page for each part of the upstream setup, each with its own
-address:
+**Admin → Providers → Overview** lists the providers; add, verify, edit or
+delete one there. Below the list are three sections:
 
-- **Overview** lists the providers. Add, verify, edit or delete a custom
-  provider here; **Manage keys** opens that provider's keys.
-- **Keys** adds and verifies a provider's keys, reserves one for a user tier,
-  and disables or removes it. It also lists the upstream concurrency of every
-  key in use.
-- **Models** edits the model catalog, and the runtime overrides that apply on
-  top of it: the role each model requires, and whether its requests count
-  toward the per-user concurrency limit. Neither override changes the catalog.
-- **Availability** takes a provider out of routing for every model, and puts it
-  back.
-- **Quotas** shows what each key has used of its plan's limits, where a quota
-  extension reports them.
-- **Performance** shows how each model's providers perform: latency, errors,
-  cache hits and throughput.
+| Section | What it does |
+|---|---|
+| **Keys** | Adds, verifies, disables and removes keys, reserves one for a user tier, and lists the upstream concurrency of every key in use |
+| **Quotas** | Shows each key's use of its plan's limits, where a quota extension reports them |
+| **Availability** | Takes a provider out of routing for every model, and puts it back |
 
-Credentials remain write-only. Built-in adapter kinds and catalog-owned provider
-names remain reserved.
+**Admin → Providers → Performance** shows each model's providers' latency,
+errors, cache hits and throughput.
 
-A provider's Base URL may name any host, private and loopback ones included,
-so that a self-hosted engine (vLLM, SGLang, Ollama) can be added. Cloud
-instance metadata addresses are always refused, in every spelling: IPv4 carried
-in IPv6 (IPv4-compatible, NAT64, 6to4 and the rest) is judged as the IPv4
-address it reaches. When a probe fails, it shows the upstream's error message
-only when the upstream answered in the OpenAI error format. Other response
-bodies, redirect targets and connection details are not shown.
+Credentials are write-only. Built-in adapter kinds and catalog-owned provider
+names are reserved.
 
-A deployment whose gateway must not reach its own network can set
-`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (Settings → Network). Base URLs saved
-or probed in Admin, and the model queue
-status address, must then
-resolve to public addresses. This is checked when the URL is validated and
-again for every connection the probe opens. Routes saved earlier keep serving:
-the switch governs what Admin accepts and probes, not existing inference
-traffic. Restrict the gateway's egress at the network layer as well.
+A provider's Base URL may name any host, private and loopback addresses
+included, so you can add a self-hosted engine (vLLM, SGLang, Ollama). Cloud
+instance metadata addresses are always refused, in every spelling. A failed
+probe shows the upstream's error message only when it is in the OpenAI error
+format.
+
+To keep Admin off the gateway's own network, set
+`ADMIN_UPSTREAM_ALLOW_PRIVATE_NETWORKS=0` (**Admin → Settings → Network**). Base
+URLs saved or probed in Admin, and the model queue status address, must then resolve to public addresses, at validation and at every
+connection. Routes saved earlier keep serving, so restrict the gateway's egress
+at the network layer as well.
 
 ### Routing tab
 
-Create models, verify routes, edit their targets and capabilities, adjust
-weights, and disable or remove routes. Resetting a catalog-route override returns
-it to its database catalog baseline. The legacy API source label `yaml` and
-`yaml_weight` field remain compatibility names for that baseline.
+**Routes** creates models, verifies routes, edits their targets and
+capabilities, adjusts weights, and disables or removes routes. Resetting a
+route's override returns it to the catalog baseline, which the API labels
+source `yaml` (`yaml_weight`). **Models** edits the model catalog and the
+overrides on top of it: each model's required role, and whether it counts
+toward the per-user concurrency limit.
 
 The **Reasoning effort levels** summary shows the route's client choices and
-where they come from. Open **Advanced mapping** to change what each public
-level sends upstream. **Use default effort settings** clears the effort
-override while keeping other capability changes. A route without declared
-effort capability can still run a model that thinks.
-
-The request field is `reasoning_effort_map`. Omitting it keeps an existing
-override. Sending `null` clears the override and follows the route's catalog
-or creation map, its legacy effort settings, or a matching preset. An
-inherited preset is resolved when the adapter is built and is never copied
-into the saved route or capability override. Existing database routes pick
-it up on reload without rewriting their catalog. Route listings include
-`reasoning_efforts_published` and `reasoning_effort_source`. See
+where they come from. **Advanced mapping** changes what each public level sends
+upstream, and **Use default effort settings** clears the effort override while
+keeping other capability changes. In the API, omitting `reasoning_effort_map`
+keeps the override and `null` clears it. See
 [Mapping reasoning-effort levels on a route](adding-models.md#mapping-reasoning-effort-levels-on-a-route).
 
 ### Settings tab
 
-Edit the application documents other than the model catalog, credentials,
-delivery settings, network policy, runtime switches and quotas here. Required
-fields and restart requirements are shown beside each setting.
-
-The page opens on **Overview**: how the site's address, email, sign-up, API
-access and alerts stand, each with the tab that changes it. One tab per topic
-follows, under four headings: **Access** (Sign-up, Sign-in & security, Usage
-limits), **Inference** (Providers, Routing, Batches), **Monitoring** (Alerts,
-Logging & privacy, Analytics) and **Deployment** (General, Email, Network,
-Integrations, Backup & restore). A tab with nothing to set on a gateway is not
-listed. Each opens on what is commonly changed and keeps its tuning under
-**Advanced settings**. A built-in setting is shown under a plain name with its
-variable beside it, and the search finds it by either.
+**Admin → Settings** opens on **Overview**: how the site address, email,
+sign-up, API access and alerts stand, each with a link to the tab that changes
+it. One tab per topic follows, under four headings: **Access** (Sign-up,
+Sign-in & security, Usage limits), **Inference** (Providers, Routing,
+Batches), **Monitoring** (Alerts, Logging & privacy, Analytics) and
+**Deployment** (General, Email, Network, Integrations, Backup & restore). A tab
+with nothing to set on a gateway is not listed. Each keeps its tuning settings
+under **Advanced settings**. A built-in setting is shown under a plain name with
+its variable beside it, and the search finds it by either. Each setting shows
+whether it is required and whether it needs a restart.
 
 ### How the two layers combine
 
-The model catalog provides the baseline. Stored runtime models, routes,
-strategy/capability overrides, weights and availability choices apply on top.
-Changing an override never edits the baseline document.
+The model catalog is the baseline. Stored runtime models, routes, overrides,
+weights and availability apply on top; changing them never edits the catalog.
 
 ## Settings stored in the database
 
-### Where a value comes from
+### Confirming a security-relevant change
 
-A database row wins over the environment, even when empty. At first boot,
-registered environment settings seed missing rows. Subsequent environment edits
-do not replace them. Resetting a setting deliberately returns it to its
-registered environment/default behavior. Database connection and wiring stay in
-the environment because they are needed before settings can be read.
+Changing a secret, an application document, or a switch that decides who may
+sign in, whether inference needs a key, what is logged or what an account may
+spend asks the administrator to confirm who they are: with an authenticator
+code if the account has one, otherwise with its password. An account that
+signs in only through single sign-on signs in there again, which confirms one
+change within five minutes. `ADMIN_TOKEN` cannot confirm. A save that would
+need two confirmations sends nothing; save the changes one at a time.
 
-An application document from the environment that does not validate is not
-imported: the log names the setting and the reason, never the value, and the
-backend refuses to start on it unless a valid stored value takes its place.
-
-### Analytics sections
-
-Analytics visibility switches affect the console without a backend restart.
-
-### On the Settings tab
-
-Security-sensitive changes require the administrator to confirm who they are.
-An account with an authenticator app gives a code. An account with a password
-gives the password. An account that signs in only through single sign-on
-signs in there again, which confirms one change within five minutes. A save
-that would need it twice, such as resetting a credential and changing another
-security setting of the same category, sends nothing; save them one at a time.
-`ADMIN_TOKEN` cannot confirm. These changes include the runtime switches and
-numbers that decide who may sign in or sign up, whether inference needs a key,
-what is logged of a request, and what each account may spend and run at once.
-Analytics and routing switches save without a confirmation. Conditional saves
-prevent overwriting another administrator's concurrent edits.
+Saves are conditional: if someone else saved after you started editing, yours
+is refused and the tab reloads the latest values, keeping your unsaved changes.
 
 ### Backup and restore
 
 **Backup** exports every application document, setting, provider, runtime route
-and override. Secret values are omitted by default; references remain intact.
-**Backup with secrets** includes credentials after administrator reauthentication.
-Restore previews security-relevant changes and applies the confirmed bundle in
-one transaction. Withheld secrets keep the destination's existing values.
+and override, without secret values; **Backup with secrets** includes them after
+you confirm again. Restore previews the security-relevant changes and applies
+the bundle in one transaction. A secret the bundle leaves out keeps its value.
+A restore removes stored settings the bundle does not name, except the
+application documents and the `CATALOG_SECRET_*` credentials; reset those
+explicitly.
 
-A restore removes the stored settings the bundle does not name, except the
-application documents and the `CATALOG_SECRET_*` credentials the upgrade lifted
-out of the catalog, which a bundle from before the upgrade cannot name: those
-keep their stored value or reset. Reset one explicitly to remove it.
-
-This configuration bundle is distinct from a full database backup, which also
-preserves accounts, sessions, request history and operational state. Use
-`make backup BACKUP=/private/path/gateway.dump` and verify it with
-`make restore-check BACKUP=/private/path/gateway.dump`; see [Database](database.md#backup).
+This bundle is not a database backup. For accounts, sessions and request
+history too, run `make backup BACKUP=/private/path/gateway.dump` and check it
+with `make restore-check BACKUP=/private/path/gateway.dump`; see
+[Database](database.md#backup).
 
 ### When a change applies
 
-Ordinary settings refresh within ten seconds. Model catalogs, routing policy,
-alert rules and credentials captured by catalog routes apply after a backend
-restart, as explicitly marked in Admin. Restarting interrupts requests in flight,
-including streams. Ordinary Admin route edits synchronize without that restart.
+Ordinary settings apply within about ten seconds. The model catalog, routing
+policy, alert rules and credentials used by catalog routes apply after a
+backend restart, as Admin marks them, and a restart interrupts requests in
+flight, streams included.
 
 ### Settings that apply without a restart
 
-A live group is a set of settings the backend applies together, without a
-restart, once an operator has activated it. The first one, `alerts.runtime`,
-holds the alert channel and the failed-request alert:
+A live group is a set of settings that every backend process applies together,
+without a restart, once an operator has activated it. The one group,
+`alerts.runtime`, holds the alert channel and the failed-request alert:
 
 | Settings | What they choose |
 |---|---|
 | `SLACK_ALERTS_WEBHOOK_URL`, `SLACK_WEBHOOK_URL`, `WECOM_ALERTS_WEBHOOK_URL` | The one channel alerts go to |
 | `FAILED_REQUEST_ALERT_THRESHOLD`, `FAILED_REQUEST_ALERT_WINDOW_MINUTES`, `FAILED_REQUEST_ALERT_COOLDOWN_MINUTES`, `FAILED_REQUEST_ALERT_RATE`, `FAILED_REQUEST_ALERT_RATE_MIN_COUNT` | When the failed-request alert pages |
 
-Once the group is active, a save reaches every backend process within about
-ten seconds. Each process checks the whole group first: a pair of channels
-that conflict, or a value out of range, keeps the values it already uses and
-reports the group as invalid, while the saved values stay for you to correct.
-To move from Slack to WeCom, clear the Slack webhooks and fill in the WeCom
-one in the same save. Clearing every webhook pauses alert delivery and the
-failed-request alert on purpose; it is not a failure. The failed-request alert
-runs while `SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set, as before;
-`SLACK_ALERTS_WEBHOOK_URL` alone does not start it.
+Once the group is active, a save reaches every process within about ten
+seconds. A process that finds two conflicting channels or a value out of range
+keeps its current values and reports the group invalid. To move from Slack to
+WeCom, clear the Slack webhooks and set the WeCom one in the same save.
+Clearing every webhook pauses alerting. The failed-request alert runs only while
+`SLACK_WEBHOOK_URL` or `WECOM_ALERTS_WEBHOOK_URL` is set.
 
-The Alerts category shows where the saved configuration stands. **Applied in
-each backend process** names the saved version — for example
-`app_config / epoch 3f1c… / revision 42` — and, for every process that has
-registered, whether it has applied that revision, is still applying it, failed
-or has not reported. A process whose heartbeat stopped more than a minute ago
-counts as unknown, never as applied. A backend running an older build does not
-register at all, so the panel cannot prove that every process is covered:
-compare its list with your deployment's own list of processes. **Applied**
-means the process uses the saved channel and thresholds; it says nothing about
-whether a message reached the channel, which **Send test** checks. **Send
-test** uses the saved webhook (or the address you typed), not necessarily the
-one a process is using.
-
-After a channel change, alerts already under way finish on the old channel,
-and the recovery message of an incident opened earlier goes to the new one.
-The failed-request alert keeps its cooldown and its open incident across the
-change. It still checks once a minute, so a new threshold takes effect at the
-next check after the change has applied.
-
-The console saves conditionally: if someone else saved the configuration after
-you started editing a category, your save is refused, nothing is stored, and
-the tab reloads the latest values and keeps your unsaved changes for you to
-review and save again. A reload, or a save in another category, never moves
-unsaved changes onto values you have not seen.
-
-`ALERTS_ENABLED`, the `ALERT_RULES` document and the alert engine still apply only
-after a restart. Other settings join live groups later, one group at a time.
+The Alerts category shows, for each registered process, whether it has applied
+the saved revision. A process silent for over a minute counts as unknown.
+**Applied** does not mean a message got through; **Send test notification**
+checks that. `ALERTS_ENABLED` and `ALERT_RULES` still apply only after a
+restart.
 
 #### Activating a live group
 
-A group stays inactive until an operator activates it, and a backend upgrade
-never activates one by itself. Until then its settings behave as **Restart
-required**. Activate it once every backend process runs a build that supports
-it:
+A group stays inactive, its settings marked **Restart required**, until an
+operator activates it. Do so once every backend process runs a build that
+supports it:
 
-1. Deploy the build everywhere and check that each process registered:
+1. Deploy the build everywhere, and check that each process registered:
    `python -m serving.config.manage live status`.
-2. Preview what activation applies. It shows each setting's saved value (a
-   secret only as set or not set) and the processes whose value in use differs
-   — values saved while a restart was pending apply as soon as you activate,
-   which can change where alerts go:
+2. Preview the activation:
    `python -m serving.config.manage live preview alerts.runtime`.
-3. Activate with the version the preview printed, and the number of backend
-   processes your deployment runs:
+   Values saved while a restart was pending apply as soon as you activate.
+3. Activate with the version the preview printed and your number of backend
+   processes:
    `python -m serving.config.manage live activate alerts.runtime --expect <epoch>:<revision> --expect-instances <N>`.
-   It refuses when the configuration changed after the preview, when a running
-   process does not support the group, or when the count differs.
-4. Check `live status`, or the Alerts category, until every process has
-   applied the latest revision.
-
-If a process cannot apply the group when it is activated — a saved value is
-invalid, say — the group stays active and the process keeps the values it was
-using. Correct the setting and save it again: it applies without a restart.
+   It refuses if the configuration changed since the preview, a process does
+   not support the group, or the count differs.
+4. Check `live status` until every process has applied the latest revision.
 
 `live deactivate alerts.runtime --expect <epoch>:<revision>` turns the group
-off. A running process then keeps the values it last applied until it
-restarts, instead of returning to the ones it started with, and a process that
-starts afterwards uses the saved values. Until every process has restarted the
-two can differ, and the status shows it. Going back to a build that does not
-know the group is a deployment, not a configuration change.
-
-A configuration backup does not include this status. Restoring a backup
-applies its `app_config` rows to live groups like any other save, and writes
-the other tables in the same transaction, so a failure anywhere restores none
-of them. After restoring a whole database, run
-`python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`:
-it starts a new version history and makes every process register again.
-
+off; running processes keep their last values until they restart. After
+restoring a whole database, run
+`python -m serving.config.manage live reset-epoch --expect <epoch>:<revision>`
+so that every process registers again.
 
 ### Without the console
 
@@ -444,23 +347,17 @@ python -m serving.config.manage document models /private/path/catalog.json
 python -m serving.config.manage status
 ```
 
-A JSON file passed to `document` is explicit import input, not a runtime source.
-The CLI never prints a secret value.
+A file passed to `document` is imported once, not read at runtime. The CLI
+never prints a secret value.
 
 ### Missing settings
 
 The console shows **Ask admin to configure**. Administrators can open Settings
-or Models from it, or create a model in Routing. Other users should contact their administrator.
-No borrowed provider, model, key or deployment identity is silently selected.
-Provider keys and URLs the model catalog references never count as missing:
-until one is set, the route that needs it is skipped (with its model, unless the
-route is `optional: true`) and the backend log names it.
-
-## Environment variables
-
-Keep the database connection and infrastructure wiring in `.env`. Use Admin for
-application changes after first boot. See `.env.example` for the remaining
-infrastructure settings.
+or Models from it, or create a model in Routing. The gateway never quietly
+picks a borrowed provider, model or key. A provider key or URL the catalog
+references never counts as missing: until it is set, the route that needs it is
+skipped (with its model, unless the route is `optional: true`) and the backend
+log names it.
 
 ## Running with your configuration
 
@@ -470,52 +367,90 @@ make doctor
 make smoke MODEL=team-chat
 ```
 
-Set `GATEWAY_API_KEY` in the shell when an inference smoke needs authentication.
-The smoke is explicit real inference and consumes the usual quota.
+Set `GATEWAY_API_KEY` when the inference smoke needs authentication; it is real
+inference and uses quota. Set `ADMIN_ACCESS_TOKEN` for `make doctor` to report
+the running processes' pending restarts.
 
 ## Email and SMS delivery providers
 
-`EMAIL_PROVIDER` defaults to `smtp`; `SMS_PROVIDER` defaults to `none`. The gateway sends mail itself in two ways: `smtp`, through an SMTP server the deployment names, and `cloudflare`, through Cloudflare Email Sending. Neither comes configured. The first-run setup step offers the choice, and it and **Admin > Configuration** show only the selected transport's settings. Every other provider is an optional module that a deployment loads explicitly. A gateway that does not load a provider neither offers it nor lists its settings. Without an SMS provider, it does not list `SMS_PROVIDER` either, which would have only one value to choose, or any of the phone settings. Selecting an unavailable provider is a configuration error; delivery never silently falls back to another provider.
+`EMAIL_PROVIDER` defaults to `smtp` and `SMS_PROVIDER` to `none`. The built-in
+mail transports are `smtp` and `cloudflare` (Cloudflare Email Sending); neither
+comes configured, and setup and Admin show only the selected one's settings.
+Other providers are [extension modules](#extension-providers); a gateway that
+does not load one neither offers nor lists it. Selecting an unavailable
+provider is a configuration error: delivery never falls back to another.
 
-In the console, **Admin > Settings > Email** shows email as one card: choose the delivery service, then fill in that service's settings, listed under readable names with the variable beside each. **Send test email** sends a fixed test message through the saved settings, to an address you enter or to your own account's address. When it is not sent, the console says why: the settings still missing, an SMTP server that refused the login or the TLS connection, or what Cloudflare's error code means, such as a token without the Email Sending: Edit permission. The reason never includes a credential. Broadcasts record the same reason for each recipient that was not sent to.
+**Admin → Settings → Email** sets up mail as one card: choose the
+service, then fill in its settings. **Send test email** sends a fixed message
+through the saved settings, to an address you enter or to your own. When mail
+is not sent, the console says why (settings still missing, an SMTP server that
+refused the login or TLS, or what a Cloudflare error code means), never
+including a credential. Broadcasts record the same reason for each recipient
+not reached.
 
 ### SMTP
 
-SMTP mail travels over TLS that checks the server's certificate before the password is sent. Port 465 uses TLS from the first byte; any other `SMTP_PORT` must offer STARTTLS. The certificate must be valid for `SMTP_HOST` and issued by an authority the backend trusts. A server with a self-signed or privately issued certificate is refused, and the backend log names the server and says why. Give it a certificate from a public authority, or set `SSL_CERT_FILE` in the backend's environment to a bundle that holds the system's authorities and the one that signed it.
+The backend checks the server's certificate before it sends the password. Port
+465 uses TLS from the first byte; any other `SMTP_PORT` must offer STARTTLS.
+The certificate must be valid for `SMTP_HOST` and issued by an authority the
+backend trusts; otherwise it is refused and the log says why. For a private
+authority, set `SSL_CERT_FILE` in the backend's environment to a bundle that
+includes it and the system's authorities.
 
 ### Cloudflare Email Sending
 
-With `EMAIL_PROVIDER=cloudflare`, each message the gateway sends (verification, password reset, approval and rejection notices, signup alerts and admin broadcasts) is one request to Cloudflare's REST API, carrying the HTML and text bodies the gateway rendered. Cloudflare applies no template. To use it:
+1. In the Cloudflare dashboard, onboard the sending domain under **Email
+   Service > Email Sending**.
+2. Create an API token with the **Email Sending: Edit** permission on that
+   account.
+3. Set `EMAIL_PROVIDER=cloudflare`, `CLOUDFLARE_ACCOUNT_ID` to the account's
+   Account ID (32 hexadecimal digits) and `CLOUDFLARE_EMAIL_API_TOKEN` to the
+   token.
+4. Set `SMTP_FROM_EMAIL` to an address on that domain. `SMTP_FROM_EMAIL` and
+   `SMTP_FROM_NAME` are the sender for both built-in transports.
 
-1. In the Cloudflare dashboard, onboard the sending domain under **Email Service > Email Sending**.
-2. Create an API token with the **Email Sending: Edit** permission on that account.
-3. Set `CLOUDFLARE_ACCOUNT_ID` to the account's Account ID, 32 hexadecimal digits, and `CLOUDFLARE_EMAIL_API_TOKEN` to the token.
-4. Set `SMTP_FROM_EMAIL` to an address on the onboarded domain. `SMTP_FROM_EMAIL` and `SMTP_FROM_NAME` are the sender of both built-in transports.
-
-The token is a secret: the configuration API redacts it, and anyone who holds it can send mail from every domain onboarded on that account. Both values are read on every send, so a rotated token applies without a restart. While either is empty, nothing is sent, and configuration health reports both as missing when public signup requires email verification, instead of asking for SMTP credentials.
-
-A message counts as sent once Cloudflare reports it delivered or queued. A refusal, a permanent bounce or a recipient on the account's suppression list is logged with Cloudflare's error code, and the send fails. Calls are not automatically retried, because a timeout can follow acceptance. On the Workers Free plan, Cloudflare delivers only to verified destination addresses.
-
-Cloudflare also accepts SMTP submission at `smtp.mx.cloudflare.net`, port 465, user `api_token`, with the token as the password, which the `smtp` transport can use instead. The `cloudflare` transport adds Cloudflare's answer for each message: delivered, queued, bounced or suppressed.
+The token can send mail from every domain on that account; the configuration
+API redacts it. Both values are read on every send, so a rotated token applies
+at once. A message counts as sent once Cloudflare reports it delivered or
+queued; a refusal, bounce or suppressed recipient fails the send and is logged
+with Cloudflare's error code. Sends are not retried, because a timeout can
+follow acceptance. On the Workers Free plan, Cloudflare delivers only to
+verified addresses. The `smtp` transport can also send through Cloudflare, at
+`smtp.mx.cloudflare.net`, port 465, user `api_token`, with the token as the
+password.
 
 ### Extension providers
 
-Each distribution can add the providers its own inference hub needs, such as a regional email or SMS service. A trusted module selected through `BACKEND_EXTENSIONS` registers its email or SMS transport and configuration entries before database-backed settings load. The shared interfaces are `register_email_provider` and `register_sms_provider` in `serving.utils.delivery`, and `register_config_entries` in `serving.config.app_config_registry`. Extension settings keep the normal database → environment → registered default precedence, validation, secret masking and worker refresh. The extension reads them through `config_value()` instead of adding vendor fields to shared `Settings`.
+A trusted module listed in `BACKEND_EXTENSIONS` can add an email or SMS
+provider with `register_email_provider` or `register_sms_provider`
+(`serving.utils.delivery`), and its settings with `register_config_entries`
+(`serving.config.app_config_registry`). Those settings get the usual
+precedence, validation and secret masking; the module reads them with
+`config_value()`.
 
 ### Tencent Cloud SES and SMS
 
-The gateway ships one such module, `serving.integrations.tencent_cloud`, for Tencent Cloud transactional email and SMS. It is not loaded by default. Add it to `BACKEND_EXTENSIONS` to offer `EMAIL_PROVIDER=tencent_ses` and `SMS_PROVIDER=tencent`. A failed SES request or missing SES template does not fall back to SMTP.
+`serving.integrations.tencent_cloud` adds `EMAIL_PROVIDER=tencent_ses` and
+`SMS_PROVIDER=tencent` when listed in `BACKEND_EXTENSIONS`. A deployment that
+used Tencent before the module became optional adds it when upgrading; settings
+are unchanged.
 
-Configure `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, optional `TENCENT_CLOUD_TOKEN`, `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` and optional `TENCENT_SES_FROM_NAME`. The sender must be approved in the selected region. Secret values remain server-side and are redacted in the configuration API. Keep production credentials and sender identities in deployment configuration.
+| For | Settings |
+|---|---|
+| Both | `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, and `TENCENT_CLOUD_TOKEN` for temporary credentials |
+| Email | `TENCENT_SES_REGION`, `TENCENT_SES_FROM_EMAIL` (approved in that region), optional `TENCENT_SES_FROM_NAME` |
+| Email templates | `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLATE_PASSWORD_RESET` (required for account mail); `TENCENT_SES_TEMPLATE_APPROVAL`, `TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP`, `TENCENT_SES_TEMPLATE_NOTICE` (unset disables) |
+| SMS | `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME`, `SMS_TEMPLATE_ID` |
 
-Set positive IDs for `TENCENT_SES_TEMPLATE_VERIFICATION` and `TENCENT_SES_TEMPLATE_PASSWORD_RESET` before enabling SES account mail. Configure `TENCENT_SES_TEMPLATE_APPROVAL`, `TENCENT_SES_TEMPLATE_REJECTION`, `TENCENT_SES_TEMPLATE_ADMIN_SIGNUP` and `TENCENT_SES_TEMPLATE_NOTICE` for the notifications the deployment uses. Unset IDs disable those templates. Configuration health reports missing SES account-mail fields when public signup requires email verification, instead of asking for SMTP credentials.
+Reference templates are in
+`apps/backend/serving/integrations/tencent_cloud/ses-templates/`. Replace the
+example domain with your console's domain before submitting them for approval;
+the verification and reset links must match `FRONTEND_URL`. Template data is
+limited to 800 UTF-8 bytes, so an oversized or HTML-only notice fails; use SMTP
+for long or free-form HTML mail. A failed SES send never falls back to SMTP and
+is not retried.
 
-Reference HTML lives in `apps/backend/serving/integrations/tencent_cloud/ses-templates/`. Before submitting templates for provider approval, replace the example domain with the deployment console domain and choose the desired language and wording. Verification and reset templates contain a fixed HTTPS origin and path; only the encoded `token` query value varies. Other templates use `site_name` and, where applicable, `reason`, `identifier` or `body`. Keep template links consistent with `FRONTEND_URL`; the gateway cannot inspect approved template contents.
-
-SES receives approved templates with escaped scalar values, never arbitrary HTML variables. Serialized template data is limited to 800 UTF-8 bytes; oversized notices and HTML-only notices fail rather than being truncated. Successful submission means provider acceptance, not inbox delivery. Calls are not automatically retried because a timeout can follow acceptance. Deployments that require unrestricted HTML mail or long notices can continue to use SMTP.
-
-The SMS provider requires `TENCENT_CLOUD_SECRET_ID`, `TENCENT_CLOUD_SECRET_KEY`, `SMS_REGION`, `SMS_SDK_APP_ID`, `SMS_SIGN_NAME` and `SMS_TEMPLATE_ID`. Temporary credentials also require `TENCENT_CLOUD_TOKEN`. Its approved template takes the code and its lifetime in minutes, in that order. It currently sends to mainland China mobile numbers only: set `SMS_DEFAULT_COUNTRY_CODE` to `86` if local input is desired and `SMS_ALLOWED_PREFIXES` to `+86`. Keep real credentials, approved signatures and template IDs in deployment configuration, outside source control.
-
-A deployment that used the Tencent adapter before it became optional adds the module to `BACKEND_EXTENSIONS` when it upgrades; setting names and stored values are unchanged. On a gateway that does not load a provider, a stored row it once used lists as an ordinary custom setting that no code reads, keeping its secret flag, and an administrator can delete it.
-
-Set `ADMIN_ACCESS_TOKEN` for `make doctor` to report the running process's pending restarts; without it, diagnostics explicitly identify saved-only configuration status.
+The SMS template takes the code and its lifetime in minutes, in that order. It
+sends to mainland China numbers only: set `SMS_ALLOWED_PREFIXES=+86`, and
+`SMS_DEFAULT_COUNTRY_CODE=86` to accept numbers without a country code. Keep credentials, signatures and template IDs in
+deployment configuration, outside source control.

@@ -23,8 +23,11 @@ At startup the gateway compares the database with its own chain of revisions
 
 from __future__ import annotations
 
+import ast
 import enum
 import logging
+import re
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -32,6 +35,7 @@ from migrations import COMPAT_TABLE, MIGRATIONS_DIR, VERSION_TABLE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
+    from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -48,12 +52,40 @@ CREATE TABLE IF NOT EXISTS {COMPAT_TABLE} (
 """
 
 
+#: The files Alembic loads as revisions (its ``_only_source_rev_file``): every
+#: ``*.py`` but ``__init__.py`` and an editor's ``.#`` lock file.
+_REVISION_FILE = re.compile(r"(?!\.\#|__init__)(.*\.py)$")
+
+#: The revision ids :func:`code_chain` reads itself. Alembic refuses some
+#: characters in an id and gives others meaning; any id outside this set is
+#: left to it.
+_PLAIN_REVISION_ID = re.compile(r"[A-Za-z0-9_]+")
+
+#: The module attributes Alembic reads from a revision.
+_HEADER = ("revision", "down_revision", "branch_labels", "depends_on")
+
+
 def code_chain() -> tuple[str, ...]:
     """This code's revisions, oldest first.
+
+    The gateway calls this at every start. Alembic answers it by importing
+    Alembic, SQLAlchemy and every revision module, about 20 MB that the
+    gateway, which uses none of them, would then hold for as long as it runs.
+    So the revision files are read here instead, without running them, when
+    each one plainly states its ``revision`` and ``down_revision`` and together
+    they form one line from a single base -- as every revision here does, and
+    as a test checks against Alembic. Anything else, a merge, a branch label or
+    an id computed at import, is Alembic's to read.
 
     Raises:
         RuntimeError: The revisions do not form one line (more than one head).
     """
+    chain = _literal_chain(MIGRATIONS_DIR / "versions")
+    return chain if chain is not None else _alembic_chain()
+
+
+def _alembic_chain() -> tuple[str, ...]:
+    """:func:`code_chain` as Alembic reads it, loading every revision module."""
     from alembic.script import ScriptDirectory
 
     script = ScriptDirectory(str(MIGRATIONS_DIR))
@@ -61,6 +93,98 @@ def code_chain() -> tuple[str, ...]:
     if len(heads) != 1:
         raise RuntimeError(f"the migrations must have exactly one head, found {sorted(heads)}")
     return tuple(reversed([s.revision for s in script.walk_revisions("base", "heads")]))
+
+
+def _literal_chain(versions: Path) -> tuple[str, ...] | None:
+    """The revisions in *versions*, oldest first, read from their source.
+
+    ``None`` unless every revision file there passes :func:`_literal_header`
+    and they form a single line: one base, no two revisions with the same
+    parent, every parent present.
+    """
+    if not versions.is_dir():
+        return None
+    parent_of: dict[str, str | None] = {}
+    for path in sorted(versions.iterdir()):
+        if not _REVISION_FILE.match(path.name) or not path.is_file():
+            continue
+        header = _literal_header(path)
+        if header is None or header[0] in parent_of:
+            return None
+        parent_of[header[0]] = header[1]
+    child_of: dict[str | None, str] = {}
+    for revision, parent in parent_of.items():
+        if parent in child_of or (parent is not None and parent not in parent_of):
+            return None
+        child_of[parent] = revision
+    chain: list[str] = []
+    while (child := child_of.get(chain[-1] if chain else None)) is not None:
+        chain.append(child)
+    # Shorter than the revisions read: some lie on a loop that the line from
+    # the base never reaches. Empty: there are none. Either way, not a line.
+    return tuple(chain) if chain and len(chain) == len(parent_of) else None
+
+
+def _literal_header(path: Path) -> tuple[str, str | None] | None:
+    """A revision file's ``revision`` and ``down_revision``, read without running it.
+
+    ``None`` when what the file states is not certainly what Alembic would read
+    from the module: a name of :data:`_HEADER` bound more than once, or by
+    anything other than one top-level assignment of a literal; an id
+    :data:`_PLAIN_REVISION_ID` does not cover; several ``down_revision`` (a
+    merge); a branch label or a dependency; a file that does not parse.
+    """
+    try:
+        tree = ast.parse(path.read_bytes(), filename=str(path))
+    except (OSError, SyntaxError, ValueError):
+        return None
+    stated: dict[str, object] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target, value = node.targets[0], node.value
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            target, value = node.target, node.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id in _HEADER:
+            if target.id in stated or not isinstance(value, ast.Constant):
+                return None
+            stated[target.id] = value.value
+    # Each statement read above binds its name once; any other binding of a
+    # header name anywhere in the file (in a block, a function, an import)
+    # could change what the module ends up holding.
+    bound = _bindings(tree)
+    if any(bound[name] != int(name in stated) for name in _HEADER):
+        return None
+    revision, down_revision = stated.get("revision"), stated.get("down_revision", ...)
+    if not isinstance(revision, str) or not _PLAIN_REVISION_ID.fullmatch(revision):
+        return None
+    if down_revision is not None and not (
+        isinstance(down_revision, str) and _PLAIN_REVISION_ID.fullmatch(down_revision)
+    ):
+        return None
+    if stated.get("branch_labels") is not None or stated.get("depends_on") is not None:
+        return None
+    return revision, down_revision
+
+
+def _bindings(tree: ast.AST) -> Counter[str]:
+    """How many times each name is bound anywhere in *tree*; a star import binds the header."""
+    bound: Counter[str] = Counter()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and not isinstance(node.ctx, ast.Load):
+            bound[node.id] += 1
+        elif isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef | ast.ClassDef):
+            bound[node.name] += 1
+        elif isinstance(node, ast.alias) and node.name == "*":
+            bound.update(_HEADER)
+        elif isinstance(node, ast.alias):
+            bound[(node.asname or node.name).partition(".")[0]] += 1
+        elif isinstance(node, ast.Global | ast.Nonlocal):
+            bound.update(node.names)
+        elif isinstance(node, ast.ExceptHandler | ast.MatchAs | ast.MatchStar) and node.name:
+            bound[node.name] += 1
+    return bound
 
 
 def ensure_compat_table(connection: Any) -> None:

@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-09-28 16:15+0800\n"
+"POT-Creation-Date: 2026-11-28 14:27+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -18,7 +18,7 @@ msgstr ""
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=utf-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Generated-By: Babel 2.18.0\n"
+"Generated-By: Babel 2.19.0\n"
 
 #: ../developer/architecture.md:1
 msgid "Architecture"
@@ -26,25 +26,25 @@ msgstr "架构"
 
 #: ../developer/architecture.md:3
 msgid ""
-"HybridInference is a FastAPI gateway that speaks the OpenAI/OpenRouter "
-"HTTP API and dispatches each request to one of several interchangeable "
-"upstreams: a local inference server (vLLM, SGLang, Ollama, or anything "
-"else OpenAI-compatible) or a hosted API. The point of the gateway is that"
-" a *model id* the client asks for is decoupled from the *endpoint* that "
-"actually serves it, so the same client call can be load-balanced, failed "
-"over, priced, and logged across a mix of machines you own and machines "
-"you rent."
+"HybridInference is a FastAPI gateway that speaks the OpenAI and "
+"OpenRouter HTTP APIs. It sends each request to a local inference server "
+"(vLLM, SGLang, Ollama or anything else OpenAI-compatible) or to a hosted "
+"API. The client names a *model id*; the gateway decides which *endpoint* "
+"serves it. That split lets one client call be load-balanced, failed over,"
+" priced and logged across machines you own and machines you rent."
 msgstr ""
-"HybridInference 是一个 FastAPI 网关，对外提供 OpenAI/OpenRouter 格式的 HTTP "
-"API，把每个请求转发给若干可互换的上游之一：本地推理服务器（vLLM、SGLang、Ollama，或其他任何兼容 OpenAI "
-"的服务），或者托管 API。网关的核心在于：客户端请求的是*模型 "
-"id*，而实际处理请求的*端点*可以随时替换。所以同一个客户端调用，可以在你自己的机器和租来的机器之间做负载均衡、故障转移、计费和日志记录。"
+"HybridInference 是一个 FastAPI 网关，对外提供 OpenAI 和 OpenRouter 的 HTTP "
+"API。它把每个请求发给本地推理服务器（vLLM、SGLang、Ollama 或其他任何兼容 OpenAI 的服务），或者发给托管 "
+"API。客户端指定*模型 "
+"id*，由网关决定哪个*端点*来提供服务。正因为两者分开，同一个客户端调用可以在自有机器和租用机器之间做负载均衡、故障转移、计价和记录日志。"
 
-#: ../developer/architecture.md:11
+#: ../developer/architecture.md:10
 msgid ""
-"The backend is one Python package tree under `apps/backend/`, split in "
-"two:"
-msgstr "后端是 `apps/backend/` 下的一组 Python 包，分成两部分："
+"The backend lives under `apps/backend/` and imports as two top-level "
+"packages (`pyproject.toml` sets `apps/backend` as the import root):"
+msgstr ""
+"后端代码位于 `apps/backend/`，以两个顶层包的形式导入（`pyproject.toml` 把 `apps/backend` "
+"设为导入根目录）："
 
 #: ../developer/architecture.md
 msgid "Directory"
@@ -56,7 +56,7 @@ msgstr "职责"
 
 #: ../developer/architecture.md
 msgid "`apps/backend/serving/`"
-msgstr ""
+msgstr "`apps/backend/serving/`"
 
 #: ../developer/architecture.md
 msgid ""
@@ -66,512 +66,402 @@ msgstr "HTTP 接口、认证与配额、请求 schema、provider adapter、存�
 
 #: ../developer/architecture.md
 msgid "`apps/backend/routing/`"
-msgstr ""
+msgstr "`apps/backend/routing/`"
 
 #: ../developer/architecture.md
 msgid "Route table, router strategies, endpoint health, circuit breaker, fallback"
 msgstr "路由表、router 策略、端点健康状态、熔断器、回退"
 
 #: ../developer/architecture.md:18
-msgid ""
-"Both are importable as top-level packages (`serving.*`, `routing.*`); the"
-" import root is `apps/backend`, declared in `pyproject.toml`."
-msgstr ""
-"两者都可以直接当作顶层包导入（`serving.*`、`routing.*`）；导入根是 `apps/backend`，在 "
-"`pyproject.toml` 里声明。"
-
-#: ../developer/architecture.md:21
 msgid "Design principles"
 msgstr "设计原则"
 
-#: ../developer/architecture.md:23
-msgid "Five ideas explain most of the code:"
-msgstr "理解了下面五条，大部分代码也就好懂了："
+#: ../developer/architecture.md:20
+msgid ""
+"**One model id, many endpoints.** Clients name a model; the gateway picks"
+" the machine."
+msgstr "**一个模型 id，多个端点**。客户端指定模型，由网关选择机器。"
+
+#: ../developer/architecture.md:22
+msgid ""
+"**Route around failure instead of retrying into it.** A non-idempotent "
+"generation is never re-sent with the same key. Resilience comes from key "
+"rotation, the fallback chain and the circuit breaker."
+msgstr "**绕开故障，而不是硬着头皮重试**。非幂等的生成请求绝不会用同一个 key 重发。可靠性来自 key 轮换、回退链和熔断器。"
 
 #: ../developer/architecture.md:25
 msgid ""
-"**One model id, many endpoints.** Clients name a model; the gateway owns "
-"which machine serves it. Everything else follows from that."
-msgstr "**一个模型 id，多个端点**。客户端只指定模型，交给哪台机器处理，由网关决定。其余设计都由此而来。"
+"**A caller learns nothing it is not entitled to.** Every access failure "
+"is the same `404`, and upstream errors are scrubbed before they reach a "
+"client."
+msgstr "**调用方得不到无权知道的信息**。所有访问失败都返回同样的 `404`，上游错误在到达客户端之前会被清理。"
 
 #: ../developer/architecture.md:27
 msgid ""
-"**Failure is routed around, not retried into.** A non-idempotent "
-"generation is never re-sent with the same key; resilience comes from "
-"rotating keys, the fallback chain and the circuit breaker."
-msgstr "**遇到故障就绕开，而不是反复重试**。非幂等的生成请求绝不会用同一个 key 重发；容错靠的是轮换 key、回退链和熔断器。"
+"**Configuration belongs to the deployment.** A deployment configures its "
+"model registry, routing policy and branding in Admin, which stores them "
+"in PostgreSQL. See [Configuration](#configuration)."
+msgstr ""
+"**配置属于部署**。部署在 Admin 中配置自己的模型注册表、路由策略和品牌，这些都存放在 PostgreSQL "
+"中。见[配置](#configuration)。"
 
 #: ../developer/architecture.md:30
 msgid ""
-"**A caller learns nothing it is not entitled to.** Access failures "
-"collapse to a uniform `404`, and upstream errors are scrubbed before they"
-" reach a client."
-msgstr "**调用方只能知道它有权知道的东西**。访问失败一律返回同样的 `404`，上游错误在返回客户端之前会先脱敏。"
-
-#: ../developer/architecture.md:33
-msgid ""
-"**Configuration is a deployment's, not the project's.** The repository "
-"ships runnable examples; a real deployment supplies its own registry and "
-"routing files, found as described under [Configuration](#configuration)."
-msgstr "**配置属于部署，不属于项目**。仓库只提供可运行的示例；实际部署自带模型注册表和路由配置文件，网关怎么找到它们，见下文[配置](#configuration)一节。"
-
-#: ../developer/architecture.md:36
-msgid ""
-"**Extension points are declarative.** New provider: a `kind` and, if the "
-"API is not OpenAI-compatible, an adapter. New routing behaviour: a module"
-" in `apps/backend/routing/strategies/` that self-registers. Neither "
-"requires touching the request handler."
+"**Extension points are declarative.** A new provider needs a `kind` and, "
+"if its API is not OpenAI-compatible, an adapter. A new routing strategy "
+"is a module in `apps/backend/routing/strategies/` that registers itself. "
+"Neither touches the request handler."
 msgstr ""
-"**扩展点是声明式的**。新增 provider：声明一个 `kind`，API 不兼容 OpenAI 的话再加一个 "
-"adapter。新增路由行为：在 `apps/backend/routing/strategies/` "
-"下放一个会自动注册的模块。两者都不用改请求处理代码。"
+"**扩展点是声明式的**。新的 provider 需要一个 `kind`，如果它的 API 不兼容 OpenAI，还需要一个 "
+"adapter。新的路由策略是 `apps/backend/routing/strategies/` "
+"下一个自行注册的模块。两者都不用改动请求处理代码。"
 
-#: ../developer/architecture.md:41
+#: ../developer/architecture.md:35
 msgid "The four layers"
 msgstr "四个层次"
 
-#: ../developer/architecture.md:83
+#: ../developer/architecture.md:77
 msgid ""
-"For how a public deployment gets traffic *to* the gateway — reverse "
-"proxy, CDN, and the console's own path rewrites — see [The public path "
-"table](public-path-table.md). Nothing in this page depends on that "
-"topology; the gateway is an ordinary HTTP server."
-msgstr ""
-"公开部署怎样把流量引*到*网关——反向代理、CDN，以及控制台自己的路径重写——见[公开路径表](public-path-"
-"table.md)。本页内容不依赖那套拓扑：网关就是一个普通的 HTTP 服务。"
+"How public traffic reaches the gateway (proxy, CDN, the console's "
+"rewrites) is in [The public path table](public-path-table.md)."
+msgstr "公网流量如何到达网关（代理、CDN、控制台的路径重写）见[公开路径表](public-path-table.md)。"
 
-#: ../developer/architecture.md:88
+#: ../developer/architecture.md:80
 msgid "Request lifecycle"
 msgstr "请求生命周期"
 
-#: ../developer/architecture.md:90
+#: ../developer/architecture.md:82
 msgid ""
-"The chat-completions path in "
-"`apps/backend/serving/servers/routers/completions.py` is the canonical "
-"one; the other inference surfaces reuse its parts."
+"`apps/backend/serving/servers/routers/completions.py` (chat completions) "
+"is the reference path; the other inference surfaces reuse its parts."
 msgstr ""
-"下面以 `apps/backend/serving/servers/routers/completions.py` 里的 chat-"
-"completions 路径为准，其他推理接口都复用它的各个环节。"
+"`apps/backend/serving/servers/routers/completions.py`（chat "
+"completions）是参考路径，其他推理接口复用它的各个部分。"
 
-#: ../developer/architecture.md:94
+#: ../developer/architecture.md:85
 msgid "1. Middleware"
 msgstr "1\\. 中间件"
 
+#: ../developer/architecture.md:87
+msgid ""
+"`create_app()` in `apps/backend/serving/servers/app.py` registers ten "
+"middlewares. From the outside in:"
+msgstr "`apps/backend/serving/servers/app.py` 中的 `create_app()` 注册了十个中间件。从外到内依次是："
+
+#: ../developer/architecture.md:90
+msgid "`NoSniffMiddleware`: adds `X-Content-Type-Options: nosniff`."
+msgstr "`NoSniffMiddleware`：添加 `X-Content-Type-Options: nosniff`。"
+
+#: ../developer/architecture.md:91
+msgid ""
+"`HandoffMiddleware`: counts requests for a release handoff and refuses "
+"new ones with `503` once the process is sealed; see [Handing traffic to a"
+" new gateway process](deployment.md#handing-traffic-to-a-new-gateway-"
+"process)."
+msgstr ""
+"`HandoffMiddleware`：为发布交接统计请求，进程封存后用 `503` "
+"拒绝新请求；见[把流量交给新的网关进程](deployment.md#handing-traffic-to-a-new-gateway-"
+"process)。"
+
+#: ../developer/architecture.md:94
+msgid "`RequestIdMiddleware`: the request id on every log line."
+msgstr "`RequestIdMiddleware`：提供每行日志都带的请求 id。"
+
+#: ../developer/architecture.md:95
+msgid "`FallbackErrorMiddleware`: shapes errors nothing else handled."
+msgstr "`FallbackErrorMiddleware`：整理其他环节都没处理的错误。"
+
 #: ../developer/architecture.md:96
 msgid ""
-"`create_app()` in `apps/backend/serving/servers/app.py` registers nine "
-"middlewares. Starlette runs the last-registered outermost, so the "
-"effective order from the outside in is:"
-msgstr ""
-"`apps/backend/serving/servers/app.py` 里的 `create_app()` "
-"注册了九个中间件。Starlette 让最后注册的在最外层运行，所以从外到内的实际顺序是："
+"`KubernetesProxyTrustMiddleware`: discovers which proxies may report the "
+"client address, when Kubernetes discovery is configured."
+msgstr "`KubernetesProxyTrustMiddleware`：配置了 Kubernetes 发现时，找出哪些代理可以上报客户端地址。"
 
-#: ../developer/architecture.md:100
+#: ../developer/architecture.md:98
+msgid "`RequestLogMiddleware`: one structured log record per request."
+msgstr "`RequestLogMiddleware`：每个请求一条结构化日志记录。"
+
+#: ../developer/architecture.md:99
 msgid ""
-"`NoSniffMiddleware` — adds `X-Content-Type-Options: nosniff` to every "
-"response that lacks it, touching only the response start."
+"`TimeoutMiddleware`: `REQUEST_TIMEOUT_SECONDS` (default 120) for ordinary"
+" requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600; `0` or less "
+"removes the cap) once the response is streaming."
 msgstr ""
-"`NoSniffMiddleware`——给每个缺少 `X-Content-Type-Options: nosniff` "
-"的响应加上它，只改动响应的开始部分。"
-
-#: ../developer/architecture.md:100
-msgid ""
-"`RequestIdMiddleware` — mints or adopts a request id used by every log "
-"line."
-msgstr "`RequestIdMiddleware`——生成或沿用一个请求 id，每一行日志都带着它。"
-
-#: ../developer/architecture.md:101
-msgid "`FallbackErrorMiddleware` — last-resort error shaping."
-msgstr "`FallbackErrorMiddleware`——兜底，统一错误响应的格式。"
+"`TimeoutMiddleware`：普通请求使用 `REQUEST_TIMEOUT_SECONDS`（默认 120），响应开始流式传输后使用 "
+"`STREAM_REQUEST_TIMEOUT_SECONDS`（默认 3600；`0` 或更小表示不设上限）。"
 
 #: ../developer/architecture.md:102
 msgid ""
-"`KubernetesProxyTrustMiddleware` — discovers which proxies may report the"
-" client address, when Kubernetes proxy discovery is configured."
-msgstr ""
-"`KubernetesProxyTrustMiddleware`——配置了 Kubernetes "
-"代理发现时，找出哪些代理可以报告客户端地址。"
-
-#: ../developer/architecture.md:104
-msgid "`RequestLogMiddleware` — one structured log record per HTTP request."
-msgstr "`RequestLogMiddleware`——每个 HTTP 请求一条结构化日志记录。"
+"`SettingsCORSMiddleware`: CORS, reading `CORS_ALLOWED_ORIGINS` per "
+"request."
+msgstr "`SettingsCORSMiddleware`：处理 CORS，每个请求都重新读取 `CORS_ALLOWED_ORIGINS`。"
 
 #: ../developer/architecture.md:103
 msgid ""
-"`TimeoutMiddleware` — `REQUEST_TIMEOUT_SECONDS` (default 120s) for "
-"ordinary requests, `STREAM_REQUEST_TIMEOUT_SECONDS` (default 3600s, `<=0`"
-" disables the cap) once a response has been marked as streaming."
+"`TrailingSlashRedirectMiddleware`: `308` from a `/v1/…/` or "
+"`/anthropic/…/` path to the same path without the slash; see [The "
+"trailing-slash interaction](public-path-table.md#the-trailing-slash-"
+"interaction)."
 msgstr ""
-"`TimeoutMiddleware`——普通请求用 `REQUEST_TIMEOUT_SECONDS`（默认 "
-"120s）；响应一旦被标记为流式，就改用 `STREAM_REQUEST_TIMEOUT_SECONDS`（默认 3600s，`<=0` "
-"表示取消该上限）。"
+"`TrailingSlashRedirectMiddleware`：把以斜杠结尾的 `/v1/…/` 或 `/anthropic/…/` 路径用 "
+"`308` 重定向到去掉斜杠的同一路径；见[末尾斜杠的相互影响](public-path-table.md#the-trailing-slash-"
+"interaction)。"
 
-#: ../developer/architecture.md:108
-msgid "`CORSMiddleware`."
-msgstr ""
-
-#: ../developer/architecture.md:111
+#: ../developer/architecture.md:106
 msgid ""
-"`TrailingSlashRedirectMiddleware` — answers a path under `/v1` or "
-"`/anthropic` that ends in a slash with a `308` to the bare path without "
-"it, as the console does; see [The public path table](public-path-table.md"
-"#the-trailing-slash-interaction)."
+"`RequestBodyLimitMiddleware`: `413` for a body over `REQUEST_MAX_BODY_MB`"
+" (default 32 MiB), checked against `Content-Length` and again as bytes "
+"arrive. Batch uploads use `BATCH_MAX_BODY_MB` instead. Control routes get"
+" 256 KiB (`/auth/`, `/user/`, `/internal/`, `/v1/identity/`, `/v1/auth/`,"
+" `/v1/batch_webhook`) or 1 MiB (`/admin/`), because FastAPI decodes a "
+"body before authentication runs. The few routes that need a large body "
+"read it only after authentication."
 msgstr ""
-"`TrailingSlashRedirectMiddleware`——对 `/v1` 或 `/anthropic` "
-"下以斜杠结尾的路径，像控制台一样回答 `308`，指向去掉斜杠的裸路径；见[公开路径表](public-path-table.md#the-"
-"trailing-slash-interaction)。"
-
-#: ../developer/architecture.md:119
-msgid ""
-"Control routes get a much smaller body limit: 256 KiB under `/auth/`, "
-"`/user/`, `/internal/` and `/v1/identity/` and on `/v1/batch_webhook`, 1 "
-"MiB under `/admin/`. FastAPI reads and decodes a route's declared body "
-"model before any dependency runs, authentication included, so an "
-"anonymous caller's body is decoded before the `401`. The routes that "
-"legitimately take a larger body (a configuration restore, the playground,"
-" the alert-history ingest) and `/v1/embeddings` read theirs only once the"
-" caller is authenticated, and keep `REQUEST_MAX_BODY_MB`."
-msgstr ""
-"控制类路由的请求体上限要小得多：`/auth/`、`/user/`、`/internal/` 和 `/v1/identity/` 之下以及 "
-"`/v1/batch_webhook` 上为 256 KiB，`/admin/` 之下为 1 MiB。FastAPI "
-"会在任何依赖项运行之前（包括身份验证）读取并解码路由声明的请求体模型，所以匿名调用方的请求体会在回复 `401` "
-"之前就被解码。确实需要更大请求体的路由（配置恢复、Playground、告警历史写入）以及 `/v1/embeddings` "
-"只在调用方通过身份验证之后才读取请求体，并沿用 `REQUEST_MAX_BODY_MB`。"
+"`RequestBodyLimitMiddleware`：请求体超过 `REQUEST_MAX_BODY_MB`（默认 32 MiB）时返回 `413`，先按 `Content-Length` 检查，字节到达时再检查一次。批量上传改用 `BATCH_MAX_BODY_MB`。控制类路由的上限是 256 KiB（`/auth/`、`/user/`、`/internal/`、`/v1/identity/`、`/v1/auth/`、`/v1/batch_webhook`）或 1 MiB（`/admin/`），因为 FastAPI 会在认证之前解码请求体。少数需要大请求体的路由只在认证之后才读取它。"
 
 #: ../developer/architecture.md:114
 msgid ""
-"Middleware order matters: streaming responses are `StreamingResponse` "
-"objects that must not be buffered. Any new middleware that reads a "
-"response body before forwarding it will break Server-Sent Events. The "
-"body limit counts request bytes as they pass and holds none of them."
-msgstr ""
-"中间件的顺序很重要：流式响应是 `StreamingResponse` 对象，不能缓冲。新加的中间件只要在转发前读取了响应体，就会破坏 "
-"Server-Sent Events。请求体上限只在字节经过时计数，一个字节也不保留。"
-
-#: ../developer/architecture.md:112
-msgid "2. Authentication and quota"
-msgstr "2\\. 认证与配额"
-
-#: ../developer/architecture.md:114
-msgid ""
-"`verify_api_key` in `apps/backend/serving/servers/auth.py` is a FastAPI "
-"dependency on every inference endpoint. It resolves, in order:"
-msgstr ""
-"`apps/backend/serving/servers/auth.py` 中的 `verify_api_key` 是挂在每个推理端点上的 "
-"FastAPI 依赖。它按下面的顺序确定调用方身份："
+"Never add a middleware that buffers response bodies: it breaks Server-"
+"Sent Events streaming."
+msgstr "不要添加会缓冲响应体的中间件：它会破坏 Server-Sent Events 流式传输。"
 
 #: ../developer/architecture.md:117
 msgid ""
-"**Agent grant tokens** — a separate credential namespace, checked first. "
-"A grant may only be used on inference paths; anything else gets `403 "
-"insufficient_scope`."
+"`HTTP_IDLE_TIMEOUT_SECONDS` (default 600; `0` turns it off) closes an "
+"accepted connection that sends no bytes in either direction for that "
+"long, including a client that never finishes its headers. Uvicorn's keep-"
+"alive timer does not cover that case. The value stays above the request "
+"and stream timeouts, so a slow prefill still gets a `504`, not a dropped "
+"connection."
 msgstr ""
-"**Agent grant token**——一个独立的凭据命名空间，最先检查。grant 只能用在推理路径上；用在别处会得到 `403 "
-"insufficient_scope`。"
-
-#: ../developer/architecture.md:120
-msgid ""
-"**Auth disabled** — when `USER_AUTH_ENABLED` is falsy the caller is "
-"treated as an anonymous admin. The setting is fail-closed: auth is on "
-"unless explicitly turned off."
-msgstr ""
-"**认证关闭**——当 `USER_AUTH_ENABLED` 为假值时，调用方被当作匿名管理员。这个开关是 fail-closed "
-"的：除非显式关掉，否则认证始终开启。"
+"`HTTP_IDLE_TIMEOUT_SECONDS`（默认 600；`0` "
+"表示关闭）会关闭在这段时间内双向都没有字节传输的已接受连接，包括始终没发完请求头的客户端。Uvicorn 的 keep-alive "
+"计时器不覆盖这种情况。这个值高于请求超时和流超时，所以预填充较慢时仍然会得到 `504`，而不是连接被断开。"
 
 #: ../developer/architecture.md:123
-msgid ""
-"**API key** — keys are minted as `hyi-<url-safe token>` and stored only "
-"as an HMAC-SHA256 digest keyed by `API_KEY_SECRET`. The key may arrive as"
-" `Authorization: Bearer …` or `X-API-Key`."
-msgstr ""
-"**API key**——签发的 key 形如 `hyi-<url-safe token>`，存储时只保存它的 HMAC-SHA256 "
-"摘要，密钥是 `API_KEY_SECRET`。key 可以放在 `Authorization: Bearer …` 或 `X-API-Key` "
-"里传入。"
+msgid "2. Authentication and quota"
+msgstr "2\\. 认证与配额"
 
-#: ../developer/architecture.md:127
+#: ../developer/architecture.md:125
 msgid ""
-"The same dependency enforces the caller's daily spend quota and returns "
-"`429` with a shared payload builder (`apps/backend/serving/quota.py`) "
-"whichever door the request came through. A separate "
-"`enforce_user_concurrency` dependency holds a per-user in-flight slot for"
-" the duration of the request. Which budget the slot comes from depends on"
-" the model (a concurrency-exempt model has its own), so the body is read "
-"before the slot is taken; a caller may have four bodies read that way at "
-"once, and a fifth request gets the same `429` before its body is read."
-msgstr ""
-"同一个依赖还负责检查调用方的每日消费配额：不管请求走的是哪条认证路径，超额时都由同一个 payload "
-"构造器（`apps/backend/serving/quota.py`）返回 `429`。另有一个 "
-"`enforce_user_concurrency` 依赖，在请求处理期间为该用户占用一个并发槽位。槽位取自哪一份额度取决于模型（不受并发限制的模型有自己的一份），所以要先读取请求体再占用槽位；同一调用方同时最多只能有四个请求体这样被读取，第五个请求在其请求体被读取之前就会收到同样的"
-" `429`。"
+"`verify_api_key` (`apps/backend/serving/servers/auth.py`) runs on every "
+"inference endpoint and checks, in order:"
+msgstr "`verify_api_key`（`apps/backend/serving/servers/auth.py`）在每个推理端点上运行，按顺序检查："
+
+#: ../developer/architecture.md:128
+msgid ""
+"**Agent grant tokens**, a separate credential namespace. A grant works "
+"only on inference paths; anything else gets `403 insufficient_scope`."
+msgstr "**Agent 授权令牌**，这是一个独立的凭据命名空间。授权只能用于推理路径，其他路径一律返回 `403 insufficient_scope`。"
+
+#: ../developer/architecture.md:130
+msgid ""
+"**Auth disabled.** With `USER_AUTH_ENABLED` false, the caller is an "
+"anonymous admin. Authentication is on unless explicitly turned off."
+msgstr "**认证已关闭**。`USER_AUTH_ENABLED` 为 false 时，调用方被当作匿名管理员。除非明确关闭，认证默认开启。"
 
 #: ../developer/architecture.md:132
 msgid ""
-"Read-only endpoints such as `/v1/models` use `optional_verify_api_key` "
-"instead: a missing or invalid key is anonymous rather than rejected, and "
-"the key only decides which models are visible."
+"**API key.** Keys look like `hyi-<token>` and are stored only as an HMAC-"
+"SHA256 digest keyed by `API_KEY_SECRET`. Send one as `Authorization: "
+"Bearer …` or `X-API-Key`."
 msgstr ""
-"像 `/v1/models` 这样的只读端点改用 `optional_verify_api_key`：key "
-"缺失或无效时按匿名处理而不是拒绝，key 只决定哪些模型可见。"
+"**API key**。key 的形式是 `hyi-<token>`，只以 `API_KEY_SECRET` 为密钥的 HMAC-SHA256 "
+"摘要存储。可以通过 `Authorization: Bearer …` 或 `X-API-Key` 发送。"
 
 #: ../developer/architecture.md:136
-msgid "3. Model gate"
-msgstr "3\\. 模型门禁"
-
-#: ../developer/architecture.md:138
 msgid ""
-"Before any provider is contacted, the handler rejects the request with "
-"`404` if the model is not in the route table, is unpublished, requires a "
-"role the caller does not have, was disabled for that user, or is outside "
-"a grant's scope. All five conditions return the same \"model not found\" "
-"body on purpose, so a caller cannot enumerate models it is not entitled "
-"to by reading the difference between `403` and `404`."
+"It also enforces the key's budgets and the project's and account's "
+"quotas, answering `429` from one shared builder "
+"(`apps/backend/serving/quota.py`). `enforce_user_concurrency` then holds "
+"a per-user in-flight slot for the whole request. It reads the body first "
+"(a concurrency-exempt model draws on its own budget), and a caller may "
+"have at most four bodies being read at once."
 msgstr ""
-"请求发往任何 provider 之前，处理器会先检查模型：不在路由表里、未发布、要求调用方没有的角色、已对该用户禁用，或者超出了 grant "
-"的范围，满足任一条件就以 `404` 拒绝。这五种情况故意返回同样的 \"model not found\" 响应体，这样调用方就没法通过区分 "
-"`403` 和 `404` 来枚举自己无权访问的模型。"
+"它还会执行 key 的预算以及项目和账户的配额，超限时用同一个构造函数（`apps/backend/serving/quota.py`）返回 "
+"`429`。之后 `enforce_user_concurrency` "
+"会在整个请求期间占用一个按用户计的并发槽位。它会先读取请求体（不受并发限制的模型使用单独的额度），每个调用方同时最多只能有四个请求体在读取。"
 
-#: ../developer/architecture.md:145
-msgid "4. Router selection"
-msgstr "4\\. router 选择"
-
-#: ../developer/architecture.md:147
+#: ../developer/architecture.md:142
 msgid ""
-"Each model resolves to a router instance through `ModelRouterRegistry` "
-"(`apps/backend/routing/model_router_registry.py`), which reads the "
-"model's `router:` / `router_params:` fields from the model registry and "
-"caches one router per model id. A model with no `router:` uses the "
-"`default_router` value from the routing config."
+"The quota check reads the counter tables (`user_daily_cost`, "
+"`api_key_daily_cost`). The spend ledger "
+"(`apps/backend/serving/spend_ledger.py`) adds what they do not show yet:"
+msgstr "配额检查读取计数表（`user_daily_cost`、`api_key_daily_cost`）。消费账本（`apps/backend/serving/spend_ledger.py`）补上计数表尚未反映的部分："
+
+#: ../developer/architecture.md:146
+msgid ""
+"**Requests in flight.** Admission reserves each request's estimated cost "
+"and releases it when the request ends. A request is refused only when not"
+" even `ESTIMATED_REQUEST_COST_USD` fits; an admitted one reserves up to "
+"`MAX_RESERVED_REQUEST_COST_USD`, so concurrent requests cannot all spend "
+"the same remaining budget."
 msgstr ""
-"每个模型通过 "
-"`ModelRouterRegistry`（`apps/backend/routing/model_router_registry.py`）解析到一个"
-" router 实例；它从模型注册表读取该模型的 `router:` / `router_params:` 字段，并为每个模型 id 缓存一个 "
-"router。没有写 `router:` 的模型使用路由配置中的 `default_router` 值。"
+"**进行中的请求**。准入时为每个请求预留估算费用，请求结束时释放。只有连 `ESTIMATED_REQUEST_COST_USD` "
+"都放不下时才拒绝请求；被准入的请求最多预留 `MAX_RESERVED_REQUEST_COST_USD`，所以并发请求不会都去花同一笔剩余预算。"
 
-#: ../developer/architecture.md:153
+#: ../developer/architecture.md:151
 msgid ""
-"The router then picks one adapter for this request "
-"(`FixedRouter._select_adapter`):"
-msgstr "接着 router 为这次请求挑选一个 adapter（`FixedRouter._select_adapter`）："
+"**Costs not yet written.** One writer per store adds finished costs to "
+"the counters in batches. The ledger keeps counting a cost until its write"
+" is confirmed, so the delay never lets a request past a limit."
+msgstr "**尚未写入的费用**。每个存储由一个写入者把已完成请求的费用分批加到计数器上。在写入确认之前，账本会一直计入这笔费用，所以写入延迟不会让请求越过限额。"
 
 #: ../developer/architecture.md:155
-msgid "routes whose provider is admin-disabled carry weight 0 and are skipped;"
-msgstr "provider 被管理员禁用的路由权重为 0，会被跳过；"
-
-#: ../developer/architecture.md:156
 msgid ""
-"routes whose input modalities cannot accept the request's media are "
-"excluded;"
-msgstr "输入模态无法接收该请求所带媒体的路由被排除；"
+"A cost the counters refuse (for example one that would overflow) is "
+"logged as `cost_counter_write_refused` and alerted for an operator to "
+"reconcile. One request adds at most $1,000; a larger cost is capped and "
+"logged as `cost_above_request_ceiling`."
+msgstr ""
+"计数器拒绝的费用（例如会溢出的值）会记为 `cost_counter_write_refused` "
+"并发出告警，由运维人员核对处理。单个请求最多计入 $1,000；更大的费用会被截断并记为 "
+"`cost_above_request_ceiling`。"
 
-#: ../developer/architecture.md:157
+#: ../developer/architecture.md:160
 msgid ""
-"routes whose circuit is open are not admitted — if that leaves nothing, "
-"the request fails with `AllCircuitsOpenError`;"
-msgstr "熔断器处于打开状态的路由不予准入——如果因此一条路由都不剩，请求以 `AllCircuitsOpenError` 失败；"
-
-#: ../developer/architecture.md:159
-msgid ""
-"among the survivors, selection is weighted-random, biased away from "
-"endpoints already saturated with prefill work;"
-msgstr "在剩下的路由中按权重随机选择，并尽量避开已经被 prefill 占满的端点；"
-
-#: ../developer/architecture.md:161
-msgid ""
-"a short-lived per-caller affinity (5 minutes) re-pins a conversation to "
-"the endpoint that already holds its prefix cache, unless that endpoint "
-"has built up a backlog."
-msgstr "按调用方维护一个短期亲和（5 分钟）：同一段对话会重新钉回已经缓存了它前缀的端点，除非那个端点已经积压了请求。"
+"The ledger is per process, so limits hold within each worker but not "
+"across workers; production runs one. A shared spend mode, off unless an "
+"operator turns it on, keeps reservations in PostgreSQL for all processes;"
+" see [Shared accounting](accounting.md#shared-accounting)."
+msgstr ""
+"账本按进程独立，所以限额只在每个 worker 内部生效，不跨 worker；生产环境只运行一个 "
+"worker。共享消费模式默认关闭，由运维人员开启后，所有进程的预留都存放在 PostgreSQL 中；见[共享记账](accounting.md"
+"#shared-accounting)。"
 
 #: ../developer/architecture.md:165
 msgid ""
-"An admin may bypass selection entirely with an `X-Route-Pin` request "
-"header naming a provider label or `endpoint_id`. A pinned request never "
-"falls back — a silent switch would make the pin meaningless."
+"A response cut off by the client or the request timeout is billed for "
+"what the upstream already did: its reported usage, or an estimate marked "
+"`metadata.usage_estimated`. A request the upstream fails is not billed."
 msgstr ""
-"管理员可以用 `X-Route-Pin` 请求头指定一个 provider 标签或 `endpoint_id`，完全跳过选择。pin "
-"住的请求永远不会回退：悄悄换了端点，pin 住也就没有意义了。"
+"被客户端或请求超时中断的响应，按上游已经完成的部分计费：上游报告的用量，或者标记为 `metadata.usage_estimated` "
+"的估算值。上游失败的请求不计费。"
 
 #: ../developer/architecture.md:169
+msgid ""
+"Read-only endpoints such as `/v1/models` use `optional_verify_api_key`: a"
+" missing or invalid key is anonymous, and the key only decides what is "
+"listed."
+msgstr ""
+"`/v1/models` 等只读端点使用 `optional_verify_api_key`：缺少 key 或 key 无效时按匿名处理，key "
+"只决定列出哪些内容。"
+
+#: ../developer/architecture.md:172
+msgid "3. Model gate"
+msgstr "3\\. 模型门禁"
+
+#: ../developer/architecture.md:174
+msgid ""
+"Before any provider is contacted, the handler answers `404` if the model "
+"is not in the route table, is unpublished, needs a role the caller lacks,"
+" was disabled for the user, or is outside the scope of the caller's key, "
+"project, user tags or inference grant. All cases return the same \"model "
+"not found\" body, so a caller cannot probe for models by comparing `403` "
+"with `404`. The check is `model_access_denial` in "
+"`apps/backend/serving/model_access.py`."
+msgstr ""
+"在联系任何 provider 之前，如果模型不在路由表中、尚未发布、要求调用方不具备的角色、对该用户已被禁用，或者超出调用方 "
+"key、项目、用户标签或推理授权的范围，处理器都会返回 `404`。所有情况都返回同样的 \"model not found\" "
+"响应体，调用方无法通过对比 `403` 和 `404` 来探测模型。这项检查是 "
+"`apps/backend/serving/model_access.py` 中的 `model_access_denial`。"
+
+#: ../developer/architecture.md:181
+msgid "4. Router selection"
+msgstr "4\\. router 选择"
+
+#: ../developer/architecture.md:183
+msgid ""
+"`ModelRouterRegistry` (`apps/backend/routing/model_router_registry.py`) "
+"builds and caches one router per model from its `router` and "
+"`router_params`. A model without `router` uses `default_router` from the "
+"routing policy (`ROUTING_POLICY`)."
+msgstr ""
+"`ModelRouterRegistry`（`apps/backend/routing/model_router_registry.py`）根据每个模型的"
+" `router` 和 `router_params` 为它构建并缓存一个 router。没有 `router` "
+"的模型使用路由策略（`ROUTING_POLICY`）中的 `default_router`。"
+
+#: ../developer/architecture.md:188
+msgid ""
+"The `fixed` router drops routes with weight `0` (an admin-disabled "
+"provider counts as `0`), routes that cannot take the request's media and "
+"routes with an open circuit, then draws one by weight, biased away from "
+"endpoints busy with prefill. A 5-minute per-caller affinity keeps a "
+"conversation on the endpoint that holds its prefix cache. An admin can "
+"pin a request with `X-Route-Pin: <provider-or-endpoint-id>`; pinned "
+"requests never fall back. See [How `FixedRouter` picks an "
+"endpoint](routing.md#how-fixedrouter-picks-an-endpoint)."
+msgstr ""
+"`fixed` router 先去掉权重为 `0` 的路由（被管理员禁用的 provider 算作 "
+"`0`）、无法接收请求中媒体的路由和熔断器已打开的路由，再按权重抽取一条，并避开正忙于预填充的端点。按调用方维持 5 "
+"分钟的亲和性，让同一个对话留在持有其前缀缓存的端点上。管理员可以用 `X-Route-Pin: <provider-or-endpoint-"
+"id>` 固定请求；被固定的请求从不回退。见[`FixedRouter` 如何选择端点](routing.md#how-fixedrouter-"
+"picks-an-endpoint)。"
+
+#: ../developer/architecture.md:196
 msgid "5. Dispatch, fallback, and the circuit breaker"
 msgstr "5\\. 分发、回退与熔断器"
 
-#: ../developer/architecture.md:171
+#: ../developer/architecture.md:198
 msgid ""
-"The router then calls the chosen adapter, through a thin wrapper that "
-"holds exactly the adapter it chose, so an admin edit made in the meantime"
-" cannot redirect a request that is already on its way. See [Routing "
-"Internals](routing-internals.md)."
+"The router calls the adapter it chose through a thin wrapper, so an admin"
+" edit cannot redirect a request already on its way. On success the "
+"response carries an internal `_routing` block (provider, base URL, "
+"`endpoint_id`). On failure the router tries the model's remaining routes "
+"in order; every attempt is recorded in `failed_attempts` for the request "
+"log, and if all fail the client gets the *primary* error."
 msgstr ""
-"随后 router 通过一层薄包装调用选中的 adapter。这层包装直接持有 router 选中的那个 "
-"adapter，所以即使管理员在此期间改了配置，也没法把在途的请求改发到别处。见[路由内部机制](routing-internals.md)。"
+"router 通过一层薄包装调用它选中的 adapter，所以管理员的修改不会改变已经在途的请求。成功时，响应带有内部的 `_routing` "
+"块（provider、base URL、`endpoint_id`）。失败时，router 按顺序尝试模型的其余路由；每次尝试都记录在 "
+"`failed_attempts` 中供请求日志使用，如果全部失败，客户端收到的是*主*路由的错误。"
 
-#: ../developer/architecture.md:176
+#: ../developer/architecture.md:205
 msgid ""
-"On success the endpoint is recorded healthy and the response carries an "
-"internal `_routing` block (provider, base URL, `endpoint_id`)."
-msgstr "成功时该端点被记为健康，响应里带上一个内部的 `_routing` 块（provider、base URL、`endpoint_id`）。"
-
-#: ../developer/architecture.md:179
-msgid ""
-"On failure the endpoint records a failure and — unless the caller pinned "
-"a provider — the router walks the model's remaining route legs in route "
-"order, skipping legs that are disabled, modality-incompatible, or "
-"circuit-open, and tries each in turn. Every attempt is appended to a "
-"`failed_attempts` list that travels with the eventual response or error, "
-"so the request log attributes the failure to real upstreams rather than "
-"to the router. If every leg fails, the *primary* error is re-raised."
+"Each `endpoint_id` has a circuit breaker "
+"(`apps/backend/routing/endpoint_health.py`). Client errors other than "
+"408, 429, 401 and 407 never trip it: 408 and 429 mean overload, and 401 "
+"and 407 reject the gateway's own credential. Thresholds and the per-"
+"caller rule are in [Endpoint health and circuit breaking](routing.md"
+"#endpoint-health-and-circuit-breaking)."
 msgstr ""
-"失败时，端点记一次失败。只要调用方没有 pin 住 provider，router "
-"就会按路由顺序逐个尝试该模型剩下的路由分支，跳过已禁用、模态不兼容或熔断器已打开的分支。每次尝试都会追加到 `failed_attempts` "
-"列表里，这个列表随最终的响应或错误一起返回，所以请求日志会把失败算到真实的上游头上，而不是算到 router "
-"头上。如果所有分支都失败，重新抛出的是*首选*路由的错误。"
+"每个 `endpoint_id` 都有一个熔断器（`apps/backend/routing/endpoint_health.py`）。除 "
+"408、429、401 和 407 之外的客户端错误永远不会触发它：408 和 429 表示过载，401 和 407 "
+"表示网关自己的凭据被拒。阈值和按调用方区分的规则见[端点健康与熔断](routing.md#endpoint-health-and-"
+"circuit-breaking)。"
 
-#: ../developer/architecture.md:187
-msgid ""
-"Circuit state lives per `endpoint_id` in "
-"`apps/backend/routing/endpoint_health.py`:"
-msgstr "熔断器状态按 `endpoint_id` 分别维护，代码在 `apps/backend/routing/endpoint_health.py`："
-
-#: ../developer/architecture.md
-msgid "Knob"
-msgstr "参数"
-
-#: ../developer/architecture.md
-msgid "Env var"
-msgstr "环境变量"
-
-#: ../developer/architecture.md
-msgid "Default"
-msgstr "默认值"
-
-#: ../developer/architecture.md
-msgid "Consecutive failures that open a circuit"
-msgstr "连续多少次失败会打开熔断器"
-
-#: ../developer/architecture.md
-msgid "`CIRCUIT_FAILURE_THRESHOLD`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "3"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "Seconds an open circuit waits before a half-open probe"
-msgstr "熔断器打开后，等待多少秒才做一次半开探测"
-
-#: ../developer/architecture.md
-msgid "`CIRCUIT_COOLDOWN_SECONDS`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "30"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "Availability floor"
-msgstr "可用率下限"
-
-#: ../developer/architecture.md
-msgid "`CIRCUIT_MIN_AVAILABILITY`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "0.7"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "EWMA smoothing for the availability estimate"
-msgstr "可用率估计的 EWMA 平滑系数"
-
-#: ../developer/architecture.md
-msgid "`ROUTER_HEALTH_EWMA_ALPHA`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "0.1"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "Seconds a caller's repeat failures stay off a circuit that has served others since its counted failure"
-msgstr "调用方的失败计入后，若端点此后服务过其他人，它的重复失败不计入熔断器的秒数"
-
-#: ../developer/architecture.md
-msgid "`CIRCUIT_CALLER_WINDOW_SECONDS`"
-msgstr ""
-
-#: ../developer/architecture.md
-msgid "60"
-msgstr ""
-
-#: ../developer/architecture.md:197
-msgid ""
-"Client errors do not trip the breaker: a 4xx other than 408, 429, 401, "
-"and 407 is the caller's problem, and counting it would let one malformed "
-"request take an endpoint away from everybody. 408 and 429 signal upstream"
-" overload and do count; 401 and 407 are unambiguous rejections of *the "
-"gateway's own* credential and count too, because no user can fix them."
-msgstr ""
-"客户端错误不会触发熔断：除 408、429、401、407 之外的 4xx "
-"都是调用方自己的问题，如果计入，一个格式错误的请求就能让端点对所有人都不可用。408 和 429 说明上游过载，要计入；401 和 407 "
-"明确表示*网关自己的*凭据被拒，也要计入，因为用户没法修复它们。"
-
-#: ../developer/architecture.md:283
-msgid "Nor can one caller open a circuit by itself while the endpoint keeps serving other callers: its failure there counts, and its further failures, until it is served again, are skipped for up to `CIRCUIT_CALLER_WINDOW_SECONDS` if the endpoint has served somebody else since. An outage serves nobody, so it still opens the circuit at once. See [Endpoint health and circuit breaking](routing.md#endpoint-health-and-circuit-breaking)."
-msgstr "端点还在持续为其他调用方提供服务时，单个调用方也无法独自让熔断器打开：它在该端点上的失败照常计入；在它再次被服务之前，如果端点此后服务过其他人，它的后续失败在最多 `CIRCUIT_CALLER_WINDOW_SECONDS` 秒内会被跳过。真正的故障不会服务任何人，所以照样立刻让熔断器打开。见[端点健康与熔断](routing.md#endpoint-health-and-circuit-breaking)。"
-
-#: ../developer/architecture.md:203
-msgid ""
-"Separately, the routing file can turn on a probe that polls the `/health`"
-" path of the local endpoints it lists. The probe only reports; it never "
-"changes routing. See [The routing file](configuration.md#the-routing-"
-"file)."
-msgstr ""
-"另外，路由配置文件可以开启健康探测，定期轮询文件里列出的本地端点的 `/health` "
-"路径。探测只报告结果，从不改变路由。见[路由配置文件](configuration.md#the-routing-file)。"
-
-#: ../developer/architecture.md:207
+#: ../developer/architecture.md:211
 msgid "6. Logging"
 msgstr "6\\. 日志"
 
-#: ../developer/architecture.md:209
+#: ../developer/architecture.md:213
 msgid ""
-"After the response is produced, `CompletionsLogger` "
-"(`apps/backend/serving/servers/routers/completions_logging.py`) schedules"
-" two fire-and-forget side effects: a row in `api_logs`, and a "
-"`RoutingObservation` handed back to the router. `FixedRouter` ignores "
-"observations; online-learning routers use them to update their cost "
-"model."
+"`CompletionsLogger` "
+"(`apps/backend/serving/servers/routers/completions_logging.py`) writes "
+"the `api_logs` row in the background and hands a `RoutingObservation` "
+"back to the router. `FixedRouter` ignores it; learning routers update "
+"their cost model."
 msgstr ""
-"响应生成后，`CompletionsLogger`（`apps/backend/serving/servers/routers/completions_logging.py`）会发起两个后台任务，不等待结果：往"
-" `api_logs` 写一行，并把一个 `RoutingObservation` 交回给 router。`FixedRouter` "
-"会忽略这些观测；在线学习型的 router 用它们更新自己的成本模型。"
+"`CompletionsLogger`（`apps/backend/serving/servers/routers/completions_logging.py`）在后台写入"
+" `api_logs` 记录，并把一个 `RoutingObservation` 交回 router。`FixedRouter` 忽略它；会学习的"
+" router 用它更新成本模型。"
 
-#: ../developer/architecture.md:215
+#: ../developer/architecture.md:218
 msgid "The routing engine in detail"
 msgstr "路由引擎详解"
 
-#: ../developer/architecture.md:217
-msgid ""
-"Diagrams of the routers and how they execute a request are in [Routing "
-"Internals](routing-internals.md#router-types-and-execution-boundaries)."
-msgstr ""
-"各个 router 的示意图，以及它们怎样执行请求，见[路由内部机制](routing-internals.md#router-types-"
-"and-execution-boundaries)。"
-
 #: ../developer/architecture.md:220
+msgid ""
+"Diagrams are in [Router types and execution boundaries](routing.md"
+"#router-types-and-execution-boundaries)."
+msgstr "示意图见[router 类型与执行边界](routing.md#router-types-and-execution-boundaries)。"
+
+#: ../developer/architecture.md:223
 msgid "Routers and strategies"
 msgstr "router 与策略"
 
-#: ../developer/architecture.md:222
-msgid ""
-"There are exactly three modules under `apps/backend/routing/strategies/`,"
-" and they are not all the same kind of thing:"
-msgstr "`apps/backend/routing/strategies/` 下正好有三个模块，而它们并不是同一类东西："
-
 #: ../developer/architecture.md
-msgid "Module"
-msgstr "模块"
+msgid "Module in `apps/backend/routing/strategies/`"
+msgstr "`apps/backend/routing/strategies/` 中的模块"
 
 #: ../developer/architecture.md
 msgid "What it is"
@@ -579,175 +469,137 @@ msgstr "它是什么"
 
 #: ../developer/architecture.md
 msgid "`fixed.py`"
-msgstr ""
+msgstr "`fixed.py`"
 
 #: ../developer/architecture.md
 msgid ""
-"Registers the `fixed` strategy: weighted-random selection with automatic "
-"fallback, implemented by `FixedRouter` in "
-"`apps/backend/routing/routers.py`"
+"The `fixed` strategy: weighted-random selection with fallback, "
+"implemented by `FixedRouter` in `apps/backend/routing/routers.py`"
 msgstr ""
-"注册 `fixed` 策略：带自动回退的按权重随机选择，由 `apps/backend/routing/routers.py` 中的 "
+"`fixed` 策略：带回退的加权随机选择，由 `apps/backend/routing/routers.py` 中的 "
 "`FixedRouter` 实现"
 
 #: ../developer/architecture.md
 msgid "`routewise.py`"
-msgstr ""
+msgstr "`routewise.py`"
 
 #: ../developer/architecture.md
 msgid ""
-"Registers the `routewise` strategy: a cost-aware router that learns from "
+"The `routewise` strategy: a cost-aware router that learns from "
 "`RoutingObservation` feedback, implemented under "
 "`apps/backend/routing/routewise/`"
 msgstr ""
-"注册 `routewise` 策略：一个考虑成本的 router，会从 `RoutingObservation` 反馈中学习，实现在 "
+"`routewise` 策略：一个考虑成本、从 `RoutingObservation` 反馈中学习的 router，实现在 "
 "`apps/backend/routing/routewise/` 下"
 
 #: ../developer/architecture.md
 msgid "`weight.py`"
-msgstr ""
+msgstr "`weight.py`"
 
 #: ../developer/architecture.md
 msgid ""
-"Not a per-model router at all. `FixedRatioStrategy` splits a *weight "
-"budget* between the local and remote endpoint groups; it is used by "
-"`RoutingManager`, not by the router registry"
-msgstr ""
-"根本不是按模型选用的 router。`FixedRatioStrategy` 在本地和远程两组端点之间分配一份*权重预算*；用它的是 "
-"`RoutingManager`，不是 router 注册表"
+"Not a per-model router. `FixedRatioStrategy` splits a weight budget "
+"between local and remote endpoint groups for `RoutingManager`"
+msgstr "不是按模型的 router。`FixedRatioStrategy` 为 `RoutingManager` 在本地和远程端点组之间分配权重预算"
 
 #: ../developer/architecture.md:231
 msgid ""
-"`fixed` and `routewise` are the only values `router:` accepts. Selecting "
-"an unregistered name fails configuration validation with a message "
-"listing the known strategies. Each strategy declares a Pydantic params "
-"model with `extra=\"forbid\"`, so a typo in `router_params:` fails at "
-"boot instead of silently falling back to a default."
+"`router` accepts `fixed` or `routewise`; any other name is refused when "
+"the catalog or routing policy is saved. Each strategy's params model sets"
+" `extra=\"forbid\"`, so a typo in `router_params` is refused rather than "
+"ignored. To add one, see [Adding a routing strategy](routing.md#adding-a"
+"-routing-strategy)."
 msgstr ""
-"`router:` 只接受 `fixed` 和 `routewise` "
-"这两个值。写了未注册的名字，配置校验会失败，错误消息里会列出已知的策略。每个策略都声明了一个 `extra=\"forbid\"` 的 "
-"Pydantic 参数模型，所以 `router_params:` 里有拼写错误时，启动就会报错，而不是悄悄退回默认值。"
+"`router` 接受 `fixed` 或 `routewise`；保存模型目录或路由策略时，其他名称都会被拒绝。每个策略的参数模型都设置了 "
+"`extra=\"forbid\"`，所以 `router_params` "
+"中的拼写错误会被拒绝，而不是被忽略。要添加新策略，见[添加路由策略](routing.md#adding-a-routing-strategy)。"
 
-#: ../developer/architecture.md:241
+#: ../developer/architecture.md:236
 msgid "Two layers of \"strategy\""
 msgstr "两层「策略」"
 
-#: ../developer/architecture.md:243
-msgid "Two different things are called a strategy:"
-msgstr "有两样不同的东西都叫「策略」："
-
-#: ../developer/architecture.md:260
+#: ../developer/architecture.md:253
 msgid ""
-"`RoutingManager` only rewrites weights when the effective strategy is "
-"`fixed`; it returns without touching anything otherwise. Per-route "
-"weights declared in the model registry already encode a local/remote "
-"split, so a deployment that does not list endpoint pools in its routing "
-"config simply keeps its declared weights. On a gateway with a database "
-"the rewritten weights are not used at all; see [The routing "
-"file](configuration.md#the-routing-file)."
+"`RoutingManager` rewrites weights from the routing policy's local/remote "
+"split once at startup, and only when `default_router` is `fixed`. A "
+"gateway with a database still runs it, but selects from the catalog "
+"weights plus Admin overrides, so the rewrite has no effect there; see "
+"[Routes excluded from selection](routing.md#routes-excluded-from-"
+"selection)."
 msgstr ""
-"只有生效的策略是 `fixed` 时，`RoutingManager` "
-"才会重写权重；否则直接返回，什么都不动。模型注册表里给每条路由声明的权重本身已经体现了本地/远程的划分，所以部署如果没有在路由配置里列出端点池，就直接沿用声明的权重。有数据库的网关根本不用重写后的权重；见[路由配置文件](configuration.md"
-"#the-routing-file)。"
+"`RoutingManager` 在启动时按路由策略中的本地/远程划分改写一次权重，而且只在 `default_router` 为 `fixed`"
+" 时改写。有数据库的网关仍会运行它，但选择路由时使用的是模型目录中的权重加上 Admin "
+"的覆盖值，所以这次改写在那里不起作用；见[被排除在选择之外的路由](routing.md#routes-excluded-from-"
+"selection)。"
 
-#: ../developer/architecture.md:267
+#: ../developer/architecture.md:259
 msgid "Execution and composition"
 msgstr "执行与组合"
 
-#: ../developer/architecture.md:269
+#: ../developer/architecture.md:261
 msgid ""
-"Every router runs the endpoint it picked through a thin wrapper called a "
-"leaf. An experimental composition, `HybridRouter`, can also divide a "
-"model's routes into a local and a cloud pool and plan across the two; it "
-"is off unless a model opts in. [Routing Internals](routing-internals.md) "
-"describes both, with diagrams."
+"Every router runs its chosen endpoint through a thin wrapper called a "
+"leaf. An experimental composition, `HybridRouter`, splits a model's "
+"routes into a local and a cloud pool; a model opts in with "
+"`router_params.hybrid_composition: true`. See [Hybrid "
+"composition](routing.md#hybrid-composition)."
 msgstr ""
-"每个 router 都通过一层叫作叶子（leaf）的薄包装来执行它选中的端点。另外还有一个实验性的组合 "
-"`HybridRouter`，可以把一个模型的路由分成本地池和云端池，并在两者之间统筹规划；除非模型显式开启，否则它不生效。[路由内部机制"
-"](routing-internals.md)介绍了这两者，并附有示意图。"
+"每个 router 都通过一层称为 leaf 的薄包装来调用选中的端点。实验性的组合 `HybridRouter` "
+"把模型的路由分成本地池和云端池；模型通过 `router_params.hybrid_composition: true` "
+"选择启用。见[混合组合](routing.md#hybrid-composition)。"
 
-#: ../developer/architecture.md:275
+#: ../developer/architecture.md:266
 msgid "`provider` versus `endpoint_id`"
 msgstr "`provider` 与 `endpoint_id`"
 
-#: ../developer/architecture.md:277
-msgid "Two identifiers look similar and mean different things."
-msgstr "这两个标识符长得像，意思却不同。"
-
-#: ../developer/architecture.md:279
+#: ../developer/architecture.md:268
 msgid ""
 "`provider` is a label on the route. It defaults to the adapter kind and "
-"can be overridden per route with `provider:` in the model registry. It is"
-" what `api_logs.provider` records, what per-provider dashboards group by,"
-" and what the admin disable switch targets. Two local vLLM boxes can "
-"carry different provider labels so their traffic stays in separate "
-"cohorts. A route may not borrow a label that belongs to an adapter kind, "
-"including kinds added by backend extensions."
+"can be overridden per route. `api_logs.provider`, per-provider dashboards"
+" and the admin disable switch all use it. A route may not borrow a label "
+"that belongs to an adapter kind."
 msgstr ""
-"`provider` 是路由上的一个标签。它默认取 adapter 的 kind，也可以在模型注册表里用每条路由的 `provider:` "
-"覆盖。`api_logs.provider` 记录的就是它，按 provider 统计的仪表盘按它分组，管理员的禁用开关也作用在它上面。两台本地 "
-"vLLM 机器可以用不同的 provider 标签，让它们的流量分开统计。路由不能使用与某个 adapter kind 同名的标签，后端扩展新增的"
-" kind 也算在内。"
+"`provider` 是路由上的标签。它默认等于 adapter kind，可以按路由覆盖。`api_logs.provider`、按 "
+"provider 统计的仪表盘和管理员的禁用开关都使用它。路由不能借用属于某个 adapter kind 的标签。"
 
-#: ../developer/architecture.md:287
+#: ../developer/architecture.md:273
 #, python-brace-format
 msgid ""
-"`endpoint_id` is the unique key for *one endpoint of one model*, written "
-"`{model_id}:{location}`:"
-msgstr "`endpoint_id` 是*某个模型的某个端点*的唯一键，写作 `{model_id}:{location}`："
-
-#: ../developer/architecture.md:290
-msgid ""
-"a host of `localhost`, `127.0.0.1`, `0.0.0.0` or `host.docker.internal` "
-"yields `local-<port>`, or `local` when there is no port;"
+"`endpoint_id` identifies one endpoint of one model: "
+"`{model_id}:{location}`. A host of `localhost`, `127.0.0.1`, `0.0.0.0` or"
+" `host.docker.internal` gives `local-<port>` (or `local`); anything else "
+"is named from the kind or hostname, for example `<model>:openrouter-api`."
+" Latency profiles, availability and circuit state are keyed on it. Do not"
+" read ownership from the suffix: a gateway-owned server on a LAN address "
+"gets `<name>-api`, and an admin-supplied `route_id` is used as written."
 msgstr ""
-"主机为 `localhost`、`127.0.0.1`、`0.0.0.0` 或 `host.docker.internal` 时，得到 "
-"`local-<port>`，没有端口时是 `local`；"
+"`endpoint_id` 标识某个模型的一个端点：`{model_id}:{location}`。主机为 "
+"`localhost`、`127.0.0.1`、`0.0.0.0` 或 `host.docker.internal` 时得到 "
+"`local-<port>`（或 `local`）；其他情况按 kind 或主机名命名，例如 `<model>:openrouter-"
+"api`。延迟画像、可用性和熔断状态都以它为键。不要根据后缀判断机器归属：网关自有、但位于局域网地址的服务器会得到 "
+"`<name>-api`，管理员提供的 `route_id` 则原样使用。"
 
-#: ../developer/architecture.md:292
-msgid ""
-"otherwise the location is derived from the kind or hostname, e.g. `<model"
-">:openrouter-api`."
-msgstr "否则位置由 kind 或主机名派生，例如 `<model>:openrouter-api`。"
-
-#: ../developer/architecture.md:295
-msgid ""
-"Latency profiles, availability tracking, and circuit-breaker state are "
-"all keyed on `endpoint_id`, which is why two route legs pointing at the "
-"same base URL with different pinned upstreams still get independent "
-"breakers."
-msgstr ""
-"延迟画像、可用性追踪和熔断器状态都以 `endpoint_id` 为键。所以两条路由分支即使指向同一个 base URL，只要 pin "
-"住的上游不同，熔断器也是各自独立的。"
-
-#: ../developer/architecture.md:299
-msgid ""
-"The suffix is not an ownership signal. A gateway-owned server on a LAN "
-"address is stamped from its hostname like any remote service, and an "
-"admin-supplied `route_id` becomes the `endpoint_id` verbatim. Do not "
-"infer \"is this machine mine?\" from the string."
-msgstr ""
-"后缀说明不了机器归谁。网关自己的服务器如果用的是局域网地址，也会像远程服务一样按主机名生成后缀；管理员提供的 `route_id` 则会原样用作 "
-"`endpoint_id`。不要靠这个字符串判断「这台机器是不是我的」。"
-
-#: ../developer/architecture.md:304
+#: ../developer/architecture.md:281
 msgid "Adapters"
 msgstr "adapter"
 
-#: ../developer/architecture.md:306
+#: ../developer/architecture.md:283
 msgid ""
-"An **adapter** is the object that knows how to talk to one provider: it "
-"builds the URL and headers, holds the API key (or a rotating pool of "
-"keys), translates the request body and the response, normalizes usage "
-"accounting, and raises errors in a shape the router understands. Adapters"
-" live in `apps/backend/serving/adapters/` and are constructed from the "
-"model registry by `_make_adapter` in "
-"`apps/backend/serving/servers/registry.py`."
+"An adapter talks to one provider: it builds the URL and headers, holds "
+"the API key or key pool, translates the request and response, normalizes "
+"usage and raises errors the router understands. `_make_adapter` in "
+"`apps/backend/serving/servers/registry.py` builds adapters from the model"
+" registry, first checking factories registered by [backend extensions"
+"](backend-extensions.md)."
 msgstr ""
-"**adapter** 负责和某一个 provider 通信：构造 URL 和请求头，持有 API key（或一组轮换使用的 "
-"key），转换请求体和响应，统一用量统计，并以 router 能理解的格式抛出错误。adapter 放在 "
-"`apps/backend/serving/adapters/` 下，由 "
-"`apps/backend/serving/servers/registry.py` 里的 `_make_adapter` 根据模型注册表构造。"
+"adapter 负责与一个 provider 通信：构造 URL 和请求头，持有 API key 或 key "
+"池，转换请求和响应，规范化用量，并抛出 router "
+"能理解的错误。`apps/backend/serving/servers/registry.py` 中的 `_make_adapter` "
+"根据模型注册表构建 adapter，并先检查[后端扩展](backend-extensions.md)注册的工厂。"
+
+#: ../developer/architecture.md
+msgid "Module"
+msgstr "模块"
 
 #: ../developer/architecture.md
 msgid "Class"
@@ -759,11 +611,11 @@ msgstr "覆盖范围"
 
 #: ../developer/architecture.md
 msgid "`openai_compat.py`"
-msgstr ""
+msgstr "`openai_compat.py`"
 
 #: ../developer/architecture.md
 msgid "`OpenAICompatAdapter`"
-msgstr ""
+msgstr "`OpenAICompatAdapter`"
 
 #: ../developer/architecture.md
 msgid ""
@@ -773,23 +625,23 @@ msgstr "所有 OpenAI 兼容的服务，包括本地的 vLLM、SGLang 和 Ollama
 
 #: ../developer/architecture.md
 msgid "`openrouter.py`"
-msgstr ""
+msgstr "`openrouter.py`"
 
 #: ../developer/architecture.md
 msgid "`OpenRouterAdapter`"
-msgstr ""
+msgstr "`OpenRouterAdapter`"
 
 #: ../developer/architecture.md
-msgid "OpenRouter; see [Routing through OpenRouter](openrouter.md)"
-msgstr "OpenRouter；见[通过 OpenRouter 路由](openrouter.md)"
+msgid "OpenRouter; see [OpenRouter routes](adding-models.md#openrouter-routes)"
+msgstr "OpenRouter；见 [OpenRouter 路由](adding-models.md#openrouter-routes)"
 
 #: ../developer/architecture.md
 msgid "`anthropic.py`"
-msgstr ""
+msgstr "`anthropic.py`"
 
 #: ../developer/architecture.md
 msgid "`AnthropicAdapter`"
-msgstr ""
+msgstr "`AnthropicAdapter`"
 
 #: ../developer/architecture.md
 msgid "The Anthropic Messages API directly"
@@ -797,11 +649,11 @@ msgstr "直连 Anthropic Messages API"
 
 #: ../developer/architecture.md
 msgid "`claude.py`"
-msgstr ""
+msgstr "`claude.py`"
 
 #: ../developer/architecture.md
 msgid "`ClaudeAdapter`"
-msgstr ""
+msgstr "`ClaudeAdapter`"
 
 #: ../developer/architecture.md
 msgid "Claude served through Google Vertex"
@@ -809,82 +661,55 @@ msgstr "通过 Google Vertex 提供的 Claude"
 
 #: ../developer/architecture.md
 msgid "`gemini.py`"
-msgstr ""
+msgstr "`gemini.py`"
 
 #: ../developer/architecture.md
 msgid "`GeminiAdapter`"
-msgstr ""
+msgstr "`GeminiAdapter`"
 
 #: ../developer/architecture.md
 msgid "The Gemini API"
 msgstr "Gemini API"
 
-#: ../developer/architecture.md:321
-#, python-brace-format
+#: ../developer/architecture.md:298
 msgid ""
-"`_make_adapter` first checks the factory table populated by explicitly "
-"enabled [backend extensions](backend-extensions.md). Without a registered"
-" factory, it maps a route's `kind:` onto a built-in adapter and pre-seeds"
-" provider-specific configuration — a usage profile, a non-standard chat "
-"path, or whether it is safe to send `stream_options: {include_usage: "
-"true}`. An extension factory instead receives the configuration "
-"dictionary before those defaults. Adding a provider that is already "
-"OpenAI-compatible usually means selecting a profile, not writing a new "
-"class; see [Adding a New Model](adding-models.md)."
+"A route with `api_keys:` (a list) gets a key pool. A key that fails with "
+"429, 401, 402, 403, 408, 425, a 5xx or a timeout hands the request to the"
+" next key; a key is muted for 20 seconds only when no untried key is "
+"left. Request errors such as 400 and 422 are not rotated, since they fail"
+" on every key. A completion is never re-sent to the same key, because "
+"that would bill it twice."
 msgstr ""
-"`_make_adapter` 先查工厂表，表里的工厂由显式启用的[后端扩展](backend-"
-"extensions.md)注册。没有注册的工厂时，它把路由的 `kind:` 映射到某个内置 adapter，并预填该 provider "
-"特有的配置：用量 profile、非标准的 chat 路径，或者能否放心发送 `stream_options: {include_usage: "
-"true}`。扩展工厂则在这些默认值填入之前就拿到配置字典。接入一个本来就兼容 OpenAI 的 provider，通常只需选一个 "
-"profile，不必写新类；见[添加新模型](adding-models.md)。"
+"带 `api_keys:`（列表）的路由会得到一个 key 池。某个 key 遇到 429、401、402、403、408、425、5xx "
+"或超时时，请求交给下一个 key；只有在没有未试过的 key 时，失败的 key 才会被静默 20 秒。400、422 这类请求本身的错误在每个 "
+"key 上都会失败，所以不会轮换。补全请求绝不会重发给同一个 key，否则会被计费两次。"
 
-#: ../developer/architecture.md:330
-msgid ""
-"Key rotation is an adapter concern. When a route declares `api_keys:` "
-"(plural), `OpenAICompatAdapter` draws from a pool: a key that hits a key-"
-"specific or transient failure (429, 401/402/403, 408/425, 5xx, timeouts) "
-"hands the request to the next key. Rotation comes before muting — while "
-"another key is still untried the failing one keeps its place in the pool,"
-" and only a key the request runs out of alternatives on is muted, for 20 "
-"seconds. Request-scoped errors such as 400 and 422 fail on every key, so "
-"they propagate immediately instead of burning the pool. A completion POST"
-" is never retried against the *same* key — re-sending a non-idempotent "
-"generation would double-bill it. Resilience comes from the router's "
-"fallback chain, not from blind retries."
-msgstr ""
-"key 轮换由 adapter 负责。路由声明了 `api_keys:`（复数）时，`OpenAICompatAdapter` 从一个 key "
-"池里取 key：某个 key 遇到与 key "
-"相关的失败或临时性失败（429、401/402/403、408/425、5xx、超时）时，请求会转给下一个 "
-"key。先轮换，后静默：只要还有没试过的 key，出错的 key 就仍留在池里；只有请求已经无 key 可换时，最后出错的那个 key 才会被静默"
-" 20 秒。400、422 这类由请求本身导致的错误，换哪个 key 都会失败，所以直接向上抛出，不会白白耗尽整个池。补全的 POST "
-"请求绝不会用*同一个* key 重试，因为重发非幂等的生成会被重复计费。容错靠的是 router 的回退链，而不是盲目重试。"
-
-#: ../developer/architecture.md:341
+#: ../developer/architecture.md:304
 msgid "Streaming timeouts"
 msgstr "流式超时"
 
-#: ../developer/architecture.md:343
+#: ../developer/architecture.md:306
 msgid ""
-"An upstream that stops sending mid-generation while keeping the socket "
-"open is a fault the gateway has to notice on its own. Waiting for the "
-"connection to break means finding out only once something further out "
-"gives up — and by then every stream committed to that endpoint has "
-"already died together, while new ones kept being dispatched to it. Four "
-"clocks cover a streaming request, staggered so the innermost one reports "
-"first:"
-msgstr "上游生成到一半不再发数据，套接字却还开着，这种故障网关必须自己发现。如果干等连接断开，只有更外层的某个环节放弃时才会知道出了问题；到那时，发往这个端点的所有流已经一起挂掉，而新请求还在不断派发过去。一个流式请求由四个计时器把关，它们的时长有意错开，保证最内层的最先触发："
+"The gateway has to notice an upstream that stops sending but keeps the "
+"socket open; otherwise every stream on that endpoint dies together when "
+"an outer proxy gives up. These clocks fire in order, innermost first:"
+msgstr "上游停止发送却不关闭连接时，网关必须自己发现；否则等到外层代理放弃时，该端点上的所有流会一起失败。下面这些计时器从最内层开始依次触发："
 
 #: ../developer/architecture.md
-msgid "Clock"
-msgstr "计时器"
+msgid "Setting"
+msgstr "设置项"
+
+#: ../developer/architecture.md
+msgid "Default"
+msgstr "默认值"
 
 #: ../developer/architecture.md
 msgid "`STREAM_IDLE_TIMEOUT_SECONDS`"
-msgstr ""
+msgstr "`STREAM_IDLE_TIMEOUT_SECONDS`"
 
 #: ../developer/architecture.md
 msgid "180s"
-msgstr ""
+msgstr "180 秒"
 
 #: ../developer/architecture.md
 msgid "Gap between two data-bearing SSE frames, after the first"
@@ -892,19 +717,31 @@ msgstr "首帧之后，两个带数据 SSE 帧之间的间隔"
 
 #: ../developer/architecture.md
 msgid "`STREAM_MAX_IDLE_S`"
-msgstr ""
+msgstr "`STREAM_MAX_IDLE_S`"
 
 #: ../developer/architecture.md
 msgid "240s"
-msgstr ""
+msgstr "240 秒"
 
 #: ../developer/architecture.md
 msgid "Same gap on `/v1/messages`, counted in *forwarded* frames"
 msgstr "`/v1/messages` 上的同一间隔，按*转发出去的*帧计算"
 
 #: ../developer/architecture.md
+msgid "`STREAM_MAX_FIRST_FRAME_IDLE_S`"
+msgstr "`STREAM_MAX_FIRST_FRAME_IDLE_S`"
+
+#: ../developer/architecture.md
+msgid "300s"
+msgstr "300 秒"
+
+#: ../developer/architecture.md
+msgid "First frame on `/v1/messages`; never less than `STREAM_MAX_IDLE_S`"
+msgstr "`/v1/messages` 上的第一帧；不小于 `STREAM_MAX_IDLE_S`"
+
+#: ../developer/architecture.md
 msgid "`STREAM_FIRST_BYTE_TIMEOUT_SECONDS`"
-msgstr ""
+msgstr "`STREAM_FIRST_BYTE_TIMEOUT_SECONDS`"
 
 #: ../developer/architecture.md
 msgid "unset"
@@ -916,255 +753,158 @@ msgstr "从建连到首帧，即 prefill 阶段"
 
 #: ../developer/architecture.md
 msgid "`STREAM_REQUEST_TIMEOUT_SECONDS`"
-msgstr ""
+msgstr "`STREAM_REQUEST_TIMEOUT_SECONDS`"
 
 #: ../developer/architecture.md
 msgid "3600s"
-msgstr ""
+msgstr "3600 秒"
 
 #: ../developer/architecture.md
 msgid "The whole streaming response"
 msgstr "整个流式响应"
 
-#: ../developer/architecture.md:357
+#: ../developer/architecture.md:318
 msgid ""
-"The first-byte and inter-chunk budgets are separate on purpose. A socket-"
-"level read timeout (`sock_read`) restarts on every read, so it cannot "
-"give a long prefill room without giving a stalled backend the same room. "
-"Prefill is legitimately slow — a 1M-token prompt can take more than two "
-"minutes to produce its first token on a self-hosted server — while the "
-"gap between chunks after that is a few milliseconds. So only the inter-"
-"chunk budget carries a default; a non-positive value disables either. "
-"`/v1/messages` keeps its own, looser ceiling because it counts frames the"
-" gateway forwards, and a buffered XML tool call can hold one back for a "
-"minute-plus without the upstream being idle at all."
+"Prefill and inter-chunk time have separate budgets because a 1M-token "
+"prompt can take minutes to reach its first token while later chunks "
+"arrive milliseconds apart. `0` turns off either of the first-byte and "
+"inter-chunk clocks. `/v1/messages` is looser because a buffered XML tool "
+"call can hold back a forwarded frame for over a minute. An expired inter-"
+"chunk budget raises `UpstreamStreamIdleError`, which counts against the "
+"endpoint's circuit instead of ending the stream with a fake `[DONE]`."
 msgstr ""
-"首字节超时和帧间超时是有意分开的。套接字层的读超时（`sock_read`）每读一次就重新计时，给漫长的 prefill "
-"留足时间，也就等于给卡住的后端留了同样多的时间。prefill 本来就慢——在自建服务器上，100 万 token 的 prompt "
-"可能要两分多钟才出第一个 "
-"token——而之后帧与帧的间隔只有几毫秒。所以只有帧间超时有默认值；两者都可以设为非正数来关闭。`/v1/messages` "
-"有自己更宽松的上限，因为它数的是网关转发出去的帧：缓冲中的 XML 工具调用可能把一帧压住一分多钟，而上游其实一直没闲着。"
+"预填充和数据块间隔分别计时，因为 100 万 token 的提示词可能要几分钟才出第一个 token，而之后的数据块间隔只有几毫秒。`0` "
+"可以关闭首字节计时器或块间计时器。`/v1/messages` 更宽松，因为缓冲中的 XML "
+"工具调用可能让一帧转发推迟一分多钟。块间时限耗尽会抛出 `UpstreamStreamIdleError`，计入该端点的熔断状态，而不是用伪造的 "
+"`[DONE]` 结束流。"
 
-#: ../developer/architecture.md:367
-msgid ""
-"When the inter-chunk budget expires, `OpenAICompatAdapter` raises "
-"`UpstreamStreamIdleError` — distinct from the end-of-body "
-"`_INCOMPLETE_STREAM_ERROR`, which is what a deployment proxy's own read "
-"timeout looks like from here. It propagates as a `stream_exception`, so "
-"the endpoint loses availability and its circuit opens, rather than the "
-"partial answer being capped with a fabricated `[DONE]`."
-msgstr ""
-"帧间超时触发时，`OpenAICompatAdapter` 抛出 `UpstreamStreamIdleError`。它不同于响应体提前结束时的 "
-"`_INCOMPLETE_STREAM_ERROR`，后者是部署代理自己的读超时在网关这边的表现。前者以 `stream_exception` "
-"的形式向上传播，于是端点的可用率下降、熔断器打开，而不是给残缺的回答补上一个伪造的 `[DONE]`。"
-
-#: ../developer/architecture.md:374
+#: ../developer/architecture.md:326
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/architecture.md:376
-msgid ""
-"Three YAML files describe a deployment: a model registry, a routing "
-"config, and an alert config. **They are not at fixed paths.** "
-"`resolve_config_path()` in `apps/backend/serving/config/distribution.py` "
-"resolves each one through a three-step precedence:"
-msgstr ""
-"一个部署由三个 YAML "
-"文件描述：模型注册表、路由配置和告警配置。**它们的路径不是固定的**。`apps/backend/serving/config/distribution.py`"
-" 里的 `resolve_config_path()` 按三级优先顺序逐个确定它们的路径："
-
-#: ../developer/architecture.md:381
-msgid ""
-"**An explicit environment variable** — `MODELS_CONFIG_PATH`, "
-"`ROUTING_CONFIG_PATH`, `ALERTS_CONFIG_PATH`. Always wins."
-msgstr "**显式的环境变量**——`MODELS_CONFIG_PATH`、`ROUTING_CONFIG_PATH`、`ALERTS_CONFIG_PATH`。总是优先。"
-
-#: ../developer/architecture.md:383
-msgid ""
-"**The distribution manifest** — a single versioned YAML naming the site "
-"identity and the config-file locations, pointed at by "
-"`DISTRIBUTION_CONFIG_PATH`. Relative `paths:` in the manifest resolve "
-"against the manifest's own directory, so a deployment overlay under "
-"`distributions/<name>/` is self-contained."
-msgstr ""
-"**发行版的 manifest**——一个带版本的 YAML 文件，写明站点身份和各配置文件的位置，由 "
-"`DISTRIBUTION_CONFIG_PATH` 指向。manifest 里 `paths:` 的相对路径以 manifest "
-"所在目录为基准，所以 `distributions/<name>/` 下的部署 overlay 自成一体。"
-
-#: ../developer/architecture.md:388
-msgid ""
-"**Built-in defaults** — `config/examples/models.openrouter.yaml` and "
-"`config/examples/routing.minimal.yaml`. This is what a fresh clone with "
-"no environment and no overlay gets: supply one `OPENROUTER_API_KEY` and "
-"the gateway serves a working catalog. The alert default is "
-"`config/alerts.yaml`, a path this repository does not ship — with no "
-"alert file present the built-in thresholds apply."
-msgstr ""
-"**内置默认值**——`config/examples/models.openrouter.yaml` 和 "
-"`config/examples/routing.minimal.yaml`。新克隆的仓库既没设环境变量、也没有 overlay "
-"时，用的就是它们：只要提供一个 `OPENROUTER_API_KEY`，网关就能提供一份可用的模型目录。告警配置的默认路径是 "
-"`config/alerts.yaml`，但本仓库不带这个文件；没有告警文件时，使用内置阈值。"
-
-#: ../developer/architecture.md:395
-msgid ""
-"The manifest is opt-in and defaults to a dry run. With "
-"`DISTRIBUTION_CONFIG_PATH` set but `DISTRIBUTION_CONFIG_MODE` unset, the "
-"mode is `dark`: the manifest is loaded, validated, and compared against "
-"the paths that are actually in effect — logging a per-file digest "
-"comparison — while resolution stays unchanged. Setting "
-"`DISTRIBUTION_CONFIG_MODE=active` makes manifest paths effective, and in "
-"that mode a manifest that fails to load leaves the gateway with no "
-"models, logged at `CRITICAL`, rather than quietly serving a different "
-"registry than the deployment named."
-msgstr ""
-"manifest 需要主动启用，默认只做试运行。设置了 `DISTRIBUTION_CONFIG_PATH` 而没设 "
-"`DISTRIBUTION_CONFIG_MODE` 时，模式为 `dark`：网关会加载、校验 "
-"manifest，把它和实际生效的路径逐个文件比对摘要并写进日志，但实际使用的路径不变。设置 "
-"`DISTRIBUTION_CONFIG_MODE=active` 后，manifest 里的路径才真正生效；这种模式下如果 manifest "
-"加载失败，网关宁可不加载任何模型，并记一条 `CRITICAL` 日志，也不会悄悄改用部署没有指定的注册表。"
-
-#: ../developer/architecture.md:404
+#: ../developer/architecture.md:328
 #, python-brace-format
 msgid ""
-"All three YAML files support environment interpolation, but not the same "
-"dialect. The model registry expands only a whole value that is exactly "
-"`${VAR}` (`registry.py`); the routing and alert files run a recursive "
-"regex expander that also handles `${VAR:-default}` and variables embedded"
-" in longer strings (`_expand_env_value` in "
-"`apps/backend/routing/config.py`). A route whose `api_key`, `api_keys`, "
-"or `base_url` expands to nothing is either skipped (if the route is "
-"marked optional) or fails startup — never registered as a dead endpoint."
+"Application documents are validated JSON settings in `app_config`: "
+"`MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`, "
+"`SITE_BRANDING` and `SSO_PROVIDERS`. No YAML file is read at runtime, and"
+" a fresh gateway serves no models until an administrator configures it. "
+"Credentials are secret settings that documents reference as `${NAME}`."
 msgstr ""
-"三份 YAML 文件都支持环境变量插值，但支持的写法不一样。模型注册表只展开整个值恰好是 `${VAR}` "
-"的情况（`registry.py`）；路由配置和告警文件用的是递归的正则展开器，还能处理 `${VAR:-default}` "
-"和嵌在更长字符串里的变量（`apps/backend/routing/config.py` 里的 "
-"`_expand_env_value`）。如果路由的 `api_key`、`api_keys` 或 `base_url` "
-"展开后为空，这条路由要么被跳过（标记为可选时），要么导致启动失败，绝不会注册成一个死端点。"
+"应用文档是 `app_config` 中经过校验的 JSON "
+"设置项：`MODEL_CATALOG`、`ROUTING_POLICY`、`ALERT_RULES`、`SITE_CONFIGURATION`、`SITE_BRANDING`"
+" 和 `SSO_PROVIDERS`。运行时不读取任何 YAML 文件，全新的网关在管理员配置之前不提供任何模型。凭据是秘密设置项，文档用 "
+"`${NAME}` 引用它们。"
 
-#: ../developer/architecture.md:413
+#: ../developer/architecture.md:334
+#, python-brace-format
 msgid ""
-"See [Configuration](configuration.md) for the field-by-field reference "
-"and [Quickstart](router-tutorial.md) for a working end-to-end example."
-msgstr "逐字段的参考见[配置](configuration.md)，可运行的端到端示例见[快速开始](router-tutorial.md)。"
+"Admin route edits apply across backend processes without a restart, and "
+"requests in flight keep the router and feedback they started with. "
+"Catalog, routing-policy and alert-rule changes need a restart. See "
+"[Configuration](configuration.md) and the {download}`accepted design "
+"<../agents/specs/2026-11-08-database-only-configuration.md>`."
+msgstr ""
+"在 Admin 中修改路由会在各个后端进程生效，无需重启，进行中的请求仍沿用开始时的 router "
+"和反馈。修改模型目录、路由策略和告警规则需要重启。见[配置](configuration.md)和{download}`accepted "
+"design <../agents/specs/2026-11-08-database-only-configuration.md>`。"
 
-#: ../developer/architecture.md:416
+#: ../developer/architecture.md:340
 msgid "Storage"
 msgstr "存储"
 
-#: ../developer/architecture.md:418
+#: ../developer/architecture.md:342
 msgid ""
-"Persistence is defined by two abstract base classes in "
-"`apps/backend/serving/storage/base.py`:"
-msgstr "持久化由 `apps/backend/serving/storage/base.py` 中的两个抽象基类定义："
-
-#: ../developer/architecture.md:421
-msgid ""
-"**`OperationalStore`** — accounts, API keys, roles, quotas, admin-managed"
-" providers and routes, runtime settings."
-msgstr "**`OperationalStore`**——账号、API key、角色、配额、管理员管理的 provider 与路由、运行时设置。"
-
-#: ../developer/architecture.md:423
-msgid "**`LogStore`** — the request log."
-msgstr "**`LogStore`**——请求日志。"
-
-#: ../developer/architecture.md:425
-msgid ""
-"Postgres implements both (`postgres_operational.py`, `postgres_log.py`). "
-"`CachedOperationalStore` wraps the operational store with an in-process "
-"cache, because auth resolves against it on every single request."
+"`apps/backend/serving/storage/base.py` defines `OperationalStore` "
+"(accounts, API keys, roles, quotas, admin-managed providers and routes, "
+"runtime settings) and `LogStore` (the request log). Postgres implements "
+"both (`postgres_operational.py`, `postgres_log.py`); "
+"`CachedOperationalStore` caches the operational store because "
+"authentication reads it on every request."
 msgstr ""
-"Postgres "
-"实现了这两个接口（`postgres_operational.py`、`postgres_log.py`）。`CachedOperationalStore`"
-" 在运行数据存储外面包了一层进程内缓存，因为每个请求做认证时都要查它。"
+"`apps/backend/serving/storage/base.py` 定义了 `OperationalStore`（账户、API "
+"key、角色、配额、由管理员管理的 provider 和路由、运行时设置）和 `LogStore`（请求日志）。两者都由 Postgres "
+"实现（`postgres_operational.py`、`postgres_log.py`）；因为每个请求的认证都要读取运行数据存储，所以由 "
+"`CachedOperationalStore` 为它加缓存。"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:348
 msgid ""
-"The schema, the request log table `api_logs` and its rollups included, "
-"comes from the versioned migrations in `apps/backend/migrations/`; the "
-"backend creates no tables of its own. Columns of `api_logs` worth "
-"knowing: `request_id`, `model_id`, `provider`, `served_model_id` / "
-"`served_endpoint_id` (which endpoint actually answered, as opposed to "
-"what the client asked for), `ttft_ms` and `latency_ms`, the token counts,"
-" `cost_usd` (what the caller is billed, from the model's own pricing) and"
-" `upstream_cost_usd` (what the upstream reported, when it reports one)."
+"The schema comes only from the migrations in `apps/backend/migrations/`. "
+"A deploy applies them before restarting the backend, and the backend "
+"refuses to start on a database they have not reached; see "
+"[Database](database.md). Useful `api_logs` columns: `request_id`, "
+"`model_id`, `provider`, `served_model_id` and `served_endpoint_id` (what "
+"actually answered), `ttft_ms`, `latency_ms`, token counts, `cost_usd` "
+"(what the caller is billed) and `upstream_cost_usd` (what the upstream "
+"reported)."
 msgstr ""
-"包括请求日志表 `api_logs` 和它的汇总表在内，表结构都来自 `apps/backend/migrations/` "
-"里有版本的迁移；后端自己不建任何表。`api_logs` "
-"值得了解的列有：`request_id`、`model_id`、`provider`、`served_model_id` / "
-"`served_endpoint_id`（实际作答的模型和端点，不一定是客户端请求的那个）、`ttft_ms` 和 `latency_ms`、各项"
-" token 计数、`cost_usd`（按模型自身定价向调用方收取的费用）和 "
-"`upstream_cost_usd`（上游报告的费用，上游报告了才有）。"
+"数据库结构只来自 `apps/backend/migrations/` "
+"中的迁移。部署会在重启后端之前应用迁移，数据库没有迁移到位时后端拒绝启动；见[数据库](database.md)。`api_logs` "
+"中常用的列：`request_id`、`model_id`、`provider`、`served_model_id` 和 "
+"`served_endpoint_id`（实际响应的模型和端点）、`ttft_ms`、`latency_ms`、各项 token "
+"数、`cost_usd`（向调用方收取的费用）和 `upstream_cost_usd`（上游报告的费用）。"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:356
 msgid ""
-"A deploy applies the migrations before it restarts the backend, and the "
-"backend refuses to start on a database they have not reached. Each "
-"migration statement waits for a table lock only briefly: an `ALTER TABLE`"
-" that queued behind a long query would block every reader behind it. See "
-"[Database](database.md)."
+"With `DB_ENABLED=false` the gateway reads its documents from environment "
+"values and still routes requests, without request logging or accounts. "
+"Stage 1 of the [Quickstart](router-tutorial.md) runs this way."
 msgstr ""
-"部署时先执行迁移，再重启后端；数据库没迁移到位，后端就拒绝启动。每条迁移语句只短暂等待表锁：一条排在长查询后面的 `ALTER "
-"TABLE`，会把排在它后面的所有读操作都堵住。见[数据库](database.md)。"
+"设置 `DB_ENABLED=false` 时，网关从环境变量读取文档，仍然可以路由请求，但没有请求日志和账户。[快速开始](router-"
+"tutorial.md)的第 1 阶段就是这样运行的。"
 
-#: ../developer/architecture.md:441
-msgid ""
-"The gateway starts without a database. `/health` then reports "
-"`database_connected: false`, and request logging and accounts are "
-"unavailable, but routing and completions still work — which is what makes"
-" the router tutorial's first stage runnable with no Postgres at all."
-msgstr ""
-"没有数据库，网关也能启动。这时 `/health` 报告 `database_connected: "
-"false`，请求日志和账号功能不可用，但路由和补全照常工作。router 教程的第一阶段能完全不装 Postgres 就跑起来，靠的就是这一点。"
-
-#: ../developer/architecture.md:446
+#: ../developer/architecture.md:360
 msgid "Observability"
 msgstr "可观测性"
 
-#: ../developer/architecture.md:448
-msgid "The gateway reports through these; it has no Prometheus exporter:"
-msgstr "网关通过以下途径对外报告状态，它没有 Prometheus exporter："
+#: ../developer/architecture.md:362
+msgid "There is no Prometheus exporter. The gateway reports through:"
+msgstr "网关没有 Prometheus exporter，而是通过以下途径报告状态："
 
-#: ../developer/architecture.md:450
+#: ../developer/architecture.md:364
 msgid ""
-"**Structured logs.** `RequestLogMiddleware` emits one record per HTTP "
-"request; `apps/backend/serving/utils/logging.py` shapes them and "
-"suppresses noise from health-probe paths unless `LOG_LEVEL=DEBUG`."
+"**Structured logs**, one record per request, formatted by "
+"`apps/backend/serving/utils/logging.py`. Health-probe noise is hidden "
+"unless `LOG_LEVEL=DEBUG`."
 msgstr ""
-"**结构化日志**。`RequestLogMiddleware` 为每个 HTTP "
-"请求输出一条记录；`apps/backend/serving/utils/logging.py` 负责格式化，并且除非 "
-"`LOG_LEVEL=DEBUG`，否则会过滤掉健康探测路径产生的噪声。"
+"**结构化日志**，每个请求一条，由 `apps/backend/serving/utils/logging.py` 格式化。除非 "
+"`LOG_LEVEL=DEBUG`，健康探测产生的噪音会被隐藏。"
 
-#: ../developer/architecture.md:453
+#: ../developer/architecture.md:367
 msgid ""
-"**The request log.** `api_logs` is the durable record and the source for "
-"the admin dashboards and usage reporting."
-msgstr "**请求日志**。`api_logs` 持久保存请求记录，也是管理员仪表盘和用量报表的数据来源。"
+"**The request log** (`api_logs`), the source for admin dashboards and "
+"usage."
+msgstr "**请求日志**（`api_logs`），是管理仪表盘和用量统计的数据来源。"
 
-#: ../developer/architecture.md:461
+#: ../developer/architecture.md:368
 msgid ""
-"**Alerting.** `alert_slack()` and `alert_on_transition()` in "
-"`apps/backend/serving/observability/alerts.py` post through an `AlertSink` to "
-"one Slack or WeCom webhook, selected in Admin Configuration. Channel changes "
-"take effect after a restart. Thresholds come from the alert config "
-"resolved by the same `resolve_config_path()` chain; with no alert file "
-"present the built-in thresholds apply. The circuit breaker pages on "
-"`circuit_open` transitions and on upstream-credential rejections, with "
-"per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence "
-"instead of flooding."
+"**Health endpoints.** `/health` returns 200 (`status: \"degraded\"` when "
+"a store is down) and 503 only when every store is unreachable. "
+"`/health/ready` returns 503 unless everything is up. `/health/deep` adds "
+"per-endpoint availability and circuit state. Anonymous callers see only "
+"`status`; all three share one store probe for two seconds."
 msgstr ""
-"**告警**。`apps/backend/serving/observability/alerts.py` 里的 `alert_slack()` "
-"和 `alert_on_transition()` 通过 `AlertSink`，把告警发送到在管理台 Configuration "
-"中选定的一个 Slack 或企业微信 webhook。渠道变更在重启后生效。阈值取自告警配置，它的路径同样由 "
-"`resolve_config_path()` 这条链确定；没有告警文件时使用内置阈值。熔断器切换到 "
-"`circuit_open`、或者上游凭据被拒时，都会发告警；每个端点有各自的冷却时间，持续存在的故障会按固定间隔重复告警，而不会刷屏。"
+"**健康检查端点**。`/health` 返回 200（某个存储不可用时为 `status: "
+"\"degraded\"`），只有所有存储都不可达时才返回 503。`/health/ready` 只要有任何一项不可用就返回 "
+"503。`/health/deep` 额外给出每个端点的可用性和熔断状态。匿名调用方只能看到 `status`；三者在两秒内共用同一次存储探测。"
 
-#: ../developer/architecture.md:470
+#: ../developer/architecture.md:373
+msgid "**Alerts.** `alert_slack()` and `alert_on_transition()` in `apps/backend/serving/observability/alerts.py` post to one Slack or WeCom webhook, set in **Admin → Settings → Alerts**. Thresholds come from `ALERT_RULES`. A channel change needs a restart unless the `alerts.runtime` live group is active; see [Settings that apply without a restart](configuration.md#settings-that-apply-without-a-restart). The circuit breaker pages on `circuit_open` and on rejected upstream credentials, with a cooldown per endpoint."
+msgstr "**告警**。`apps/backend/serving/observability/alerts.py` 中的 `alert_slack()` 和 `alert_on_transition()` 把告警发送到一个 Slack 或企业微信 webhook，在 **Admin → Settings → Alerts** 中设置。阈值来自 `ALERT_RULES`。除非 `alerts.runtime` 实时组已激活，更换告警渠道需要重启；见[无需重启即可生效的设置](configuration.md#settings-that-apply-without-a-restart)。熔断器在 `circuit_open` 和上游凭据被拒时发出告警，每个端点有各自的冷却时间。"
+
+#: ../developer/architecture.md:381
+msgid ""
+"**Alert history**, on when there is a database "
+"(`ALERT_HISTORY_ENABLED=false` turns it off), records every alert "
+"decision without changing what is sent; see [Alert history](alert-"
+"history.md)."
+msgstr ""
+"**告警历史**在有数据库时开启（`ALERT_HISTORY_ENABLED=false` "
+"可关闭），它记录每一个告警决策，但不改变实际发送的内容；见[告警历史](alert-history.md)。"
+
+#: ../developer/architecture.md:385
 msgid "HTTP surface"
 msgstr "HTTP 接口"
-
-#: ../developer/architecture.md:472
-msgid "Client-facing groups, all served by the same app:"
-msgstr "面向客户端的分组，全部由同一个应用提供："
 
 #: ../developer/architecture.md
 msgid "Group"
@@ -1183,10 +923,15 @@ msgid "OpenAI-compatible inference"
 msgstr "OpenAI 兼容推理"
 
 #: ../developer/architecture.md
+#, python-brace-format
 msgid ""
 "`POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, "
-"`POST /v1/embeddings`, `POST /v1/responses`"
+"`POST /v1/embeddings`, `POST /v1/responses`; `GET` and `DELETE "
+"/v1/responses/{id}`"
 msgstr ""
+"`POST /v1/chat/completions`, `POST /v1/completions`, `POST /completion`, "
+"`POST /v1/embeddings`, `POST /v1/responses`; `GET` and `DELETE "
+"/v1/responses/{id}`"
 
 #: ../developer/architecture.md
 msgid "API key"
@@ -1198,7 +943,57 @@ msgstr "Anthropic 兼容推理"
 
 #: ../developer/architecture.md
 msgid "`POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens`"
+msgstr "`POST /v1/messages`, `POST /anthropic/v1/messages`, `…/count_tokens`"
+
+#: ../developer/architecture.md
+msgid "[Batch inference](batches.md)"
+msgstr "[批量推理](batches.md)"
+
+#: ../developer/architecture.md
+#, python-brace-format
+msgid ""
+"`POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST "
+"/v1/batches/{id}/cancel`, `POST /v1/batches/{id}/retry-failed`, `GET "
+"/v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl`"
 msgstr ""
+"`POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST "
+"/v1/batches/{id}/cancel`, `POST /v1/batches/{id}/retry-failed`, `GET "
+"/v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl`"
+
+#: ../developer/architecture.md
+msgid "API key; creating a batch needs `BATCH_MIN_ROLE` (default `internal`)"
+msgstr "API key；创建批处理需要 `BATCH_MIN_ROLE`（默认 `internal`）"
+
+#: ../developer/architecture.md
+msgid "[Batch files](batches.md#batches-from-a-file)"
+msgstr "[批次文件](batches.md#batches-from-a-file)"
+
+#: ../developer/architecture.md
+#, python-brace-format
+msgid ""
+"`POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET "
+"/v1/files/{id}/content`"
+msgstr ""
+"`POST` 和 `GET /v1/files`、`GET` 和 `DELETE /v1/files/{id}`、`GET "
+"/v1/files/{id}/content`"
+
+#: ../developer/architecture.md
+msgid "API key; uploading needs `BATCH_MIN_ROLE`"
+msgstr "API key；上传需要 `BATCH_MIN_ROLE`"
+
+#: ../developer/architecture.md
+msgid "[Batch webhooks](batches.md#webhooks)"
+msgstr "[批次 webhook](batches.md#webhooks)"
+
+#: ../developer/architecture.md
+msgid ""
+"`GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET "
+"/v1/batch_webhook/events`"
+msgstr "`GET`、`PUT` 和 `DELETE /v1/batch_webhook`、`GET /v1/batch_webhook/events`"
+
+#: ../developer/architecture.md
+msgid "API key; changing a webhook needs `BATCH_MIN_ROLE`"
+msgstr "API key；修改 webhook 需要 `BATCH_MIN_ROLE`"
 
 #: ../developer/architecture.md
 msgid "Model catalog"
@@ -1209,10 +1004,12 @@ msgid ""
 "`GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET "
 "/anthropic/v1/models`"
 msgstr ""
+"`GET /v1/models`, `GET /models`, `GET /openrouter/models`, `GET "
+"/anthropic/v1/models`"
 
 #: ../developer/architecture.md
-msgid "Optional — a key only widens what is listed"
-msgstr "可选——带上 key 只会让列出的模型变多"
+msgid "Optional: a key only widens what is listed"
+msgstr "可选：key 只会扩大列出的范围"
 
 #: ../developer/architecture.md
 msgid "Balance probes"
@@ -1222,12 +1019,15 @@ msgstr "余额探测"
 msgid ""
 "`GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET "
 "/v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, "
-"`GET /v1/sub2api/billing`"
+"`GET /v1/sub2api/billing`, `GET /anthropic/user/balance`"
 msgstr ""
+"`GET /v1/usage`, `GET /v1/dashboard/billing/subscription`, `GET "
+"/v1/dashboard/billing/usage`, `GET /v1/dashboard/billing/credit_grants`, "
+"`GET /v1/sub2api/billing`, `GET /anthropic/user/balance`"
 
 #: ../developer/architecture.md
-msgid "API key. A spent quota still answers; these routes do not admit work"
-msgstr "API key。额度用完时仍会应答；这些路由不接收推理请求"
+msgid "API key; answers even when the quota is spent"
+msgstr "API key；配额用完时仍会响应"
 
 #: ../developer/architecture.md
 msgid "API key description"
@@ -1238,26 +1038,12 @@ msgid "`GET /v1/key`"
 msgstr "`GET /v1/key`"
 
 #: ../developer/architecture.md
-msgid ""
-"`GET /v1/key` describes the calling key: its project, models, budgets and "
-"`concurrency.max_in_flight`, the effective in-flight cap the limiter "
-"enforces for it, or `null` when unlimited. When a project cap is the "
-"tighter one, that slot is shared across every key in the project, so a key "
-"can still receive `429` below `max_in_flight` while sibling keys hold the "
-"slot."
-msgstr ""
-"`GET /v1/key` 描述调用方密钥：其项目、模型、预算以及 "
-"`concurrency.max_in_flight`，即限流器对该密钥实际生效的并发在途上限，无限制时为 `null`。"
-"当项目上限更紧时，该名额由项目内所有密钥共享，因此同级密钥占用名额时，客户端仍可能在低于 "
-"`max_in_flight` 的情况下收到 `429`。"
-
-#: ../developer/architecture.md
 msgid "Health"
 msgstr "健康检查"
 
 #: ../developer/architecture.md
 msgid "`GET /health`, `/health/ready`, `/health/deep`"
-msgstr ""
+msgstr "`GET /health`, `/health/ready`, `/health/deep`"
 
 #: ../developer/architecture.md
 msgid "None; upstream addresses only for an admin"
@@ -1269,7 +1055,7 @@ msgstr "公开的路由信息"
 
 #: ../developer/architecture.md
 msgid "`GET /routing`"
-msgstr ""
+msgstr "`GET /routing`"
 
 #: ../developer/architecture.md
 msgid "Admin"
@@ -1285,250 +1071,86 @@ msgstr "账号与控制台 API"
 
 #: ../developer/architecture.md
 msgid "`/auth/*`, `/user/*`, `/site-config`"
-msgstr ""
+msgstr "`/auth/*`, `/user/*`, `/site-config`"
 
 #: ../developer/architecture.md
 msgid "Mixed"
 msgstr "视路径而定"
 
-#: ../developer/architecture.md:485
+#: ../developer/architecture.md:402
 msgid ""
-"`GET /routing` requires no authentication and returns each published route's provider label and traffic weight. Its upstream base URL, and the routing file's probe results, which are keyed by endpoint URL, are shown only to a caller that sends an administrator's JWT or `ADMIN_TOKEN` in the `Authorization: Bearer ...` header, and `/health/deep` leaves the base URL out of its `route_exclusions` on the same terms. `GET /admin/routing` requires those credentials and additionally includes unpublished routes."
-msgstr ""
-"`GET /routing` 不需要认证，会返回每条已发布路由的 provider 标签和流量权重。路由的上游 base URL，以及以端点 URL 为键的路由配置文件探测结果，只展示给在 `Authorization: Bearer ...` 请求头中提供管理员 JWT 或 `ADMIN_TOKEN` 的调用方；`/health/deep` 的 `route_exclusions` 也按同样的条件省略 base URL。`GET /admin/routing` 必须带这些凭据，并且还额外包含未发布的路由。"
+"`BATCH_ENABLED` switches every batch, file and webhook route; when it is "
+"off they answer `404` and no queued request starts."
+msgstr "`BATCH_ENABLED` 控制所有批处理、文件和 webhook 路由；关闭时它们都返回 `404`，排队中的请求也不会开始。"
 
-#: ../developer/architecture.md:493
+#: ../developer/architecture.md:404
 msgid ""
-"`/v1/models` shape-shifts by client: an Anthropic-family client calling "
-"it receives the Anthropic list response, while `/models` and "
-"`/openrouter/models` always return the OpenAI/OpenRouter shape."
+"`GET /routing` lists each published route's provider label and weight. "
+"Upstream base URLs and probe results appear only with an administrator's "
+"JWT or `ADMIN_TOKEN` as a bearer token; `GET /admin/routing` also lists "
+"unpublished routes."
 msgstr ""
-"`/v1/models` 的响应格式因客户端而异：Anthropic 系的客户端调用它，拿到的是 Anthropic 格式的列表；而 "
-"`/models` 和 `/openrouter/models` 始终返回 OpenAI/OpenRouter 格式。"
+"`GET /routing` 列出每条已发布路由的 provider 标签和权重。只有用管理员的 JWT 或 `ADMIN_TOKEN` 作为 "
+"bearer token 时才会显示上游 base URL 和探测结果；`GET /admin/routing` 还会列出未发布的路由。"
 
-#: ../developer/architecture.md
+#: ../developer/architecture.md:408
 msgid ""
-"The balance probes answer the quota checks that new-api, one-api, sub2api "
-"and cc-switch run on a timer or on demand. Four of them report the money "
-"left under the tightest of the account's daily quota, its monthly quota when "
-"one is set, and the presented key's and project's budgets; "
-"`/v1/sub2api/billing` answers sub2api's rate-multiplier probe. A limit reads "
-"as spent once the request gate would refuse a request on it, so remaining is "
-"`0` exactly when a request would be refused, and a spent quota still answers "
-"HTTP 200. new-api disables a channel whose balance check reads `0` or less "
-"when the channel's automatic disabling is on, and enables it again only if "
-"its operator turned on automatic enabling. While user auth is disabled the "
-"same paths report an unlimited balance."
+"`/v1/models` answers an Anthropic-family client in the Anthropic shape; "
+"`/models` and `/openrouter/models` always use the OpenAI shape."
 msgstr ""
-"余额探测接口用于响应 new-api、one-api、sub2api 和 cc-switch 定时或按需发起的额度查询。其中四个接口报告在最紧的限额下还剩多少钱：账户的每日额度、设置了月度额度时的月度额度，以及所用 key 和项目的预算；`/v1/sub2api/billing` 用于响应 sub2api 的费率倍数探测。一旦请求闸门会因某个限额拒绝请求，该限额即视为已用完，因此剩余额度恰好在请求会被拒绝时为 `0`，额度用完时这些接口仍返回 HTTP 200。如果 new-api 的渠道开启了自动禁用，余额检查读到 `0` 或更低时，new-api 会禁用该渠道；只有运营者开启了自动启用，渠道才会被重新启用。关闭用户认证时，这些路径报告无限余额。"
+"`/v1/models` 对 Anthropic 系客户端返回 Anthropic 格式；`/models` 和 "
+"`/openrouter/models` 始终使用 OpenAI 格式。"
 
-#: ../developer/architecture.md:497
+#: ../developer/architecture.md:410
+msgid ""
+"The balance probes serve the quota checks of new-api, one-api, sub2api "
+"and cc-switch. They report what is left under the tightest of the daily "
+"quota, the monthly quota and the key's and project's budgets "
+"(`/anthropic/user/balance`: the daily quota only). Remaining is `0` "
+"exactly when a request would be refused, and the answer is still HTTP "
+"200."
+msgstr ""
+"余额探测接口服务于 new-api、one-api、sub2api 和 cc-switch 的配额检查。它们报告每日配额、每月配额以及 key "
+"和项目预算中最紧的那一项还剩多少（`/anthropic/user/balance` 只看每日配额）。剩余额度恰好在请求会被拒绝时为 "
+"`0`，此时仍返回 HTTP 200。"
+
+#: ../developer/architecture.md:415
+msgid ""
+"`GET /v1/key` shows the key's project, models, budgets and "
+"`concurrency.max_in_flight` (`null` when unlimited). A project cap is "
+"shared by all the project's keys, so a key can get `429` below its own "
+"limit."
+msgstr ""
+"`GET /v1/key` 显示 key 的项目、模型、预算和 `concurrency.max_in_flight`（无上限时为 "
+"`null`）。项目的上限由项目内所有 key 共享，所以某个 key 可能在没达到自己的上限时就收到 `429`。"
+
+#: ../developer/architecture.md:419
 msgid "Deployment shape"
 msgstr "部署形态"
 
-#: ../developer/architecture.md:499
+#: ../developer/architecture.md:421
 msgid ""
-"The repository ships Dockerfiles and Compose files under "
-"`deploy/docker/`: `Dockerfile.backend` (the gateway), "
-"`Dockerfile.frontend` (the Next.js console in `apps/frontend/`), and "
-"`docker-compose.yml`. Systemd units live in `deploy/systemd/`."
+"`deploy/docker/` holds `Dockerfile.backend`, `Dockerfile.frontend` (the "
+"Next.js console in `apps/frontend/`) and `docker-compose.yml`; systemd "
+"units are in `deploy/systemd/`. The console and the API share one origin:"
+" console route handlers forward `/v1`, `/anthropic`, `/auth`, `/user`, "
+"`/admin` and the published `/internal` paths, and "
+"`apps/frontend/next.config.js` rewrites `/health`, `/site-config`, "
+"`/site-updates` and `/public-stats`. Together they are [the public path "
+"table](public-path-table.md). The frontend has its own quality gates, "
+"separate from the Python `make` targets."
 msgstr ""
-"仓库在 `deploy/docker/` 下提供 Dockerfile 和 Compose "
-"文件：`Dockerfile.backend`（网关）、`Dockerfile.frontend`（`apps/frontend/` 里的 "
-"Next.js 控制台）和 `docker-compose.yml`。systemd 单元在 `deploy/systemd/`。"
+"`deploy/docker/` 中有 "
+"`Dockerfile.backend`、`Dockerfile.frontend`（`apps/frontend/` 中的 Next.js "
+"控制台）和 `docker-compose.yml`；systemd 单元在 `deploy/systemd/` 中。控制台和 API "
+"共用同一个源：控制台的路由处理器转发 `/v1`、`/anthropic`、`/auth`、`/user`、`/admin` 以及公开的 "
+"`/internal` 路径，`apps/frontend/next.config.js` 则重写 `/health`、`/site-config"
+"`、`/site-updates` 和 `/public-stats`。两者合起来就是[公开路径表](public-path-"
+"table.md)。前端有自己的质量检查，与 Python 的 `make` 目标分开。"
 
-#: ../developer/architecture.md:504
+#: ../developer/architecture.md:430
 msgid ""
-"The console and the API share one origin: the console's route handlers "
-"forward `/v1`, `/anthropic`, `/auth`, `/user`, `/admin` and the published "
-"`/internal` paths to the backend, and the Next.js rewrites in "
-"`apps/frontend/next.config.js` forward `/health` and `/site-config`, so a "
-"browser session and an API key reach the same paths on the same host. Those "
-"handlers and rewrites — not a reverse proxy config — are [the public path "
-"table](public-path-table.md). The frontend has its own toolchain and quality"
-" gates, separate from the Python `make` targets."
-msgstr ""
-"控制台和 API 共用同一个 origin：控制台的 route handler 把 "
-"`/v1`、`/anthropic`、`/auth`、`/user`、`/admin` 和公开的那几条 `/internal` "
-"路径转发到后端，`apps/frontend/next.config.js` 里的 Next.js rewrites 则转发 `/health` 和 "
-"`/site-config`，所以浏览器会话和 API key "
-"访问的是同一台主机上的同一组路径。[公开路径表](public-path-table.md)说的就是这些 handler 和 "
-"rewrites，而不是哪份反向代理配置。前端有自己的工具链和质量门禁，与 Python 的 `make` 目标互不相干。"
+"Next: [Deployment Guide](deployment.md), [Installation](installation.md),"
+" [Contributing](contributing.md)."
+msgstr "接下来：[部署指南](deployment.md)、[安装](installation.md)、[贡献指南](contributing.md)。"
 
-#: ../developer/architecture.md:512
-msgid ""
-"See [Deployment Guide](deployment.md) to run it, "
-"[Installation](installation.md) for a local checkout, and "
-"[Contributing](contributing.md) before sending a change."
-msgstr "要部署运行，见[部署指南](deployment.md)；要在本地开发，见[安装](installation.md)；提交改动前，先读[参与贡献](contributing.md)。"
-
-#: ../developer/architecture.md
-msgid "[Batch inference](batches.md)"
-msgstr "[批量推理](batches.md)"
-
-#: ../developer/architecture.md
-#, python-brace-format
-msgid "`POST` and `GET /v1/batches`, `GET` and `DELETE /v1/batches/{id}`, `POST /v1/batches/{id}/cancel`, `GET /v1/batches/{id}/results`, `GET /v1/batches/{id}/output.jsonl` (JSONL export); chat, embeddings, Responses and Messages targets, as direct requests or a JSONL file"
-msgstr "`POST` 和 `GET /v1/batches`、`GET` 和 `DELETE /v1/batches/{id}`、`POST /v1/batches/{id}/cancel`、`GET /v1/batches/{id}/results`、`GET /v1/batches/{id}/output.jsonl`（JSONL 导出）；目标可以是 Chat、Embeddings、Responses 和 Messages，请求可以直接提交，也可以用 JSONL 文件提交"
-
-#: ../developer/architecture.md
-msgid "API key; creating a batch needs the `BATCH_MIN_ROLE` role, `internal` by default"
-msgstr "API key；创建批次需要 `BATCH_MIN_ROLE` 角色，默认为 `internal`"
-
-#: ../developer/architecture.md
-msgid "[Batch files](batches.md#batches-from-a-file)"
-msgstr "[批次文件](batches.md#batches-from-a-file)"
-
-#: ../developer/architecture.md
-#, python-brace-format
-msgid "`POST` and `GET /v1/files`, `GET` and `DELETE /v1/files/{id}`, `GET /v1/files/{id}/content`"
-msgstr "`POST` 和 `GET /v1/files`、`GET` 和 `DELETE /v1/files/{id}`、`GET /v1/files/{id}/content`"
-
-#: ../developer/architecture.md
-msgid "[Batch webhooks](batches.md#webhooks)"
-msgstr "[批次 webhook](batches.md#webhooks)"
-
-#: ../developer/architecture.md
-msgid "`GET`, `PUT` and `DELETE /v1/batch_webhook`, `GET /v1/batch_webhook/events`"
-msgstr "`GET`、`PUT` 和 `DELETE /v1/batch_webhook`、`GET /v1/batch_webhook/events`"
-
-#: ../developer/architecture.md:490
-msgid "`BATCH_ENABLED` controls all batch, file and webhook routes together; when it is off, even management and result routes answer `404`, and no queued request starts. With it on, all batch kinds are available. `BATCH_MIN_ROLE` controls creating batches, uploading files and setting up or changing a webhook. An owner whose role is lowered can still manage existing batches and files, read or delete their webhook, and receive its deliveries."
-msgstr "`BATCH_ENABLED` 统一控制所有批次、文件和 webhook 路由；关闭时，管理和结果路由也会返回 `404`，排队中的请求不会开始执行。开启时，所有批次类型都可用。`BATCH_MIN_ROLE` 控制创建批次、上传文件以及设置或修改 webhook 的权限。所有者的角色降低后，仍可管理已有批次和文件，读取或删除自己的 webhook，并接收其事件投递。"
-
-#: ../developer/architecture.md:466
-msgid ""
-"**Alert history** (on with a database; `ALERT_HISTORY_ENABLED=false` turns "
-"it off). The same alert path records what it did "
-"— breaches, recoveries, suppression decisions, deliveries and their results "
-"— into PostgreSQL through a bounded buffer and one writer per process "
-"(`serving/observability/alert_history/`). It never changes what is sent. See"
-" [Alert history](alert-history.md)."
-msgstr ""
-"**告警历史**（有数据库时开启；`ALERT_HISTORY_ENABLED=false` 可关闭）。同一条告警路径会把自己做过的事——越限、恢复、抑制决定、投递及其结果——通过一个有上限的缓冲区和每个进程一个写入器记录到 "
-"PostgreSQL 中（`serving/observability/alert_history/`）。它从不改变发送的内容。参见 "
-"[告警历史](alert-history.md)。"
-
-#: ../developer/architecture.md:0
-msgid "API key; uploading a file needs `BATCH_MIN_ROLE`"
-msgstr "API 密钥；上传文件需要达到 `BATCH_MIN_ROLE`"
-
-#: ../developer/architecture.md:0
-msgid "API key; setting up or changing a webhook needs `BATCH_MIN_ROLE`"
-msgstr "API 密钥；设置或修改 webhook 需要达到 `BATCH_MIN_ROLE`"
-
-#: ../developer/architecture.md:109
-msgid ""
-"`RequestBodyLimitMiddleware` — answers `413` to a request body larger than "
-"`REQUEST_MAX_BODY_MB` (default 32 MiB): before reading anything when "
-"`Content-Length` declares more, otherwise as soon as the bytes received pass"
-" the limit. Batch input uploads keep their own limit, `BATCH_MAX_BODY_MB`. "
-"Behind the console, every gateway path that takes a request body streams "
-"through a route handler and is bounded only here, so raising "
-"`REQUEST_MAX_BODY_MB` takes effect behind the console too."
-msgstr ""
-"`RequestBodyLimitMiddleware`——请求体超过 `REQUEST_MAX_BODY_MB`（默认 32 MiB）时回复 "
-"`413`：`Content-Length` "
-"声明的长度已经超出时，一个字节都不读；否则在收到的字节数超过上限的那一刻回复。批处理输入文件的上传保留自己的上限 "
-"`BATCH_MAX_BODY_MB`。在控制台后面，所有带请求体的网关路径都经由路由处理器以流式转发，只受这里的限制，所以调高 "
-"`REQUEST_MAX_BODY_MB`，在控制台后面同样生效。"
-
-#: ../developer/architecture.md:144
-msgid ""
-"The spend the gate reads comes from the counter tables "
-"(`user_daily_cost`, `api_key_daily_cost`), and the spend ledger "
-"(`apps/backend/serving/spend_ledger.py`) adds what those tables do not "
-"show yet:"
-msgstr "门禁读取的花费来自计数表（`user_daily_cost`、`api_key_daily_cost`），花费账本（`apps/backend/serving/spend_ledger.py`）再补上这些表里还看不到的部分："
-
-#: ../developer/architecture.md:148
-msgid ""
-"**Requests in flight.** `enforce_user_concurrency` (and the batch worker,"
-" for each item) checks the quotas and the key's budgets again and "
-"reserves the request's estimated cost in one step, then releases the "
-"reservation when the request ends, however it ends. A request is refused"
-" only when not even `ESTIMATED_REQUEST_COST_USD` fits, as at the gate. An"
-" online request then reserves what it may cost (its prompt and its "
-"`max_tokens` at its model's prices, at most "
-"`MAX_RESERVED_REQUEST_COST_USD`), or what its limits have left if that is"
-" less; a batch item reserves `ESTIMATED_REQUEST_COST_USD`. Requests "
-"admitted at the same time therefore cannot all fit into the same "
-"remaining budget."
-msgstr ""
-"**进行中的请求**。`enforce_user_concurrency`（以及批处理 worker，对每个条目）会再检查一次配额和该 key "
-"的预算，并在同一步里预留这个请求的估算成本，请求结束时——无论以何种方式结束——再释放这份预留。只有连 "
-"`ESTIMATED_REQUEST_COST_USD` 都放不下时才拒绝请求，与网关入口的检查一致。在线请求随后预留它可能花费的金额（按所用模型的价格计算提示词和 "
-"`max_tokens`，最多 "
-"`MAX_RESERVED_REQUEST_COST_USD`），如果额度剩余更少，就只预留剩余的部分；批处理条目预留 "
-"`ESTIMATED_REQUEST_COST_USD`。因此，同时放行的多个请求不可能都挤进同一份剩余预算。"
-
-#: ../developer/architecture.md:154
-msgid ""
-"**Costs not yet written.** A finished request's cost is recorded in the "
-"ledger and written to the counters by one writer per store: costs "
-"recorded while a write is in flight are coalesced per user, key and UTC "
-"day into the next, which goes out as one statement, account and key "
-"counters together. The ledger keeps counting a cost until its write is "
-"confirmed (and for a while after, for a gate whose read began before it "
-"landed), so the delay never lets a request past a limit. A failed write "
-"is retried; shutdown writes what is left and logs anything it could not. "
-"An entry the counters refuse for its own values, such as one that would "
-"overflow its counter, is set aside rather than retried, so it cannot hold "
-"back other accounts' costs: it stays counted in the process and is logged "
-"(`cost_counter_write_refused`) and alerted, for an operator to reconcile. "
-"One request adds at most $1,000; a larger cost is recorded as $1,000, "
-"logged (`cost_above_request_ceiling`) and alerted."
-msgstr ""
-"**尚未写入的成本**。已完成请求的成本先记入账本，再由每个存储各自的一个写入者写进计数表：某次写入进行期间记下的成本，会按用户、key 和 "
-"UTC 日合并进下一次写入，并以一条语句发出，账号计数和 key "
-"计数一起写。在写入得到确认之前（以及确认之后的一段时间内，供读取早于写入落地的门禁使用），账本会一直计入这笔成本，所以这段延迟绝不会让请求越过限额。写入失败会重试；关闭时会写出剩余的部分，写不出去的会记录到日志。"
-"计数表因条目自身的取值而拒收的条目（例如会让计数溢出的条目）会被搁置，不再重试，因此不会拖住其他账号的成本：它仍在本进程内计入，并记录日志（`cost_counter_write_refused`）、发出告警，由运维人员核对补记。"
-"单个请求最多计入 1,000 美元；更高的成本按 1,000 美元记录，并记录日志（`cost_above_request_ceiling`）、发出告警。"
-
-#: ../developer/architecture.md:163
-msgid ""
-"The ledger is per process. With several worker processes each sees only "
-"its own requests in flight and costs not yet written, so the limits are "
-"protected within each process, not across them; production runs one "
-"worker."
-msgstr ""
-"账本按进程划分。有多个 worker "
-"进程时，每个进程只能看到自己的进行中请求和尚未写入的成本，因此限额只在单个进程内受保护，跨进程则不受保护；生产环境只运行一个 worker。"
-
-#: ../developer/architecture.md:167
-msgid ""
-"A response the client closes early, or that the gateway's request "
-"timeout cuts off, is billed for what the upstream already did, streamed "
-"or not: the usage it reported, or else an estimate of the prompt and of "
-"the output so far (`metadata.usage_estimated` marks the estimate). A "
-"non-streaming request is billed so only once it has left the gateway; "
-"one still waiting for an outbound slot was never seen upstream. A request"
-" the upstream fails is not billed."
-msgstr ""
-"客户端提前关闭的响应，或被网关请求超时截断的响应，无论是否流式，都按上游已经完成的部分计费：上游报告了用量就用它，否则估算提示词和目前为止的输出（`metadata.usage_estimated`"
-" 标记这是估算值）。非流式请求只有在离开网关之后才这样计费；仍在等待出站槽位的请求从未到达上游。上游失败的请求不计费。"
-
-#: ../developer/architecture.md
-msgid "**Health endpoints.** `/health` is a liveness check that returns 200 with `status: \"degraded\"` when a configured store is down but traffic can still be served, and 503 only when every configured store is unreachable. `/health/ready` is the strict variant: 503 unless everything configured is up. Both tell an anonymous caller only `status`; the reason, instance, route count and stores are shown to an administrator. `/health/deep` adds per-endpoint availability and circuit state, and reports `degraded` when any endpoint is. All three answer from one shared store probe for two seconds, and concurrent callers wait for the probe in flight, so polling them does not cost a database query per call."
-msgstr "**健康检查端点。** `/health` 是存活检查：某个已配置的存储不可用但仍能服务流量时，返回 200 和 `status: \"degraded\"`；只有所有已配置的存储都不可达时才返回 503。`/health/ready` 是严格版本：只要有已配置的组件不可用就返回 503。两者对匿名调用方只返回 `status`；原因、实例、路由数量和存储状态只向管理员展示。`/health/deep` 还会给出每个端点的可用性和熔断状态，任一端点降级时报告 `degraded`。三者在两秒内共用同一次存储探测，并发调用方会等待正在进行的探测，所以轮询它们不会每次都产生一次数据库查询。"
-
-msgid "**Configuration is a deployment's, not the project's.** The repository ships runnable examples; a real deployment configures its registry, routing policy and branding in Admin and PostgreSQL. See [Configuration](#configuration)."
-msgstr "**配置属于具体部署，不属于项目本身。** 仓库提供可运行示例；实际部署应在 Admin 和 PostgreSQL 中配置注册表、路由策略和品牌信息。参见[配置](#configuration)。"
-
-msgid "Application documents are validated JSON settings in `app_config`: `MODEL_CATALOG`, `ROUTING_POLICY`, `ALERT_RULES`, `SITE_CONFIGURATION`, `SITE_BRANDING` and `SSO_PROVIDERS`. Application YAML files and their path/mode selectors are not runtime inputs. A fresh gateway serves an empty model list and a neutral console that asks an administrator to configure it."
-msgstr "应用文档是 `app_config` 中经过验证的 JSON 设置：`MODEL_CATALOG`、`ROUTING_POLICY`、`ALERT_RULES`、`SITE_CONFIGURATION`、`SITE_BRANDING` 和 `SSO_PROVIDERS`。应用 YAML 文件及其路径或模式选择器不再是运行时输入。新网关提供空模型列表及中性控制台，并提示联系管理员配置。"
-
-msgid "The model catalog supplies the baseline; operational provider, key, route and weight state is applied on top. Ordinary Admin route edits synchronize between backend processes through committed, model-scoped change counters. Existing routing transition helpers retain execution and feedback ownership. Per-process acknowledgements distinguish saved configuration from applied configuration. Catalog/routing-policy/alert-rule changes remain explicitly restart-required."
-msgstr "模型目录提供基线，运行时的供应商、密钥、路由和权重状态在其上叠加。普通 Admin 路由修改通过已提交的按模型变更计数器在后端进程间同步。现有路由切换辅助函数保留执行和反馈的所有权。每个进程的确认状态区分已保存配置与已应用配置。目录、路由策略和告警规则修改仍明确要求重启。"
-
-msgid "Credentials are separate secret settings referenced by documents. The existing settings store owns validation, audit, conditional writes and backup/restore. An explicit offline importer handles old external YAML; startup never imports those files. See [Configuration](configuration.md) and the {download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`."
-msgstr "凭据保存在独立的秘密设置中，由文档引用。现有设置存储负责验证、审计、条件写入和备份恢复。旧的外部 YAML 通过显式离线导入器处理；启动时绝不导入这些文件。参见[配置](configuration.md)和{download}`accepted design <../agents/specs/2026-11-08-database-only-configuration.md>`。"
-
-msgid "**Alerting.** `alert_slack()` and `alert_on_transition()` in `apps/backend/serving/observability/alerts.py` post through an `AlertSink` to one Slack or WeCom webhook, selected in Admin Configuration. Channel changes take effect after a restart. Thresholds come from the `ALERT_RULES` database document; an empty document uses built-in thresholds. The circuit breaker pages on `circuit_open` transitions and on upstream-credential rejections, with per-endpoint cooldowns so a persistent fault re-pages on a fixed cadence instead of flooding."
-msgstr "**告警。** `apps/backend/serving/observability/alerts.py` 中的 `alert_slack()` 和 `alert_on_transition()` 通过 `AlertSink` 向 Admin Configuration 中选择的一个 Slack 或 WeCom webhook 发送消息。通道修改在重启后生效。阈值来自 `ALERT_RULES` 数据库文档；空文档使用内置阈值。熔断器在 `circuit_open` 状态切换及上游凭据被拒绝时通知，并按端点冷却，使持续故障按固定间隔再次通知，避免消息泛滥。"
-
-#: ../developer/architecture.md:123
-msgid ""
-"Accepted connections have one more clock, and it is not a middleware. Uvicorn arms its keep-alive timer only while it is waiting for the next request, and cancels that timer on the first byte. A client that then stops, including one that never finishes the headers, holds the socket until the process restarts. `HTTP_IDLE_TIMEOUT_SECONDS` (default 600, `<=0` disables it) closes that connection after that many seconds with no bytes in either direction. Response bytes reset it, so a stream that keeps sending is limited by the streaming clocks below rather than by this one. It is longer than `REQUEST_TIMEOUT_SECONDS` and the inter-chunk stream idle, so a slow prefill still receives the gateway's 504 instead of a dropped connection."
-msgstr ""
-"已接受的连接还有一个计时器，它不是中间件。Uvicorn 只在等待下一个请求时启动 keep-alive 计时器，并在收到第一个字节时取消它。此后停止发送的客户端（包括从未发完请求头的客户端）会一直占用套接字，直到进程重启。`HTTP_IDLE_TIMEOUT_SECONDS`（默认 600，`<=0` 表示禁用）会在连接双向都没有任何字节传输达到该秒数后关闭连接。响应字节会重置它，因此持续发送数据的流由下文的流式计时器限制，而不是由它限制。它比 `REQUEST_TIMEOUT_SECONDS` 和流式分块之间的空闲时限更长，因此预填充较慢的请求仍会收到网关的 504，而不是连接被直接断开。"

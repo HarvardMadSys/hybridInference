@@ -423,6 +423,118 @@
     "source": "Forgot Password",
     "text": "忘记密码"
   },
+  "auth.key_authorize.allow": {
+    "source": "Allow",
+    "text": "允许"
+  },
+  "auth.key_authorize.cancel": {
+    "source": "Cancel",
+    "text": "取消"
+  },
+  "auth.key_authorize.check_failed": {
+    "source": "This request could not be checked: {reason}",
+    "text": "无法核验这个请求：{reason}"
+  },
+  "auth.key_authorize.choose_account": {
+    "source": "Choose the account {app} gets an API key for",
+    "text": "选择要让 {app} 获得 API key 的账户"
+  },
+  "auth.key_authorize.explain_key": {
+    "source": "{app} will get a new API key for this account. The application keeps the key and uses it to make requests for you; what it uses counts against this account’s usage and quota.",
+    "text": "{app} 将获得这个账户的一个新 API key。应用会保存这个 key，并用它代你发出请求；它产生的用量计入这个账户的用量和额度。"
+  },
+  "auth.key_authorize.explain_revoke": {
+    "source": "You can revoke the key at any time on your API keys page.",
+    "text": "你可以随时在 API key 页面吊销这个 key。"
+  },
+  "auth.key_authorize.failed_title": {
+    "source": "Cannot create an API key",
+    "text": "无法创建 API key"
+  },
+  "auth.key_authorize.incomplete": {
+    "source": "This link is incomplete. Please start again from the application.",
+    "text": "这个链接不完整，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.invalid": {
+    "source": "This link is not valid. Please start again from the application.",
+    "text": "这个链接无效，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.key_limit": {
+    "source": "This account already holds as many API keys as it may. Revoke one on the API keys page, then press Allow again.",
+    "text": "这个账户的 API key 数量已达上限。请先在 API key 页面吊销一个，然后再点一次“允许”。"
+  },
+  "auth.key_authorize.not_allowed": {
+    "source": "This link is not valid for this deployment. Please start again from the application.",
+    "text": "这个链接在本站无效，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.not_offered": {
+    "source": "This deployment does not let applications create API keys.",
+    "text": "本站不允许应用创建 API key。"
+  },
+  "auth.key_authorize.open_keys": {
+    "source": "Open API keys",
+    "text": "打开 API key 页面"
+  },
+  "auth.key_authorize.recheck": {
+    "source": "I have verified my email",
+    "text": "我已完成邮箱验证"
+  },
+  "auth.key_authorize.refused_inactive": {
+    "source": "The account is not active, so no application can get an API key for it.",
+    "text": "这个账户当前不可用，任何应用都不能为它获取 API key。"
+  },
+  "auth.key_authorize.refused_pending": {
+    "source": "The account is waiting for an administrator to approve it. Once it is approved, start again from the application.",
+    "text": "这个账户还在等待管理员审核。审核通过后，请回到应用里重新发起。"
+  },
+  "auth.key_authorize.refused_suspended": {
+    "source": "The account is suspended, so no application can get an API key for it.",
+    "text": "这个账户已被停用，任何应用都不能为它获取 API key。"
+  },
+  "auth.key_authorize.refused_title": {
+    "source": "This account cannot create API keys",
+    "text": "这个账户不能创建 API key"
+  },
+  "auth.key_authorize.resend": {
+    "source": "Resend verification email",
+    "text": "重新发送验证邮件"
+  },
+  "auth.key_authorize.resent": {
+    "source": "A new verification email is on its way to {email}.",
+    "text": "新的验证邮件正在发往 {email}。"
+  },
+  "auth.key_authorize.signed_in_as": {
+    "source": "Signed in as {account}",
+    "text": "当前登录账户：{account}"
+  },
+  "auth.key_authorize.still_unverified": {
+    "source": "This email address is not verified yet. Open the link in the verification email, then try again.",
+    "text": "这个邮箱地址还没有完成验证。请打开验证邮件里的链接，然后再试一次。"
+  },
+  "auth.key_authorize.title": {
+    "source": "Allow {app} to create an API key?",
+    "text": "允许 {app} 创建 API key 吗？"
+  },
+  "auth.key_authorize.try_again": {
+    "source": "Try again",
+    "text": "再试一次"
+  },
+  "auth.key_authorize.use_another": {
+    "source": "Use another account",
+    "text": "使用其他账户"
+  },
+  "auth.key_authorize.verify_body": {
+    "source": "Before an application can get an API key for this account, confirm that {email} is yours: open the link in the verification email, then come back to this page.",
+    "text": "在应用获得这个账户的 API key 之前，需要先确认 {email} 是你的邮箱：请打开验证邮件里的链接，然后回到这个页面。"
+  },
+  "auth.key_authorize.verify_body_no_email": {
+    "source": "Before an application can get an API key for this account, verify its email address, then come back to this page.",
+    "text": "在应用获得这个账户的 API key 之前，需要先验证这个账户的邮箱地址，然后回到这个页面。"
+  },
+  "auth.key_authorize.verify_title": {
+    "source": "Verify your email to continue",
+    "text": "请先验证邮箱再继续"
+  },
   "auth.legal.see": {
     "source": "See",
     "text": "详见"

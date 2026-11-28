@@ -13,6 +13,13 @@ from serving.openinfra.store import SnapshotWrite
 from serving.openinfra.wire import parse_snapshot
 
 
+@pytest.fixture(autouse=True)
+def _no_real_docker(monkeypatch):
+    """No test runs the host's docker; each starts with nothing said about engine logs."""
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: None)
+    monkeypatch.setattr(reporter, "_no_logs_noted", set())
+
+
 def test_the_snapshot_goes_to_the_gateways_ingest_route():
     assert reporter.ingest_url("https://gateway.example.org/") == (
         "https://gateway.example.org/internal/openinfra/ingest"
@@ -336,3 +343,50 @@ def test_the_pcie_monitor_reports_recent_readings(monkeypatch):
     # The reporter's exit ends it.
     monitor.stop()
     assert Process.terminated
+
+
+def test_an_account_without_docker_is_told_once_why_requests_are_missing(capsys):
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    err = capsys.readouterr().err
+    assert err.count("engine logs for port 1001") == 1
+    assert "cannot run docker" in err
+    assert "docker group" in err
+    assert "recent requests" in err
+
+
+def test_a_port_no_container_publishes_is_named(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: None)
+    assert reporter.summarize_engine_logs(1002, 60) is None
+    assert "port 1002: no running container publishes that port" in capsys.readouterr().err
+
+
+def test_a_failed_docker_logs_is_reported_with_its_error(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: "engine-a")
+
+    class Failed:
+        returncode = 1
+        stdout = ""
+        stderr = "permission denied while trying to connect to the Docker daemon socket\n"
+
+    monkeypatch.setattr(reporter.subprocess, "run", lambda *a, **k: Failed())
+    assert reporter.summarize_engine_logs(1001, 60) is None
+    err = capsys.readouterr().err
+    assert "`docker logs engine-a` failed: permission denied" in err
+
+
+def test_readable_engine_logs_give_request_events_and_say_nothing(monkeypatch, capsys):
+    monkeypatch.setattr(reporter, "docker_cmd", lambda: ["docker"])
+    monkeypatch.setattr(reporter, "container_for_port", lambda port: "engine-a")
+
+    class Logs:
+        returncode = 0
+        stdout = ""
+        stderr = "Finish: meta_info={'prompt_tokens': 812, 'completion_tokens': 30}\n"
+
+    monkeypatch.setattr(reporter.subprocess, "run", lambda *a, **k: Logs())
+    stats = reporter.summarize_engine_logs(1001, 60)
+    assert [r["input_len"] for r in stats["requests"]] == [812]
+    assert capsys.readouterr().err == ""

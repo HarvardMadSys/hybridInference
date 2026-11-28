@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version: HybridInference \n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-27 05:52-0400\n"
+"POT-Creation-Date: 2026-11-28 06:23+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -26,32 +26,20 @@ msgstr "部署指南"
 
 #: ../developer/deployment.md:3
 msgid ""
-"Running HybridInference as a long-lived deployment: what starts, how to "
-"reach it publicly or keep it private, how to create the first "
-"administrator, how to operate it, and how to reset it without losing (or "
-"accidentally keeping) data. A staging or scratch instance is the same "
-"stack; the sections on keeping it private and on the first admin account "
-"matter most there."
+"This page covers running HybridInference as a long-lived deployment: "
+"reaching it, operating and releasing it, the first administrator, alerts,"
+" and recovery. It assumes the stack already starts; first-time setup is "
+"in [Installation](installation.md#running-with-docker)."
 msgstr ""
-"本页讲怎样长期运行一套 "
-"HybridInference：会启动哪些服务，怎样放到公网上或者不对外暴露，怎样创建第一个管理员，日常怎么运维，以及重置时怎样既不丢数据、也不误留数据。staging"
-" 或临时实例用的是同一套服务栈，对它们最要紧的是「不对外暴露」和「第一个管理员账号」这两节。"
+"本页讲怎样把 HybridInference "
+"作为长期运行的部署来维护：访问方式、日常运维与发布、第一个管理员、告警和故障恢复。本页假定服务栈已经能启动；首次搭建见[安装](installation.md"
+"#running-with-docker)。"
 
-#: ../developer/deployment.md:9
-msgid ""
-"First-time setup — cloning, the database login in `.env`, the first `make"
-" up` and the console's setup page — is in [Installation](installation.md"
-"#running-with-docker). This page assumes the stack already comes up."
-msgstr ""
-"首次搭建——克隆仓库、在 `.env` 里填写数据库登录信息、第一次 `make "
-"up`，以及控制台的设置页面——见[安装](installation.md#running-with-"
-"docker)。本页假定整套服务栈已经能起来。"
-
-#: ../developer/deployment.md:14
+#: ../developer/deployment.md:8
 msgid "What the stack is"
 msgstr "服务栈的组成"
 
-#: ../developer/deployment.md:16
+#: ../developer/deployment.md:10
 msgid "`make up` starts three containers from `deploy/docker/docker-compose.yml`:"
 msgstr "`make up` 会按 `deploy/docker/docker-compose.yml` 启动三个容器："
 
@@ -98,7 +86,7 @@ msgid "`postgres`"
 msgstr ""
 
 #: ../developer/deployment.md
-msgid "`postgres:16`"
+msgid "`postgres:16.16`"
 msgstr ""
 
 #: ../developer/deployment.md
@@ -106,142 +94,108 @@ msgstr ""
 msgid "`127.0.0.1:${DB_PORT:-5432}`"
 msgstr ""
 
-#: ../developer/deployment.md:24
-#, python-brace-format
+#: ../developer/deployment.md:18
 msgid ""
-"All three published ports default to loopback. A reverse proxy on the "
-"same host can reach the console at `127.0.0.1:3001`. The containers also "
-"join one bridge network defined in the same Compose file, on which the "
-"backend reaches the database as `postgres:5432`. Of the database address "
-"settings, only `DB_PORT` from `.env` reaches this file, and only as the "
-"host half of the mapping (`127.0.0.1:${DB_PORT:-5432}:5432`); the host-"
-"side bind address is hard-coded to loopback. `DB_HOST` is pinned to "
-"`postgres` in the Compose file and is ignored under Compose — it matters "
-"only for a backend started directly from source."
+"All three ports are published on loopback by default. The containers "
+"share the `hybridinference` network, where the backend reaches the "
+"database as `postgres:5432`. Under Compose, `DB_PORT` in `.env` sets only"
+" the host side of the database's port, and `DB_HOST` is ignored (it "
+"matters only for a backend started from source). The optional `pgadmin` "
+"service starts only with the `admin` profile; see [pgAdmin](database.md"
+"#optional-pgadmin)."
 msgstr ""
-"三个发布端口默认都绑定在回环地址上，同一台机器上的反向代理可以通过 `127.0.0.1:3001` 访问控制台。三个容器还会加入同一个 "
-"Compose 文件里定义的桥接网络，后端在这个网络里用 `postgres:5432` 连接数据库。在数据库地址相关的设置里，`.env` 只有"
-" `DB_PORT` "
-"会传进这个文件，而且只用作端口映射的宿主机一侧（`127.0.0.1:${DB_PORT:-5432}:5432`）；宿主机一侧的绑定地址写死为回环地址。`DB_HOST`"
-" 在 Compose 文件里固定为 `postgres`，所以在 Compose 下设置它不起作用，只有直接从源码启动后端时它才有意义。"
+"三个端口默认都只发布在回环地址上。容器共用 `hybridinference` 网络，后端在其中以 `postgres:5432` 访问数据库。在"
+" Compose 下，`.env` 中的 `DB_PORT` 只决定数据库端口的主机端，`DB_HOST` "
+"会被忽略（它只对从源码启动的后端有意义）。可选的 `pgadmin` 服务只在启用 `admin` profile 时启动；见 "
+"[pgAdmin](database.md#optional-pgadmin)。"
 
-#: ../developer/deployment.md:33
+#: ../developer/deployment.md:25
+msgid "Keeping it private: an SSH tunnel"
+msgstr "不对外暴露：SSH 隧道"
+
+#: ../developer/deployment.md:27
 msgid ""
-"One more service exists in the same file but starts only when its profile"
-" is named: `pgadmin` (profile `admin`)."
-msgstr "同一个文件里还有一个服务 `pgadmin`（profile 为 `admin`），只有指定这个 profile 时才会启动。"
+"A staging or scratch instance can keep the loopback defaults. Forward "
+"both ports from your workstation:"
+msgstr "staging 或临时实例可以保留回环地址的默认设置。从你的工作站转发两个端口："
 
-#: ../developer/deployment.md:36
-msgid "pgAdmin over mutual TLS"
-msgstr "通过双向 TLS 访问 pgAdmin"
-
-#: ../developer/deployment.md:38
+#: ../developer/deployment.md:34
 msgid ""
-"The optional `/pgadmin/` console proxy checks the caller's administrator "
-"session before connecting to pgAdmin. By default it uses "
-"`http://pgadmin:80`; setting `PGADMIN_INTERNAL_URL` overrides that "
-"address. For a separately hosted pgAdmin behind a gateway that requires "
-"client certificates, configure the **frontend server's runtime "
-"environment** with:"
-msgstr "可选的 `/pgadmin/` 控制台代理在连接 pgAdmin 前会检查调用者的管理员会话。默认地址为 `http://pgadmin:80`，可通过 `PGADMIN_INTERNAL_URL` 覆盖。若 pgAdmin 单独部署在要求客户端证书的网关后面，请在**前端服务的运行时环境**中配置："
-
-#: ../developer/deployment.md:60
-msgid ""
-"The example Compose file does not forward these variables or mount these "
-"files; a deployment using Compose must explicitly add the frontend "
-"environment and secret volumes in an override. Setting only the root "
-"`.env` is not sufficient. With mTLS enabled, an HTTPS URL and all three "
-"files are required; invalid or unreadable settings make `/pgadmin/` "
-"return 502 without falling back to HTTP. Unset `PGADMIN_MTLS_ENABLED` or "
-"set it to the literal `false` to retain the existing proxy behavior. "
-"Values other than `true` or `false` fail closed."
-msgstr "示例 Compose 文件不会传入这些变量，也不会挂载这些文件；使用 Compose 时，必须在 override 中显式添加前端环境变量和 Secret 卷。只设置根目录 `.env` 不够。启用 mTLS 后必须提供 HTTPS URL 和全部三个文件；配置无效或不可读取时，`/pgadmin/` 返回 502，不会回退到 HTTP。未设置 `PGADMIN_MTLS_ENABLED` 或将其设为字面值 `false` 时保留现有代理行为。除 `true` 和 `false` 以外的值会按关闭访问处理。"
-
-#: ../developer/deployment.md:68
-msgid ""
-"The proxy rereads credentials for each new request and supports "
-"Kubernetes Secret volume projections that place all three files in the "
-"same projection directory. Ordinary files must not be modified while a "
-"request reads them; independent file updates cannot provide an atomic "
-"three-file snapshot. Certificate rotation across the frontend and gateway"
-" requires a coordinated procedure: their Secret projections do not update"
-" at the same time, and the gateway may need a reload. Existing in-flight "
-"requests can continue using the credentials they already acquired."
-msgstr "代理在每个新请求中重新读取凭据，支持将三个文件放在同一个投影目录内的 Kubernetes Secret 卷。普通文件在请求读取期间不得修改；分别更新文件无法提供三个文件的原子快照。前端与网关之间的证书轮换需要协调：两端的 Secret 投影不会同时更新，网关可能需要重新加载。已经进行中的请求可能继续使用此前获取的凭据。"
-
-#: ../developer/deployment.md:36
-msgid ""
-"`frontend` depends on `backend` with `condition: service_started`, not "
-"`service_healthy` — deliberately, so that a backend reporting unhealthy "
-"because its database logging is down does not stop the console from "
-"starting."
+"Then open `http://localhost:3001`. Keep the local end on `localhost` or "
+"`127.0.0.1`: the refresh cookie is `Secure` by default (`COOKIE_SECURE`),"
+" and browsers accept a `Secure` cookie only over HTTPS or from a loopback"
+" origin. Port 8080 is forwarded because the console calls the API at the "
+"`NEXT_PUBLIC_API_BASE` built into its image, `http://localhost:8080` by "
+"default; changing it needs a frontend rebuild."
 msgstr ""
-"`frontend` 依赖 `backend` 时用的是 `condition: service_started`，而不是 "
-"`service_healthy`。这是有意为之：后端可能因为数据库日志写不进去而报告 unhealthy，这时不应该连控制台也起不来。"
+"然后打开 `http://localhost:3001`。本地这一端要用 `localhost` 或 `127.0.0.1`：刷新 cookie "
+"默认带 `Secure` 标志（`COOKIE_SECURE`），而浏览器只在 HTTPS 或回环源上接受 `Secure` "
+"cookie。之所以也转发 8080 端口，是因为控制台调用的是构建进镜像的 `NEXT_PUBLIC_API_BASE`，默认为 "
+"`http://localhost:8080`；修改它需要重新构建前端。"
 
 #: ../developer/deployment.md:41
+msgid "Check that the stack answers:"
+msgstr "检查服务栈是否应答："
+
+#: ../developer/deployment.md:48
+msgid ""
+"The default `CORS_ALLOWED_ORIGINS` covers ports 3000, 3001 and 3002 on "
+"`localhost` and `127.0.0.1`, and HTTPS on port 8443, so a tunnel needs no"
+" CORS change."
+msgstr ""
+"默认的 `CORS_ALLOWED_ORIGINS` 已包含 `localhost` 和 `127.0.0.1` 上的 "
+"3000、3001、3002 端口以及 8443 端口上的 HTTPS，所以使用隧道无需修改 CORS。"
+
+#: ../developer/deployment.md:52
 msgid "Putting it on the public internet"
 msgstr "把它放到公网上"
 
-#: ../developer/deployment.md:43
+#: ../developer/deployment.md:54
 msgid ""
 "Nothing in the stack terminates TLS, and this repository ships no "
-"reverse-proxy config to copy: certificates and the proxy in front of the "
-"two published ports are yours to supply. A proxy running on the host can "
-"use `127.0.0.1:3001` for the console or `127.0.0.1:8080` for direct "
-"gateway access. A proxy container on the same Docker network can use "
-"`frontend:3001` or `backend:8080`."
+"reverse-proxy configuration. A proxy on the host uses `127.0.0.1:3001` "
+"for the console or `127.0.0.1:8080` for direct gateway access; a proxy "
+"container on the same Docker network uses `frontend:3001` or "
+"`backend:8080`."
 msgstr ""
-"服务栈里没有任何组件负责 TLS "
-"终止，仓库也没有现成的反向代理配置可以直接套用：证书和两个发布端口前面的代理都要你自己准备。跑在宿主机上的代理，访问控制台用 "
-"`127.0.0.1:3001`，直接访问网关用 `127.0.0.1:8080`；和服务栈在同一个 Docker 网络里的代理容器，则用 "
-"`frontend:3001` 或 `backend:8080`。"
+"服务栈中没有任何组件终止 TLS，本仓库也不提供反向代理配置。主机上的代理用 `127.0.0.1:3001` 访问控制台，或用 "
+"`127.0.0.1:8080` 直接访问网关；同一 Docker 网络中的代理容器用 `frontend:3001` 或 "
+"`backend:8080`。"
 
-#: ../developer/deployment.md:49
+#: ../developer/deployment.md:59
 msgid ""
-"If your proxy runs on another machine, set `FRONTEND_HOST` to a reachable"
-" host interface in `.env`; `0.0.0.0` binds all IPv4 interfaces. Restrict "
-"access to the intended proxy and run `make up` to recreate the port "
-"mapping. The console forwards API routes as well as serving pages, so "
-"exposing its port also exposes those routes. Set `BACKEND_HOST` "
-"separately only if direct gateway access is needed."
+"For a proxy on another machine, set `FRONTEND_HOST` in `.env` to an "
+"interface it can reach (`0.0.0.0` for all IPv4 interfaces), restrict "
+"access to that proxy, and run `make up`. The console also forwards the "
+"API, so exposing its port exposes the API. Set `BACKEND_HOST` only if you"
+" need direct gateway access. Releases before the loopback default bound "
+"the console to `0.0.0.0`; if you relied on that, set `FRONTEND_HOST` "
+"before upgrading."
 msgstr ""
-"如果代理跑在另一台机器上，就在 `.env` 里把 `FRONTEND_HOST` 设成代理能访问到的宿主机网卡地址；设成 `0.0.0.0` "
-"会绑定所有 IPv4 网卡。然后限制只让你的代理访问，再运行 `make up` 重建端口映射。控制台除了提供页面，还会转发 API "
-"路由，所以暴露它的端口也就暴露了这些路由。只有需要直接访问网关时，才另外设置 `BACKEND_HOST`。"
+"如果代理在另一台机器上，在 `.env` 中把 `FRONTEND_HOST` 设为它能访问到的网卡地址（`0.0.0.0` 表示所有 IPv4 "
+"网卡），只允许该代理访问，然后运行 `make up`。控制台也会转发 API，所以暴露它的端口就等于暴露了 API。只有需要直接访问网关时才设置"
+" `BACKEND_HOST`。在默认绑定回环地址之前的版本把控制台绑定在 `0.0.0.0`；如果你依赖这一点，请在升级前设置 "
+"`FRONTEND_HOST`。"
 
-#: ../developer/deployment.md:56
+#: ../developer/deployment.md:66
 msgid ""
-"Releases before the loopback default bound the console to `0.0.0.0`. If a"
-" deployment relied on that, set `FRONTEND_HOST` explicitly before "
-"upgrading; see [Releases and upgrades](releases.md)."
+"Which paths the console serves and which it forwards is set by `deploy"
+"/public-paths.json` and `next.config.js`, not by the proxy; see [The "
+"public path table](public-path-table.md)."
 msgstr ""
-"在默认改为回环地址之前，旧版本会把控制台绑定到 `0.0.0.0`。如果你的部署依赖这个行为，升级前要显式设置 "
-"`FRONTEND_HOST`；见[发布与升级](releases.md)。"
+"哪些路径由控制台自己提供、哪些转发给后端，由 `deploy/public-paths.json` 和 `next.config.js` "
+"决定，与代理无关；见[公开路径表](public-path-table.md)。"
 
-#: ../developer/deployment.md:105
-msgid ""
-"Which public paths the console serves itself and which it forwards to the"
-" backend is a separate question, and the answer is in `deploy/public-"
-"paths.json` and the console's own `next.config.js` rather than in any "
-"proxy config. See [The public path table](public-path-table.md)."
-msgstr ""
-"控制台自己提供哪些公开路径、把哪些转发给后端，是另一个问题，答案在 `deploy/public-paths.json` 和控制台自己的 "
-"`next.config.js` 里，而不在任何代理配置里。见[公开路径表](public-path-table.md)。"
-
-#: ../developer/deployment.md:65
+#: ../developer/deployment.md:70
 msgid "What your proxy still has to do"
 msgstr "代理仍然要负责的事"
 
-#: ../developer/deployment.md:67
+#: ../developer/deployment.md:72
 msgid ""
-"Three protections are commonly left to the reverse proxy, and nothing "
-"inside this stack provides them. A deployment that exposes the published "
-"ports without a proxy — a tunnel daemon connecting to `127.0.0.1:3001`, "
-"for instance — has none of them, and nothing warns you:"
-msgstr ""
-"有三项防护通常交给反向代理来做，这套服务栈内部并不提供。如果部署不经过代理就直接暴露已发布的端口——比如让隧道守护进程直接连到 "
-"`127.0.0.1:3001`——这三项防护就一项都没有，而且不会有任何提示："
+"Nothing inside the stack provides these. Without a proxy (a tunnel daemon"
+" connecting straight to `127.0.0.1:3001`, say) you have none of them, and"
+" nothing warns you:"
+msgstr "服务栈内部不提供以下保护。不用代理（比如让隧道守护进程直连 `127.0.0.1:3001`）就一项也没有，而且没有任何警告："
 
 #: ../developer/deployment.md
 msgid "Protection"
@@ -259,15 +213,23 @@ msgstr "Next.js Server Action 防护"
 #, python-brace-format
 msgid ""
 "Refuse requests carrying a `Next-Action` header (`if ($http_next_action) "
-"{ return 403; }`), so console server actions cannot be invoked from "
-"outside the console"
+"{ return 403; }`), so nobody outside the console can invoke its server "
+"actions"
 msgstr ""
-"拒绝带 `Next-Action` 头的请求（`if ($http_next_action) { return 403; "
-"}`），这样外部就调用不了控制台的 server action"
+"拒绝带 `Next-Action` 请求头的请求（`if ($http_next_action) { return 403; "
+"}`），让控制台之外的任何人都无法调用它的 server action"
 
 #: ../developer/deployment.md
 msgid "Request body cap on `/v1/`"
 msgstr "`/v1/` 的请求体大小上限"
+
+#: ../developer/deployment.md
+msgid ""
+"Bound request bodies (commonly `client_max_body_size 50m`). The gateway "
+"itself refuses bodies over `REQUEST_MAX_BODY_MB` (32 MiB)"
+msgstr ""
+"限制请求体大小（常见的是 `client_max_body_size 50m`）。网关自己会拒绝超过 "
+"`REQUEST_MAX_BODY_MB`（32 MiB）的请求体"
 
 #: ../developer/deployment.md
 msgid "`X-Forwarded-For` rewriting"
@@ -275,60 +237,50 @@ msgstr "`X-Forwarded-For` 重写"
 
 #: ../developer/deployment.md
 msgid ""
-"Overwrite a client-supplied chain, so only hops the proxy inserted reach "
-"the gateway"
-msgstr "覆盖客户端自带的转发链，让网关只看到代理自己加上的那几跳"
+"Overwrite a client-supplied chain, so only hops the proxy added reach the"
+" gateway"
+msgstr "覆盖客户端提供的链条，只让代理自己添加的跳到达网关"
 
-#: ../developer/deployment.md:78
+#: ../developer/deployment.md:82
 msgid ""
-"The gateway reads forwarded headers only from the proxies you authorize "
-"(see [Trusted proxies and client IPs](trusted-proxies-and-client-"
-"ips.md)), but it never rewrites them. Without a proxy that does, the "
-"leftmost `X-Forwarded-For` entry is whatever the caller sent — which is "
-"why `CF-Connecting-IP` is preferred when Cloudflare is in front."
+"The gateway reads forwarded headers only from proxies you authorize, but "
+"never rewrites them; see [Trusted proxies and client IPs](trusted-"
+"proxies-and-client-ips.md)."
 msgstr ""
-"网关只信任你授权过的代理发来的转发头（见[可信代理与客户端 IP](trusted-proxies-and-client-"
-"ips.md)），但从不改写这些头。如果前面没有负责改写的代理，`X-Forwarded-For` "
-"最左边的那一项就是调用方随便填的值——所以前面有 Cloudflare 时，优先用 `CF-Connecting-IP`。"
+"网关只读取你授权的代理发来的转发请求头，但从不改写它们；见[可信代理与客户端 IP](trusted-proxies-and-client-"
+"ips.md)。"
 
-#: ../developer/deployment.md:129
+#: ../developer/deployment.md:85
 msgid "Splitting inference traffic at the entry"
 msgstr "在入口分流推理流量"
 
-#: ../developer/deployment.md:131
+#: ../developer/deployment.md:87
 msgid ""
-"By default every request reaches the console, which forwards the "
-"gateway's paths to it. A long stream then passes through two processes "
-"that are each released and restarted, and a console release or restart "
-"interrupts it as surely as a gateway one does. An entry that can route by"
-" path — an Ingress path rule, a tunnel's path routing, a load balancer — "
-"may instead send the paths the public path manifest marks `entry_split`, "
-"`/v1` and `/anthropic`, straight to the gateway, and everything else to "
-"the console as before."
+"By default every request goes through the console, so a release or "
+"restart of the console interrupts long streams just as a gateway release "
+"does. An entry that routes by path (an Ingress rule, a tunnel's path "
+"routing, a load balancer) can instead send the paths the public path "
+"manifest marks `entry_split`, `/v1` and `/anthropic`, straight to the "
+"gateway, and everything else to the console."
 msgstr ""
-"默认情况下，每个请求都先到控制台，由控制台把网关的路径转发给网关。于是一条长流要经过两个各自会被发布和重启的进程，控制台的发布或重启和网关的一样会打断它。能按路径路由的入口——Ingress"
-" 的路径规则、隧道的路径路由、负载均衡——可以改为把公开路径清单里标记了 `entry_split` 的路径（`/v1` 和 "
-"`/anthropic`）直接交给网关，其余路径照旧交给控制台。"
+"默认情况下所有请求都经过控制台，所以控制台的发布或重启会像网关发布一样打断长流式请求。能按路径路由的入口（Ingress "
+"规则、隧道的路径路由、负载均衡器）可以改为把公开路径清单中标为 `entry_split` 的路径（`/v1` 和 "
+"`/anthropic`）直接发给网关，其余照旧发给控制台。"
 
-#: ../developer/deployment.md:140
+#: ../developer/deployment.md:93
 msgid ""
-"This is optional and is the deployment's to set up: this repository ships"
-" no entry configuration, and the example and local stacks keep the built-"
-"in forwarding. The console's image is the same either way and still "
-"forwards both prefixes, so removing the entry's two rules is the rollback"
-" and needs no image change, provided the gateway still trusts the console"
-" as before and the console's stop grace period has not been shortened. "
-"The split does not change what a gateway release does to a stream (open "
-"requests still get 5 seconds after the stop signal), and the console's "
-"model playground, `/internal/playground`, still goes through the console."
+"This is optional, and this repository ships no entry configuration. The "
+"console image still forwards both prefixes, so removing the entry's two "
+"rules rolls the split back, provided the gateway still trusts the console"
+" and the console's stop grace period is unchanged. A gateway release "
+"still gives open requests 5 seconds after the stop signal."
 msgstr ""
-"这是可选的，由部署自己配置：本仓库不提供任何入口配置，example "
-"和本地环境继续使用内置转发。两种方式下控制台的镜像相同，并且仍然转发这两个前缀，所以撤掉入口上的两条规则就是回滚，不需要换镜像，前提是网关仍像以前一样信任控制台，并且控制台的停止宽限时间没有缩短。分流不改变网关发布对流的影响（收到停止信号后，进行中的请求仍然只有"
-" 5 秒），控制台的模型 playground（`/internal/playground`）也仍然经过控制台。"
+"这是可选的，本仓库不提供入口配置。控制台镜像仍会转发这两个前缀，所以删掉入口上的两条规则就能撤销分流，前提是网关仍信任控制台、控制台的停止宽限期没有缩短。网关发布时，停止信号之后仍给进行中的请求"
+" 5 秒。"
 
-#: ../developer/deployment.md:150
-msgid "On the split paths the entry has to meet these conditions:"
-msgstr "在分流路径上，入口必须满足下面的条件："
+#: ../developer/deployment.md:99
+msgid "On the split paths, the entry must meet these conditions:"
+msgstr "在分流的路径上，入口必须满足以下条件："
 
 #: ../developer/deployment.md
 msgid "#"
@@ -345,14 +297,13 @@ msgstr ""
 #: ../developer/deployment.md
 #, python-format
 msgid ""
-"It sends to the gateway only the manifest's `entry_split` prefixes: a "
-"path equal to `/v1` or `/anthropic`, or beginning `/v1/` or "
-"`/anthropic/`. It matches after resolving `.` and `..` segments and "
-"percent-encoding, so `/v1/%2e%2e/openapi.json` is not under `/v1`"
+"It sends to the gateway only a path equal to `/v1` or `/anthropic`, or "
+"starting with `/v1/` or `/anthropic/`, matched after resolving `.` and "
+"`..` segments and percent-encoding (`/v1/%2e%2e/openapi.json` is not "
+"under `/v1`)"
 msgstr ""
-"只把清单里的 `entry_split` 前缀交给网关：路径等于 `/v1` 或 `/anthropic`，或以 `/v1/` 或 "
-"`/anthropic/` 开头。匹配在解析完 `.`、`..` 段和百分号编码之后进行，所以 `/v1/%2e%2e/openapi.json`"
-" 不在 `/v1` 之下"
+"只把等于 `/v1` 或 `/anthropic`、或以 `/v1/` 或 `/anthropic/` 开头的路径发给网关，并且先解析 `.` 和"
+" `..` 段与百分号编码再匹配（`/v1/%2e%2e/openapi.json` 不在 `/v1` 之下）"
 
 #: ../developer/deployment.md
 msgid "E2"
@@ -371,12 +322,12 @@ msgstr ""
 #: ../developer/deployment.md
 msgid ""
 "Its idle timeout is longer than the gateway's `REQUEST_TIMEOUT_SECONDS`, "
-"and it sets no limit on a request's total duration shorter than "
+"and any limit on a request's total duration is no shorter than "
 "`STREAM_REQUEST_TIMEOUT_SECONDS`. Streams send a keepalive every 15 "
 "seconds"
 msgstr ""
-"空闲超时大于网关的 `REQUEST_TIMEOUT_SECONDS`，并且不设短于 "
-"`STREAM_REQUEST_TIMEOUT_SECONDS` 的请求总时长上限。流每 15 秒发一次保活"
+"它的空闲超时长于网关的 `REQUEST_TIMEOUT_SECONDS`，对请求总时长的任何限制都不短于 "
+"`STREAM_REQUEST_TIMEOUT_SECONDS`。流式响应每 15 秒发送一次 keepalive"
 
 #: ../developer/deployment.md
 msgid "E4"
@@ -384,9 +335,9 @@ msgstr ""
 
 #: ../developer/deployment.md
 msgid ""
-"Its request body limit is no lower than the gateway's own, file uploads "
-"under `/v1` included"
-msgstr "请求体上限不低于网关自己的上限，包括 `/v1` 下的文件上传"
+"Its request body limit is no lower than the gateway's own, including file"
+" uploads under `/v1`"
+msgstr "它的请求体大小限制不低于网关自己的限制，包括 `/v1` 下的文件上传"
 
 #: ../developer/deployment.md
 msgid "E5"
@@ -411,8 +362,8 @@ msgid "E7"
 msgstr ""
 
 #: ../developer/deployment.md
-msgid "The gateway's port is reachable from the entry and the console only"
-msgstr "网关的端口只有入口和控制台能连到"
+msgid "Only the entry and the console can reach the gateway's port"
+msgstr "只有入口和控制台能访问网关的端口"
 
 #: ../developer/deployment.md
 msgid "E8"
@@ -420,304 +371,474 @@ msgstr ""
 
 #: ../developer/deployment.md
 msgid ""
-"It does not resend a `POST` once the request has been sent to the "
-"gateway. Retrying on another instance when the connection could not be "
-"established is fine"
-msgstr "请求已经发给网关之后，不重发 `POST`。连接没建立成功时换一个实例重试是可以的"
+"It does not resend a `POST` once it has reached the gateway; retrying "
+"when the connection could not be established is fine"
+msgstr "请求一旦到达网关就不再重发 `POST`；连接没能建立时重试没有问题"
 
 #: ../developer/deployment.md
 msgid "E9"
 msgstr ""
 
 #: ../developer/deployment.md
-msgid "When an instance is taken out of rotation, it stops giving it new requests but does not close the connections already open to it. A release handoff depends on it; see [Handing traffic to a new gateway process](#handing-traffic-to-a-new-gateway-process)"
-msgstr "实例被摘除时，停止给它分配新请求，但不关闭它上面已经建立的连接。发布交接依赖这一条；见[把流量交给新的网关进程](#handing-traffic-to-a-new-gateway-process)"
-
-#: ../developer/deployment.md:164
 msgid ""
-"What clients see on the split paths is the gateway's own answer, the same"
-" as through the console, with these differences:"
-msgstr "客户端在分流路径上看到的是网关自己的回答，和经过控制台时一样，区别如下："
-
-#: ../developer/deployment.md:167
-msgid ""
-"`X-Content-Type-Options: nosniff` comes from the gateway, which adds it "
-"to every response. The console's other two headers, `X-Frame-Options` and"
-" `Referrer-Policy`, only mean something for a page and are not sent on "
-"these paths."
+"Taking an instance out of rotation stops new requests but keeps open "
+"connections; see [Handing traffic to a new gateway process](#handing-"
+"traffic-to-a-new-gateway-process)"
 msgstr ""
-"`X-Content-Type-Options: nosniff` 由网关添加，网关给每个响应都加上它。控制台的另外两个头，`X-Frame-"
-"Options` 和 `Referrer-Policy`，只对网页有意义，在这些路径上不再出现。"
+"把实例移出轮换时，停止发送新请求，但保留已打开的连接；见[把流量交给新的网关进程](#handing-traffic-to-a-new-"
+"gateway-process)"
 
-#: ../developer/deployment.md:171
+#: ../developer/deployment.md:113
 msgid ""
-"A path that ends in a slash, `/v1/models/`, gets the same `308` to the "
-"bare path `/v1/models` from the gateway as from the console."
-msgstr "以斜杠结尾的路径（`/v1/models/`）从网关得到的，与从控制台得到的一样，是到裸路径 `/v1/models` 的 `308`。"
-
-#: ../developer/deployment.md:173
-msgid ""
-"When the gateway cannot be reached, the error comes from the entry: a "
-"`502`, `503` or `504`, but with the entry's own body rather than the "
-"console's OpenAI-shaped JSON. SDKs act on the status; a client that "
-"parses error bodies will see different content. An entry that can be "
-"given a JSON error body may be configured to send one."
+"Clients see the gateway's own answers, with two differences: the `X"
+"-Frame-Options` and `Referrer-Policy` page headers are not sent (the "
+"gateway adds `X-Content-Type-Options: nosniff` itself), and when the "
+"gateway is down the `502`, `503` or `504` carries the entry's body, not "
+"the console's OpenAI-shaped JSON. To see which way a request went, "
+"compare the gateway's request log, whose `peer_ip` names the process that"
+" connected, with the entry's access log."
 msgstr ""
-"网关连不上时，错误由入口返回：`502`、`503` 或 `504`，但响应体是入口自己的，而不是控制台的 OpenAI 格式 JSON。SDK "
-"按状态码处理；自己解析错误体的客户端会看到不同的内容。能配置 JSON 错误体的入口，可以配置成返回 JSON。"
+"客户端看到的是网关自己的应答，有两处不同：不再发送 `X-Frame-Options` 和 `Referrer-Policy` "
+"这两个页面请求头（`X-Content-Type-Options: nosniff` 由网关自己添加）；网关不可用时，`502`、`503` 或 "
+"`504` 带的是入口的响应体，而不是控制台的 OpenAI 格式 JSON。要知道请求走的是哪条路，把网关请求日志中的 "
+"`peer_ip`（它是发起连接的进程）与入口的访问日志对照。"
 
-#: ../developer/deployment.md:179
-msgid ""
-"Which way a request went is shown by the gateway's request log, whose "
-"`peer_ip` names the process that connected to it, read together with the "
-"entry's own access log. A response header is not proof: anything in "
-"between can rewrite one."
-msgstr ""
-"一个请求走了哪条路径，看网关的请求日志：其中的 `peer_ip` "
-"是连到网关的那个进程，再对照入口自己的访问日志。响应头不能作为证明：中间的任何一层都可以改写它。"
-
-#: ../developer/deployment.md:184
+#: ../developer/deployment.md:121
 msgid "Client addresses with the entry in front"
 msgstr "入口在前面时的客户端地址"
 
-#: ../developer/deployment.md:186
+#: ../developer/deployment.md:123
 msgid ""
-"With the split, two peers forward requests to the gateway on clients' "
-"behalf: the console, for everything that is not split, and the entry. "
-"Requests through the entry must resolve to the same client address as "
-"before, and must do so with the console stopped. Do not get there by "
-"trusting more: keep `TRUST_PROXY_HEADERS` on, add no network that holds "
-"other workloads to a trust list, and do not treat an `unknown` address as"
-" a normal result."
+"Requests through the entry must resolve to the same client addresses as "
+"before, with the console stopped. Do not get there by trusting more: keep"
+" `TRUST_PROXY_HEADERS` on, add no network that holds other workloads to a"
+" trust list, and do not treat an `unknown` address as normal."
 msgstr ""
-"分流之后，有两个对端代表客户端把请求转给网关：控制台（负责没有分流的一切）和入口。经入口的请求必须解析出和以前相同的客户端地址，并且在控制台停止时也要做到。不要靠扩大信任来做到这一点：保持"
-" `TRUST_PROXY_HEADERS` 开启，不把包含其他工作负载的网段加入信任列表，也不把 `unknown` 地址当作正常结果。"
+"经过入口的请求必须解析出与以前相同的客户端地址，而且在控制台停止时也是如此。不要靠扩大信任来做到这一点：保持 "
+"`TRUST_PROXY_HEADERS` 开启，不要把运行其他工作负载的网络加入信任列表，也不要把 `unknown` 地址当成正常结果。"
 
-#: ../developer/deployment.md:193
+#: ../developer/deployment.md:128
 msgid ""
-"**Static trust** (Kubernetes proxy discovery not enabled). Readiness does"
-" not depend on any proxy, so stopping the console leaves `/health/ready` "
-"as it was. For the address, add the entry's exact peer address, as the "
-"gateway sees it, to the setting for the header the entry writes: "
-"`TRUSTED_PROXIES` for an entry that writes `X-Forwarded-For`, "
-"`TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare. Keep the console's own "
-"entry. Add nothing wider than the entry itself: if the gateway cannot "
-"tell the entry's connections from other processes' — behind a loopback "
-"port mapping, every process on the host reaches the gateway from the same"
-" address — solve that first, rather than trusting the shared address. See"
-" [Trusted proxies and client IPs](trusted-proxies-and-client-ips.md)."
+"With static trust, add the entry's exact peer address, as the gateway "
+"sees it, to `TRUSTED_PROXIES` for an entry that writes `X-Forwarded-For`,"
+" or to `TRUSTED_CLOUDFLARE_NETWORKS` for Cloudflare, and keep the "
+"console's own entry. If the gateway cannot tell the entry's connections "
+"from other processes' (behind a loopback port mapping every process on "
+"the host shares one address), solve that first."
 msgstr ""
-"**静态信任**（未启用 Kubernetes 代理发现）。就绪不依赖任何代理，所以停止控制台不会改变 "
-"`/health/ready`。地址方面，把入口在网关眼中的精确对端地址，加到入口所写的那个头对应的设置里：写 `X-Forwarded-For`"
-" 的入口加到 `TRUSTED_PROXIES`，Cloudflare 加到 "
-"`TRUSTED_CLOUDFLARE_NETWORKS`。控制台原有的那一项保留。不要加比入口本身更宽的范围：如果网关分不清入口的连接和其他进程的连接——在回环端口映射后面，主机上的每个进程都从同一个地址连到网关——先解决这一点，而不是去信任这个共用的地址。见[可信代理与客户端"
-" IP](trusted-proxies-and-client-ips.md)。"
+"使用静态信任时，把网关看到的入口确切对端地址加入设置：入口写 `X-Forwarded-For` 时加入 "
+"`TRUSTED_PROXIES`，Cloudflare 则加入 "
+"`TRUSTED_CLOUDFLARE_NETWORKS`，同时保留控制台原有的条目。如果网关无法把入口的连接与其他进程的连接区分开（在回环端口映射之后，主机上的所有进程共用一个地址），先解决这个问题。"
 
-#: ../developer/deployment.md:204
+#: ../developer/deployment.md:135
 msgid ""
-"**Kubernetes proxy discovery.** The split does not meet its goal in this "
-"mode today, so a deployment that uses it stays on the console's "
-"forwarding:"
-msgstr "**Kubernetes 代理发现**。按今天的实现，分流在这种模式下达不到目标，所以使用它的部署继续使用控制台的转发："
-
-#: ../developer/deployment.md:207
-msgid ""
-"The discovered proxies are one Service's pods. An entry outside that "
-"Service is not one of them, so every request it sends resolves to "
-"`unknown`."
-msgstr "被发现的代理是一个 Service 的 Pod。Service 之外的入口不在其中，所以它送来的每个请求都解析为 `unknown`。"
-
-#: ../developer/deployment.md:209
-msgid ""
-"With the frontend stopped the discovered set is empty, `/health/ready` "
-"answers `503 proxy_discovery_unavailable`, and the entry takes the "
-"gateway out of rotation: stopping the console would interrupt inference, "
-"the very coupling the split removes."
+"Kubernetes proxy discovery does not support the split: an entry outside "
+"the discovered Service resolves to `unknown`, and with the frontend "
+"stopped the discovered set is empty and `/health/ready` answers `503 "
+"proxy_discovery_unavailable`. A deployment that uses discovery keeps the "
+"console's forwarding."
 msgstr ""
-"前端停止时，被发现的集合为空，`/health/ready` 返回 `503 "
-"proxy_discovery_unavailable`，入口随即把网关摘掉：停止控制台就会打断推理，而这正是分流要消除的耦合。"
+"Kubernetes 代理发现不支持分流：位于被发现 Service 之外的入口会解析为 "
+"`unknown`，而前端停止时被发现的集合为空，`/health/ready` 会返回 `503 "
+"proxy_discovery_unavailable`。使用代理发现的部署继续让控制台转发。"
 
-#: ../developer/deployment.md:213
-msgid ""
-"The pinned identity is the frontend pods' direct controller. A frontend "
-"run as a Deployment gets a new ReplicaSet on every release, which "
-"requires updating that identity and restarting the gateway."
-msgstr ""
-"被固定的身份是前端 Pod 的直接控制器。以 Deployment 运行的前端每次发布都会换一个新的 "
-"ReplicaSet，于是需要更新这个身份并重启网关。"
-
-#: ../developer/deployment.md:217
+#: ../developer/deployment.md:141
 msgid "Checking an entry split with the probe"
 msgstr "用探针检查入口分流"
 
-#: ../developer/deployment.md:219
-msgid ""
-"`ops/dev/entry_split_probe.py` checks a deployment's inference path from "
-"outside, through the address clients use, on either topology. It uses a "
-"raw HTTP client and never retries, so every failed request counts:"
-msgstr ""
-"`ops/dev/entry_split_probe.py` 从外部、通过客户端使用的地址检查部署的推理路径，两种拓扑都适用。它用原始 HTTP "
-"客户端，从不重试，所以每一次失败的请求都会被计入："
-
-#: ../developer/deployment.md:223
-msgid ""
-"long streams on `/v1/chat/completions`, `/v1/responses` and "
-"`/anthropic/v1/messages`, with each frame's arrival time, the end marker "
-"(`[DONE]`, `response.completed`, `message_stop`) and the usage report "
-"checked;"
-msgstr ""
-"`/v1/chat/completions`、`/v1/responses` 和 `/anthropic/v1/messages` "
-"上的长流，检查每一帧的到达时间、结束标记（`[DONE]`、`response.completed`、`message_stop`）和 "
-"usage；"
-
-#: ../developer/deployment.md:227
-msgid ""
-"short streaming and non-streaming requests on the same three paths, at a "
-"fixed rate, for as long as the long streams run;"
-msgstr "同样这三条路径上的短的流式和非流式请求，按固定速率发出，持续到长流结束；"
-
-#: ../developer/deployment.md:229
+#: ../developer/deployment.md:143
 #, python-format
 msgid ""
-"the boundary, from `deploy/public-paths.json`: each split prefix reaches "
-"the gateway and carries `nosniff`, a trailing slash redirects to the same"
-" origin, the gateway's unpublished paths (`/docs`, `/openapi.json`, "
-"`/health/deep`, escapes such as `/v1/%2e%2e/openapi.json` and `//v1`) do "
-"not answer, and a missing or wrong API key gets `401`;"
+"`ops/dev/entry_split_probe.py` tests the inference path from outside, "
+"through the address clients use, on either topology. It never retries, so"
+" every failed request counts. It runs long streams on "
+"`/v1/chat/completions`, `/v1/responses` and `/anthropic/v1/messages`, "
+"checking each frame's timing, the end marker and the usage report; short "
+"requests on the same paths at a fixed rate; and boundary checks from "
+"`deploy/public-paths.json` (split prefixes reach the gateway, unpublished"
+" paths such as `/docs` and `/v1/%2e%2e/openapi.json` do not answer, a "
+"missing key gets `401`)."
 msgstr ""
-"边界，依据 `deploy/public-paths.json`：每个分流前缀都到达网关并带有 "
-"`nosniff`，尾斜杠重定向到同一个源，网关未公开的路径（`/docs`、`/openapi.json`、`/health/deep`，以及 "
-"`/v1/%2e%2e/openapi.json`、`//v1` 这样的越界写法）不响应，缺少或错误的 API key 得到 `401`；"
+"`ops/dev/entry_split_probe.py` "
+"从外部、通过客户端使用的地址测试推理链路，两种拓扑都适用。它从不重试，所以每个失败的请求都会计数。它在 "
+"`/v1/chat/completions`、`/v1/responses` 和 `/anthropic/v1/messages` "
+"上运行长流式请求，检查每一帧的时间、结束标记和用量报告；以固定速率在相同路径上发送短请求；并按 `deploy/public-"
+"paths.json` 做边界检查（分流前缀能到达网关，`/docs`、`/v1/%2e%2e/openapi.json` "
+"等未公开路径不应答，缺少 key 时返回 `401`）。"
 
-#: ../developer/deployment.md:234
-msgid "`/health`, every few seconds, recorded but never counted."
-msgstr "`/health`，每隔几秒一次，只记录，从不计入。"
-
-#: ../developer/deployment.md:236
+#: ../developer/deployment.md:152
 msgid ""
-"Give the long streams a synthetic upstream with a known shape: the "
-"example's fake provider (`distributions/example/fixtures/fake-openai-"
+"Point the long streams at a synthetic upstream: the example's fake "
+"provider (`distributions/example/fixtures/fake-openai-"
 "provider/server.py`) started with `--stream-frames 600 --frame-interval-"
-"ms 100` streams 600 numbered frames 100 ms apart, and the probe then "
-"checks that every frame arrived once, in order, at that interval. An "
-"entry that buffers shows up here as frames arriving in bursts. Route one "
-"model to it for the long streams and, optionally, a second to a default "
-"instance for the short requests:"
+"ms 100` sends 600 numbered frames 100 ms apart, and an entry that buffers"
+" shows up as frames arriving in bursts:"
 msgstr ""
-"给长流一个形状已知的合成上游：example 的假模型服务（`distributions/example/fixtures/fake-"
-"openai-provider/server.py`）用 `--stream-frames 600 --frame-interval-ms "
-"100` 启动后，会以 100 毫秒的间隔发出 600 "
-"个带序号的帧，探针随后检查每一帧都按顺序到达且只到达一次，间隔符合设定。缓冲响应的入口在这里表现为帧成批到达。把一个模型路由到它，用于长流；也可以把第二个模型路由到一个默认实例，用于短请求："
+"让长流式请求指向一个合成上游：示例中的假 provider（`distributions/example/fixtures/fake-"
+"openai-provider/server.py`）以 `--stream-frames 600 --frame-interval-ms "
+"100` 启动时，会每隔 100 ms 发送一帧、共 600 个编号帧；会缓冲的入口表现为帧成批到达："
 
-#: ../developer/deployment.md:250
+#: ../developer/deployment.md:163
 msgid ""
-"The key is read from the environment variable `--api-key-env` names and "
-"is never printed. The report is JSON; the exit status is `0` only when "
-"nothing failed. Run it before and while you release, restart or stop the "
-"console: with the split in place, no long stream may break and no short "
-"request may fail. Run it once on the console's own path while stopping "
-"the console as well, to see that it does report the broken streams. Run "
-"against the gateway's port directly, it reports `/docs` and the other "
-"unpublished paths as reachable: that port is not an entry, which is why "
-"E7 keeps it private."
+"The key comes from the variable `--api-key-env` names (`PROBE_API_KEY` by"
+" default). The exit status is `0` only when nothing failed. Run it while "
+"you release, restart or stop the console: with the split in place, "
+"nothing may fail. Run against the gateway's own port, it reports `/docs` "
+"as reachable; that is why E7 keeps the port private."
 msgstr ""
-"key 从 `--api-key-env` 指定的环境变量读取，从不打印。报告是 JSON；只有没有任何失败时退出码才是 "
-"`0`。在发布、重启或停止控制台之前和期间运行它：分流就位时，不能有长流中断，也不能有短请求失败。另外在控制台自己的路径上、一边停止控制台一边运行一次，确认它确实报告了中断的流。直接对着网关的端口运行时，它会报告"
-" `/docs` 和其他未公开的路径可以访问：那个端口不是入口，这正是 E7 要求它不对外开放的原因。"
+"key 从 `--api-key-env` 指定的变量读取（默认 `PROBE_API_KEY`）。只有没有任何失败时退出码才是 "
+"`0`。在发布、重启或停止控制台时运行它：分流到位后，不应有任何失败。直接对网关自己的端口运行时，它会报告 `/docs` 可以访问；这正是 E7"
+" 要求该端口不对外的原因。"
 
-#: ../developer/deployment.md:84
-msgid "Keeping it private: an SSH tunnel"
-msgstr "不对外暴露：SSH 隧道"
-
-#: ../developer/deployment.md:86
-msgid ""
-"A staging or scratch instance, or any gateway you do not want on a "
-"network at all, can keep the loopback defaults. Reach it from your "
-"workstation by forwarding both ports:"
-msgstr "staging 或临时实例，以及任何你根本不想放到网络上的网关，都可以保留默认的回环绑定，然后在自己的工作机上转发这两个端口来访问："
-
-#: ../developer/deployment.md:94
-msgid ""
-"Then open `http://localhost:3001`. Keep the local end on `localhost` or "
-"`127.0.0.1`: the refresh cookie is issued with the `Secure` flag by "
-"default (`COOKIE_SECURE`), and browsers accept `Secure` cookies only over"
-" HTTPS or from a loopback origin."
-msgstr ""
-"然后打开 `http://localhost:3001`。本地这一端只能用 `localhost` 或 `127.0.0.1`：存放 "
-"refresh token 的 cookie 默认带 `Secure` 标志（`COOKIE_SECURE`），而浏览器只在 HTTPS "
-"或回环地址的 origin 下才接受 `Secure` cookie。"
-
-#: ../developer/deployment.md:99
-msgid ""
-"The console talks to the API at whatever `NEXT_PUBLIC_API_BASE` was baked"
-" in at image build time — `http://localhost:8080` by default — which is "
-"why the tunnel forwards 8080 as well. Changing it is a frontend rebuild, "
-"not a restart."
-msgstr ""
-"控制台访问 API 的地址，是镜像构建时编译进去的 `NEXT_PUBLIC_API_BASE`（默认 "
-"`http://localhost:8080`），所以隧道还要转发 8080。改这个值需要重新构建前端，光重启没用。"
-
-#: ../developer/deployment.md:103
-msgid ""
-"VS Code-family editors can manage the same forwards from their ports "
-"panel."
-msgstr "VS Code 系列的编辑器可以在自带的端口面板里管理同样的转发。"
-
-#: ../developer/deployment.md:105
-msgid "Check the stack answers:"
-msgstr "检查服务栈是否正常响应："
-
-#: ../developer/deployment.md:112
-msgid ""
-"The default `CORS_ALLOWED_ORIGINS` already covers ports 3000, 3001 and "
-"3002 on `localhost` and `127.0.0.1`, plus HTTPS on port 8443, so a "
-"tunnelled instance needs no CORS entry. Add one only when you serve the "
-"console from another origin."
-msgstr ""
-"`CORS_ALLOWED_ORIGINS` 的默认值已经覆盖 `localhost` 和 `127.0.0.1` 上的 "
-"3000、3001、3002 端口，外加 8443 端口上的 HTTPS，所以走隧道访问的实例不需要再加 CORS 条目。只有当控制台由别的 "
-"origin 提供时才需要加。"
-
-#: ../developer/deployment.md:117
+#: ../developer/deployment.md:169
 msgid "Everyday operations"
 msgstr "日常运维"
 
-#: ../developer/deployment.md:119
-msgid "All from the repository root:"
-msgstr "以下命令都在仓库根目录执行："
+#: ../developer/deployment.md:171
+msgid "Run these from the repository root:"
+msgstr "在仓库根目录运行以下命令："
+
+#: ../developer/deployment.md:186
+msgid ""
+"`make up` and `make build` create the external volume "
+"`hybridinference_postgres_data` if it is missing, apply the schema "
+"migrations with the backend image, and then start the services. `make "
+"restart` migrates nothing."
+msgstr ""
+"`make up` 和 `make build` 会在外部卷 `hybridinference_postgres_data` "
+"不存在时创建它，用后端镜像执行 schema 迁移，然后启动服务。`make restart` 不做任何迁移。"
+
+#: ../developer/deployment.md:191
+msgid ""
+"Name optional profiles on the command line, which outranks every env "
+"file: `make up COMPOSE_PROFILES=admin` (a comma-separated list). To keep "
+"host-local choices (profiles, `CLOUD_AGENT_NETWORK`, `PGADMIN_PUBLISH`) "
+"across commands, copy `.ops.env.example` to `.ops.env` and uncomment what"
+" this host needs."
+msgstr ""
+"在命令行上指定可选 profile，命令行的优先级高于所有 env 文件：`make up "
+"COMPOSE_PROFILES=admin`（逗号分隔的列表）。要让本机的选择（profile、`CLOUD_AGENT_NETWORK`、`PGADMIN_PUBLISH`）对所有命令都生效，把"
+" `.ops.env.example` 复制为 `.ops.env`，再取消注释本机需要的项。"
+
+#: ../developer/deployment.md:196
+msgid "Diagnostics, deployment and recovery"
+msgstr "诊断、部署与恢复"
+
+#: ../developer/deployment.md:207
+msgid ""
+"Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` "
+"runs the distribution's own `smoke.py` when it ships one."
+msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。如果发行版自带 `smoke.py`，`make smoke` 会运行它。"
+
+#: ../developer/deployment.md:210
+msgid ""
+"`make deploy` records the running artifacts, pulls the pinned images, "
+"runs the migrations with the new backend image, imports the previous "
+"release's file configuration when `LEGACY_MANIFEST` is set (see [Model "
+"and routing documents in the database](configuration.md#model-and-"
+"routing-documents-in-the-database)), then switches the services and runs "
+"the acceptance smoke. Any failure after the switch, including an "
+"interruption, restores the previous images and runs the acceptance on "
+"them. `make rollback` starts the recorded previous images without running"
+" their migrations."
+msgstr ""
+"`make deploy` 会记录正在运行的制品，拉取固定的镜像，用新的后端镜像执行迁移，在设置了 `LEGACY_MANIFEST` "
+"时导入上一版本的文件配置（见[数据库中的模型与路由文档](configuration.md#model-and-routing-"
+"documents-in-the-"
+"database)），然后切换服务并运行验收冒烟测试。切换之后的任何失败（包括被中断）都会恢复旧镜像，并在旧镜像上再次运行验收。`make "
+"rollback` 启动记录中的旧镜像，不运行它们的迁移。"
+
+#: ../developer/deployment.md:219
+msgid ""
+"The record lives in `.ops/<distribution>/` (`.ops/none/` without a "
+"distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when "
+"the shell sets it): `images.env` pins the images, and `previous.json` and"
+" `current.json` name the releases. A deploy writes them only once its "
+"release is accepted. While `images.env` exists, `make up`, `make migrate`"
+" and the other lifecycle commands start the pinned images, and `make "
+"build` refuses; delete `images.env` to return to source builds."
+msgstr ""
+"记录保存在 `.ops/<distribution>/` 中（没有发行版时为 `.ops/none/`；shell 设置了 "
+"`COMPOSE_PROJECT_NAME` 时还会再分一层以它命名的子目录）：`images.env` 固定镜像，`previous.json`"
+" 和 `current.json` 记录版本。只有版本通过验收后，部署才会写入它们。只要 `images.env` 存在，`make "
+"up`、`make migrate` 等生命周期命令就会启动固定的镜像，`make build` 会拒绝执行；删除 `images.env` "
+"即可回到源码构建。"
+
+#: ../developer/deployment.md:227
+msgid ""
+"`make backup` writes to `.ops/<distribution>/gateway.dump` unless you set"
+" `BACKUP`. The dump holds every stored secret, so keep it private and "
+"copy it off the host. `make restore-check` is described under "
+"[Backup](database.md#backup)."
+msgstr ""
+"不设置 `BACKUP` 时，`make backup` 写到 "
+"`.ops/<distribution>/gateway.dump`。转储包含所有已存储的密钥，请妥善保管并复制到主机之外。`make "
+"restore-check` 见[备份](database.md#backup)。"
+
+#: ../developer/deployment.md:231
+msgid "Handing traffic to a new gateway process"
+msgstr "把流量交给新的网关进程"
+
+#: ../developer/deployment.md:233
+msgid ""
+"A release can start a new gateway process beside the old one and stop the"
+" old one only when it has nothing left: no request cut short, no request-"
+"log row or cost lost. The release asks the old process instead of waiting"
+" a fixed time. Stopping with a signal is unchanged: open requests get "
+"five seconds, then are cancelled."
+msgstr "发布时可以在旧网关进程旁边启动新进程，等旧进程什么都不剩时再停止它：不打断任何请求，不丢失任何请求日志行或费用。发布流程会询问旧进程，而不是等待固定的时间。用信号停止的行为不变：进行中的请求有五秒时间，之后被取消。"
+
+#: ../developer/deployment.md:239
+msgid ""
+"The handoff routes exist only when the process has `HANDOFF_TOKEN` in its"
+" environment, a random value of at least 32 characters; otherwise they "
+"answer 404. They live under `/internal/handoff`, which no public path "
+"list includes, so neither the console nor an entry forwards them. Call "
+"each process at its own address with `Authorization: Bearer "
+"<HANDOFF_TOKEN>`. This is not the administrator token, which is read-only"
+" for changes wherever administrators need a second factor."
+msgstr ""
+"只有进程环境中有 `HANDOFF_TOKEN`（至少 32 个字符的随机值）时，交接路由才存在；否则它们返回 404。这些路由位于 "
+"`/internal/handoff` 下，不在任何公开路径列表中，所以控制台和入口都不会转发它们。用 `Authorization: "
+"Bearer <HANDOFF_TOKEN>` "
+"在每个进程自己的地址上调用。这不是管理员令牌；在要求管理员第二重验证的部署中，管理员令牌对修改是只读的。"
 
 #: ../developer/deployment.md
-msgid "`make up` and `make build` first run the `docker-volumes` target, which creates the external volume `hybridinference_postgres_data` when it is missing, and then apply the schema migrations with the backend image before they start the services. `make restart` starts the existing containers again and migrates nothing. On a deployment that `make deploy` pinned to published images, these commands start the pinned images, and `make build` refuses until you return to source builds; see [Diagnostics, deployment and recovery](#diagnostics-deployment-and-recovery)."
-msgstr "`make up` 和 `make build` 会先执行 `docker-volumes` 这个 target，外部卷 `hybridinference_postgres_data` 不存在时由它创建；然后在启动服务之前，用后端镜像执行表结构迁移。`make restart` 只是把现有容器重新启动，不做任何迁移。如果 `make deploy` 已把部署固定到已发布的镜像，这些命令会启动固定的镜像，而 `make build` 会拒绝执行，直到你回到源码构建；见[诊断、部署与恢复](#diagnostics-deployment-and-recovery)。"
+msgid "Call"
+msgstr "调用"
 
-#: ../developer/deployment.md:136
+#: ../developer/deployment.md
+msgid "What it does"
+msgstr "作用"
+
+#: ../developer/deployment.md
+msgid "`GET /internal/handoff`"
+msgstr "`GET /internal/handoff`"
+
+#: ../developer/deployment.md
 msgid ""
-"To start an optional profile, pass it on the `make` command line — a "
-"variable set there is exported into the environment of the recipe, and a "
-"shell variable outranks every `--env-file` in Compose:"
-msgstr ""
-"要启动可选的 profile，在 `make` 命令行上传入即可。命令行上设置的变量会导出到 recipe 的环境里，而在 Compose "
-"中，shell 变量比任何 `--env-file` 都优先："
+"The state (`serving`, `draining` or `sealed`), the work under way, "
+"`blocking` (why a seal would fail now) and `idle`"
+msgstr "状态（`serving`、`draining` 或 `sealed`）、正在进行的工作、`blocking`（封口此刻会失败的原因）和 `idle`"
 
-#: ../developer/deployment.md:144
+#: ../developer/deployment.md
+msgid "`POST /internal/handoff/drain`"
+msgstr "`POST /internal/handoff/drain`"
+
+#: ../developer/deployment.md
+msgid "Begins draining"
+msgstr "开始排空"
+
+#: ../developer/deployment.md
+msgid "`POST /internal/handoff/seal`"
+msgstr "`POST /internal/handoff/seal`"
+
+#: ../developer/deployment.md
 msgid ""
-"`COMPOSE_PROFILES` is a comma-separated list, so you can name several "
-"profiles at once. It can also be set in `.env` (as `.env.example` notes),"
-" but the command line is the form to reach for when you want certainty "
-"about which profiles are active."
-msgstr ""
-"`COMPOSE_PROFILES` 是逗号分隔的列表，所以可以一次指定多个 profile。它也可以写在 `.env` "
-"里（`.env.example` 有说明），但想确定哪些 profile 真的生效时，优先用命令行这种写法。"
+"Seals if nothing is left (200); otherwise answers 409 with `blocking` and"
+" keeps draining"
+msgstr "没有剩余工作时封口（200）；否则返回 409 和 `blocking`，并继续排空"
 
-#: ../developer/deployment.md:149
+#: ../developer/deployment.md
+msgid "`POST /internal/handoff/resume`"
+msgstr "`POST /internal/handoff/resume`"
+
+#: ../developer/deployment.md
+msgid "Serves normally again, from draining or sealed; this abandons a release"
+msgstr "从排空或封口状态恢复正常服务；这会放弃本次发布"
+
+#: ../developer/deployment.md:254
+msgid "A release runs in this order:"
+msgstr "发布按这个顺序进行："
+
+#: ../developer/deployment.md:256
+msgid ""
+"Start the new process and accept it: `/health/ready` answers 200 and it "
+"serves the acceptance requests."
+msgstr "启动新进程并验收：`/health/ready` 返回 200，并且能处理验收请求。"
+
+#: ../developer/deployment.md:258
+msgid "Take the old process out of the entry's rotation (E9)."
+msgstr "把旧进程从入口的分配中摘掉（E9）。"
+
+#: ../developer/deployment.md:259
+msgid "Drain the old process."
+msgstr "让旧进程开始排空。"
+
+#: ../developer/deployment.md:260
+msgid "Call seal until it answers 200. Polling never holds a drain open."
+msgstr "反复调用 seal，直到返回 200。轮询从不会让排空无法结束。"
+
+#: ../developer/deployment.md:261
+msgid "Stop the old process."
+msgstr "停止旧进程。"
+
+#: ../developer/deployment.md:263
+msgid ""
+"If the seal does not succeed in the time you expect, do not stop the "
+"process: keep it, record the release as unfinished, and read `blocking`. "
+"The longest a request may run is `STREAM_REQUEST_TIMEOUT_SECONDS`, an "
+"hour by default. To abandon the release, resume the old process and "
+"remove the new one."
+msgstr ""
+"如果在预期时间内封口没有成功，不要停止进程：保留它，把发布记为未完成，并查看 `blocking`。请求最长可以运行 "
+"`STREAM_REQUEST_TIMEOUT_SECONDS`，默认一小时。要放弃发布，恢复旧进程并移除新进程。"
+
+#: ../developer/deployment.md:268
+msgid ""
+"A draining process still serves every request that reaches it. Its "
+"`/health/ready` answers 503 with `\"reason\": \"draining\"` (`/health` "
+"stays 200), every response carries `Connection: close`, and idle "
+"connections are closed after five seconds. It claims no new batch items "
+"and runs no scheduled jobs; the other process does."
+msgstr ""
+"排空中的进程仍会处理到达它的每个请求。它的 `/health/ready` 返回 503 和 `\"reason\": "
+"\"draining\"`（`/health` 仍返回 200），每个响应都带 `Connection: "
+"close`，空闲连接在五秒后关闭。它不再领取新的批处理条目，也不运行定时任务；这些由另一个进程负责。"
+
+#: ../developer/deployment.md:274
+msgid "`blocking` lists what is left:"
+msgstr "`blocking` 列出还剩下什么："
+
+#: ../developer/deployment.md
+msgid "`blocking`"
+msgstr "`blocking`"
+
+#: ../developer/deployment.md
+msgid "What is left"
+msgstr "还剩什么"
+
+#: ../developer/deployment.md
+msgid "`requests_in_flight`"
+msgstr "`requests_in_flight`"
+
+#: ../developer/deployment.md
+msgid "A request in progress, streams included"
+msgstr "一个进行中的请求，包括流式请求"
+
+#: ../developer/deployment.md
+msgid "`connections_open`"
+msgstr "`connections_open`"
+
+#: ../developer/deployment.md
+msgid "An open client connection, other than the release's calls and probes"
+msgstr "一个打开的客户端连接，发布调用和探活的连接除外"
+
+#: ../developer/deployment.md
+msgid "`background_writes`"
+msgstr "`background_writes`"
+
+#: ../developer/deployment.md
+msgid ""
+"Work a request left behind, such as a cost increment or an alert being "
+"sent"
+msgstr "请求留下的工作，例如一次费用累加或一条正在发送的告警"
+
+#: ../developer/deployment.md
+msgid "`request_log_unwritten`"
+msgstr "`request_log_unwritten`"
+
+#: ../developer/deployment.md
+msgid "Request-log rows queued or being written"
+msgstr "排队或正在写入的请求日志行"
+
+#: ../developer/deployment.md
+msgid "`request_log_lost`"
+msgstr "`request_log_lost`"
+
+#: ../developer/deployment.md
+msgid ""
+"A request-log row that was dropped or failed to write since the process "
+"started. Never clears"
+msgstr "进程启动以来有请求日志行被丢弃或写入失败。不会消除"
+
+#: ../developer/deployment.md
+msgid "`stream_close_abandoned`"
+msgstr "`stream_close_abandoned`"
+
+#: ../developer/deployment.md
+msgid ""
+"A stream whose close took more than ten seconds and was cut short, so its"
+" billing or logging may be incomplete. Never clears"
+msgstr "某个流的关闭耗时超过十秒而被中断，它的计费或日志可能不完整。不会消除"
+
+#: ../developer/deployment.md
+msgid "`batch_work_running`"
+msgstr "`batch_work_running`"
+
+#: ../developer/deployment.md
+msgid "A batch item, validation, sealing, delivery or sweep still running here"
+msgstr "本进程中仍在运行的批处理条目、校验、封口、投递或清扫"
+
+#: ../developer/deployment.md
+msgid "`scheduled_jobs_running`"
+msgstr "`scheduled_jobs_running`"
+
+#: ../developer/deployment.md
+msgid "A scheduled job, or a broadcast still sending"
+msgstr "一个定时任务，或一封仍在发送的群发邮件"
+
+#: ../developer/deployment.md
+msgid "`spend_unwritten`"
+msgstr "`spend_unwritten`"
+
+#: ../developer/deployment.md
+msgid ""
+"A cost not yet added to the counters, or, in the shared spend mode, a "
+"reservation not yet settled"
+msgstr "一笔尚未计入计数器的费用，或在共享花费模式下一笔尚未结算的预留"
+
+#: ../developer/deployment.md
+msgid "`spend_unconfirmed`"
+msgstr "`spend_unconfirmed`"
+
+#: ../developer/deployment.md
+msgid ""
+"A cost that waiting will not confirm: one the counters refused, a write "
+"with an unknown outcome, or, in the shared spend mode, a quarantined "
+"reservation or refused increment. Never clears"
+msgstr "一笔等待也无法确认的费用：被计数器拒绝的费用、结果未知的写入，或在共享花费模式下被隔离的预留或被拒绝的累加。不会消除"
+
+#: ../developer/deployment.md:289
+msgid ""
+"The three reasons that never clear keep the process draining for as long "
+"as it lives. Keep it, record what the status reports, and reconcile "
+"before you stop it. There is no way to force a seal, and clearing the "
+"records is not reconciling. An empty `blocking` also means every cost the"
+" process recorded is confirmed in the counters (each ledger in `spend` "
+"reports `confirmed`)."
+msgstr ""
+"这三个不会消除的原因会让进程在整个生命周期内一直处于排空状态。保留它，记下状态报告的内容，对账之后再停止它。没有办法强制封口，清除记录也不算对账。`blocking`"
+" 为空还意味着该进程记录的每笔费用都已在计数器中确认（`spend` 中的每个账本都会报告 `confirmed`）。"
+
+#: ../developer/deployment.md:295
+msgid ""
+"Checking and switching to `sealed` is one step. After it, every request "
+"is refused with 503 and the code `instance_sealed` before any upstream "
+"call, and counted in `requests.refused_after_seal`; a release that saw "
+"any did not hand over cleanly. At shutdown the process logs its state "
+"(event `handoff_state_at_shutdown`)."
+msgstr ""
+"检查并切换到 `sealed` 是同一步。此后每个请求在任何上游调用之前就以 503 和代码 `instance_sealed` 被拒绝，并计入 "
+"`requests.refused_after_seal`；出现过这种拒绝的发布不算干净交接。关闭时，进程会记录它所处的状态（事件 "
+"`handoff_state_at_shutdown`）。"
+
+#: ../developer/deployment.md:301
+msgid ""
+"Run one uvicorn worker per instance: with several workers behind one "
+"port, or under gunicorn, drain and seal answer 409. While two processes "
+"run side by side, each enforces per-user concurrency, login rate limits "
+"and auth blocks on its own, so a user can briefly have twice their "
+"concurrent requests. Budgets are shared only in the shared spend mode, "
+"which is switched on with every process stopped."
+msgstr ""
+"每个实例只运行一个 uvicorn worker：同一端口后面有多个 worker，或者运行在 gunicorn 下时，drain 和 seal "
+"都返回 "
+"409。两个进程并行运行时，各自独立执行按用户的并发限制、登录限流和认证封禁，所以一个用户可能短暂拥有两倍的并发请求。只有在共享花费模式下预算才是共享的，而该模式要在所有进程都停止时才能开启。"
+
+#: ../developer/deployment.md:308
 msgid "What a change actually requires"
 msgstr "改动之后到底要做什么"
-
-#: ../developer/deployment.md:151
-msgid ""
-"Three different answers, and picking the wrong one looks like the change "
-"not taking effect:"
-msgstr "答案有三种，选错了，看起来就像改动没生效："
 
 #: ../developer/deployment.md
 msgid "You changed"
@@ -728,26 +849,28 @@ msgid "Do this"
 msgstr "该怎么做"
 
 #: ../developer/deployment.md
-msgid "A setting on the admin **Configuration** tab"
-msgstr "管理后台 **Configuration** 标签页上的某个设置项"
+msgid "A setting in **Admin → Settings**"
+msgstr "**Admin → Settings** 中的设置项"
 
 #: ../developer/deployment.md
 msgid ""
 "Nothing, unless it is marked **Restart required**: then select **Restart "
-"backend** on that tab, or run `make restart s=backend`"
+"backend**, or run `make restart s=backend`"
 msgstr ""
-"什么都不用做，除非它标着 **Restart required**：那就在这个标签页上点 **Restart backend**，或者运行 "
-"`make restart s=backend`"
-
-#: ../developer/deployment.md
-msgid "A value in `.env` that stays in the environment — the database connection, ports, the configuration selectors a rollback needs, console values"
-msgstr "`.env` 里留在环境变量中的值——数据库连接、端口、回退所需的配置选择变量、控制台的取值"
+"什么都不用做，除非它标有 **Restart required**：这时选择 **Restart backend**，或运行 `make "
+"restart s=backend`"
 
 #: ../developer/deployment.md
 msgid ""
-"`make up` — a container reads its `env_file` when it is *created*, so "
+"A value in `.env` that stays in the environment: the database connection,"
+" ports, the configuration selectors a rollback needs, console values"
+msgstr "`.env` 中留在环境变量里的值：数据库连接、端口、回滚所需的配置选择变量、控制台的值"
+
+#: ../developer/deployment.md
+msgid ""
+"`make up`. A container reads its `env_file` when it is created, so "
 "`docker compose restart` keeps the old environment"
-msgstr "`make up`——容器只在*创建*时读取自己的 `env_file`，所以 `docker compose restart` 会沿用旧的环境变量"
+msgstr "`make up`。容器在创建时读取 `env_file`，所以 `docker compose restart` 会保留旧的环境"
 
 #: ../developer/deployment.md
 msgid "Any other value in `.env`"
@@ -755,61 +878,52 @@ msgstr "`.env` 里的其他值"
 
 #: ../developer/deployment.md
 msgid ""
-"Nothing happens once the database has the setting: change it on the "
-"**Configuration** tab instead. See [Upgrading a deployment that kept its "
-"settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-"
-"env)"
+"Nothing happens once the database has the setting; change it in Admin. "
+"See [Upgrading a deployment that kept its settings in "
+"`.env`](#upgrading-a-deployment-that-kept-its-settings-in-env)"
 msgstr ""
-"数据库里有了这个设置项之后，改它不会有任何效果：改为在 **Configuration** 标签页上修改。见[升级一个把设置项放在 `.env` "
-"里的部署](#upgrading-a-deployment-that-kept-its-settings-in-env)"
+"数据库中已有该设置项后不会有任何效果；请在 Admin 中修改。见[升级把设置放在 `.env` 里的部署](#upgrading-a"
+"-deployment-that-kept-its-settings-in-env)"
 
 #: ../developer/deployment.md
-msgid "A model registry or routing YAML"
-msgstr "模型注册表或路由 YAML"
+msgid "The model catalog, routing policy or alert rules"
+msgstr "模型目录、路由策略或告警规则"
 
 #: ../developer/deployment.md
-msgid ""
-"`make restart s=backend` — `config/` and `distributions/` are bind-"
-"mounted read-only, so no rebuild is needed"
-msgstr ""
-"`make restart s=backend`——`config/` 和 `distributions/` 是以只读方式 bind-mount "
-"进去的，不需要重新构建"
+msgid "Follow the **Restart required** marker; no rebuild"
+msgstr "按 **Restart required** 标记操作；无需重新构建"
 
 #: ../developer/deployment.md
-msgid "A distribution branding YAML"
-msgstr "发行版的品牌 YAML"
+msgid "Site configuration or branding"
+msgstr "站点配置或品牌"
 
 #: ../developer/deployment.md
-msgid ""
-"`make restart s=backend` — `/site-config` serves the validated snapshot "
-"loaded at backend startup"
-msgstr "`make restart s=backend`——`/site-config` 返回的是后端启动时加载并校验过的快照"
+msgid "Applies when settings refresh; no rebuild or restart"
+msgstr "设置刷新时应用；无需重新构建或重启"
 
 #: ../developer/deployment.md
 msgid "A file in the mounted site-assets directory"
 msgstr "挂载的 site-assets 目录中的文件"
 
 #: ../developer/deployment.md
-msgid "No image rebuild; replace the file in the deployment overlay"
-msgstr "不用重建镜像，直接替换部署 overlay 里的文件"
+msgid "Replace the file in the deployment overlay; no rebuild"
+msgstr "替换部署 overlay 中的文件；无需重新构建"
 
 #: ../developer/deployment.md
 msgid "`AGENT_WEB_INTERNAL_URL` or `AGENT_CONTROL_PLANE_INTERNAL_URL`"
 msgstr "`AGENT_WEB_INTERNAL_URL` 或 `AGENT_CONTROL_PLANE_INTERNAL_URL`"
 
 #: ../developer/deployment.md
-msgid ""
-"`make up` — the `/agents` route handler reads them at runtime in the "
-"recreated frontend container"
-msgstr "`make up`——前端容器重建后，`/agents` 的 route handler 会在运行时读到它们"
+msgid "`make up`; the console reads them at runtime"
+msgstr "`make up`；控制台在运行时读取它们"
 
 #: ../developer/deployment.md
-msgid "A true build-only `NEXT_PUBLIC_*` compatibility value"
-msgstr "真正只在构建时生效的 `NEXT_PUBLIC_*` 兼容值"
+msgid "A build-time `NEXT_PUBLIC_*` value"
+msgstr "构建时的 `NEXT_PUBLIC_*` 值"
 
 #: ../developer/deployment.md
-msgid "`make build s=frontend` — see below"
-msgstr "`make build s=frontend`——见下文"
+msgid "`make build s=frontend`; it is compiled into the browser bundle"
+msgstr "`make build s=frontend`；它会被编译进浏览器包"
 
 #: ../developer/deployment.md
 msgid "Backend or frontend source"
@@ -819,319 +933,233 @@ msgstr "后端或前端的源码"
 msgid "`make build`, or `make build s=<service>`"
 msgstr "`make build`，或 `make build s=<service>`"
 
-#: ../developer/deployment.md:166
+#: ../developer/deployment.md:322
 msgid ""
-"The console gets its name and branding from the backend's `/site-config` "
-"at runtime, and the `/agents` destinations from its own runtime "
-"environment, so neither needs a new frontend image: restart the backend "
-"after editing the branding file, and run `make up` after changing the "
-"console's environment."
+"The console reads its name and branding from the backend's `/site-config`"
+" at runtime. The old `NEXT_PUBLIC_*` branding variables remain only as "
+"build arguments for existing pipelines."
 msgstr ""
-"控制台在运行时从后端的 `/site-config` 获取名称和品牌，从自己的运行时环境获取 `/agents` "
-"的目标地址，所以两者都不需要新的前端镜像：改了品牌文件就重启后端，改了控制台的环境变量就运行 `make up`。"
+"控制台在运行时从后端的 `/site-config` 读取名称和品牌。旧的 `NEXT_PUBLIC_*` "
+"品牌变量只作为构建参数保留，供现有流水线使用。"
 
-#: ../developer/deployment.md:171
-msgid ""
-"The console will not render its normal pages without a valid `/site-"
-"config` answer. If the backend is unreachable, slow (over three seconds) "
-"or returns something invalid, the console shows a configuration error "
-"with a retry button instead of guessing. Check the frontend logs and "
-"whether the backend is up, then retry. The example deployment needs no "
-"extra settings for this."
-msgstr ""
-"拿不到有效的 `/site-config` "
-"响应，控制台就不会渲染正常页面。如果后端连不上、太慢（超过三秒）或者返回了无效内容，控制台会显示一个带重试按钮的配置错误，而不会自己去猜。先查看前端日志，确认后端是否在运行，然后重试。示例部署不需要为此做任何额外设置。"
-
-#: ../developer/deployment.md:177
-msgid ""
-"The old branding variables remain as build-time options for existing build "
-"pipelines; Compose still accepts them as build arguments, and standard "
-"builds do not need them. Anything that really is a `NEXT_PUBLIC_*` build value is "
-"compiled into the browser bundle and needs `make build s=frontend`; see "
-"[The public path table](public-path-table.md)."
-msgstr ""
-"为了兼容现有的构建流水线，旧的品牌变量仍保留为构建期选项：Compose 仍然接受这些构建参数，标准构建用不到它们。"
-"真正的 `NEXT_PUBLIC_*` 构建值会编译进浏览器 bundle，改了就要运行"
-" `make build s=frontend`；见[公开路径表](public-path-table.md)。"
-
-#: ../developer/deployment.md:184
+#: ../developer/deployment.md:326
 msgid "Configuration"
 msgstr "配置"
 
-#: ../developer/deployment.md:186
-msgid "Environment"
-msgstr "环境变量"
-
-#: ../developer/deployment.md:188
+#: ../developer/deployment.md:328
 msgid ""
-"`.env` at the repository root holds the database connection and the "
-"container settings; `.env.example` is the annotated list. Compose is "
-"invoked with `--env-file .env` and the backend service also loads it as "
-"`env_file`. The variables Compose itself requires are in "
-"[Installation](installation.md#running-with-docker). Everything else is a"
-" setting stored in the database and edited on the admin console's "
-"**Configuration** tab; see [Settings stored in the "
-"database](configuration.md#settings-stored-in-the-database)."
+"`.env` holds the database connection and the container settings; every "
+"other setting lives in the database and is edited in **Admin → "
+"Settings**. See [Settings stored in the database](configuration.md"
+"#settings-stored-in-the-database)."
 msgstr ""
-"仓库根目录的 `.env` 里放的是数据库连接和容器相关的设置，`.env.example` 是带注释的清单。调用 Compose 时会带上 "
-"`--env-file .env`，后端服务也通过 `env_file` 加载它。Compose "
-"本身要求必填的变量见[安装](installation.md#running-with-docker)。其余都是存储在数据库里、在管理控制台 "
-"**Configuration** 标签页上编辑的设置项；见[存储在数据库中的设置项](configuration.md#settings-"
-"stored-in-the-database)。"
+"`.env` 保存数据库连接和容器设置；其他所有设置项都在数据库中，在 **Admin → Settings** "
+"中编辑。见[存储在数据库中的设置项](configuration.md#settings-stored-in-the-database)。"
 
-#: ../developer/deployment.md:197
+#: ../developer/deployment.md:332
 msgid "Upgrading a deployment that kept its settings in `.env`"
 msgstr "升级一个把设置项放在 `.env` 里的部署"
 
-#: ../developer/deployment.md:199
+#: ../developer/deployment.md:334
 msgid ""
 "Nothing has to change before the upgrade. At its first start the new "
-"backend copies every setting that has a value in its environment into the"
-" database — from `.env`, from an overlay's `deploy/*.env`, and from the "
-"values the Compose file passes through — and logs `Imported N setting(s) "
-"from the environment into the database`, with the exceptions below. The "
-"switches on the **Settings** tab are copied into their own store the same"
-" way. The existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are among the "
-"copied values, so sessions and API keys keep working, and a database that"
-" already has accounts never shows the setup page. Provider credentials "
-"the deployment leaves unset are not reported as missing settings; see "
-"[Missing settings](configuration.md#missing-settings)."
+"backend copies into the database every setting that has a value in its "
+"environment (from `.env`, an overlay's `deploy/*.env` and the Compose "
+"passthroughs) and logs `Imported N setting(s) from the environment into "
+"the database`. The existing `JWT_SECRET_KEY` and `API_KEY_SECRET` are "
+"copied too, so sessions and API keys keep working, and a database that "
+"has accounts never shows the setup page."
 msgstr ""
-"升级之前什么都不用改。新后端第一次启动时，会把环境变量里有值的每个设置项都复制进数据库——来自 `.env`、来自 overlay 的 "
-"`deploy/*.env`，以及 Compose 文件透传进来的值——并记录 `Imported N setting(s) from the "
-"environment into the database`，下文列出的例外除外。**Settings** "
-"标签页上的开关也以同样的方式复制进它们自己的存储。现有的 `JWT_SECRET_KEY` 和 `API_KEY_SECRET` "
-"也在复制之列，所以会话和 API key "
-"继续可用；已经有账号的数据库也永远不会出现设置页面。部署没有设置的 provider "
-"凭据不会被报告为缺失的设置项；见[缺失的设置项](configuration.md#missing-settings)。"
+"升级前什么都不用改。新后端首次启动时，会把环境中（来自 `.env`、overlay 的 `deploy/*.env` 以及 Compose "
+"传入的值）每个有值的设置项复制到数据库，并记录 `Imported N setting(s) from the environment into "
+"the database`。现有的 `JWT_SECRET_KEY` 和 `API_KEY_SECRET` 也会被复制，所以会话和 API key"
+" 照常可用，已有账号的数据库也不会显示设置页面。"
 
-#: ../developer/deployment.md:213
+#: ../developer/deployment.md:341
 msgid ""
-"From then on the database value wins. Editing such a line in `.env` "
-"changes nothing — the **Configuration** tab marks it **Environment "
-"ignored** — so make changes on the tab and delete the lines from `.env` "
-"when convenient. Keep a copy until a rollback is no longer possible: a "
-"release from before the settings moved into the database reads them only "
-"from the environment."
+"From then on the database value wins: editing the line in `.env` changes "
+"nothing, and Admin marks the setting **Environment ignored**. Delete the "
+"lines when convenient, but keep a copy of `.env` until a rollback is no "
+"longer possible, because an earlier release reads its settings only from "
+"the environment."
 msgstr ""
-"从此以数据库里的值为准。再改 `.env` 里的这类行不会有任何效果（**Configuration** 标签页会把它标为 "
-"**Environment ignored**），所以要在标签页上修改，方便时把这些行从 `.env` "
-"里删掉。在还可能回滚的时候保留一份副本：设置项搬进数据库之前的版本只从环境变量读取它们。"
+"此后以数据库中的值为准：修改 `.env` 中的那一行不会有任何效果，Admin 会把该设置项标为 **Environment "
+"ignored**。方便时删掉这些行，但在不再可能回滚之前保留一份 `.env`，因为旧版本只从环境变量读取设置。"
 
-#: ../developer/deployment.md:219
-msgid ""
-"Besides a value that is not valid on its own, two kinds of value are not "
-"copied, and the log names each with a warning:"
-msgstr "除了本身就不合法的值，还有两类值不会被复制，日志会用警告逐一指出："
+#: ../developer/deployment.md:347
+msgid "The log warns about the values it does not copy:"
+msgstr "日志会对没有复制的值发出警告："
 
-#: ../developer/deployment.md:222
+#: ../developer/deployment.md:349
 msgid ""
-"A value that breaks a rule with a setting already stored, such as "
-"`TRUST_X_REAL_IP=1` while the stored `TRUST_PROXY_HEADERS` is off. The "
-"stored value wins and the environment's counts as unset. Check proxy "
-"trust after an upgrade: the Compose file passes `TRUST_PROXY_HEADERS` "
-"with a default of `0`, so a database that stored that `0` keeps the "
-"gateway off forwarded headers whatever `.env` says. Change it on the "
-"Settings tab; see [Trusted Proxies and Client IPs](trusted-proxies-and-"
+"A value that conflicts with a stored setting, such as `TRUST_X_REAL_IP=1`"
+" while the stored `TRUST_PROXY_HEADERS` is off; the stored value wins. "
+"Check proxy trust after an upgrade: Compose passes `TRUST_PROXY_HEADERS` "
+"with a default of `0`, so a database that stored that `0` ignores a `1` "
+"in `.env`. See [Trusted Proxies and Client IPs](trusted-proxies-and-"
 "client-ips.md)."
 msgstr ""
-"与已存储的设置项一起违反规则的值，比如存储的 `TRUST_PROXY_HEADERS` 是关闭的，"
-"而环境变量里是 `TRUST_X_REAL_IP=1`。存储的值优先，环境变量里的值被当作未设置。"
-"升级之后要检查代理信任：Compose 文件透传 `TRUST_PROXY_HEADERS` 时默认值是 "
-"`0`，所以如果数据库存下的是这个 `0`，无论 `.env` 怎么写，网关都不会处理转发头。请在 "
-"Settings 标签页上修改；见[可信代理与客户端 "
-"IP](trusted-proxies-and-client-ips.md)。"
+"与已存储设置项冲突的值，例如已存储的 `TRUST_PROXY_HEADERS` 为关闭时的 "
+"`TRUST_X_REAL_IP=1`；以存储的值为准。升级后请检查代理信任：Compose 传入的 `TRUST_PROXY_HEADERS` "
+"默认是 `0`，数据库存下这个 `0` 后，就会忽略 `.env` 中的 `1`。见[可信代理与客户端 IP](trusted-proxies-"
+"and-client-ips.md)。"
 
-#: ../developer/deployment.md:229
+#: ../developer/deployment.md:354
 msgid ""
-"`ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET` in "
-"its place. Leave the variable out: while it is set, the backend refuses "
-"to start; see [Database](database.md#secrets-for-deleting-accounts)."
+"`ERASURE_FENCE_SECRET`, once the erasure fence uses `API_KEY_SECRET`. "
+"Remove the variable: while it is set, the backend refuses to start; see "
+"[Database](database.md#secrets-for-deleting-accounts)."
 msgstr ""
-"`ERASURE_FENCE_SECRET`，前提是 erasure fence 已经改用 `API_KEY_SECRET` "
-"代替它。不要设置这个变量：只要它还在，后端就会拒绝启动；见[数据库](database.md#secrets-for-deleting-"
+"`ERASURE_FENCE_SECRET`，在擦除栅栏改用 `API_KEY_SECRET` "
+"之后。请删除这个变量：只要它还在，后端就拒绝启动；见[数据库](database.md#secrets-for-deleting-"
 "accounts)。"
 
-#: ../developer/deployment.md:233
+#: ../developer/deployment.md:358
 msgid ""
-"The `environment:` passthroughs in `deploy/docker/docker-compose.yml` "
-"work the same way: they carry an overlay's values into the container, "
-"where they are imported once. Their built-in defaults are imported too, "
-"so on a new deployment `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`, "
-"`SITE_NAME` and the sender address of outgoing mail start out as those "
-"defaults until you change them on the tab."
+"The Compose passthroughs' built-in defaults are imported as well, so a "
+"new deployment starts with the default `FRONTEND_URL`, "
+"`CORS_ALLOWED_ORIGINS`, `SITE_NAME` and mail sender until you change "
+"them."
 msgstr ""
-"`deploy/docker/docker-compose.yml` 里 `environment:` 的透传也是同样的道理：它们把 "
-"overlay "
-"的值带进容器，在那里导入一次。它们的内置默认值也会被导入，所以在新部署上，`FRONTEND_URL`、`CORS_ALLOWED_ORIGINS`、`SITE_NAME`"
-" 和外发邮件的发件地址一开始都是这些默认值，直到你在标签页上改掉。"
+"Compose 传入项的内置默认值也会被导入，所以新部署一开始使用默认的 "
+"`FRONTEND_URL`、`CORS_ALLOWED_ORIGINS`、`SITE_NAME` 和邮件发件人，直到你修改它们。"
 
-#: ../developer/deployment.md:240
-msgid "Config file resolution"
-msgstr "配置文件的解析顺序"
+#: ../developer/deployment.md:362
+msgid "Application configuration"
+msgstr "应用配置"
 
-#: ../developer/deployment.md:242
+#: ../developer/deployment.md:364
 msgid ""
-"The gateway picks each configuration file from an explicit "
-"`MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / `ALERTS_CONFIG_PATH`, then"
-" an active distribution manifest, then the examples under "
-"`config/examples/`; see [How a gateway finds its "
-"config](configuration.md#how-a-gateway-finds-its-config)."
+"Models, routing, alert rules, site identity and branding live in the "
+"database. This release ignores the retired `*_CONFIG_PATH`, "
+"`DISTRIBUTION_CONFIG_PATH` and `DISTRIBUTION_CONFIG_MODE` variables, and "
+"warns at startup while one is set. Keep them, and the files they name, "
+"through the rollback window: a rolled-back release reads its files "
+"through them, and the legacy import uses them. See "
+"[Configuration](configuration.md)."
 msgstr ""
-"网关按以下顺序选取每个配置文件：先是显式设置的 `MODELS_CONFIG_PATH` / `ROUTING_CONFIG_PATH` / "
-"`ALERTS_CONFIG_PATH`，然后是已启用的发行版 manifest，最后是 `config/examples/` "
-"下的示例；见[网关如何找到自己的配置](configuration.md#how-a-gateway-finds-its-config)。"
+"模型、路由、告警规则、站点标识和品牌都存放在数据库中。本版本忽略已退役的 "
+"`*_CONFIG_PATH`、`DISTRIBUTION_CONFIG_PATH` 和 `DISTRIBUTION_CONFIG_MODE` "
+"变量，只要设置了其中之一，启动时就会发出警告。在回滚窗口内保留它们以及它们指向的文件：回滚后的版本通过它们读取文件，旧配置导入也会用到它们。见[配置](configuration.md)。"
 
-#: ../developer/deployment.md:247
-msgid "Note that the Compose file passes these through explicitly:"
-msgstr "注意，Compose 文件是显式把它们透传进去的："
-
-#: ../developer/deployment.md:255
-msgid ""
-"An `--env-file` alone does not put a variable into a container's "
-"environment; these lines are what carry it in. Without them the gateway "
-"would silently fall back to the default files."
-msgstr "光有 `--env-file` 并不能把变量放进容器的环境里；真正把它带进去的是这几行。没有它们，网关就会悄悄回退到默认文件。"
-
-#: ../developer/deployment.md:259
+#: ../developer/deployment.md:371
 msgid "Local inference servers"
 msgstr "本地推理服务器"
 
-#: ../developer/deployment.md:261
+#: ../developer/deployment.md:373
 msgid ""
-"The backend container reaches servers on the host through "
-"`host.docker.internal`, which the Compose file wires with `extra_hosts: "
-"host.docker.internal:host-gateway`. Write that address explicitly in the "
-"model registry:"
+"The backend container reaches servers on the host at "
+"`host.docker.internal` (mapped with `extra_hosts: host.docker.internal"
+":host-gateway`). Write that address in the model's route; the gateway "
+"never rewrites provider URLs:"
 msgstr ""
-"后端容器通过 `host.docker.internal` 访问宿主机上的服务器，这个主机名由 Compose 文件里的 "
-"`extra_hosts: host.docker.internal:host-gateway` 配置。在模型注册表里要显式写出这个地址："
+"后端容器通过 `host.docker.internal` 访问主机上的服务（由 `extra_hosts: "
+"host.docker.internal:host-gateway` 映射）。在模型的路由中写这个地址；网关从不改写 provider URL："
 
-#: ../developer/deployment.md:272
+#: ../developer/deployment.md:388
 msgid ""
-"For a backend running directly on the host, use `localhost` instead. The "
-"gateway never rewrites provider URLs. See [Adding a New Local Model](add-"
-"local-model.md)."
-msgstr ""
-"如果后端直接跑在宿主机上，就改用 `localhost`。网关从不改写 provider 的 URL。见[添加新的本地模型](add-local-"
-"model.md)。"
+"A backend running directly on the host uses `localhost`. See [Adding a "
+"New Local Model](add-local-model.md)."
+msgstr "直接在主机上运行的后端使用 `localhost`。见[添加新的本地模型](add-local-model.md)。"
 
-#: ../developer/deployment.md:276
+#: ../developer/deployment.md:391
 msgid "Health checks"
 msgstr "健康检查"
 
-#: ../developer/deployment.md:295
+#: ../developer/deployment.md:393
+#, python-brace-format
 msgid ""
-"`routes_configured` counts published route entries — one per model id in "
-"the active registry, plus one per alias. It is whatever *your* registry "
-"defines."
+"Anyone may call `/health` and `/health/ready`, and gets the status code "
+"and `{\"status\": ...}`. An administrator's credential (a console token "
+"or `ADMIN_TOKEN`) also shows the reason, the process's `instance`, the "
+"route count and each store's state:"
 msgstr ""
-"`routes_configured` 统计的是已发布的路由条目——生效的注册表里每个模型 id "
-"一条，每个别名再加一条。它完全取决于*你自己的*注册表定义了什么。"
-
-#: ../developer/deployment.md:297
-msgid ""
-"`database_configured` distinguishes \"this deployment asked for no "
-"database\" from \"the database is down\": with `DB_ENABLED=false` it is "
-"`false` and the status is still `healthy`; with a database configured but"
-" unreachable at startup, `/health` answers **503** with `\"reason\": "
-"\"database_unavailable_at_startup\"`."
-msgstr ""
-"`database_configured` 区分的是「这个部署本来就不要数据库」和「数据库挂了」：`DB_ENABLED=false` 时它是 "
-"`false`，状态仍然是 `healthy`；而配置了数据库、启动时却连不上时，`/health` 返回 **503**，并带上 "
-"`\"reason\": \"database_unavailable_at_startup\"`。"
-
-#: ../developer/deployment.md:302
-msgid ""
-"`status` becomes `degraded` — still HTTP 200 — when one configured store "
-"is down but the other is serving. That shape is deliberate: the container"
-" `HEALTHCHECK` uses `curl -f /health`, so returning 503 for partial "
-"degradation would tear down backends that are still answering requests."
-msgstr ""
-"已配置的两个存储中，如果一个挂了、另一个还能用，`status` 会变成 `degraded`，但 HTTP 状态码仍是 "
-"200。这是有意这样设计的：容器的 `HEALTHCHECK` 用的是 `curl -f /health`，如果部分降级也返回 "
-"503，还在正常响应请求的后端就会被下线。"
+"任何人都可以调用 `/health` 和 `/health/ready`，得到状态码和 `{\"status\": "
+"...}`。管理员凭据（控制台令牌或 `ADMIN_TOKEN`）还能看到原因、进程的 `instance`、路由数量和每个存储的状态："
 
 #: ../developer/deployment.md
-msgid "Use `/health/ready` for a strict readiness probe: it applies AND-logic across configured stores and returns 503 unless every one of them is up. Like `/health`, it tells an anonymous caller `{\"status\": \"ready\"}` or `{\"status\": \"not_ready\"}`, and an administrator also the reason and stores. `/health/deep` additionally reports per-endpoint health."
-msgstr "严格的就绪探针请使用 `/health/ready`：它对已配置的存储做 AND 判断，只要有一个不可用就返回 503。与 `/health` 一样，它对匿名调用方只返回 `{\"status\": \"ready\"}` 或 `{\"status\": \"not_ready\"}`，对管理员还会返回原因和存储状态。`/health/deep` 还会报告每个端点的健康状况。"
+msgid "Endpoint"
+msgstr "端点"
 
-#: ../developer/deployment.md:311
+#: ../developer/deployment.md
+msgid "Answers 503 when"
+msgstr "返回 503 的情况"
+
+#: ../developer/deployment.md
+msgid "`/health`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"Every configured store is down, or the configured database was "
+"unreachable at startup (`database_unavailable_at_startup`). One store "
+"down gives `\"status\": \"degraded\"` with 200, so the container "
+"`HEALTHCHECK` does not kill a backend that still serves"
+msgstr ""
+"所有已配置的存储都不可用，或者已配置的数据库在启动时无法连接（`database_unavailable_at_startup`）。只有一个存储不可用时返回"
+" 200 和 `\"status\": \"degraded\"`，这样容器的 `HEALTHCHECK` 不会杀掉仍在服务的后端"
+
+#: ../developer/deployment.md
+msgid "`/health/ready`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid ""
+"Any configured store is down, the process is draining, or Kubernetes "
+"proxy discovery has no fresh proxy set. Use it for readiness"
+msgstr "任一已配置的存储不可用、进程正在排空，或 Kubernetes 代理发现没有新鲜的代理集合。用它做就绪检查"
+
+#: ../developer/deployment.md
+msgid "`/health/deep`"
+msgstr ""
+
+#: ../developer/deployment.md
+msgid "Every configured store is down. It also reports each endpoint's health"
+msgstr "所有已配置的存储都不可用。它还会报告每个端点的健康状况"
+
+#: ../developer/deployment.md:422
+msgid ""
+"With `DB_ENABLED=false`, `database_configured` is `false` and the status "
+"is `healthy`."
+msgstr "`DB_ENABLED=false` 时，`database_configured` 为 `false`，状态为 `healthy`。"
+
+#: ../developer/deployment.md:425
 msgid "Marking monitor traffic"
 msgstr "给监控流量打标记"
 
-#: ../developer/deployment.md:313
+#: ../developer/deployment.md:427
 msgid ""
-"A monitor that drives real inference — hitting `/v1/chat/completions` on "
-"a schedule to measure a backend end to end, rather than just polling "
-"`/health` — would otherwise land in `api_logs`, skew the dashboards, and "
-"feed RouteWise's online learning as if it were user demand. Send "
-"`X-Probe: synthetic` on those requests to keep them out: a marked request"
-" is left out of `api_logs` (and its rejections out of the rejection log),"
-" does not record a routing observation, and carries an `X-Provider` "
-"response header naming the backend that answered, so the monitor can "
-"confirm which route it exercised."
+"Send `X-Probe: synthetic` on a monitor's inference requests to keep them "
+"out of `api_logs`, the dashboards and RouteWise's learning. A marked "
+"request also records no routing observation and gets an `X-Provider` "
+"response header naming the backend that answered."
 msgstr ""
-"有些监控会真的发起推理：按计划请求 `/v1/chat/completions`，端到端地测量某个后端，而不只是轮询 "
-"`/health`。不做标记的话，这类请求会写进 `api_logs`，把仪表盘的数据带偏，还会被 RouteWise "
-"的在线学习当成真实的用户需求。给这些请求加上 `X-Probe: synthetic` 就能把它们排除在外：带标记的请求不写入 "
-"`api_logs`（被拒绝时也不进拒绝日志），不记录路由观测，并且响应里会带一个 `X-Provider` "
-"头，写明是哪个后端回答的，方便监控确认自己测的是哪条路由。"
+"在监控程序的推理请求上发送 `X-Probe: synthetic`，让它们不进入 `api_logs`、仪表盘和 RouteWise "
+"的学习。带标记的请求也不记录路由观测，并会收到一个 `X-Provider` 响应头，写明是哪个后端应答的。"
 
-#: ../developer/deployment.md:322
+#: ../developer/deployment.md:432
 msgid ""
-"The marker is honoured **only from an authenticated internal- or admin-"
-"role API key** — never a free/pro key, an agent-sandbox grant, or, "
-"importantly, an anonymous caller on a deployment running with "
-"`USER_AUTH_ENABLED=0` (auth-off hands every caller the admin role, which "
-"is not the same as holding a monitor identity). From any other caller the"
-" header is ignored and the request is logged like ordinary traffic. A "
-"deployment that needs probes without auth wants an explicit mechanism — a"
-" shared secret, a source allowlist — not this header."
+"The marker is honoured only from an authenticated API key with the "
+"internal or admin role, never from a free or pro key, an agent grant, or "
+"an anonymous caller on a gateway with `USER_AUTH_ENABLED=0`. It never "
+"affects billing, and it does not protect a monitor from the auth-failure "
+"blocklist (see [below](#a-monitor-or-service-account-is-suddenly-getting-"
+"429s)). To log marked requests anyway, turn on the `log_synthetic_probes`"
+" runtime setting."
 msgstr ""
-"这个标记**只认已通过鉴权的 internal 或 admin 角色 API key**——free/pro key 不行，agent 沙箱的 "
-"grant 不行，在 `USER_AUTH_ENABLED=0` 的部署上，匿名调用方尤其不行（关掉鉴权后，每个调用方都会拿到 admin "
-"角色，但这不等于持有监控身份）。其他调用方带这个头会被忽略，请求照普通流量记录。如果部署不开鉴权又需要探测，应该用显式的机制，比如共享密钥或来源白名单，而不是这个头。"
+"只有来自 internal 或 admin 角色、经过认证的 API key 的标记才会被采纳；free 或 pro key、agent "
+"授权，以及 `USER_AUTH_ENABLED=0` "
+"网关上的匿名调用方发送的标记一律无效。它从不影响计费，也不能让监控程序免于认证失败封禁（见[下文](#a-monitor-or-service-"
+"account-is-suddenly-getting-429s)）。如果仍想记录带标记的请求，开启运行时设置 "
+"`log_synthetic_probes`。"
 
-#: ../developer/deployment.md:330
-msgid ""
-"The marker is about noise, not access. It cannot keep a monitor's own "
-"auth failures from tripping the repeated-auth-failure blocklist, because "
-"that decision is made before the presented key is read — see [A monitor "
-"or service account is suddenly getting 429s](#a-monitor-or-service-"
-"account-is-suddenly-getting-429s)."
-msgstr ""
-"这个标记只管噪声，不管访问权限。监控自己的认证失败照样可能触发针对反复认证失败的黑名单，因为是否封禁是在读取请求带的 key "
-"之前就判断的——见[监控或服务账号突然开始收到 429](#a-monitor-or-service-account-is-suddenly-"
-"getting-429s)。"
-
-#: ../developer/deployment.md:336
-msgid ""
-"The one thing the marker never touches is billing: cost and quota are "
-"incremented unconditionally on every surface, for trusted and untrusted "
-"callers alike, so a probe cannot be used to obtain unmetered inference. "
-"To keep marked traffic in `api_logs` after all — to see a monitor's real "
-"latency and spend in the requests dashboard — turn on the "
-"`log_synthetic_probes` runtime setting; the routing-observation and "
-"`X-Provider` behaviour is unchanged."
-msgstr ""
-"标记唯一不影响的是计费：无论走哪个接口、调用方是否可信，成本和配额都会照常累加，所以没法用探测标记来获得免计费的推理。如果你还是想让带标记的流量写进"
-" `api_logs`，比如想在请求仪表盘里看到监控的真实延迟和花费，就打开 `log_synthetic_probes` "
-"这个运行时设置；路由观测和 `X-Provider` 的行为不受影响。"
-
-#: ../developer/deployment.md:343
+#: ../developer/deployment.md:439
 msgid "Alerting"
 msgstr "告警"
 
-#: ../developer/deployment.md:345
-msgid "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In **Admin → Settings → Alerts**, in the **Alerts** section, choose a **Notification channel** and enter its webhook URL. Only the selected channel's field is shown; saved URLs remain write-only. Choose **None** to turn off notifications."
-msgstr "后端将告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Alerts** 的 **Alerts** 部分选择 **Notification channel**（通知渠道），并填入对应的 webhook URL。界面只显示所选渠道的配置字段；已保存的 URL 只可写入，不会回显。选择 **None** 可关闭通知。"
-
-#: ../developer/deployment.md:350
-msgid ""
-"The in-process engine is off unless you enable `ALERTS_ENABLED`. Its "
-"underlying configuration keys are:"
-msgstr "进程内告警引擎默认关闭，需要启用 `ALERTS_ENABLED` 才会运行。对应的底层配置键如下："
+#: ../developer/deployment.md:441
+msgid "The backend sends alerts to one Slack or WeCom (企业微信) group webhook. In the **Alerts** section of **Admin → Settings → Alerts**, choose a **Notification channel** and enter its webhook URL; saved URLs are write-only. Choose **None** to turn notifications off."
+msgstr "后端把告警发送到一个 Slack 或企业微信群 webhook。在 **Admin → Settings → Alerts** 的 **Alerts** 部分选择 **Notification channel** 并填写其 webhook URL；已保存的 URL 只能写入。选择 **None** 可以关闭通知。"
 
 #: ../developer/deployment.md
 msgid "Setting"
@@ -1146,16 +1174,16 @@ msgid "`ALERTS_ENABLED`"
 msgstr ""
 
 #: ../developer/deployment.md
-msgid "on; applies after a backend restart"
-msgstr "打开；重启后端后生效"
+msgid "Turns the in-process engine on; applies after a backend restart"
+msgstr "开启进程内告警引擎；重启后端后生效"
 
 #: ../developer/deployment.md
 msgid "`SLACK_ALERTS_WEBHOOK_URL`"
 msgstr ""
 
 #: ../developer/deployment.md
-msgid "optional dedicated Slack webhook"
-msgstr "可选的专用 Slack webhook"
+msgid "Dedicated Slack webhook; falls back to `SLACK_WEBHOOK_URL` when empty"
+msgstr "专用的 Slack webhook；为空时回退到 `SLACK_WEBHOOK_URL`"
 
 #: ../developer/deployment.md
 msgid "`SLACK_WEBHOOK_URL`"
@@ -1173,485 +1201,402 @@ msgstr "`WECOM_ALERTS_WEBHOOK_URL`"
 msgid "WeCom group webhook; also enables the failed-request detector"
 msgstr "企业微信群 webhook；同时启用失败请求检测器"
 
-#: ../developer/deployment.md:360
+#: ../developer/deployment.md:453
 msgid ""
-"If `SLACK_ALERTS_WEBHOOK_URL` is empty it falls back to "
-"`SLACK_WEBHOOK_URL`, so one webhook can serve both code paths. The "
-"console preserves existing dedicated Slack settings and uses the fallback"
-" key for a new Slack configuration."
+"Slack and WeCom are mutually exclusive. Webhook changes apply after a "
+"backend restart, or within about ten seconds once an operator activates "
+"the `alerts.runtime` live group; see [Settings that apply without a "
+"restart](configuration.md#settings-that-apply-without-a-restart). **Send "
+"test notification** sends a marked test without saving anything. A URL "
+"typed into the test field must be the platform's official HTTPS endpoint "
+"(`hooks.slack.com`, `hooks.slack-gov.com` or `qyapi.weixin.qq.com/cgi-"
+"bin/webhook/send`), so an admin session cannot make the server call an "
+"arbitrary address. A saved HTTPS URL may point elsewhere, such as a "
+"Slack-compatible Mattermost."
 msgstr ""
-"`SLACK_ALERTS_WEBHOOK_URL` 为空时会改用 `SLACK_WEBHOOK_URL`，所以两条代码路径可以共用一个 "
-"webhook。控制台会保留已有的专用 Slack 配置；首次配置 Slack 时使用回退配置键。"
+"Slack 和企业微信只能二选一。webhook 的修改在重启后端后生效；运维人员激活 `alerts.runtime` "
+"实时组后，大约十秒内生效；见[无需重启即可生效的设置项](configuration.md#settings-that-apply-"
+"without-a-restart)。**Send test notification** "
+"发送一条带标记的测试消息，不保存任何内容。在测试框中输入的 URL 必须是该平台的官方 HTTPS "
+"端点（`hooks.slack.com`、`hooks.slack-gov.com` 或 `qyapi.weixin.qq.com/cgi-"
+"bin/webhook/send`），这样管理员会话就不能让服务器访问任意地址。已保存的 HTTPS URL 可以指向别处，例如兼容 Slack "
+"的 Mattermost。"
 
-#: ../developer/deployment.md:364
-msgid ""
-"Slack and WeCom are mutually exclusive. Saving a channel switch clears "
-"the old channel in the same update. Webhook changes apply after a backend"
-" restart until an operator activates the `alerts.runtime` live group; "
-"from then on they apply in every backend process within about ten "
-"seconds, without a restart. See [Settings that apply without a "
-"restart](configuration.md#settings-that-apply-without-a-restart). Until a"
-" change applies, normal alerts continue using the previous channel. "
-"**Restart pending**, or the **Applied in each backend process** panel "
-"once the group is active, shows what is still waiting."
-msgstr ""
-"Slack 和企业微信互斥。保存渠道切换时，会在同一次更新中清空旧渠道。在操作者激活 `alerts.runtime` 实时配置组之前，webhook 改动在后端重启后生效；激活之后，改动在约十秒内、无需重启就在每个后端进程中生效。参见[无需重启即可生效的设置项](configuration.md#settings-that-apply-without-a-restart)。改动生效之前，普通告警继续使用之前的渠道。**Restart pending**，或组激活后的 **Applied in each backend process** 面板，会显示仍在等待的内容。"
+#: ../developer/deployment.md:464
+msgid "Rules and thresholds are the `ALERT_RULES` document, under **Advanced** in **Admin → Settings → Alerts** (empty means built-in thresholds; changes need a restart). Two auth rules have deliberate defaults: `rules.auth_failure_spike` is off, because bad keys are background noise, and `rules.auth_ip_blocked` is on, because the source the blocklist refuses is sometimes the deployment's own monitor."
+msgstr "规则和阈值是 `ALERT_RULES` 文档，位于 **Admin → Settings → Alerts** 的 **Advanced** 下（为空表示使用内置阈值；修改后需要重启）。两条认证规则的默认值是有意为之：`rules.auth_failure_spike` 默认关闭，因为错误的 key 是互联网背景噪声；`rules.auth_ip_blocked` 默认开启，因为被封禁的来源有时正是本部署自己的监控程序。"
 
-#: ../developer/deployment.md:373
-msgid ""
-"**Send test notification** sends a marked test using the URL currently "
-"entered, or the latest saved URL when no draft is entered. It works "
-"before a restart and does not save changes, enable alerting or change "
-"incident/cooldown state. The success message includes a test ID to check "
-"in the receiving group."
-msgstr ""
-"**Send test notification** 使用当前输入的 URL 发送一条带有测试标识的消息；没有输入草稿时，使用最新保存的 "
-"URL。重启前也可以测试，测试不会保存变更、启用告警，也不会改变告警事件或冷却状态。成功提示会包含测试 ID，可在接收群里核对。"
-
-#: ../developer/deployment.md:378
-msgid ""
-"A URL typed into the test field must be the selected platform's official "
-"HTTPS endpoint (`hooks.slack.com` / `hooks.slack-gov.com`, or "
-"`qyapi.weixin.qq.com/cgi-bin/webhook/send`); that restriction exists so "
-"an admin session cannot make the server request an arbitrary address. A "
-"**saved** URL is not held to that host list: normal delivery already "
-"posts to it, so a Slack-compatible destination (Mattermost, Rocket.Chat, "
-"an egress proxy) tests normally. It must still be `https`. Discord, "
-"Telegram and arbitrary webhook formats are not supported by this "
-"selector."
-msgstr ""
-"在测试输入框中新填写的 URL 必须是所选平台的官方 HTTPS 端点（`hooks.slack.com` / `hooks.slack-"
-"gov.com`，或 `qyapi.weixin.qq.com/cgi-"
-"bin/webhook/send`）；这条限制是为了防止借管理员会话让服务器请求任意地址。**已保存**的 URL "
-"不受这份域名列表限制：正常告警本来就会发送到它，因此兼容 Slack "
-"的目标（Mattermost、Rocket.Chat、出口代理）也能正常测试，但仍必须是 `https`。此选择器不支持 "
-"Discord、Telegram 或任意自定义 webhook 格式。"
-
-#: ../developer/deployment.md:387
-msgid ""
-"Rules and thresholds are a deployment's own; this repository ships no "
-"alerts file. Point `ALERTS_CONFIG_PATH` at yours, or leave it unset and "
-"the built-in thresholds apply. The rule types and evaluation live in "
-"`apps/backend/serving/observability/`."
-msgstr ""
-"规则和阈值由各个部署自己决定，本仓库不带告警文件。把 `ALERTS_CONFIG_PATH` "
-"指向你自己的文件；不设置的话就用内置阈值。规则类型和求值逻辑在 `apps/backend/serving/observability/` 里。"
-
-#: ../developer/deployment.md:392
-msgid ""
-"Two auth rules are worth knowing apart, because their defaults differ on "
-"purpose:"
-msgstr "有两条认证规则要分清楚，它们的默认值是故意设成不一样的："
-
-#: ../developer/deployment.md:395
-msgid ""
-"`rules.auth_failure_spike` is **off**. Bad keys are internet background "
-"noise, and a count of them names nothing to act on. The `auth_failure` "
-"log records are emitted regardless."
-msgstr ""
-"`rules.auth_failure_spike` 默认**关闭**。错误的 key "
-"在互联网上就是背景噪声，光看数量指不出该处理什么。不管这条规则开不开，`auth_failure` 日志都照常输出。"
-
-#: ../developer/deployment.md:398
-msgid ""
-"`rules.auth_ip_blocked` is **on**. This one fires when the blocklist "
-"starts *refusing* a source — a discrete decision at a much higher "
-"threshold, naming an address. It is on because the source is sometimes "
-"the deployment's own; see the troubleshooting entry below."
-msgstr ""
-"`rules.auth_ip_blocked` "
-"默认**开启**。它在黑名单开始*拒绝*某个来源时触发：这是一个明确的判断，阈值高得多，而且指向具体地址。默认开启是因为被拒的来源有时就是部署自己的调用方；见下面的故障排查条目。"
-
-#: ../developer/deployment.md:403
+#: ../developer/deployment.md:471
 msgid "What an auth alert tells you"
 msgstr "认证告警里有什么"
 
-#: ../developer/deployment.md:405
+#: ../developer/deployment.md:473
 msgid ""
-"An auth-failure card names the sources and, where it can, the accounts "
-"behind them — the addresses they came from, how many distinct ones, the "
-"leading characters of the keys presented, why each failed, and the paths "
-"being hit. The recovery card carries the same picture of the incident "
-"that just closed, rather than only the rule's name: by the time a spike "
-"resolves, the window it breached on is empty, so the numbers have to come"
-" from a tally kept across the incident."
+"An auth-failure card names the sources, how many distinct addresses, the "
+"key prefixes presented, why each failed and the paths hit; the recovery "
+"card summarizes the whole incident. **Known Accounts** names accounts "
+"whose issued keys were refused, with `credential_state` (`revoked`, "
+"`expired`, `user_suspended`): usually a stale monitor or CI credential. "
+"The lookup is skipped under load or with "
+"`AUTH_FAILURE_IDENTIFY_CALLER=false`, so no named account does not prove "
+"the traffic is external. **Arrived Via Peers** appears when the addresses"
+" came from forwarding headers, and names the sockets they arrived on. "
+"Counts marked `(capped)` are lower bounds."
 msgstr ""
-"认证失败的告警卡片会列出失败的来源，能查到的话还会给出背后的账号：来源地址、不同地址的个数、所出示 key "
-"的前几个字符、每次失败的原因，以及被访问的路径。恢复卡片给出的也是刚结束的这次事件的完整情况，而不只是规则名：等尖峰恢复时，当初越过阈值的那个时间窗口里已经没有数据了，所以这些数字只能来自整个事件期间持续累计的统计。"
+"认证失败告警卡片会列出来源、不同地址的数量、所出示 key 的前缀、每次失败的原因以及被访问的路径；恢复卡片汇总整个事件。**Known "
+"Accounts** 列出本部署签发的 key 被拒绝的账号，并附上 "
+"`credential_state`（`revoked`、`expired`、`user_suspended`）：通常是过期的监控或 CI "
+"凭据。负载高时或设置 `AUTH_FAILURE_IDENTIFY_CALLER=false` "
+"时会跳过这项查询，所以没有列出账号并不能证明流量来自外部。**Arrived Via Peers** "
+"在地址来自转发请求头时出现，并列出这些请求实际到达的套接字。标有 `(capped)` 的计数是下限。"
 
-#: ../developer/deployment.md:412
-msgid "Two of those lines are worth reading carefully:"
-msgstr "其中有两行值得仔细读："
-
-#: ../developer/deployment.md:414
-msgid ""
-"**Known accounts.** Most auth failures are anonymous by construction — "
-"nobody was authenticated, which is the failure. A named account means a "
-"key this deployment *did* issue was presented and refused, with "
-"`credential_state` saying why (`revoked`, `expired`, `user_suspended`). "
-"That is the actionable case: a monitor, CI job or service account whose "
-"credential went stale. Resolving the owner costs one indexed lookup per "
-"failed auth, bounded by the shared rejection-enrichment budget and shed "
-"instantly under a flood; set `AUTH_FAILURE_IDENTIFY_CALLER=false` to "
-"spend nothing and lose the line. Read a named account as evidence and no "
-"named account as *unknown*, never as proof the traffic is external: the "
-"lookup is shed during exactly the flood you are investigating, and "
-"answers nothing on a timeout, a failed lookup, or with the setting off."
-msgstr ""
-"**Known "
-"accounts**（已知账号）。大多数认证失败天生就是匿名的——正因为没有人通过认证，才叫认证失败。出现账号，说明有人出示了本部署*确实*签发过的"
-" key 并被拒绝，`credential_state` "
-"会说明原因（`revoked`、`expired`、`user_suspended`）。这才是需要处理的情况：某个监控、CI "
-"任务或服务账号的凭据已经失效。查出持有者，每次认证失败要多做一次走索引的查询；这些查询和其他拒绝请求的信息补全共用一份预算，遇到流量洪峰会立即放弃。设置"
-" `AUTH_FAILURE_IDENTIFY_CALLER=false` "
-"就没有这笔开销，但也看不到这一行了。看到账号可以当作证据；看不到账号只能算*未知*，不能当作流量来自外部的证据：查询恰恰会在你正在排查的洪峰期间被放弃，而且查询超时、查询失败或这个设置关闭时，它都不会给出结果。"
-
-#: ../developer/deployment.md:426
-msgid ""
-"**Arrived via peers.** Present only when the reported addresses did not "
-"come off the socket. They are then only as trustworthy as the proxy that "
-"set them, and a forged `X-Forwarded-For` is exactly how a source spreads "
-"its failures across the blocklist's buckets. The line names the sockets "
-"they actually arrived on."
-msgstr ""
-"**Arrived via peers**（实际经由的对端）。只有上报的地址不是直接取自 socket "
-"时，才会出现这一行。这时这些地址是否可信，完全取决于写入它们的那层代理；而伪造 `X-Forwarded-"
-"For`，正是一个来源把自己的失败次数分散到黑名单各个分桶里的手段。这一行列出这些请求实际是从哪些 套接字对端进来的。"
-
-#: ../developer/deployment.md:432
-msgid ""
-"Counts marked `(capped)` are floors, not totals: a source rotating "
-"addresses faster than the tally tracks them stops being counted rather "
-"than being allowed to grow it without bound. Do not size an incident from"
-" a capped number."
-msgstr ""
-"带 `(capped)` "
-"标记的计数是下限，不是总数：某个来源换地址的速度一旦超过统计能跟踪的范围，超出的部分就不再计入，而不是任由统计无限增长。不要根据封顶的数字估计事件规模。"
-
-#: ../developer/deployment.md:436
+#: ../developer/deployment.md:483
 msgid "Silencing alerts from the dashboard"
 msgstr "在仪表盘中静音告警"
 
-#: ../developer/deployment.md:438
-msgid ""
-"The admin dashboard's Settings tab has two controls, and neither changes "
-"your alerts file:"
-msgstr "管理仪表盘的 Settings 标签页里有两个开关，两者都不会改动你的告警文件："
+#: ../developer/deployment.md:485
+msgid "**Admin → Settings → Alerts** has two controls, neither of which changes `ALERT_RULES`. **Alert Notifications** snoozes every alert for up to 24 hours (the admin API accepts up to seven days). **Alert Types** mutes one type, such as `auth_ip_blocked`, for an hour, a day, a week or until unmuted. Mutes are stored in the database and reach every process within seconds. An incident that opens while muted or snoozed closes without a recovery message; one posted before still gets its recovery."
+msgstr "**Admin → Settings → Alerts** 中有两个控件，都不会修改 `ALERT_RULES`。**Alert Notifications** 可以把所有告警暂停最多 24 小时（管理 API 最多接受七天）。**Alert Types** 可以把某一类告警（例如 `auth_ip_blocked`）静音一小时、一天、一周或直到取消静音。静音保存在数据库中，几秒内就会到达每个进程。在静音或暂停期间开始的事件结束时不会发送恢复消息；之前已发出的事件仍会收到恢复消息。"
 
-#: ../developer/deployment.md:441
-msgid "**Slack Alerts** snoozes every alert for up to seven days."
-msgstr "**Slack Alerts** 可以暂停所有告警，最长七天。"
-
-#: ../developer/deployment.md:442
-msgid ""
-"**Alert Types** mutes one type of alert, such as `auth_ip_blocked` or "
-"`circuit_open`, for an hour, a day, a week, or until it is unmuted. Every"
-" other type keeps sending."
-msgstr ""
-"**Alert Types** 可以静音某一类告警，例如 `auth_ip_blocked` 或 "
-"`circuit_open`，时长为一小时、一天、一周，或直到手动取消静音。其他类型照常发送。"
-
-#: ../developer/deployment.md:446
-msgid ""
-"A mute is stored in the database, so it survives a restart and reaches "
-"every gateway process within a few seconds. While a type is muted nothing"
-" of it is sent, and an incident that opens during the mute also closes "
-"without a recovery message. An incident that was posted before the mute "
-"still gets its recovery, and a breach still live when the mute lifts "
-"pages at its next evaluation. A mute is for an alert you want back later;"
-" to retire a rule for good, turn it off in your alerts file instead."
-msgstr "静音保存在数据库里，所以重启后依然有效，几秒内就会同步到所有网关进程。某类告警被静音期间，它的任何消息都不会发出；静音期间开始的事件在关闭时也不会发送恢复消息。静音之前已经发出的事件仍会收到恢复消息；静音解除时如果越限仍在持续，会在下一次评估时立即告警。静音适合那些你以后还想恢复的告警；要彻底停用某条规则，应该在告警文件里把它关掉。"
-
-#: ../developer/deployment.md:495
-msgid ""
-"A snooze treats recoveries the same way: an incident that opens while "
-"alerts are snoozed closes without a recovery message, and one that was "
-"posted before the snooze still gets its recovery."
-msgstr "暂停对恢复消息的处理方式相同：告警暂停期间开始的事件，在关闭时不会发送恢复消息；暂停之前已经发出的事件仍会收到恢复消息。"
-
-#: ../developer/deployment.md:454
+#: ../developer/deployment.md:493
 msgid "The first admin account"
 msgstr "第一个管理员账号"
 
-#: ../developer/deployment.md:456
+#: ../developer/deployment.md:495
 msgid ""
 "A new deployment creates its first administrator on the console's setup "
-"page. Until then the backend refuses every sign-up, by email or by phone,"
-" so nobody else can claim the account:"
-msgstr "新部署在控制台的设置页面上创建第一个管理员。在那之前，后端拒绝一切注册，无论是用邮箱还是手机号，所以别人抢不走这个账号："
-
-#: ../developer/deployment.md:460
-msgid ""
-"Read the setup code from the backend's log. The code is kept in the "
-"database and stays the same, across restarts and worker processes, until "
-"setup is complete; every start logs it again, whatever `LOG_LEVEL` is set"
-" to:"
-msgstr ""
-"从后端日志里读出设置码。设置码保存在数据库里，在设置完成之前，无论重启多少次、有几个 worker 进程，它都保持不变；不管 "
-"`LOG_LEVEL` 设成什么，每次启动都会再把它记进日志："
-
-#: ../developer/deployment.md:469
-msgid ""
-"Open the console. While setup is pending, every page sends you to "
-"`/setup`."
-msgstr "打开控制台。设置完成之前，每个页面都会把你带到 `/setup`。"
-
-#: ../developer/deployment.md:470
-msgid ""
-"Enter the code and choose a username and a password. This administrator "
-"has no email address and signs in with the username."
-msgstr "输入设置码，再选一个用户名和密码。这个管理员没有邮箱地址，用用户名登录。"
-
-#: ../developer/deployment.md:473
-msgid ""
-"Once email delivery is configured, this administrator can bind an email "
-"in **Account Settings → Email Address**. Confirm the current password and"
-" follow the verification link sent to the new address. The username "
-"continues to work after binding; the same settings section also lets you "
-"change a bound email."
-msgstr ""
-"配置好邮件发送之后，这个管理员可以在 **Account Settings → Email Address**（账户设置 → "
-"邮箱地址）中绑定邮箱：先确认当前密码，再打开发到新地址的验证链接。绑定之后，用户名仍然可以用来登录；在同一个设置区域里也可以更换已绑定的邮箱。"
-
-#: ../developer/deployment.md:478
-msgid ""
-"Whoever can read the backend log, or the database that holds the code, "
-"can create this account, so keep both as private as the host. Wrong codes"
-" are rate limited per client address, ten in 15 minutes; the right code "
-"is never refused."
-msgstr ""
-"能读到后端日志的人，或者能读到保存设置码的数据库的人，就能创建这个账号，所以要像保护主机本身一样保护这两者。输错的设置码会按客户端地址限流，每 "
-"15 分钟十次；正确的设置码从不会被拒绝。"
+"page. Until then the backend refuses every sign-up, by email or phone:"
+msgstr "新部署在控制台的设置页面上创建第一个管理员。在此之前，后端拒绝所有注册，无论通过邮箱还是手机号："
 
 #: ../developer/deployment.md:498
 msgid ""
-"**Without the browser.** `ops/admin/create_admin.py` writes the account "
-"directly: it creates it with `role='admin'`, `status='active'`, "
-"`email_verified=TRUE`, or promotes an existing account with the same "
-"address. Run it from the repository root once the schema migrations "
-"have run (`make migrate`; `make up` runs them):"
-msgstr ""
-"**不用浏览器**。`ops/admin/create_admin.py` 直接往数据库写账号：新建一个 "
-"`role='admin'`、`status='active'`、`email_verified=TRUE` "
-"的账号；如果同一地址的账号已经存在，就把它提升为管理员。数据库迁移运行过之后（`make migrate`；`make up` 会自动运行），在仓库根目录运行："
+"Read the setup code from the backend's log. It is stored in the database,"
+" stays the same across restarts until setup is complete, and is logged at"
+" every start whatever `LOG_LEVEL` is:"
+msgstr "从后端日志中读取设置码。它保存在数据库中，在设置完成之前跨重启保持不变，并且无论 `LOG_LEVEL` 如何，每次启动都会打印："
 
-#: ../developer/deployment.md:508
+#: ../developer/deployment.md:506
+msgid "Open the console; while setup is pending every page sends you to `/setup`."
+msgstr "打开控制台；设置未完成时，每个页面都会把你带到 `/setup`。"
+
+#: ../developer/deployment.md:507
 msgid ""
-"Run it inside the project environment (`source .venv/bin/activate` after "
-"`make setup-dev`) so the `serving` package is importable. It reads "
-"`DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER` and `DB_PASSWORD` from `.env`,"
-" and Postgres publishes on `127.0.0.1:5432`, so it works from the host "
-"shell. Omit `--password` and it prompts, keeping the password out of your"
-" shell history. Creating any account this way also completes first-run "
-"setup: a database that has accounts never shows the setup page."
+"Enter the code and choose a username and password. This administrator has"
+" no email address and signs in with the username. It can add one later in"
+" **Account Settings → Email Address** once mail delivery works."
 msgstr ""
-"要在项目环境里运行它（`make setup-dev` 之后执行 `source .venv/bin/activate`），这样才能 import"
-" `serving` 包。它从 `.env` 读取 `DB_HOST`、`DB_PORT`、`DB_NAME`、`DB_USER` 和 "
-"`DB_PASSWORD`，而 Postgres 发布在 `127.0.0.1:5432`，所以直接在宿主机的 shell 里就能运行。不带 "
-"`--password` 时它会提示你输入密码，这样密码就不会留在 shell "
-"历史里。用这种方式创建任何账号，也同样完成了首次运行设置：有账号的数据库永远不会出现设置页面。"
+"输入设置码，选择用户名和密码。这个管理员没有邮箱，用用户名登录。邮件发送可用后，它可以在 **Account Settings → Email "
+"Address** 中添加邮箱。"
+
+#: ../developer/deployment.md:511
+msgid ""
+"Anyone who can read the backend log or the database can create this "
+"account, so keep both private. Wrong codes are limited to ten per client "
+"address in 15 minutes; the right code is never refused. Once an "
+"administrator exists, you can close signup with the `signup_enabled` "
+"runtime setting."
+msgstr ""
+"能读取后端日志或数据库的人就能创建这个账号，所以两者都要严格保密。错误的设置码每个客户端地址 15 "
+"分钟内最多十次；正确的设置码永远不会被拒绝。管理员创建之后，可以用运行时设置 `signup_enabled` 关闭注册。"
 
 #: ../developer/deployment.md:516
 msgid ""
-"**A forgotten password.** The setup administrator has no email address, "
-"so there is no reset link to send. Reset its password where the backend "
-"runs:"
-msgstr "**忘记密码**。首次运行设置创建的管理员没有邮箱地址，所以没有重置链接可发。在后端运行的地方重置它的密码："
+"**Choose a username that is hard to guess.** Sign-in counts attempts "
+"before it checks the password:"
+msgstr "**选一个难以猜到的用户名。** 登录会在检查密码之前先计数："
 
 #: ../developer/deployment.md
-msgid ""
-"It reads only the `DB_*` settings, asks twice for the new password — or, "
-"with `--generate`, prints a strong one — and revokes the account's "
-"sessions, so every browser must sign in again. It takes an email address "
-"as well, for any other account. From a source checkout, run `uv run "
-"python -m serving.auth.reset_password <username>` in the repository root."
-" It also works on a database the schema migrations have not brought up to"
-" date — while a migration waits for the users table's lock and the "
-"previous release goes on serving, say — and changes no schema. Such a "
-"database may have no login names yet, so name the account by its email "
-"address there."
+msgid "Limit"
+msgstr "限制"
+
+#: ../developer/deployment.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../developer/deployment.md
+msgid "Per username from one address"
+msgstr "同一地址、同一用户名"
+
+#: ../developer/deployment.md
+msgid "5 in 15 minutes"
+msgstr "所有地址、同一用户名"
+
+#: ../developer/deployment.md
+msgid "`LOGIN_RATE_LIMIT_PER_15MIN`"
 msgstr ""
-"它只读取 `DB_*` 这几个设置，会让你输入两次新密码（加上 `--generate` "
-"则直接生成并打印一个强密码），并吊销这个账号的所有会话，所以每个浏览器都得重新登录。对其他账号，它也接受邮箱地址。从源码运行时，在仓库根目录执行 "
-"`uv run python -m serving.auth.reset_password "
-"<username>`。数据库还没迁移到最新时它也能用（比如迁移正在等 users "
-"表的锁、上一版还在服务的时候），而且不改动任何表结构。这样的数据库里可能还没有登录名，所以在那里要用邮箱地址指定账号。"
 
-#: ../developer/deployment.md:533
-msgid ""
-"**A setting that breaks the console.** Settings live in the database, so "
-"a value that stops sign-in from working cannot be fixed by editing "
-"`.env`, nor from a console nobody can sign in to. Change it back from the"
-" command line:"
+#: ../developer/deployment.md
+msgid "Per username from all addresses"
+msgstr "同一地址"
+
+#: ../developer/deployment.md
+msgid "50 in 15 minutes"
+msgstr "15 分钟 5 次"
+
+#: ../developer/deployment.md
+msgid "`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`"
 msgstr ""
-"**把控制台弄坏的设置项**。设置项存放在数据库里，所以一个让登录失效的值，既没法靠改 `.env` "
-"修好，也没法在谁都登录不了的控制台里修好。用命令行把它改回来："
 
-#: ../developer/deployment.md:541
-msgid ""
-"`list`, `get KEY`, `set KEY VALUE` and `reset KEY` work like the Settings"
-" tab, with its validation, and never print a secret's value; see [Without"
-" the console](configuration.md#without-the-console). The running backend "
-"picks the change up within about ten seconds, or after a restart for a "
-"setting marked **Restart required**."
+#: ../developer/deployment.md
+msgid "Per address"
+msgstr "15 分钟 50 次"
+
+#: ../developer/deployment.md
+msgid "20 in an hour"
+msgstr "1 小时 20 次"
+
+#: ../developer/deployment.md
+msgid "`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`"
 msgstr ""
-"`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 的作用和 "
-"Settings 标签页一样，校验规则也相同，而且从不打印密钥的值；"
-"见[不通过控制台](configuration.md#without-the-console)。"
-"正在运行的后端会在大约十秒内读到改动；标着 **Restart required** "
-"的设置项则要重启之后才生效。"
 
-#: ../developer/deployment.md:547
+#: ../developer/deployment.md:525
 msgid ""
-"With an administrator in place the instance can run with signup closed: "
-"turn off `signup_enabled` on the **Settings** tab."
-msgstr "有了管理员，实例就可以关闭注册运行：在 **Settings** 标签页上关掉 `signup_enabled`。"
+"A browser that has signed in to the account before holds a device cookie "
+"(`<REFRESH_TOKEN_COOKIE_NAME>_device`, valid 180 days) and gets five "
+"attempts of its own per 15 minutes, so other people's guesses do not lock"
+" it out. Changing `JWT_SECRET_KEY` invalidates device cookies. Other "
+"browsers share the limits with their address, and behind the bundled "
+"console every browser has the same address unless the gateway trusts your"
+" edge's header (see [Behind the console](trusted-proxies-and-client-"
+"ips.md#behind-the-console)). `admin` is the first name anyone tries."
+msgstr ""
+"曾经登录过该账号的浏览器持有一个设备 cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，有效期 180 "
+"天），每 15 分钟有自己的五次尝试，别人的猜测不会把它锁住。更改 `JWT_SECRET_KEY` 会让设备 cookie "
+"失效。其他浏览器与同一地址共享限制，而在自带的控制台之后，除非网关信任你的边缘设置的请求头，所有浏览器的地址都相同（见[控制台之后"
+"](trusted-proxies-and-client-ips.md#behind-the-console)）。`admin` "
+"是任何人都会最先尝试的用户名。"
 
-#: ../developer/deployment.md:550
-msgid "Promoting accounts with `ADMIN_EMAILS`"
-msgstr "用 `ADMIN_EMAILS` 提升账号"
+#: ../developer/deployment.md:534
+msgid ""
+"The recovery tools below need no sign-in. `ADMIN_TOKEN`, when set, also "
+"still reaches the admin API."
+msgstr "下面的恢复工具都不需要登录。设置了 `ADMIN_TOKEN` 时，它也仍能访问管理 API。"
+
+#: ../developer/deployment.md:537
+msgid "Creating an administrator without the browser"
+msgstr "不用浏览器创建管理员"
+
+#: ../developer/deployment.md:539
+msgid ""
+"`ops/admin/create_admin.py` creates an account with `role='admin'`, "
+"`status='active'` and `email_verified=TRUE`, or promotes the existing "
+"account with that address. Run it from the repository root, in the "
+"project environment (`source .venv/bin/activate` after `make setup-dev`),"
+" once the migrations have run:"
+msgstr ""
+"`ops/admin/create_admin.py` 创建一个 "
+"`role='admin'`、`status='active'`、`email_verified=TRUE` "
+"的账号，或者提升使用该邮箱的现有账号。在迁移执行之后，在仓库根目录、项目环境中（`make setup-dev` 之后执行 `source "
+".venv/bin/activate`）运行它："
+
+#: ../developer/deployment.md:549
+msgid ""
+"It reads the `DB_*` settings from `.env` and prompts for the password "
+"when you omit `--password`. Any account created this way also completes "
+"first-run setup."
+msgstr "它从 `.env` 读取 `DB_*` 设置，省略 `--password` 时会提示输入密码。用这种方式创建任何账号也会完成首次运行设置。"
 
 #: ../developer/deployment.md:552
-msgid ""
-"`ADMIN_EMAILS`, under **Security** on the **Configuration** tab, makes a "
-"listed address an administrator when that account signs in. It is not "
-"needed for the first administrator, and it is unsafe without email "
-"verification:"
-msgstr ""
-"`ADMIN_EMAILS` 位于 **Configuration** 标签页的 **Security** "
-"分类下，列在其中的地址对应的账号登录时会成为管理员。创建第一个管理员用不到它，而且在没有邮箱验证时它并不安全："
+msgid "Resetting a forgotten password"
+msgstr "重置忘记的密码"
 
-#: ../developer/deployment.md:557
+#: ../developer/deployment.md:554
 msgid ""
-"Do not combine open signup (`signup_enabled`), disabled email "
-"verification (`signup_require_email_verification` off) and `ADMIN_EMAILS`"
-" on an instance anyone else can reach. Together they are a privilege-"
-"escalation recipe:"
-msgstr ""
-"在别人能访问到的实例上，不要同时开放注册（`signup_enabled`）、关闭邮箱验证（`signup_require_email_verification`"
-" 关掉）并使用 `ADMIN_EMAILS`。三者组合起来就是一条现成的提权路径："
+"The setup administrator has no email, so reset its password where the "
+"backend runs:"
+msgstr "首次设置创建的管理员没有邮箱，所以要在后端运行的地方重置它的密码："
 
 #: ../developer/deployment.md:561
 msgid ""
-"with verification disabled, `POST /auth/signup` marks any address as "
-"verified without sending mail to it;"
-msgstr "关闭验证后，`POST /auth/signup` 会把任何地址都标记为已验证，却根本不往这个地址发邮件；"
-
-#: ../developer/deployment.md:563
-msgid ""
-"on login *and* on every token refresh, the backend promotes any account "
-"whose address is listed in `ADMIN_EMAILS` from `free` to `admin`, with no"
-" check that the person signing up owns that address."
+"It reads only the `DB_*` settings, asks for the new password twice (or "
+"prints a strong one with `--generate`), and signs the account out "
+"everywhere. It also accepts an email address. From a source checkout, run"
+" `uv run python -m serving.auth.reset_password <username>` at the "
+"repository root. It works on a database whose migrations are not yet "
+"applied; name the account by email there."
 msgstr ""
-"登录时*以及*每一次 token 刷新时，后端都会把地址列在 `ADMIN_EMAILS` 里的账号从 `free` 提升为 "
-"`admin`，并不检查注册的人是否真的拥有那个地址。"
+"它只读取 `DB_*` 设置，要求输入两次新密码（或用 `--generate` "
+"打印一个强密码），并让该账号在所有地方退出登录。它也接受邮箱地址。在源码检出中，在仓库根目录运行 `uv run python -m "
+"serving.auth.reset_password <username>`。它也能用于尚未执行迁移的数据库；这时请用邮箱指定账号。"
 
-#: ../developer/deployment.md:567
-msgid ""
-"So a stranger who guesses or reads your `ADMIN_EMAILS` value signs up "
-"with that address and is an admin on their first login."
-msgstr "于是，陌生人只要猜到或看到了你的 `ADMIN_EMAILS`，用那个地址注册，第一次登录就是管理员。"
+#: ../developer/deployment.md:568
+msgid "Undoing a setting that breaks sign-in"
+msgstr "撤销导致无法登录的设置"
 
-#: ../developer/deployment.md:941
+#: ../developer/deployment.md:570
 msgid ""
-"Email verification is on by default, and with it on an account cannot log"
-" in until it has followed a link sent to the address, which restores the "
-"ownership check that `ADMIN_EMAILS` itself does not perform. This needs "
-"working mail; without it nobody can complete a signup, and the console "
-"reports the selected transport's settings as missing: `SMTP_HOST`, "
-"`SMTP_USER` and `SMTP_PASSWORD` while `EMAIL_PROVIDER` is `smtp`, or "
-"`CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` while it is "
-"`cloudflare`. There is no default mail service: a deployment sends "
-"through its own SMTP server or Cloudflare account. See [Email and SMS "
-"delivery providers](configuration.md#email-and-sms-delivery-providers)."
-msgstr ""
-"邮箱验证默认是打开的。打开时，账号必须先点击发送到该地址的验证链接才能登录，这就补上了 `ADMIN_EMAILS` "
-"自己不做的地址归属检查。这需要一套可用的邮件发送方式；没有它，谁都无法完成注册，控制台也会把所选发送方式的设置项报为缺失：`EMAIL_PROVIDER`"
-" 为 `smtp` 时是 `SMTP_HOST`、`SMTP_USER` 和 `SMTP_PASSWORD`，为 `cloudflare` 时是 "
-"`CLOUDFLARE_ACCOUNT_ID` 和 "
-"`CLOUDFLARE_EMAIL_API_TOKEN`。系统不预设任何邮件服务：部署通过自己的 SMTP 服务器或 Cloudflare "
-"账户发信。参见[邮件与短信发送服务](configuration.md#email-and-sms-delivery-providers)。"
+"A setting that stops sign-in cannot be fixed in `.env` or from the "
+"console. Reset it from the command line:"
+msgstr "导致无法登录的设置项既不能在 `.env` 中修复，也不能在控制台中修复。请在命令行中重置："
 
 #: ../developer/deployment.md:577
 msgid ""
-"`ADMIN_EMAILS` also picks the default recipients for signup approval "
-"mail. To narrow the notification list without changing who holds the "
-"admin role, set `SIGNUP_NOTIFY_EMAILS` (comma-separated); when it is "
-"empty, notifications fall back to `ADMIN_EMAILS`."
+"`list`, `get KEY`, `set KEY VALUE` and `reset KEY` validate like Admin "
+"and never print secrets; see [Without the console](configuration.md"
+"#without-the-console). The backend picks the change up within about ten "
+"seconds, or after a restart for a setting marked **Restart required**."
 msgstr ""
-"`ADMIN_EMAILS` 还决定注册审批邮件的默认收件人。如果只想缩小通知名单、不想改变谁是管理员，就设置 "
-"`SIGNUP_NOTIFY_EMAILS`（逗号分隔）；它为空时，通知仍发给 `ADMIN_EMAILS`。"
+"`list`、`get KEY`、`set KEY VALUE` 和 `reset KEY` 与 Admin "
+"一样校验，并且从不打印密钥；见[不用控制台](configuration.md#without-the-"
+"console)。后端大约十秒内会读到修改；标有 **Restart required** 的设置项则在重启后生效。"
 
 #: ../developer/deployment.md:582
-msgid ""
-"Both `signup_enabled` and `signup_require_email_verification` are runtime"
-" settings on the **Settings** tab. A `SIGNUP_ENABLED` or "
-"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` line in `.env` is copied into that "
-"store at startup while it has no value of its own, and the stored value "
-"wins afterwards."
-msgstr ""
-"`signup_enabled` 和 `signup_require_email_verification` 都是 **Settings** "
-"标签页上的运行时设置。`.env` 里的 `SIGNUP_ENABLED` 或 "
-"`SIGNUP_REQUIRE_EMAIL_VERIFICATION` 只在那个存储里还没有值时，才会在启动时被复制过去，此后以存储里的值为准。"
+msgid "Promoting accounts with `ADMIN_EMAILS`"
+msgstr "用 `ADMIN_EMAILS` 提升账号"
 
-#: ../developer/deployment.md:588
+#: ../developer/deployment.md:584
+msgid "`ADMIN_EMAILS` (under **Security** in **Admin → Settings → Sign-in & security**) makes a listed address an administrator when that account signs in. You do not need it for the first administrator."
+msgstr "`ADMIN_EMAILS`（位于 **Admin → Settings → Sign-in & security** 的 **Security** 下）会在列出的邮箱对应的账号登录时把它设为管理员。创建第一个管理员不需要它。"
+
+#: ../developer/deployment.md:589
+msgid ""
+"Never combine open signup (`signup_enabled`), disabled email verification"
+" (`signup_require_email_verification` off) and `ADMIN_EMAILS` on an "
+"instance others can reach. Without verification, `POST /auth/signup` "
+"marks any address verified, and the backend promotes a listed address to "
+"`admin` on login and on every token refresh. Anyone who guesses an "
+"`ADMIN_EMAILS` value becomes an administrator."
+msgstr ""
+"绝不要在别人能访问的实例上同时开启注册（`signup_enabled`）、关闭邮箱验证（`signup_require_email_verification`"
+" 关闭）并使用 `ADMIN_EMAILS`。没有验证时，`POST /auth/signup` "
+"会把任何地址标为已验证，而后端会在登录和每次刷新令牌时把列出的地址提升为 `admin`。猜到 `ADMIN_EMAILS` "
+"中任一地址的人都会成为管理员。"
+
+#: ../developer/deployment.md:597
+msgid ""
+"Email verification is on by default and needs working mail: set "
+"`SMTP_HOST`, `SMTP_USER` and `SMTP_PASSWORD` with `EMAIL_PROVIDER=smtp`, "
+"or `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_EMAIL_API_TOKEN` with "
+"`cloudflare`. There is no default mail service; see [Email and SMS "
+"delivery providers](configuration.md#email-and-sms-delivery-providers). "
+"`ADMIN_EMAILS` is also the default recipient list for signup approval "
+"mail; `SIGNUP_NOTIFY_EMAILS` overrides it."
+msgstr ""
+"邮箱验证默认开启，需要可用的邮件服务：使用 `EMAIL_PROVIDER=smtp` 时设置 `SMTP_HOST`、`SMTP_USER` 和"
+" `SMTP_PASSWORD`，使用 `cloudflare` 时设置 `CLOUDFLARE_ACCOUNT_ID` 和 "
+"`CLOUDFLARE_EMAIL_API_TOKEN`。没有默认的邮件服务；见[邮件与短信发送服务](configuration.md"
+"#email-and-sms-delivery-providers)。`ADMIN_EMAILS` "
+"也是注册审批邮件的默认收件人列表；`SIGNUP_NOTIFY_EMAILS` 可以覆盖它。"
+
+#: ../developer/deployment.md:605
+msgid "Requiring two-factor authentication of administrators"
+msgstr "要求管理员使用双重验证"
+
+#: ../developer/deployment.md:607
+msgid ""
+"Any account can add an authenticator app (any TOTP app) in **Settings → "
+"Two-Factor Authentication** and then confirms lasting changes, such as "
+"raising a role, minting a key for another account or exporting secrets, "
+"with a six-digit code. It gets ten recovery codes, shown once."
+msgstr ""
+"任何账号都可以在 **Settings → Two-Factor Authentication** 中添加身份验证器应用（任何 TOTP "
+"应用），之后用六位数验证码确认持久性的修改，例如提升角色、为其他账号生成 key 或导出密钥。它会得到十个恢复码，只显示一次。"
+
+#: ../developer/deployment.md:612
+msgid ""
+"`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes an authenticator a "
+"condition of administrator access. It is read from the environment only, "
+"so an administrator session cannot switch it off. With it on:"
+msgstr ""
+"在 `.env` 中设置 `ADMIN_TWO_FACTOR_REQUIRED=true` "
+"后，拥有身份验证器就成为获得管理员权限的前提。它只从环境变量读取，所以管理员会话无法把它关掉。开启后："
+
+#: ../developer/deployment.md:616
+msgid ""
+"a console session reaches the Admin API only after giving a code, and "
+"again when it appears in a different kind of client;"
+msgstr "控制台会话只有在提供验证码后才能访问 Admin API，出现在另一种客户端中时还要再次提供；"
+
+#: ../developer/deployment.md:618
+msgid ""
+"an administrator without an authenticator has no administrator access "
+"until they add one, and only an account with one can be given the `admin`"
+" role;"
+msgstr "没有身份验证器的管理员在添加之前没有管理员权限，只有拥有身份验证器的账号才能被授予 `admin` 角色；"
+
+#: ../developer/deployment.md:620
+msgid "`ADMIN_TOKEN` is read-only, so move automation that writes with it first."
+msgstr "`ADMIN_TOKEN` 变为只读，所以先迁移用它写入的自动化任务。"
+
+#: ../developer/deployment.md:622
+msgid ""
+"Enroll the administrators before you turn it on: until an account has an "
+"authenticator, anyone with its password can add theirs. **Admin → Users**"
+" shows whether an account has one and removes a lost one. "
+"`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps "
+"confirming changes."
+msgstr ""
+"先让管理员完成登记再开启：账号添加身份验证器之前，任何知道其密码的人都能添加自己的。**Admin → Users** "
+"显示账号是否有身份验证器，并可以移除丢失的身份验证器。`TWO_FACTOR_STEP_UP_MINUTES`（默认 "
+"10）是验证码可以持续确认修改的时长。"
+
+#: ../developer/deployment.md:629
+#, python-brace-format
+msgid ""
+"An administrator who loses both the device and the recovery codes cannot "
+"reach the Admin API. Another administrator removes the authenticator in "
+"**Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If "
+"there is no other administrator, delete it in the database and add a new "
+"one with the account's password:"
+msgstr ""
+"同时丢失设备和恢复码的管理员无法访问 Admin API。另一位管理员可以在 **Admin → Users** 中移除其身份验证器（`POST "
+"/admin/users/{user_id}/two-"
+"factor/reset`）。如果没有其他管理员，就在数据库中删除它，再用该账号的密码添加新的："
+
+#: ../developer/deployment.md:638
 msgid "Database"
 msgstr "数据库"
 
-#: ../developer/deployment.md:590
+#: ../developer/deployment.md:640
 msgid ""
-"PostgreSQL 16 runs in the `postgres` service with its data in the Docker "
-"volume `hybridinference_postgres_data`. A psql shell:"
+"PostgreSQL runs in the `postgres` service with its data in the volume "
+"`hybridinference_postgres_data`. The schema, backups, pgAdmin and what "
+"the database holds are in [Database](database.md)."
 msgstr ""
-"PostgreSQL 16 跑在 `postgres` 服务里，数据放在 Docker 卷 "
-"`hybridinference_postgres_data` 中。开一个 psql shell："
+"PostgreSQL 运行在 `postgres` 服务中，数据保存在卷 `hybridinference_postgres_data` "
+"里。schema、备份、pgAdmin 以及数据库中存放的内容见[数据库](database.md)。"
 
-#: ../developer/deployment.md:597
-msgid "Schema details are in [Database](database.md)."
-msgstr "表结构细节见[数据库](database.md)。"
-
-#: ../developer/deployment.md
+#: ../developer/deployment.md:644
 msgid "Applying schema migrations"
 msgstr "执行表结构迁移"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:646
 msgid ""
-"Every deployment method has the same step: run the migrations with the "
-"image you are about to start, while the old one still serves, and start "
-"it only when they succeed."
-msgstr "不管用哪种方式部署，都有同样的一步：趁旧版本还在服务，用即将启动的镜像执行迁移，迁移成功了再启动它。"
+"Run the migrations with the image you are about to start, while the old "
+"one still serves, and start the new one only when they succeed:"
+msgstr "在旧版本仍在服务时，用即将启动的镜像执行迁移，迁移成功后再启动新版本："
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "Deployment"
 msgstr "部署方式"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "The step"
 msgstr "这一步怎么做"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "The bundled Compose stack"
 msgstr "自带的 Compose 栈"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "`make migrate`; `make up` and `make build` run it for you"
 msgstr "`make migrate`；`make up` 和 `make build` 会替你执行"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "Pinned images (`make deploy`)"
 msgstr "固定镜像（`make deploy`）"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid ""
-"`make deploy` runs it before switching over; `make rollback` never runs an "
-"older image's migrations"
+"`make deploy` runs it before switching over; `make rollback` never runs "
+"an older image's migrations"
 msgstr "`make deploy` 会在切换之前执行这一步；`make rollback` 从不执行旧镜像的迁移"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid "A systemd unit (`deploy/systemd/`)"
 msgstr "systemd 服务单元（`deploy/systemd/`）"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:628
 msgid ""
 "`.venv/bin/python -m migrations upgrade` in the unit's working directory,"
 " with its environment, before `systemctl restart`"
@@ -1659,316 +1604,232 @@ msgstr ""
 "在 `systemctl restart` 之前，在单元的工作目录里、用它的环境执行 `.venv/bin/python -m "
 "migrations upgrade`"
 
-#: ../developer/deployment.md
-msgid "Rules for a deploy script that does this itself:"
-msgstr "部署脚本自己执行这一步时，要遵守这几条："
+#: ../developer/deployment.md:655
+msgid "Rules for your own deploy script:"
+msgstr "自己编写部署脚本时的规则："
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:657
 msgid ""
-"Run the migrations with the same image, by digest, that you then start. "
-"The image carries the label "
-"`org.hybridinference.schema.migrations=alembic`; an image without it "
-"predates versioned migrations, builds its schema at startup, and has no "
-"step to run."
+"Migrate with the same image, by digest, that you start. Images with "
+"versioned migrations carry the label "
+"`org.hybridinference.schema.migrations=alembic`."
 msgstr ""
-"执行迁移用的镜像必须就是随后要启动的那个镜像，按摘要指定。这样的镜像带有 label "
-"`org.hybridinference.schema.migrations=alembic`；没有这个 label "
-"的镜像早于版本化迁移，启动时自己建表，也就没有这一步要执行。"
+"用将要启动的同一个镜像（按摘要）执行迁移。带版本化迁移的镜像有 "
+"`org.hybridinference.schema.migrations=alembic` 标签。"
 
-#: ../developer/deployment.md
+#: ../developer/deployment.md:659
 msgid ""
-"`run --rm backend` gives the one-off container the backend service's "
-"networks, fixed addresses included. If the service pins an address "
-"(`ipv4_address`), the running backend holds it and Docker refuses the one-"
-"off with `Address already in use`. Give the migrations a service of their "
-"own instead: the same image and `DB_*` settings, only the database's "
-"network, and a Compose profile so that no `up` starts it."
+"Use a one-off container with `--no-deps`, and check yourself that the "
+"database is up; otherwise Compose may recreate the database first. If the"
+" backend service pins an `ipv4_address`, give the migrations their own "
+"service (same image and `DB_*` settings, the database's network only, a "
+"profile so `up` never starts it), or Docker refuses with `Address already"
+" in use`."
 msgstr ""
-"`run --rm backend` 起的一次性容器会沿用 backend 服务的网络设置，包括固定地址。"
-"如果服务固定了地址（`ipv4_address`），这个地址正被运行中的 backend 占着，Docker "
-"会以 `Address already in use` 拒绝创建这个容器。这种情况下要给迁移单独定义一个服务："
-"镜像和 `DB_*` 设置与 backend 相同，只接入数据库所在的网络，再放进一个 Compose "
-"profile，这样任何 `up` 都不会启动它。"
-
-#: ../developer/deployment.md
-msgid ""
-"Do not let the one-off start or recreate the database. Pass `--no-deps` and "
-"check yourself that the database is up: Compose recreates a dependency "
-"whose configuration changed, before a migration that may then fail."
-msgstr ""
-"不要让这个一次性容器启动或重建数据库。加上 `--no-deps`，数据库是否已经运行由你自己检查："
-"依赖服务的配置一旦变了，Compose 会先重建它，而之后的迁移仍可能失败。"
-
-#: ../developer/deployment.md
-msgid ""
-"If the deploy script itself arrives on stdin (`ssh host bash -s`), run the "
-"one-off with `</dev/null`. `compose run` attaches stdin even with `-T`, so "
-"it reads the rest of the script, and the deploy ends with status 0 having "
-"done nothing more."
-msgstr ""
-"如果部署脚本本身是从标准输入传进来的（`ssh host bash -s`），运行一次性容器时要加 "
-"`</dev/null`。即使加了 `-T`，`compose run` 仍会接上标准输入，把脚本剩下的部分读走；"
-"部署以状态 0 结束，后面的步骤一步都没执行。"
-
-#: ../developer/deployment.md
-msgid ""
-"Do not make the migrations a step that every start runs (Compose's "
-"`depends_on: condition: service_completed_successfully`, a Kubernetes init "
-"container). Every restart would migrate first and wait on table locks "
-"before it serves. Where they are wired that way anyway, a restored earlier "
-"image finds nothing to apply on the newer schema: the command exits 0, or 1"
-" when that schema no longer supports the earlier code."
-msgstr ""
-"不要把迁移做成每次启动都要跑的步骤（比如 Compose 的 `depends_on: condition: "
-"service_completed_successfully`，或者 Kubernetes 的 init container）。那样每次重启都会先迁移，"
-"还要等表锁，之后才开始服务。如果已经这样接了，恢复上一版镜像时，它在更新的表结构上没有要执行的迁移："
-"命令以 0 退出；如果那个结构已经不再支持上一版代码，就以 1 退出。"
-
-#: ../developer/deployment.md
-msgid ""
-"If the step fails, stop: do not restart the service. Exit status 75 means"
-" a lock was not available in time (a backup holding a table, or another "
-"migration run); the same command can be run again later."
-msgstr "这一步失败就停下，不要重启服务。退出状态 75 表示没能及时拿到锁（备份占着某张表，或者另一个迁移正在执行），稍后可以原样重跑。"
-
-#: ../developer/deployment.md
-msgid ""
-"Have the deploy in place, and seen working once on an image without the "
-"label, before the first image with it arrives. The backend refuses to "
-"start on a database that has not been migrated, so a missed step shows up"
-" as a failed start and, where the deploy restores the previous image, an "
-"outage while it does."
-msgstr ""
-"在第一个带这个 label 的镜像到来之前，就把部署脚本改好，并且在一个不带 label "
-"的镜像上确认它确实生效过一次。数据库没迁移时后端会拒绝启动，所以漏掉这一步的结果是启动失败；部署会自动恢复上一版镜像的话，恢复期间服务是中断的。"
-
-#: ../developer/deployment.md:600
-msgid ""
-"The database holds every setting in plaintext: provider keys, the SMTP "
-"password, webhook URLs, and the `JWT_SECRET_KEY` and `API_KEY_SECRET` "
-"that sign sessions and protect API keys. A `pg_dump`, a backup, or a psql"
-" or pgAdmin session therefore reveals all of them, and lets its holder "
-"call your providers, decrypt users' stored API keys and sign "
-"administrator tokens. Protect database backups and database access as you"
-" would a `.env` that held those credentials."
-msgstr ""
-"数据库以明文保存每一个设置项：provider key、SMTP 密码、webhook URL，以及签发会话、保护 API key 的 "
-"`JWT_SECRET_KEY` 和 `API_KEY_SECRET`。因此一次 `pg_dump`、一份备份，或者一个 psql、pgAdmin"
-" 会话，就能看到所有这些内容，持有者可以用它们调用你的 provider、解密用户存下的 API key，并签发管理员 "
-"token。要像保护一份存着这些凭据的 `.env` 那样，保护数据库备份和数据库访问权限。"
-
-#: ../developer/deployment.md:609
-msgid "pgAdmin (optional)"
-msgstr "pgAdmin（可选）"
-
-#: ../developer/deployment.md:611
-msgid "Set `PGADMIN_PASSWORD` in `.env` first, then:"
-msgstr "先在 `.env` 里设置 `PGADMIN_PASSWORD`，然后："
-
-#: ../developer/deployment.md:615
-msgid ""
-"The console serves pgAdmin at `/pgadmin/` (`SCRIPT_NAME=/pgadmin`), gated"
-" on an admin session by "
-"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts`, which denies on "
-"every unexpected condition, including a backend it cannot reach. pgAdmin "
-"publishes no host port, since one would skip that gate; "
-"`PGADMIN_PUBLISH=1` adds one on `127.0.0.1` for an SSH tunnel."
-msgstr ""
-"控制台在 `/pgadmin/`（`SCRIPT_NAME=/pgadmin`）下提供 pgAdmin，由 "
-"`apps/frontend/src/app/pgadmin/[[...path]]/route.ts` "
-"检查是否为管理员会话；遇到任何意外情况它都会拒绝访问，包括连不上后端的时候。pgAdmin "
-"不发布任何主机端口，因为主机端口会绕过这道关卡；`PGADMIN_PUBLISH=1` 会在 `127.0.0.1` "
-"上加一个端口，供 SSH 隧道使用。"
-
-#: ../developer/deployment.md:621
-msgid ""
-"Behind the console's gate pgAdmin asks for its own login, "
-"`PGADMIN_EMAIL` and `PGADMIN_PASSWORD`: `PGADMIN_CONFIG_SERVER_MODE` "
-"defaults to `True`, and `False` serves pgAdmin with no login at all. "
-"There is no fallback password: without one pgAdmin will not set up its "
-"volume. It keeps the login it first started with, so a volume first "
-"started without a password, or with server mode off, needs the steps in "
-"[Authentication](database.md#authentication)."
-msgstr ""
-"在控制台这道关卡之后，pgAdmin 还会要求登录它自己的账号，即 `PGADMIN_EMAIL` 和 "
-"`PGADMIN_PASSWORD`：`PGADMIN_CONFIG_SERVER_MODE` 默认为 `True`，设为 `False` 时 "
-"pgAdmin 完全不需要登录。密码没有兜底的默认值：不设密码，pgAdmin 就不会初始化它的卷。它会一直沿用首次启动时的"
-"登录信息，所以首次启动时没有设密码、或者关着 server mode 的卷，需要按[认证](database.md#authentication)"
-"中的步骤处理。"
-
-#: ../developer/deployment.md:627
-msgid "Troubleshooting"
-msgstr "故障排查"
-
-#: ../developer/deployment.md:629
-msgid "A service will not start"
-msgstr "某个服务起不来"
-
-#: ../developer/deployment.md:636
-#, python-brace-format
-msgid ""
-"`required variable DB_NAME is missing a value: DB_NAME must be set in "
-".env file` — Compose stopped at interpolation before starting anything. "
-"`DB_NAME`, `DB_USER` and `DB_PASSWORD` are declared required with the "
-"`${VAR:?message}` form, so the half after the colon is the Compose file's"
-" own text and the most greppable part of the line."
-msgstr ""
-"`required variable DB_NAME is missing a value: DB_NAME must be set in "
-".env file`——Compose 在变量插值阶段就停下了，什么都还没启动。`DB_NAME`、`DB_USER` 和 "
-"`DB_PASSWORD` 是用 `${VAR:?message}` 形式声明为必填的，所以冒号之后那半句是 Compose "
-"文件自己写的文案，也是这一行里最好 grep 的部分。"
-
-#: ../developer/deployment.md:641
-msgid ""
-"Port already in use — override `BACKEND_PORT`, `FRONTEND_PORT` or "
-"`DB_PORT`."
-msgstr "端口已被占用——换一个 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`。"
-
-#: ../developer/deployment.md:642
-msgid ""
-"Database connection failed — check `make ps` for the `postgres` health "
-"status."
-msgstr "数据库连接失败——用 `make ps` 查看 `postgres` 的健康状态。"
-
-#: ../developer/deployment.md
-msgid ""
-"`The database records no schema version` or `The database is at revision "
-"…, behind this code's …` — the migrations have not been applied for this "
-"image. Run `make migrate` (or your deployment's step, see [Applying "
-"schema migrations](#applying-schema-migrations)), then start the backend "
-"again."
-msgstr ""
-"`The database records no schema version` 或 `The database is at revision "
-"…, behind this code's …`：还没有为这个镜像执行迁移。执行 `make "
-"migrate`（或者你的部署方式对应的那一步，见[执行表结构迁移](#applying-schema-migrations)），再重新启动后端。"
-
-#: ../developer/deployment.md:643
-msgid ""
-"`Configuration load failed after 3 attempts`, then `Authentication "
-"configuration incomplete` — the backend could not read its settings from "
-"the database and fell back to the environment, which holds no secrets. "
-"Fix the database connection rather than adding secrets to `.env`."
-msgstr ""
-"先出现 `Configuration load failed after 3 attempts`，接着是 `Authentication "
-"configuration "
-"incomplete`——后端没能从数据库读到它的设置项，退回到了环境变量，而环境变量里没有密钥。应该修好数据库连接，而不是往 `.env` "
-"里加密钥。"
-
-#: ../developer/deployment.md:648
-msgid "A monitor or service account is suddenly getting 429s"
-msgstr "监控或服务账号突然开始收到 429"
-
-#: ../developer/deployment.md:650
-msgid ""
-"`Too many authentication failures from this IP. Temporarily blocked.` is "
-"the gateway's own abuse defense, not a provider error and not a quota. "
-"Once a source accumulates `AUTH_FAILURE_BLOCK_THRESHOLD` failed "
-"authentications inside `AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day, by "
-"default) it is refused for `AUTH_FAILURE_BLOCK_DURATION_SEC` (a day)."
-msgstr ""
-"`Too many authentication failures from this IP. Temporarily blocked.` "
-"是网关自己的防滥用机制，既不是 provider 报的错，也不是配额限制。一个来源在 "
-"`AUTH_FAILURE_BLOCK_WINDOW_SEC` 内累计 `AUTH_FAILURE_BLOCK_THRESHOLD` "
-"次认证失败（默认是一天 200 次）后，接下来的 `AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）内都会被拒绝。"
-
-#: ../developer/deployment.md:656
-msgid ""
-"The awkward case is a caller you own — a status monitor, a CI job, a "
-"service account — whose key was rotated, revoked, or never reached its "
-"environment. It retries on a schedule, crosses the threshold, and is then"
-" refused *ahead of the key check*, which has two consequences:"
-msgstr ""
-"麻烦的是你自己的调用方——状态监控、CI 任务、服务账号——它的 key "
-"被轮换或吊销了，或者压根没配置到它的运行环境里。它按计划不断重试，越过阈值，然后在*检查 key 之前*就被拒绝。这会带来两个后果："
-
-#: ../developer/deployment.md:661
-msgid ""
-"**Repairing the credential does not lift the block.** The blocklist is "
-"consulted before the presented key is read, so a corrected key gets the "
-"same 429 until the deadline passes."
-msgstr "**修好凭据并不会解除封禁**。黑名单在读取请求带的 key 之前就做了判断，所以在封禁到期之前，换上正确的 key 也还是 429。"
+"使用带 `--no-deps` 的一次性容器，并自行确认数据库已启动；否则 Compose 可能会先重建数据库。如果后端服务固定了 "
+"`ipv4_address`，请给迁移单独定义一个服务（相同镜像和 `DB_*` 设置，只接入数据库所在网络，并放在一个 profile 中，让 "
+"`up` 永远不会启动它），否则 Docker 会以 `Address already in use` 拒绝。"
 
 #: ../developer/deployment.md:664
 msgid ""
-"**The 429 hides the original error.** Whatever the caller reports after "
-"the block is in place says nothing about whether the underlying 401/403 "
-"was fixed."
-msgstr "**429 掩盖了原始错误**。封禁生效之后，调用方报什么都说明不了底层那个 401/403 究竟修好了没有。"
+"If the script arrives on stdin (`ssh host bash -s`), run the one-off with"
+" `</dev/null`; `compose run` reads stdin even with `-T` and swallows the "
+"rest of the script."
+msgstr ""
+"如果脚本是通过 stdin 传入的（`ssh host bash -s`），运行一次性容器时加上 `</dev/null`；`compose "
+"run` 即使加了 `-T` 也会读取 stdin，吞掉脚本的剩余部分。"
 
 #: ../developer/deployment.md:667
 msgid ""
-"Which caller is it? Turn on the `log_rejected_requests` admin setting and"
-" the refusals land in Recent Requests as `ip_blocked` rows. Each row "
-"names the account behind the key the caller presented — including a key "
-"that was revoked or expired, which is what a stuck monitor is presenting "
-"— and labels it with the credential's state (`revoked`, `expired`, "
-"`user_suspended`) beside the user. A row with no user is unresolved, not "
-"proof of a stranger: the key may be one this deployment never issued, or "
-"the lookup may have been shed, since it runs on a strict budget that "
-"gives up first under exactly the flood a block is holding back."
-msgstr ""
-"到底是哪个调用方？打开 `log_rejected_requests` 这个管理设置，被拒绝的请求就会以 `ip_blocked` 行的形式出现在"
-" Recent Requests 里。每一行都会写出调用方所带 key 背后的账号，包括已吊销或已过期的 "
-"key（卡住的监控带的正是这种），并在用户旁边标出凭据状态（`revoked`、`expired`、`user_suspended`）。没有用户的行只是没查出来，不能证明是陌生人：可能这个"
-" key 根本不是本部署签发的，也可能查询被放弃了。这个查询的预算很紧，而封禁正在挡的那种流量洪峰，恰恰最容易让它放弃。"
+"Do not run migrations on every start (a `service_completed_successfully` "
+"dependency, an init container): every restart would wait on table locks."
+msgstr "不要在每次启动时都运行迁移（`service_completed_successfully` 依赖、init 容器）：每次重启都会等待表锁。"
 
-#: ../developer/deployment.md:677
-msgid "To recover, first fix the credential, then clear the block:"
-msgstr "要恢复，先修好凭据，再解除封禁："
-
-#: ../developer/deployment.md:692
+#: ../developer/deployment.md:669
 msgid ""
-"`cleared: false` means there was nothing to lift — it lapsed, or that "
-"bucket was never blocked. Clearing grants no immunity: a caller still "
-"presenting a bad key is blocked again on crossing the threshold. For a "
-"source that should never be blocked at all, list it in "
-"`AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated addresses or CIDRs) "
-"instead."
-msgstr ""
-"`cleared: false` 表示没有需要解除的封禁：要么已经到期，要么那个分桶从来没被封过。解除封禁不等于豁免：调用方如果还在用错误的 "
-"key，越过阈值后会再次被封。对于永远不该被封的来源，应该把它加进 "
-"`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。"
+"If the step fails, stop. Exit status 75 means a lock was not available in"
+" time; run it again later."
+msgstr "这一步失败时就停下来。退出码 75 表示没能及时拿到锁；稍后再运行一次。"
 
-#: ../developer/deployment.md:698
+#: ../developer/deployment.md:672
 msgid ""
-"The blocklist is per-process, in-memory state. On the single-process "
-"default both endpoints are exact, and a restart also clears every block. "
-"Run multiple workers and each holds its own counts, so a listing shows "
-"only the worker that answered and clearing may take more than one call."
-msgstr ""
-"黑名单是进程内的内存状态。在默认的单进程部署下，这两个接口给出的都是准确结果，而且重启也会清掉所有封禁。跑多个 worker 时，每个 "
-"worker 各记一份计数，所以列表只反映应答的那个 worker，解除也可能需要调用多次。"
+"The backend refuses to start on an unmigrated database, so a missed step "
+"shows up as a failed start. Have the step working before the first image "
+"with the label arrives."
+msgstr "后端拒绝在未迁移的数据库上启动，所以漏掉这一步会表现为启动失败。在第一个带该标签的镜像到来之前，让这一步先跑通。"
 
-#: ../developer/deployment.md:703
+#: ../developer/deployment.md:676
+msgid "Troubleshooting"
+msgstr "故障排查"
+
+#: ../developer/deployment.md:678
+msgid "A service will not start"
+msgstr "某个服务起不来"
+
+#: ../developer/deployment.md:628
+msgid "Message"
+msgstr "消息"
+
+#: ../developer/deployment.md:628
+msgid "Fix"
+msgstr "解决办法"
+
+#: ../developer/deployment.md:628
+msgid ""
+"`required variable DB_NAME is missing a value: DB_NAME must be set in "
+".env file`"
+msgstr ""
+
+#: ../developer/deployment.md:628
+msgid ""
+"Compose stopped before starting anything. Set `DB_NAME`, `DB_USER` and "
+"`DB_PASSWORD` in `.env`"
+msgstr "Compose 在启动任何服务之前就停止了。在 `.env` 中设置 `DB_NAME`、`DB_USER` 和 `DB_PASSWORD`"
+
+#: ../developer/deployment.md:628
+msgid "Port already in use"
+msgstr "端口已被占用"
+
+#: ../developer/deployment.md:628
+msgid "Override `BACKEND_PORT`, `FRONTEND_PORT` or `DB_PORT` in `.env`"
+msgstr "在 `.env` 中改用其他 `BACKEND_PORT`、`FRONTEND_PORT` 或 `DB_PORT`"
+
+#: ../developer/deployment.md:628
+msgid "Database connection failed"
+msgstr "数据库连接失败"
+
+#: ../developer/deployment.md:628
+msgid "Check the `postgres` health in `make ps`"
+msgstr "在 `make ps` 中检查 `postgres` 的健康状态"
+
+#: ../developer/deployment.md:628
+msgid ""
+"`The database records no schema version` or `The database is at revision "
+"…, behind this code's …`"
+msgstr ""
+"`The database records no schema version` 或 `The database is at revision "
+"…, behind this code's …`"
+
+#: ../developer/deployment.md:628
+msgid ""
+"Run `make migrate` (or [your deployment's step](#applying-schema-"
+"migrations)), then start the backend"
+msgstr "运行 `make migrate`（或[你的部署方式对应的步骤](#applying-schema-migrations)），然后启动后端"
+
+#: ../developer/deployment.md:628
+msgid ""
+"`Configuration load failed after 3 attempts`, then `Authentication "
+"configuration incomplete`"
+msgstr ""
+"`Configuration load failed after 3 attempts`，之后是 `Authentication "
+"configuration incomplete`"
+
+#: ../developer/deployment.md:628
+msgid ""
+"The backend could not read its settings from the database. Fix the "
+"connection; do not add secrets to `.env`"
+msgstr "后端无法从数据库读取设置项。修好数据库连接；不要把密钥写进 `.env`"
+
+#: ../developer/deployment.md:628
+msgid "The console shows a configuration error with a retry button"
+msgstr "控制台显示带重试按钮的配置错误"
+
+#: ../developer/deployment.md:628
+msgid ""
+"The console could not get a valid `/site-config` from the backend within "
+"three seconds. Check the frontend logs and the backend, then retry"
+msgstr "控制台没能在三秒内从后端拿到有效的 `/site-config`。检查前端日志和后端，然后重试"
+
+#: ../developer/deployment.md:694
+msgid "The backend's memory after large requests"
+msgstr "大请求过后后端的内存"
+
+#: ../developer/deployment.md:696
+msgid ""
+"At startup the backend fixes glibc's mmap threshold at 128 KiB, glibc's "
+"own starting value, and logs `Allocator: glibc mmap threshold fixed at "
+"128 KiB`. Without this, the threshold rises with every large request body "
+"or reply the backend frees, and the process keeps a burst's memory long "
+"after the burst ends. `serving/servers/allocator.py` has the details. An "
+"operator's own `MALLOC_MMAP_THRESHOLD_`, or `glibc.malloc.mmap_threshold` "
+"in `GLIBC_TUNABLES`, takes precedence. With any other C library the "
+"backend changes nothing."
+msgstr ""
+"后端启动时会把 glibc 的 mmap 阈值固定在 128 KiB，也就是 glibc 自己的初始值，并记录日志 "
+"`Allocator: glibc mmap threshold fixed at 128 KiB`。不这样做的话，后端每释放一个大的请求体或回复，"
+"阈值就会随之升高，一阵大请求过去很久之后，进程仍占着那批内存。细节见 "
+"`serving/servers/allocator.py`。运维人员自己设置的 `MALLOC_MMAP_THRESHOLD_`，或 "
+"`GLIBC_TUNABLES` 中的 `glibc.malloc.mmap_threshold`，优先生效。换成其他 C 库时，后端不做任何改动。"
+
+#: ../developer/deployment.md:705
+msgid "A monitor or service account is suddenly getting 429s"
+msgstr "监控或服务账号突然开始收到 429"
+
+#: ../developer/deployment.md:696
+msgid ""
+"`Too many authentication failures from this IP. Temporarily blocked.` is "
+"the gateway's own abuse defense. A source with "
+"`AUTH_FAILURE_BLOCK_THRESHOLD` failed authentications within "
+"`AUTH_FAILURE_BLOCK_WINDOW_SEC` (200 in a day by default) is refused for "
+"`AUTH_FAILURE_BLOCK_DURATION_SEC` (a day)."
+msgstr ""
+"`Too many authentication failures from this IP. Temporarily blocked.` "
+"是网关自己的防滥用机制。在 `AUTH_FAILURE_BLOCK_WINDOW_SEC` 内认证失败达到 "
+"`AUTH_FAILURE_BLOCK_THRESHOLD` 次（默认一天 200 次）的来源会被拒绝 "
+"`AUTH_FAILURE_BLOCK_DURATION_SEC`（一天）。"
+
+#: ../developer/deployment.md:701
+msgid ""
+"It usually hits a caller you own whose key was rotated or revoked. The "
+"block is checked before the key, so fixing the credential does not lift "
+"it, and the 429 hides whether the original 401 or 403 is fixed. To find "
+"the caller, turn on the `log_rejected_requests` runtime setting: refusals"
+" appear in **Recent Requests** as `ip_blocked` rows naming the account "
+"behind the key, with its state (`revoked`, `expired`, `user_suspended`). "
+"A row without a user is unresolved, not proof of a stranger."
+msgstr ""
+"它通常落在你自己的、key 被轮换或吊销的调用方身上。封禁检查在 key 检查之前，所以修好凭据并不能解除封禁，而 429 也掩盖了原来的 401"
+" 或 403 是否已经解决。要找出调用方，开启运行时设置 `log_rejected_requests`：被拒绝的请求会以 "
+"`ip_blocked` 行出现在 **Recent Requests** 中，写明 key "
+"背后的账号及其状态（`revoked`、`expired`、`user_suspended`）。没有用户的行表示未能解析，并不能证明是陌生人。"
+
+#: ../developer/deployment.md:709
+msgid "Fix the credential, then clear the block:"
+msgstr "修好凭据，然后解除封禁："
+
+#: ../developer/deployment.md:724
+msgid ""
+"`cleared: false` means nothing was blocked. To exempt a source "
+"permanently, list it in `AUTH_FAILURE_BLOCK_EXEMPT_IPS` (comma-separated "
+"addresses or CIDRs). The blocklist lives in each process's memory: a "
+"restart clears it, and with several workers each keeps its own."
+msgstr ""
+"`cleared: false` 表示原本就没有封禁。要永久豁免某个来源，把它加入 "
+"`AUTH_FAILURE_BLOCK_EXEMPT_IPS`（逗号分隔的地址或 CIDR）。封禁列表保存在每个进程的内存中：重启会清空它，多个 "
+"worker 各自维护一份。"
+
+#: ../developer/deployment.md:729
 msgid "Resetting the stack"
 msgstr "重置这套服务栈"
 
-#: ../developer/deployment.md:705
-msgid "**Stop and start, keeping data:**"
-msgstr "**停止再启动，保留数据：**"
-
-#: ../developer/deployment.md:711
+#: ../developer/deployment.md:731
 msgid ""
-"**Destroy the database and start clean.** `docker compose down -v` does "
-"*not* do this. `postgres_data` is declared `external: true` in "
-"`deploy/docker/docker-compose.yml`, and Compose never removes an external"
-" volume — `down -v` returns success and leaves it fully intact, so `make "
-"up` comes back on exactly the same data. Remove it by name:"
+"`make down && make up` keeps the data. To start with an empty database, "
+"remove the volume by name. `docker compose down -v` does not remove it, "
+"because it is declared `external: true`, and `make up` would come back on"
+" the same data:"
 msgstr ""
-"**销毁数据库、从干净状态开始**。`docker compose down -v` 做*不到*这件事。`postgres_data` 在 "
-"`deploy/docker/docker-compose.yml` 里声明为 `external: true`，而 Compose "
-"从不删除外部卷——`down -v` 会返回成功，却把卷原封不动地留着，所以 `make up` 之后还是原来那份数据。要按名字删除这个卷："
+"`make down && make up` 会保留数据。要从空数据库开始，请按名称删除卷。`docker compose down -v` "
+"不会删除它，因为它被声明为 `external: true`，`make up` 会带着同样的数据回来："
 
-#: ../developer/deployment.md:723
+#: ../developer/deployment.md:741
 msgid ""
-"The backend then starts as on a new deployment: it generates new secrets "
-"unless `.env` supplies them, imports whatever settings `.env` still "
-"holds, and prints a setup code for a new administrator."
-msgstr ""
-"随后后端会像在新部署上一样启动：生成新的密钥（除非 `.env` 里已经提供），导入 `.env` "
-"里还留着的设置项，并打印一个设置码，供创建新的管理员。"
+"The backend then starts as a new deployment: new secrets unless `.env` "
+"supplies them, the settings `.env` still holds imported, and a new setup "
+"code."
+msgstr "随后后端会像新部署一样启动：除非 `.env` 提供，否则生成新的密钥，导入 `.env` 中仍有的设置项，并打印新的设置码。"
 
-#: ../developer/deployment.md:728
+#: ../developer/deployment.md:745
 msgid ""
 "`docker volume rm` is irreversible and takes every account, API key, "
 "request log and stored setting with it. Take a `pg_dump` first if any of "
@@ -1977,490 +1838,9 @@ msgstr ""
 "`docker volume rm` 不可逆，所有账号、API key、请求日志和已存储的设置项都会随之删除。只要其中有任何数据还有用，先做一次 "
 "`pg_dump`。"
 
-#: ../developer/deployment.md:732
+#: ../developer/deployment.md:749
 msgid ""
-"pgAdmin's own volume (`hybridinference_pgadmin_data`) is an ordinary "
-"local volume that `make down` leaves in place. To clear pgAdmin's saved "
-"state, remove it by name as described in [Resetting pgAdmin](database.md"
+"pgAdmin's volume is separate; see [Resetting pgAdmin](database.md"
 "#resetting-pgadmin)."
-msgstr ""
-"pgAdmin 自己的卷（`hybridinference_pgadmin_data`）是普通的本地卷，`make down` 不会动它。要清掉 "
-"pgAdmin 保存的状态，参照[重置 pgAdmin](database.md#resetting-pgadmin)，按名字删除这个卷。"
+msgstr "pgAdmin 的卷是单独的；见[重置 pgAdmin](database.md#resetting-pgadmin)。"
 
-#: ../developer/deployment.md:736
-msgid "Rebuilding after code changes"
-msgstr "改动代码后重新构建"
-
-#: ../developer/deployment.md:52
-msgid ""
-"The URL hostname must match the gateway server certificate. The CA file "
-"verifies that server; the client certificate and key authenticate the "
-"frontend to the gateway. Supply the files through a read-only secret "
-"mount accessible to the frontend process, and restrict who may read or "
-"mount the client private key. The console runs as uid 1000, not root, so "
-"the files must be readable by that user: for example group 1000 with mode"
-" `0440`, or a Kubernetes `fsGroup: 1000` with `defaultMode: 0440`. A file"
-" only root can read makes `/pgadmin/` answer 502, and the console logs "
-"that the credentials are not readable by its user. These are file paths "
-"inside the frontend container, not certificate contents. The upstream "
-"gateway must enforce mTLS itself and restrict access to pgAdmin; the "
-"console's administrator check does not protect a separately exposed "
-"backend."
-msgstr ""
-"URL 中的主机名必须与网关服务端证书匹配。CA 文件用于验证服务端；客户端证书和私钥用于向网关认证前端。请通过前端进程可读取的只读 Secret"
-" 挂载提供文件，并限制谁能读取或挂载客户端私钥。控制台以 uid 1000 而非 root 运行，所以这些文件必须能被该用户读取：例如属组为 "
-"1000、权限为 `0440`，或者在 Kubernetes 中设置 `fsGroup: 1000` 和 `defaultMode: "
-"0440`。如果文件只有 root 能读，`/pgadmin/` 会返回 "
-"502，控制台会在日志中说明凭据无法被它的用户读取。这些是前端容器内的文件路径，不是证书内容。上游网关必须自行强制 mTLS 并限制对 "
-"pgAdmin 的访问；控制台的管理员检查无法保护单独暴露的后端。"
-
-#: ../developer/deployment.md
-msgid ""
-"Bound completion request bodies (commonly `client_max_body_size 50m`), so"
-" oversized ones never cross your network. The gateway refuses bodies over"
-" `REQUEST_MAX_BODY_MB` (32 MiB) itself, and the console streams `/v1/` "
-"bodies to it without holding them"
-msgstr ""
-"限制补全请求的请求体大小（常见配置是 `client_max_body_size "
-"50m`），让过大的请求体根本不会穿过你的网络。网关自己会拒绝超过 `REQUEST_MAX_BODY_MB`（32 MiB）的请求体，控制台则把"
-" `/v1/` 的请求体以流式转发给它，不在内存中保留"
-
-#: ../developer/deployment.md:536
-msgid ""
-"**Choose a username that is hard to guess.** Sign-in counts each attempt "
-"before it checks the password: five per username from one address in 15 "
-"minutes (`LOGIN_RATE_LIMIT_PER_15MIN`), fifty per username from all "
-"addresses together (`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`, counting only "
-"the attempts the other limits let through), and twenty per address in an "
-"hour (`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`). A browser that has signed in "
-"to the account before, including the one you used for setup, holds a "
-"device cookie (`<REFRESH_TOKEN_COOKIE_NAME>_device`, sent only to "
-"`/auth`, kept on sign-out, valid for 180 days) and gets five attempts per"
-" 15 minutes of its own, so other people's guesses never lock it out. "
-"Together, the account's browsers that hold one get "
-"`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` attempts per 15 minutes, a budget "
-"only requests carrying such a cookie count against, and once it is spent "
-"they are limited like any other browser. Each password has its own "
-"budget: cookies from before a password change or reset cannot spend the "
-"one your browsers share after it. Changing `JWT_SECRET_KEY` invalidates "
-"every device cookie until that browser's next sign-in."
-msgstr ""
-"**选一个难猜的用户名**。登录在检查密码之前就为每次尝试计数：同一个用户名从同一个地址每 15 "
-"分钟五次（`LOGIN_RATE_LIMIT_PER_15MIN`），同一个用户名从所有地址合计五十次（`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN`，只计入其他限制放行的尝试），每个地址每小时二十次（`LOGIN_RATE_LIMIT_PER_HOUR_PER_IP`）。以前登录过这个账号的浏览器——包括你做首次运行设置时用的那个——持有一个设备"
-" cookie（`<REFRESH_TOKEN_COOKIE_NAME>_device`，只发给 `/auth`，退出登录后仍保留，有效期 180"
-" 天），并单独享有每 15 分钟五次的尝试额度，所以别人的猜测永远锁不住它。持有这种 cookie 的该账号所有浏览器合计每 15 分钟有 "
-"`LOGIN_ACCOUNT_RATE_LIMIT_PER_15MIN` 次尝试，这份额度只有携带这种 cookie 的请求才会消耗；额度用完后，它们就和其他浏览器一样受限。每个密码各有一份额度：修改或重置密码之前发出的 "
-"cookie，用不掉你的浏览器在此之后共享的那一份。修改 "
-"`JWT_SECRET_KEY` 会让所有设备 cookie 失效，直到那个浏览器下次登录。"
-
-#: ../developer/deployment.md:550
-msgid ""
-"Other browsers share the limits with their address, and behind the "
-"bundled Compose file's console every browser has the same address "
-"unless the gateway trusts the header your edge sets, which is safe "
-"only while the console is reachable through that edge alone (see "
-"[Behind the "
-"console](trusted-proxies-and-client-ips.md#behind-the-console)); "
-"`admin` is the first username anyone tries. The pages that mail a "
-"link to an address anyone types, password reset and resending the "
-"verification email, are limited too: three of each kind an hour per "
-"address, whether or not an account has it, and ten an hour per client "
-"address when the backend can tell clients apart (without that, the "
-"per-address limit alone). The counts are held in memory, so a backend "
-"restart clears them. Nothing below needs a sign-in: `ADMIN_TOKEN`, "
-"when set, still reaches the admin API, and the command-line tools "
-"work on the database directly."
-msgstr ""
-"其他浏览器与它们的地址共用这些限制；而在仓库自带 Compose 文件的控制台后面，除非网关信任你的边缘层所设置的那个头，所有浏览器的地址都相同，而这样的信任只有在控制台只能经由这个边缘层访问时才安全（见[在控制台后面](trusted-proxies-and-client-ips.md#behind-the-console)）；`admin` 又恰恰是谁都会先试的用户名。那些会向任何人输入的地址发送链接的页面——重置密码和重新发送验证邮件——也有限制：每个地址每种邮件每小时三封，无论该地址是否有账号；后端能区分客户端时，每个客户端地址每小时十封（不能区分时只有按地址的限制）。这些计数只保存在内存里，所以重启后端会把它们清空。下面这些都不需要登录：设置了"
-" `ADMIN_TOKEN` 时，它照样能访问管理 API，命令行工具则直接操作数据库。"
-
-#: ../developer/deployment.md:736
-msgid ""
-"pgAdmin is on a network of its own, `pgadmin`, shared only with the "
-"console and the database. The backend and any other service on "
-"`hybridinference` cannot reach it. The first `make up` after this change "
-"recreates the `postgres` container to attach it to that network, a "
-"restart of a few seconds."
-msgstr ""
-"pgAdmin 位于它自己的网络 `pgadmin` 上，只与控制台和数据库共享。后端以及 `hybridinference` "
-"网络上的其他服务都无法访问它。这次变更之后的第一次 `make up` 会重建 `postgres` 容器，把它接入该网络，会有几秒钟的重启。"
-
-#: ../developer/deployment.md:741
-msgid ""
-"The Compose service runs an exact pgAdmin release "
-"(`dpage/pgadmin4:9.19`). Moving from the earlier `dpage/pgadmin4:8` "
-"upgrades pgAdmin's settings database in the `pgadmin_data` volume on the "
-"first start, which an 8.x image cannot read afterwards."
-msgstr ""
-"Compose 服务运行一个确切的 pgAdmin 版本（`dpage/pgadmin4:9.19`）。从之前的 "
-"`dpage/pgadmin4:8` 升级时，pgAdmin 会在首次启动时升级 `pgadmin_data` 卷中的设置数据库，之后 8.x "
-"镜像就无法再读取它。"
-
-#: ../developer/deployment.md:747
-msgid ""
-"pgAdmin and the agent web app (`/agents`) are served on the console's own"
-" origin. Any script either app serves runs with the authority of the "
-"console session open in that browser, because the session's access token "
-"and `/auth/refresh` are same-origin. The proxies keep each app's cookies "
-"under its own path and refuse any cookie named like one of the console's,"
-" which stops an app from replacing or clearing the console's session, but"
-" only a separate origin removes the shared authority. Serving each app "
-"from its own hostname behind the same admin gate needs DNS and tunnel "
-"routes per deployment and is tracked as follow-up work."
-msgstr ""
-"pgAdmin 和 agent Web "
-"应用（`/agents`）与控制台同源提供服务。这两个应用提供的任何脚本，都以该浏览器中已打开的控制台会话的权限运行，因为会话的访问令牌和 "
-"`/auth/refresh` 都是同源的。代理会把每个应用的 cookie 限定在它自己的路径下，并拒绝任何与控制台 cookie 同名的 "
-"cookie，这能阻止应用替换或清除控制台的会话，但只有独立的源才能消除这种共享权限。让每个应用在同一个管理员门禁后面使用自己的主机名提供服务，需要为每个部署配置"
-" DNS 和隧道路由，这项工作作为后续事项跟踪。"
-
-msgid "Diagnostics, deployment and recovery"
-msgstr "诊断、部署与恢复"
-
-msgid "Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the distribution's own `smoke.py` when it ships one."
-msgstr "为需要认证的推理检查设置 `GATEWAY_API_KEY`。如果发行版自带 `smoke.py`，`make smoke` 会运行它。"
-
-msgid "Copy `.ops.env.example` to `.ops.env` and uncomment the options this host needs to persist optional Compose profiles, cloud-agent networking and the pgAdmin host-port choice across commands; the copy alone changes nothing."
-msgstr "将 `.ops.env.example` 复制到 `.ops.env`，并取消注释本主机需要的选项，即可在各命令间保留可选 Compose profiles、云代理网络和 pgAdmin 主机端口选择；仅复制文件不会改变任何设置。"
-
-msgid "Model catalog, routing policy or alert rules in Admin Settings"
-msgstr "Admin Settings 中的模型目录、路由策略或告警规则"
-
-msgid "Follow the **Restart required** marker; no image rebuild is needed"
-msgstr "遵循 **Restart required** 标记；无需重新构建镜像"
-
-msgid "Site configuration or branding in Admin Settings"
-msgstr "Admin Settings 中的站点配置或品牌信息"
-
-msgid "Applies when settings refresh; no rebuild or restart"
-msgstr "设置刷新时应用；无需重新构建或重启"
-
-msgid "Application configuration"
-msgstr "应用配置"
-
-msgid "Models, routing, alert rules, site identity and branding are database settings, not runtime files. Retired `*_CONFIG_PATH` and active/dark manifest selections have no effect on this release, which warns at startup while one is set. Keep them in the deployment's env files through the rollback window anyway: Compose passes them to the backend, where a rolled-back previous release reads its files through them and the legacy import learns what that release had in force. See [Configuration](configuration.md) for the document controls and the import an existing deployment runs during its upgrade."
-msgstr "模型、路由、告警规则、站点标识和品牌信息均为数据库设置，不是运行时文件。已停用的 `*_CONFIG_PATH` 和 active/dark 清单选择对当前版本无效；只要设置了其中任何一项，当前版本就会在启动时发出警告。尽管如此，在回退窗口结束前仍要把它们保留在部署的 env 文件中：Compose 会把它们传给后端，回退后的上一版本通过它们读取自己的文件，旧版配置导入也通过它们得知上一版本实际生效的配置。文档管理以及现有部署在升级期间运行的导入，见[配置](configuration.md)。"
-
-msgid "Set rules and thresholds in the `ALERT_RULES` JSON document in Admin Settings. Leave it empty to use built-in thresholds; changes are marked Restart required. The rule types and evaluation live in `apps/backend/serving/observability/`."
-msgstr "在 Admin Settings 中通过 `ALERT_RULES` JSON 文档设置规则和阈值。留空时使用内置阈值；修改会标记为 Restart required。规则类型及求值逻辑位于 `apps/backend/serving/observability/`。"
-
-msgid "A deploy records the running artifacts, pulls the pinned pair and migrates with the new backend image. With `LEGACY_MANIFEST` set it then imports the previous release's file-based configuration with that image; see [Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database). Only then does it switch the services and run the acceptance smoke. Any failure after the switch, an interrupted command included, restores the previous images and runs the acceptance on them again; the command then exits with the deploy's own error and whether the restore passed. A rollback starts the recorded previous images without running their migrations."
-msgstr "部署会记录正在运行的镜像，拉取固定的一对镜像，并用新的后端镜像执行迁移。设置了 `LEGACY_MANIFEST` 时，它接着用该镜像导入上一版本基于文件的配置；见[数据库中的模型和路由文档](configuration.md#model-and-routing-documents-in-the-database)。之后才切换服务并执行冒烟验收。切换之后的任何失败（包括命令被中断）都会恢复上一组镜像，并对它们重新执行验收；命令随后以部署本身的错误退出，并说明恢复是否通过。回退会启动记录的上一组镜像，不运行它们的迁移。"
-
-msgid "Each deployment keeps its record in `.ops/<distribution>/` (`.ops/none/` without a distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the shell sets it): `images.env`, the images it is pinned to, and `previous.json` and `current.json`. A deploy writes them only once its release is accepted, so a failed attempt changes neither the pin nor the release a rollback returns to; a rollback pins the images it starts. While `images.env` exists, that deployment's `make up`, `make migrate` and other lifecycle commands start the pinned images instead of building the checkout, and `make build` refuses. To return to source builds, delete that `images.env` and run `make build`. No other distribution, the example included, uses the pin."
-msgstr "每个部署都把自己的记录保存在 `.ops/<distribution>/` 中（没有发行版时为 `.ops/none/`；shell 设置了 `COMPOSE_PROJECT_NAME` 时，位于以它命名的子目录中）：`images.env`（部署固定使用的镜像），以及 `previous.json` 和 `current.json`。部署只有在新版本通过验收后才写入这些文件，因此失败的尝试既不会改变固定的镜像，也不会改变回退要返回的版本；回退会固定它启动的镜像。只要 `images.env` 存在，该部署的 `make up`、`make migrate` 及其他生命周期命令都会启动固定的镜像，而不是构建检出的代码，`make build` 则会拒绝执行。要回到源码构建，删除该 `images.env` 并运行 `make build`。其他发行版（包括示例）都不会使用这个固定。"
-
-msgid "Without `BACKUP`, the dump goes to `.ops/<distribution>/gateway.dump`. It holds every stored secret: keep it private and copy it off the host. A restore check never touches the deployment's database server. It restores the dump into a throwaway PostgreSQL container of the same image, with its own volume and internal network, migrates the copy to this release, as a deploy would migrate a backup taken before the upgrade, and removes the container, volume and network afterwards. For its duration it adds a second database server's CPU and I/O, and it needs free disk where Docker keeps volumes, normally the disk of the deployment's own database: it refuses to start unless about twice the database's size plus 1 GiB is free there."
-msgstr "未指定 `BACKUP` 时，转储写入 `.ops/<distribution>/gateway.dump`。它包含所有已保存的秘密：请妥善保管，并复制到主机之外。恢复检查绝不会触碰部署的数据库服务器。它把转储恢复到一个使用相同镜像的一次性 PostgreSQL 容器中，该容器有自己的卷和内部网络；然后把副本迁移到当前版本（就像部署会迁移升级前的备份那样），最后删除容器、卷和网络。检查期间会额外占用第二个数据库服务器的 CPU 和 I/O，并需要 Docker 存放卷的磁盘上有空闲空间（通常就是部署自身数据库所在的磁盘）：除非那里约有数据库大小两倍再加 1 GiB 的空闲空间，否则它会拒绝启动。"
-
-#: ../developer/deployment.md:830
-msgid ""
-"Requiring two-factor authentication of administrators"
-msgstr ""
-"要求管理员使用双重验证"
-
-#: ../developer/deployment.md:832
-msgid ""
-"An account can add an authenticator app (any that reads a standard TOTP QR code: Duo Mobile, Google Authenticator, 1Password) and from then on confirms with a six-digit code instead of its password before a change that outlasts its session: raising a role, minting a key for another account, exporting secret values, changing who may use a model."
-msgstr ""
-"账号可以添加一个验证器应用（任何能读取标准 TOTP 二维码的应用都可以：Duo Mobile、Google Authenticator、1Password）。添加之后，在做出比会话存续更久的更改之前，它用六位验证码而不是密码来确认：提升角色、为其他账号创建密钥、导出密钥值、更改谁可以使用某个模型。"
-
-#: ../developer/deployment.md:838
-msgid ""
-"`ADMIN_TWO_FACTOR_REQUIRED=true` in `.env` makes it a condition of administrator access. It is off by default, and read from the environment only, so a session that holds administrator access cannot switch it off. With it on:"
-msgstr ""
-"在 `.env` 中设置 `ADMIN_TWO_FACTOR_REQUIRED=true`，就把它变成获得管理员权限的条件。它默认关闭，并且只从环境变量读取，所以持有管理员权限的会话无法把它关掉。开启之后："
-
-#: ../developer/deployment.md:843
-msgid ""
-"a console session reaches the Admin API only after giving a code from the account's authenticator, and is asked again when it turns up in a different kind of client (a browser's session presented by a script, for example);"
-msgstr ""
-"控制台会话只有在给出账号验证器上的验证码之后才能访问 Admin API；当它出现在另一类客户端中时（例如浏览器的会话被脚本拿去使用），会被再次要求验证；"
-
-#: ../developer/deployment.md:846
-msgid ""
-"an administrator who has no authenticator yet has no administrator access until they add one;"
-msgstr ""
-"还没有验证器的管理员在添加之前没有管理员权限；"
-
-#: ../developer/deployment.md:848
-msgid ""
-"an account is given the `admin` role only once it has an authenticator;"
-msgstr ""
-"账号只有在已有验证器之后才能被授予 `admin` 角色；"
-
-#: ../developer/deployment.md:849
-msgid ""
-"`ADMIN_TOKEN` is answered for reads only. Move any automation that writes with the token before turning this on."
-msgstr ""
-"`ADMIN_TOKEN` 只能用于读取。开启之前，请先迁移所有用该令牌写入的自动化。"
-
-#: ../developer/deployment.md:852
-msgid ""
-"In the console:"
-msgstr ""
-"在控制台中："
-
-#: ../developer/deployment.md:854
-msgid ""
-"**Settings → Two-Factor Authentication** adds the authenticator: the account's password, a QR code to scan, the first code, then ten recovery codes that are shown once. Administrators see the section. An account that is about to be made an administrator opens it at `/dashboard/settings#two-factor`."
-msgstr ""
-"**设置 → 两步验证** 用来添加验证器：输入账号密码，扫描二维码，输入第一个验证码，然后得到十个只显示一次的恢复码。管理员可以直接看到这一栏。即将被设为管理员的账号通过 `/dashboard/settings#two-factor` 打开它。"
-
-#: ../developer/deployment.md:859
-msgid ""
-"**Admin** asks a session that owes a code before it opens, and a dialog asks again when a change needs a more recent one."
-msgstr ""
-"**Admin** 在打开之前会向还没给过验证码的会话要验证码；当某项更改需要更新的验证码时，会弹出对话框再次询问。"
-
-#: ../developer/deployment.md:861
-msgid ""
-"**Admin → Users** shows in an account's details whether it has an authenticator (`Two-factor: on`), and removes one for someone who lost the device."
-msgstr ""
-"**Admin → Users** 在账号详情中显示它是否有验证器（`Two-factor: on`），并可以为丢失设备的人移除验证器。"
-
-#: ../developer/deployment.md:865
-msgid ""
-"Turn it on after the administrators have enrolled, not before: until an administrator account has an authenticator, someone who has its password can add their own."
-msgstr ""
-"请在管理员都完成绑定之后再开启，而不是之前：在管理员账号有验证器之前，拿到其密码的人可以添加自己的验证器。"
-
-#: ../developer/deployment.md:857
-msgid ""
-"An administrator who loses the device and the recovery codes cannot reach the Admin API. Another administrator removes the lost authenticator in **Admin → Users** (`POST /admin/users/{user_id}/two-factor/reset`). If there is no other administrator, remove it in the database and let the account add a new one with its password:"
-msgstr ""
-"同时丢失设备和恢复码的管理员无法访问 Admin API。其他管理员可以在 **Admin → Users** 中移除丢失的验证器（`POST /admin/users/{user_id}/two-factor/reset`）。如果没有其他管理员，请在数据库中移除它，再让该账号用密码添加一个新的："
-
-#: ../developer/deployment.md:866
-msgid ""
-"`TWO_FACTOR_STEP_UP_MINUTES` (default 10) is how long a code keeps confirming those changes before the console asks for a new one."
-msgstr ""
-"`TWO_FACTOR_STEP_UP_MINUTES`（默认 10）是一个验证码能持续确认这些更改的时长，之后控制台会要求新的验证码。"
-
-#: ../developer/deployment.md
-msgid "Handing traffic to a new gateway process"
-msgstr "把流量交给新的网关进程"
-
-#: ../developer/deployment.md
-msgid "A release that runs the new gateway process beside the old one can stop the old one without cutting a request short or losing a request-log row or a cost. The release asks the old process, while it is still alive, whether anything is left, and stops it only once nothing is and every cost and row it recorded is confirmed written. It never decides by waiting a fixed time. Stopping a process with a signal is unchanged: open requests get five seconds and are then cancelled. A process sealed first has none open."
-msgstr "发布时如果让新网关进程与旧进程并存，就可以在不切断任何请求、不丢任何请求日志或费用的前提下停掉旧进程。发布流程趁旧进程还活着时问它还有没有没做完的事，确认什么都没有了、它记下的每笔费用和每行日志都已确认写入，才停它，从不靠固定等待时间来判断。用信号停进程的行为不变：进行中的请求有五秒，之后被取消。先封口的进程这时已经没有进行中的请求。"
-
-#: ../developer/deployment.md
-msgid "The routes are off until the process has `HANDOFF_TOKEN` in its environment, a random value of at least 32 characters. Without it they answer 404. They are under `/internal/handoff`, which no public path list includes, so neither the console nor an entry forwards them. The release calls each process at its own address with `Authorization: Bearer <HANDOFF_TOKEN>`. This token is separate from the administrator token, which is read-only for changes wherever administrators need a second factor."
-msgstr "进程环境里有 `HANDOFF_TOKEN`（至少 32 个字符的随机值）之后这些接口才开启，否则一律返回 404。它们位于 `/internal/handoff` 下，任何公开路径清单都不包含它，控制台和入口都不会转发。发布流程用各进程自己的地址调用，带上 `Authorization: Bearer <HANDOFF_TOKEN>`。这个令牌与管理员令牌分开：要求管理员第二重验证的部署里，管理员令牌对修改操作是只读的。"
-
-#: ../developer/deployment.md
-msgid "Call"
-msgstr "调用"
-
-#: ../developer/deployment.md
-msgid "What it does"
-msgstr "作用"
-
-#: ../developer/deployment.md
-msgid "`GET /internal/handoff`"
-msgstr "`GET /internal/handoff`"
-
-#: ../developer/deployment.md
-msgid "The state (`serving`, `draining` or `sealed`), everything still under way, `blocking` (why a seal would fail now) and `idle`"
-msgstr "状态（`serving`、`draining` 或 `sealed`）、所有仍在进行的事、`blocking`（此刻封口会失败的原因）和 `idle`"
-
-#: ../developer/deployment.md
-msgid "`POST /internal/handoff/drain`"
-msgstr "`POST /internal/handoff/drain`"
-
-#: ../developer/deployment.md
-msgid "Begins draining"
-msgstr "开始排空"
-
-#: ../developer/deployment.md
-msgid "`POST /internal/handoff/seal`"
-msgstr "`POST /internal/handoff/seal`"
-
-#: ../developer/deployment.md
-msgid "Seals if nothing is left (200); otherwise answers 409 with `blocking`, and the process keeps draining"
-msgstr "什么都不剩时封口（200）；否则返回 409 并附 `blocking`，进程继续排空"
-
-#: ../developer/deployment.md
-msgid "`POST /internal/handoff/resume`"
-msgstr "`POST /internal/handoff/resume`"
-
-#: ../developer/deployment.md
-msgid "Serves normally again, from draining or sealed. This is how a release is abandoned"
-msgstr "从排空或封口回到正常服务。放弃一次发布就用它"
-
-#: ../developer/deployment.md
-msgid "A release runs in this order:"
-msgstr "发布按这个顺序进行："
-
-#: ../developer/deployment.md
-msgid "Start the new process and accept it: `/health/ready` answers 200 and it serves the acceptance requests."
-msgstr "启动新进程并验收：`/health/ready` 返回 200，并且能处理验收请求。"
-
-#: ../developer/deployment.md
-msgid "Take the old process out of the entry's rotation (E9)."
-msgstr "把旧进程从入口的分配中摘掉（E9）。"
-
-#: ../developer/deployment.md
-msgid "Drain the old process."
-msgstr "让旧进程开始排空。"
-
-#: ../developer/deployment.md
-msgid "Call seal until it answers 200. Poll as often as you like: the calls and the platform's probes are counted apart and never hold a drain open."
-msgstr "反复调用封口，直到返回 200。轮询多频繁都可以：这些调用和平台的探活单独计数，从不拖住排空。"
-
-#: ../developer/deployment.md
-msgid "Stop the old process."
-msgstr "停止旧进程。"
-
-#: ../developer/deployment.md
-msgid "If the seal does not succeed within the time your deployment expects, keep the old process and record the release as unfinished. The longest a request may run is `STREAM_REQUEST_TIMEOUT_SECONDS`, an hour by default. Do not stop the process: `blocking` says what it is waiting for. To abandon the release instead, resume the old process and take the new one away."
-msgstr "如果封口在部署预期的时间内没有成功，保留旧进程，并把这次发布记为未完成。一个请求最长可以运行 `STREAM_REQUEST_TIMEOUT_SECONDS`，默认一小时。不要停进程：`blocking` 说明它在等什么。要放弃这次发布，就让旧进程恢复服务，并撤下新进程。"
-
-#: ../developer/deployment.md
-msgid "While a process drains, it still serves every request that reaches it:"
-msgstr "排空期间，进程照常处理到达它的每一个请求："
-
-#: ../developer/deployment.md
-msgid "`/health/ready` answers 503 with `\"reason\": \"draining\"`. `/health` stays 200."
-msgstr "`/health/ready` 返回 503，`\"reason\": \"draining\"`。`/health` 仍返回 200。"
-
-#: ../developer/deployment.md
-msgid "Every response carries `Connection: close`. A client or entry holding a kept-alive connection then opens its next request elsewhere."
-msgstr "每个响应都带 `Connection: close`。持有长连接的客户端或入口会在别处发起下一个请求。"
-
-#: ../developer/deployment.md
-msgid "A connection with no request in progress is closed after five seconds, uvicorn's keep-alive limit, even one that was opened and never used. A connection with a request in progress keeps the normal idle limit (`HTTP_IDLE_TIMEOUT_SECONDS`), as it would without a drain: a stream that keeps sending is never cut, and one where nothing moves for that long is closed. If a request begins on a connection after its five seconds started, the normal limit applies instead, counted from its last byte."
-msgstr "没有进行中请求的连接在五秒后关闭（uvicorn 的长连接空闲上限），打开后从未用过的连接也一样。有进行中请求的连接保持正常的空闲上限（`HTTP_IDLE_TIMEOUT_SECONDS`），和不排空时一样：持续发送数据的流不会被切断，而这么久没有任何数据往来的连接会被关闭。如果五秒已经开始计时后连接上才开始一个请求，改用正常上限，从它最后一个字节算起。"
-
-#: ../developer/deployment.md
-msgid "It claims no new batch items and starts no validation, sealing, webhook delivery or sweep; the other process does them. Items it runs go on, and it keeps their leases."
-msgstr "不再领取新的批处理条目，也不启动校验、封装、webhook 投递或清理，这些由另一个进程做。已在运行的条目继续执行，租约照常续期。"
-
-#: ../developer/deployment.md
-msgid "It runs no scheduled job. The alert checks and rollups run in the other process, and the alerts are not sent twice. A job already running goes on."
-msgstr "不运行定时任务。告警检查和汇总在另一个进程里运行，告警不会发两次。已在运行的任务继续执行完。"
-
-#: ../developer/deployment.md
-msgid "A seal succeeds only when none of these is left. Each appears in `blocking` under its own name:"
-msgstr "只有下面这些都不剩时封口才会成功。每一项在 `blocking` 里有自己的名字："
-
-#: ../developer/deployment.md
-msgid "`blocking`"
-msgstr "`blocking`"
-
-#: ../developer/deployment.md
-msgid "What is left"
-msgstr "还剩什么"
-
-#: ../developer/deployment.md
-msgid "`requests_in_flight`"
-msgstr "`requests_in_flight`"
-
-#: ../developer/deployment.md
-msgid "A request in progress, streams included. A request lasts until its response, its clean-up and its stream's close are over"
-msgstr "进行中的请求，包括流式请求。一个请求直到响应、收尾和流的关闭都结束才算结束"
-
-#: ../developer/deployment.md
-msgid "`connections_open`"
-msgstr "`connections_open`"
-
-#: ../developer/deployment.md
-msgid "An open client connection other than the ones carrying the release's calls or a probe. A request could still arrive on it"
-msgstr "除了正在承载发布调用或探活的连接以外，还开着的客户端连接。请求仍可能从它进来"
-
-#: ../developer/deployment.md
-msgid "`background_writes`"
-msgstr "`background_writes`"
-
-#: ../developer/deployment.md
-msgid "Work a request left behind: a cost increment, a refused request's log row, an interrupted Responses object being saved, an alert being sent"
-msgstr "请求留下的后续工作：费用写入、被拒请求的日志行、被中断的 Responses 对象的保存、正在发送的告警"
-
-#: ../developer/deployment.md
-msgid "`request_log_unwritten`"
-msgstr "`request_log_unwritten`"
-
-#: ../developer/deployment.md
-msgid "Request-log rows queued or being written"
-msgstr "排队或正在写入的请求日志行"
-
-#: ../developer/deployment.md
-msgid "`batch_work_running`"
-msgstr "`batch_work_running`"
-
-#: ../developer/deployment.md
-msgid "A batch item, or a batch validation, sealing, delivery or sweep, still running here. An item lasts until its task ends, so one already handed back still counts while its batch is being failed or its owner paused"
-msgstr "本进程里仍在运行的批处理条目，或批处理的校验、封装、投递、清理。条目要等它的任务结束才算完成：已经归还的条目，在它的批次还在写失败状态、或它的用户还在被暂停时，仍然计入"
-
-#: ../developer/deployment.md
-msgid "`scheduled_jobs_running`"
-msgstr "`scheduled_jobs_running`"
-
-#: ../developer/deployment.md
-msgid "A scheduled job or a broadcast still sending"
-msgstr "仍在运行的定时任务或仍在发送的群发邮件"
-
-#: ../developer/deployment.md
-msgid "`spend_unwritten`"
-msgstr "`spend_unwritten`"
-
-#: ../developer/deployment.md
-msgid "A cost not yet added to the counters, or in the shared spend mode a reservation not yet settled"
-msgstr "还没写进计数表的费用；共享额度模式下是还没结算的预留"
-
-#: ../developer/deployment.md
-msgid "An empty `blocking` means more than \"nothing is running\". It also means that every cost this process recorded is confirmed in the counters and every request-log row it took was written. Each ledger in `spend` says so in `confirmed`, with what is not confirmed in `unconfirmed_requests` and `unconfirmed_usd` (or `unconfirmed_reservations` and `unconfirmed_increments` in the shared spend mode). A request that cost nothing was never recorded, so it never blocks. Nothing here changes what is charged."
-msgstr "`blocking` 为空不只表示“没有正在执行的事”，还表示这个进程记下的每笔费用都已在计数表中确认，接手的每行请求日志都已写入。`spend` 里每个账本用 `confirmed` 说明这一点，未确认的部分见 `unconfirmed_requests` 和 `unconfirmed_usd`（共享模式下是 `unconfirmed_reservations` 和 `unconfirmed_increments`）。不产生费用的请求从未被记录，因此永远不会阻止封口。这里的一切都不改变收费规则。"
-
-#: ../developer/deployment.md
-msgid "The check and the switch to `sealed` are one step, so no request can start between them. From then on a request is refused with 503 and the code `instance_sealed` before anything is done for it, so it has no upstream call and no cost. It is counted in `requests.refused_after_seal`. A release that saw any did not hand over cleanly: the entry was still sending to the old process."
-msgstr "检查和切换到 `sealed` 是同一步，中间不会有请求开始。此后到达的请求在做任何事之前就被拒绝，返回 503 和代码 `instance_sealed`，不会有上游调用，也不产生费用，并计入 `requests.refused_after_seal`。只要出现过一个，这次发布就不算干净交接：入口仍在向旧进程发请求。"
-
-#: ../developer/deployment.md
-msgid "At its stop, the process logs the state it was in and the requests still in flight (event `handoff_state_at_shutdown`). A sealed process stops at once."
-msgstr "进程停止时会记录它当时的状态和仍在进行的请求（事件 `handoff_state_at_shutdown`）。已封口的进程会立即停止。"
-
-#: ../developer/deployment.md
-msgid "A handoff drains one process. With several worker processes behind one port, a call reaches whichever worker accepts it, so drain and seal answer 409 there, and under gunicorn, whose workers the process cannot count. Run one uvicorn worker per instance."
-msgstr "一次交接排空一个进程。一个端口后面有多个工作进程时，调用会落到随便哪个接受它的进程上，所以排空和封口在那里返回 409；在 gunicorn 下也一样，因为进程数不清它的工作进程。每个实例只运行一个 uvicorn 工作进程。"
-
-#: ../developer/deployment.md
-msgid "What a handoff does not cover: while the two processes run side by side, each still enforces per-user concurrency, login rate limits and authentication blocks on its own. A user can have up to twice their concurrent requests in flight until the old process's requests end. Budgets are shared between the two processes only in the shared spend mode, and that mode is switched on with every process stopped, not during a handoff."
-msgstr "交接不覆盖的：两个进程并存期间，每用户并发、登录限流和鉴权失败封禁仍由各进程自己执行。在旧进程的请求结束之前，一个用户最多可以有两倍于上限的并发请求。只有在共享额度模式下，两个进程才共用额度；而这个模式要在所有进程都停止时开启，不能在交接中开启。"
-
-#: ../developer/deployment.md
-msgid "Three reasons never clear by waiting: `spend_unconfirmed`, `request_log_lost` and `stream_close_abandoned`. A process that reports any of them keeps draining for as long as it lives. Keep it, record the release as unfinished with what the status reports, and reconcile before stopping it. There is no way to force a seal, and clearing the records does not count as reconciling."
-msgstr "有三种原因等待也不会消失：`spend_unconfirmed`、`request_log_lost` 和 `stream_close_abandoned`。报告其中任何一种的进程会一直处于排空状态，直到它退出。保留这个进程，把发布记为未完成并附上状态报告的内容，对完账后再停它。没有强制封口的办法，清空记录也不算对账。"
-
-#: ../developer/deployment.md
-msgid "`request_log_lost`"
-msgstr "`request_log_lost`"
-
-#: ../developer/deployment.md
-msgid "A request-log row dropped by a full queue or whose write failed, or a refused request's row that could not be written, since the process started. It is never written, and this never clears"
-msgstr "进程启动以来，因队列满被丢弃或写入失败的请求日志行，或没能写入的被拒请求日志行。它不会再被写入，这一项也永远不会消失"
-
-#: ../developer/deployment.md
-msgid "`stream_close_abandoned`"
-msgstr "`stream_close_abandoned`"
-
-#: ../developer/deployment.md
-msgid "A stream whose close, or the close of the upstream stream inside it, took more than ten seconds and was cut short. What it still had to bill or log is not known to be done, and this never clears"
-msgstr "自身或其内部上游流的收尾超过十秒而被中断的流。它原本还要做的计费或写日志无法确认已完成，这一项永远不会消失"
-
-#: ../developer/deployment.md
-msgid "`spend_unconfirmed`"
-msgstr "`spend_unconfirmed`"
-
-#: ../developer/deployment.md
-msgid "A cost not confirmed in the counters that waiting will not confirm: a cost the counters refused, a cost write whose outcome is unknown, or in the shared spend mode a quarantined or unaccounted reservation or a refused increment. This never clears while the process lives"
-msgstr "尚未在计数表中确认、且等待也无法确认的费用：计数表拒收的费用、结果未知的费用写入，或共享模式下被隔离（quarantined）或无法核对（unaccounted）的预留以及被拒收的增量。只要进程还活着，这一项就不会消失"
-
-#: ../developer/deployment.md
-msgid "Anyone may call `/health` and `/health/ready`, and anyone is answered with the status code and `status` alone:"
-msgstr "任何人都可以调用 `/health` 和 `/health/ready`，并且只会得到状态码和 `status`："
-
-#: ../developer/deployment.md
-msgid "The status codes are what probes and monitors read, and they are the same for every caller. An administrator's credential, a console token or `ADMIN_TOKEN`, also shows the reason, the process's `instance`, the route count and how each store is doing:"
-msgstr "探针和监控读取的是状态码，对所有调用方都一样。管理员凭据（控制台令牌或 `ADMIN_TOKEN`）还会看到原因、进程的 `instance`、路由数量以及各存储的状态："

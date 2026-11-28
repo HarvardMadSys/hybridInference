@@ -5,38 +5,39 @@ description: Implement features or enhancements in HybridInference, verify the b
 
 # Implement Feature
 
-Read the repository's `AGENTS.md` and applicable subsystem guides first. They
-own branch/worktree conventions and quality gates; this skill adds the feature
-workflow.
+Read `AGENTS.md` and any applicable subsystem guide first; they own the branch,
+worktree and quality-gate rules, and this skill adds the feature workflow.
 
 ## Prepare and implement
 
-- Inspect the working tree and existing worktrees. Reuse a suitable task worktree;
-  otherwise fetch the upstream `dev` and create a feature branch in a worktree
-  following `AGENTS.md`. Do not pull `dev` into an unrelated current branch.
-- Read neighboring code and any design record that `AGENTS.md` or the subsystem
-  guide names for the area.
-  Explain the intended behavior, affected components and verification approach.
-  Proceed within the user's authorized scope; clarify only unresolved decisions
-  that materially change the result.
-- Implement the requested behavior using existing abstractions. Keep unrelated
-  refactors and new dependencies out unless the task needs them. Delegate only
-  when useful and permitted; parallel agents are not a prerequisite.
-- Add tests for meaningful behavior and failure cases. For runtime changes,
-  exercise the affected behavior against a running local/example or authorized
-  staging deployment; a generic health check alone is insufficient.
+- Inspect the working tree and existing worktrees. Reuse a suitable task
+  worktree, or fetch the upstream `dev` and create a feature branch in a
+  worktree as `AGENTS.md` describes. Never pull `dev` into an unrelated current
+  branch.
+- Read the neighboring code and any design record that `AGENTS.md` or the
+  subsystem guide names for the area. State the intended behavior, affected
+  components and how you will verify them. Proceed within the user's authorized
+  scope; ask only about open decisions that would materially change the result.
+- Implement with the existing abstractions. Leave out unrelated refactors and
+  new dependencies the task does not need. Delegate only when useful and
+  permitted; parallel agents are not required.
+- Add tests for meaningful behavior and failure cases. Exercise runtime changes
+  against a running local, example or authorized staging deployment; a generic
+  health check alone is not enough.
 
 ## Review and deliver
 
-- Review both the committed diff against the base branch and uncommitted changes.
-  Check correctness, compatibility, concurrency, security and relevant subsystem
-  invariants. Inspect `git diff` again after formatting to exclude unrelated edits.
-- Run the gates in `AGENTS.md` and
-  `docs/developer/contributing.md`, including frontend or database checks when
-  relevant. Report exact results and any verification that remains unavailable.
-- When asked to submit a PR, commit only intended paths, push the task branch and
-  target `dev`. Write a description of the final behavior and validation to a
-  file, then use `gh pr create --base dev --title "..." --body-file <file>`.
-- If PR follow-up is requested, use the sibling `check-pr` skill when available.
-  Report the PR URL and remaining checks. Creating a PR does not authorize a
-  merge, deployment, recurring monitor or worktree deletion.
+- Review the committed diff against the base branch and any uncommitted
+  changes for correctness, compatibility, concurrency, security and the
+  subsystem's invariants. Inspect `git diff` again after formatting to catch
+  unrelated edits.
+- Run the gates in `AGENTS.md` and `docs/developer/contributing.md`, including
+  frontend or database checks when relevant. Report exact results and any
+  verification you could not run.
+- When asked to submit a PR, commit only the intended paths, push the task
+  branch and target `dev`. Write the description of the final behavior and its
+  validation to a file, then run
+  `gh pr create --base dev --title "..." --body-file <file>`.
+- For PR follow-up the user asks for, use the sibling `check-pr` skill, and
+  report the PR URL and remaining checks. Creating a PR does not authorize a
+  merge, a deployment, a recurring monitor or deleting the worktree.

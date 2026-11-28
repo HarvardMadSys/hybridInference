@@ -1,97 +1,14 @@
 # Adding a New Local Model
 
-This guide explains how to register a self-hosted model behind the
-HybridInference gateway. Use it when the model is already served by a local
-OpenAI-compatible server such as vLLM, SGLang, Ollama, or your own
-`/v1/chat/completions` service.
+Use this guide for a model served by an OpenAI-compatible server you run:
+vLLM, SGLang, Ollama or your own `/v1/chat/completions` service. The gateway
+sends chat requests to `/v1/chat/completions`, and embedding requests to
+`/v1/embeddings` for a model with `model_type: embedding`. For hosted
+providers, see [Adding a New Model](adding-models.md).
 
-For remote providers or custom adapters, see
-[Adding a New Model](adding-models.md).
+## Step 1: Start the local model server
 
-## Overview
-
-Adding a local model has three parts:
-
-1. Start the local inference server.
-2. Create a model and verified route in Admin Routing that points at that server.
-3. Grant the intended users access and verify through the public `/v1` API.
-
-The local server must expose OpenAI-compatible endpoints. The gateway forwards
-chat requests to `/v1/chat/completions`, and embedding requests to
-`/v1/embeddings` when the model is registered with `model_type: embedding`.
-
-Below, "your model registry" means the database model catalog in Admin;
-[Where your model registry lives](adding-models.md#where-your-model-registry-lives)
-explains which one that is.
-
-## Private Server (No Public Internet)
-
-If your model runs on a different machine that is not exposed to the public
-internet, keep it private and let the gateway reach it over a trusted network
-path.
-
-Point the route at the private address:
-
-```json
-{
-  "route": [
-    {
-      "kind": "openai_compat",
-      "weight": 1.0,
-      "base_url": "http://10.0.12.34:8000/v1",
-      "deployment_type": "self_hosted",
-      "provider_model_id": "your-served-model-name"
-    }
-  ]
-}
-```
-
-`deployment_type: self_hosted` tells the gateway this route reaches an engine
-you operate, even though its address is on another machine. It bypasses the
-provider-key concurrency limit and makes streaming requests eligible for a
-configured [engine queue limit](routing.md#engine-queue-limit). It does not
-enable queue offload by itself. Keep the reachable private address: `localhost`
-inside a gateway container refers to that container, not the model server.
-
-The Admin Routing tab can change the deployment type of an existing route while
-keeping its provider and target URL, or set it when you create or repoint a
-route. Choosing **Self-hosted engine** does not waive the Base URL checks for a
-new or changed target.
-
-A choice made in Admin belongs to that endpoint. Changing the Base URL or
-provider resets the deployment type to **Auto** unless you choose again, and
-editing other fields leaves an undeclared route following the model registry.
-If a saved Admin override cannot be applied at startup, for example because its
-saved target no longer passes the Base URL checks, the route is marked
-**Override not applied** and the list shows the registry endpoint that is
-serving. Edit the route or reset its config to clear it.
-
-Or forward the port to the gateway host with an SSH reverse tunnel:
-
-```bash
-# Run this on the INTERNAL model host
-ssh -N -R 8001:127.0.0.1:8000 <user>@<gateway-host>
-```
-
-Then the route target is a loopback address on the gateway host:
-
-```json
-{
-  "base_url": "http://127.0.0.1:8001/v1"
-}
-```
-
-For reverse-tunnel setups, verify from the gateway host before changing any
-gateway config:
-
-```bash
-curl http://127.0.0.1:8001/v1/models | jq
-```
-
-## Step 1: Start the Local Model Server
-
-Start the model with your preferred serving runtime. The rest of this guide
-registers the server as `kind: sglang`, so the example starts one:
+This guide registers the server as `kind: sglang`:
 
 ```bash
 python -m sglang.launch_server \
@@ -101,13 +18,12 @@ python -m sglang.launch_server \
   --served-model-name my-local-model
 ```
 
-vLLM and Ollama work the same way —
-`vllm serve <hf-org>/<hf-model> --port 8007 --served-model-name my-local-model`
-is the equivalent command. All three dispatch to the same `OpenAICompatAdapter`;
-the `kind` you register selects the metrics label and the provider profile, so
-use the one that matches the runtime you actually started.
+For vLLM, run
+`vllm serve <hf-org>/<hf-model> --port 8007 --served-model-name my-local-model`.
+All local kinds use `OpenAICompatAdapter`; the `kind` sets the dashboard label
+and provider profile, so pick the one that matches the runtime you started.
 
-Check that the local server responds before touching the gateway config:
+Check the server before registering it. Local servers usually need no API key:
 
 ```bash
 curl http://localhost:8007/v1/models | jq
@@ -120,18 +36,18 @@ curl -s -X POST http://localhost:8007/v1/chat/completions \
   }' | jq
 ```
 
-Local inference servers usually do not require an API key, which is why these
-two calls carry no `Authorization` header. The gateway's own API does — see
-[Step 5](#step-5-verify-through-the-gateway).
+A gateway in Docker reaches the host at `http://host.docker.internal:<port>`;
+a gateway running directly on the host uses `http://localhost:<port>`. For a
+server on another machine, see
+[A server on another machine](#a-server-on-another-machine).
 
-If the gateway runs in Docker, use `http://host.docker.internal:<port>` in your
-registry so the container can reach the host. If it runs directly on the host,
-`http://localhost:<port>` is fine.
+## Step 2: Register the model
 
-## Step 2: Add the Model to Your Registry
-
-Add a new entry under `models:`. Keep the public `id` short and stable, because
-clients send it in the `model` field.
+Create the model in **Admin → Routing → Create model** with a route to the
+server; it applies at once. For aliases or other metadata, add an entry to the
+`models` list of the model catalog (see
+[Where your model registry lives](adding-models.md#where-your-model-registry-lives))
+and run `make restart s=backend` when Admin marks it **Restart required**:
 
 ```json
 [
@@ -184,38 +100,28 @@ clients send it in the `model` field.
 ]
 ```
 
-Use these fields carefully:
+For a local server, check these fields:
 
-- `id`: Public model ID returned by `/v1/models` and used by clients.
-- `provider`: Top-level provider label for metadata, and the default
-  `route[].kind` when no `route:` list is given. For local OpenAI-compatible
-  servers, use `vllm`, `sglang`, `ollama`, or `openai_compat`.
-- `route[].kind`: Adapter kind used by the gateway. Local OpenAI-compatible
-  services can use `vllm`, `sglang`, `ollama`, or `openai_compat`.
-- `base_url`: The local server root. It may include `/v1`, but does not have to.
-- `provider_model_id`: Model name sent to the local server. It must match the
-  serving runtime's model name (vLLM's `--served-model-name`, the Ollama tag,
-  and so on).
-- `aliases`: Optional extra public names that resolve to the same gateway model.
-  They must not collide with another model's `id` or aliases — a duplicate
-  resolves to whichever model loads last, and the backend logs a warning.
-- `supported_params`: Only include parameters the local runtime accepts.
-- `route[].provider`: Optional analytics label override — see
-  [Naming a Route in the Dashboard](#naming-a-route-in-the-dashboard).
-- `route[].provider_display_name`: Optional human-readable name for that label.
+- `id`: the name clients send as `model`. Keep it short and stable.
+- `route[].kind`: `vllm`, `sglang`, `ollama` or `openai_compat`.
+- `base_url`: the server root, with or without `/v1`; the adapter appends
+  `/chat/completions`.
+- `provider_model_id`: the name the runtime serves (`--served-model-name`, the
+  Ollama tag).
+- `supported_params`, `supports_tools`, `supports_structured_output`: only what
+  the runtime supports.
+- `aliases`: must not collide with another model's `id` or aliases.
 
-The full field reference, including everything a route entry accepts, is in
-[Adding a New Model](adding-models.md#configuration-reference).
+Every field is in the
+[Configuration Reference](adding-models.md#configuration-reference).
 
-### Naming a Route in the Dashboard
+### Naming a route in the dashboard
 
-By default a route reports its `kind` as the provider label, and that label is
-what `api_logs.provider` records and what every provider-scoped admin view
-groups on: Token Usage, Provider Performance, Provider Observability, the
-provider disable switch, and the provider registry. Two local boxes both served
-by `kind: vllm` therefore land in one row and cannot be compared.
-
-Give each route its own label to split them, and optionally a display name:
+A route's dashboard label defaults to its `kind`. Every provider-scoped admin
+view (Token Usage, Provider Performance, Provider Observability, the provider
+disable switch and the provider registry) groups on that label, which
+`api_logs.provider` records. Two boxes both served as `kind: vllm` therefore
+share one row. Give each route its own label, and optionally a display name:
 
 ```json
 {
@@ -240,45 +146,31 @@ Give each route its own label to split them, and optionally a display name:
 }
 ```
 
-The dashboard then shows `Local box A · local-a` and `Local box B · local-b` as
-separate providers, each with its own error rate, cache-hit rate, token totals,
-and enable/disable switch.
+The dashboard then shows `Local box A · local-a` and `Local box B · local-b`
+as separate providers, each with its own metrics and enable switch. Only the
+label changes. The adapter, the server and the
+[`endpoint_id`](glossary.md#routes-and-providers) (with its circuit breaker,
+latency history and weight overrides) stay the same, and API keys stay pooled
+under the kind, so one `LOCAL_API_KEY` serves both boxes.
 
-Only the label changes. The route still uses the adapter its `kind` selects
-and the server its `base_url` names. Its
-[`endpoint_id`](glossary.md#routes-and-providers) — and with it the circuit
-breaker, latency history and weight overrides — stays the same, and API keys
-stay pooled under the kind, so one `LOCAL_API_KEY` continues to serve both
-boxes.
+- A label is lowercase letters, digits, `-` or `_`, at most 64 characters, and
+  may not reuse a built-in provider's name (`vllm`, `zai`, `openrouter`, …),
+  which would merge its traffic into that provider's reporting and disable
+  switch. Admin refuses such a catalog. A stored one registers no catalog
+  model, and the backend logs
+  `The model catalog (MODEL_CATALOG in Admin > Providers > Models) was not registered: …`.
+- `provider_display_name` alone renames a provider without splitting it.
+- If a custom provider created in the Providers tab already uses the label, it
+  keeps its keys and target and the backend logs the clash as an error at
+  startup. Rename the label.
+- Rows already written keep their old label until they age out of
+  `provider_hourly_stats` after 30 days, so charts show both labels for a while.
 
-Rules and caveats:
+## Step 3: Add a remote fallback (optional)
 
-- The label must be lowercase letters, numbers, dashes, or underscores (max 64
-  characters), and may not borrow a built-in provider's name (`vllm`, `zai`,
-  `openrouter`, …). Reusing one would fold this route's traffic into that
-  provider's quota reporting and disable switch. A malformed or reserved label
-  stops the registry from loading at that model, so the backend comes up with
-  only the models before it rather than silently mislabelling traffic. Look for
-  `Failed to load the Admin model catalog` in the log; it is written at `WARNING`, not
-  `ERROR`.
-- `provider_display_name` works on its own too, if you want to rename a provider
-  in the dashboard without splitting it.
-- A label reserves its slug against custom providers created in the Providers
-  tab. If a custom provider with that slug already exists, the custom provider
-  keeps its keys and route target and the clash is logged as an error at
-  startup — rename the label, since otherwise both report under one provider.
-- Renaming does not rewrite history. Rows already written under the old label
-  keep it, so both labels appear until the old data ages out of
-  `provider_hourly_stats` (purged at 30 days) — expect a gap in the new label's
-  charts right after the rename.
-- Per-model route weight overrides key on `endpoint_id`, not the label, so a
-  rename leaves them intact.
-
-## Step 3: Add Optional Remote Fallbacks
-
-For automatic fallback, add another route. The fallback is only tried if its
-weight is above `0`; a small weight such as `0.01` makes it a fallback that
-almost never takes a request first:
+Add a second route with a small weight. With `0.01`, the fallback takes about
+one request in a hundred first, plus every request that fails on the local
+server. A route with weight `0` is never used, not even as a fallback.
 
 ```json
 {
@@ -308,44 +200,20 @@ almost never takes a request first:
 }
 ```
 
-With these weights about one request in a hundred goes to OpenRouter first, and
-a request that fails on the local server is retried there. A route with weight `0`
-stays configured but is never used, not even as a fallback.
-`config/examples/models.openrouter.json` ships a working local-first entry
+`config/examples/models.openrouter.json` has a working local-first entry
 built this way.
 
-## Step 4: Restart the Gateway
+## Step 4: Verify through the gateway
 
-Create the model and route in Admin Routing for an online update. If you edited the model catalog document instead, follow its Restart required marker. With the bundled Docker Compose
-setup:
-
-```bash
-make restart s=backend
-```
-
-For local development without Docker, start it directly:
-
-```bash
-PYTHONPATH=apps/backend \
-  uv run uvicorn serving.servers.app:app --no-proxy-headers --port 8080
-```
-
-Admin Routing shows the effective routes. For catalog changes, check that the
-restart marker clears after restarting the backend.
-
-## Step 5: Verify Through the Gateway
-
-List registered models. `GET /v1/models` accepts an anonymous request — it
-resolves an API key only to decide whether to include admin-visible entries:
+`GET /v1/models` answers without a key:
 
 ```bash
 curl -s http://localhost:8080/v1/models | jq
 ```
 
-`POST /v1/chat/completions` goes through `verify_api_key`, so **it returns 401
-without a valid gateway API key** unless the backend runs with
-`USER_AUTH_ENABLED=false`. This is the key issued by your gateway, not the local
-server's:
+`POST /v1/chat/completions` returns `401` without a gateway API key (the key
+your gateway issued, not the local server's), unless the backend runs with
+`USER_AUTH_ENABLED=false`:
 
 ```bash
 export GATEWAY_API_KEY=<your gateway API key>
@@ -374,19 +242,291 @@ curl -N -s -X POST http://localhost:8080/v1/chat/completions \
   }'
 ```
 
-## Routing Notes
+## A server on another machine
 
-The gateway splits a model's traffic by the weights in the model registry. A
-routing file can shift weights between local and remote routes, but only on a
-gateway without a database; see [The routing file](configuration.md#the-routing-file)
-and [Routing](routing.md).
+Keep a model server on another machine off the public internet, and point the
+route at its private address:
 
-### Prioritizing Decode on an sglang Route
+```json
+{
+  "route": [
+    {
+      "kind": "openai_compat",
+      "weight": 1.0,
+      "base_url": "http://10.0.12.34:8000/v1",
+      "deployment_type": "self_hosted",
+      "provider_model_id": "your-served-model-name"
+    }
+  ]
+}
+```
 
-A route whose server was started with sglang's `--enable-priority-scheduling`
-can declare that, and the gateway will stamp a per-request `priority` on the
-upstream body so a mega-prefill is scheduled behind interactive traffic rather
-than ahead of it:
+`deployment_type: self_hosted` marks the route as an engine you operate even
+though its address is remote. It skips the provider-key concurrency limit and
+lets a configured [engine queue limit](routing.md#engine-queue-limit) apply to
+its streaming requests; it does not turn on queue offload by itself. Inside a
+gateway container, `localhost` is the container, not the model server.
+
+In **Admin → Routing** you can set the deployment type when you create or
+repoint a route, or change it later. **Self-hosted engine** does not skip the
+base URL checks. Changing the base URL or provider resets it to **Auto** unless
+you choose again. If a saved override cannot be applied at startup (its target
+no longer passes the base URL checks, say), the route shows
+**Override not applied** until you edit it or reset its config.
+
+You can also forward the port to the gateway host with an SSH reverse tunnel,
+run on the model host:
+
+```bash
+# Run this on the INTERNAL model host
+ssh -N -R 8001:127.0.0.1:8000 <user>@<gateway-host>
+```
+
+The route then targets `http://127.0.0.1:8001/v1`. Check it from the gateway
+host first:
+
+```bash
+curl http://127.0.0.1:8001/v1/models | jq
+```
+
+## Serving from an HPC cluster
+
+On a cluster behind a batch scheduler (Slurm, PBS, LSF), each allocation gives
+you a different compute node for a few hours. The node is usually unreachable
+from the gateway and often cannot reach a container registry, and the
+allocation costs money or queue priority while you hold it. So the server
+binds the node's loopback, an SSH reverse tunnel carries it to a fixed loopback
+port on the gateway host, and the route names that port. A new allocation
+needs a new tunnel, never a catalog change.
+
+```text
+compute node (new hostname each allocation)        gateway host
+┌──────────────────────────────┐                   ┌──────────────────────────┐
+│ vLLM in a container          │  ssh -R           │ 127.0.0.1:8001           │
+│ published on 127.0.0.1:8000  │ ────────────────► │   ▲                      │
+└──────────────────────────────┘                   │   │ base_url             │
+                                                   │ gateway                  │
+                                                   └──────────────────────────┘
+```
+
+Every scheduler flag, path and port below is a placeholder. Partitions, GPU
+resource names, walltime limits and the container runtime differ per site.
+
+### 1. Allocate a node
+
+With Slurm:
+
+```bash
+salloc \
+  --partition=<gpu-partition> \
+  --gres=gpu:<count> \
+  --cpus-per-task=<cpus> \
+  --mem=<memory> \
+  --time=<hh:mm:ss>
+```
+
+Note the job ID (to release the allocation) and the node name (to log in).
+The node name changes with every allocation, so never put it in the catalog.
+
+```bash
+squeue --me
+ssh <allocated-node>
+```
+
+### 2. Make the container image available offline
+
+Compute nodes often have no outbound network. Pull the image where there is
+network, save it to shared storage and load it on the node. Pin an exact tag or
+digest, not `:latest`, so every load is the same image:
+
+```bash
+# On a host with registry access
+podman pull docker.io/vllm/vllm-openai:<version>
+podman save --output /path/to/shared/vllm-openai-<version>.tar \
+  docker.io/vllm/vllm-openai:<version>
+
+# On the compute node
+podman load --input /path/to/shared/vllm-openai-<version>.tar
+podman images
+```
+
+`docker save` and `docker load` take the same arguments.
+
+### 3. Start the model server
+
+```bash
+podman run --rm \
+  --name model-server \
+  --device nvidia.com/gpu=all \
+  --ipc=host \
+  --publish 127.0.0.1:8000:8000 \
+  --volume /path/to/model-weights:/models:Z \
+  docker.io/vllm/vllm-openai:<version> \
+  --model /models/<model-directory> \
+  --served-model-name <served-model-name> \
+  --host 0.0.0.0 \
+  --port 8000 \
+  --tensor-parallel-size <gpu-count> \
+  --gpu-memory-utilization 0.95
+```
+
+- `--publish 127.0.0.1:8000:8000` keeps the server off the cluster network. A
+  bare `-p 8000:8000` exposes it, unauthenticated, to every machine on the
+  fabric.
+- `--host 0.0.0.0` is the container's interface. Binding `127.0.0.1` inside the
+  container would leave the published port answering nothing.
+- `--tensor-parallel-size` must equal the number of GPUs in the allocation.
+- `--ipc=host` gives vLLM's workers enough shared memory. Where your site
+  forbids it, set a large `--shm-size`.
+- `--device nvidia.com/gpu=all` is Podman's CDI syntax; Docker uses
+  `--gpus all`. `:Z` relabels the volume for SELinux; drop it where SELinux is
+  not enforced.
+- `--served-model-name` becomes your `provider_model_id`. Without it, the model
+  is named by its `--model` path.
+
+Check it on the node:
+
+```bash
+curl -s http://127.0.0.1:8000/v1/models
+```
+
+### 4. Tunnel it to the gateway host
+
+From the compute node, open the tunnel and record its PID:
+
+```bash
+ssh -N \
+  -o ExitOnForwardFailure=yes \
+  -o ServerAliveInterval=30 \
+  -o ServerAliveCountMax=3 \
+  -R 127.0.0.1:8001:127.0.0.1:8000 \
+  <user>@<gateway-host> &
+echo $! > ~/model-tunnel.pid
+
+# Confirm it is actually up: with ExitOnForwardFailure the ssh may already be
+# gone, and the line above would have recorded a dead PID.
+sleep 1 && kill -0 "$(cat ~/model-tunnel.pid)" && echo tunnel up
+```
+
+- Bind the remote end to `127.0.0.1`. `-R 0.0.0.0:8001:...` would publish an
+  unauthenticated model server on every network of the gateway host; it also
+  needs `GatewayPorts yes` in that host's `sshd`, which is safer left off.
+- With `ExitOnForwardFailure=yes`, the tunnel fails if port 8001 is still held
+  by a previous allocation's tunnel. That process runs on the gateway host, so
+  clear it there:
+
+  ```bash
+  # on the gateway host
+  ss -lntp 'sport = :8001'      # or: lsof -nP -iTCP:8001 -sTCP:LISTEN
+  kill <the sshd/ssh pid it names>
+  ```
+- The tunnel ends with the allocation. `autossh`, a systemd user unit or a
+  retry loop rides out network blips, but nothing survives the job ending.
+
+Check from the gateway host, where the gateway resolves it:
+
+```bash
+curl -s http://127.0.0.1:8001/v1/models
+```
+
+### 5. Register the route
+
+Register the model as in [Step 2](#step-2-register-the-model), with
+`http://127.0.0.1:8001/v1` as `base_url` and your `--served-model-name` as
+`provider_model_id`.
+
+### 6. Release everything when you are done
+
+Otherwise the job keeps burning walltime, the route points at a closed port,
+and a stale listener on the gateway host breaks the next tunnel.
+
+1. Disable the route in **Admin → Routing**, so traffic stops before the port
+   closes.
+2. On the compute node, close the tunnel and stop the server:
+
+   ```bash
+   kill "$(cat ~/model-tunnel.pid)" && rm ~/model-tunnel.pid
+   podman stop model-server
+   ```
+
+3. Release the allocation: exit the `salloc` shell, or from the login node run
+   `scancel <job-id>`.
+4. From the gateway host, confirm the port is free. This should now fail to
+   connect:
+
+   ```bash
+   curl -s --max-time 5 http://127.0.0.1:8001/v1/models
+   ```
+
+### Showing the queue in the admin console
+
+A host that starts a model's job only when the model is requested answers
+`503` with error code `model_queued` while the job waits. Interactive callers
+get that answer and batch requests wait; neither counts against the endpoint's
+circuit. A request that runs longer than the proxy waits for one answer gets
+`504` with `upstream_timeout`. The caller sees it, but it does not count
+against the circuit either, so one caller's long generations cannot shut the
+model off for everyone.
+
+To see the queue, have the proxy publish its status and give the gateway the
+address in **Admin → Settings → Providers → Advanced settings**:
+
+| Setting | Meaning |
+|---|---|
+| `MODEL_QUEUE_STATUS_URL` | The status address as the backend reaches it, for example `http://host.docker.internal:8010/status` |
+| `MODEL_QUEUE_STATUS_API_KEY` | Bearer key for that address; empty sends `LOCAL_API_KEY` |
+
+**Admin → Batches → Model queue** then lists each model the proxy serves, with
+its state and jobs, the gateway models routed to it and the batch requests
+waiting for them. A route belongs to the proxy when its `base_url` has the
+status address's scheme, host and port. The gateway follows no redirect from
+the address, and reports a failure on the page instead of failing requests.
+
+The status is a JSON object with times in epoch seconds. Each model needs only
+`model` (the name the proxy serves it under) and `state` (`serving`, `loading`,
+`queued` or `idle`); other fields are optional, and unknown ones are ignored:
+
+```json
+{
+  "cluster": "Cluster A",
+  "scheduler": "slurm",
+  "refreshed_at": 1800000050,
+  "models": [
+    {
+      "model": "meta-llama/Llama-3.1-8B-Instruct",
+      "state": "queued",
+      "last_request_at": 1800000000,
+      "walltime_seconds": 3600,
+      "avoided_nodes": ["node-7"],
+      "jobs": [
+        {
+          "job_id": "1001",
+          "state": "PENDING",
+          "reason": "Priority",
+          "partition": "gpu_requeue",
+          "submitted_at": 1799993000,
+          "expected_start_at": 1800002000
+        }
+      ]
+    }
+  ],
+  "failed_nodes": [
+    {"node": "node-7", "jobs": ["od-llama31-8b"], "avoided_until": 1800020600}
+  ]
+}
+```
+
+`refreshed_at` is when the proxy last read the scheduler's queue. A running
+job's `nodes`, `started_at` and `ends_at` describe it; `expected_start_at` is
+the scheduler's estimate for a pending job.
+
+## Server-specific settings
+
+### Prioritizing decode on an sglang route
+
+If an sglang server was started with `--enable-priority-scheduling`, set
+`priority_scheduling: true` on its route. The gateway then gives each request a
+`priority`, so a huge prefill is scheduled behind interactive traffic:
 
 ```json
 {
@@ -410,31 +550,21 @@ than ahead of it:
 }
 ```
 
-Priority is derived from the estimated *un-cached* prefill — the prompt size
-minus the prefix this endpoint is expected to have cached. The three tiers
-default to interactive 20, large 15, elephant 0, and clients cannot set their
-own: a `priority` field in a client request body is dropped.
-Both `/v1/chat/completions` and `/v1/messages` stamp it. A model on
-`router: routewise` keeps the upstream's default priority instead, because that
-router has no prefill accounting to compute the discount from — so
-`priority_scheduling: true` is inert there.
+The priority comes from the estimated *uncached* prefill: the prompt size minus
+the prefix this endpoint probably has cached. The tiers are interactive 20,
+large 15 and elephant 0, and a client's own `priority` field is dropped. Both
+`/v1/chat/completions` and `/v1/messages` set it. Models on
+`router: routewise` keep the upstream default, so the flag does nothing there.
+Set it only for servers started with the flag: a remote provider that validates
+its request body strictly may reject the field.
 
-Set it only on routes pointing at a server launched with the flag. A server
-without it ignores the field, but a remote provider that validates its request
-body strictly would not.
+### Recording a prefix-cache miss on an sglang route
 
-### Recording a Prefix-Cache Miss on an sglang Route
-
-An sglang server started with `--enable-cache-report` answers a prefix-cache
-**miss** with `"prompt_tokens_details": null` rather than
-`{"cached_tokens": 0}`. Left alone, the gateway reads that null as "this
-provider says nothing about caching" and stores `NULL` in
-`api_logs.cache_read_tokens` — the same value it stores for a provider that
-cannot report at all, so a measured miss disappears from any hit-rate
-denominator computed off that column.
-
-A route can declare that its server does report, which turns the null into the
-0 it means:
+sglang with `--enable-cache-report` answers a prefix-cache miss with
+`"prompt_tokens_details": null` instead of `{"cached_tokens": 0}`. The gateway
+stores that null as `NULL` in `api_logs.cache_read_tokens`, as for a provider
+that cannot report, so measured misses drop out of hit-rate calculations.
+Declare on the route that the server reports, and the null is stored as `0`:
 
 ```json
 {
@@ -452,92 +582,52 @@ A route can declare that its server does report, which turns the null into the
 }
 ```
 
-**Verify before setting it.** The null is ambiguous: sglang *without*
-`--enable-cache-report`, and vLLM without `--enable-prompt-tokens-details`,
-send the identical null on every request — hit or miss
-([vllm-project/vllm#44377](https://github.com/vllm-project/vllm/issues/44377)).
-Setting the flag there would record every request as a cache miss, which is
-harder to notice later than the missing value it replaces. The check is one cold request and one warm repeat of the same prompt
-against the endpoint:
+**Verify before setting it.** sglang without `--enable-cache-report`, and vLLM
+without `--enable-prompt-tokens-details`, send the same null on every request,
+hit or miss ([vllm-project/vllm#44377](https://github.com/vllm-project/vllm/issues/44377)).
+There the flag would record every request as a miss. Send the same fresh, long
+prompt twice:
 
 ```bash
 curl -s "$BASE_URL/chat/completions" -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"<a long, freshly generated prompt>"}],"max_tokens":1}' | jq .usage
 ```
 
-Run it twice. The route qualifies only if the second call returns
-`{"cached_tokens": N}` with `N > 0` while the first returned `null`. If both
-return `null`, the server is not reporting — leave the flag off.
+The route qualifies only if the first call returns `null` and the second
+`{"cached_tokens": N}` with `N > 0`. The flag is allowed only on a route, and
+only as a real boolean: a quoted `"false"` is a configuration error.
 
-Two loader rules keep a wrong declaration from passing quietly:
+### Media URLs on a self-hosted route
 
-- **Route-level only.** Declaring it on the model (including a shorthand model
-  with no `route:` block) is a config error, because the claim is about one
-  server's startup flags and inheritance would carry it to every fallback.
-- **Booleans only.** In the JSON catalog, a quoted `"false"` is a config error,
-  so it can never turn the flag on by accident.
+vLLM and SGLang download any image, video or audio URL in a request from the
+machine they run on. On a self-hosted route the gateway fetches those URLs
+itself and sends the engine a `data:` URL, so a caller cannot make your server
+read addresses on its own network. A route is self-hosted with
+`deployment_type: self_hosted`, or under `auto` when its host is a loopback or
+Docker-host address. Declare it for an engine on a LAN address, which `auto`
+treats as a provider API.
 
-What the client sees differs by surface: a non-streaming response carries
-`cache_read_tokens: 0` (the `Usage` response model drops the rest), while a
-streaming final chunk also carries `cached_tokens: 0` and
-`prompt_tokens_details: {"cached_tokens": 0}`. `/v1/messages` reports it as
-`cache_read_input_tokens: 0`.
-
-### Media URLs on a Self-Hosted Route
-
-vLLM and SGLang download any image, video or audio URL a request names, from
-the machine they run on. On a self-hosted route the gateway therefore fetches
-each such URL itself and sends the engine a `data:` URL instead, so a caller
-cannot make your model server read addresses on its own network. A route is
-self-hosted when it declares `deployment_type: self_hosted`, or under `auto`
-when its host is a loopback or Docker-host address. Declare it for an engine on
-a LAN address, which `auto` treats as a provider API.
-
-The gateway fetches only `http` and `https` URLs, connects only to public
-addresses, and accepts at most 20 MiB per file and 32 MiB per request within
-30 seconds. Anything else is answered with a 400 naming the message and part.
-It needs outbound internet access for this and does not use an HTTP proxy.
-`data:` URLs pass through unchanged, and provider routes forward URLs as before.
+The gateway fetches only `http` and `https` URLs on public addresses, up to
+20 MiB per file and 32 MiB per request within 30 seconds; anything else gets a
+`400` that names the message and part. It needs outbound internet access and
+does not use an HTTP proxy. `data:` URLs pass through, and provider routes
+forward URLs unchanged.
 
 ## Troubleshooting
 
-### Model Does Not Appear in `/v1/models`
+**Model missing from `/v1/models`.** See
+[Troubleshooting](adding-models.md#troubleshooting) for the startup log lines
+to check.
 
-- Confirm which catalog the backend loaded, from the
-  `Registered N routes from the database route catalog` startup log line. When
-  the catalog has no models, it logs an error, `/v1/models` is empty, and every
-  request reports the model as not found.
-- Check that the model is an entry of the catalog's `models` list.
-- Restart the backend after saving the catalog.
-- Confirm `id` and `aliases` do not collide with another model.
-- A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` resolves to
-  empty drops the whole model; the log names the skipped models and the unset
-  variables. Mark such a route `optional: true` to skip only that route.
+**Gateway cannot reach the server.**
 
-### Gateway Cannot Reach the Local Server
+- From Docker, use `host.docker.internal`, not `localhost`.
+- A server reached from a container must listen on `0.0.0.0`, not only
+  `127.0.0.1`.
+- Run `curl <base_url>/v1/models` from the same environment as the backend.
 
-- From Docker, use `host.docker.internal` instead of `localhost`.
-- From bare metal, use `localhost` or the host IP.
-- For private remote servers, use a private IP/hostname or a private tunnel
-  endpoint; avoid public internet exposure.
-- Confirm the local server listens on `0.0.0.0`, not only `127.0.0.1`, if it has
-  to be reached from a container.
-- Verify `curl <base_url>/v1/models` works from the same environment as the
-  backend.
+**Requests fail after registration.**
 
-### Requests Fail After Registration
-
-- Make sure `provider_model_id` matches the model name exposed by the local
-  runtime.
-- Remove unsupported request params from `supported_params`.
-- If the runtime's base URL already ends in `/v1`, keep it that way; the adapter
-  appends `/chat/completions` under that base.
-- Set `supports_tools` and `supports_structured_output` only when the local
-  runtime actually supports them.
-
-## See Also
-
-- [Adding a New Model](adding-models.md) — the full field reference, adapter
-  kinds, and how to integrate a new remote provider
-- [Quickstart](router-tutorial.md) — a runnable deployment that ends by
-  pointing at your own local vLLM/SGLang/Ollama server
-- [Routing](routing.md) — weights, health checks, and strategies
+- `provider_model_id` must match the name the runtime serves.
+- Drop parameters the runtime rejects from `supported_params`.
+- Set `supports_tools` and `supports_structured_output` only if the runtime
+  supports them.

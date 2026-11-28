@@ -23,6 +23,7 @@ import {
 import { APIError, getErrorMessage } from '@/lib/utils/errors';
 import { usePageRestored } from '@/lib/hooks/usePageRestored';
 import { internalPathOr, navigateTo } from '@/lib/utils/navigation';
+import { rememberAuthNext, signupHref } from '@/lib/utils/authNext';
 import { useT } from '@/components/providers/useT';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { fill } from '@/lib/utils/interpolate';
@@ -61,6 +62,10 @@ function LoginContent() {
   // through here with its query attached, and a crafted ?next= must never be
   // able to send a fresh session off-site.
   const nextPath = internalPathOr('/dashboard', searchParams.get('next'));
+  // The same destination as it was asked for, or '' without one: what the
+  // sign-up link and a verification email carry on. Never the dashboard
+  // default, which nobody asked for.
+  const askedNext = internalPathOr('', searchParams.get('next'));
   // ?add=1 comes from "Add another account": the visitor is signed in already
   // and wants the form, not to be sent on.
   const addMode = searchParams.get('add') === '1';
@@ -250,6 +255,9 @@ function LoginContent() {
         data.email.includes('@')
       ) {
         setUnverifiedEmail(data.email);
+        // The verification link opens in a tab that knows nothing of this
+        // one: the verification page offers this destination back.
+        rememberAuthNext(askedNext);
       }
     } finally {
       setIsLoading(false);
@@ -493,7 +501,8 @@ function LoginContent() {
         features.publicSignup ? (
           <>
             {t('auth.login.no_account', "Don't have an account?")}{' '}
-            <Link href="/signup" prefetch={false}>
+            {/* A new account comes back to where this sign-in was going. */}
+            <Link href={signupHref(askedNext)} prefetch={false}>
               {t('auth.login.signup_link', 'Sign Up')}
             </Link>
           </>

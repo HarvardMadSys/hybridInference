@@ -1,23 +1,19 @@
 # Writing a Provider Adapter
 
-This page is for contributors adding support for a provider the gateway
-cannot talk to yet. To serve another model from a provider the gateway already
-supports, you need no code at all; see [Adding a New Model](adding-models.md).
-
-Most providers do not need a new adapter either. If the API is
-OpenAI-compatible, a profile and a few lines in `registry.py` are enough, as
-Step 1 shows. A dedicated adapter is only for a provider with its own wire format.
+This page is for adding a provider the gateway cannot talk to yet. Serving
+another model from a supported provider needs no code; see
+[Adding a New Model](adding-models.md).
 
 ## Step 1: decide whether you need an adapter at all
 
-Most new providers expose an OpenAI-style `/chat/completions` endpoint. For
-those, **do not write an adapter class.** Register a provider profile, then add
-two things to `_make_adapter` in `apps/backend/serving/servers/registry.py`: an
-arm that selects the profile, and the kind in the OpenAI-compatible tuple
-further down the same function:
+If the provider exposes an OpenAI-style `/chat/completions` endpoint, **do not
+write an adapter class.** Add a provider profile in
+`apps/backend/serving/adapters/profiles.py` for its usage or path quirks, then
+change `_build_adapter` in `apps/backend/serving/servers/registry.py` (called by
+`_make_adapter`) in two places:
 
 ```python
-# ...among the per-kind arms of _make_adapter:
+# ...among the per-kind arms of _build_adapter:
 elif kind == "your_provider":
     cfg = {**cfg, "provider_profile": "your_provider"}
 
@@ -40,18 +36,17 @@ if kind in (
     return OpenAICompatAdapter(model_cfg)
 ```
 
-Add the kind to `RESERVED_PROVIDER_LABELS` in the same module as well, so that
-no route can borrow it as a label of its own; a unit test fails if a
-dispatchable kind is missing from that set.
+Also add the kind to `RESERVED_PROVIDER_LABELS` in the same module. That set is
+the list of kinds the catalog accepts, and it stops routes from borrowing the
+kind as a label; a unit test fails if a dispatchable kind is missing. If the
+provider answers `stream_options.include_usage` with a final usage chunk, add
+the kind to `_STREAM_USAGE_DEFAULT_KINDS` too. `deepseek`, `zai`, `kimi` and
+`minimax` are built this way.
 
-This is how `deepseek`, `zai`, `kimi`, and `minimax` are integrated today: a
-per-provider profile in `apps/backend/serving/adapters/profiles.py` carries the
-usage-metric or path quirks, and `OpenAICompatAdapter` does the rest.
-
-Write a dedicated adapter only when the provider speaks a genuinely non-OpenAI
-wire format — Gemini's `generateContent`, the Anthropic Messages API,
-OpenRouter's provider-pinning body fields. `gemini`, `claude`, `anthropic`, and
-`openrouter` all follow that pattern, each with its own dispatch branch:
+Write a dedicated adapter only for a different wire format, such as Gemini's
+`generateContent`, the Anthropic Messages API or OpenRouter's provider-pinning
+fields. `gemini`, `claude`, `anthropic` and `openrouter` each have their own
+branch:
 
 ```python
 if kind == "your_provider":
@@ -60,9 +55,8 @@ if kind == "your_provider":
 
 ## Step 2: write the adapter (custom protocols only)
 
-Create a new file under `apps/backend/serving/adapters/`, for example
-`apps/backend/serving/adapters/your_provider.py`. The backend package root is
-`apps/backend`, so imports are written as `serving.…` / `routing.…`:
+Create `apps/backend/serving/adapters/your_provider.py`. The package root is
+`apps/backend`, so imports start with `serving.` or `routing.`:
 
 ```python
 import json
@@ -237,65 +231,58 @@ from serving.adapters import (
 
 ## Step 3: add the model to your registry
 
-```yaml
-models:
-  - id: your-model-id
-    name: Your Model Name
-    provider: your_provider
-    provider_model_id: "actual-model-id"
-    base_url: ${YOUR_PROVIDER_BASE_URL}
-    api_key: ${YOUR_PROVIDER_API_KEY}
-    quantization: "bf16"
-    input_modalities: ["text"]
-    output_modalities: ["text"]
-    context_length: 8192
-    max_output_length: 4096
-    supports_tools: true
-    supports_structured_output: true
-    supported_params: [temperature, top_p, max_tokens, stop]
-    aliases: []  # Optional alternative names
-    pricing:
-      prompt: "0"
-      completion: "0"
-      image: "0"
-      request: "0"
-      input_cache_reads: "0"
-      input_cache_writes: "0"
-    route:
-      - kind: your_provider
-        weight: 1.0
-        base_url: ${YOUR_PROVIDER_BASE_URL}
-        api_key: ${YOUR_PROVIDER_API_KEY}
+Add an entry like this to the `models` list of the catalog (**Admin →
+Routing → Models**); every field is in the
+[Configuration Reference](adding-models.md#configuration-reference):
+
+```json
+{
+  "id": "your-model-id",
+  "name": "Your Model Name",
+  "provider": "your_provider",
+  "provider_model_id": "actual-model-id",
+  "base_url": "${YOUR_PROVIDER_BASE_URL}",
+  "api_key": "${YOUR_PROVIDER_API_KEY}",
+  "context_length": 8192,
+  "max_output_length": 4096,
+  "supports_tools": true,
+  "supports_structured_output": true,
+  "supported_params": ["temperature", "top_p", "max_tokens", "stop"],
+  "route": [
+    {
+      "kind": "your_provider",
+      "weight": 1.0
+    }
+  ]
+}
 ```
 
 ## Step 4: set the variables
 
-On a gateway with a database, add both on the admin console's
-**Configuration** tab with **Add variable**, marking the key secret, and
-restart the backend. Without a database, add them to `.env`; a gateway with a
-database also copies them from there into the database at startup, unless it
-already has a value of that name:
+Add both variables in **Admin → Settings → Providers** with **Add
+variable**, mark the key **Secret**, and restart the backend. A gateway without
+a database reads them from `.env`; a gateway with one also copies them from
+`.env` into the database at startup unless it already stores that name:
 
 ```bash
 YOUR_PROVIDER_BASE_URL=https://api.yourprovider.example/v1
 YOUR_PROVIDER_API_KEY=your-api-key-here
 ```
 
-A route whose `${VAR}`-backed `api_key`, `api_keys`, or `base_url` resolves to
-empty is not registered. By default that drops the whole model, and the backend
-logs which models were skipped and which variables were unset. Mark a route
-`optional: true` to have only that route be skipped instead, leaving the rest of
-the model registered.
+If a `${VAR}` in `api_key`, `api_keys` or `base_url` is empty, the whole model
+is skipped and the log names the model and variable. Mark a route
+`optional: true` to skip only that route.
 
 ## Step 5: verify it
 
-Start the gateway with a registry that uses the new kind, then check it as
-described in [Verify it through the gateway](adding-models.md#verify-it-through-the-gateway).
+Restart the backend with your code, then check the model as in
+[Verify it through the gateway](adding-models.md#verify-it-through-the-gateway).
 
 ## Deployment-local adapters
 
-A deployment can register a local factory without editing the built-in dispatch.
-Its module exposes a synchronous, no-argument `register()` function:
+A deployment can register its own adapter factory without editing the built-in
+dispatch. Its module exposes a synchronous `register()` that takes no
+arguments:
 
 ```python
 from serving.adapters import ModelConfig, OpenAICompatAdapter
@@ -310,19 +297,17 @@ def register():
     register_adapter_factory("example_service", make_example_adapter)
 ```
 
-Set `BACKEND_EXTENSIONS` to this module's import name and use
-`kind: example_service` in the model registry. The factory receives the route's
-configuration dictionary and returns an adapter. It runs before built-in
-provider defaults, so it must supply any profile or path defaults it needs.
-Duplicate registrations fail; replacing a built-in kind requires
-`register_adapter_factory(kind, factory, override=True)` and is logged.
-See [Backend Extensions](backend-extensions.md) for the startup and deployment
-requirements.
+Set `BACKEND_EXTENSIONS` to the module's import name and use
+`"kind": "example_service"` in the catalog. The factory receives the route's
+configuration dictionary before any built-in defaults, so it must supply its
+own profile and path defaults. Registering a kind twice fails; replacing a
+built-in kind needs `register_adapter_factory(kind, factory, override=True)`
+and is logged. See [Backend Extensions](backend-extensions.md).
 
 ## BaseAdapter API reference
 
-All adapters inherit from `BaseAdapter`
-(`apps/backend/serving/adapters/base.py`) and implement:
+Every adapter subclasses `BaseAdapter` (`apps/backend/serving/adapters/base.py`)
+and implements:
 
 ```python
 async def chat_completion(
@@ -336,7 +321,9 @@ async def stream_chat_completion(
     """Execute streaming chat completion."""
 ```
 
-Utility methods provided by the base class:
+The base class's `messages()` and `stream_messages()` serve the Anthropic
+Messages API by translating to and from these two methods; an Anthropic-native
+adapter overrides them. Helpers:
 
 ```python
 def validate_params(self, params: dict[str, Any]) -> dict[str, Any]:
@@ -366,145 +353,55 @@ def format_tool_chunk(self, tool_calls: list[dict[str, Any]], model: str) -> str
     """Format tool calls into an OpenAI-compatible streaming chunk."""
 ```
 
-Available attributes:
+Attributes:
 
 ```python
 self.config       # ModelConfig instance
 self.http         # AsyncHTTPClient (apps/backend/serving/http.py), shared
 ```
 
-## Advanced features
+## Capabilities
 
-### Multi-modal support
+- **Images.** A model with `"input_modalities": ["text", "image"]` sends image
+  content blocks; handle them in `chat_completion`. A route can declare
+  narrower modalities, so a text-only fallback never receives media.
+- **Tools.** With `"supports_tools": true`, convert the provider's tool calls to
+  the OpenAI shape and pass them to `format_response(tool_calls=...)`.
+- **Structured output.** With `"supports_structured_output": true`, forward
+  `response_format`. The gateway also checks replies itself: when an endpoint
+  cannot take the format, the OpenAI-compatible adapter puts it in the prompt;
+  `kind: vllm` routes get `structured_outputs` with `disable_any_whitespace`;
+  and a non-streaming reply that is not valid JSON for the schema is retried up
+  to twice with the schema in the prompt (not when `max_tokens` cut it off).
+  If no attempt conforms, the last reply is returned as is, and
+  `metadata.structured_output` in the request log records the attempts.
+- **Concurrency.** Do not add a limiter. The gateway caps open requests per
+  provider key and lowers the cap on 429 (see
+  [Outbound concurrency](routing.md#outbound-concurrency)); wrap your upstream
+  call in a slot from `apps/backend/serving/adapters/upstream_limiter.py`, as
+  the built-in adapters do.
 
-For models accepting images:
+## Checklist
 
-```yaml
-input_modalities: ["text", "image"]
-```
+- Return the OpenAI response shape from `format_response()`, with integer
+  `UsageInfo` fields and a `finish_reason` of `stop`, `length`,
+  `content_filter` or `tool_calls`.
+- Prefer provider-reported usage; fall back to `estimate_prompt_tokens()` and
+  `estimate_text_tokens()`.
+- Stream SSE lines (`data: {json}\n\n`) with `format_stream_chunk()`. Send the
+  first content chunk as soon as you have it (time to first token is measured
+  from it), then the final usage chunk (`make_final_usage_chunk()`), then
+  `done_sentinel()`. Skip lines that are not valid JSON.
+- Use `self.http.json_post_with_retry()` and give provider errors useful
+  messages.
+- Keep request and response shapes aligned with
+  `apps/backend/serving/schemas.py`, and keep provider-specific logic out of
+  shared code.
+- Test streaming and non-streaming paths, including large prompts.
+- Put keys and endpoints in settings and reference them as `${NAME}`; the
+  catalog refuses inline credentials.
 
-Handle the image content blocks in your adapter's `chat_completion`. A route may
-declare narrower `input_modalities` than the model, so a text-only fallback never
-receives media.
-
-### Tool / function calling
-
-```yaml
-supports_tools: true
-```
-
-Parse the provider's tool calls into OpenAI shape and pass them through:
-
-```python
-tool_calls = []
-if "function_call" in data:
-    tool_calls.append({
-        "id": f"call_{int(time.time() * 1000)}",
-        "type": "function",
-        "function": {
-            "name": data["function_call"]["name"],
-            "arguments": data["function_call"]["arguments"],
-        },
-    })
-
-return self.format_response(
-    content=content,
-    model=self.config.id,
-    usage=usage,
-    tool_calls=tool_calls,
-)
-```
-
-### Structured output (JSON mode)
-
-```yaml
-supports_structured_output: true
-```
-
-Handle the `response_format` parameter:
-
-```python
-if params.get("response_format", {}).get("type") == "json_object":
-    payload["response_format"] = {"type": "json_object"}
-```
-
-The gateway does not rely on the provider alone to honor `response_format`:
-
-- When an endpoint cannot take the requested format, the OpenAI-compatible
-  adapter describes it in the prompt instead. This covers a route without
-  `supports_structured_output` and a provider that keeps only `json_object`
-  of a schema.
-- A `kind: vllm` route also gets `structured_outputs` with
-  `disable_any_whitespace`, so the model cannot loop on whitespace inside the
-  JSON grammar.
-- A non-streaming reply is checked against the request. JSON in a code fence
-  or surrounded by prose is unwrapped. A reply that is not JSON or does not
-  match the schema is asked again with the schema in the prompt, up to twice,
-  unless it was cut off by `max_tokens`.
-  If no attempt conforms, the last reply is returned unchanged rather than as
-  an error. The request log's `metadata.structured_output` records the
-  attempts and whether the reply conformed.
-
-### Limiting concurrent requests
-
-An adapter does not need its own limiter. The gateway already caps how many
-requests it keeps open against each provider key, and lowers the cap when the
-provider answers 429; see [Outbound concurrency](routing.md#outbound-concurrency).
-A new adapter takes part by wrapping its upstream call in a slot from
-`apps/backend/serving/adapters/upstream_limiter.py`, as the built-in adapters
-do.
-
-## Examples
-
-- **OpenAI-compatible provider.** DeepSeek has no adapter file. `_make_adapter`
-  in `apps/backend/serving/servers/registry.py` sets
-  `provider_profile = "deepseek"` and returns `OpenAICompatAdapter`; the profile
-  lives in `apps/backend/serving/adapters/profiles.py`.
-- **Custom API format.** See `apps/backend/serving/adapters/gemini.py` for
-  message conversion against a non-OpenAI wire format.
-- **Local deployment.** vLLM and SGLang reuse
-  `apps/backend/serving/adapters/openai_compat.py`. The `vllm` and `sglang` kinds
-  dispatch to the same class; local-vs-remote behaviour comes from `base_url`
-  and the routing layer, not from a dedicated adapter.
-
-## Troubleshooting
-
-### Response format errors
-
-- Ensure `format_response()` returns the OpenAI-compatible structure.
-- Validate that `UsageInfo` fields are integers.
-- Check `finish_reason` is one of `stop`, `length`, `content_filter`,
-  `tool_calls`.
-- For streaming, emit the first non-empty content chunk as soon as it is
-  available so time-to-first-token is recorded accurately.
-
-### Streaming issues
-
-- Ensure chunks are SSE-formatted: `data: {json}\n\n`.
-- Send the final usage chunk before `data: [DONE]`.
-- Handle JSON parsing errors gracefully.
-
-## Best practices
-
-1. **Error handling** — use `self.http.json_post_with_retry()` and surface
-   provider faults with useful messages.
-2. **Usage accounting** — prefer provider-reported usage; fall back to
-   `estimate_prompt_tokens()` / `estimate_text_tokens()`.
-3. **Streaming helpers** — use `format_stream_chunk()`,
-   `make_final_usage_chunk()`, and `done_sentinel()` for consistent SSE.
-4. **Type safety** — full type hints, and keep request/response shapes aligned
-   with `apps/backend/serving/schemas.py`.
-5. **Testing** — exercise both streaming and non-streaming paths, and try large
-   prompts to validate token clamping.
-6. **Docs & style** — Google-style docstrings in English; keep provider-specific
-   logic out of shared code.
-7. **Secrets** — use `${ENV_VAR}` in YAML rather than hardcoding keys or
-   endpoints, and keep the values in the gateway's settings
-   (**Configuration** tab), or in `.env` for a gateway without a database.
-
-## See also
-
-- [Adding a New Model](adding-models.md) — every field a model entry accepts
-- [Architecture](architecture.md#adapters) — where adapters sit in a request
-- [Backend Extensions](backend-extensions.md) — registering an adapter from
-  outside the source tree
+For examples, read `apps/backend/serving/adapters/gemini.py` (a non-OpenAI
+format) and the `deepseek` profile in `apps/backend/serving/adapters/profiles.py`
+(an OpenAI-compatible provider with no adapter file). Where adapters sit in a
+request is in [Architecture](architecture.md#adapters).

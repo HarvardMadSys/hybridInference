@@ -1,16 +1,19 @@
 'use client';
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
+import { useSearchParams } from 'next/navigation';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import { buildCombinedUseCase, createAuthSchemas, SignupFormData } from '@/lib/schemas/auth';
 import { signup, type SignupResponse } from '@/lib/api/auth';
+import { loginHref, rememberAuthNext } from '@/lib/utils/authNext';
 import { getErrorMessage } from '@/lib/utils/errors';
+import { internalPathOr } from '@/lib/utils/navigation';
 import { useSiteConfig } from '@/components/providers/SiteConfigProvider';
 import { useT } from '@/components/providers/useT';
 import { fill } from '@/lib/utils/interpolate';
-import { AuthField, AuthNotice } from '@/components/auth/AuthForm';
+import { AuthField, AuthLoading, AuthNotice } from '@/components/auth/AuthForm';
 import { useAuthAppearance } from '@/site-ui/appearance';
 import { AuthPageFrame } from '@/site-ui/SiteUiBoundary';
 import { NO_CONSENT, SignupConsentStep, type ConsentProgress } from './SignupConsentStep';
@@ -61,10 +64,23 @@ function Spinner(): JSX.Element {
   );
 }
 
-export default function SignupPage() {
+/**
+ * Where the visitor was going before signing up (`?next=`), held to the same
+ * rule as login: an internal path, or '' for none. Outside Next's router (a
+ * unit test) there are no search parameters at all.
+ */
+function askedNext(searchParams: Pick<URLSearchParams, 'get'> | null): string {
+  return internalPathOr('', searchParams?.get('next'));
+}
+
+function SignupContent() {
   const t = useT();
   const skin = useAuthAppearance();
   const { branding, features } = useSiteConfig();
+  // A new account signs in afterwards and should land where it was going:
+  // every way to login on this page carries it.
+  const next = askedNext(useSearchParams());
+  const toLogin = loginHref(next);
   const turnstileSiteKey = branding.turnstileSiteKey;
   const [step, setStep] = useState<SignupStep>('consent');
   const [accountStarted, setAccountStarted] = useState(false);
@@ -103,6 +119,13 @@ export default function SignupPage() {
     }
   }, [step]);
 
+  // The verification link opens in a tab that knows nothing of this one, so
+  // the destination is also kept for the page it opens.
+  const finishSignup = (result: SignupResponse) => {
+    rememberAuthNext(next);
+    setSignupResult(result);
+  };
+
   const onSubmit = async (data: SignupFormData) => {
     setIsLoading(true);
     setError(null);
@@ -132,7 +155,7 @@ export default function SignupPage() {
         accepted_tos: true,
         turnstileToken: turnstileTokenRef.current ?? undefined,
       });
-      setSignupResult(result);
+      finishSignup(result);
     } catch (err) {
       setError(getErrorMessage(err));
     } finally {
@@ -154,7 +177,7 @@ export default function SignupPage() {
         )}
       >
         <div className={skin.form} data-auth="form">
-          <Link href="/login" className={skin.submit} data-auth="submit">
+          <Link href={toLogin} className={skin.submit} data-auth="submit">
             {t('auth.signup.signin_link', 'Sign in')}
           </Link>
         </div>
@@ -179,7 +202,7 @@ export default function SignupPage() {
         <div className={skin.form} data-auth="form">
           <ResultIcon pending={isPendingApproval} />
           <AuthNotice tone={isPendingApproval ? 'info' : 'ok'}>{signupResult.message}</AuthNotice>
-          <Link href="/login" className={skin.submit} data-auth="submit" prefetch={false}>
+          <Link href={toLogin} className={skin.submit} data-auth="submit" prefetch={false}>
             {t('auth.signup.back_to_login', 'Back to Login')}
           </Link>
         </div>
@@ -196,7 +219,7 @@ export default function SignupPage() {
       topbar={
         <>
           {t('auth.signup.have_account', 'Already have an account?')}{' '}
-          <Link href="/login" prefetch={false}>
+          <Link href={toLogin} prefetch={false}>
             {t('auth.signup.login_link', 'Log In')}
           </Link>
         </>
@@ -213,7 +236,7 @@ export default function SignupPage() {
       <SignupSteps current="form" onBack={() => setStep('consent')} />
       {features.phoneAuth && <AuthMethodSelector value={method} onChange={setMethod} />}
       {features.phoneAuth && method === 'phone' ? (
-        <PhoneAuthForm purpose="signup" onSuccess={setSignupResult} />
+        <PhoneAuthForm purpose="signup" onSuccess={finishSignup} />
       ) : (
         <form onSubmit={handleSubmit(onSubmit)} className={skin.form} data-auth="form">
           {error && <AuthNotice tone="error">{error}</AuthNotice>}
@@ -387,6 +410,7 @@ export default function SignupPage() {
             setStep('form');
             window.scrollTo({ top: 0 });
           }}
+          loginHref={toLogin}
         />
       )}
       {/* Retain the phone draft, pending request and absolute resend deadline while reviewing. */}
@@ -396,5 +420,14 @@ export default function SignupPage() {
         </div>
       )}
     </>
+  );
+}
+
+// Reading the address (`?next=`) needs a Suspense boundary, as the login page has.
+export default function SignupPage() {
+  return (
+    <Suspense fallback={<AuthLoading />}>
+      <SignupContent />
+    </Suspense>
   );
 }

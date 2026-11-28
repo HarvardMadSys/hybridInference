@@ -194,6 +194,7 @@ const LABELS: Readonly<Record<string, string>> = {
   OPENINFRA_RETIRED_ENGINES: 'OpenInfra retired engines',
   OPENINFRA_RETENTION_DAYS: 'Keep OpenInfra samples (days)',
   OPENINFRA_DELETE_UNARCHIVED: 'Delete unarchived OpenInfra samples',
+  API_KEY_AUTHORIZATION_CALLBACKS: 'Applications that may request API keys',
   RAG_API_KEY: 'Docs assistant API key',
   RAG_API_BASE_URL: 'Docs assistant gateway address',
   RAG_EMBEDDER: 'Docs assistant embedder',

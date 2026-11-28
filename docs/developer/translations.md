@@ -1,13 +1,15 @@
-# Translating the Docs
+# Translating the Docs and the Console
 
-This page is for translators, and for anyone whose English edit changes a
-paragraph that has a translation.
+This page is for translators, and for anyone whose English edit changes
+translated text. The docs and the console are translated separately: the docs
+through Sphinx's gettext catalogs, the console through a JSON catalog. Both
+show English for anything untranslated, and both follow the
+[terminology tables](#chinese-terminology) at the end.
 
-The pages are written in English and translated with Sphinx's gettext
-workflow, so a translation is attached to *each paragraph of source text*
-rather than to a whole file. That is what makes a partial translation safe:
-any string without one falls back to English, and the site still builds
-complete.
+## Translating the docs
+
+Each translation is attached to one paragraph of English source, not to a whole
+file, so a partly translated page still builds complete.
 
 ```bash
 make docs-gettext                      # extract one catalog template per page
@@ -24,120 +26,176 @@ msgid "HybridInference is an open-source LLM inference gateway."
 msgstr "HybridInference 是一个开源的 LLM 推理网关。"
 ```
 
-Because the English text *is* the lookup key, editing a paragraph invalidates
-its translation automatically: the next `make docs-translate` marks that entry
-`#, fuzzy`, the build stops using it, and the page falls back to English rather
-than serving a translation that no longer matches what the code does. A
-translator only has to revisit the entries that are marked. **This is the
-reason to use catalogs instead of parallel `.zh.md` files**, which drift
-silently and give a reader no signal that what they are reading is out of date.
+The English text is the lookup key. After you edit a paragraph, the next
+`make docs-translate` marks its entry `#, fuzzy`, the build stops using it, and
+the page shows the English until someone updates the translation. Translators
+only revisit marked entries. Use catalogs, not parallel `.zh.md` files: those
+drift with no sign that they are out of date.
 
-Commit the `.po` files. `docs/gettext/` is generated and ignored.
+Commit the `.po` files; `docs/gettext/` is generated and ignored. You do not
+have to translate a whole page or keep a language complete.
 
-Translating a page does not require translating all of it, and there is no
-obligation to keep a language complete — an untranslated paragraph is a
-fallback, not a bug.
+### Traps in Chinese, Japanese and Korean
 
-## Translating into Chinese, Japanese or Korean
+Each of these leaves the build green and the page wrong.
 
-Four traps, all of them silent — the build stays green and the page is wrong.
-
-**A heading that starts with a number is discarded.** Sphinx re-parses a
-translated title, and MyST reads `1. ` as an enumerated-list marker rather than
-text. The structure no longer matches the source, the translation is dropped,
-the English heading is emitted, and nothing warns — not even under `-W`. Escape
-the period:
+**A heading that starts with a number is dropped.** MyST re-parses a translated
+title and reads `1. ` as a list marker. The structure no longer matches the
+source, so Sphinx emits the English heading, with no warning even under `-W`.
+Escape the period:
 
 ```po
 msgstr "1\. 申请一个节点"
 ```
 
 **In `index.rst`, inline markup that touches a CJK character does not parse.**
-reStructuredText requires whitespace or specific punctuation before an opening
-`*`, and a Chinese character is neither, so `请求的*模型 id*` renders literal
-asterisks. Separate them with an escaped space — written `\\ ` in the catalog,
-which is a backslash-space in the string:
+reStructuredText needs whitespace or certain punctuation before an opening `*`,
+so `请求的*模型 id*` renders literal asterisks. Separate them with an escaped
+space, written `\\ ` in the catalog:
 
 ```po
 msgstr "客户端请求的\\ *模型 id*\\ ，与真正服务它的\\ *端点*\\ 是解耦的。"
 ```
 
-This applies to `index.rst` only. Markdown pages need no escaping: CommonMark
-treats a CJK character as neither whitespace nor punctuation, so `**模型 id**`
-between Chinese characters is a valid emphasis run.
+Markdown pages need no such escaping: CommonMark treats a CJK character as
+neither whitespace nor punctuation, so `**模型 id**` between Chinese characters
+works.
 
-**One Markdown case does break, though**: a closing `**` preceded by a CJK full
-stop and followed by a CJK character is not right-flanking, so
-`**术语。**后文` leaves literal asterisks. Put the period outside the bold —
-`**术语**。后文` — which is better typography anyway, since bolding punctuation
-is wrong.
+**In Markdown, a closing `**` after a CJK full stop breaks** when a CJK
+character follows it, so `**术语。**后文` leaves literal asterisks. Put the full
+stop outside the bold: `**术语**。后文`.
 
-**A stale `.mo` masks your edits.** Sphinx skips recompilation when the `.mo` is
-newer than its `.po`, so you can verify a build that never read your changes.
-Before any verification build:
+**A stale `.mo` hides your edits.** Sphinx does not recompile a `.mo` that is
+newer than its `.po`. Before any verification build, run:
 
 ```bash
 find docs/developer/locale -name '*.mo' -delete
 ```
 
-The check that catches all four at once is a structural diff against the English
-build: for each page, compare the counts of `<code>`, `<strong>`, `<em>` and
-`<a>`, and the multiset of inline-code literals and link targets. A dropped
-marker or a translated link target shows up there and in no other check.
+A fifth problem fails loudly: `make docs-translate` can add `python-format` to
+an entry marked `no-python-format`, because a string such as `≥ 5%` looks like
+a format string, and `msgfmt -c` then rejects the pair. Delete the added
+`python-format`.
 
-One more, which at least fails loudly: `make docs-translate` can append
-`python-format` to an entry you had annotated `no-python-format` — a source
-string containing something like `≥ 5%` looks like a format string to gettext —
-and `msgfmt -c` then rejects the contradictory pair. Delete the added
-`python-format` and keep `no-python-format`.
-
-## How a translation reaches the published site
-
-`make docs` builds every published language from one `sphinx-build`. The first
-language named in `DOCS_LANGUAGES` (declared in `conf.py`, defaulting to
-`en:English,zh_CN:简体中文`) is the root language and lands at the top of the
-output tree; each other language is written to `docs/build/html/<code>/` by a
-`build-finished` hook in `conf.py`.
-
-One invocation rather than one per language, because the published site is
-built by a command that lives in the hosting project's settings, not in this
-repository — there is no env var to set at publish time, so the language list
-has to travel in `conf.py`. Keeping the root language at the tree root is what
-preserves every URL the English-only site had: `/routing.html` stays
-`/routing.html`, and the translation is at `/zh_CN/routing.html`.
-
-The sidebar switcher links to the same page in each other language and renders
-nothing when fewer than two languages are declared, so a single-language site
-never shows a dead control. `DOCS_LANGUAGES="en:English"` builds English alone
-when a translation is not what you are working on.
-
-## The check that catches a reverted translation
+### Checking the docs
 
 ```bash
 make docs-verify
 ```
 
-`make docs` plus `ops/ci/check_docs_translations.py`, and the same thing the
-Docs Build CI job runs. It exists because none of the failures above are
-visible to `-W`: Sphinx falls back to the English source for any string it
-cannot translate, so a page that has quietly reverted still builds clean. Five
-checks —
+The Docs Build CI job runs the same command. It builds every language with
+warnings as errors, extracts fresh catalog templates, checks local links, and
+runs `ops/ci/check_docs_translations.py`. That last step is needed because
+Sphinx falls back to English for any string it cannot translate, so a page that
+has quietly reverted still builds clean. It fails on:
 
-- **fuzzy** entries, which Sphinx refuses to apply;
+- **fuzzy** entries, which Sphinx does not apply;
 - **missing catalogs**, for a page added without `make docs-translate`;
-- **stale catalogs** — an English edit whose `msgid` no longer matches any
-  entry, which is the commonest case and carries no `fuzzy` marker at all
-  because nothing re-merged;
-- **block starts** — a translation that begins with `1. `, `- `, `# ` or `> `,
-  which re-parses as a list or heading and is dropped;
-- **structural divergence** between the built pages, which is what catches the
-  CJK-adjacent markup traps above.
+- **stale catalogs**: an English edit whose `msgid` no longer matches any
+  entry. This is the commonest case, and it has no `fuzzy` marker;
+- **block starts**: a translation that begins with `1. `, `- `, `# ` or `> `,
+  which re-parses as a list or a heading and is dropped;
+- **structural divergence**: different counts of `<code>`, `<strong>`, `<em>`
+  and `<a>`, or different inline-code literals and link targets, between a
+  translated page and the English one. This catches the markup traps above.
+
+### How the languages are published
+
+`make docs` builds every language in one `sphinx-build` run. `DOCS_LANGUAGES`
+in `conf.py` lists them (default `en:English,zh_CN:简体中文`). The first is the
+root language, at the top of the output tree, so `/routing.html` keeps its URL
+and the translation is at `/zh_CN/routing.html`. A `build-finished` hook writes
+each other language to `docs/build/html/<code>/`. The list lives in `conf.py`
+because the published site is built by a command in the hosting project's
+settings, where no environment variable can be set.
+
+The sidebar switcher links to the same page in the other languages and is
+hidden when only one language is declared. `DOCS_LANGUAGES="en:English"` builds
+English alone.
+
+## Translating the console
+
+The console can be read in English or Chinese. A signed-in reader chooses
+**Language** from the account menu or under **Account Settings**; the choice is
+kept in the browser and in the account, so it follows them to other browsers.
+A signed-out reader sees the language last chosen in that browser, or the one
+the browser asks for. The **Appearance** setting (**Light**, **Dark** or
+**System**) is saved per browser only.
+
+### Writing a console string
+
+Every string a reader sees goes through `t(slot, English)`:
+
+```tsx
+const t = useT();
+<h2>{t('settings.language.title', 'Language')}</h2>
+```
+
+- The English at the call site is the source text. Edit it there; there is no
+  English catalog.
+- Name the slot `<area>.<page or component>.<meaning>`, like
+  `auth.login.title` and `chrome.header.dashboard`.
+- Translate whole sentences, and insert values with `fill()` from
+  `@/lib/utils/interpolate`, so another language can reorder them:
+  `fill(t('chrome.account_menu.switched', 'Switched to {name}'), { name })`.
+- In a server component, get the same function, in the request's language,
+  from `await requestTranslator()` (`@/lib/i18n/request.server`).
+- Format dates and numbers with `useFormatter()` (`@/lib/i18n/useFormatter`),
+  not `toLocaleString()`. Amounts stay in US dollars.
+- Both arguments must be literals (or a `cond ? 'a' : 'b'` of literals), so the
+  catalog check can read them.
+
+### The catalog
+
+`apps/frontend/src/lib/i18n/messages/zh-CN.json` maps each slot to the English
+it translates and the translation:
+
+```json
+"settings.language.title": { "source": "Language", "text": "语言" }
+```
+
+An entry is used only while its `source` matches the English the call site
+passes, so a changed sentence shows the new English until it is translated
+again. A slot that passes different English in different places holds a list
+of entries, one per string. Only the active language's catalog is sent to the
+browser.
+
+```bash
+cd apps/frontend
+npm run i18n:check                                 # report every catalog
+node scripts/i18n/check-catalogs.mjs --todo zh-CN  # what still needs translating
+node scripts/i18n/check-catalogs.mjs --prune       # drop slots no code uses
+```
+
+Missing and stale entries fall back to English. The test suite
+(`src/lib/i18n/catalog.test.ts`) fails on a malformed entry, on a translation
+whose `{placeholders}` differ from its source, and on stale or orphaned entries
+in a shipped catalog, so re-translate or prune in the same change that edits
+the English.
+
+The Terms of Service and the research-consent statements at sign-up are
+translated in full and shown in Chinese alone. Because they are binding, an
+edit to their English must come with its translation in the same change.
+
+### What stays in English
+
+- Pages only the people running the deployment see: administration
+  (`/dashboard/admin`), first-run setup (`/setup`), and the API Playground,
+  which only internal accounts can open. The admin layout provides an English
+  `LocaleProvider` with no catalog and marks its container `lang="en"`, and
+  admin dates use the `en-US` locale.
+- The last-resort error screens (`global-error` and the boundary around the
+  whole application), which render outside the language provider.
+- Error messages from the gateway, model names, and Markdown written by
+  administrators (broadcasts, site updates).
 
 ## Chinese terminology
 
-Use the same Chinese for an English term on every page, and define a new term
-in the [Glossary](glossary.md) first. Terms that stay in English are written in
+Use the same Chinese for an English term everywhere, and define a new term in
+the [Glossary](glossary.md) first. Terms that stay in English are written in
 English in the Chinese text too.
+
+In the docs:
 
 | English | Chinese |
 |---|---|
@@ -158,3 +216,15 @@ English in the Chinese text too.
 | first-run setup | 首次运行设置 |
 | setup code | 设置码 |
 | provider, kind, adapter, router, overlay, manifest | provider、kind、adapter、router、overlay、manifest |
+
+In the console:
+
+| English | Chinese |
+|---|---|
+| Dashboard (the console) | 控制台 |
+| Log in / Sign up | 登录 / 注册 |
+| Usage | 用量 |
+| Quota | 额度 |
+| Docs Assistant | 文档助手 |
+| Status (page) | 服务状态 |
+| API key, token, model id, endpoint, Playground | unchanged |

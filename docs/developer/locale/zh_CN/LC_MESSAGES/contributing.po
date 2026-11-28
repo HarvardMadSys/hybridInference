@@ -9,7 +9,7 @@ msgid ""
 msgstr ""
 "Project-Id-Version:  HybridInference\n"
 "Report-Msgid-Bugs-To: \n"
-"POT-Creation-Date: 2026-10-18 03:18-0400\n"
+"POT-Creation-Date: 2026-11-28 06:31+0000\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language: zh_CN\n"
@@ -27,153 +27,129 @@ msgstr "参与贡献"
 #: ../developer/contributing.md:3
 msgid ""
 "HybridInference is MIT-licensed (see `LICENSE`) and contributions are "
-"welcome. This page covers what the repository contains, the checks a "
-"change has to pass, and how a change gets proposed."
-msgstr ""
-"HybridInference 采用 MIT 许可（见 "
-"`LICENSE`），欢迎贡献。本页介绍仓库里有哪些内容、改动需要通过哪些检查，以及如何提交改动。"
+"welcome. This page covers the checks a change must pass and how to "
+"propose it."
+msgstr "HybridInference 采用 MIT 许可证（见 `LICENSE`），欢迎贡献。本页说明改动必须通过哪些检查，以及如何提交改动。"
 
-#: ../developer/contributing.md:7
+#: ../developer/contributing.md:6
 msgid "Getting set up"
 msgstr "环境准备"
 
-#: ../developer/contributing.md:18
+#: ../developer/contributing.md:17
 msgid ""
-"Replace `yourname` in the branch name with your GitHub username. To keep "
-"your main checkout free for other work, create the branch in a separate "
-"[worktree](https://git-scm.com/docs/git-worktree) instead, for example "
-"`git worktree add -b <branch> ../hybridinference-<feature> upstream/dev`."
-" If you cloned the upstream repository rather than a fork, start from "
-"`origin/dev` and push to your fork remote."
+"Replace `yourname` with your GitHub username. To keep your main checkout "
+"free, create the branch in a [worktree](https://git-scm.com/docs/git-"
+"worktree) instead: `git worktree add -b <branch> "
+"../hybridinference-<feature> upstream/dev`. If you cloned upstream rather"
+" than a fork, start from `origin/dev` and push to your fork remote."
 msgstr ""
-"把分支名里的 `yourname` 换成你的 GitHub 用户名。如果想让主 checkout 空出来做别的事，可以改为在单独的 "
-"[worktree](https://git-scm.com/docs/git-worktree) 里创建分支，例如 `git worktree "
-"add -b <branch> ../hybridinference-<feature> upstream/dev`。如果你克隆的是上游仓库而不是"
-" fork，就从 `origin/dev` 开始，并推送到你 fork 的 remote。"
+"把 `yourname` 换成你的 GitHub 用户名。为了不占用主检出目录，可以改在 [worktree](https://git-"
+"scm.com/docs/git-worktree) 中创建分支：`git worktree add -b <branch> "
+"../hybridinference-<feature> upstream/dev`。如果你克隆的是上游仓库而不是 fork，请从 "
+"`origin/dev` 开始，并推送到你的 fork 远端。"
 
-#: ../developer/contributing.md:25
+#: ../developer/contributing.md:23
 msgid ""
 "`make setup-dev` creates `.venv` on Python 3.12, installs the project "
-"editable, syncs the `dev` dependency group and installs the pre-commit "
-"hooks. Full prerequisites and the ways to run the gateway are in "
-"[Installation](installation.md)."
+"editable with the `dev` dependency group, and installs the pre-commit "
+"hooks; [Installation](installation.md) has the full prerequisites. Every "
+"`make` target that runs Python goes through `uv run`; override it if you "
+"need to, for example `make lint UV_RUN=\"uv run --active\"`."
 msgstr ""
-"`make setup-dev` 会用 Python 3.12 创建 `.venv`，以可编辑方式安装本项目，同步 `dev` 依赖组，并装上 "
-"pre-commit 钩子。完整的前置条件和运行网关的各种方式见[安装](installation.md)。"
+"`make setup-dev` 用 Python 3.12 创建 `.venv`，以可编辑方式安装本项目及 `dev` 依赖组，并安装 pre-"
+"commit 钩子；完整的前置条件见[安装](installation.md)。所有运行 Python 的 `make` 目标都经由 `uv "
+"run`；需要时可以覆盖它，例如 `make lint UV_RUN=\"uv run --active\"`。"
 
-#: ../developer/contributing.md:30
-msgid ""
-"Every `make` target that touches Python runs through `uv run`. Override "
-"that if your environment needs it:"
-msgstr "所有涉及 Python 的 `make` 目标都通过 `uv run` 执行。如果你的环境需要，可以覆盖这个设置："
-
-#: ../developer/contributing.md:37
+#: ../developer/contributing.md:29
 msgid "Your first contribution"
 msgstr "完成第一次贡献"
 
+#: ../developer/contributing.md:31
+msgid ""
+"Run the [Quickstart](router-tutorial.md) or the [source development "
+"setup](installation.md#development-checkout-no-docker) first, so you can "
+"tell a failure your change causes from a setup problem. A local example "
+"deployment is enough. Pick a small reproducible bug, an uncovered "
+"configuration case or a confusing instruction, and search the issues and "
+"tests first. For a larger feature, open a feature request to agree on the"
+" behavior before writing it."
+msgstr ""
+"先运行[快速上手](router-tutorial.md)或[源码开发环境](installation.md#development-"
+"checkout-no-docker)，这样才能分清失败是你的改动造成的，还是环境问题。一个本地示例部署就够了。挑一个小而可复现的 "
+"bug、一个未覆盖的配置场景或一段令人困惑的说明，并先搜索 issue 和已有测试。较大的功能请先提交功能请求，在动手之前就行为达成一致。"
+
 #: ../developer/contributing.md:39
+#, python-brace-format
 msgid ""
-"Start by running the [Quickstart](router-tutorial.md) in your worktree, "
-"or use the [source development setup](installation.md#development-"
-"checkout-no-docker). Seeing the gateway answer one request makes it "
-"easier to tell whether a later failure comes from your change or from "
-"setup. A local example deployment is enough; contributing does not "
-"require access to a maintainer's server."
+"For a first exercise, test a routing-policy endpoint that uses an "
+"environment-variable default, such as "
+"`${TEST_ROUTING_ENDPOINT:-https://default.example}`. Read "
+"`_expand_env_value` and `load_routing_config` in "
+"`apps/backend/routing/config.py`, and the tests in "
+"`tests/unit/routing/test_config.py`. The gateway keeps its routing policy"
+" in the database as JSON; `load_routing_config` parses the same structure"
+" from a file, which keeps the test self-contained. An unset variable "
+"should give the default URL, and a set one should override it:"
 msgstr ""
-"先在你的 worktree 里把[快速开始](router-tutorial.md)跑一遍，或者按[源码开发环境](installation.md"
-"#development-checkout-no-"
-"docker)搭好环境。亲眼看到网关成功响应一次请求，之后遇到失败时就更容易判断是你的改动引起的，还是环境没配好。本地的示例部署就够用了，参与贡献不需要访问维护者的服务器。"
+"作为第一个练习，可以测试一个使用环境变量默认值的路由策略端点，例如 "
+"`${TEST_ROUTING_ENDPOINT:-https://default.example}`。阅读 "
+"`apps/backend/routing/config.py` 中的 `_expand_env_value` 和 "
+"`load_routing_config`，以及 `tests/unit/routing/test_config.py` "
+"中的测试。网关把路由策略以 JSON 形式保存在数据库中；`load_routing_config` "
+"从文件解析同样的结构，这让测试可以自成一体。未设置变量时应得到默认 URL，设置后应覆盖它："
 
-#: ../developer/contributing.md:45
+#: ../developer/contributing.md:67
 msgid ""
-"Choose a small reproducible bug, an uncovered configuration case, or a "
-"confusing instruction you can verify yourself. Search the issue tracker "
-"and existing tests first. For a larger feature, open a feature request to"
-" agree on the behavior before writing it; the repository provides bug and"
-" feature forms."
+"Add it only if the case is still uncovered. For a bug fix, make the "
+"regression test fail on the original code first, then change the smallest"
+" responsible function until it passes. Run the focused tests while "
+"editing:"
 msgstr ""
-"可以挑一个能复现的小 bug、一个还没有测试覆盖的配置场景，或者一处让人困惑、你又能自己验证的说明。先搜一下 issue tracker "
-"和现有测试。较大的功能，先提交功能请求，把行为讨论清楚再动手写；仓库提供了 bug 报告和功能请求的表单。"
+"只有在该场景尚未被覆盖时才添加这个测试。修复 bug "
+"时，先让回归测试在原始代码上失败，再修改最小的相关函数，直到测试通过。编辑过程中运行针对性的测试："
 
-#: ../developer/contributing.md:50
-msgid ""
-"For a concrete first exercise, cover a routing YAML endpoint that uses an"
-" environment-variable default. Read `_expand_env_value` and "
-"`load_routing_config` in `apps/backend/routing/config.py`, then the "
-"neighboring tests in `tests/unit/routing/test_config.py`. An unset "
-"variable should use the default URL; a set variable should override it. "
-"The test below exercises both through the public loader and restores the "
-"environment after each case:"
-msgstr ""
-"一个具体的入门练习：给路由 YAML 里使用环境变量默认值的端点补一个测试。先读 `apps/backend/routing/config.py`"
-" 里的 `_expand_env_value` 和 `load_routing_config`，再看 "
-"`tests/unit/routing/test_config.py` 里相邻的测试。变量没设置时应该用默认 "
-"URL，设置了就应该覆盖默认值。下面这个测试通过公开的加载函数把两种情况都测到，并在每个用例结束后恢复环境变量："
-
-#: ../developer/contributing.md:76
-msgid ""
-"Add it to that test file only if the case is still uncovered. This is a "
-"test-only contribution when the loader already behaves correctly. For a "
-"bug fix, first make your regression test fail on the original code, then "
-"change the smallest responsible function until it passes."
-msgstr ""
-"只有这个场景还没被覆盖时，才把它加进那个测试文件。如果加载器本来就行为正确，这就是一次只加测试的贡献。如果是修 "
-"bug，先写好回归测试，确认它在原来的代码上会失败，再去改负责这段逻辑的、范围最小的那个函数，直到测试通过。"
-
-#: ../developer/contributing.md:81
-msgid "Run the focused tests while editing:"
-msgstr "编辑时运行相关测试："
-
-#: ../developer/contributing.md:87
+#: ../developer/contributing.md:75
 msgid ""
 "For a runtime change, repeat the affected request against your local "
-"gateway. With the [Quickstart](router-tutorial.md)'s example running, "
-"`make build s=backend DISTRIBUTION=example` rebuilds changed backend "
-"code; `make smoke DISTRIBUTION=example` checks health, the model list and"
-" a routed completion. Exercise the changed behavior as well: a generic "
-"smoke passing does not establish that a particular bug is fixed. The "
-"[Quickstart](router-tutorial.md) explains the separate full-console check"
-" when your change involves accounts or the frontend."
+"gateway. With the Quickstart's example running, `make build s=backend "
+"DISTRIBUTION=example` rebuilds the backend, and `make smoke "
+"DISTRIBUTION=example` checks health, the model list and a routed "
+"completion. A passing smoke does not show that your bug is fixed, so "
+"exercise the changed behavior too."
 msgstr ""
-"如果改动影响运行时行为，请在本地网关上重放受影响的请求。在[快速开始](router-tutorial.md)的示例跑着的时候，`make "
-"build s=backend DISTRIBUTION=example` 会重新构建改动过的后端代码；`make smoke "
-"DISTRIBUTION=example` 会检查健康状态、模型列表和一次经过路由的 "
-"completion。还要实际验证改动的行为：通用的冒烟测试通过，并不能说明某个具体的 bug 已经修好。如果改动涉及账号或前端，[快速开始"
-"](router-tutorial.md)里介绍了单独的完整控制台检查。"
+"对于运行时改动，请在本地网关上重放受影响的请求。快速上手的示例运行时，`make build s=backend "
+"DISTRIBUTION=example` 会重新构建后端，`make smoke DISTRIBUTION=example` "
+"会检查健康状态、模型列表和一次经路由的补全。冒烟测试通过并不说明你的 bug 已修复，所以也要实际验证改动后的行为。"
 
-#: ../developer/contributing.md:96
+#: ../developer/contributing.md:81
 msgid ""
-"Before opening the PR, run `make format`, `make lint` and `make test`, "
-"plus the [frontend](#frontend) or [documentation](#documentation) checks "
-"when relevant. Review `git diff` so the patch contains only your intended"
-" files. Push your branch to your fork and open a PR targeting upstream "
-"`dev`, using a title such as `test(routing): cover endpoint environment "
-"defaults`. Fill in the existing PR template with the behavior covered and"
-" the exact checks you ran; include the reproduction and before/after "
-"result for a bug fix."
+"Before opening the pull request, run `make format`, `make lint` and `make"
+" test`, plus the [frontend](#frontend) or [documentation](#documentation)"
+" checks when relevant, and review `git diff`. Push to your fork and open "
+"a pull request against upstream `dev`, with a title such as "
+"`test(routing): cover endpoint environment defaults`. In the template, "
+"list the behavior covered and the checks you ran; for a bug fix, add the "
+"reproduction and the before and after result."
 msgstr ""
-"开 PR 之前，运行 `make format`、`make lint` 和 `make "
-"test`；如果涉及[前端](#frontend)或[文档](#documentation)，还要跑相应的检查。看一遍 `git "
-"diff`，确认补丁里只有你打算改的文件。把分支推到你的 fork，向上游的 `dev` 提 PR，标题类似 `test(routing): "
-"cover endpoint environment defaults`。按现有的 PR 模板写明覆盖了哪些行为、实际跑了哪些检查；如果是修 "
-"bug，还要写上复现步骤和修复前后的结果。"
+"提交 pull request 之前，运行 `make format`、`make lint` 和 `make "
+"test`，相关时再运行[前端](#frontend)或[文档](#documentation)检查，并检查 `git diff`。推送到你的 "
+"fork，向上游 `dev` 提交 pull request，标题例如 `test(routing): cover endpoint "
+"environment defaults`。在模板中列出覆盖的行为和你运行过的检查；修复 bug 时，附上复现步骤和修复前后的结果。"
 
-#: ../developer/contributing.md:104
+#: ../developer/contributing.md:89
 msgid "Repository layout"
 msgstr "仓库结构"
 
-#: ../developer/contributing.md:136
+#: ../developer/contributing.md:120
 msgid ""
-"The backend packages are `serving` and `routing`, rooted at "
-"`apps/backend`. `make setup-dev` installs them into `.venv`, so `uv run` "
-"or an activated `.venv` imports them from any directory; outside that "
-"environment, set `PYTHONPATH=apps/backend`."
+"The backend packages, `serving` and `routing`, are rooted at "
+"`apps/backend`. `make setup-dev` installs them into `.venv`; outside it, "
+"set `PYTHONPATH=apps/backend`."
 msgstr ""
-"后端的包是 `serving` 和 `routing`，根目录在 `apps/backend`。`make setup-dev` 会把它们装进 "
-"`.venv`，所以通过 `uv run` 或激活后的 `.venv`，在任何目录下都能 import 它们；在这个环境之外，需要设置 "
-"`PYTHONPATH=apps/backend`。"
+"后端包 `serving` 和 `routing` 的根目录是 `apps/backend`。`make setup-dev` 会把它们安装进 "
+"`.venv`；在该环境之外，请设置 `PYTHONPATH=apps/backend`。"
 
-#: ../developer/contributing.md:141
+#: ../developer/contributing.md:124
 msgid "Quality gates"
 msgstr "质量门禁"
 
@@ -187,7 +163,7 @@ msgstr "执行什么"
 
 #: ../developer/contributing.md
 msgid "`make format`"
-msgstr ""
+msgstr "`make format`"
 
 #: ../developer/contributing.md
 msgid "`ruff format .`, then `ruff check --fix --unsafe-fixes .`"
@@ -195,15 +171,15 @@ msgstr "`ruff format .`，然后 `ruff check --fix --unsafe-fixes .`"
 
 #: ../developer/contributing.md
 msgid "`make lint`"
-msgstr ""
+msgstr "`make lint`"
 
 #: ../developer/contributing.md
 msgid "`ruff format --check .`, `ruff check --no-fix .`, `pydocstyle`"
-msgstr ""
+msgstr "`ruff format --check .`、`ruff check --no-fix .`、`pydocstyle`"
 
 #: ../developer/contributing.md
 msgid "`make test`"
-msgstr ""
+msgstr "`make test`"
 
 #: ../developer/contributing.md
 msgid "`pytest -m \"not external and not dbtest\" -n auto --dist loadfile`"
@@ -211,86 +187,67 @@ msgstr "`pytest -m \"not external and not dbtest\" -n auto --dist loadfile`"
 
 #: ../developer/contributing.md
 msgid "`make check`"
-msgstr ""
+msgstr "`make check`"
 
 #: ../developer/contributing.md
 msgid "`lint` + `test`"
-msgstr ""
+msgstr "`lint` + `test`"
 
 #: ../developer/contributing.md
 msgid "`make all`"
-msgstr ""
+msgstr "`make all`"
 
 #: ../developer/contributing.md
 msgid "`format` + `check`"
-msgstr ""
+msgstr "`format` + `check`"
 
-#: ../developer/contributing.md:151
+#: ../developer/contributing.md:134
 msgid ""
-"`make all` does **not** type-check. `mypy` is in the `dev` dependency "
-"group and you may run it by hand, but `pyproject.toml` has no "
-"`[tool.mypy]` section and no target invokes it, so nothing enforces it."
+"Nothing type-checks the backend: `mypy` is in the `dev` group, but no "
+"target runs it and `pyproject.toml` has no `[tool.mypy]` section. Tooling"
+" enforces style: ruff (line length 100, target `py311`, rules `E`, `W`, "
+"`F`, `I`, `UP`, `B`, `C4`, `SIM`, `TCH` and `RUF`) and pydocstyle (Google"
+" convention), which skips `tests`, `.venv`, `node_modules`, "
+"`apps/frontend`, `ops` and `docs` and so enforces docstrings in "
+"`apps/backend`."
 msgstr ""
-"`make all` **不**做类型检查。`mypy` 在 `dev` 依赖组里，可以手动运行，但 `pyproject.toml` 里没有 "
-"`[tool.mypy]` 配置段，也没有哪个 target 会调用它，所以类型检查不是强制的。"
+"后端没有任何类型检查：`mypy` 在 `dev` 依赖组中，但没有目标运行它，`pyproject.toml` 也没有 "
+"`[tool.mypy]` 段。代码风格由工具强制：ruff（行宽 100，目标 `py311`，规则 "
+"`E`、`W`、`F`、`I`、`UP`、`B`、`C4`、`SIM`、`TCH` 和 `RUF`）和 pydocstyle（Google "
+"风格）；pydocstyle 跳过 `tests`、`.venv`、`node_modules`、`apps/frontend`、`ops` 和 "
+"`docs`，因此会强制 `apps/backend` 中的 docstring。"
 
-#: ../developer/contributing.md:155
-msgid "Style is enforced by tooling, not by review:"
-msgstr "代码风格由工具强制，而不是靠评审："
-
-#: ../developer/contributing.md:157
+#: ../developer/contributing.md:141
 msgid ""
-"**ruff**, line length 100, target `py311`, with "
-"`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/ `SIM`/`TCH`/`RUF` enabled (`[tool.ruff]` "
-"in `pyproject.toml`)."
+"The pre-commit hooks (`pre-commit run --all-files` runs them on the whole"
+" tree) cover ruff at the version CI uses, pydocstyle, `gitleaks` secret "
+"scanning, the standard whitespace, YAML, JSON and TOML checks, and eslint"
+" and prettier for `apps/frontend`."
 msgstr ""
-"**ruff**，行长 100，target 为 `py311`，启用 "
-"`E`/`W`/`F`/`I`/`UP`/`B`/`C4`/`SIM`/`TCH`/`RUF`（见 `pyproject.toml` 的 "
-"`[tool.ruff]`）。"
+"pre-commit 钩子（`pre-commit run --all-files` 会在整个仓库上运行它们）包括与 CI 相同版本的 "
+"ruff、pydocstyle、`gitleaks` 秘密扫描、标准的空白符以及 YAML、JSON、TOML 检查，还有针对 "
+"`apps/frontend` 的 eslint 和 prettier。"
 
-#: ../developer/contributing.md:159
-msgid ""
-"**pydocstyle**, Google convention. It skips `tests`, `.venv`, "
-"`node_modules`, `apps/frontend`, `ops` and `docs`, so docstrings are "
-"required in `apps/backend` and enforced there."
-msgstr ""
-"**pydocstyle**，采用 Google 风格。它会跳过 "
-"`tests`、`.venv`、`node_modules`、`apps/frontend`、`ops` 和 `docs`，所以 "
-"`apps/backend` 里必须写 docstring，并且会强制检查。"
-
-#: ../developer/contributing.md:163
-msgid "Pre-commit hooks run on commit and are installed by `make setup-dev`:"
-msgstr "pre-commit 钩子在 commit 时运行，由 `make setup-dev` 安装："
-
-#: ../developer/contributing.md:169
-msgid ""
-"They cover ruff (pinned to the version CI uses), pydocstyle, `gitleaks` "
-"secret scanning, the standard whitespace/YAML/JSON/TOML checks, and "
-"eslint + prettier for `apps/frontend`."
-msgstr ""
-"这些钩子包括 ruff（版本与 CI 保持一致）、pydocstyle、`gitleaks` "
-"密钥扫描、常规的空白字符/YAML/JSON/TOML 检查，以及 `apps/frontend` 的 eslint + prettier。"
-
-#: ../developer/contributing.md:173
+#: ../developer/contributing.md:146
 msgid ""
 "Before opening a pull request, run `make format` and make sure `make "
 "test` passes."
 msgstr "开 PR 之前，先跑 `make format`，并确认 `make test` 通过。"
 
-#: ../developer/contributing.md:176
+#: ../developer/contributing.md:149
 msgid "Tests"
 msgstr "测试"
 
-#: ../developer/contributing.md:178
+#: ../developer/contributing.md:151
 msgid ""
-"Markers are the contract; directories are a convention. The markers "
-"declared in `pyproject.toml` are `unit`, `integration`, `slow`, `perf`, "
-"`external` and `dbtest`, and `--strict-markers` means an undeclared "
-"marker is an error."
+"A test's marker decides its tier; the directories are a convention. The "
+"markers declared in `pyproject.toml` are `unit`, `integration`, "
+"`external` and `dbtest`, and `--strict-markers` makes any other marker an"
+" error."
 msgstr ""
-"测试分层以 marker 为准，目录只是惯例。`pyproject.toml` 里声明的 marker 有 "
-"`unit`、`integration`、`slow`、`perf`、`external` 和 `dbtest`；由于开启了 `--strict-"
-"markers`，使用未声明的 marker 会直接报错。"
+"测试属于哪一层由它的 marker 决定；目录只是约定。`pyproject.toml` 中声明的 marker 有 "
+"`unit`、`integration`、`external` 和 `dbtest`，而 `--strict-markers` 会让其他任何 "
+"marker 报错。"
 
 #: ../developer/contributing.md
 msgid "Tier"
@@ -314,11 +271,11 @@ msgstr "单元测试"
 
 #: ../developer/contributing.md
 msgid "`tests/unit/`"
-msgstr ""
+msgstr "`tests/unit/`"
 
 #: ../developer/contributing.md
 msgid "—"
-msgstr ""
+msgstr "—"
 
 #: ../developer/contributing.md
 msgid "yes"
@@ -330,7 +287,7 @@ msgstr "API 接口"
 
 #: ../developer/contributing.md
 msgid "`tests/api/`"
-msgstr ""
+msgstr "`tests/api/`"
 
 #: ../developer/contributing.md
 msgid "Server / observability"
@@ -338,7 +295,7 @@ msgstr "服务器 / 可观测性"
 
 #: ../developer/contributing.md
 msgid "`tests/servers/`, `tests/observability/`"
-msgstr ""
+msgstr "`tests/servers/`、`tests/observability/`"
 
 #: ../developer/contributing.md
 msgid "Needs a live Postgres"
@@ -350,7 +307,7 @@ msgstr "主要在 `tests/integration/`"
 
 #: ../developer/contributing.md
 msgid "`dbtest`"
-msgstr ""
+msgstr "`dbtest`"
 
 #: ../developer/contributing.md
 msgid "no"
@@ -362,215 +319,195 @@ msgstr "会打到真实的外部服务器"
 
 #: ../developer/contributing.md
 msgid "`tests/external/`"
-msgstr ""
+msgstr "`tests/external/`"
 
 #: ../developer/contributing.md
 msgid "`external`"
-msgstr ""
+msgstr "`external`"
 
-#: ../developer/contributing.md:190
+#: ../developer/contributing.md:163
 msgid ""
-"`testpaths` is `[\"tests\", \"distributions\"]`, so overlay-owned tests "
-"run in the default suite alongside `tests/`."
+"`testpaths` is `[\"tests\", \"distributions\"]`, so tests an overlay "
+"ships run in the default suite too."
 msgstr ""
-"`testpaths` 是 `[\"tests\", \"distributions\"]`，因此 overlay 自带的测试会和 "
-"`tests/` 一起在默认测试集中运行。"
+"`testpaths` 为 `[\"tests\", \"distributions\"]`，因此 overlay "
+"自带的测试也会在默认测试集中运行。"
 
-#: ../developer/contributing.md:205
+#: ../developer/contributing.md:178
 msgid ""
-"The `dbtest` tier needs a reachable PostgreSQL. Every test finds it "
-"through `tests/fixtures/postgres.py`, which reads `TEST_DB_HOST`, "
-"`TEST_DB_PORT`, `TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` "
-"(defaulting to `localhost:5432`, `postgres`/`postgres` and "
-"`hybridinference_test_db`). Starting just the database container is "
-"enough:"
+"The `dbtest` tier needs PostgreSQL. With Docker, `make test-db-local` "
+"needs no setup: it starts one container for the whole machine "
+"(`hybridinference-test-postgres` on `127.0.0.1:54329`, data in memory), "
+"gives each checkout its own database, prepares it, and runs the tier with"
+" one worker per CPU, up to eight. The container and databases are kept, "
+"so a re-run takes about 15 seconds."
 msgstr ""
-"`dbtest` 这一层需要能连上的 PostgreSQL。所有测试都通过 "
-"`tests/fixtures/postgres.py` 找到它，这个模块读取 `TEST_DB_HOST`、"
-"`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD` 和 `TEST_DB_NAME`"
-"（默认是 `localhost:5432`、`postgres`/`postgres` 和 "
+"`dbtest` 层需要 PostgreSQL。有 Docker 时，`make test-db-local` "
+"无需任何准备：它为整台机器启动一个容器（`hybridinference-test-postgres`，监听 "
+"`127.0.0.1:54329`，数据保存在内存中），为每个检出目录创建独立的数据库并完成准备，再以每个 CPU 一个 "
+"worker（最多八个）运行这一层。容器和数据库会保留，因此再次运行大约只需 15 秒。"
+
+#: ../developer/contributing.md:194
+msgid ""
+"Otherwise, every test finds the database through "
+"`tests/fixtures/postgres.py`, from `TEST_DB_HOST`, `TEST_DB_PORT`, "
+"`TEST_DB_USER`, `TEST_DB_PASSWORD` and `TEST_DB_NAME` (defaults "
+"`localhost:5432`, `postgres`/`postgres`, `hybridinference_test_db`). "
+"Starting the database container is enough:"
+msgstr ""
+"否则，每个测试都通过 `tests/fixtures/postgres.py` 找到数据库，读取 "
+"`TEST_DB_HOST`、`TEST_DB_PORT`、`TEST_DB_USER`、`TEST_DB_PASSWORD` 和 "
+"`TEST_DB_NAME`（默认分别为 `localhost:5432`、`postgres`/`postgres` 和 "
 "`hybridinference_test_db`）。只启动数据库容器就够了："
 
-#: ../developer/contributing.md:215
+#: ../developer/contributing.md:203
 msgid ""
-"`make test-db` prepares the schema first and sets `TEST_DB_REQUIRED=1`, "
-"so a database test that cannot connect fails instead of skipping, and "
-"`TEST_DB_HOST` and `TEST_DB_PORT` must be set explicitly. CI sets the "
-"same variable. No setup step is needed otherwise: each test process "
-"creates and migrates its own database on first use. `uv run python -m "
-"tests.fixtures.postgres prepare --workers N` does the same up front, which"
-" is faster before a run with `-n N`."
+"Each test process creates and migrates its own database on first use; `uv"
+" run python -m tests.fixtures.postgres prepare --workers N` does it up "
+"front before a run with `-n N`. `make test-db` sets `TEST_DB_REQUIRED=1`,"
+" as CI does: a database test that cannot connect then fails instead of "
+"skipping, and `TEST_DB_HOST` and `TEST_DB_PORT` must be set."
 msgstr ""
-"`make test-db` 会先准备表结构，并设置 `TEST_DB_REQUIRED=1`：连不上数据库的"
-"测试会失败而不是跳过，而且必须显式设置 `TEST_DB_HOST` 和 `TEST_DB_PORT`。"
-"CI 也设置了这个变量。除此之外不需要任何准备步骤：每个测试进程会在第一次使用时"
-"自己创建并迁移它的数据库。`uv run python -m tests.fixtures.postgres prepare "
-"--workers N` 会预先完成同样的工作，在用 `-n N` 运行之前执行会更快。"
+"每个测试进程在第一次使用时创建并迁移自己的数据库；在用 `-n N` 运行之前，`uv run python -m "
+"tests.fixtures.postgres prepare --workers N` 会提前完成这一步。`make test-db` 与 CI"
+" 一样设置 `TEST_DB_REQUIRED=1`：此时连不上数据库的测试会失败而不是跳过，并且必须设置 `TEST_DB_HOST` 和 "
+"`TEST_DB_PORT`。"
 
-#: ../developer/contributing.md:222
+#: ../developer/contributing.md:209
 msgid ""
-"With Docker, `make test-db-local` needs no setup at all. It starts one "
-"PostgreSQL container for the whole machine (`hybridinference-test-"
-"postgres` on `127.0.0.1:54329`, data in memory), gives each checkout its "
-"own database named from its path, prepares it, and runs the tier with one"
-" worker per CPU, up to eight. The container and the databases are kept "
-"between runs, so a re-run only re-reads the schema; the whole tier takes "
-"about 15 seconds."
+"`make test` runs files in parallel. Run serially to debug one failure, "
+"but check a suspected environment leak under `-n auto` as well: leaks "
+"between files show up only in the parallel run."
 msgstr ""
-"有 Docker 的话，`make test-db-local` 不需要任何准备。它在整台机器上只启动一个 "
-"PostgreSQL 容器（`hybridinference-test-postgres`，监听 `127.0.0.1:54329`，"
-"数据放在内存里），按路径给每个 checkout 一个自己的数据库，准备好表结构，再按每个 "
-"CPU 一个 worker、最多八个的并行度运行这一层测试。容器和数据库在两次运行之间都会保留，"
-"所以再次运行只需重新读取表结构；整层测试大约 15 秒。"
+"`make test` 会并行运行测试文件。调试单个失败时请串行运行，但怀疑是环境变量泄漏时，也要在 `-n auto` "
+"下检查：文件之间的泄漏只在并行运行时出现。"
 
-#: ../developer/contributing.md:221
-msgid ""
-"`make test` parallelises with `pytest-xdist` at file granularity. Run "
-"serially when you are debugging a specific failure, but check a suspected"
-" env-leak failure under `-n auto` too — cross-file environment leakage "
-"only shows up under the parallel run."
-msgstr ""
-"`make test` 用 `pytest-xdist` 以文件为粒度并行。调查某个具体失败时可以串行跑，但怀疑是环境变量泄漏引起的失败，还要在 "
-"`-n auto` 下再查一遍——跨文件的环境泄漏只有在并行运行时才会暴露。"
-
-#: ../developer/contributing.md:226
+#: ../developer/contributing.md:213
 msgid "Frontend"
 msgstr "前端"
 
-#: ../developer/contributing.md:228
+#: ../developer/contributing.md:215
 msgid "The console's gates are separate from the Python ones:"
 msgstr "控制台的门禁与 Python 那套是分开的："
 
-#: ../developer/contributing.md:240
+#: ../developer/contributing.md:227
 msgid ""
-"CI additionally runs `npm run format:check` (prettier) and `npm audit "
-"--omit=dev --audit-level=high` in `apps/frontend`."
+"CI also runs `npm run format:check` (prettier) and `npm audit --omit=dev "
+"--audit-level=high` in `apps/frontend`."
 msgstr ""
-"CI 还会在 `apps/frontend` 里额外运行 `npm run format:check`（prettier）和 `npm audit"
-" --omit=dev --audit-level=high`。"
+"CI 还会在 `apps/frontend` 中运行 `npm run format:check`（prettier）和 `npm audit "
+"--omit=dev --audit-level=high`。"
 
-#: ../developer/contributing.md:243
+#: ../developer/contributing.md:230
 msgid "Documentation"
 msgstr "文档"
 
+#: ../developer/contributing.md:232
+msgid ""
+"These pages are MyST Markdown built by Sphinx from `docs/developer/`, "
+"with `docs/developer/index.rst` as the root toctree. Before pushing, run "
+"the checks CI runs:"
+msgstr ""
+"这些页面是 MyST Markdown，由 Sphinx 从 `docs/developer/` 构建，根 toctree 是 "
+"`docs/developer/index.rst`。推送之前，运行 CI 所做的检查："
+
+#: ../developer/contributing.md:240
+msgid ""
+"It builds the English and Chinese sites with warnings as errors, checks "
+"local links, and checks that no translation has fallen back to English. "
+"`make docs` builds the site alone. Add a new page to "
+"`docs/developer/index.rst`; an orphan page is a warning, and warnings "
+"fail the build."
+msgstr ""
+"它以警告即错误的方式构建英文和中文站点，检查本地链接，并检查没有译文悄悄退回英文。`make docs` 只构建站点。新增页面要加入 "
+"`docs/developer/index.rst`；孤立页面会产生警告，而警告会使构建失败。"
+
 #: ../developer/contributing.md:245
-msgid ""
-"These pages are MyST Markdown compiled by Sphinx from `docs/developer/`, "
-"with `docs/developer/index.rst` as the root toctree. Build them, and run "
-"the checks CI runs, from the repository root:"
-msgstr ""
-"这些页面用 MyST Markdown 编写，由 Sphinx 从 `docs/developer/` 编译，根 toctree 是 "
-"`docs/developer/index.rst`。在仓库根目录下构建文档，并运行 CI 会跑的检查："
-
-#: ../developer/contributing.md:253
-msgid ""
-"That builds the English and Chinese sites with warnings treated as "
-"errors, checks the local links in every Markdown file, and checks that no"
-" translated paragraph has quietly fallen back to English. A broken cross-"
-"reference or a page missing from the toctree fails it, so run it before "
-"pushing. Sphinx, `myst-parser` and `sphinx-rtd-theme` come from the `dev`"
-" dependency group, so `make setup-dev` is enough to build. `make docs` "
-"builds the site alone."
-msgstr ""
-"它会把警告当作错误来构建英文和中文站点，检查每个 Markdown "
-"文件里的本地链接，并检查有没有哪段译文悄悄回退成了英文。交叉引用断了、或者某个页面没加进 "
-"toctree，它都会失败，所以推送之前先跑一遍。Sphinx、`myst-parser` 和 `sphinx-rtd-theme` 都来自 "
-"`dev` 依赖组，所以执行过 `make setup-dev` 就能构建。`make docs` 只构建站点。"
-
-#: ../developer/contributing.md:260
-msgid ""
-"Add a new page to `docs/developer/index.rst` as well as writing it; an "
-"orphan file is a warning, and warnings are errors in CI."
-msgstr "新写一个页面，还要把它加进 `docs/developer/index.rst`；没加进去的孤立文件会产生警告，而 CI 会把警告当作错误。"
-
-#: ../developer/contributing.md:263
 msgid "Writing a page"
 msgstr "撰写页面"
 
-#: ../developer/contributing.md:265
-msgid ""
-"These pages ship with the source, and most readers arrive from a search "
-"or the sidebar with one task in mind. Write for that reader:"
-msgstr "这些页面随源码一起发布，大多数读者是从搜索结果或侧边栏进来的，心里只想着一件要办的事。写的时候要想着这样的读者："
+#: ../developer/contributing.md:247
+msgid "Most readers arrive from a search or the sidebar with one task in mind:"
+msgstr "大多数读者从搜索或侧边栏进来，心里只有一个任务："
 
-#: ../developer/contributing.md:268
+#: ../developer/contributing.md:249
 msgid ""
 "**Say who the page is for and what they can do after reading it**, in the"
 " first paragraph."
 msgstr "**说明页面写给谁、读完之后能做什么**，放在第一段。"
 
-#: ../developer/contributing.md:270
+#: ../developer/contributing.md:251
 msgid ""
 "**Lead with the action or the answer.** Put exceptions and edge cases "
-"after it, in a note if they run long, and do not open a section with what"
-" the software lacks."
-msgstr "**先给出操作步骤或答案**。例外和边界情况放在后面，篇幅长的话放进 note；小节开头也不要先讲软件缺少什么。"
+"after it, and do not open a section with what the software lacks."
+msgstr "**先给出操作或答案。** 例外和边界情况放在后面，也不要用软件缺少什么来开头。"
 
-#: ../developer/contributing.md:273
+#: ../developer/contributing.md:253
 msgid ""
 "**Name a file only when the reader will open or edit it.** Do not cite "
 "functions or line numbers to prove a statement; tests and review do that."
 msgstr "**只有读者会打开或编辑某个文件时，才写出它的文件名**。不要为了证明某个说法去引用函数或行号；那是测试和评审的事。"
 
-#: ../developer/contributing.md:275
+#: ../developer/contributing.md:255
 msgid ""
-"**Describe the software as it is now.** What changed, how it used to work"
-" and how you checked belong in the pull request or the release notes."
-msgstr "**描述软件现在的样子**。改了什么、以前是怎么工作的、你是怎么验证的，这些该写进 PR 或发布说明。"
+"**Describe the software as it is now.** What changed and how you checked "
+"belong in the pull request or the release notes."
+msgstr "**描述软件现在的样子。** 改了什么、如何验证的，应写在 pull request 或发布说明中。"
 
-#: ../developer/contributing.md:278
+#: ../developer/contributing.md:257
 msgid ""
-"**Leave out the details of any one installation** — its hosts, model ids,"
-" accounts and measurements. They belong in that distribution's own "
+"**Leave out the details of any one installation**: its hosts, model ids, "
+"accounts and measurements belong in that distribution's own "
 "documentation."
-msgstr "**不要写某个具体部署的细节**——它的主机、模型 id、账号和测量数据。这些属于那个发行版自己的文档。"
+msgstr "**不要写入任何一个具体部署的细节**：它的主机、模型 id、账号和测量数据属于该发行版自己的文档。"
 
-#: ../developer/contributing.md:281
+#: ../developer/contributing.md:259
 msgid ""
-"**Use the words in the [Glossary](glossary.md)**, and add a term there "
-"before relying on a new one."
-msgstr "**用[术语表](glossary.md)里的词**；要用一个新术语，先把它加进术语表。"
+"**Use the words in the [Glossary](glossary.md)**, and add a new term "
+"there first."
+msgstr "**使用[术语表](glossary.md)中的用词**，新术语先加到术语表里。"
 
-#: ../developer/contributing.md:283
+#: ../developer/contributing.md:261
 msgid ""
 "**Keep a paragraph to one idea.** When it piles up conditions, make it a "
 "list or a table."
 msgstr "**一个段落只讲一件事**。条件一多，就改成列表或表格。"
 
-#: ../developer/contributing.md:285
+#: ../developer/contributing.md:263
 msgid ""
 "**When a setting does not do what its name suggests, say so in one "
 "sentence**, add it to [Settings that currently have no "
 "effect](configuration.md#settings-that-currently-have-no-effect), and "
-"open an issue, rather than explaining the internals at length."
+"open an issue."
 msgstr ""
-"**如果某个设置的实际作用和它的名字对不上，用一句话说明**，把它加进[目前不生效的设置](configuration.md#settings-"
-"that-currently-have-no-effect)，并提一个 issue，而不是长篇解释内部实现。"
+"**如果某个设置项的实际作用与名字不符，用一句话说明**，把它加到[目前不起作用的设置项](configuration.md#settings-"
+"that-currently-have-no-effect)中，并提交一个 issue。"
 
-#: ../developer/contributing.md:290
+#: ../developer/contributing.md:268
 msgid "Translations"
 msgstr "翻译"
 
-#: ../developer/contributing.md:292
+#: ../developer/contributing.md:270
 msgid ""
-"The site is published in English and Chinese, and an English edit changes"
-" the paragraph a translation is attached to. Update the Chinese in the "
-"same pull request; [Translating the Docs](translations.md) explains how."
+"The site is published in English and Chinese, and a translation is "
+"attached to each English paragraph. Update the Chinese in the same pull "
+"request; [Translating the Docs and the Console](translations.md) explains"
+" how."
 msgstr ""
-"站点同时发布英文版和中文版。译文是挂在英文段落上的，改动英文段落，挂在上面的译文就对不上了。请在同一个 PR "
-"里更新中文，具体做法见[翻译文档](translations.md)。"
+"站点以英文和中文发布，译文挂在每个英文段落上。请在同一个 pull request "
+"中更新中文；做法见[翻译文档与控制台](translations.md)。"
 
-#: ../developer/contributing.md:296
+#: ../developer/contributing.md:274
 msgid "Proposing a change"
 msgstr "提出改动"
 
-#: ../developer/contributing.md:298
+#: ../developer/contributing.md:276
 msgid ""
 "**Branch off `dev`, not `main`.** Pull requests target `dev`; CI runs on "
 "pull requests against `main` and `dev`."
 msgstr "**从 `dev` 开分支，而不是 `main`**。PR 提向 `dev`；针对 `main` 和 `dev` 的 PR 都会跑 CI。"
 
-#: ../developer/contributing.md:300
+#: ../developer/contributing.md:278
 msgid ""
 "**Name branches `<user>/<scope>/<feature-name>`**, e.g. `jane/routing"
 "/weighted-fallback`."
@@ -578,47 +515,45 @@ msgstr ""
 "**分支命名为 `<user>/<scope>/<feature-name>`**，例如 `jane/routing/weighted-"
 "fallback`。"
 
-#: ../developer/contributing.md:302
+#: ../developer/contributing.md:280
 msgid ""
-"**Write commit and pull-request titles as conventional commits** — "
+"**Write commit and pull-request titles as conventional commits**: "
 "`type(scope): summary`, e.g. `fix(routing): keep the fallback route on "
-"429`. History on `dev` is squashed one commit per pull request, so the "
-"title you write becomes the commit subject — `git log --oneline` shows "
-"the shape to match."
+"429`. Each pull request is squashed into one commit on `dev`, so its "
+"title becomes the commit subject."
 msgstr ""
-"**commit 和 PR 的标题写成 conventional commits 的形式**——`type(scope): summary`，例如"
-" `fix(routing): keep the fallback route on 429`。`dev` 上的历史按每个 PR 压成一个 "
-"commit，所以你写的 PR 标题就是最终的 commit 标题，格式参照 `git log --oneline` 即可。"
+"**提交和 pull request 的标题使用 conventional commits 格式**：`type(scope): "
+"summary`，例如 `fix(routing): keep the fallback route on 429`。每个 pull "
+"request 在 `dev` 上会被压缩成一个提交，因此它的标题就是提交的标题。"
 
-#: ../developer/contributing.md:307
+#: ../developer/contributing.md:284
 msgid ""
 "Keep a pull request to one feature or fix, update the docs in the same "
-"change, and add tests for new behaviour."
-msgstr "一个 PR 只做一个功能或一处修复，文档在同一个 PR 里一起更新，并为新行为补上测试。"
+"change, and add tests for new behavior."
+msgstr "一个 pull request 只做一个功能或一个修复，在同一个改动中更新文档，并为新行为添加测试。"
 
-#: ../developer/contributing.md:309
+#: ../developer/contributing.md:286
 msgid ""
 "Call out changes to API behavior, configuration, defaults or database "
-"schema in the PR, with migration steps and rollback limits. See [Releases"
-" and upgrades](releases.md#compatibility-and-breaking-changes)."
+"schema, with migration steps and rollback limits. See [Releases and "
+"upgrades](releases.md#compatibility-and-breaking-changes)."
 msgstr ""
-"在 PR 中明确说明 API 行为、配置、默认值或数据库 schema "
-"的变化，并提供迁移步骤和回滚限制。参见[发布与升级](releases.md#compatibility-and-breaking-"
-"changes)。"
+"对 API 行为、配置、默认值或数据库结构的改动，要在 PR 中明确指出，并写明迁移步骤和回滚限制。见[发布与升级](releases.md"
+"#compatibility-and-breaking-changes)。"
 
-#: ../developer/contributing.md:312
+#: ../developer/contributing.md:289
 msgid "Do not commit to `main` or `dev` directly."
 msgstr "不要直接向 `main` 或 `dev` 提交。"
 
-#: ../developer/contributing.md:314
+#: ../developer/contributing.md:291
 msgid "What CI will run"
 msgstr "CI 会跑什么"
 
-#: ../developer/contributing.md:316
+#: ../developer/contributing.md:293
 msgid ""
-"The `CI` workflow (`.github/workflows/ci.yml`) classifies which paths a "
-"pull request touched and then runs only the relevant jobs:"
-msgstr "`CI` 这个 workflow（`.github/workflows/ci.yml`）会先判断 PR 改动了哪些路径，再只运行相关的 job："
+"The `CI` workflow (`.github/workflows/ci.yml`) runs the jobs relevant to "
+"the paths a pull request touches:"
+msgstr "`CI` 工作流（`.github/workflows/ci.yml`）按 pull request 改动的路径，运行相关的任务："
 
 #: ../developer/contributing.md
 msgid "Job"
@@ -630,19 +565,19 @@ msgstr "作用"
 
 #: ../developer/contributing.md
 msgid "Backend Quality"
-msgstr ""
+msgstr "Backend Quality"
 
 #: ../developer/contributing.md
 msgid "`ruff format --check`, `ruff check --no-fix`, `pydocstyle`"
-msgstr ""
+msgstr "`ruff format --check`、`ruff check --no-fix`、`pydocstyle`"
 
 #: ../developer/contributing.md
 msgid "Frontend Quality"
-msgstr ""
+msgstr "Frontend Quality"
 
 #: ../developer/contributing.md
 msgid "prettier, eslint, `tsc --noEmit`, vitest, `npm audit`"
-msgstr ""
+msgstr "prettier、eslint、`tsc --noEmit`、vitest、`npm audit`"
 
 #: ../developer/contributing.md
 msgid "Site UI Containers"
@@ -657,30 +592,25 @@ msgstr "分别构建不带模块和带示例 Site UI 模块的前端镜像，确
 
 #: ../developer/contributing.md
 msgid "Docs Build"
-msgstr ""
+msgstr "Docs Build"
 
 #: ../developer/contributing.md
-msgid ""
-"`make docs-verify`: both languages built with warnings as errors, local "
-"links checked, and every translation checked against the English"
-msgstr "`make docs-verify`：构建两种语言并把警告当作错误，检查本地链接，并把每条译文都和英文对照检查"
+msgid "`make docs-verify`"
+msgstr "`make docs-verify`"
 
 #: ../developer/contributing.md
 msgid "`test`"
-msgstr ""
+msgstr "`test`"
 
 #: ../developer/contributing.md
 msgid ""
-"pytest across four shards with a PostgreSQL service, `-m \"not "
-"external\"` — so the `dbtest` tier does run in CI even though it is "
-"excluded from `make test`"
-msgstr ""
-"分四个分片跑 pytest，带 PostgreSQL 服务，参数为 `-m \"not external\"`——所以 `dbtest` "
-"这一层虽然不在 `make test` 里，CI 却会跑"
+"pytest in four shards for the default selection, plus a `db` shard that "
+"runs the `dbtest` tier against PostgreSQL"
+msgstr "pytest 分四个分片运行默认测试集，另有一个 `db` 分片针对 PostgreSQL 运行 `dbtest` 层"
 
 #: ../developer/contributing.md
 msgid "Security Scan"
-msgstr ""
+msgstr "Security Scan"
 
 #: ../developer/contributing.md
 msgid ""
@@ -690,7 +620,7 @@ msgstr "对整棵代码树跑 `gitleaks detect`，再对导出的生产依赖清
 
 #: ../developer/contributing.md
 msgid "`docker-build`"
-msgstr ""
+msgstr "`docker-build`"
 
 #: ../developer/contributing.md
 msgid "builds the affected images, then starts the runnable example and smokes it"
@@ -698,7 +628,7 @@ msgstr "构建受影响的镜像，再启动可运行的示例并做冒烟测试
 
 #: ../developer/contributing.md
 msgid "Tutorial E2E"
-msgstr ""
+msgstr "Tutorial E2E"
 
 #: ../developer/contributing.md
 msgid ""
@@ -708,25 +638,23 @@ msgstr "运行快速开始里的 `make up` → `make smoke` → `make demo` → 
 
 #: ../developer/contributing.md
 msgid "CI Gate"
-msgstr ""
+msgstr "CI Gate"
 
 #: ../developer/contributing.md
 msgid "aggregates the results of the jobs above into one check"
 msgstr "把上面各个 job 的结果汇总成一个检查项"
 
-#: ../developer/contributing.md:331
+#: ../developer/contributing.md:308
 msgid ""
-"Because CI includes `dbtest`, a change to storage or auth can be green "
-"locally and red in CI. Run `make test-db` against a local Postgres when "
-"you touch `apps/backend/serving/storage/` or the auth surface."
+"Because CI runs `dbtest`, a change can pass `make test` and fail in CI. "
+"When you touch storage (`apps/backend/serving/storage/`), SQL, the "
+"schema, auth or a database test, run `make test-db-local`, or `make test-"
+"db` against your own PostgreSQL, before you push. If a pull request shows"
+" no CI run at all, check it for a merge conflict: a conflicted pull "
+"request does not trigger the `pull_request` workflow."
 msgstr ""
-"因为 CI 包含 `dbtest`，改动存储或认证时，可能本地全绿而 CI 报红。改动 "
-"`apps/backend/serving/storage/` 或认证相关接口时，要对着本地 Postgres 跑一遍 `make test-"
-"db`。"
+"由于 CI 会运行 `dbtest`，一个改动可能通过 `make test` 却在 CI "
+"中失败。修改存储（`apps/backend/serving/storage/`）、SQL、数据库结构、认证或数据库测试时，请在推送之前运行 "
+"`make test-db-local`，或针对你自己的 PostgreSQL 运行 `make test-db`。如果 pull request"
+" 完全没有 CI 运行记录，先检查是否有合并冲突：有冲突的 pull request 不会触发 `pull_request` 工作流。"
 
-#: ../developer/contributing.md:335
-msgid ""
-"If a pull request shows no CI run at all, check whether it has a merge "
-"conflict first — a conflicted pull request does not trigger the "
-"`pull_request` workflow."
-msgstr "如果一个 PR 一次 CI 运行都没有，先看它是不是有合并冲突——有冲突的 PR 不会触发 `pull_request` workflow。"
