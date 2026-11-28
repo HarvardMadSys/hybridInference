@@ -3,7 +3,7 @@
   "hostname": "node-a",
   "region": "lab",
   "cluster": "main",
-  "flush_interval": 5,
+  "flush_interval": 1,
   "sglang": [
     {
       "url": "http://127.0.0.1:30000/metrics",

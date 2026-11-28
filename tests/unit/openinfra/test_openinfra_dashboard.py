@@ -55,9 +55,12 @@ def test_clamp_hours(hours, clamped):
 @pytest.mark.parametrize(
     ("hours", "grain"),
     [
-        (0.25, store.GRAIN_1M),
+        (0.25, 5_000),
+        (0.5, 10_000),
+        (1, 20_000),
         (2, store.GRAIN_1M),
-        (2.25, store.GRAIN_20M),
+        (3, store.GRAIN_1M),
+        (3.25, store.GRAIN_20M),
         (24, store.GRAIN_20M),
         (25, store.GRAIN_1H),
         (168, store.GRAIN_1H),

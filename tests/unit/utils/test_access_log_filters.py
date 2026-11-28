@@ -6,7 +6,11 @@ import logging
 
 import pytest
 
-from serving.utils.logging import _CallbackQueryFilter, attach_quiet_access_filter
+from serving.utils.logging import (
+    _CallbackQueryFilter,
+    _QuietPathFilter,
+    attach_quiet_access_filter,
+)
 
 
 def _access_record(path: str, status: int = 302) -> logging.LogRecord:
@@ -95,3 +99,20 @@ def test_the_filter_is_attached_once_with_the_access_log_filters():
         assert len(attached) == 1
     finally:
         access.filters[:] = before
+
+
+@pytest.mark.parametrize(
+    ("status", "logged"), [(200, False), (400, True), (401, True), (503, True)]
+)
+def test_an_openinfra_snapshot_is_logged_only_when_refused(monkeypatch, status, logged):
+    # Reporters post every second from every GPU host.
+    monkeypatch.setattr(logging.root, "level", logging.INFO)
+    record = _access_record("/internal/openinfra/ingest", status=status)
+
+    assert _QuietPathFilter().filter(record) is logged
+
+
+def test_every_snapshot_is_logged_at_debug(monkeypatch):
+    monkeypatch.setattr(logging.root, "level", logging.DEBUG)
+
+    assert _QuietPathFilter().filter(_access_record("/internal/openinfra/ingest", 200)) is True

@@ -142,10 +142,14 @@ export function yOf(layout: ChartLayout, v: number): number {
 
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
-/** An axis time: the clock within a day and a half, then the date, then the year. */
+/**
+ * An axis time: the clock to the second within half an hour, to the minute
+ * within a day and a half, then the date, then the year.
+ */
 export function formatTick(t: number, spanMs: number): string {
   const d = new Date(t);
   const hm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  if (spanMs <= 30 * MINUTE) return `${hm}:${pad2(d.getSeconds())}`;
   if (spanMs <= 36 * HOUR) return hm;
   if (spanMs <= 40 * DAY) return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;

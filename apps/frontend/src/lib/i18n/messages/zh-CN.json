@@ -2736,8 +2736,8 @@
     "text": "{count} 秒前"
   },
   "openinfra.chart.cache_hit.desc": {
-    "source": "Prefix-cache hit rate in percent this sample: 100 × cached prefill tokens / (cached + new). Idle intervals with no tokens are left blank.",
-    "text": "本次采样的前缀缓存命中率（百分比）：100 × 命中缓存的预填充 token /（命中 + 新算）。没有 token 的空闲时段留空。"
+    "source": "Prefix-cache hit rate in percent: 100 × cached prefill tokens / (cached + new), averaged over each point’s interval. Idle intervals with no tokens are left blank.",
+    "text": "前缀缓存命中率（百分比）：100 × 命中缓存的预填充 token /（命中 + 新算），按每个点的时间段取平均。没有 token 的空闲时段留空。"
   },
   "openinfra.chart.cache_hit.title": {
     "source": "Cache hit",
@@ -2772,8 +2772,8 @@
     "text": "关闭"
   },
   "openinfra.chart.cpu.desc": {
-    "source": "Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is one scrape, not a window average.",
-    "text": "主机 CPU 利用率（百分比）和来自 /proc 的 1 分钟平均负载。load1 不是百分比。每个点是一次采集，不是窗口平均值。"
+    "source": "Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is the mean of the per-second samples in its interval.",
+    "text": "主机 CPU 利用率（百分比）和来自 /proc 的 1 分钟平均负载。load1 不是百分比。每个点是其时间段内每秒样本的平均值。"
   },
   "openinfra.chart.cpu.title": {
     "source": "CPU",
@@ -2824,8 +2824,8 @@
     "text": "DCGM Tensor"
   },
   "openinfra.chart.e2e.desc": {
-    "source": "End-to-end request latency in seconds, from arrival to completion, over requests finished in this sample.",
-    "text": "端到端请求延迟（秒），从到达到完成，统计本次采样内完成的请求。"
+    "source": "End-to-end request latency in seconds, from arrival to completion, over requests finished in each point’s interval.",
+    "text": "端到端请求延迟（秒），从到达到完成，统计每个点的时间段内完成的请求。"
   },
   "openinfra.chart.e2e.title": {
     "source": "E2E latency",
@@ -2860,8 +2860,8 @@
     "text": "GPU 功耗"
   },
   "openinfra.chart.gpu_sm.desc": {
-    "source": "SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is one scrape, not a window average.",
-    "text": "来自 nvidia-smi 的 SM（流式多处理器）利用率百分比。每个点是一次采集，不是窗口平均值。"
+    "source": "SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is the mean of the per-second samples in its interval.",
+    "text": "来自 nvidia-smi 的 SM（流式多处理器）利用率百分比。每个点是其时间段内每秒样本的平均值。"
   },
   "openinfra.chart.gpu_sm.title": {
     "source": "GPU SM",
@@ -2952,8 +2952,8 @@
     "text": "GB"
   },
   "openinfra.chart.requests.desc": {
-    "source": "Count of requests currently running vs waiting in the engine queue. Each point is one scrape, not a window peak.",
-    "text": "引擎中正在运行与排队等待的请求数。每个点是一次采集，不是窗口峰值。"
+    "source": "Count of requests currently running vs waiting in the engine queue. Each point is the mean of its interval, so a brief peak is flattened.",
+    "text": "引擎中正在运行与排队等待的请求数。每个点是其时间段内的平均值，短暂的峰值会被拉平。"
   },
   "openinfra.chart.requests.title": {
     "source": "Requests",
@@ -2992,8 +2992,8 @@
     "text": "请求/分钟"
   },
   "openinfra.chart.shape.desc": {
-    "source": "Mean token counts per request this sample: the full prompt, the uncached (computed) prompt, and the generation length.",
-    "text": "本次采样每个请求的平均 token 数：完整提示词、未命中缓存（需要计算）的提示词，以及生成长度。"
+    "source": "Mean token counts per request in each point’s interval: the full prompt, the uncached (computed) prompt, and the generation length.",
+    "text": "每个点的时间段内每个请求的平均 token 数：完整提示词、未命中缓存（需要计算）的提示词，以及生成长度。"
   },
   "openinfra.chart.shape.title": {
     "source": "Request shape",
@@ -3036,8 +3036,8 @@
     "text": "token/分钟"
   },
   "openinfra.chart.ttft.desc": {
-    "source": "Time to first token in seconds this sample. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).",
-    "text": "本次采样的首 token 延迟（秒）。排队是开始计算前的等待，预填充是预填充前向计算，总计就是 TTFT（排队 + 预填充，再加上调度和分词）。"
+    "source": "Time to first token in seconds, averaged over each point’s interval. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).",
+    "text": "首 token 延迟（秒），按每个点的时间段取平均。排队是开始计算前的等待，预填充是预填充前向计算，总计就是 TTFT（排队 + 预填充，再加上调度和分词）。"
   },
   "openinfra.chart.ttft.title": {
     "source": "TTFT",
@@ -3288,8 +3288,8 @@
     "text": "GPU 集群"
   },
   "openinfra.footer": {
-    "source": "Refreshed every 30 seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger",
-    "text": "每 30 秒刷新 · 悬停图表查看数值 · 按住 Ctrl 或 ⌘ 滚动以缩放 · 拖动平移 · 双击复原 · 点“放大”查看大图"
+    "source": "Refreshed every {seconds} seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger",
+    "text": "每 {seconds} 秒刷新 · 悬停图表查看数值 · 按住 Ctrl 或 ⌘ 滚动以缩放 · 拖动平移 · 双击复原 · 点“放大”查看大图"
   },
   "openinfra.gpu.kpis": {
     "source": "GPU figures",
@@ -3432,24 +3432,32 @@
     "text": "24 小时"
   },
   "openinfra.range.24h_title": {
-    "source": "20-minute samples",
-    "text": "每 20 分钟一个样本"
+    "source": "20-minute averages",
+    "text": "每 20 分钟平均"
+  },
+  "openinfra.range.15m": {
+    "source": "15m",
+    "text": "15 分钟"
+  },
+  "openinfra.range.15m_title": {
+    "source": "5-second averages",
+    "text": "每 5 秒平均"
   },
   "openinfra.range.2h": {
     "source": "2h",
     "text": "2 小时"
   },
   "openinfra.range.2h_title": {
-    "source": "1-minute samples",
-    "text": "每分钟一个样本"
+    "source": "1-minute averages",
+    "text": "每分钟平均"
   },
   "openinfra.range.7d": {
     "source": "7d",
     "text": "7 天"
   },
   "openinfra.range.7d_title": {
-    "source": "hourly samples",
-    "text": "每小时一个样本"
+    "source": "hourly averages",
+    "text": "每小时平均"
   },
   "openinfra.range.avg_days": {
     "source": "{days}d avg",
@@ -3458,6 +3466,10 @@
   "openinfra.range.avg_hours": {
     "source": "{hours}h avg",
     "text": "{hours} 小时平均"
+  },
+  "openinfra.range.avg_minutes": {
+    "source": "{minutes}m avg",
+    "text": "{minutes} 分钟平均"
   },
   "openinfra.range.live": {
     "source": "live",

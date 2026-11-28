@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 import pytest_asyncio
 
-from serving.openinfra import import_d1
+from serving.openinfra import archive, import_d1
 from tests.fixtures import postgres
 from tests.integration.test_openinfra_store_postgres import TABLES
 
@@ -64,7 +64,7 @@ def build_d1(path) -> None:
         "INSERT INTO gpu_samples (gpu_id, ts, utilization_pct, memory_used_mb) VALUES (?, ?, ?, ?)",
         [
             ("node-a:0", T0, 10, 100),
-            ("node-a:0", T0 + 5_000, 20, 200),  # same 6 s bucket: the first is kept
+            ("node-a:0", T0 + 500, 20, 200),  # same second: the first is kept
             ("node-a:0", T0 + 6_000, 30, 300),
             ("node-a:0", "not a time", 40, 400),  # refused: no usable ts
         ],
@@ -120,10 +120,10 @@ async def test_an_export_lands_in_the_gateways_tables(conn, tmp_path):
 
     results = await import_d1.run(dump, conn)
 
-    assert results["gpu_samples"] == (4, 1)
-    assert results["gpus"] == (1, 0)
-    assert results["request_events"] == (3, 0)
-    assert results["gpu_rollups"] == (0, 0)  # absent from this export
+    assert results["gpu_samples"] == (4, 1, 0)
+    assert results["gpus"] == (1, 0, 0)
+    assert results["request_events"] == (3, 0, 0)
+    assert results["gpu_rollups"] == (0, 0, 0)  # absent from this export
     nodes = await rows(
         conn,
         "SELECT id, hostname, region, status, metadata, cpu_util_pct, load1 "
@@ -142,8 +142,8 @@ async def test_an_export_lands_in_the_gateways_tables(conn, tmp_path):
         "FROM openinfra_gpu_samples ORDER BY ts",
     )
     assert [(s["bucket"], s["ts"], s["utilization_pct"]) for s in samples] == [
-        (T0 // 6_000, T0, 10.0),
-        (T0 // 6_000 + 1, T0 + 6_000, 30.0),
+        (T0 // 1_000, T0, 10.0),
+        (T0 // 1_000 + 6, T0 + 6_000, 30.0),
     ]
     engines = await rows(conn, "SELECT engine_id, ts FROM openinfra_engine_samples ORDER BY ts")
     assert [e["engine_id"] for e in engines] == ["chat-a", "chat-a"]
@@ -168,24 +168,53 @@ async def test_running_again_adds_nothing_and_the_gateways_rows_win(conn, tmp_pa
     await conn.execute(
         "INSERT INTO openinfra_request_events (engine_id, ts) VALUES ('chat-a', $1)", T0 - 1_500
     )
+    # The gateway's own first sample of this GPU, between the export's two.
+    await conn.execute(
+        "INSERT INTO openinfra_gpu_samples (gpu_id, bucket, ts, utilization_pct) "
+        "VALUES ('node-a:0', $1, $2, 99)",
+        (T0 + 3_000) // 1_000,
+        T0 + 3_000,
+    )
 
     await import_d1.run(database, conn)  # a SQLite file works as well as a dump
-    await import_d1.run(database, conn)
+    results = await import_d1.run(database, conn)
 
     assert await conn.fetchval("SELECT hostname FROM openinfra_nodes WHERE id = 'node-a'") == (
         "renamed"
     )
-    assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_gpu_samples") == 2
+    # Only what came before the gateway's own first sample, once.
+    samples = await rows(conn, "SELECT ts, utilization_pct FROM openinfra_gpu_samples ORDER BY ts")
+    assert [(s["ts"], s["utilization_pct"]) for s in samples] == [(T0, 10.0), (T0 + 3_000, 99.0)]
+    assert results["gpu_samples"] == (4, 1, 3)
     # Only the event from before the gateway's first one was imported, once.
     events = await rows(conn, "SELECT ts FROM openinfra_request_events ORDER BY ts")
     assert [e["ts"] for e in events] == [T0 - 2_000, T0 - 1_500]
+
+
+async def test_nothing_is_imported_into_an_archived_week(conn, tmp_path):
+    database = tmp_path / "d1.sqlite"
+    build_d1(database)
+    week = archive.week_start(T0)
+    await conn.execute(
+        "INSERT INTO openinfra_archives (week_start, location, tables, archived_at) "
+        "VALUES ($1, '/archive', '{}', 1)",
+        week,
+    )
+
+    results = await import_d1.run(database, conn)
+
+    assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_gpu_samples") == 0
+    assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_request_events") == 0
+    assert results["gpu_samples"] == (4, 1, 3)
+    # Rollups stay in the database whatever the archive holds.
+    assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_engine_rollups") == 1
 
 
 async def test_a_dry_run_writes_nothing(conn, tmp_path):
     database = tmp_path / "d1.sqlite"
     build_d1(database)
     results = await import_d1.run(database, conn, dry_run=True)
-    assert results["nodes"] == (2, 0)
+    assert results["nodes"] == (2, 0, 0)
     assert await conn.fetchval("SELECT COUNT(*) FROM openinfra_nodes") == 0
 
 
@@ -206,7 +235,7 @@ def test_the_insert_keeps_existing_rows_and_takes_the_earliest_sample():
         ("ts", "ts"),
         ("req_per_min", "req_per_min"),
     ]
-    assert table_plan.convert(("chat-a", 12_345, "6")) == ("chat-a", 12_345, 6.0, 2)
+    assert table_plan.convert(("chat-a", 12_345, "6")) == ("chat-a", 12_345, 6.0, 12)
     assert table_plan.convert(("chat-a", None, 6)) is None
     sql = import_d1.insert_sql(table_plan)
     assert sql.startswith(

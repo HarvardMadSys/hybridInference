@@ -67,8 +67,9 @@ describe('OpenInfraPage', () => {
     // The offline row left under chat-model's name gets no tab of its own.
     expect(tabs.map((tab) => tab.textContent)).toEqual(['chat-model', 'code-model', 'embed-model']);
     expect(tabs[0]).toHaveAttribute('aria-pressed', 'true');
-    // The address now names it, so it can be shared.
-    expect(window.location.hash).toBe('#chat-model');
+    // The address now names it, so it can be shared. An effect writes it,
+    // after the render that shows the page.
+    await waitFor(() => expect(window.location.hash).toBe('#chat-model'));
     expect(screen.getByText('chat-model · GPU 0,1 · node-a')).toBeInTheDocument();
     expect(api.getOpenInfraHistory).toHaveBeenCalledWith(2);
 
@@ -178,11 +179,34 @@ describe('OpenInfraPage', () => {
     await loaded();
     expect(api.getOpenInfraDashboard).toHaveBeenCalledTimes(1);
 
+    expect(screen.getByText(/^Refreshed every 30 seconds/)).toBeInTheDocument();
+
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(30_000);
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(api.getOpenInfraDashboard).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(25_000);
     });
     expect(api.getOpenInfraDashboard).toHaveBeenCalledTimes(2);
     expect(api.getOpenInfraHistory).toHaveBeenLastCalledWith(2);
+  });
+
+  it('refreshes the last 15 minutes every 5 seconds', async () => {
+    window.history.replaceState(null, '', '/openinfra?hours=0.25');
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    render(<OpenInfraPage />);
+    await loaded();
+    expect(api.getOpenInfraHistory).toHaveBeenLastCalledWith(0.25);
+    expect(screen.getByRole('button', { name: '15m' })).toHaveAttribute('aria-pressed', 'true');
+    expect(screen.getByText(/^Refreshed every 5 seconds/)).toBeInTheDocument();
+    expect(screen.getAllByText(/^15m avg/).length).toBeGreaterThan(0);
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5_000);
+    });
+    expect(api.getOpenInfraDashboard).toHaveBeenCalledTimes(2);
+    expect(api.getOpenInfraHistory).toHaveBeenLastCalledWith(0.25);
   });
 
   it('opens a chart larger, saves its CSV, and closes on Escape', async () => {

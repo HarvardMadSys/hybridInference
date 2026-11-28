@@ -39,7 +39,7 @@ async def test_the_tables_arrive_empty(scratch):
         before = await conn.fetchval(
             "SELECT COUNT(*) FROM pg_tables WHERE tablename LIKE 'openinfra%'"
         )
-    await mig.upgrade(scratch)
+    await mig.upgrade(scratch, REVISION)
     async with mig.connected(scratch) as conn:
         found = {
             row["tablename"]
