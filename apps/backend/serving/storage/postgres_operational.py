@@ -1724,13 +1724,15 @@ class PostgresOperationalStore(
             )
             total = count_row["total"] if count_row else 0
 
-            # Status counts (unfiltered — global navigation aid).
+            # Status and tier counts, unfiltered, in one round trip. The list
+            # filters do not apply: both are navigation counts for the whole table.
             count_rows = await conn.fetch(
-                "SELECT status, COUNT(*) as cnt FROM users GROUP BY status"
+                "SELECT status, NULL::text AS role, COUNT(*) AS cnt FROM users GROUP BY status "
+                "UNION ALL "
+                "SELECT NULL::text, role, COUNT(*) FROM users GROUP BY role"
             )
-            sc = {r["status"]: r["cnt"] for r in count_rows}
-            role_rows = await conn.fetch("SELECT role, COUNT(*) AS cnt FROM users GROUP BY role")
-            by_role = {r["role"]: r["cnt"] for r in role_rows}
+            sc = {r["status"]: r["cnt"] for r in count_rows if r.get("status")}
+            by_role = {r["role"]: r["cnt"] for r in count_rows if r.get("role")}
             status_counts: Row = {
                 "all": sum(sc.values()),
                 "pending_approval": sc.get("pending_approval", 0),
