@@ -3,13 +3,17 @@
 A download renders its batch's rows on the event loop and holds a page of up
 to ``PAGE_BYTES`` while its client reads, however slowly, and nothing limited
 how many ran at once. Now each takes a slot, per owner and per process, given
-back however the download ends; and each response is released as soon as its
-line is rendered, rather than kept until the page ends.
+back however the download ends, even when its response is never run; and each
+response or request is released as soon as its line is rendered, and sent
+about every ``_SEND_BYTES``, rather than kept until the page ends.
 """
 
 from __future__ import annotations
 
+import gc
+import json
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -80,3 +84,59 @@ async def test_each_response_is_released_once_its_line_is_rendered():
     assert len(seen) == 3
     assert not any("response" in row or "response_text" in row for row in seen)
     await stream.aclose()
+
+
+async def test_a_slot_comes_back_when_a_body_never_run_is_dropped():
+    """A response built but never run neither reads nor closes its body."""
+    held = delivery.hold_download(_body(), "alice")
+    assert dict(delivery._downloads) == {"alice": 1}
+
+    del held
+    gc.collect()
+
+    assert dict(delivery._downloads) == {}
+
+
+def _stored_requests(count: int) -> list[dict[str, Any]]:
+    """Rows as ``request_page`` returns them: each request still its stored text."""
+    rows = []
+    for n in range(1, count + 1):
+        text = json.dumps({"model": "m", "input": f"q{n} ✓"}, ensure_ascii=False)
+        rows.append(
+            {"id": n, "custom_id": f"req-{n}", "request_text": text, "status": "failed", "bytes": 9}
+        )
+    return rows
+
+
+async def test_a_request_export_sends_its_page_in_parts(monkeypatch):
+    """A page of stored requests went out in one piece, rendered whole before it was sent."""
+    monkeypatch.setattr(delivery, "_SEND_BYTES", 1)
+    rows = _stored_requests(3)
+    store = AsyncMock()
+    store.take_read_lease.return_value = "lease"
+    store.batch_intact.return_value = True
+    store.request_page.return_value = (rows, False)
+
+    stream = delivery.stream_requests(store=store, batch_id="b", url="/v1/embeddings")
+    first = await anext(stream)
+    # The client has the first line; the rest of the page is not rendered yet,
+    # and what was sent is no longer held.
+    assert "request" not in rows[0] and "request_text" not in rows[0]
+    assert "request_text" in rows[1]
+    parts = [first] + [part async for part in stream]
+
+    assert len(parts) == 3
+    assert b"".join(parts) == b"".join(
+        json.dumps(
+            {
+                "custom_id": f"req-{n}",
+                "method": "POST",
+                "url": "/v1/embeddings",
+                "body": {"model": "m", "input": f"q{n} ✓"},
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ).encode()
+        + b"\n"
+        for n in (1, 2, 3)
+    )

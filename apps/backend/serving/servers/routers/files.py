@@ -34,6 +34,7 @@ from serving.batch.admission import declared_length_exceeds
 from serving.batch.config import batch_config, may_use_batch
 from serving.batch.delivery import (
     DOWNLOAD_RETRY_AFTER_SECONDS,
+    DOWNLOAD_SEND_TIMEOUT_SECONDS,
     DownloadInterrupted,
     hold_download,
     stream_lines,
@@ -150,8 +151,10 @@ def jsonl_download(
     of this process's download slots while it runs (see
     :data:`serving.batch.delivery.MAX_DOWNLOADS`), and with none free the
     download is refused 429 before anything is read. The response closes its
-    body however it ends, which gives the slot back.
+    body however it ends, which gives the slot back, and it ends once its
+    client reads nothing of it for ``DOWNLOAD_SEND_TIMEOUT_SECONDS``.
     """
+    send_timeout = None
     if owner is not None:
         held = hold_download(body, owner)
         if held is None:
@@ -161,8 +164,11 @@ def jsonl_download(
                 headers={"Retry-After": str(DOWNLOAD_RETRY_AFTER_SECONDS)},
             )
         body = held
+        send_timeout = DOWNLOAD_SEND_TIMEOUT_SECONDS
     request.scope.setdefault("state", {})[STREAMING_RESPONSE_SCOPE_STATE_KEY] = True
-    return ClosingStreamingResponse(body, media_type="application/jsonl", headers=headers)
+    return ClosingStreamingResponse(
+        body, media_type="application/jsonl", headers=headers, send_timeout=send_timeout
+    )
 
 
 def _not_found(file_id: str) -> HTTPException:

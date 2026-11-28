@@ -80,6 +80,10 @@ MAX_DOWNLOADS = 8
 MAX_DOWNLOADS_PER_OWNER = 2
 #: The ``Retry-After`` of a download refused for want of a free slot.
 DOWNLOAD_RETRY_AFTER_SECONDS = 5
+#: A download holding a slot whose client reads nothing of it for this long is
+#: ended, which gives the slot back: a client that stops reading would
+#: otherwise keep it until the stream cap (``STREAM_REQUEST_TIMEOUT_SECONDS``).
+DOWNLOAD_SEND_TIMEOUT_SECONDS = 60.0
 
 #: This process's rendered downloads, by owner (see :func:`hold_download`).
 _downloads: Counter[str] = Counter()
@@ -94,7 +98,8 @@ def hold_download(body: AsyncIterator[bytes], owner: str) -> AsyncIterator[bytes
 
     The slot is given back when the body ends, fails or is closed, whichever
     comes first, so the response must close its body (``ClosingStreamingResponse``):
-    a body never read holds its slot until then.
+    a body never read holds its slot until then, or, should its response be
+    dropped without being run, until the body is collected.
     """
     if sum(_downloads.values()) >= MAX_DOWNLOADS or _downloads[owner] >= MAX_DOWNLOADS_PER_OWNER:
         return None
@@ -134,6 +139,11 @@ class _HeldDownload:
         _downloads[owner] -= 1
         if _downloads[owner] <= 0:
             del _downloads[owner]
+
+    def __del__(self) -> None:
+        # A response built but never run neither reads nor closes its body:
+        # its slot then comes back when the body is collected, instead of never.
+        self._release()
 
 
 def _statuses(kind: str) -> frozenset[str]:
@@ -431,8 +441,10 @@ async def stream_requests(
                 raise DownloadInterrupted(batch_id)
             if not page:
                 break
-            lines = []
-            for item in page:
+            # Sent every _SEND_BYTES, as stream_lines does, rather than the
+            # page's lines kept until its end and then joined and encoded.
+            chunk = bytearray()
+            for index, item in enumerate(page):
                 after = item["id"]
                 line = (
                     json.dumps(
@@ -446,11 +458,13 @@ async def stream_requests(
                         separators=(",", ":"),
                     )
                     + "\n"
-                )
-                lines.append(line)
+                ).encode("utf-8")
+                chunk += line
                 await pacer.step(int(item.get("bytes") or 0) + len(line))
-            if lines:
-                yield "".join(lines).encode("utf-8")
+                if len(chunk) < _SEND_BYTES and index + 1 < len(page):
+                    continue
+                yield bytes(chunk)
+                chunk = bytearray()
         if keeper.lost or not await store.batch_intact(batch_id):
             raise DownloadInterrupted(batch_id)
     finally:
