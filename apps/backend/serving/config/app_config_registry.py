@@ -1002,7 +1002,10 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         "routing",
         "Seconds after one caller's counted failure on an endpoint during which its "
         "repeat failures there do not count toward opening the circuit, if the "
-        "endpoint has served another caller since. 0 counts every failure.",
+        "endpoint has served another caller since. Also how recent another "
+        "caller's failure must be, unless it is part of the current run of "
+        "failures, for one caller's failures to open the circuit. 0 stops telling "
+        "callers apart: every failure counts and can open the circuit.",
         type="float",
         default="60",
         restart_required=True,
