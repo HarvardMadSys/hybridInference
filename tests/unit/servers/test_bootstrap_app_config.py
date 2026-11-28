@@ -29,8 +29,6 @@ def boot_env(monkeypatch, tmp_path):
     monkeypatch.setenv("DB_ENABLED", "true")
     monkeypatch.setenv("JWT_SECRET_KEY", "env-jwt")
     monkeypatch.setenv("API_KEY_SECRET", "env-api")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     monkeypatch.delenv("DB_STORE_FULL_CONTENT", raising=False)
     monkeypatch.setattr(bootstrap, "_CONFIG_LOAD_RETRY_DELAY", 0)
     get_settings.cache_clear()

@@ -9,8 +9,8 @@
 # log.
 #
 # The first start also copies the application settings below into that
-# database -- all but DB_ENABLED, the DISTRIBUTION_CONFIG_* lines and
-# REFRESH_TOKEN_COOKIE_NAME, which stay in the environment. From then on the
+# database -- all but DB_ENABLED and REFRESH_TOKEN_COOKIE_NAME, which stay in
+# the environment. From then on the
 # stored values win over this file: change them in Admin -> Configuration
 # (USER_AUTH_ENABLED and the SIGNUP_* switches are on the Settings tab), or
 # reset the example to start over.

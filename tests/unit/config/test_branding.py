@@ -1,18 +1,24 @@
 """Tests for the versioned public branding document."""
 
+import json
 from pathlib import Path
+from typing import Any
 
 import pytest
-import yaml
+from pydantic import ValidationError
 
-from serving.config.branding import BrandingConfigError, load_branding_config
+from serving.config.branding import BrandingConfig
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _EXAMPLE = _REPO_ROOT / "config" / "examples" / "branding.example.json"
 
 
+def _example() -> dict[str, Any]:
+    return json.loads(_EXAMPLE.read_text())
+
+
 def test_example_branding_is_valid_and_complete() -> None:
-    config = load_branding_config(_EXAMPLE)
+    config = BrandingConfig.model_validate(_example())
 
     assert config.schema_version == 1
     assert config.organization.name == "Example Organization"
@@ -24,22 +30,20 @@ def test_example_branding_is_valid_and_complete() -> None:
     assert config.sponsors == []
 
 
-def test_branding_written_before_nav_links_existed_still_loads(tmp_path: Path) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+def test_branding_written_before_nav_links_existed_still_loads() -> None:
+    data = _example()
     del data["links"]["nav"]
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    config = load_branding_config(path)
+    config = BrandingConfig.model_validate(data)
 
-    # The strict model must not turn an added optional field into a loader
+    # The strict model must not turn an added optional field into a validation
     # failure for every distribution that has not adopted it yet.
     assert config.links.nav == []
     assert config.public_payload(docs_url="https://docs.example.com")["links"]["nav"] == []
 
 
-def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: Path) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+def test_public_payload_uses_snake_case_and_omits_absent_team_fields() -> None:
+    data = _example()
     data["team"] = [{"name": "Example Person", "affiliations": ["Example Lab"]}]
     data["sponsors"] = [
         {
@@ -51,10 +55,10 @@ def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: P
             "height": 40,
         }
     ]
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    payload = load_branding_config(path).public_payload(docs_url="https://override.example/docs")
+    payload = BrandingConfig.model_validate(data).public_payload(
+        docs_url="https://override.example/docs"
+    )
 
     assert payload["links"]["docs_url"] == "https://override.example/docs"
     assert payload["team"] == [{"name": "Example Person", "affiliations": ["Example Lab"]}]
@@ -70,33 +74,18 @@ def test_public_payload_uses_snake_case_and_omits_absent_team_fields(tmp_path: P
     ],
 )
 def test_public_payload_revalidates_the_operational_docs_override(docs_url: str) -> None:
-    config = load_branding_config(_EXAMPLE)
+    config = BrandingConfig.model_validate(_example())
 
     with pytest.raises(ValueError):
         config.public_payload(docs_url=docs_url)
 
 
-def test_loader_rejects_missing_file(tmp_path: Path) -> None:
-    with pytest.raises(BrandingConfigError, match="cannot read branding config"):
-        load_branding_config(tmp_path / "missing.yaml")
-
-
-def test_loader_rejects_malformed_yaml(tmp_path: Path) -> None:
-    path = tmp_path / "branding.yaml"
-    path.write_text("links: [")
-
-    with pytest.raises(BrandingConfigError, match="cannot read branding config"):
-        load_branding_config(path)
-
-
-def test_loader_rejects_fields_outside_public_contract(tmp_path: Path) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+def test_fields_outside_the_public_contract_are_refused() -> None:
+    data = _example()
     data["signup"]["turnstile_secret_key"] = "must-not-be-public"
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    with pytest.raises(BrandingConfigError, match="turnstile_secret_key"):
-        load_branding_config(path)
+    with pytest.raises(ValidationError, match="turnstile_secret_key"):
+        BrandingConfig.model_validate(data)
 
 
 @pytest.mark.parametrize(
@@ -127,19 +116,17 @@ def test_loader_rejects_fields_outside_public_contract(tmp_path: Path) -> None:
         (("assets", "logo_url"), "/site-assets/logo%ZZ.svg"),
     ],
 )
-def test_loader_rejects_values_the_runtime_client_cannot_consume(
-    tmp_path: Path, keys: tuple[str, ...], value: str
+def test_values_the_runtime_client_cannot_consume_are_refused(
+    keys: tuple[str, ...], value: str
 ) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+    data = _example()
     target = data
     for key in keys[:-1]:
         target = target[key]
     target[keys[-1]] = value
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    with pytest.raises(BrandingConfigError):
-        load_branding_config(path)
+    with pytest.raises(ValidationError):
+        BrandingConfig.model_validate(data)
 
 
 @pytest.mark.parametrize(
@@ -153,22 +140,16 @@ def test_loader_rejects_values_the_runtime_client_cannot_consume(
         [{"label": "Example Project", "url": "https://project.example.com", "target": "_self"}],
     ],
 )
-def test_loader_rejects_a_nav_link_the_console_cannot_render(
-    tmp_path: Path, nav: list[dict[str, str]]
-) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+def test_a_nav_link_the_console_cannot_render_is_refused(nav: list[dict[str, str]]) -> None:
+    data = _example()
     data["links"]["nav"] = nav
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    with pytest.raises(BrandingConfigError):
-        load_branding_config(path)
+    with pytest.raises(ValidationError):
+        BrandingConfig.model_validate(data)
 
 
-def test_loader_rejects_a_sponsor_class_the_neutral_css_does_not_compile(
-    tmp_path: Path,
-) -> None:
-    data = yaml.safe_load(_EXAMPLE.read_text())
+def test_a_sponsor_class_the_neutral_css_does_not_compile_is_refused() -> None:
+    data = _example()
     data["sponsors"] = [
         {
             "name": "Unsafe Sponsor",
@@ -179,24 +160,20 @@ def test_loader_rejects_a_sponsor_class_the_neutral_css_does_not_compile(
             "height": 40,
         }
     ]
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    with pytest.raises(BrandingConfigError, match="class_name"):
-        load_branding_config(path)
+    with pytest.raises(ValidationError, match="class_name"):
+        BrandingConfig.model_validate(data)
 
 
-def test_loader_names_unsupported_layout_keys(tmp_path: Path) -> None:
+def test_unsupported_layout_keys_are_named() -> None:
     """Unsupported branding keys fail with an actionable field name.
 
     Runtime branding does not select public-page layouts. A module supplies its
     own presentation at build time, and the branding schema rejects fields it
     does not support instead of silently accepting unused settings.
     """
-    data = yaml.safe_load(_EXAMPLE.read_text())
+    data = _example()
     data["theme"] = {"accent": "#0052D9"}
-    path = tmp_path / "branding.yaml"
-    path.write_text(yaml.safe_dump(data))
 
-    with pytest.raises(BrandingConfigError, match="theme"):
-        load_branding_config(path)
+    with pytest.raises(ValidationError, match="theme"):
+        BrandingConfig.model_validate(data)

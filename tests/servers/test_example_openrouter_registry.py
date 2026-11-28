@@ -78,15 +78,15 @@ def test_empty_catalog_names_the_variable_that_would_fix_it(monkeypatch, caplog)
 def test_quickstart_routing_example_declares_no_endpoint():
     """The quickstart's routing file must not send a clone at anyone's machines.
 
-    Pointing only MODELS_CONFIG_PATH at the example leaves config/routing.yaml
-    — the operator's own deployment map — in play, which greets a newcomer with
-    warnings about hosts they do not have, and prints those hosts. The example
-    pairs with a routing file that names none.
+    Seeding only the example catalog leaves the operator's own routing policy
+    in play, which greets a newcomer with warnings about hosts they do not
+    have, and prints those hosts. The example pairs with a routing policy that
+    names none.
     """
     import yaml
 
     example = REPO_ROOT / "config" / "examples" / "routing.minimal.json"
-    assert example.exists(), "README.md#quickstart points ROUTING_CONFIG_PATH here"
+    assert example.exists(), "README.md#quickstart seeds ROUTING_POLICY from here"
 
     config = yaml.safe_load(example.read_text())
     assert config["local_deployment"] == []

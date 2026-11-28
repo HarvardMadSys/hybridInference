@@ -407,11 +407,13 @@ msgstr "这个示例就是一个[发行版](glossary.md#deployments)："
 #: ../developer/router-tutorial.md:247
 msgid ""
 "`distribution.json` holds Stage 1's site settings, with public signup "
-"off, and `distribution.demo.json` the demo's, with signup on. Both stages"
-" seed the model catalog and the routing file from `config/`."
+"off; the demo's, with signup on, are the `SITE_CONFIGURATION` in "
+"`deploy/docker-compose.demo.yml`. Both stages seed the model catalog and "
+"the routing file from `config/`."
 msgstr ""
-"`distribution.json` 保存阶段 1 的站点设置，关闭了公开注册；`distribution.demo.json` "
-"保存演示环境的站点设置，开启了注册。两个阶段都从 `config/` 初始化模型目录和路由文件。"
+"`distribution.json` 保存阶段 1 的站点设置，关闭了公开注册；演示环境的站点设置开启了注册，是 "
+"`deploy/docker-compose.demo.yml` 中的 `SITE_CONFIGURATION`。两个阶段都从 `config/` "
+"初始化模型目录和路由文件。"
 
 #: ../developer/router-tutorial.md:250
 msgid ""
@@ -628,4 +630,3 @@ msgid ""
 "Replace `backend` with `frontend`, `postgres` or `example-provider`. "
 "Press Ctrl-C to stop following."
 msgstr "把 `backend` 换成 `frontend`、`postgres` 或 `example-provider`。按 Ctrl-C 停止跟踪。"
-

@@ -76,8 +76,6 @@ def auth_test_env():
             "JWT_SECRET_KEY": "test-secret-key-32-chars-long!!",
             "BASE_URL": "http://test",
             "METRICS_ENABLED": "0",
-            "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
-            "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
             "SIGNUP_DEFAULT_DAILY_QUOTA_USD": "10.00",
             "ADMIN_TOKEN": "test-admin-token",
             "TURNSTILE_SECRET_KEY": "",
@@ -147,8 +145,6 @@ def mock_env(monkeypatch):
     """Mock environment variables for testing."""
     test_env = {
         "DB_ENABLED": "false",  # Disable DB in tests by default
-        "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
-        "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
         "LOCAL_DEPLOYMENT_URL": "http://localhost:8001",
     }
     for key, value in test_env.items():

@@ -33,8 +33,6 @@ features:
 
 @pytest.fixture(autouse=True)
 def _clean(monkeypatch):
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
     monkeypatch.delenv("SITE_PUBLIC_BASE_URL", raising=False)
     monkeypatch.delenv("SITE_DOCS_URL", raising=False)
     monkeypatch.delenv("SITE_SUPPORT_EMAIL", raising=False)
@@ -81,7 +79,6 @@ async def test_serves_manifest_site_identity(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
@@ -103,7 +100,6 @@ async def test_site_identity_env_overrides_manifest_site_fields(client, monkeypa
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_PUBLIC_BASE_URL", "http://localhost:13001")
     monkeypatch.setenv("SITE_SUPPORT_EMAIL", "support@local.dev")
     get_settings.cache_clear()
@@ -128,7 +124,6 @@ async def test_retired_mode_does_not_hide_database_identity(client, monkeypatch,
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "dark")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
@@ -151,7 +146,6 @@ async def test_serves_validated_public_branding_with_docs_override(client, monke
         )
     )
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_DOCS_URL", "https://override-docs.example.com")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -213,7 +207,6 @@ async def test_invalid_docs_override_cannot_invalidate_runtime_branding(
         )
     )
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setenv("SITE_DOCS_URL", invalid_docs_url)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -229,7 +222,6 @@ async def test_never_leaks_server_paths(client, monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
 
@@ -251,7 +243,6 @@ async def test_phone_auth_flag_is_sent_only_while_enabled(
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(MANIFEST)
         seed_site(monkeypatch, manifest)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
         get_settings.cache_clear()
         get_distribution_config.cache_clear()
 
@@ -293,7 +284,6 @@ async def test_reports_pending_setup_and_incomplete_configuration(
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(MANIFEST)
         seed_site(monkeypatch, manifest)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
         get_settings.cache_clear()
         get_distribution_config.cache_clear()
     store = MagicMock()
@@ -360,7 +350,6 @@ async def test_single_sign_on_is_announced_at_the_top_level_and_names_no_provide
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(MANIFEST)
         seed_site(monkeypatch, manifest)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
         get_settings.cache_clear()
         get_distribution_config.cache_clear()
 

@@ -9,7 +9,6 @@ from types import SimpleNamespace
 import pytest
 
 import serving.config.distribution as distribution_module
-import serving.config.settings as settings_module
 from serving.config.site_identity import NEUTRAL_DEFAULT, get_site_identity
 from serving.rag.pipeline import system_prompt
 from serving.utils.email import render_broadcast_template, render_markdown_email
@@ -21,14 +20,6 @@ _ENV_KEYS = ("SITE_NAME", "SITE_PUBLIC_BASE_URL", "SITE_DOCS_URL", "SITE_SUPPORT
 def _clean_site_env(monkeypatch):
     for key in _ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
-
-
-def _force_mode(monkeypatch, mode: str) -> None:
-    monkeypatch.setattr(
-        settings_module,
-        "get_settings",
-        lambda: SimpleNamespace(distribution_config_mode=mode),
-    )
 
 
 def _force_manifest(
@@ -72,8 +63,7 @@ def test_env_overrides_win(monkeypatch):
     assert identity.support_email == NEUTRAL_DEFAULT.support_email
 
 
-def test_active_manifest_supplies_identity(monkeypatch):
-    _force_mode(monkeypatch, "active")
+def test_site_configuration_supplies_identity(monkeypatch):
     _force_manifest(
         monkeypatch,
         display_name="Acme",
@@ -86,19 +76,7 @@ def test_active_manifest_supplies_identity(monkeypatch):
     assert identity.support_email == "help@acme.example"
 
 
-def test_retired_dark_mode_does_not_hide_database_identity(monkeypatch):
-    _force_mode(monkeypatch, "dark")
-    _force_manifest(
-        monkeypatch,
-        display_name="Acme",
-        base_url="https://acme.example",
-        support="help@acme.example",
-    )
-    assert get_site_identity().name == "Acme"
-
-
-def test_env_beats_active_manifest(monkeypatch):
-    _force_mode(monkeypatch, "active")
+def test_env_beats_site_configuration(monkeypatch):
     _force_manifest(
         monkeypatch,
         display_name="Acme",
@@ -110,7 +88,6 @@ def test_env_beats_active_manifest(monkeypatch):
 
 
 def test_branding_supplies_docs_url_but_env_still_wins(monkeypatch):
-    _force_mode(monkeypatch, "active")
     _force_manifest(
         monkeypatch,
         display_name="Acme",
@@ -136,7 +113,6 @@ def test_branding_supplies_docs_url_but_env_still_wins(monkeypatch):
     ],
 )
 def test_invalid_docs_env_falls_back_to_valid_manifest_value(monkeypatch, invalid_docs_url):
-    _force_mode(monkeypatch, "active")
     _force_manifest(
         monkeypatch,
         display_name="Acme",

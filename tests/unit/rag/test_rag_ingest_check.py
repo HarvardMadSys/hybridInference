@@ -350,9 +350,6 @@ def test_the_cli_reconstructs_every_settings_field(tmp_path, monkeypatch):
 def _stored_settings(monkeypatch, tmp_path, rows) -> None:
     """Make *rows* the configuration database load_stored_configuration reads."""
     store = FakeAppConfigStore(rows)
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "no-models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "no-routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "no-alerts.yaml"))
 
     @contextlib.asynccontextmanager
     async def session():

@@ -39,7 +39,6 @@ async def client(monkeypatch, tmp_path):
     manifest = tmp_path / "distribution.yaml"
     manifest.write_text(MANIFEST)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     monkeypatch.setattr(
         config,
         "config_value",

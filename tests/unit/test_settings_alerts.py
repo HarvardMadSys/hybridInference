@@ -20,13 +20,6 @@ def test_slack_alerts_webhook_url_falls_back_to_slack_webhook_url(monkeypatch):
     assert settings.slack_alerts_webhook_url == "https://hooks.slack.com/services/XYZ"
 
 
-def test_alerts_config_path_default(monkeypatch):
-    monkeypatch.delenv("ALERTS_CONFIG_PATH", raising=False)
-    get_settings.cache_clear()
-    settings = get_settings()
-    assert settings.alerts_config_path == "config/alerts.yaml"
-
-
 def test_wecom_alerts_webhook_url_default(monkeypatch):
     monkeypatch.delenv("WECOM_ALERTS_WEBHOOK_URL", raising=False)
     get_settings.cache_clear()

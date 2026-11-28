@@ -24,8 +24,12 @@ to configure" state. It has no bundled provider and assumes no model.
 - The old rows stay so the previous release keeps working, and later saves of
   model and routing documents are mirrored into them. The new gateway never
   reads them.
-- `python -m serving.config.manage import-legacy` imports external YAML
-  overlays into the database. Normal startup never scans those files.
+- Nothing imports external YAML overlays any more. `import-legacy`, which
+  imported them once, was retired with the variables that named the files;
+  the last release that read them was 20261107.1. A deployment upgrading from
+  one stores its documents in Admin or with
+  `python -m serving.config.manage document`. Normal startup never scans those
+  files.
 
 ## Runtime rules
 

@@ -38,11 +38,8 @@ def test_index_path_resolves_under_distributions_in_this_checkout(monkeypatch):
     # overlay moved to its own repository (and the runnable example is skipped
     # by its EXAMPLE_OVERLAY marker), this checkout has no overlay, and the
     # resolver's documented no-overlay fallback is the distributions root.
-    # Recomputed rather than read from the import-time constant: a host `.env`
-    # naming DISTRIBUTION_CONFIG_PATH taints that constant with another tree.
     from serving.rag import config as rag_config
 
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     assert rag_config._distribution_root() is None
     resolved = rag_config._default_index_path()
     assert resolved.parts[-4:] == (
@@ -83,31 +80,18 @@ def test_a_tree_with_no_overlay_resolves_to_nothing(tmp_path, monkeypatch):
     """A plain clone has no corpus, and RAG is expected to degrade to 503."""
     from serving.rag import config as rag_config
 
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     monkeypatch.setattr(rag_config, "_REPO_ROOT", tmp_path)
     assert rag_config._distribution_root() is None
 
 
 def test_an_ambiguous_tree_picks_neither(tmp_path, monkeypatch):
-    """Two overlays and no manifest: guessing would serve the wrong docs."""
+    """Two overlays: guessing would serve the wrong docs."""
     from serving.rag import config as rag_config
 
     (tmp_path / "distributions" / "alpha").mkdir(parents=True)
     (tmp_path / "distributions" / "beta").mkdir(parents=True)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
     monkeypatch.setattr(rag_config, "_REPO_ROOT", tmp_path)
     assert rag_config._distribution_root() is None
-
-
-def test_a_declared_manifest_wins(tmp_path, monkeypatch):
-    """A deployment that named its manifest has already answered the question."""
-    from serving.rag import config as rag_config
-
-    manifest = tmp_path / "distributions" / "acme" / "distribution.yaml"
-    manifest.parent.mkdir(parents=True)
-    manifest.write_text("schema_version: 1\n")
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
-    assert rag_config._distribution_root() == manifest.parent
 
 
 def test_load_rag_settings_does_not_raise():

@@ -112,13 +112,8 @@ Overlay
 
 Manifest
 : The retired configuration file `distributions/<name>/distribution.yaml`. Its
-  settings now live in Admin's `SITE_CONFIGURATION` document and startup no
-  longer reads it; `python -m serving.config.manage import-legacy` imports an
-  old one once.
-
-Dry run and active
-: The modes of the retired `DISTRIBUTION_CONFIG_MODE` setting: `active`
-  applied a manifest, and the dry run (`dark`) only compared it.
+  settings now live in Admin's `SITE_CONFIGURATION` document; nothing reads the
+  file.
 
 Operational store
 : The Postgres tables that hold accounts, API keys and everything changed in

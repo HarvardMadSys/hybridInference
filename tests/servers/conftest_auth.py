@@ -39,12 +39,7 @@ def auth_env(monkeypatch):
 
     get_settings.cache_clear()
 
-    test_env = build_auth_test_env_defaults(
-        {
-            "MODELS_CONFIG": "tests/fixtures/test_models.yaml",
-            "ROUTING_CONFIG": "tests/fixtures/test_routing.yaml",
-        }
-    )
+    test_env = build_auth_test_env_defaults({})
     for key, value in test_env.items():
         monkeypatch.setenv(key, value)
 

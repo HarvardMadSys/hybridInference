@@ -24,8 +24,6 @@ from tests.fixtures.auth_factories import create_signup_request
 
 @pytest.fixture
 async def signup_client(monkeypatch):
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_PATH", raising=False)
-    monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
     monkeypatch.setenv("SIGNUP_ENABLED", "true")
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
@@ -54,31 +52,30 @@ async def signup_client(monkeypatch):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "mode,manifest_flag,env_enabled,runtime_override,expected",
+    "seeded,manifest_flag,env_enabled,runtime_override,expected",
     [
-        ("active", "false", True, None, False),
-        ("active", "false", True, True, False),
-        ("active", "false", False, True, False),
-        ("active", "true", False, None, False),
-        ("active", "true", True, False, False),
-        ("active", "true", False, True, True),
-        ("active", "true", True, None, True),
-        ("active", "null", False, None, False),
-        ("active", "null", True, None, True),
-        ("active", None, True, False, False),
-        ("active", None, True, None, True),
-        ("dark", "false", True, None, False),
-        (None, None, False, None, False),
-        (None, None, True, False, False),
-        (None, None, False, True, True),
-        (None, None, True, None, True),
+        (True, "false", True, None, False),
+        (True, "false", True, True, False),
+        (True, "false", False, True, False),
+        (True, "true", False, None, False),
+        (True, "true", True, False, False),
+        (True, "true", False, True, True),
+        (True, "true", True, None, True),
+        (True, "null", False, None, False),
+        (True, "null", True, None, True),
+        (True, None, True, False, False),
+        (True, None, True, None, True),
+        (False, None, False, None, False),
+        (False, None, True, False, False),
+        (False, None, False, True, True),
+        (False, None, True, None, True),
     ],
 )
 async def test_signup_policy_matches_public_configuration(
     signup_client,
     monkeypatch,
     tmp_path,
-    mode,
+    seeded,
     manifest_flag,
     env_enabled,
     runtime_override,
@@ -86,14 +83,13 @@ async def test_signup_policy_matches_public_configuration(
 ):
     client, store = signup_client
     monkeypatch.setenv("SIGNUP_ENABLED", str(env_enabled))
-    if mode is not None:
+    if seeded:
         manifest = tmp_path / "distribution.yaml"
         contents = "schema_version: 1\ndistribution: {id: policy-test}\n"
         if manifest_flag is not None:
             contents += f"features:\n  public_signup: {manifest_flag}\n"
         manifest.write_text(contents)
         seed_site(monkeypatch, manifest)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     if runtime_override is not None:
         store.get_setting.side_effect = lambda key: (
@@ -116,7 +112,7 @@ async def test_signup_policy_matches_public_configuration(
         store.create_user.assert_not_awaited()
         auth_routes.check_and_record_signup.assert_not_awaited()
         auth_routes.verify_turnstile_token.assert_not_awaited()
-    if mode is not None and manifest_flag == "false":
+    if seeded and manifest_flag == "false":
         store.get_setting.assert_not_awaited()
 
 
@@ -265,18 +261,8 @@ async def test_policy_invalidation_discards_an_inflight_failure(signup_client):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["", "activ", "active"])
-async def test_invalid_distribution_selection_cannot_enable_signup(
-    signup_client, monkeypatch, tmp_path, mode
-):
+async def test_invalid_site_configuration_cannot_enable_signup(signup_client, monkeypatch):
     client, store = signup_client
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
-    if mode != "active":
-        manifest = tmp_path / "distribution.yaml"
-        manifest.write_text(
-            "schema_version: 1\ndistribution: {id: example}\nfeatures: {public_signup: false}\n"
-        )
-        seed_site(monkeypatch, manifest)
     monkeypatch.setenv("SITE_CONFIGURATION", "invalid")
     get_settings.cache_clear()
 
@@ -305,7 +291,6 @@ async def test_invalid_active_manifest_cannot_create_accounts(
     if contents is not None:
         manifest.write_text(contents)
     seed_site(monkeypatch, manifest)
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
     get_settings.cache_clear()
 
     response = await client.post("/auth/signup", json=create_signup_request())
@@ -349,13 +334,13 @@ def _assert_neutral_and_closed(response):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("mode", [None, "dark", "active"])
+@pytest.mark.parametrize("seeded", [False, True], ids=["no-site", "site"])
 @pytest.mark.parametrize("failure", [ConnectionError, RuntimeError, ValueError])
 async def test_runtime_read_failure_preserves_identity_and_closes_signup(
-    signup_client, monkeypatch, tmp_path, caplog, mode, failure
+    signup_client, monkeypatch, tmp_path, caplog, seeded, failure
 ):
     client, store = signup_client
-    if mode is not None:
+    if seeded:
         manifest = tmp_path / "distribution.yaml"
         manifest.write_text(
             "schema_version: 1\ndistribution: {id: example, display_name: Example Router}\n"
@@ -363,7 +348,6 @@ async def test_runtime_read_failure_preserves_identity_and_closes_signup(
             "features: {public_signup: true, rag: false}\n"
         )
         seed_site(monkeypatch, manifest)
-        monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", mode)
     get_settings.cache_clear()
     runtime = init_runtime_settings(store)
     await runtime.get_bool("signup_enabled")
@@ -375,7 +359,7 @@ async def test_runtime_read_failure_preserves_identity_and_closes_signup(
     assert configuration.status_code == 200
     body = configuration.json()
     assert body["features"]["public_signup"] is False
-    if mode is not None:
+    if seeded:
         assert body["distribution"]["display_name"] == "Example Router"
         assert body["site"]["public_base_url"] == "https://example.test"
         assert body["features"]["rag"] is False

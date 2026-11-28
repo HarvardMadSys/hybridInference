@@ -34,7 +34,6 @@ async def client(monkeypatch, tmp_path):
         monkeypatch.delenv(key, raising=False)
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
     get_settings.cache_clear()
     store = FakeAppConfigStore()
     await app_config.load(store)

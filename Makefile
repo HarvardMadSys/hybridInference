@@ -342,16 +342,6 @@ DOCKER_VOLUMES := hybridinference_postgres_data
 MIGRATE_DB := $(COMPOSE) up -d --no-recreate --wait postgres
 MIGRATE := $(COMPOSE) run --rm --no-deps backend python -m migrations upgrade
 DEMO_MIGRATE := $(DEMO_COMPOSE) run --rm --no-deps backend python -m migrations upgrade
-# Upgrading from a release that read its site policy, branding and alert rules
-# from files: LEGACY_MANIFEST names that release's manifest as the backend
-# container sees it (distributions/<name>/distribution.yaml, or the deployment's
-# DISTRIBUTION_CONFIG_PATH), and the image about to start imports it after the
-# migrations, before it serves. Settings already stored are kept, so a repeat
-# changes nothing. LEGACY_IMPORT_OPTIONS passes options on to import-legacy
-# (--include-dark, --alerts=<file>), and runs it even without a manifest.
-LEGACY_MANIFEST ?=
-LEGACY_IMPORT_OPTIONS ?=
-LEGACY_IMPORT := $(if $(LEGACY_MANIFEST)$(LEGACY_IMPORT_OPTIONS),$(COMPOSE) run --rm --no-deps backend python -m serving.config.manage import-legacy$(if $(LEGACY_IMPORT_OPTIONS), $(LEGACY_IMPORT_OPTIONS))$(if $(LEGACY_MANIFEST), "$(LEGACY_MANIFEST)"),)
 
 docker-volumes:  ## Create external Docker volumes required by production compose
 	@for volume in $(DOCKER_VOLUMES); do \
@@ -373,7 +363,6 @@ else
 up: docker-volumes  ## Start all services, after applying the schema migrations
 	$(MIGRATE_DB)
 	$(MIGRATE)
-	$(LEGACY_IMPORT)
 	$(COMPOSE) up -d
 endif
 
@@ -449,13 +438,8 @@ demo-smoke: _require-demo  ## Verify the full demo through its frontend origin
 # file's pass-throughs, and runs the deploy acceptance on it. The full smoke
 # follows, its recreate included. The deployment's own record is never
 # touched, so `make demo` afterwards returns to the current image.
-#
-# An image from before the database-backed configuration reads its public site
-# identity from the manifest its deployment still names, as a deployment keeps
-# doing for its rollback window. The shell outranks every env file, and the
-# base Compose file passes the selectors on.
 DEMO_DRILL_STATE := $(OPS_STATE)/restore-drill
-DEMO_PREVIOUS_COMPOSE := env COMPOSE_PROFILES= DISTRIBUTION_CONFIG_PATH=/app/$(DISTRIBUTION_PATH)/distribution.demo.json DISTRIBUTION_CONFIG_MODE=active docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
+DEMO_PREVIOUS_COMPOSE := env COMPOSE_PROFILES= docker compose $(COMPOSE_FILE_ARGS) $(DEMO_COMPOSE_FILE_ARG) $(DISTRIBUTION_ENV_FILES) $(COMPOSE_EXTRA_ENV_ARGS) $(LOCAL_ENV_ARGS)
 DEMO_PREVIOUS_PINNED := $(DEMO_PREVIOUS_COMPOSE) -f deploy/docker/docker-compose.artifacts.yml --env-file $(DEMO_DRILL_STATE)/images.env
 demo-previous: _require-demo  ## Restore drill: roll back to PREVIOUS_BACKEND_IMAGE on the migrated demo database, smoked
 	@test -n "$(PREVIOUS_BACKEND_IMAGE)" || (echo "Set PREVIOUS_BACKEND_IMAGE to the image to restore"; exit 1)
@@ -522,13 +506,11 @@ ifdef s
 	$(COMPOSE) build $(s)
 	$(MIGRATE_DB)
 	$(MIGRATE)
-	$(LEGACY_IMPORT)
 	$(COMPOSE) up -d $(s)
 else
 	$(COMPOSE) build
 	$(MIGRATE_DB)
 	$(MIGRATE)
-	$(LEGACY_IMPORT)
 	$(COMPOSE) up -d
 endif
 endif
@@ -543,7 +525,7 @@ doctor:  ## Diagnose services, readiness, schema and missing configuration
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops doctor --base-url "$(OPS_BASE_URL)" --compose $(COMPOSE)
 
 deploy: docker-volumes  ## Deploy pinned BACKEND_IMAGE and FRONTEND_IMAGE with acceptance and rollback
-	$(SMOKE_PYTHON) -m ops.admin.gateway_ops deploy --state "$(OPS_STATE)" --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --backend-image "$(BACKEND_IMAGE)" --frontend-image "$(FRONTEND_IMAGE)" --legacy-manifest "$(LEGACY_MANIFEST)" $(foreach option,$(LEGACY_IMPORT_OPTIONS),--legacy-import-option=$(option)) --compose $(COMPOSE)
+	$(SMOKE_PYTHON) -m ops.admin.gateway_ops deploy --state "$(OPS_STATE)" --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --backend-image "$(BACKEND_IMAGE)" --frontend-image "$(FRONTEND_IMAGE)" --compose $(COMPOSE)
 
 rollback:  ## Restore previously recorded images without running old migrations
 	$(SMOKE_PYTHON) -m ops.admin.gateway_ops rollback --state "$(OPS_STATE)" --base-url "$(OPS_BASE_URL)" --model "$(MODEL)" --compose $(COMPOSE)

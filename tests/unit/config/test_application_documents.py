@@ -42,9 +42,6 @@ async def test_no_application_file_is_a_startup_fallback(configuration, monkeypa
     manifest.write_text("schema_version: 1\ndistribution: {id: unexpected}\n")
     models = tmp_path / "models.yaml"
     models.write_text("models: [{id: unexpected}]\n")
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_PATH", str(manifest))
-    monkeypatch.setenv("DISTRIBUTION_CONFIG_MODE", "active")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
     await load()
     assert get("models") == {}
     assert get_active_distribution_config() is None
@@ -173,6 +170,11 @@ def test_import_secret_names_never_depend_on_credential_values():
 def test_application_examples_can_be_saved_in_admin(key, filename):
     root = Path(__file__).resolve().parents[3]
     validate(key, (root / "config/examples" / filename).read_text())
+
+
+def test_site_configuration_refuses_an_unsupported_schema_version():
+    with pytest.raises(DocumentError):
+        validate("SITE_CONFIGURATION", '{"schema_version": 2, "distribution": {"id": "x"}}')
 
 
 def test_token_limits_are_numbers_rather_than_credentials():

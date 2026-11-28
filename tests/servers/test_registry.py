@@ -178,12 +178,6 @@ def _chutes_demo(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("CHUTES_DEMO_KEY", "literal-key")
     path = tmp_path / "models.yaml"
     path.write_text(_CHUTES_DEMO)
-    for name, target in (
-        ("MODELS_CONFIG_PATH", path),
-        ("ROUTING_CONFIG_PATH", tmp_path / "none.yaml"),
-        ("ALERTS_CONFIG_PATH", tmp_path / "none.yaml"),
-    ):
-        monkeypatch.setenv(name, str(target))
     return path
 
 

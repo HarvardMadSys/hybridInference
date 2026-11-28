@@ -1192,10 +1192,8 @@ class TestBootstrapErrorHandling:
     """Test error handling in bootstrap."""
 
     @pytest.mark.asyncio
-    async def test_initialize_handles_model_yaml_error(self, mock_env, monkeypatch):
-        """Test that initialize continues if models.yaml fails to load."""
-        monkeypatch.setenv("MODELS_CONFIG", "/nonexistent/models.yaml")
-
+    async def test_initialize_continues_without_a_model_catalog(self, mock_env):
+        """Test that initialize continues, with a warning, when no catalog is configured."""
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch("serving.servers.bootstrap._apply_routing_manager", return_value=None),
@@ -1205,14 +1203,12 @@ class TestBootstrapErrorHandling:
 
             # Should still return services
             assert isinstance(services, AppServices)
-            # Should log a warning about missing models config
+            # Should log a warning about the missing catalog
             mock_logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_initialize_handles_routing_manager_error(self, mock_env, monkeypatch):
-        """Test that initialize continues if routing manager fails."""
-        monkeypatch.setenv("ROUTING_CONFIG", "/invalid/routing.yaml")
-
+    async def test_initialize_continues_without_a_routing_policy(self, mock_env):
+        """Test that initialize continues, with a warning, when no routing policy is configured."""
         with (
             patch("serving.servers.bootstrap._init_db_logger", return_value=None),
             patch(
@@ -1229,7 +1225,7 @@ class TestBootstrapErrorHandling:
             assert services.routing_manager is None or isinstance(
                 services.routing_manager, RoutingManager
             )
-            # Should log a warning about routing config failure/missing
+            # Should log a warning about the missing routing configuration
             mock_logger.warning.assert_called()
 
 

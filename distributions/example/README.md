@@ -120,7 +120,6 @@ at UTC midnight, and is not enabled by `make up` or `make demo`.
 distributions/example/
 ├── EXAMPLE_OVERLAY
 ├── distribution.json
-├── distribution.demo.json
 ├── config/
 │   ├── models.json
 │   └── routing.json

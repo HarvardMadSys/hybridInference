@@ -94,7 +94,6 @@ class TestRouteWiseExampleRegistry:
 
     def test_example_registers_and_builds_routewise_candidates(self, monkeypatch):
         """Load it the way the gateway does, then build what RouteWise routes on."""
-        monkeypatch.delenv("MODELS_CONFIG", raising=False)
         router = FixedRouter()
         count, _infos = register_from_models_yaml(router, _EXAMPLE)
         assert count >= 1, "the example model was skipped at registration"

@@ -1,26 +1,20 @@
-"""Database-backed public site configuration and explicit legacy import helpers.
+"""Database-backed public site configuration.
 
-Runtime consumers use get_active_distribution_config, which reads validated JSON
-settings and never loads a manifest file. The file loader is retained only for
-the explicit legacy import (``python -m serving.config.manage import-legacy``).
+Runtime consumers use get_active_distribution_config, which reads the validated
+SITE_CONFIGURATION and SITE_BRANDING settings. No manifest file is read.
 """
 
 from __future__ import annotations
 
 from functools import lru_cache
-from pathlib import Path
 from typing import Literal
 
-import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
 
-from serving.config.branding import BrandingConfig, BrandingConfigError, load_branding_config
-from serving.config.settings import get_settings
+from serving.config.branding import BrandingConfig
 from serving.utils.logging import get_logger
 
 logger = get_logger(__name__)
-
-ConfigKind = Literal["models", "routing", "alerts", "mcp"]
 
 
 class _ManifestModel(BaseModel):
@@ -38,7 +32,7 @@ class DistributionInfo(_ManifestModel):
 
 
 class DistributionSite(_ManifestModel):
-    """Site identity and the path to the distribution-owned branding document."""
+    """Site identity. ``branding`` is a retired file path; validation refuses one."""
 
     public_base_url: str = ""
     support_email: str = ""
@@ -54,7 +48,7 @@ class DistributionFeatures(_ManifestModel):
     model_config = ConfigDict(extra="forbid")
 
     routers: list[str] = Field(default_factory=list)
-    # In active mode, false disables the signup API as well as its UI.
+    # False disables the signup API as well as its UI.
     # True/None defer to the effective runtime/environment signup setting.
     public_signup: bool | None = None
     rag: bool | None = None
@@ -68,7 +62,7 @@ class DistributionFeatures(_ManifestModel):
 
 
 class DistributionPaths(_ManifestModel):
-    """Config-file locations; relative values resolve against the manifest."""
+    """Retired config-file locations, kept in the schema so validation can refuse them."""
 
     models: str = ""
     routing: str = ""
@@ -113,62 +107,6 @@ class DistributionConfig(_ManifestModel):
 
 class DistributionConfigError(Exception):
     """Raised when a distribution manifest cannot be loaded or validated."""
-
-
-def load_distribution_config(path: Path) -> DistributionConfig:
-    """Load and validate a manifest and its declared public documents.
-
-    Relative ``paths:`` and ``site.branding`` values resolve against the
-    manifest directory.
-
-    Raises:
-        DistributionConfigError: On unreadable files, YAML errors, or
-            schema validation failures (including unsupported
-            ``schema_version``).
-    """
-    try:
-        data = yaml.safe_load(path.read_text())
-    except (OSError, UnicodeDecodeError, yaml.YAMLError) as exc:
-        raise DistributionConfigError(f"cannot read distribution manifest {path}: {exc}") from exc
-    if not isinstance(data, dict):
-        raise DistributionConfigError(f"distribution manifest {path} must be a YAML mapping")
-    try:
-        config = DistributionConfig.model_validate(data)
-    except Exception as exc:
-        raise DistributionConfigError(f"invalid distribution manifest {path}: {exc}") from exc
-
-    try:
-        root = path.resolve().parent
-        # `root / value` keeps absolute values as-is and anchors relative ones
-        # at the manifest directory; resolving unconditionally validates both
-        # forms (e.g. embedded NUL bytes raise here instead of at use time).
-        resolved_paths = {
-            kind: str((root / value).resolve()) if value else value
-            for kind, value in config.paths.model_dump().items()
-        }
-        resolved_branding = (
-            str((root / config.site.branding).resolve()) if config.site.branding else ""
-        )
-    except (OSError, RuntimeError, ValueError) as exc:
-        raise DistributionConfigError(
-            f"cannot resolve paths in distribution manifest {path}: {exc}"
-        ) from exc
-
-    branding_config: BrandingConfig | None = None
-    if resolved_branding:
-        try:
-            branding_config = load_branding_config(Path(resolved_branding))
-        except BrandingConfigError as exc:
-            raise DistributionConfigError(
-                f"branding declared by distribution manifest {path} did not load: {exc}"
-            ) from exc
-
-    resolved_site = config.site.model_copy(update={"branding": resolved_branding})
-    resolved_config = config.model_copy(
-        update={"paths": DistributionPaths(**resolved_paths), "site": resolved_site}
-    )
-    resolved_config._branding_config = branding_config
-    return resolved_config
 
 
 @lru_cache(maxsize=1)
@@ -225,67 +163,9 @@ def _forget_report() -> None:
     _invalid_reported = False
 
 
-_VALID_MODES = {"active", "dark"}
-
-# Resolver decisions are logged once per unique situation, not per call: the
-# admin provider registry resolves the models path on every request.
-_logged_once: set[tuple[str, ...]] = set()
-
-
-def _log_once(key: tuple[str, ...], message: str, *, level: str = "info") -> None:
-    if key in _logged_once:
-        return
-    _logged_once.add(key)
-    getattr(logger, level)(message)
-
-
-def _effective_mode() -> str:
-    """Normalize the configured mode; unknown values degrade to ``dark``.
-
-    This fallback applies to the legacy import, where it prevents an
-    accidental activation. Feature policies and public identity use
-    ``get_active_distribution_config`` to reject unknown modes instead of
-    silently discarding a restriction.
-    """
-    raw = get_settings().distribution_config_mode.strip().lower()
-    if raw in _VALID_MODES:
-        return raw
-    _log_once(
-        ("invalid-mode", raw),
-        f"Invalid DISTRIBUTION_CONFIG_MODE={raw!r} (expected 'active' or 'dark'); "
-        "treating as 'dark': manifest loads and is compared, legacy resolution "
-        "stays effective",
-        level="warning",
-    )
-    return "dark"
-
-
 def get_active_distribution_config() -> DistributionConfig | None:
     """Return the database site policy, effective in every process after refresh."""
     return get_distribution_config()
-
-
-def _explicitly_configured(field_name: str) -> bool:
-    """True when the operator supplied the field from ANY settings source.
-
-    ``model_fields_set`` covers process env (any case — Settings runs
-    ``case_sensitive=False``), pydantic's native ``.env`` loading, aliases,
-    and constructor input alike; an ``os.environ`` key check would miss
-    everything but exact-case process env.
-    """
-    return field_name in get_settings().model_fields_set
-
-
-def _env_override(kind: ConfigKind) -> str:
-    settings = get_settings()
-    value: str = getattr(settings, f"{kind}_config_path")
-    if kind == "alerts" and not _explicitly_configured("alerts_config_path"):
-        # alerts_config_path predates this module and its Settings default is
-        # the legacy path instead of "". Explicitness therefore means "the
-        # operator supplied the field" (env, .env, or constructor) — one who
-        # sets it to the default value still wins over the manifest.
-        return ""
-    return value
 
 
 # Settings changes invalidate the parsed public configuration in this process,

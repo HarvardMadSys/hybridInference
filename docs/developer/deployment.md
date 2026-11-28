@@ -208,13 +208,10 @@ Set `GATEWAY_API_KEY` for authenticated inference checks. `make smoke` runs the
 distribution's own `smoke.py` when it ships one.
 
 `make deploy` records the running artifacts, pulls the pinned images, runs the
-migrations with the new backend image, imports the previous release's file
-configuration when `LEGACY_MANIFEST` is set (see
-[Model and routing documents in the database](configuration.md#model-and-routing-documents-in-the-database)),
-then switches the services and runs the acceptance smoke. Any failure after the
-switch, including an interruption, restores the previous images and runs the
-acceptance on them. `make rollback` starts the recorded previous images without
-running their migrations.
+migrations with the new backend image, then switches the services and runs the
+acceptance smoke. Any failure after the switch, including an interruption,
+restores the previous images and runs the acceptance on them. `make rollback`
+starts the recorded previous images without running their migrations.
 
 The record lives in `.ops/<distribution>/` (`.ops/none/` without a
 distribution, in a subdirectory named after `COMPOSE_PROJECT_NAME` when the
@@ -310,7 +307,7 @@ stopped.
 | You changed | Do this |
 |---|---|
 | A setting in **Admin → Settings** | Nothing, unless it is marked **Restart required**: then select **Restart backend**, or run `make restart s=backend` |
-| A value in `.env` that stays in the environment: the database connection, ports, the configuration selectors a rollback needs, console values | `make up`. A container reads its `env_file` when it is created, so `docker compose restart` keeps the old environment |
+| A value in `.env` that stays in the environment: the database connection, ports, console values | `make up`. A container reads its `env_file` when it is created, so `docker compose restart` keeps the old environment |
 | Any other value in `.env` | Nothing happens once the database has the setting; change it in Admin. See [Upgrading a deployment that kept its settings in `.env`](#upgrading-a-deployment-that-kept-its-settings-in-env) |
 | The model catalog, routing policy or alert rules | Follow the **Restart required** marker; no rebuild |
 | Site configuration or branding | Applies when settings refresh; no rebuild or restart |
@@ -362,11 +359,9 @@ deployment starts with the default `FRONTEND_URL`, `CORS_ALLOWED_ORIGINS`,
 ### Application configuration
 
 Models, routing, alert rules, site identity and branding live in the database.
-This release ignores the retired `*_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH` and
-`DISTRIBUTION_CONFIG_MODE` variables, and warns at startup while one is set.
-Keep them, and the files they name, through the rollback window: a rolled-back
-release reads its files through them, and the legacy import uses them. See
-[Configuration](configuration.md).
+The backend ignores the retired `*_CONFIG_PATH`, `DISTRIBUTION_CONFIG_PATH` and
+`DISTRIBUTION_CONFIG_MODE` variables, and warns at startup while one is set:
+remove them, and the files they name. See [Configuration](configuration.md).
 
 ### Local inference servers
 

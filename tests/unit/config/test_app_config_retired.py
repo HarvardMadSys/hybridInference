@@ -23,13 +23,10 @@ RETIRED = "BATCH_EXPANSION_ENABLED"
 def config_env(tmp_path, monkeypatch):
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    for key in ("ENVIRONMENT", "DISTRIBUTION_CONFIG_PATH", RETIRED):
+    for key in ("ENVIRONMENT", RETIRED):
         monkeypatch.delenv(key, raising=False)
     models = tmp_path / "models.yaml"
     models.write_text("models: []\n")
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(models))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
-    monkeypatch.setenv("ALERTS_CONFIG_PATH", str(tmp_path / "alerts.yaml"))
     get_settings.cache_clear()
     return tmp_path
 

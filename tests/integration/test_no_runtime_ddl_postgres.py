@@ -49,8 +49,6 @@ async def ddl_forbidden():
 def config_env(monkeypatch, tmp_path):
     for entry in static_entries():
         monkeypatch.delenv(entry.key, raising=False)
-    monkeypatch.setenv("MODELS_CONFIG_PATH", str(tmp_path / "models.yaml"))
-    monkeypatch.setenv("ROUTING_CONFIG_PATH", str(tmp_path / "routing.yaml"))
     get_settings.cache_clear()
     app_config.reset_state()
     yield
