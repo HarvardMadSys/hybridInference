@@ -313,6 +313,9 @@ class JsonFormatter(logging.Formatter):
 
 
 _QUIET_PATHS = frozenset({"/health", "/health/deep", "/health/ready", "/metrics"})
+#: Paths whose successful requests are not logged either: OpenInfra's reporters
+#: post every second from every GPU host. A refusal is still logged.
+_QUIET_WHEN_OK_PATHS = frozenset({"/internal/openinfra/ingest"})
 
 
 class _QuietPathFilter(logging.Filter):
@@ -324,6 +327,8 @@ class _QuietPathFilter(logging.Filter):
             return True
         # Uvicorn access log args: (client_addr, method, path, http_version, status_code)
         args = record.args
+        if isinstance(args, tuple) and len(args) >= 5 and args[2] in _QUIET_WHEN_OK_PATHS:
+            return not (isinstance(args[4], int) and args[4] < 400)
         if isinstance(args, tuple) and len(args) >= 3:
             return args[2] not in _QUIET_PATHS
         # Fallback for unexpected record formats

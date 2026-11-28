@@ -14,8 +14,9 @@
 
 The reads are unauthenticated and serve only what the page shows, but answer
 404 unless the distribution publishes OpenInfra (``features.openinfra``).
-Each document is computed at most once per :data:`DASHBOARD_TTL_SEC` or
-:data:`HISTORY_TTL_SEC` per distinct request, whoever asks and however often,
+Each document is computed at most once per :data:`DASHBOARD_TTL_SEC`, or for a
+history window the spacing of its points up to :data:`HISTORY_TTL_SEC`
+(:func:`history_ttl`), per distinct request, whoever asks and however often,
 and callers arriving meanwhile share the read; browsers and the edge may reuse
 it as long. The distinct requests are few by construction: a fixed set of
 windows times the hosts that exist, so no caller can make every request miss.
@@ -33,7 +34,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, R
 from fastapi.responses import JSONResponse
 
 from serving.openinfra import config, dashboard
-from serving.openinfra.store import SnapshotWrite
+from serving.openinfra.store import SnapshotWrite, history_grain
 from serving.openinfra.wire import IngestError, parse_snapshot
 from serving.servers.deps import get_db_logger
 from serving.servers.routers.internal_auth import error
@@ -49,9 +50,10 @@ router = APIRouter()
 MAX_BODY_BYTES = 2 * 1024 * 1024
 #: Budget for receiving a snapshot.
 BODY_READ_TIMEOUT_SEC = 10.0
-#: How long the dashboard document is reused. Reporters flush every few seconds.
-DASHBOARD_TTL_SEC = 10.0
-#: How long a history document is reused. Its finest points are a minute apart.
+#: How long the dashboard document is reused. Reporters flush every second.
+DASHBOARD_TTL_SEC = 5.0
+#: The longest a history document is reused; one whose points are closer
+#: together is reused for the spacing of its points.
 HISTORY_TTL_SEC = 30.0
 #: The longest ``node`` a history request may name.
 MAX_NODE_ID_LENGTH = 200
@@ -59,12 +61,29 @@ MAX_NODE_ID_LENGTH = 200
 #: the next longer one, so the page's 2 h, 24 h and 7 d are served as asked.
 HISTORY_WINDOWS: tuple[float, ...] = (0.25, 0.5, 1.0, 2.0, 3.0, 6.0, 12.0, 24.0, 48.0, 72.0, 168.0)
 
+
+def history_ttl(window: float) -> float:
+    """How long the history of a *window* (hours) is reused: its points' spacing, up to 30 s."""
+    return min(HISTORY_TTL_SEC, history_grain(window) / 1000)
+
+
 _DASHBOARDS: SingleFlightCache[bytes] = SingleFlightCache(DASHBOARD_TTL_SEC, max_entries=4)
-_HISTORIES: SingleFlightCache[bytes] = SingleFlightCache(HISTORY_TTL_SEC, max_entries=512)
+#: One cache per window, as each is reused for its own time.
+_HISTORIES: dict[float, SingleFlightCache[bytes]] = {
+    window: SingleFlightCache(history_ttl(window), max_entries=64) for window in HISTORY_WINDOWS
+}
 #: The ids of the hosts that have reported, for checking a history ``node``.
 _KNOWN_NODES: SingleFlightCache[frozenset[str]] = SingleFlightCache(HISTORY_TTL_SEC, max_entries=4)
 
 _UNAVAILABLE = "OpenInfra is temporarily unavailable."
+
+
+def clear_caches() -> None:
+    """Forget every document computed so far."""
+    _DASHBOARDS.clear()
+    for cache in _HISTORIES.values():
+        cache.clear()
+    _KNOWN_NODES.clear()
 
 
 def _published_pool(db: Any) -> Any:
@@ -169,11 +188,11 @@ async def get_history(
             )
 
     try:
-        body = await _HISTORIES.get((pool, window, node, retired), compute)
+        body = await _HISTORIES[window].get((pool, node, retired), compute)
     except Exception:
         logger.warning("openinfra history read failed", exc_info=True)
         raise HTTPException(status_code=503, detail=_UNAVAILABLE) from None
-    return _json_response(body, HISTORY_TTL_SEC)
+    return _json_response(body, history_ttl(window))
 
 
 def require_ingest_token(
@@ -255,4 +274,14 @@ async def ingest(request: Request, db=Depends(get_db_logger)) -> dict[str, Any]:
     except Exception:
         logger.warning("openinfra ingest failed", exc_info=True)
         raise error(status.HTTP_503_SERVICE_UNAVAILABLE, "unavailable", _UNAVAILABLE) from None
-    return {"ok": True, "gpus": len(write.gpus), "sglang": len(write.engines)}
+    answer: dict[str, Any] = {"ok": True, "gpus": len(write.gpus), "sglang": len(write.engines)}
+    if write.requests_dropped:
+        # Request events go once a minute, so this is at most a line a minute a host.
+        logger.warning(
+            "openinfra ingest from %s: dropped %d request events more than 15 minutes older, "
+            "or a minute newer, than their snapshot",
+            write.node[0] if write.node else "an engine",
+            write.requests_dropped,
+        )
+        answer["requests_dropped"] = write.requests_dropped
+    return answer

@@ -132,7 +132,7 @@ CATEGORIES: tuple[Category, ...] = (
     Category(
         "integrations",
         "Integrations",
-        "Cloud agent identity, the documentation assistant, Qdrant and the OpenInfra reporters.",
+        "Cloud agent identity, the documentation assistant, Qdrant and OpenInfra collection.",
         one_time=True,
     ),
     Category("privacy", "Privacy", "Request content storage and account deletion."),
@@ -1661,6 +1661,26 @@ _STATIC_ENTRIES: tuple[ConfigEntry, ...] = (
         type="list",
     ),
     ConfigEntry(
+        "OPENINFRA_RETENTION_DAYS",
+        "integrations",
+        "Days the per-second OpenInfra samples and request events stay in the database "
+        "once their week is archived to OPENINFRA_ARCHIVE_DIR. Rollups are kept. 0 keeps "
+        "everything.",
+        type="int",
+        default="7",
+        minimum=0,
+    ),
+    ConfigEntry(
+        "OPENINFRA_DELETE_UNARCHIVED",
+        "integrations",
+        "Delete OpenInfra samples and request events past OPENINFRA_RETENTION_DAYS even "
+        "while OPENINFRA_ARCHIVE_DIR is unset, so they are never archived. Off, a gateway "
+        "without an archive directory keeps them all.",
+        type="bool",
+        default="0",
+        flag=True,
+    ),
+    ConfigEntry(
         "RAG_API_KEY",
         "integrations",
         "API key the documentation assistant uses for its own gateway calls. Empty "
@@ -1798,6 +1818,7 @@ ENVIRONMENT_ONLY: Mapping[str, str] = {
     "BACKEND_EXTENSIONS": "process wiring: imports code at boot",
     "GEOIP_COUNTRY_DB": "process wiring",
     "GEOIP_COUNTRY_PROVIDER": "process wiring",
+    "OPENINFRA_ARCHIVE_DIR": "process wiring: a directory on the gateway's filesystem",
     "WEB_CONCURRENCY": "process wiring",
     "UVICORN_WORKERS": "process wiring",
     "GUNICORN_WORKERS": "process wiring",

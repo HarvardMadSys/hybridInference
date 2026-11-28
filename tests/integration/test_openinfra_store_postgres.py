@@ -28,6 +28,7 @@ TABLES = (
     "openinfra_gpu_rollups",
     "openinfra_engine_rollups",
     "openinfra_cpu_rollups",
+    "openinfra_archives",
 )
 
 
@@ -104,12 +105,12 @@ async def test_a_snapshot_lands_in_the_live_rows_and_one_sample_per_bucket(pool)
         engines=[engine(num_queue_reqs=5, gen_throughput=100.5)],
     )
     await ingest(pool, payload, T0)
-    # A second flush in the same 6 s bucket updates the live rows only.
+    # A second flush in the same second updates the live rows only.
     payload["gpus"][0]["utilization_pct"] = 45
-    await ingest(pool, payload, T0 + 3_000)
+    await ingest(pool, payload, T0 + 500)
 
     async with pool.acquire() as conn:
-        nodes, gpus, engines = await store.load_snapshot(conn, now=T0 + 3_000)
+        nodes, gpus, engines = await store.load_snapshot(conn, now=T0 + 500)
     assert [(n["id"], n["hostname"], n["region"], n["status"]) for n in nodes] == [
         ("node-a", "host-a", "lab", "online")
     ]
@@ -121,7 +122,7 @@ async def test_a_snapshot_lands_in_the_live_rows_and_one_sample_per_bucket(pool)
     assert engines[0]["id"] == "chat-a"
     assert engines[0]["gen_throughput"] == 100.5
     assert engines[0]["created_at"] == T0
-    assert engines[0]["last_seen_at"] == T0 + 3_000
+    assert engines[0]["last_seen_at"] == T0 + 500
 
     samples = await fetch(pool, "SELECT gpu_id, ts, utilization_pct FROM openinfra_gpu_samples")
     assert sorted((s["gpu_id"], s["ts"], s["utilization_pct"]) for s in samples) == [
@@ -131,9 +132,67 @@ async def test_a_snapshot_lands_in_the_live_rows_and_one_sample_per_bucket(pool)
     assert len(await fetch(pool, "SELECT 1 FROM openinfra_engine_samples")) == 1
     assert len(await fetch(pool, "SELECT 1 FROM openinfra_cpu_samples")) == 1
 
-    # The next bucket takes a sample again.
-    await ingest(pool, payload, T0 + 6_000)
+    # The next second takes a sample again.
+    await ingest(pool, payload, T0 + 1_000)
     assert len(await fetch(pool, "SELECT 1 FROM openinfra_gpu_samples")) == 4
+
+
+async def test_samples_are_stored_when_the_reporter_took_them(pool):
+    # Two snapshots a second apart by the reporter's clock, the first delayed
+    # on the way: by the gateway's clock both arrive in the same second.
+    first = {**body(), "ts": T0 + 100}
+    second = {**body(), "ts": T0 + 1_100}
+    await ingest(pool, first, T0 + 1_050)
+    await ingest(pool, second, T0 + 1_150)
+
+    samples = await fetch(pool, "SELECT bucket, ts FROM openinfra_gpu_samples ORDER BY ts")
+    assert samples == [
+        {"bucket": T0 // 1_000, "ts": T0 + 100},
+        {"bucket": T0 // 1_000 + 1, "ts": T0 + 1_100},
+    ]
+    # Whether a host is online is the gateway's clock alone.
+    nodes = await fetch(pool, "SELECT last_seen_at FROM openinfra_nodes")
+    assert nodes == [{"last_seen_at": T0 + 1_150}]
+
+
+@pytest.mark.parametrize("sent", [T0 - 61_000, T0 + 61_000, 1])
+async def test_a_reporter_clock_that_is_off_gives_way_to_the_gateways(pool, sent):
+    await ingest(pool, {**body(), "ts": sent}, T0)
+    samples = await fetch(pool, "SELECT ts FROM openinfra_cpu_samples")
+    assert samples == [{"ts": T0}]
+
+
+async def test_a_skewed_reporter_keeps_its_request_events(pool):
+    """Events share the reporter's clock: bounded by it, and moved with the samples."""
+    ahead = 5 * MINUTE  # the reporter's clock is five minutes fast
+    events = [{"ts": T0 + ahead - 2_000, "input_len": 1}, {"input_len": 2}]
+    payload = {**body(engines=[engine(requests=events)]), "ts": T0 + ahead}
+    async with pool.acquire() as conn:
+        write = store.SnapshotWrite(parse_snapshot(payload), T0)
+        await write.apply(conn)
+    rows = await fetch(pool, "SELECT ts, input_len FROM openinfra_request_events ORDER BY ts")
+    # Stored on the gateway's time, as the samples are.
+    assert rows == [{"ts": T0 - 2_000, "input_len": 1}, {"ts": T0, "input_len": 2}]
+    assert await fetch(pool, "SELECT ts FROM openinfra_cpu_samples") == [{"ts": T0}]
+    assert write.requests_dropped == 0
+
+
+async def test_request_events_outside_their_bounds_are_dropped(pool):
+    events = [
+        {"ts": T0 - 16 * MINUTE, "input_len": 1},  # too old: its week may be archived
+        {"ts": T0 - 14 * MINUTE, "input_len": 2},
+        {"input_len": 3},  # no time: the snapshot's
+        {"ts": T0 + 2 * MINUTE, "input_len": 4},  # from the future
+    ]
+    payload = {**body(engines=[engine(requests=events)]), "ts": T0}
+    async with pool.acquire() as conn:
+        write = store.SnapshotWrite(parse_snapshot(payload), T0 + 500)
+        await write.apply(conn)
+    rows = await fetch(
+        pool, "SELECT ts, input_len FROM openinfra_request_events ORDER BY input_len"
+    )
+    assert rows == [{"ts": T0 - 14 * MINUTE, "input_len": 2}, {"ts": T0, "input_len": 3}]
+    assert write.requests_dropped == 2
 
 
 async def test_absent_identity_keeps_what_was_stored_and_metrics_are_replaced(pool):
@@ -249,12 +308,12 @@ async def test_a_sample_without_prefill_tps_is_estimated_from_its_cached_rate(po
     await ingest(pool, body(engines=[engine(cached_prefill_tps=30, cache_hit_rate=0.75)]), T0)
     async with pool.acquire() as conn:
         served = await store.load_served(conn, now=T0 + 1_000)
-    # One sample counts one 6 s bucket: 30 x (0.25 / 0.75) = 10 tokens/s.
-    assert served["hour"]["prefill_tokens"] == 60
-    assert served["hour"]["cache_tokens"] == 180
+    # One sample counts one second: 30 x (0.25 / 0.75) = 10 tokens/s.
+    assert served["hour"]["prefill_tokens"] == 10
+    assert served["hour"]["cache_tokens"] == 30
 
 
-async def test_history_keeps_the_newest_sample_of_each_minute(pool):
+async def test_a_history_point_is_the_mean_of_its_samples(pool):
     for offset, util in ((0, 10), (30_000, 20), (60_000, 30)):
         await ingest(
             pool,
@@ -275,20 +334,38 @@ async def test_history_keeps_the_newest_sample_of_each_minute(pool):
     async with pool.acquire() as conn:
         history = await store.load_history(conn, 2, now=T0 + 90_000)
     assert history["grain_ms"] == store.GRAIN_1M
+    # A point is at its minute's start.
     assert [(r["ts"], r["utilization_pct"], r["memory_pct"]) for r in history["gpu"]] == [
-        (T0 + 30_000, 20.0, 25.0),
+        (T0, 15.0, 25.0),
         (T0 + 60_000, 30.0, 25.0),
     ]
     assert [(r["server_id"], r["running"]) for r in history["sglang"]] == [
-        ("chat-a", 20.0),
+        ("chat-a", 15.0),
         ("chat-a", 30.0),
     ]
-    assert [r["cpu_util_pct"] for r in history["cpu"]] == [20.0, 30.0]
+    assert [r["cpu_util_pct"] for r in history["cpu"]] == [15.0, 30.0]
     assert history["gpu"][0]["node_id"] == "node-a"
     assert history["gpu"][0]["gpu_index"] == 0
 
 
-async def test_rollups_keep_each_buckets_last_sample_and_the_rate_sums(pool):
+async def test_fifteen_minutes_are_drawn_five_seconds_apart(pool):
+    for second in range(12):
+        await ingest(
+            pool,
+            body(gpus=[{"index": 0, "utilization_pct": second}], engines=[engine()]),
+            T0 + second * 1_000,
+        )
+    async with pool.acquire() as conn:
+        history = await store.load_history(conn, 0.25, now=T0 + 12_000)
+    assert history["grain_ms"] == 5_000
+    assert [(r["ts"], r["utilization_pct"]) for r in history["gpu"]] == [
+        (T0, 2.0),
+        (T0 + 5_000, 7.0),
+        (T0 + 10_000, 10.5),
+    ]
+
+
+async def test_rollups_keep_the_means_of_their_samples_and_the_rate_sums(pool):
     # Two 20-minute buckets: three samples in the first, one in the second.
     for offset, running in ((0, 1), (6_000, 2), (19 * MINUTE, 3), (20 * MINUTE, 9)):
         await ingest(
@@ -314,7 +391,7 @@ async def test_rollups_keep_each_buckets_last_sample_and_the_rate_sums(pool):
             "grain": store.GRAIN_20M,
             "bucket_ts": T0,
             "samples": 3,
-            "running": 3.0,
+            "running": 2.0,
             "reqs_sum": 18.0,
             "decode_tps_sum": 30.0,
         },
@@ -330,7 +407,8 @@ async def test_rollups_keep_each_buckets_last_sample_and_the_rate_sums(pool):
             "grain": store.GRAIN_1H,
             "bucket_ts": T0,
             "samples": 4,
-            "running": 9.0,
+            # Its 20-minute rollups' means, weighted by their samples.
+            "running": 3.75,
             "reqs_sum": 24.0,
             "decode_tps_sum": 40.0,
         },
@@ -341,7 +419,7 @@ async def test_rollups_keep_each_buckets_last_sample_and_the_rate_sums(pool):
         "WHERE grain = $1 ORDER BY bucket_ts",
         store.GRAIN_20M,
     )
-    assert [(r["samples"], r["utilization_pct"]) for r in gpu_rows] == [(3, 30.0), (1, 90.0)]
+    assert [(r["samples"], r["utilization_pct"]) for r in gpu_rows] == [(3, 20.0), (1, 90.0)]
     cpu_rows = await fetch(
         pool,
         "SELECT samples FROM openinfra_cpu_rollups WHERE grain = $1 ORDER BY bucket_ts",
@@ -354,7 +432,7 @@ async def test_rollups_keep_each_buckets_last_sample_and_the_rate_sums(pool):
         served = await store.load_served(conn, now=now)
     assert history["grain_ms"] == store.GRAIN_20M
     assert [(r["ts"], r["running"]) for r in history["sglang"]] == [
-        (T0, 3.0),
+        (T0, 2.0),
         (T0 + 20 * MINUTE, 9.0),
     ]
     # Each bucket's mean rate times its part of the window: the first bucket's
@@ -406,7 +484,7 @@ async def test_request_events_list_each_engines_newest_first(pool):
     await ingest(pool, body(engines=[engine(requests=events)]), T0)
     await ingest(
         pool,
-        body(engines=[engine(requests=[{"ts": 1_800_000_100, "e2e_s": 1.5}])]),
+        body(engines=[engine(requests=[{"ts": 1_800_000_003, "e2e_s": 1.5}])]),
         T0 + 6_000,
     )
     async with pool.acquire() as conn:
@@ -414,8 +492,8 @@ async def test_request_events_list_each_engines_newest_first(pool):
             conn, [("chat-a", "chat-a"), ("missing", "missing")]
         )
     assert len(rows) == 21
-    # Seconds are read as milliseconds' thousandths: 1_800_000_100 s.
-    assert rows[0]["ts"] == 1_800_000_100_000
+    # A time below 10^12 is seconds: 1_800_000_003 s.
+    assert rows[0]["ts"] == 1_800_000_003_000
     assert rows[0]["e2e_s"] == 1.5
     assert rows[1]["ts"] == T0
     assert rows[1]["output_len"] == 3  # token counts round half up
@@ -570,3 +648,33 @@ async def test_a_request_event_sent_twice_is_stored_once(pool):
         (10, 5),
         (11, 5),
     ]
+
+
+async def test_samples_the_release_before_wrote_get_their_seconds(pool):
+    """A rollback writes 6-second buckets; the next run converts them."""
+    await ingest(pool, body(), T0)  # the live rows the keys come from
+    async with pool.acquire() as conn:
+        for ts, util in ((T0 + 6_300, 1), (T0 + 12_000, 2)):
+            await conn.execute(
+                "INSERT INTO openinfra_gpu_samples (gpu_id, bucket, ts, utilization_pct) "
+                "VALUES ('node-a:0', $1, $2, $3)",
+                ts // 6_000,
+                ts,
+                util,
+            )
+        # One whose second already has a per-second sample.
+        await conn.execute(
+            "INSERT INTO openinfra_cpu_samples (node_id, bucket, ts) VALUES ('node-a', $1, $2)",
+            (T0 + 400) // 6_000,
+            T0 + 400,
+        )
+        assert await store.convert_six_second_buckets(conn) == 3
+        assert await store.convert_six_second_buckets(conn) == 0
+    gpu = await fetch(pool, "SELECT bucket, ts FROM openinfra_gpu_samples ORDER BY ts")
+    assert gpu == [
+        {"bucket": T0 // 1_000, "ts": T0},
+        {"bucket": T0 // 1_000 + 6, "ts": T0 + 6_300},
+        {"bucket": T0 // 1_000 + 12, "ts": T0 + 12_000},
+    ]
+    cpu = await fetch(pool, "SELECT bucket, ts FROM openinfra_cpu_samples")
+    assert cpu == [{"bucket": T0 // 1_000, "ts": T0}]

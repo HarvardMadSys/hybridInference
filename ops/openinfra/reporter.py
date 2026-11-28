@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenInfra reporter: scrape this GPU host and post a snapshot to the gateway every few seconds.
+"""OpenInfra reporter: scrape this GPU host and post a snapshot to the gateway every second.
 
 Runs on each GPU host, apart from the gateway. Each flush it reads the GPUs
 (``nvidia-smi``, and DCGM's exporter on ``127.0.0.1:9400`` when it runs), the
@@ -8,6 +8,11 @@ host (``/proc``) and every SGLang or vLLM engine the node configuration lists
 shapes), and posts one JSON snapshot to the gateway's
 ``POST /internal/openinfra/ingest`` with ``Authorization: Bearer <token>``.
 Only outbound HTTPS is needed: the gateway never connects to the host.
+
+Snapshots are taken in the middle of each flush interval of wall-clock time
+and carry the time they were taken (``ts``), so network delay cannot put two
+in the gateway's same second. A snapshot that takes longer than the interval
+skips the next one rather than queueing it.
 
     OPENINFRA_URL=https://gateway.example.org OPENINFRA_TOKEN=... \
         python3 reporter.py --config node.json --once
@@ -21,6 +26,7 @@ Python of a GPU host. See docs/developer/openinfra.md.
 from __future__ import annotations
 
 import argparse
+import atexit
 import datetime
 import json
 import math
@@ -28,6 +34,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -70,6 +77,8 @@ _VLLM_FINISHED = re.compile(
 _HTTP_STATUS = re.compile(r'"POST /[^"]*"\s+(\d{3})')
 MAX_REQUEST_EVENTS = 20
 REQUEST_FLUSH_S = 60.0
+#: How often a flush is logged; failures always are.
+LOG_INTERVAL_S = 60.0
 _docker_probed = False
 _docker_cmd: list[str] | None = None
 
@@ -1096,6 +1105,26 @@ def sibling_metrics_url(url: str) -> str | None:
 
 
 _no_metrics_noted: set[str] = set()
+#: Each repeating failure's last report and the reports held back since.
+_error_log: dict[str, tuple[float, int]] = {}
+#: Seconds between reports of one failure; main() sets it from --log-interval.
+_error_interval = LOG_INTERVAL_S
+
+
+def log_error(key: str, message: str) -> None:
+    """Print *message* to stderr, at most once per log interval for each *key*.
+
+    A failure that repeats on every flush would otherwise print every second;
+    the next report says how many were held back.
+    """
+    now = time.monotonic()
+    last, held = _error_log.get(key, (-math.inf, 0))
+    if now - last < _error_interval:
+        _error_log[key] = (last, held + 1)
+        return
+    more = f" ({held} more since the last report)" if held else ""
+    print(f"{message}{more}", file=sys.stderr, flush=True)
+    _error_log[key] = (now, 0)
 
 
 def note_no_sibling_metrics(target: dict[str, Any], url: str, why: str) -> None:
@@ -1257,7 +1286,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--flush-interval",
         type=float,
-        default=float(os.environ.get("OPENINFRA_FLUSH_INTERVAL", "5")),
+        default=float(os.environ.get("OPENINFRA_FLUSH_INTERVAL", "1")),
+        help="seconds between snapshots (1); the gateway keeps one sample a second",
+    )
+    parser.add_argument(
+        "--log-interval",
+        type=float,
+        default=float(os.environ.get("OPENINFRA_LOG_INTERVAL", str(LOG_INTERVAL_S))),
+        help="seconds between logged flushes (60); 0 logs every one",
     )
     parser.add_argument("--once", action="store_true")
     parser.add_argument("--skip-gpu", action="store_true")
@@ -1275,12 +1311,16 @@ def parse_args() -> argparse.Namespace:
                 setattr(args, key, cfg[key])
         if cfg.get("flush_interval") is not None:
             args.flush_interval = float(cfg["flush_interval"])
+        if cfg.get("log_interval") is not None:
+            args.log_interval = float(cfg["log_interval"])
         if "sglang" in cfg:
             raw = cfg["sglang"] or []
             args.sglang_from_config = list(raw)
             args.sglang_configured = True
     if not args.dashboard:
         parser.error("set the gateway's address with --dashboard, OPENINFRA_URL or the config")
+    if not args.flush_interval > 0:
+        parser.error("the flush interval must be a positive number of seconds")
     return args
 
 
@@ -1342,20 +1382,94 @@ def scrape_pcie_dmon() -> dict[int, dict[str, float]]:
         return {}
     by_gpu: dict[int, dict[str, float]] = {}
     for line in out.splitlines():
-        line = line.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) < 3:
-            continue
-        try:
-            idx = int(parts[0])
-            rx, tx = float(parts[1]), float(parts[2])
-        except ValueError:
-            # dmon prints "-" for a metric it cannot read on this card.
-            continue
-        by_gpu[idx] = {"pcie_rx_bps": rx * 1e6, "pcie_tx_bps": tx * 1e6}
+        parsed = parse_dmon_line(line)
+        if parsed:
+            by_gpu[parsed[0]] = parsed[1]
     return by_gpu
+
+
+def parse_dmon_line(line: str) -> tuple[int, dict[str, float]] | None:
+    """One GPU's PCIe throughput from a line of ``nvidia-smi dmon -s t``, in bytes/s."""
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return None
+    parts = line.split()
+    if len(parts) < 3:
+        return None
+    try:
+        idx = int(parts[0])
+        rx, tx = float(parts[1]), float(parts[2])
+    except ValueError:
+        # dmon prints "-" for a metric it cannot read on this card.
+        return None
+    return idx, {"pcie_rx_bps": rx * 1e6, "pcie_tx_bps": tx * 1e6}
+
+
+class PcieMonitor:
+    """``nvidia-smi dmon -s t`` running in the background: each GPU's latest PCIe reading.
+
+    dmon samples over a second before it prints, so running it once per
+    flush, as :func:`scrape_pcie_dmon` does, would take the whole of a
+    one-second interval. One long-running dmon prints a line per GPU every
+    second instead, read here as it comes. It starts on the first call to
+    :meth:`latest`, and is started again 10 s after it exits; without
+    ``nvidia-smi`` it gives up. It is stopped when the reporter exits, and
+    should the reporter be killed instead, it ends at its next line, which
+    no longer has anywhere to go.
+    """
+
+    #: A reading older than this is not reported.
+    MAX_AGE_S = 5.0
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._latest: dict[int, tuple[float, dict[str, float]]] = {}
+        self._thread: threading.Thread | None = None
+        self._proc: subprocess.Popen[str] | None = None
+
+    def latest(self) -> dict[int, dict[str, float]]:
+        """The readings of the last few seconds, by GPU index; empty until dmon prints."""
+        if self._thread is None:
+            self._thread = threading.Thread(target=self._run, name="pcie-dmon", daemon=True)
+            self._thread.start()
+            atexit.register(self.stop)
+        now = time.monotonic()
+        with self._lock:
+            return {
+                idx: values
+                for idx, (at, values) in self._latest.items()
+                if now - at <= self.MAX_AGE_S
+            }
+
+    def stop(self) -> None:
+        """End the running dmon, if any."""
+        proc = self._proc
+        if proc is not None and proc.poll() is None:
+            proc.terminate()
+
+    def _run(self) -> None:
+        while True:
+            try:
+                proc = subprocess.Popen(
+                    ["nvidia-smi", "dmon", "-s", "t", "-d", "1"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    text=True,
+                )
+            except OSError:
+                return
+            self._proc = proc
+            assert proc.stdout is not None
+            for line in proc.stdout:
+                parsed = parse_dmon_line(line)
+                if parsed:
+                    with self._lock:
+                        self._latest[parsed[0]] = (time.monotonic(), parsed[1])
+            proc.wait()
+            time.sleep(10)
+
+
+PCIE_MONITOR = PcieMonitor()
 
 
 def scrape_dcgm(url: str = "http://127.0.0.1:9400/metrics") -> dict[int, dict[str, float]]:
@@ -1438,7 +1552,8 @@ def scrape(args: argparse.Namespace, targets: list[dict[str, str]]) -> dict[str,
                     pass
             sglang[target["id"] or target["url"]] = {"target": target, **parsed}
         except (urllib.error.URLError, OSError, TimeoutError, json.JSONDecodeError) as exc:
-            print(f"sglang scrape {target.get('id') or target.get('url')}: {exc}", file=sys.stderr)
+            name = target.get("id") or target.get("url")
+            log_error(f"sglang {name}", f"sglang scrape {name}: {exc}")
 
     with ThreadPoolExecutor(max_workers=5) as pool:
         futs = [pool.submit(host_job), pool.submit(dcgm_job)]
@@ -1450,7 +1565,7 @@ def scrape(args: argparse.Namespace, targets: list[dict[str, str]]) -> dict[str,
             try:
                 fut.result()
             except (subprocess.CalledProcessError, OSError, json.JSONDecodeError) as exc:
-                print(f"scrape error: {exc}", file=sys.stderr)
+                log_error("scrape", f"scrape error: {exc}")
     if dcgm:
         for gpu in gpus:
             extra = dcgm.get(int(gpu["index"]))
@@ -1460,7 +1575,7 @@ def scrape(args: argparse.Namespace, targets: list[dict[str, str]]) -> dict[str,
     # host engine is running, and a DCGM deployment must not be downgraded to
     # a once-per-flush nvidia-smi sample.
     if gpus and not any(g.get("pcie_tx_bps") is not None for g in gpus):
-        pcie = scrape_pcie_dmon()
+        pcie = scrape_pcie_dmon() if args.once else PCIE_MONITOR.latest()
         for gpu in gpus:
             extra = pcie.get(int(gpu["index"]))
             if extra:
@@ -1494,7 +1609,8 @@ def snapshot_sglang(
     last_m = last.get("metrics") or {}
     first_m = (prev or {}).get("metrics") or last_m
     metrics = dict(last_m)
-    can_rate = prev is not None and elapsed >= 1
+    # Half a second: a one-second flush may come a little early.
+    can_rate = prev is not None and elapsed >= 0.5
     src_first = first_m if can_rate else last_m
     src_elapsed = elapsed if can_rate else 0.0
     for prefix, dest in (
@@ -1798,10 +1914,14 @@ def flush(
     prev_sglang: dict[str, dict[str, Any]],
     elapsed: float,
     include_requests: bool,
+    *,
+    taken: float | None = None,
+    log: bool = True,
 ) -> dict[str, dict[str, Any]]:
-    """Post one snapshot of the host, its GPUs and engines.
+    """Post one snapshot of the host, its GPUs and engines, taken at *taken* (epoch seconds).
 
-    Returns the engine readings the next rates start from.
+    Logs what it posted when *log* is set. Returns the engine readings the next
+    rates start from.
     """
     node_meta = {
         **node,
@@ -2007,20 +2127,23 @@ def flush(
         )
 
     body: dict[str, Any] = {"node": node_meta}
+    if taken is not None:
+        body["ts"] = int(taken * 1000)
     if gpus:
         body["gpus"] = gpus
     if engines:
         body["sglang"] = engines
     if gpus or engines or not args.skip_gpu:
         result = post(args.dashboard, args.token, body)
-        print(
-            f"flush gpus interval={elapsed:.1f}s "
-            f"cpu={node_meta.get('cpu', {}).get('cpu_util_pct')} "
-            f"util={[g.get('utilization_pct') for g in gpus]} {result}",
-            flush=True,
-        )
-        for line in lines:
-            print(line, flush=True)
+        if log or result.get("requests_dropped"):
+            print(
+                f"flush gpus interval={elapsed:.1f}s "
+                f"cpu={node_meta.get('cpu', {}).get('cpu_util_pct')} "
+                f"util={[g.get('utilization_pct') for g in gpus]} {result}",
+                flush=True,
+            )
+            for line in lines:
+                print(line, flush=True)
     # Only once the sample is stored: if the post fails, main() retries
     # the log read next flush, from the old hold's end. A hold then
     # serves the fields of the flush that stored it, and no more.
@@ -2033,9 +2156,22 @@ def flush(
     return next_prev
 
 
+def next_slot(now: float, interval: float) -> float:
+    """When the next snapshot is taken: the middle of the next *interval* of wall-clock time.
+
+    Taken mid-interval, a snapshot stays inside its own second (the gateway
+    keeps one sample a second, by the snapshot's time) however late a busy
+    host wakes. One whose time has passed is skipped, not caught up.
+    """
+    slot = math.floor(now / interval) * interval + interval / 2
+    return slot if slot > now else slot + interval
+
+
 def main() -> int:
     """Scrape and post every flush interval, or once with ``--once``."""
+    global _error_interval
     args = parse_args()
+    _error_interval = 0.0 if args.once else args.log_interval
     targets = [] if args.skip_sglang else sglang_targets(args)
     node = {
         "id": args.node_id,
@@ -2045,14 +2181,16 @@ def main() -> int:
     }
     prev_sglang: dict[str, dict[str, Any]] = {}
     last_req_flush = 0.0
+    last_log = -math.inf
     last_flush_at = time.time()
-    next_tick = last_flush_at
+    tick = next_slot(last_flush_at, args.flush_interval)
 
     while True:
         if not args.once:
-            wait = next_tick - time.time()
+            wait = tick - time.time()
             if wait > 0:
                 time.sleep(wait)
+        taken = time.time()
         gpus: list[dict[str, Any]] = []
         sglang: dict[str, dict[str, Any]] = {}
         cpu: dict[str, Any] | None = None
@@ -2067,27 +2205,38 @@ def main() -> int:
             OSError,
             json.JSONDecodeError,
         ) as exc:
-            print(f"scrape error: {exc}", file=sys.stderr)
+            log_error("scrape", f"scrape error: {exc}")
 
-        now = time.time()
-        elapsed = max(now - last_flush_at, 0.001)
-        include_requests = args.once or (now - last_req_flush) >= REQUEST_FLUSH_S
+        elapsed = max(taken - last_flush_at, 0.001)
+        include_requests = args.once or (taken - last_req_flush) >= REQUEST_FLUSH_S
+        log = args.once or taken - last_log >= args.log_interval
         try:
             prev_sglang = flush(
-                args, node, gpus, sglang, cpu, prev_sglang, elapsed, include_requests
+                args,
+                node,
+                gpus,
+                sglang,
+                cpu,
+                prev_sglang,
+                elapsed,
+                include_requests,
+                taken=taken,
+                log=log,
             )
             if include_requests:
-                last_req_flush = now
+                last_req_flush = taken
+            if log:
+                last_log = taken
             # Only after a stored flush: a failed one keeps the previous
             # counters, so the next rates must span the time since those.
-            last_flush_at = now
+            last_flush_at = taken
         except (urllib.error.URLError, OSError, json.JSONDecodeError) as exc:
-            print(f"flush error: {exc}", file=sys.stderr)
+            log_error("flush", f"flush error: {exc}")
             if args.once:
                 return 1
-        next_tick = now + args.flush_interval
         if args.once:
             return 0
+        tick = next_slot(time.time(), args.flush_interval)
 
 
 if __name__ == "__main__":

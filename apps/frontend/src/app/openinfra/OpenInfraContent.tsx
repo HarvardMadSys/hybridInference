@@ -46,6 +46,13 @@ import { ChartPanel } from './TimeSeriesChart';
 
 /** How often the page asks for fresh numbers while it is visible. */
 export const REFRESH_MS = 30_000;
+/** How often over the last 15 minutes, whose points are 5 seconds apart. */
+export const FAST_REFRESH_MS = 5_000;
+
+/** How often the page refreshes while it shows the last `hours`. */
+export function refreshMs(hours: number): number {
+  return hours <= 0.25 ? FAST_REFRESH_MS : REFRESH_MS;
+}
 
 type Phase = 'loading' | 'ready' | 'unavailable' | 'error';
 
@@ -72,21 +79,27 @@ function fleetLabel(fleet: FleetHealth, f: InfraFormat): string {
 
 function rangeButtonLabel(hours: number, f: InfraFormat): { label: string; title: string } {
   const { t } = f;
+  if (hours === 0.25) {
+    return {
+      label: t('openinfra.range.15m', '15m'),
+      title: t('openinfra.range.15m_title', '5-second averages'),
+    };
+  }
   if (hours === 2) {
     return {
       label: t('openinfra.range.2h', '2h'),
-      title: t('openinfra.range.2h_title', '1-minute samples'),
+      title: t('openinfra.range.2h_title', '1-minute averages'),
     };
   }
   if (hours === 24) {
     return {
       label: t('openinfra.range.24h', '24h'),
-      title: t('openinfra.range.24h_title', '20-minute samples'),
+      title: t('openinfra.range.24h_title', '20-minute averages'),
     };
   }
   return {
     label: t('openinfra.range.7d', '7d'),
-    title: t('openinfra.range.7d_title', 'hourly samples'),
+    title: t('openinfra.range.7d_title', 'hourly averages'),
   };
 }
 
@@ -96,6 +109,11 @@ function rangeNote(k: RangeKpis, hours: number, f: InfraFormat): string {
   if (!k.averaged) return t('openinfra.range.live', 'live');
   if (hours > 48) {
     return fill(t('openinfra.range.avg_days', '{days}d avg'), { days: f.n(hours / 24, 1) });
+  }
+  if (hours < 1) {
+    return fill(t('openinfra.range.avg_minutes', '{minutes}m avg'), {
+      minutes: f.n(hours * 60, 0),
+    });
   }
   return fill(t('openinfra.range.avg_hours', '{hours}h avg'), { hours: f.n(hours, 2) });
 }
@@ -226,7 +244,8 @@ function tiles(k: RangeKpis, hours: number, f: InfraFormat) {
 /**
  * The public OpenInfra page: live metrics of the deployment's own servers,
  * one deployment at a time (named after `#` in the address) over the range in
- * `?hours=`, refreshed every 30 seconds while the page is visible.
+ * `?hours=`, refreshed while the page is visible: every 5 seconds over the last
+ * 15 minutes, every 30 seconds otherwise.
  */
 export function OpenInfraContent(): JSX.Element {
   const f = useInfraFormat();
@@ -305,11 +324,12 @@ export function OpenInfraContent(): JSX.Element {
   useEffect(() => {
     if (hours === null) return;
     void load(hours);
+    const every = refreshMs(hours);
     const timer = setInterval(() => {
       if (document.visibilityState !== 'hidden') void load(hours);
-    }, REFRESH_MS);
+    }, every);
     const onVisible = () => {
-      if (document.visibilityState === 'visible' && Date.now() - loadedAt.current >= REFRESH_MS) {
+      if (document.visibilityState === 'visible' && Date.now() - loadedAt.current >= every) {
         void load(hours);
       }
     };
@@ -543,9 +563,12 @@ export function OpenInfraContent(): JSX.Element {
           </section>
 
           <p className="text-xs text-gray-500">
-            {t(
-              'openinfra.footer',
-              'Refreshed every 30 seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger',
+            {fill(
+              t(
+                'openinfra.footer',
+                'Refreshed every {seconds} seconds · hover a chart for values · Ctrl or ⌘ + scroll to zoom · drag to pan · double-click to reset · Zoom opens a chart larger',
+              ),
+              { seconds: String(refreshMs(hours ?? DEFAULT_HOURS) / 1000) },
             )}
           </p>
         </>

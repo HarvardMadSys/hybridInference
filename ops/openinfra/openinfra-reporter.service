@@ -1,4 +1,5 @@
-# OpenInfra reporter: posts this GPU host's metrics to the gateway every 5 s.
+# OpenInfra reporter: posts this GPU host's metrics to the gateway every second
+# (the node configuration's flush_interval, or --flush-interval, changes it).
 #
 # Install (see docs/developer/openinfra.md):
 #   sudo install -d /opt/openinfra /etc/openinfra
@@ -21,7 +22,7 @@ User=openinfra
 Group=openinfra
 # OPENINFRA_URL, OPENINFRA_TOKEN and OPENINFRA_NODE_CONFIG.
 EnvironmentFile=/etc/openinfra/reporter.env
-ExecStart=/usr/bin/python3 /opt/openinfra/reporter.py --flush-interval 5
+ExecStart=/usr/bin/python3 /opt/openinfra/reporter.py
 Restart=always
 RestartSec=5
 TimeoutStopSec=20

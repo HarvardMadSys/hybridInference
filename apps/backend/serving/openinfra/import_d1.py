@@ -7,14 +7,19 @@ The input is that export (SQL text, read a batch of statements at a time into a
 temporary SQLite file, so its size does not matter) or a SQLite database made
 from it. Every row is copied into the ``openinfra_*`` tables: hosts, GPUs and
 engines, their samples, request events and rollups. Columns an older database
-lacks are left empty, and a sample keeps the first of its 6-second bucket, as
-the gateway does.
+lacks are left empty, and a sample keeps the first of its second, as the
+gateway does.
 
 What the gateway already holds wins, so the import can run after the reporters
-were pointed at the gateway, and again: a host, GPU or engine row, a sample
-bucket or a rollup bucket it has is kept, and request events are imported only
-from before each engine's first one here. Engines the old dashboard had retired
-appear again unless ``OPENINFRA_RETIRED_ENGINES`` lists them.
+were pointed at the gateway, and again: a host, GPU or engine row or a rollup
+bucket it has is kept, and a host's, GPU's or engine's samples and an engine's
+request events are imported only from before its first one here. Nothing is
+imported into a week already archived (:mod:`serving.openinfra.archive`): the
+archive would not have it, and the retention would delete it. The import holds
+the archive lock while it runs, so no week is archived under it. Samples and
+events older than the retention are deleted by the next scheduled run, once
+their week is archived. Engines the old dashboard had retired appear again
+unless ``OPENINFRA_RETIRED_ENGINES`` lists them.
 
 The connection is the gateway's own database settings (``DB_HOST`` and the
 rest, as every ``python -m serving`` job reads them). Writes go in chunks of
@@ -36,6 +41,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from serving.openinfra import archive
 from serving.openinfra.store import SAMPLE_MS
 from serving.utils.logging import get_logger
 
@@ -297,41 +303,63 @@ def _chunks(cursor: sqlite3.Cursor) -> Iterator[list[tuple[Any, ...]]]:
 
 async def import_table(
     source: sqlite3.Connection, conn: Any, table: Table, *, dry_run: bool = False
-) -> tuple[int, int]:
-    """Copy one table; (rows read, rows refused for a missing required value)."""
+) -> tuple[int, int, int]:
+    """Copy one table; (rows read, refused for a missing required value, skipped).
+
+    A sample or request event is skipped when it is not older than the first
+    of its host, GPU or engine here, or falls in an archived week.
+    """
     columns = source_columns(source, table.source)
     if not columns:
-        return 0, 0
+        return 0, 0, 0
     table_plan = plan(table, columns, await target_columns(conn, table.target))
     sql = insert_sql(table_plan)
-    cutoff: dict[str, int] = {}
-    if table.key is None:
-        cutoff = {
-            row["engine_id"]: row["first"]
-            for row in await conn.fetch(
-                "SELECT engine_id, MIN(ts) AS first FROM openinfra_request_events "
-                "GROUP BY engine_id"
-            )
-        }
+    pruned = next((t for t in archive.PRUNED if t.name == table.target), None)
+    first: dict[str, int] = {}
+    archived: set[int] = set()
+    if pruned is not None:
+        first = await archive.first_times(conn, pruned)
+        archived = set(await archive.archived_weeks(conn))
+        names = [column.name for column in table_plan.columns]
+        key_at, ts_at = names.index(pruned.key), names.index("ts")
+
+    def kept(values: tuple[Any, ...]) -> bool:
+        ts = values[ts_at]
+        return ts < first.get(values[key_at], math.inf) and archive.week_start(ts) not in archived
+
     selected = ", ".join(f'"{name}"' for name, _ in table_plan.pairs)
     cursor = source.execute(f'SELECT {selected} FROM "{table.source}" ORDER BY rowid')
-    read = refused = 0
+    read = refused = skipped = 0
     for rows in _chunks(cursor):
         read += len(rows)
         converted = [values for values in map(table_plan.convert, rows) if values is not None]
         refused += len(rows) - len(converted)
-        if cutoff:
-            engine = [c.name for c in table_plan.columns].index("engine_id")
-            ts = [c.name for c in table_plan.columns].index("ts")
-            converted = [v for v in converted if v[ts] < cutoff.get(v[engine], math.inf)]
+        if pruned is not None:
+            offered = len(converted)
+            converted = [values for values in converted if kept(values)]
+            skipped += offered - len(converted)
         if converted and not dry_run:
             await conn.execute(sql, *(list(column) for column in zip(*converted, strict=True)))
-    return read, refused
+    return read, refused, skipped
 
 
-async def run(path: Path, conn: Any, *, dry_run: bool = False) -> dict[str, tuple[int, int]]:
-    """Import every table of the export at *path*; per D1 table, (rows read, rows refused)."""
-    results: dict[str, tuple[int, int]] = {}
+async def run(path: Path, conn: Any, *, dry_run: bool = False) -> dict[str, tuple[int, int, int]]:
+    """Import every table of the export at *path*; per D1 table, (read, refused, skipped) rows.
+
+    Holds the archive lock throughout (waiting for an archive run to finish),
+    so no week is archived while rows are being imported into it.
+    """
+    if dry_run:
+        return await _run(path, conn, dry_run=True)
+    await conn.execute(archive.LOCK_SQL)
+    try:
+        return await _run(path, conn, dry_run=False)
+    finally:
+        await conn.execute(archive.UNLOCK_SQL)
+
+
+async def _run(path: Path, conn: Any, *, dry_run: bool) -> dict[str, tuple[int, int, int]]:
+    results: dict[str, tuple[int, int, int]] = {}
     with open_source(path) as source:
         for table in TABLES:
             if dry_run:
@@ -340,7 +368,7 @@ async def run(path: Path, conn: Any, *, dry_run: bool = False) -> dict[str, tupl
             async with conn.transaction():
                 results[table.source] = await import_table(source, conn, table)
             logger.info(
-                "openinfra import: %s -> %s: %d rows read, %d refused",
+                "openinfra import: %s -> %s: %d rows read, %d refused, %d skipped",
                 table.source,
                 table.target,
                 *results[table.source],
@@ -367,8 +395,12 @@ async def _main(args: argparse.Namespace) -> int:
     finally:
         await conn.close()
     verb = "would import" if args.dry_run else "imported"
-    for name, (read, refused) in results.items():
-        print(f"{name}: {verb} {read - refused} of {read} rows", file=sys.stdout)
+    for name, (read, refused, skipped) in results.items():
+        print(
+            f"{name}: {verb} {read - refused - skipped} of {read} rows "
+            f"({refused} without a required value, {skipped} held here or archived)",
+            file=sys.stdout,
+        )
     return 0
 
 

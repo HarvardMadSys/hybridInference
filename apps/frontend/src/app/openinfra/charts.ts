@@ -148,7 +148,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: t('openinfra.chart.cpu.unit', '% util · load (dimensionless)'),
       desc: t(
         'openinfra.chart.cpu.desc',
-        'Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is one scrape, not a window average.',
+        'Host CPU utilization in percent and 1-minute load average from /proc. Load1 is not a percent. Each point is the mean of the per-second samples in its interval.',
       ),
       series: [...cpuUtil, ...cpuLoad],
       opts: { format: (v) => f.n(v, 1) },
@@ -187,7 +187,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: '%',
       desc: t(
         'openinfra.chart.gpu_sm.desc',
-        'SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is one scrape, not a window average.',
+        'SM (streaming multiprocessor) utilization in percent from nvidia-smi. Each point is the mean of the per-second samples in its interval.',
       ),
       series: lines(gpuG, 'utilization_pct', null, (r) => gpuName(r)),
       opts: percent,
@@ -295,7 +295,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: t('openinfra.chart.requests.unit', 'requests'),
       desc: t(
         'openinfra.chart.requests.desc',
-        'Count of requests currently running vs waiting in the engine queue. Each point is one scrape, not a window peak.',
+        'Count of requests currently running vs waiting in the engine queue. Each point is the mean of its interval, so a brief peak is flattened.',
       ),
       series: requestSeries,
       opts: { max: Math.max(4, peak(requestSeries)), format: (v) => f.n(v) },
@@ -328,7 +328,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: '%',
       desc: t(
         'openinfra.chart.cache_hit.desc',
-        'Prefix-cache hit rate in percent this sample: 100 × cached prefill tokens / (cached + new). Idle intervals with no tokens are left blank.',
+        'Prefix-cache hit rate in percent: 100 × cached prefill tokens / (cached + new), averaged over each point’s interval. Idle intervals with no tokens are left blank.',
       ),
       series: lines(sgG, 'cache_hit_rate', asPercent, (r) => serverName(r)),
       opts: percent,
@@ -366,7 +366,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: 's',
       desc: t(
         'openinfra.chart.ttft.desc',
-        'Time to first token in seconds this sample. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).',
+        'Time to first token in seconds, averaged over each point’s interval. Queue is the wait before compute, prefill is the prefill forward pass, and the total is TTFT (queue + prefill plus scheduling and tokenizing).',
       ),
       series: [
         ...lines(sgG, 'queue_avg_s', null, (r) => serverName(r, word.queue), 0, ROLE.second),
@@ -392,7 +392,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: 's',
       desc: t(
         'openinfra.chart.e2e.desc',
-        'End-to-end request latency in seconds, from arrival to completion, over requests finished in this sample.',
+        'End-to-end request latency in seconds, from arrival to completion, over requests finished in each point’s interval.',
       ),
       series: lines(sgG, 'e2e_latency_avg_s', null, (r) => serverName(r)),
       opts: seconds,
@@ -520,7 +520,7 @@ export function buildCharts(hist: HistoryRows, f: InfraFormat): ChartSections {
       unit: t('openinfra.chart.shape.unit', 'tokens / request'),
       desc: t(
         'openinfra.chart.shape.desc',
-        'Mean token counts per request this sample: the full prompt, the uncached (computed) prompt, and the generation length.',
+        'Mean token counts per request in each point’s interval: the full prompt, the uncached (computed) prompt, and the generation length.',
       ),
       series: [
         ...lines(sgG, 'prompt_tokens_avg', null, (r) => serverName(r, word.prompt), 0, ROLE.first),

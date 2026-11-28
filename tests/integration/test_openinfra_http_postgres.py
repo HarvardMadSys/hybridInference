@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -46,8 +47,7 @@ async def client(monkeypatch, tmp_path):
     )
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
-    openinfra._DASHBOARDS.clear()
-    openinfra._HISTORIES.clear()
+    openinfra.clear_caches()
     pool = await postgres.create_pool(min_size=1, max_size=2)
     async with pool.acquire() as conn:
         await conn.execute(f"TRUNCATE {', '.join(TABLES)}")
@@ -66,7 +66,9 @@ async def client(monkeypatch, tmp_path):
 
 
 async def test_a_reported_snapshot_is_on_the_page(client):
+    taken = int(time.time() * 1000)
     snapshot = {
+        "ts": taken,
         "node": {
             "id": "node-a",
             "hostname": "node-a",
@@ -101,7 +103,7 @@ async def test_a_reported_snapshot_is_on_the_page(client):
                     "prefill_tps": 100,
                 },
                 "requests": [
-                    {"ts": 1_700_000_000_000, "input_len": 900, "output_len": 120, "ttft_s": 0.4}
+                    {"ts": taken - 5_000, "input_len": 900, "output_len": 120, "ttft_s": 0.4}
                 ],
             }
         ],
@@ -124,7 +126,7 @@ async def test_a_reported_snapshot_is_on_the_page(client):
     assert doc["gpus"][0]["name"] == "Test GPU"
     assert doc["requests"][0]["input_len"] == 900
     assert doc["served"]["servers"][0]["id"] == "node-a-chat"
-    assert doc["served"]["hour"]["reqs"] == 3.0  # 30/min over one 6 s bucket
+    assert doc["served"]["hour"]["reqs"] == 0.5  # 30/min over one second
 
     history = await client.get("/public-openinfra/history?hours=2")
     assert history.status_code == 200
@@ -133,3 +135,22 @@ async def test_a_reported_snapshot_is_on_the_page(client):
     assert [r["utilization_pct"] for r in rows["gpu"]] == [77.0]
     assert [r["running"] for r in rows["sglang"]] == [4.0]
     assert [r["cpu_util_pct"] for r in rows["cpu"]] == [12.5]
+
+
+async def test_dropped_request_events_are_counted_in_the_answer(client, caplog):
+    taken = int(time.time() * 1000)
+    snapshot = {
+        "ts": taken,
+        "sglang": [
+            {
+                "server": {"id": "e", "node_id": "node-a"},
+                "metrics": {"num_running_reqs": 1},
+                "requests": [{"ts": taken - 3_600_000, "input_len": 5}, {"input_len": 6}],
+            }
+        ],
+    }
+    stored = await client.post(
+        "/internal/openinfra/ingest", json=snapshot, headers={"Authorization": f"Bearer {TOKEN}"}
+    )
+    assert stored.json() == {"ok": True, "gpus": 0, "sglang": 1, "requests_dropped": 1}
+    assert "dropped 1 request events" in caplog.text

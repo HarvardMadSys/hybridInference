@@ -37,15 +37,11 @@ def _clean(monkeypatch):
     monkeypatch.delenv("DISTRIBUTION_CONFIG_MODE", raising=False)
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
-    openinfra._DASHBOARDS.clear()
-    openinfra._HISTORIES.clear()
-    openinfra._KNOWN_NODES.clear()
+    openinfra.clear_caches()
     yield
     get_settings.cache_clear()
     get_distribution_config.cache_clear()
-    openinfra._DASHBOARDS.clear()
-    openinfra._HISTORIES.clear()
-    openinfra._KNOWN_NODES.clear()
+    openinfra.clear_caches()
 
 
 def _publish(monkeypatch, tmp_path, extra: str = "  openinfra: true\n") -> None:
@@ -156,7 +152,7 @@ async def test_serves_the_dashboard_with_cache_headers(monkeypatch, tmp_path, bu
     resp = await _call(_db(), "GET", "/public-openinfra")
     assert resp.status_code == 200
     assert resp.json() == {"generated_at": 1, "fleet": "healthy", "sglang": []}
-    assert resp.headers["cache-control"] == "public, max-age=10"
+    assert resp.headers["cache-control"] == "public, max-age=5"
     assert builds == [("dashboard", {"retired": ("old", "older"), "order": ("b", "a")})]
 
 
@@ -178,6 +174,21 @@ async def test_history_passes_the_normalized_window_and_node(monkeypatch, tmp_pa
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "public, max-age=30"
     assert builds == [("history", {"hours": 2.0, "node": "node-a", "retired": ()})]
+
+
+@pytest.mark.parametrize(
+    ("hours", "ttl"), [(0.25, 5), (0.5, 10), (1, 20), (2, 30), (24, 30), (168, 30)]
+)
+def test_a_history_is_reused_for_the_spacing_of_its_points(hours, ttl):
+    assert openinfra.history_ttl(hours) == ttl
+
+
+@pytest.mark.asyncio
+async def test_the_fifteen_minutes_are_reused_for_five_seconds(monkeypatch, tmp_path, builds):
+    _publish(monkeypatch, tmp_path)
+    resp = await _call(_db(), "GET", "/public-openinfra/history?hours=0.25")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=5"
 
 
 @pytest.mark.asyncio
