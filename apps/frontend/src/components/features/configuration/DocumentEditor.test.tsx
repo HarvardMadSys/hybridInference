@@ -268,7 +268,7 @@ describe('a JSON document as fields', () => {
     expect(screen.getByRole('textbox', { name: 'MODEL_CATALOG' })).toHaveValue(big);
   });
 
-  it('shows an empty list without a field to type into, and saves a never-set value as text', () => {
+  it('shows an empty list without a field to type into, and saves a never-set value as its type', () => {
     renderDocument(
       documentEntry({ value: JSON.stringify({ local_deployment: [], release: null, name: 'x' }) }),
     );
@@ -277,8 +277,14 @@ describe('a JSON document as fields', () => {
     expect(fields.getByText('An empty list. Add its items in JSON.')).toBeInTheDocument();
     expect(fields.getAllByRole('textbox')).toHaveLength(2);
     expect(field('release')).toHaveAttribute('placeholder', 'null');
+    expect(field('release')).toHaveAccessibleDescription('"quote" to keep as text');
 
     type('release', '2024');
+    expect(draftDocument()).toEqual({ local_deployment: [], release: 2024, name: 'x' });
+    // Edited again, the field still reads what is typed by its own shape.
+    type('release', 'false');
+    expect(draftDocument()).toEqual({ local_deployment: [], release: false, name: 'x' });
+    type('release', '"2024"');
     expect(draftDocument()).toEqual({ local_deployment: [], release: '2024', name: 'x' });
   });
 

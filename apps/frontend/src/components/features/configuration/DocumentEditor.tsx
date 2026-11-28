@@ -29,6 +29,8 @@ const KIND_HINTS: Partial<Record<FieldKind, string>> = {
   number: 'number',
   boolean: 'true or false',
   list: 'comma-separated',
+  // Never set: a number or true/false is read as one, anything else as text.
+  null: '"quote" to keep as text',
 };
 
 /** The draft without a field's complaint: what the valid fields made of the document. */
