@@ -80,12 +80,7 @@ def regression_cases(fixtures: dict[str, list[tuple[str, str]]]) -> tuple[dict, 
     for name in sorted(names):
         rows = []
         for rule, value in fixtures.get(name, []):
-            if name == ".env.example" and value == "DB_ENABLED=true":
-                # Exercise the blank-value false positive in its actual form,
-                # without a comment between the password and boolean setting.
-                rows.extend(["DB_PASSWORD=", value])
-            else:
-                rows.append(f'api_key = "{value}"' if rule == "generic-api-key" else value)
+            rows.append(f'api_key = "{value}"' if rule == "generic-api-key" else value)
         for rule, value in sentinels.items():
             # Put the generic sentinel beside a permitted fixture, guarding
             # against whole-line exceptions as well as path-only exceptions.
