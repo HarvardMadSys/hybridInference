@@ -457,6 +457,93 @@ class BulkUserAutomationScoresResponse(BaseModel):
     scores: dict[str, UserAutomationScore]  # keyed by user_id
 
 
+class DuplicateAccountEvidence(BaseModel):
+    """One kind of evidence that two accounts may belong to one person.
+
+    ``kind`` is one of :data:`serving.analytics.duplicate_accounts.SIGNAL_WEIGHTS`,
+    counted once per pair at ``weight``. ``addresses`` are the IPv4 addresses
+    or IPv6 /64s it was seen on, for the kinds drawn on an address (empty for
+    the others); ``detail`` says what it shows, in one sentence.
+    """
+
+    kind: str
+    weight: int
+    addresses: list[str] = Field(default_factory=list)
+    detail: str
+
+
+class DuplicateAccountLink(BaseModel):
+    """The evidence between one pair of accounts, and its total weight."""
+
+    user_ids: list[str]
+    weight: int
+    evidence: list[DuplicateAccountEvidence]
+
+
+class DuplicateAccountMember(BaseModel):
+    """An account in a duplicate-account group, with its requests in the window."""
+
+    user_id: str
+    email: str | None = None
+    login_name: str | None = None
+    phone: str | None = None
+    user_name: str | None = None
+    role: str = "free"
+    status: str = "active"
+    created_at: datetime | None = None
+    requests: int = 0
+
+
+class DuplicateAccountGroup(BaseModel):
+    """Accounts that may belong to one person, with every link between them.
+
+    ``score`` is the sum of the weights of every linked pair in the group,
+    including pairs too weak to have merged on their own; ``signals`` the kinds
+    of evidence found, strongest first; ``address_only`` whether all of it is
+    shared addresses, with no timing, identity or behaviour (as often a
+    household or an office as one person);
+    ``members`` oldest account first, and ``links`` heaviest first.
+    """
+
+    score: int
+    user_ids: list[str]
+    signals: list[str]
+    address_only: bool = False
+    members: list[DuplicateAccountMember]
+    links: list[DuplicateAccountLink]
+
+
+class OversizedAccountComponent(BaseModel):
+    """Accounts linked into a component too large to be one person's.
+
+    Shared infrastructure that slipped the per-address limits; listed so the
+    limit is visible rather than silent.
+    """
+
+    user_ids: list[str]
+
+
+class DuplicateAccountScanResponse(BaseModel):
+    """The result of a duplicate-account scan over the last ``days`` days.
+
+    ``accounts_scanned`` counts the accounts active in the window (operator,
+    internal and service accounts aside). ``shared_addresses`` and
+    ``shared_browsers`` count the addresses and browsers set aside as shared by
+    too many accounts. ``total_groups`` is how many groups scored at least the
+    requested minimum; ``groups`` lists the first ``limit`` of them, highest
+    score first.
+    """
+
+    days: int
+    since: datetime
+    accounts_scanned: int
+    shared_addresses: int
+    shared_browsers: int
+    total_groups: int
+    groups: list[DuplicateAccountGroup]
+    oversized: list[OversizedAccountComponent]
+
+
 class SummaryUserItem(MoneyResponse):
     """User entry inside a summary card (sub-set of UserListItem)."""
 

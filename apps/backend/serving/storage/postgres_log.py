@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
+import time
 from typing import TYPE_CHECKING, Any, Literal
 
 from serving.accounting import get_accounting_policy
 from serving.analytics.automation_score import score_users_from_logs
+from serving.analytics.duplicate_accounts import (
+    SCAN_BUDGET_SEC,
+    ScannedWindow,
+    gather_duplicate_scan,
+)
 from serving.storage import (
     admin_view_results,
     alert_history_store,
@@ -98,6 +105,10 @@ USER_USAGE_CACHE_TTL_SEC = 30.0
 #: Users whose usage is kept at once; the least recently computed goes first.
 USER_USAGE_CACHE_ENTRIES = 4096
 
+#: How long a duplicate-account scan's result is reused for the same window and
+#: bounds: repeated clicks and a second administrator cost one scan, not two.
+DUPLICATE_SCAN_CACHE_TTL_SEC = 30.0
+
 # What :meth:`PostgresLogStore.log_request` writes to ``api_logs``: the columns,
 # and their values over the statement's parameters, in the same order.
 _LOG_COLUMNS = """
@@ -156,6 +167,14 @@ class PostgresLogStore(LogStore):
         self._user_usage: SingleFlightCache[dict[str, Any]] = SingleFlightCache(
             USER_USAGE_CACHE_TTL_SEC, max_entries=USER_USAGE_CACHE_ENTRIES
         )
+        # A window's scan, by its ``days``: a report's other bounds only
+        # filter it. Few are kept, since each holds the whole scan.
+        self._duplicate_scans: SingleFlightCache[ScannedWindow] = SingleFlightCache(
+            DUPLICATE_SCAN_CACHE_TTL_SEC, max_entries=4
+        )
+        # One duplicate-account scan at a time in this process, whatever its
+        # bounds, so scans never hold more than one general-pool connection.
+        self._duplicate_scan_lock = asyncio.Lock()
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -817,6 +836,42 @@ class PostgresLogStore(LogStore):
         async with self.pool.acquire() as conn:
             records = await score_users_from_logs(conn, days=days, user_ids=user_ids)
         return {r["user_id"]: r for r in records}
+
+    async def scan_duplicate_accounts(
+        self, *, days: int, min_score: int, limit: int
+    ) -> dict[str, Any]:
+        """Return the groups of accounts that may belong to one person.
+
+        See :mod:`serving.analytics.duplicate_accounts`. Besides ``api_logs`` it
+        reads the account tables of the same database (``users``,
+        ``admin_audit_log``, ``login_events`` and ``browser_session_accounts``),
+        on one general-pool connection and within one time budget for the
+        whole scan. A process runs one scan at a time. A window scanned in the
+        last half minute is reported again from that scan, at any *min_score*
+        and *limit*.
+
+        Raises:
+            TimeoutError: The budget ran out, waiting for another scan to
+                finish or between statements.
+            asyncpg.QueryCanceledError: The database cancelled a statement
+                that ran past the budget.
+        """
+        window = await self._duplicate_scans.get(days, lambda: self._scan_window(days))
+        return window.report(min_score=min_score, limit=limit)
+
+    async def _scan_window(self, days: int) -> ScannedWindow:
+        # The wait for another scan spends this one's budget, so a request
+        # queued behind it gives up within the budget rather than start late.
+        deadline = time.monotonic() + SCAN_BUDGET_SEC
+        async with asyncio.timeout(SCAN_BUDGET_SEC):
+            await self._duplicate_scan_lock.acquire()
+        try:
+            async with self.pool.acquire() as conn:
+                return await gather_duplicate_scan(
+                    conn, days=days, budget_sec=deadline - time.monotonic()
+                )
+        finally:
+            self._duplicate_scan_lock.release()
 
     async def get_key_detail_usage(self, user_id: str) -> dict[str, Any]:
         """Return usage detail for admin key-detail view."""

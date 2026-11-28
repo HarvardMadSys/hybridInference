@@ -1,0 +1,441 @@
+# SOME DESCRIPTIVE TITLE.
+# Copyright (C) 2026, The HybridInference contributors
+# This file is distributed under the same license as the HybridInference
+# package.
+# FIRST AUTHOR <EMAIL@ADDRESS>, 2026.
+#
+#, fuzzy
+msgid ""
+msgstr ""
+"Project-Id-Version: HybridInference \n"
+"Report-Msgid-Bugs-To: \n"
+"POT-Creation-Date: 2026-11-28 17:01+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language: zh_CN\n"
+"Language-Team: zh_CN <LL@li.org>\n"
+"Plural-Forms: nplurals=1; plural=0;\n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=utf-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"Generated-By: Babel 2.18.0\n"
+
+#: ../developer/duplicate-accounts.md:1
+msgid "Duplicate accounts"
+msgstr "重复账户"
+
+#: ../developer/duplicate-accounts.md:3
+msgid ""
+"The duplicate-account scan finds accounts that may belong to one person: "
+"several sign-ups from one address within minutes, accounts used from one "
+"address in the same hours, one browser signed in to several accounts. It "
+"is for administrators of a deployment that gives each account its own "
+"quota. Run it under **Users → Duplicate accounts** in the admin console, "
+"or through the [admin API](#admin-api)."
+msgstr ""
+"重复账户扫描会找出可能属于同一个人的账户：几分钟内从同一地址注册的多个账户、在相同时段从同一地址使用的账户、在同一个浏览器中登录的多个账户。它面向为每个账户单独分配额度的部署的管理员。在管理控制台的"
+" **Users → Duplicate accounts** 下运行它，或使用[管理 API](#admin-api)。"
+
+#: ../developer/duplicate-accounts.md:5
+msgid ""
+"The scan only reports. It changes no account, and each group it lists "
+"comes with the evidence behind it, so a person can decide what, if "
+"anything, to do."
+msgstr "扫描只出报告。它不会改动任何账户，列出的每个分组都附有其依据，由人来决定是否采取行动、采取什么行动。"
+
+#: ../developer/duplicate-accounts.md:7
+msgid "Running a scan"
+msgstr "运行扫描"
+
+#: ../developer/duplicate-accounts.md:9
+msgid ""
+"Choose a window (the last day up to the last 90 days, 14 by default) and "
+"press **Scan**. The result lists groups of accounts, highest score first."
+" Each group shows its members, oldest account first, with their status, "
+"role, requests in the window and sign-up date; a member's name opens the "
+"account below. **Why these accounts** lists every linked pair and what "
+"links it."
+msgstr ""
+"选择一个时间窗口（从最近一天到最近 90 天，默认 14 天），然后点击 "
+"**Scan**。结果按得分从高到低列出账户分组。每个分组列出其成员，最早创建的账户在前，并显示其状态、角色、窗口内的请求数和注册日期；点击成员名称会在下方打开该账户。**Why"
+" these accounts** 列出每一对相互关联的账户及其关联依据。"
+
+#: ../developer/duplicate-accounts.md:11
+msgid ""
+"A scan reads every request the window holds, so it runs only when you "
+"ask, and a long window on a busy gateway takes longer. If it cannot "
+"finish within 50 seconds, counting any wait for another scan to finish, "
+"it stops and asks for a shorter window. A gateway process runs one scan "
+"at a time. For half a minute after a window is scanned, asking for that "
+"window again, with any `min_score` or `limit`, reuses the scan."
+msgstr ""
+"一次扫描会读取窗口内的全部请求，所以只在你要求时运行；在繁忙的网关上，窗口越长耗时越久。如果它无法在 50 "
+"秒内完成（等待另一次扫描结束的时间也计算在内），就会停止，并提示你缩短窗口。一个网关进程同一时间只运行一次扫描。一个窗口扫描完成后的半分钟内，再次请求同一窗口，不论"
+" `min_score` 或 `limit` 取何值，都会复用这次扫描。"
+
+#: ../developer/duplicate-accounts.md:13
+msgid "The evidence"
+msgstr "依据"
+
+#: ../developer/duplicate-accounts.md:15
+msgid ""
+"The scan links two accounts by what they share in the window. Each kind "
+"of evidence has a weight:"
+msgstr "扫描根据两个账户在窗口内的共同点把它们关联起来。每种依据都有一个权重："
+
+#: ../developer/duplicate-accounts.md
+msgid "Evidence"
+msgstr "依据"
+
+#: ../developer/duplicate-accounts.md
+msgid "Weight"
+msgstr "权重"
+
+#: ../developer/duplicate-accounts.md
+msgid "Two accounts that"
+msgstr "两个账户"
+
+#: ../developer/duplicate-accounts.md
+msgid "`same_browser`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "8"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "are signed in together on one browser of the console"
+msgstr "在控制台的同一个浏览器中同时登录"
+
+#: ../developer/duplicate-accounts.md
+msgid "`email_alias`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "6"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "have email addresses that reach one mailbox"
+msgstr "邮箱地址指向同一个邮箱"
+
+#: ../developer/duplicate-accounts.md
+msgid "`signup_burst`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "3"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "registered from one address within 60 minutes of each other"
+msgstr "在 60 分钟之内先后从同一地址注册"
+
+#: ../developer/duplicate-accounts.md
+msgid "`signup_ip`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "registered from one address"
+msgstr "从同一地址注册"
+
+#: ../developer/duplicate-accounts.md
+msgid "`login_ip`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "both signed in from one address"
+msgstr "都从同一地址登录过"
+
+#: ../developer/duplicate-accounts.md
+msgid "`cross_ip`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid ""
+"split one address: one sent API requests from it, the other registered or"
+" signed in from it"
+msgstr "共用一个地址：一个从这里发送 API 请求，另一个从这里注册或登录"
+
+#: ../developer/duplicate-accounts.md
+msgid "`co_active`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid ""
+"sent requests from one address in the same clock hour, in at least 2 "
+"different hours"
+msgstr "在同一个整点小时内从同一地址发送请求，且这样的小时至少有 2 个"
+
+#: ../developer/duplicate-accounts.md
+msgid "`request_ip`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "2"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "both sent at least 2 API requests from one address"
+msgstr "都从同一地址发送过至少 2 个 API 请求"
+
+#: ../developer/duplicate-accounts.md
+msgid "`activity_profile`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid ""
+"are active at the same hours of the week (cosine similarity of at least "
+"0.9, with at least 10 active hours each)"
+msgstr "在一周中的相同时段活跃（余弦相似度至少为 0.9，且各自至少有 10 个活跃小时）"
+
+#: ../developer/duplicate-accounts.md
+msgid "`same_client`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid ""
+"used one uncommon client: a User-Agent at most 3 accounts used in the "
+"window, with at least 2 requests each"
+msgstr "使用同一个不常见的客户端：窗口内至多 3 个账户使用过的 User-Agent，且各自至少发送了 2 个请求"
+
+#: ../developer/duplicate-accounts.md:30
+msgid ""
+"An address is an IPv4 address or an IPv6 /64, because a host's temporary "
+"IPv6 addresses change inside its /64. Registrations are self-service "
+"sign-ups by email, phone or single sign-on; an account an administrator "
+"created is not one. Sign-ins are successful ones only."
+msgstr ""
+"这里的地址指一个 IPv4 地址或一个 IPv6 /64，因为主机的临时 IPv6 地址会在其 /64 "
+"之内变化。注册指通过邮箱、手机号或单点登录完成的自助注册；管理员创建的账户不算。登录只计成功的登录。"
+
+#: ../developer/duplicate-accounts.md:32
+msgid ""
+"Email addresses reach one mailbox when they match after dropping "
+"everything from a `+` in the part before the `@`, for every provider, and"
+" for Gmail also the dots there (`googlemail.com` counts as `gmail.com`). "
+"So `jane.doe+test@example.com` and `jane.doe@example.com` match, and at "
+"Gmail `jane.doe` and `janedoe` are one mailbox too."
+msgstr ""
+"两个邮箱地址在去掉从 `+` 起到 `@` 之前的内容后相同，就视为指向同一个邮箱，这适用于所有邮箱服务商；对 "
+"Gmail，还会去掉这部分中的点号（`googlemail.com` 视同 `gmail.com`）。因此 "
+"`jane.doe+test@example.com` 与 `jane.doe@example.com` 相匹配；在 "
+"Gmail，`jane.doe` 与 `janedoe` 也是同一个邮箱。"
+
+#: ../developer/duplicate-accounts.md:34
+msgid ""
+"`activity_profile` and `same_client` are compared only between accounts "
+"that some other evidence already links, so behaviour alone never links "
+"two accounts. They only strengthen a link found another way."
+msgstr ""
+"`activity_profile` 和 `same_client` "
+"只在已被其他依据关联的账户之间比较，因此仅凭行为永远不会关联两个账户。它们只会加强通过其他方式发现的关联。"
+
+#: ../developer/duplicate-accounts.md:36
+msgid "From links to groups"
+msgstr "从关联到分组"
+
+#: ../developer/duplicate-accounts.md:38
+msgid ""
+"Each kind of evidence counts once per pair, however many addresses carry "
+"it: sharing six addresses of one provider's pool is one fact about the "
+"pair, not six. Two accounts join one group when the evidence between that"
+" pair reaches 5. Every kind drawn on an address weighs less than that, so"
+" no single kind of address evidence links two accounts. Two kinds do, "
+"even on one address: registering close together, being active in the same"
+" hours, or both signing in and sending requests from it. Two people "
+"behind one home or office router who both sign in and use the API, or use"
+" it in the same hours, therefore form a group, at the lowest score. A "
+"group with no evidence but shared addresses is marked **Shared addresses "
+"only** in the console and `address_only` in the API. Using an address in "
+"the same hours counts as sharing it; registering from it close together "
+"does not, and neither does identity or behaviour evidence."
+msgstr ""
+"每种依据对一对账户只计一次，不论它出现在多少个地址上：共用同一运营商地址池中的六个地址，对这对账户来说是一个事实，而不是六个。两个账户之间的依据权重之和达到"
+" 5 时，它们归入同一个分组。基于地址的每种依据权重都低于 "
+"5，所以任何单独一种地址依据都不会关联两个账户。两种依据就会，哪怕在同一个地址上：注册时间相近、在相同时段活跃，或者都从这个地址登录并发送请求。因此，同一个家庭或办公室路由器后面的两个人，如果都登录并使用"
+" API，或者在相同时段使用 API，就会以最低得分组成一个分组。如果一个分组除了共用地址之外没有任何依据，控制台会把它标注为 **Shared "
+"addresses only**，API 中则为 "
+"`address_only`。在相同时段使用同一地址也算作共用地址；从同一地址相近时间注册则不算，身份或行为方面的依据也不算。"
+
+#: ../developer/duplicate-accounts.md:40
+msgid ""
+"Because each merge needs strong evidence between a pair, a chain of weak "
+"links cannot pull strangers into one group. A group's score is the sum of"
+" the weights of every linked pair in it, so larger and more tightly "
+"linked groups score higher. The score and **Why these accounts** cover "
+"every linked pair in the group, including pairs too weak to have merged "
+"on their own."
+msgstr ""
+"由于每次合并都要求一对账户之间有足够强的依据，一串弱关联无法把互不相识的人拉进同一个分组。分组的得分是其中每一对关联账户的权重之和，因此更大、关联更紧密的分组得分更高。得分和"
+" **Why these accounts** 涵盖分组内每一对有关联的账户，包括那些依据不足以单独合并的账户对。"
+
+#: ../developer/duplicate-accounts.md:42
+msgid ""
+"A group of more than 10 accounts is usually a shared network rather than "
+"one person. The scan raises the bar inside such a group until its parts "
+"are plausible and reports the parts that remain. Whatever stays that "
+"large is listed apart, under the components linked too loosely to be one "
+"person's, so that the limit is visible rather than silent. A group that "
+"same-mailbox or same-browser evidence holds together is reported whole, "
+"however large: that is one person with many accounts."
+msgstr ""
+"超过 10 "
+"个账户的分组通常是一个共享网络，而不是一个人。扫描会在这样的分组内部逐步提高门槛，直到各部分都合理，再报告剩下的部分。仍然这么大的部分会单独列出，归入关联过于松散、不像一个人所有的组件，这样上限的作用是可见的，而不是悄无声息。由同一邮箱或同一浏览器依据维系的分组则不论多大都会完整报告：那是一个人拥有许多账户。"
+
+#: ../developer/duplicate-accounts.md:44
+msgid "Shared networks and the operator's own accounts"
+msgstr "共享网络与运营方自己的账户"
+
+#: ../developer/duplicate-accounts.md:46
+msgid ""
+"An office, a campus, a VPN exit or a mobile carrier puts unrelated people"
+" on one address. An address that more than 5 accounts used in the window "
+"links nobody, and the result says how many addresses it set aside. A "
+"browser holding more than 10 accounts is treated as a shared computer in "
+"the same way."
+msgstr ""
+"办公室、校园网、VPN 出口或移动运营商会让互不相关的人共用一个地址。窗口内被超过 5 "
+"个账户使用过的地址不会关联任何人，结果中会说明有多少个地址因此被搁置。同样，登录了超过 10 个账户的浏览器被视为共用电脑。"
+
+#: ../developer/duplicate-accounts.md:48
+msgid ""
+"Administrator, internal and service accounts are never linked: they share"
+" the operator's own addresses by design. They still count towards an "
+"address's 5 accounts, so an address the operator's staff use is treated "
+"as shared."
+msgstr ""
+"管理员、内部账户和服务账户永远不会被关联：它们本来就共用运营方自己的地址。但它们仍计入一个地址的 5 "
+"个账户上限，因此运营方员工使用的地址会被视为共享地址。"
+
+#: ../developer/duplicate-accounts.md:50
+msgid ""
+"Requests that the gateway or another service sends on an account's behalf"
+" say nothing about where the person is, so the scan skips them: batch "
+"work, cloud-agent sandboxes and synthetic probes. An address the gateway "
+"could not attribute to a client (see [Trusted Proxies and Client IPs"
+"](trusted-proxies-and-client-ips.md)) is ignored. Private addresses "
+"count, because the gateway records one only for a network authorized as "
+"direct clients."
+msgstr ""
+"网关或其他服务代表账户发送的请求说明不了这个人在哪里，所以扫描会跳过它们：批处理任务、云端 agent "
+"沙箱和合成探测请求。网关无法归属到某个客户端的地址（见[可信代理与客户端 IP](trusted-proxies-and-client-"
+"ips.md)）会被忽略。私有地址会被计入，因为网关只会为被授权为直连客户端的网络记录私有地址。"
+
+#: ../developer/duplicate-accounts.md:52
+msgid "The window"
+msgstr "时间窗口"
+
+#: ../developer/duplicate-accounts.md:54
+msgid ""
+"Registrations, sign-ins and requests count only inside the window. A "
+"browser or a mailbox is not bound to it, but links accounts only when one"
+" of them was active in it; a dormant account that shares a mailbox with "
+"an active one is still reported. Accounts stay signed in to a browser "
+"until they sign out of it, so `same_browser` reflects the browsers that "
+"hold the accounts now."
+msgstr ""
+"注册、登录和请求只计入窗口之内的。浏览器和邮箱不受窗口限制，但只有当其中一个账户在窗口内活跃过时才会关联账户；与活跃账户共用邮箱的休眠账户仍会被报告。账户在浏览器中保持登录，直到从该浏览器退出，因此"
+" `same_browser` 反映的是目前登录着这些账户的浏览器。"
+
+#: ../developer/duplicate-accounts.md:56
+msgid "Caveats"
+msgstr "注意事项"
+
+#: ../developer/duplicate-accounts.md:58
+msgid ""
+"A household, a lab or a small office shares an address, and its members "
+"may sign up on the same day. Read the evidence before acting on a group."
+msgstr "一个家庭、一个实验室或一个小办公室会共用一个地址，其成员也可能在同一天注册。对某个分组采取行动之前，先读一读它的依据。"
+
+#: ../developer/duplicate-accounts.md:59
+msgid ""
+"The console lets one person sign in to several accounts on purpose. "
+"`same_browser` shows that one browser holds the accounts, not that the "
+"deployment's rules were broken."
+msgstr "控制台有意允许一个人登录多个账户。`same_browser` 表明这些账户登录在同一个浏览器中，并不表明违反了部署的规则。"
+
+#: ../developer/duplicate-accounts.md:60
+msgid ""
+"The scan reads where and when accounts registered, signed in and sent "
+"requests. A deployment that runs it should say so in its privacy policy, "
+"and should use it as input to a person's decision, not as grounds for "
+"automated enforcement."
+msgstr "扫描会读取账户在何时、何地注册、登录和发送请求。运行它的部署应在自己的隐私政策中说明，并且应把结果作为人工决策的参考，而不是自动处罚的依据。"
+
+#: ../developer/duplicate-accounts.md:62
+msgid "Admin API"
+msgstr "管理 API"
+
+#: ../developer/duplicate-accounts.md:64
+msgid ""
+"`GET /admin/users/duplicate-accounts` needs admin authentication (a "
+"console session or `ADMIN_TOKEN`)."
+msgstr "`GET /admin/users/duplicate-accounts` 需要管理员认证（控制台会话或 `ADMIN_TOKEN`）。"
+
+#: ../developer/duplicate-accounts.md
+msgid "Parameter"
+msgstr "参数"
+
+#: ../developer/duplicate-accounts.md
+msgid "Default"
+msgstr "默认值"
+
+#: ../developer/duplicate-accounts.md
+msgid "Meaning"
+msgstr "含义"
+
+#: ../developer/duplicate-accounts.md
+msgid "`days`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "14"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "The window, 1 to 90 days"
+msgstr "时间窗口，1 到 90 天"
+
+#: ../developer/duplicate-accounts.md
+msgid "`min_score`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "5"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "Leave out groups scoring below this, 1 to 100"
+msgstr "略去得分低于此值的分组，1 到 100"
+
+#: ../developer/duplicate-accounts.md
+msgid "`limit`"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "100"
+msgstr ""
+
+#: ../developer/duplicate-accounts.md
+msgid "List at most this many groups, 1 to 500"
+msgstr "最多列出这么多个分组，1 到 500"
+
+#: ../developer/duplicate-accounts.md:72
+msgid ""
+"The response has `accounts_scanned` (the accounts active in the window, "
+"the operator's own aside), `shared_addresses` and `shared_browsers` (how "
+"many were set aside as shared), `total_groups`, `groups` and `oversized`."
+" Each group has its `score`, `user_ids`, `signals` (the kinds of evidence"
+" found, strongest first), `address_only`, `members` and `links`. Each "
+"link names two accounts and lists its `evidence`: the `kind`, its "
+"`weight`, the `addresses` it was seen on (empty for identity and "
+"behaviour evidence) and a one-sentence `detail`. A scan that runs out of "
+"time is answered with 504."
+msgstr ""
+"响应包含 `accounts_scanned`（窗口内活跃的账户数，不含运营方自己的账户）、`shared_addresses` 和 "
+"`shared_browsers`（因共享而被搁置的数量）、`total_groups`、`groups` 以及 "
+"`oversized`。每个分组包含 "
+"`score`、`user_ids`、`signals`（发现的依据种类，最强的在前）、`address_only`、`members` 和 "
+"`links`。每条关联指明两个账户，并列出其 `evidence`：`kind`、`weight`、出现过该依据的 "
+"`addresses`（身份类和行为类依据为空），以及一句话的 `detail`。超时的扫描会返回 504。"

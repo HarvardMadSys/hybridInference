@@ -9,10 +9,12 @@ import secrets
 from decimal import Decimal
 from typing import Literal
 
+import asyncpg
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 
 from serving.accounting import get_accounting_policy
 from serving.accounting_api import native_quota_updates, primary_amounts
+from serving.analytics import duplicate_accounts
 from serving.audit import AuditActor, AuditTarget
 from serving.auth import sso_accounts
 from serving.auth.two_factor import admin_two_factor_required, has_authenticator
@@ -42,6 +44,7 @@ from serving.schemas_admin import (
     CreateServiceAccountResponse,
     DeleteUserRequest,
     DeleteUserResponse,
+    DuplicateAccountScanResponse,
     HardDeleteUserRequest,
     HardDeleteUserResponse,
     ListAuditActionsResponse,
@@ -502,6 +505,48 @@ async def admin_get_bulk_user_automation_scores(
         days=days,
         scores={uid: _automation_score_item(rec) for uid, rec in raw.items()},
     )
+
+
+@router.get("/users/duplicate-accounts", response_model=DuplicateAccountScanResponse)
+async def admin_scan_duplicate_accounts(
+    days: int = duplicate_accounts.DEFAULT_DAYS,
+    min_score: int = duplicate_accounts.MERGE_THRESHOLD,
+    limit: int = duplicate_accounts.DEFAULT_LIMIT,
+    admin_id: str = Depends(verify_admin_access),
+    log_store=Depends(get_log_store),
+) -> DuplicateAccountScanResponse:
+    """Groups of accounts that may belong to one person, with the evidence for each.
+
+    A read-only sweep of the last ``days`` days of registrations, sign-ins and
+    requests, plus the console's multi-account browsers and email aliases
+    (:mod:`serving.analytics.duplicate_accounts`). It reads the whole window's
+    request log, so the admin UI runs it on demand from a button.
+
+    Query params:
+    - ``days``: 1..90 inclusive (default 14)
+    - ``min_score``: leave out groups scoring below it (default 5, the merge
+      threshold; 1..100)
+    - ``limit``: list at most this many groups, highest score first (1..500,
+      default 100); ``total_groups`` says how many there were
+    """
+    if not log_store:
+        raise HTTPException(500, "Log store not configured")
+    if days < 1 or days > duplicate_accounts.MAX_DAYS:
+        raise HTTPException(422, f"days must be between 1 and {duplicate_accounts.MAX_DAYS}")
+    if min_score < 1 or min_score > 100:
+        raise HTTPException(422, "min_score must be between 1 and 100")
+    if limit < 1 or limit > duplicate_accounts.MAX_LIMIT:
+        raise HTTPException(422, f"limit must be between 1 and {duplicate_accounts.MAX_LIMIT}")
+
+    try:
+        report = await log_store.scan_duplicate_accounts(
+            days=days, min_score=min_score, limit=limit
+        )
+    except (TimeoutError, asyncpg.QueryCanceledError) as exc:
+        # A statement ran past the pool's timeout: the window holds too many
+        # requests to sweep in one go.
+        raise HTTPException(504, "The scan did not finish in time. Try a shorter window.") from exc
+    return DuplicateAccountScanResponse.model_validate(report)
 
 
 @router.get("/users/summary", response_model=UsersSummaryResponse)
